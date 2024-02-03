@@ -29,6 +29,7 @@
 #include <sdk/FName.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/FBoolProperty.hpp>
+#include <sdk/FViewport.hpp>
 
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APawn.hpp>
@@ -1661,6 +1662,8 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
 bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
     SPDLOG_INFO("Attempting to hook UGameViewportClient::Draw...");
 
+    // We need to cache the canvas index before we hook the draw function or else this doesn't work.
+    sdk::FViewport::get_debug_canvas_index();
     auto game_viewport_client_draw = sdk::UGameViewportClient::get_draw_function();
 
     if (!game_viewport_client_draw) {
@@ -1721,8 +1724,22 @@ void FFakeStereoRenderingHook::viewport_draw_hook(void* viewport, bool should_pr
     call_orig();
 }
 
-void FFakeStereoRenderingHook::game_viewport_client_draw_hook(void* viewport_client, void* viewport, void* canvas, void* a4) {
+void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
+
+    // AHUD Compatibility
+    // Replaces the canvas with the debug canvas if it's available.
+    // The debug canvas is captured by the Slate UI system, whereas the scene canvas is not.
+    // This allows the UI to be displayed correctly in VR.
+    // TODO: Probably fix the scissor and/or view rects.
+    // Also TODO: Figure out how games that bypass this render directly to the scene RT anyways.
+    if (g_framework->is_game_data_intialized() && VR::get()->is_ahud_compatibility_enabled() && viewport != nullptr) {
+        const auto debug_canvas = viewport->get_debug_canvas();
+
+        if (debug_canvas != nullptr) {
+            canvas = debug_canvas;
+        }
+    }
 
     auto call_orig = [=]() {
         ZoneScopedN("UGameViewportClient::Draw");

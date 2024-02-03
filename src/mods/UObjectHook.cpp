@@ -1296,9 +1296,9 @@ void UObjectHook::update_persistent_states() {
                     auto obj_primcomp = obj.as<sdk::UPrimitiveComponent*>();
 
                     if (m_uobject_hook_disabled) {
-                        obj_primcomp->set_overall_visibility(true);
+                        obj_primcomp->set_overall_visibility(true, true);
                     } else {
-                        obj_primcomp->set_overall_visibility(false);
+                        obj_primcomp->set_overall_visibility(false, prop_base->hide_legacy);
                     }
                 } else if (obj.definition->is_a(scene_comp_t)) {
                     auto obj_scenecomp = obj.as<sdk::USceneComponent*>();
@@ -2170,12 +2170,14 @@ void UObjectHook::draw_main() {
 
 void UObjectHook::ui_handle_object(sdk::UObject* object) {
     if (object == nullptr) {
+        ImGui::Text("nullptr");
         return;
     }
 
     const auto uclass = object->get_class();
 
     if (uclass == nullptr) {
+        ImGui::Text("null class");
         return;
     }
 
@@ -2413,10 +2415,21 @@ void UObjectHook::ui_handle_scene_component(sdk::USceneComponent* comp) {
     auto prim_comp = (sdk::UPrimitiveComponent*)comp;
 
     bool visible = comp->is_a(prim_comp_t) ? prim_comp->is_rendering_in_main_pass() : comp->is_visible();
+    bool legacy_visible = comp->is_visible();
 
-    if (ImGui::Checkbox("Visible", &visible)) {
+    auto visible_checkbox = ImGui::Checkbox("Visible", &visible);
+    ImGui::SameLine();
+
+    const auto legacy_visible_changed = ImGui::Checkbox("Legacy", &legacy_visible);
+    visible_checkbox |= legacy_visible_changed;
+
+    if (visible_checkbox) {
+        if (legacy_visible_changed) {
+            visible = legacy_visible;
+        }
+
         if (comp->is_a(prim_comp_t)) {
-            prim_comp->set_overall_visibility(visible);
+            prim_comp->set_overall_visibility(visible, legacy_visible_changed || (visible == true && !legacy_visible));
         } else {
             comp->set_visibility(visible, false);
         }
@@ -2434,6 +2447,23 @@ void UObjectHook::ui_handle_scene_component(sdk::USceneComponent* comp) {
 
             if (props != nullptr && props->hide) {
                 props->hide = false;
+                props->save_to_file();
+            }
+        }
+
+        if (legacy_visible) {
+            // Check if we have a persistent property for this component
+            std::shared_ptr<PersistentProperties> props{};
+
+            for (const auto& existing_prop : m_persistent_properties) {
+                if (existing_prop->path.resolve() == comp) {
+                    props = existing_prop;
+                    break;
+                }
+            }
+
+            if (props != nullptr && props->hide_legacy) {
+                props->hide_legacy = false;
                 props->save_to_file();
             }
         }
@@ -2472,6 +2502,7 @@ void UObjectHook::ui_handle_scene_component(sdk::USceneComponent* comp) {
 
         if (props != nullptr) {
             props->hide = !visible;
+            props->hide_legacy = !legacy_visible;
             props->save_to_file();
         }
     }
@@ -2839,7 +2870,40 @@ void UObjectHook::ui_handle_functions(void* object, sdk::UStruct* uclass) {
     });
 
     for (auto func : sorted_functions) {
-        if (is_real_object && ImGui::TreeNode(utility::narrow(func->get_fname().to_string()).data())) {
+        const auto made = ImGui::TreeNode(utility::narrow(func->get_fname().to_string()).data());
+
+        if (ImGui::BeginPopupContextItem()) {
+            if (ImGui::Button("Copy Name")) {
+                if (OpenClipboard(NULL)) {
+                    EmptyClipboard();
+                    HGLOBAL hcd = GlobalAlloc(GMEM_DDESHARE, func->get_fname().to_string().size() + 1);
+                    char* data = (char*)GlobalLock(hcd);
+                    strcpy(data, utility::narrow(func->get_fname().to_string()).c_str());
+                    GlobalUnlock(hcd);
+                    SetClipboardData(CF_TEXT, hcd);
+                    CloseClipboard();
+                }
+            }
+
+            if (ImGui::Button("Copy Address")) {
+                const auto addr = (uintptr_t)func;
+                const auto hex = (std::stringstream{} << std::hex << addr).str();
+
+                if (OpenClipboard(NULL)) {
+                    EmptyClipboard();
+                    HGLOBAL hcd = GlobalAlloc(GMEM_DDESHARE, hex.size() + 1);
+                    char* data = (char*)GlobalLock(hcd);
+                    strcpy(data, hex.c_str());
+                    GlobalUnlock(hcd);
+                    SetClipboardData(CF_TEXT, hcd);
+                    CloseClipboard();
+                }
+            }
+
+            ImGui::EndPopup();
+        }
+
+        if (is_real_object && made) {
             auto parameters = func->get_child_properties();
 
             if (parameters == nullptr || (parameters->get_next() == nullptr && parameters->get_field_name().to_string() == L"ReturnValue")) {
@@ -3362,6 +3426,7 @@ nlohmann::json UObjectHook::PersistentProperties::to_json() const {
     json["properties"] = nlohmann::json::array();
     json["type"] = "properties";
     json["hide"] = hide;
+    json["hide_legacy"] = hide_legacy;
 
     for (const auto& prop : properties) {
         json["properties"].push_back({
@@ -3411,6 +3476,12 @@ std::shared_ptr<UObjectHook::PersistentProperties> UObjectHook::PersistentProper
         result->hide = json["hide"].get<bool>();
     } else {
         result->hide = false;
+    }
+
+    if (json.contains("hide_legacy") && json["hide_legacy"].is_boolean()) {
+        result->hide_legacy = json["hide_legacy"].get<bool>();
+    } else {
+        result->hide_legacy = false;
     }
 
     return result;
