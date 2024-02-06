@@ -90,6 +90,10 @@ private:
     static void* process_view_rotation_analyzer(void*, size_t, size_t, size_t, size_t, size_t);
     static void process_view_rotation(sdk::APlayerCameraManager* pcm, float delta_time, Rotator<float>* rot, Rotator<float>* delta_rot);
 
+    // UHeadMountedDisplayFunctionLibrary
+    static void* get_orientation_and_position_native(void*, void*, void*, void*);
+    static void* is_head_mounted_display_enabled_native(void*, void*, void*, void*);
+
     void pre_update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
 
     FFakeStereoRenderingHook* m_stereo_hook{nullptr};
@@ -125,6 +129,17 @@ private:
 
     SharedPtr m_xr_camera_shared{};
     SharedPtr m_view_extension_shared{};
+
+    // Hook for the UFunction GetOrientationAndPosition
+    std::unique_ptr<PointerHook> m_native_get_oap_hook{};
+    bool m_within_get_oap_native{false};
+
+    std::unique_ptr<PointerHook> m_native_is_hmd_enabled_hook{};
+    bool m_within_is_hmd_enabled_native{false};
+
+    bool is_within_valid_head_tracking_allowed_code() const {
+        return m_within_get_oap_native || m_within_is_hmd_enabled_native;
+    }
 
     uintptr_t m_addr_of_process_view_rotation_ptr{};
     //std::unique_ptr<PointerHook> m_process_view_rotation_hook{};
