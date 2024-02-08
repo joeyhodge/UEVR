@@ -44,8 +44,10 @@ UEVRSharedMemory::UEVRSharedMemory() {
     m_data = (Data*)MapViewOfFile(m_memory, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Data));
 
     if (m_data != nullptr) {
-        auto p = *utility::get_module_path(utility::get_executable());
-        strcpy_s(m_data->path, p.c_str());
+        const auto p = *utility::get_module_pathw(utility::get_executable());
+        std::memset(m_data->path, 0, sizeof(m_data->path));
+        std::wcsncpy(m_data->path, p.c_str(), p.length());
+        m_data->path[p.length()] = L'\0';
         m_data->pid = GetCurrentProcessId();
         spdlog::info("Mapped memory!");
     } else {
@@ -940,11 +942,11 @@ void Framework::on_direct_input_keys(const std::array<uint8_t, 256>& keys) {
 
 std::filesystem::path Framework::get_persistent_dir() {
     auto return_appdata_dir = []() -> std::filesystem::path {
-        char app_data_path[MAX_PATH]{};
-        SHGetSpecialFolderPathA(0, app_data_path, CSIDL_APPDATA, false);
+        wchar_t app_data_path[MAX_PATH]{};
+        SHGetSpecialFolderPathW(0, app_data_path, CSIDL_APPDATA, false);
 
         const auto exe_name = [&]() {
-            const auto result = std::filesystem::path(*utility::get_module_path(utility::get_executable())).stem().string();
+            const auto result = std::filesystem::path(*utility::get_module_pathw(utility::get_executable())).stem().string();
             const auto dir = std::filesystem::path(app_data_path) / "UnrealVRMod" / result;
             std::filesystem::create_directories(dir);
 
