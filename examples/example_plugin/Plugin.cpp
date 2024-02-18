@@ -24,6 +24,8 @@ SOFTWARE.
 #include <sstream>
 #include <mutex>
 #include <memory>
+#include <locale>
+#include <codecvt>
 
 #include <Windows.h>
 
@@ -168,14 +170,106 @@ public:
         return !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().WantCaptureKeyboard;
     }
 
-    void on_pre_engine_tick(UEVR_UGameEngineHandle engine, float delta) override {
+    void on_pre_engine_tick(API::UGameEngine* engine, float delta) override {
         PLUGIN_LOG_ONCE("Pre Engine Tick: %f", delta);
 
         static bool once = true;
 
         if (once) {
             once = false;
-            API::get()->sdk()->functions->execute_command(L"stat fps");
+
+            API::get()->log_info("Running once on pre engine tick");
+            API::get()->execute_command(L"stat fps");
+
+            // Log the UEngine name.
+            const auto uengine_name = engine->get_full_name();
+
+            // Convert from wide to narrow string (we do not have utility::narrow in this context).
+            std::string uengine_name_narrow{std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(uengine_name)};
+
+            API::get()->log_info("Engine name: %s", uengine_name_narrow.c_str());
+
+            // Go through all of engine's fields and log their names.
+            const auto engine_class_ours = (API::UStruct*)engine->get_class();
+            for (auto super = engine_class_ours; super != nullptr; super = super->get_super()) {
+                for (auto field = super->get_child_properties(); field != nullptr; field = field->get_next()) {
+                    const auto field_fname = field->get_fname();
+                    const auto field_name = field_fname->to_string();
+                    const auto field_class = field->get_class();
+
+                    std::wstring prepend{};
+
+                    if (field_class != nullptr) {
+                        const auto field_class_fname = field_class->get_fname();
+                        const auto field_class_name = field_class_fname->to_string();
+
+                        prepend = field_class_name + L" ";
+                    }
+
+                    // Convert from wide to narrow string (we do not have utility::narrow in this context).
+                    std::string field_name_narrow{std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(prepend + field_name)};
+                    API::get()->log_info(" Field name: %s", field_name_narrow.c_str());
+                }
+            }
+
+            // Check if we can find the GameInstance and call is_a() on it.
+            const auto game_instance = engine->get_property<API::UObject*>(L"GameInstance");
+
+            if (game_instance != nullptr) {
+                const auto game_instance_class = API::get()->find_uobject<API::UClass>(L"Class /Script/Engine.GameInstance");
+
+                if (game_instance->is_a(game_instance_class)) {
+                    const auto& local_players = game_instance->get_property<API::TArray<API::UObject*>>(L"LocalPlayers");
+
+                    if (local_players.count > 0 && local_players.data != nullptr) {
+                        const auto local_player = local_players.data[0];
+
+                        
+                    } else {
+                        API::get()->log_error("Failed to find LocalPlayers");
+                    }
+
+                    API::get()->log_info("GameInstance is a UGameInstance");
+                } else {
+                    API::get()->log_error("GameInstance is not a UGameInstance");
+                }
+            } else {
+                API::get()->log_error("Failed to find GameInstance");
+            }
+
+            // Find the Engine object and compare it to the one we have.
+            const auto engine_class = API::get()->find_uobject<API::UClass>(L"Class /Script/Engine.GameEngine");
+            if (engine_class != nullptr) {
+                // Round 1, check if we can find it via get_first_object_by_class.
+                const auto engine_searched = engine_class->get_first_object_matching<API::UGameEngine>(false);
+
+                if (engine_searched != nullptr) {
+                    if (engine_searched == engine) {
+                        API::get()->log_info("Found Engine object @ 0x%p", engine_searched);
+                    } else {
+                        API::get()->log_error("Found Engine object @ 0x%p, but it's not the same as the one we have", engine_searched);
+                    }
+                } else {
+                    API::get()->log_error("Failed to find Engine object");
+                }
+
+                // Round 2, check if we can find it via get_objects_by_class.
+                const auto objects = engine_class->get_objects_matching<API::UGameEngine>(false);
+
+                if (!objects.empty()) {
+                    for (const auto& obj : objects) {
+                        if (obj == engine) {
+                            API::get()->log_info("Found Engine object @ 0x%p", obj);
+                        } else {
+                            API::get()->log_info("Found unrelated Engine object @ 0x%p", obj);
+                        }
+                    }
+                } else {
+                    API::get()->log_error("Failed to find Engine objects");
+                }
+            } else {
+                API::get()->log_error("Failed to find Engine class");
+            }
         }
 
         if (m_initialized) {
@@ -191,7 +285,7 @@ public:
         }
     }
 
-    void on_post_engine_tick(UEVR_UGameEngineHandle engine, float delta) override {
+    void on_post_engine_tick(API::UGameEngine* engine, float delta) override {
         PLUGIN_LOG_ONCE("Post Engine Tick: %f", delta);
     }
 

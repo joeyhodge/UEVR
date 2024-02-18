@@ -21,6 +21,7 @@
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
 
+#include "UObjectHook.hpp"
 #include "VR.hpp"
 
 #include "PluginLoader.hpp"
@@ -338,6 +339,10 @@ UEVR_UObjectFunctions g_uobject_functions {
     [](UEVR_UObjectHandle obj, const wchar_t* name, void* params) {
         UOBJECT(obj)->call_function(name, params);
     },
+    // get_fname
+    [](UEVR_UObjectHandle obj) {
+        return (UEVR_FNameHandle)&UOBJECT(obj)->get_fname();
+    },
 };
 
 UEVR_UObjectArrayFunctions g_uobject_array_functions {
@@ -353,6 +358,14 @@ UEVR_FFieldFunctions g_ffield_functions {
     // get_next
     [](UEVR_FFieldHandle field) {
         return (UEVR_FFieldHandle)FFIELD(field)->get_next();
+    },
+    // get_class
+    [](UEVR_FFieldHandle field) {
+        return (UEVR_FFieldClassHandle)FFIELD(field)->get_class();
+    },
+    // get_fname
+    [](UEVR_FFieldHandle field) {
+        return (UEVR_FNameHandle)&FFIELD(field)->get_field_name();
     },
 };
 
@@ -400,6 +413,123 @@ UEVR_UFunctionFunctions g_ufunction_functions {
     },
 };
 
+namespace uevr {
+namespace uobjecthook {
+    void activate() {
+        UObjectHook::get()->activate();
+    }
+
+    bool exists(UEVR_UObjectHandle obj) {
+        return UObjectHook::get()->exists((sdk::UObject*)obj);
+    }
+
+    int get_objects_by_class(UEVR_UClassHandle klass, UEVR_UObjectHandle* out_objects, unsigned int max_objects, bool allow_default) {
+        const auto objects = UObjectHook::get()->get_objects_by_class((sdk::UClass*)klass);
+
+        if (objects.empty()) {
+            return 0;
+        }
+
+        const auto default_object = ((sdk::UClass*)klass)->get_class_default_object();
+
+        unsigned int i = 0;
+        for (auto&& obj : objects) {
+            if (!allow_default && obj == default_object) {
+                continue;
+            }
+
+            if (i < max_objects && out_objects != nullptr) {
+                out_objects[i++] = (UEVR_UObjectHandle)obj;
+            } else {
+                i++;
+            }
+        }
+
+        return i;
+    }
+
+    int get_objects_by_class_name(const wchar_t* class_name, UEVR_UObjectHandle* out_objects, unsigned int max_objects, bool allow_default) {
+        const auto c = sdk::find_uobject<sdk::UClass>(class_name);
+
+        if (c == nullptr) {
+            return 0;
+        }
+
+        return get_objects_by_class((UEVR_UClassHandle)c, out_objects, max_objects, allow_default);
+    }
+
+    UEVR_UObjectHandle get_first_object_by_class(UEVR_UClassHandle klass, bool allow_default) {
+        const auto objects = UObjectHook::get()->get_objects_by_class((sdk::UClass*)klass);
+
+        if (objects.empty()) {
+            return nullptr;
+        }
+
+        if (allow_default) {
+            return (UEVR_UObjectHandle)*objects.begin();
+        }
+
+        const auto default_object = ((sdk::UClass*)klass)->get_class_default_object();
+
+        for (auto&& obj : objects) {
+            if (obj != default_object) {
+                return (UEVR_UObjectHandle)obj;
+            }
+        }
+
+        return (UEVR_UObjectHandle)nullptr;
+    }
+
+    UEVR_UObjectHandle get_first_object_by_class_name(const wchar_t* class_name, bool allow_default) {
+        const auto c = sdk::find_uobject<sdk::UClass>(class_name);
+
+        if (c == nullptr) {
+            return nullptr;
+        }
+
+        return get_first_object_by_class((UEVR_UClassHandle)c, allow_default);
+    }
+}
+}
+
+UEVR_UObjectHookFunctions g_uobjecthook_functions {
+    uevr::uobjecthook::activate,
+    uevr::uobjecthook::exists,
+    uevr::uobjecthook::get_objects_by_class,
+    uevr::uobjecthook::get_objects_by_class_name,
+    uevr::uobjecthook::get_first_object_by_class,
+    uevr::uobjecthook::get_first_object_by_class_name
+};
+
+#define FFIELDCLASS(x) ((sdk::FFieldClass*)x)
+
+UEVR_FFieldClassFunctions g_ffield_class_functions {
+    // get_fname
+    [](UEVR_FFieldClassHandle field) {
+        return (UEVR_FNameHandle)&FFIELDCLASS(field)->get_name();
+    },
+};
+
+#define FNAME(x) ((sdk::FName*)x)
+
+UEVR_FNameFunctions g_fname_functions {
+    // to_string
+    [](UEVR_FNameHandle name, wchar_t* buffer, unsigned int buffer_size) -> unsigned int {
+        const auto result = FNAME(name)->to_string();
+
+        if (buffer == nullptr || buffer_size == 0) {
+            return (unsigned int)result.size();
+        }
+
+        const auto size = std::min<size_t>(result.size(), (size_t)buffer_size - 1);
+
+        memcpy(buffer, result.c_str(), size * sizeof(wchar_t));
+        buffer[size] = L'\0';
+
+        return (unsigned int)size;
+    },
+};
+
 UEVR_SDKData g_sdk_data {
     &g_sdk_functions,
     &g_sdk_callbacks,
@@ -409,7 +539,10 @@ UEVR_SDKData g_sdk_data {
     &g_fproperty_functions,
     &g_ustruct_functions,
     &g_uclass_functions,
-    &g_ufunction_functions
+    &g_ufunction_functions,
+    &g_uobjecthook_functions,
+    &g_ffield_class_functions,
+    &g_fname_functions,
 };
 
 namespace uevr {
@@ -832,11 +965,11 @@ void PluginLoader::early_init() try {
     namespace fs = std::filesystem;
 
     std::scoped_lock _{m_mux};
-    std::string module_path{};
+    std::wstring module_path{};
 
     module_path.resize(1024, 0);
-    module_path.resize(GetModuleFileName(nullptr, module_path.data(), module_path.size()));
-    spdlog::info("[PluginLoader] Module path {}", module_path);
+    module_path.resize(GetModuleFileNameW(nullptr, module_path.data(), module_path.size()));
+    spdlog::info("[PluginLoader] Module path {}", utility::narrow(module_path));
 
     const auto plugin_path = Framework::get_persistent_dir() / "plugins";
 
