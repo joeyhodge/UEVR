@@ -28,6 +28,9 @@ extern "C" {
     #include "API.h"
 }
 
+#include <optional>
+#include <filesystem>
+#include <string>
 #include <mutex>
 #include <array>
 #include <vector>
@@ -50,7 +53,7 @@ public:
         }
 
         if (s_instance != nullptr) {
-            throw std::runtime_error("API already initialized");
+            return s_instance;
         }
 
         s_instance = std::make_unique<API>(param);
@@ -77,12 +80,29 @@ public:
 
     }
 
-    inline const auto param() const {
+    inline const UEVR_PluginInitializeParam* param() const {
         return m_param;
     }
 
-    inline const auto sdk() const {
+    inline const UEVR_SDKData* sdk() const {
         return m_sdk;
+    }
+
+    std::filesystem::path get_persistent_dir(std::optional<std::wstring> file = std::nullopt) {
+        static const auto fn = param()->functions->get_persistent_dir;
+        const auto size = fn(nullptr, 0);
+        if (size == 0) {
+            return std::filesystem::path{};
+        }
+
+        std::wstring result(size, L'\0');
+        fn(result.data(), size + 1);
+
+        if (file.has_value()) {
+            return std::filesystem::path{result} / file.value();
+        }
+
+        return result;
     }
 
     template <typename... Args> void log_error(const char* format, Args... args) { m_param->functions->log_error(format, args...); }
@@ -103,6 +123,15 @@ public:
     struct FFieldClass;
     struct FUObjectArray;
     struct FName;
+    struct FConsoleManager;
+    struct IConsoleObject;
+    struct IConsoleVariable;
+    struct IConsoleCommand;
+    struct ConsoleObjectElement;
+    struct UObjectHook;
+
+    template<typename T>
+    struct TArray;
 
     template<typename T = UObject>
     T* find_uobject(std::wstring_view name) {
@@ -145,9 +174,62 @@ public:
         return (FUObjectArray*)fn();
     }
 
+    FConsoleManager* get_console_manager() {
+        static const auto fn = sdk()->functions->get_console_manager;
+        return (FConsoleManager*)fn();
+    }
+
+    struct FMalloc {
+        static FMalloc* get() {
+            static const auto fn = initialize()->get;
+            return (FMalloc*)fn();
+        }
+
+        inline UEVR_FMallocHandle to_handle() { return (UEVR_FMallocHandle)this; }
+        inline UEVR_FMallocHandle to_handle() const { return (UEVR_FMallocHandle)this; }
+
+        using FMallocSizeT = uint32_t; // because of C89
+
+        void* malloc(FMallocSizeT size, uint32_t alignment = 0) {
+            static const auto fn = initialize()->malloc;
+            return fn(to_handle(), size, alignment);
+        }
+        
+        void* realloc(void* original, FMallocSizeT size, uint32_t alignment = 0) {
+            static const auto fn = initialize()->realloc;
+            return fn(to_handle(), original, size, alignment);
+        }
+
+        void free(void* original) {
+            static const auto fn = initialize()->free;
+            fn(to_handle(), original);
+        }
+
+    private:
+        static inline const UEVR_FMallocFunctions* s_functions{nullptr};
+        static inline const UEVR_FMallocFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->malloc;
+            }
+
+            return s_functions;
+        }
+    };
+
     struct FName {
         inline UEVR_FNameHandle to_handle() { return (UEVR_FNameHandle)this; }
         inline UEVR_FNameHandle to_handle() const { return (UEVR_FNameHandle)this; }
+
+        enum class EFindName : uint32_t {
+            Find,
+            Add
+        };
+
+        FName() = default;
+        FName(std::wstring_view name, EFindName find_type = EFindName::Add) {
+            static const auto fn = initialize()->constructor;
+            fn(to_handle(), name.data(), (uint32_t)find_type);
+        }
 
         std::wstring to_string() const {
             static const auto fn = initialize()->to_string;
@@ -160,6 +242,9 @@ public:
             fn(to_handle(), result.data(), size + 1);
             return result;
         }
+
+        int32_t comparison_index{};
+        int32_t number{};
 
     private:
         static inline const UEVR_FNameFunctions* s_functions{nullptr};
@@ -194,11 +279,6 @@ public:
         inline bool is_a(UClass* cmp) const {
             static const auto fn = initialize()->is_a;
             return fn(to_handle(), cmp->to_handle());
-        }
-
-        template<typename T>
-        inline bool is_a() const {
-            return is_a(T::static_class());
         }
 
         void process_event(UFunction* function, void* params) {
@@ -471,9 +551,136 @@ public:
         }
     };
 
+    struct ConsoleObjectElement {
+        wchar_t* key;
+        int32_t unk[2];
+        IConsoleObject* value;
+        int32_t unk2[2];
+    };
+
+    struct FConsoleManager {
+        inline UEVR_FConsoleManagerHandle to_handle() { return (UEVR_FConsoleManagerHandle)this; }
+        inline UEVR_FConsoleManagerHandle to_handle() const { return (UEVR_FConsoleManagerHandle)this; }
+
+        TArray<ConsoleObjectElement>& get_console_objects() {
+            static const auto fn = initialize()->get_console_objects;
+            return *(TArray<ConsoleObjectElement>*)fn(to_handle());
+        }
+
+        IConsoleObject* find_object(std::wstring_view name) {
+            static const auto fn = initialize()->find_object;
+            return (IConsoleObject*)fn(to_handle(), name.data());
+        }
+
+        IConsoleVariable* find_variable(std::wstring_view name) {
+            static const auto fn = initialize()->find_variable;
+            return (IConsoleVariable*)fn(to_handle(), name.data());
+        }
+
+        IConsoleCommand* find_command(std::wstring_view name) {
+            static const auto fn = initialize()->find_command;
+            return (IConsoleCommand*)fn(to_handle(), name.data());
+        }
+
+    private:
+        static inline const UEVR_ConsoleFunctions* s_functions{nullptr};
+        static inline const UEVR_ConsoleFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->console;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct IConsoleObject {
+        inline UEVR_IConsoleObjectHandle to_handle() { return (UEVR_IConsoleObjectHandle)this; }
+        inline UEVR_IConsoleObjectHandle to_handle() const { return (UEVR_IConsoleObjectHandle)this; }
+
+        IConsoleCommand* as_command() {
+            static const auto fn = initialize()->as_command;
+            return (IConsoleCommand*)fn(to_handle());
+        }
+
+    private:
+        static inline const UEVR_ConsoleFunctions* s_functions{nullptr};
+        static inline const UEVR_ConsoleFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->console;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct IConsoleVariable : public IConsoleObject {
+        inline UEVR_IConsoleVariableHandle to_handle() { return (UEVR_IConsoleVariableHandle)this; }
+        inline UEVR_IConsoleVariableHandle to_handle() const { return (UEVR_IConsoleVariableHandle)this; }
+
+        void set(std::wstring_view value) {
+            static const auto fn = initialize()->variable_set;
+            fn(to_handle(), value.data());
+        }
+
+        void set_ex(std::wstring_view value, uint32_t flags = 0x80000000) {
+            static const auto fn = initialize()->variable_set_ex;
+            fn(to_handle(), value.data(), flags);
+        }
+
+        void set(float value) {
+            set(std::to_wstring(value));
+        }
+
+        void set(int value) {
+            set(std::to_wstring(value));
+        }
+
+        int get_int() const {
+            static const auto fn = initialize()->variable_get_int;
+            return fn(to_handle());
+        }
+
+        float get_float() const {
+            static const auto fn = initialize()->variable_get_float;
+            return fn(to_handle());
+        }
+
+    private:
+        static inline const UEVR_ConsoleFunctions* s_functions{nullptr};
+        static inline const UEVR_ConsoleFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->console;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct IConsoleCommand : public IConsoleObject {
+        inline UEVR_IConsoleCommandHandle to_handle() { return (UEVR_IConsoleCommandHandle)this; }
+        inline UEVR_IConsoleCommandHandle to_handle() const { return (UEVR_IConsoleCommandHandle)this; }
+
+        void execute(std::wstring_view args) {
+            static const auto fn = initialize()->command_execute;
+            fn(to_handle(), args.data());
+        }
+    
+    private:
+        static inline const UEVR_ConsoleFunctions* s_functions{nullptr};
+        static inline const UEVR_ConsoleFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->console;
+            }
+
+            return s_functions;
+        }
+    };
+
     // TODO
     struct UEngine : public UObject {
-
+        static UEngine* get() {
+            return API::get()->get_engine();
+        }
     };
 
     struct UGameEngine : public UEngine {
@@ -484,11 +691,144 @@ public:
 
     };
 
+    struct FUObjectArray {
+        static FUObjectArray* get() {
+            return API::get()->get_uobject_array();
+        }
+    };
+
+    // One of the very few non-opaque structs
+    // because these have never changed, if they do its because of bespoke code
     template <typename T>
     struct TArray {
         T* data;
         int32_t count;
         int32_t capacity;
+
+        ~TArray() {
+            if (data != nullptr) {
+                FMalloc::get()->free(data);
+                data = nullptr;
+            }
+        }
+
+        T* begin() {
+            return data;
+        }
+
+        T* end() {
+            if (data == nullptr) {
+                return nullptr;
+            }
+
+            return data + count;
+        }
+
+        T* begin() const {
+            return data;
+        }
+
+        T* end() const {
+            if (data == nullptr) {
+                return nullptr;
+            }
+
+            return data + count;
+        }
+
+        bool empty() const {
+            return count == 0 || data == nullptr;
+        }
+    };
+
+public:
+    // UEVR specific stuff
+    struct UObjectHook {
+        struct MotionControllerState;
+
+        static void activate() {
+            static const auto fn = initialize()->activate;
+            fn();
+        }
+
+        static bool exists(UObject* obj) {
+            static const auto fn = initialize()->exists;
+            return fn(obj->to_handle());
+        }
+
+        static std::vector<UObject*> get_objects_by_class(UClass* c, bool allow_default = false) {
+            if (c == nullptr) {
+                return {};
+            }
+
+            return c->get_objects_matching(allow_default);
+        }
+
+        static UObject* get_first_object_by_class(UClass* c, bool allow_default = false) {
+            if (c == nullptr) {
+                return nullptr;
+            }
+
+            return c->get_first_object_matching(allow_default);
+        }
+
+        // Must be a USceneComponent
+        // Also, do NOT keep the pointer around, it will be invalidated at any time
+        // Call it every time you need it
+        static MotionControllerState* get_or_add_motion_controller_state(UObject* obj) {
+            static const auto fn = initialize()->get_or_add_motion_controller_state;
+            return (MotionControllerState*)fn(obj->to_handle());
+        }
+
+        static MotionControllerState* get_motion_controller_state(UObject* obj) {
+            static const auto fn = initialize()->get_motion_controller_state;
+            return (MotionControllerState*)fn(obj->to_handle());
+        }
+
+        struct MotionControllerState {
+            inline UEVR_UObjectHookMotionControllerStateHandle to_handle() { return (UEVR_UObjectHookMotionControllerStateHandle)this; }
+            inline UEVR_UObjectHookMotionControllerStateHandle to_handle() const { return (UEVR_UObjectHookMotionControllerStateHandle)this; }
+
+            void set_rotation_offset(const UEVR_Quaternionf* offset) {
+                static const auto fn = initialize()->set_rotation_offset;
+                fn(to_handle(), offset);
+            }
+
+            void set_location_offset(const UEVR_Vector3f* offset) {
+                static const auto fn = initialize()->set_location_offset;
+                fn(to_handle(), offset);
+            }
+
+            void set_hand(uint32_t hand) {
+                static const auto fn = initialize()->set_hand;
+                fn(to_handle(), hand);
+            }
+
+            void set_permanent(bool permanent) {
+                static const auto fn = initialize()->set_permanent;
+                fn(to_handle(), permanent);
+            }
+
+        private:
+            static inline const UEVR_UObjectHookMotionControllerStateFunctions* s_functions{nullptr};
+            static inline const UEVR_UObjectHookMotionControllerStateFunctions* initialize() {
+                if (s_functions == nullptr) {
+                    s_functions = API::get()->sdk()->uobject_hook->mc_state;
+                }
+
+                return s_functions;
+            }
+        };
+
+    private:
+        static inline const UEVR_UObjectHookFunctions* s_functions{nullptr};
+        static inline const UEVR_UObjectHookFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->uobject_hook;
+            }
+
+            return s_functions;
+        }
     };
 
 private:

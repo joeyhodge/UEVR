@@ -175,11 +175,84 @@ public:
 
         static bool once = true;
 
+        // Unit tests for the API basically.
         if (once) {
             once = false;
 
             API::get()->log_info("Running once on pre engine tick");
             API::get()->execute_command(L"stat fps");
+
+            API::FName test_name{L"Left"};
+            std::string name_narrow{std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(test_name.to_string())};
+            API::get()->log_info("Test FName: %s", name_narrow.c_str());
+
+            // Test attaching skeletal mesh components with UObjectHook.
+            struct {
+                API::UClass* c;
+                API::TArray<API::UObject*> return_value{};
+            } component_params;
+
+            component_params.c = API::get()->find_uobject<API::UClass>(L"Class /Script/Engine.SkeletalMeshComponent");
+            const auto pawn = API::get()->get_local_pawn(0);
+
+            if (component_params.c != nullptr && pawn != nullptr) {
+                // either or.
+                pawn->call_function(L"K2_GetComponentsByClass", &component_params);
+                pawn->call_function(L"GetComponentsByClass", &component_params);
+
+                if (component_params.return_value.empty()) {
+                    API::get()->log_error("Failed to find any SkeletalMeshComponents");
+                }
+
+                for (auto mesh : component_params.return_value) {
+                    auto state = API::UObjectHook::get_or_add_motion_controller_state(mesh);
+                }
+            } else {
+                API::get()->log_error("Failed to find SkeletalMeshComponent class or local pawn");
+            }
+
+            // Iterate over all console variables.
+            const auto console_manager = API::get()->get_console_manager();
+
+            if (console_manager != nullptr) {
+                API::get()->log_info("Console manager @ 0x%p", console_manager);
+                const auto& objects = console_manager->get_console_objects();
+
+                for (const auto& object : objects) {
+                    if (object.key != nullptr) {
+                        // convert from wide to narrow string (we do not have utility::narrow in this context).
+                        std::string key_narrow{std::wstring_convert<std::codecvt_utf8<wchar_t>>{}.to_bytes(object.key)};
+                        if (object.value != nullptr) {
+                            const auto command = object.value->as_command();
+
+                            if (command != nullptr) {
+                                API::get()->log_info(" Console COMMAND: %s @ 0x%p", key_narrow.c_str(), object.value);
+                            } else {
+                                API::get()->log_info(" Console VARIABLE: %s @ 0x%p", key_narrow.c_str(), object.value);
+                            }
+                        }
+                    }
+                }
+
+                auto cvar = console_manager->find_variable(L"r.Color.Min");
+
+                if (cvar != nullptr) {
+                    API::get()->log_info("Found r.Color.Min @ 0x%p (%f)", cvar, cvar->get_float());
+                } else {
+                    API::get()->log_error("Failed to find r.Color.Min");
+                }
+
+                auto cvar2 = console_manager->find_variable(L"r.Upscale.Quality");
+
+                if (cvar2 != nullptr) {
+                    API::get()->log_info("Found r.Upscale.Quality @ 0x%p (%d)", cvar2, cvar2->get_int());
+                    cvar2->set(cvar2->get_int() + 1);
+                } else {
+                    API::get()->log_error("Failed to find r.Upscale.Quality");
+                }
+            } else {
+                API::get()->log_error("Failed to find console manager");
+            }
 
             // Log the UEngine name.
             const auto uengine_name = engine->get_full_name();
@@ -337,7 +410,8 @@ private:
         IMGUI_CHECKVERSION();
         ImGui::CreateContext();
 
-        ImGui::GetIO().IniFilename = "example_dll_ui.ini";
+        static const auto imgui_ini = API::get()->get_persistent_dir(L"imgui_example_plugin.ini").string();
+        ImGui::GetIO().IniFilename = imgui_ini.c_str();
 
         const auto renderer_data = API::get()->param()->renderer;
 
