@@ -22,6 +22,10 @@
 #include <sdk/APlayerController.hpp>
 #include <sdk/USceneComponent.hpp>
 
+#include "pluginloader/FFakeStereoRenderingFunctions.hpp"
+#include "pluginloader/FRenderTargetPoolHook.hpp"
+#include "pluginloader/FRHITexture2DFunctions.hpp"
+
 #include "UObjectHook.hpp"
 #include "VR.hpp"
 
@@ -775,7 +779,10 @@ UEVR_SDKData g_sdk_data {
     &g_ffield_class_functions,
     &g_fname_functions,
     &g_console_functions,
-    &g_malloc_functions
+    &g_malloc_functions,
+    &uevr::render_target_pool_hook::functions,
+    &uevr::stereo_hook::functions,
+    &uevr::frhitexture2d::functions
 };
 
 namespace uevr {
@@ -986,6 +993,22 @@ bool is_aim_allowed() {
 void set_aim_allowed(bool allowed) {
     VR::get()->set_aim_allowed(allowed);
 }
+
+unsigned int get_hmd_width() {
+    return VR::get()->get_hmd_width();
+}
+
+unsigned int get_hmd_height() {
+    return VR::get()->get_hmd_height();
+}
+
+unsigned int get_ui_width() {
+    return (unsigned int)g_framework->get_rt_size().x;
+}
+
+unsigned int get_ui_height() {
+    return (unsigned int)g_framework->get_rt_size().y;
+}
 }
 }
 
@@ -1025,7 +1048,11 @@ UEVR_VRData g_vr_data {
     uevr::vr::get_aim_method,
     uevr::vr::set_aim_method,
     uevr::vr::is_aim_allowed,
-    uevr::vr::set_aim_allowed
+    uevr::vr::set_aim_allowed,
+    uevr::vr::get_hmd_width,
+    uevr::vr::get_hmd_height,
+    uevr::vr::get_ui_width,
+    uevr::vr::get_ui_height
 };
 
 
