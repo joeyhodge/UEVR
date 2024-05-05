@@ -1405,10 +1405,10 @@ void Framework::draw_ui() {
 }
 
 void Framework::draw_about() {
-    ImGui::Text("Author: praydog");
+    ImGui::Text("Author: joeyhodge");
     ImGui::Text("Unreal Engine VR");
-    ImGui::Text("https://github.com/praydog/UEVR");
-    ImGui::Text("http://praydog.com");
+    ImGui::Text("https://github.com/joeyhodge/UEVR");
+    ImGui::Text("https://uevr.io/");
 
     if (ImGui::CollapsingHeader("Licenses")) {
         ImGui::TreePush("Licenses");
