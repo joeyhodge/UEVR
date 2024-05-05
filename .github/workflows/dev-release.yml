@@ -27,7 +27,7 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
-          repository: praydog/uevr-frontend
+          repository: joeyhodge/uevr-frontend
           path: frontend
 
       - name: Set up dotnet
