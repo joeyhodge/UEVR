@@ -12,9 +12,8 @@ jobs:
       - name: Checkout backend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
-          token: ${{ secrets.UESDK_PULLER }}
+          token: ${{ secrets.PAT_TOKEN }}
           submodules: recursive
-          persist-credentials: false
 
       - name: Configure CMake
         run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
@@ -28,9 +27,8 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
-          repository: praydog/uevr-frontend
+          repository: joeyhodge/uevr-frontend
           path: frontend
-          persist-credentials: false
 
       - name: Set up dotnet
         uses: actions/setup-dotnet@v1
@@ -62,14 +60,12 @@ jobs:
           $ReleaseHash.Hash | Out-File -FilePath ${{github.workspace}}/${{matrix.target}}.zip.sha256
 
       - name: Create Release
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/Altdpad'
         uses: ncipollo/release-action@6c75be85e571768fa31b40abf38de58ba0397db5
         with:
-          repo: UEVR-nightly
-          owner: praydog
-          token: ${{ secrets.CI_NIGHTLY }}
+          repo: UEVR
+          owner: joeyhodge
           name: ${{format('UEVR Nightly {0} ({1})', github.run_number, github.sha)}}
           tag: ${{format('nightly-{0}-{1}', github.run_number, github.sha)}}
           artifacts: "${{github.workspace}}/${{matrix.target}}.zip,${{github.workspace}}/${{matrix.target}}.zip.sha256"
           makeLatest: true
-          bodyFile: ${{github.workspace}}/nightly-body.md
