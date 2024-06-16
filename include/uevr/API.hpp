@@ -403,6 +403,11 @@ public:
             return (UFunction*)fn(to_handle(), name.data());
         }
 
+        FProperty* find_property(std::wstring_view name) const {
+            static const auto fn = initialize()->find_property;
+            return (FProperty*)fn(to_handle(), name.data());
+        }
+
         // Not an array, it's a linked list. Meant to call ->get_next() until nullptr
         FField* get_child_properties() const {
             static const auto fn = initialize()->get_child_properties;
@@ -588,6 +593,36 @@ public:
 
         int32_t get_offset() const {
             static const auto fn = initialize()->get_offset;
+            return fn(to_handle());
+        }
+
+        uint64_t get_property_flags() const {
+            static const auto fn = initialize()->get_property_flags;
+            return fn(to_handle());
+        }
+
+        bool is_param() const {
+            static const auto fn = initialize()->is_param;
+            return fn(to_handle());
+        }
+
+        bool is_out_param() const {
+            static const auto fn = initialize()->is_out_param;
+            return fn(to_handle());
+        }
+
+        bool is_return_param() const {
+            static const auto fn = initialize()->is_return_param;
+            return fn(to_handle());
+        }
+
+        bool is_reference_param() const {
+            static const auto fn = initialize()->is_reference_param;
+            return fn(to_handle());
+        }
+
+        bool is_pod() const {
+            static const auto fn = initialize()->is_pod;
             return fn(to_handle());
         }
 
