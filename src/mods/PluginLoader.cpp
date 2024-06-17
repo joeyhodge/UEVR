@@ -21,6 +21,8 @@
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
 #include <sdk/USceneComponent.hpp>
+#include <sdk/FArrayProperty.hpp>
+#include <sdk/FBoolProperty.hpp>
 
 #include "pluginloader/FFakeStereoRenderingFunctions.hpp"
 #include "pluginloader/FRenderTargetPoolHook.hpp"
@@ -426,22 +428,24 @@ UEVR_FPropertyFunctions g_fproperty_functions {
 #define USTRUCT(x) ((sdk::UStruct*)x)
 
 UEVR_UStructFunctions g_ustruct_functions {
-    // get_super_struct
-    [](UEVR_UStructHandle strct) {
+    .get_super_struct = [](UEVR_UStructHandle strct) {
         return (UEVR_UStructHandle)USTRUCT(strct)->get_super_struct();
     },
-    // get_child_properties
-    [](UEVR_UStructHandle strct) {
+    .get_child_properties = [](UEVR_UStructHandle strct) {
         return (UEVR_FFieldHandle)USTRUCT(strct)->get_child_properties();
     },
-    // find_function
-    [](UEVR_UStructHandle strct, const wchar_t* name) {
+    .find_function = [](UEVR_UStructHandle strct, const wchar_t* name) {
         return (UEVR_UFunctionHandle)USTRUCT(strct)->find_function(name);
     },
-    // find_property
-    [](UEVR_UStructHandle strct, const wchar_t* name) {
+    .find_property = [](UEVR_UStructHandle strct, const wchar_t* name) {
         return (UEVR_FPropertyHandle)USTRUCT(strct)->find_property(name);
     },
+    .get_properties_size = [](UEVR_UStructHandle strct) {
+        return USTRUCT(strct)->get_properties_size();
+    },
+    .get_min_alignment = [](UEVR_UStructHandle strct) {
+        return USTRUCT(strct)->get_min_alignment();
+    }
 };
 
 #define UCLASS(x) ((sdk::UClass*)x)
@@ -801,6 +805,39 @@ UEVR_FMallocFunctions g_malloc_functions {
     uevr::malloc::free
 };
 
+UEVR_FArrayPropertyFunctions g_farray_property_functions {
+    .get_inner = [](UEVR_FArrayPropertyHandle prop) -> UEVR_FPropertyHandle {
+        return (UEVR_FPropertyHandle)((sdk::FArrayProperty*)prop)->get_inner();
+    }
+};
+
+UEVR_FBoolPropertyFunctions g_fbool_property_functions {
+    .get_field_size = [](UEVR_FBoolPropertyHandle prop) -> uint32_t {
+        return ((sdk::FBoolProperty*)prop)->get_field_size();
+    },
+    .get_byte_offset = [](UEVR_FBoolPropertyHandle prop) -> uint32_t {
+        return ((sdk::FBoolProperty*)prop)->get_byte_offset();
+    },
+    .get_byte_mask = [](UEVR_FBoolPropertyHandle prop) -> uint32_t {
+        return ((sdk::FBoolProperty*)prop)->get_byte_mask();
+    },
+    .get_field_mask = [](UEVR_FBoolPropertyHandle prop) -> uint32_t {
+        return ((sdk::FBoolProperty*)prop)->get_field_mask();
+    },
+    .get_value_from_object = [](UEVR_FBoolPropertyHandle prop, void* obj) -> bool {
+        return ((sdk::FBoolProperty*)prop)->get_value_from_object((sdk::UObject*)obj);
+    },
+    .get_value_from_propbase = [](UEVR_FBoolPropertyHandle prop, void* propbase) -> bool {
+        return ((sdk::FBoolProperty*)prop)->get_value_from_propbase(propbase);
+    },
+    .set_value_in_object = [](UEVR_FBoolPropertyHandle prop, void* obj, bool value) {
+        ((sdk::FBoolProperty*)prop)->set_value_in_object((sdk::UObject*)obj, value);
+    },
+    .set_value_in_propbase = [](UEVR_FBoolPropertyHandle prop, void* propbase, bool value) {
+        ((sdk::FBoolProperty*)prop)->set_value_in_propbase(propbase, value);
+    }
+};
+
 UEVR_SDKData g_sdk_data {
     &g_sdk_functions,
     &g_sdk_callbacks,
@@ -819,7 +856,9 @@ UEVR_SDKData g_sdk_data {
     &uevr::render_target_pool_hook::functions,
     &uevr::stereo_hook::functions,
     &uevr::frhitexture2d::functions,
-    &uevr::uscriptstruct::functions
+    &uevr::uscriptstruct::functions,
+    &g_farray_property_functions,
+    &g_fbool_property_functions
 };
 
 namespace uevr {

@@ -414,6 +414,16 @@ public:
             return (FField*)fn(to_handle());
         }
 
+        int32_t get_properties_size() const {
+            static const auto fn = initialize()->get_properties_size;
+            return fn(to_handle());
+        }
+
+        int32_t get_min_alignment() const {
+            static const auto fn = initialize()->get_min_alignment;
+            return fn(to_handle());
+        }
+
     private:
         static inline const UEVR_UStructFunctions* s_functions{nullptr};
         inline static const UEVR_UStructFunctions* initialize() {
@@ -631,6 +641,81 @@ public:
         static inline const UEVR_FPropertyFunctions* initialize() {
             if (s_functions == nullptr) {
                 s_functions = API::get()->sdk()->fproperty;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct FArrayProperty : public FProperty {
+        inline UEVR_FArrayPropertyHandle to_handle() { return (UEVR_FArrayPropertyHandle)this; }
+        inline UEVR_FArrayPropertyHandle to_handle() const { return (UEVR_FArrayPropertyHandle)this; }
+
+        FProperty* get_inner() const {
+            static const auto fn = initialize()->get_inner;
+            return (FProperty*)fn(to_handle());
+        }
+
+    private:
+        static inline const UEVR_FArrayPropertyFunctions* s_functions{nullptr};
+        static inline const UEVR_FArrayPropertyFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->farrayproperty;
+            }
+
+            return s_functions;
+        }
+    };
+
+    struct FBoolProperty : public FProperty {
+        inline UEVR_FBoolPropertyHandle to_handle() { return (UEVR_FBoolPropertyHandle)this; }
+        inline UEVR_FBoolPropertyHandle to_handle() const { return (UEVR_FBoolPropertyHandle)this; }
+
+        uint32_t get_field_size() const {
+            static const auto fn = initialize()->get_field_size;
+            return fn(to_handle());
+        }
+
+        uint32_t get_byte_offset() const {
+            static const auto fn = initialize()->get_byte_offset;
+            return fn(to_handle());
+        }
+
+        uint32_t get_byte_mask() const {
+            static const auto fn = initialize()->get_byte_mask;
+            return fn(to_handle());
+        }
+
+        uint32_t get_field_mask() const {
+            static const auto fn = initialize()->get_field_mask;
+            return fn(to_handle());
+        }
+
+        bool get_value_from_object(void* object) const {
+            static const auto fn = initialize()->get_value_from_object;
+            return fn(to_handle(), object);
+        }
+
+        bool get_value_from_propbase(void* addr) const {
+            static const auto fn = initialize()->get_value_from_propbase;
+            return fn(to_handle(), addr);
+        }
+
+        void set_value_in_object(void* object, bool value) const {
+            static const auto fn = initialize()->set_value_in_object;
+            fn(to_handle(), object, value);
+        }
+
+        void set_value_in_propbase(void* addr, bool value) const {
+            static const auto fn = initialize()->set_value_in_propbase;
+            fn(to_handle(), addr, value);
+        }
+
+    private:
+        static inline const UEVR_FBoolPropertyFunctions* s_functions{nullptr};
+        static inline const UEVR_FBoolPropertyFunctions* initialize() {
+            if (s_functions == nullptr) {
+                s_functions = API::get()->sdk()->fboolproperty;
             }
 
             return s_functions;
