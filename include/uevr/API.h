@@ -36,7 +36,7 @@ SOFTWARE.
 #define UEVR_OUT
 
 #define UEVR_PLUGIN_VERSION_MAJOR 2
-#define UEVR_PLUGIN_VERSION_MINOR 21
+#define UEVR_PLUGIN_VERSION_MINOR 24
 #define UEVR_PLUGIN_VERSION_PATCH 0
 
 #define UEVR_RENDERER_D3D11 0
@@ -76,6 +76,8 @@ DECLARE_UEVR_HANDLE(UEVR_TArrayHandle);
 DECLARE_UEVR_HANDLE(UEVR_FMallocHandle);
 DECLARE_UEVR_HANDLE(UEVR_FRHITexture2DHandle);
 DECLARE_UEVR_HANDLE(UEVR_UScriptStructHandle);
+DECLARE_UEVR_HANDLE(UEVR_FArrayPropertyHandle);
+DECLARE_UEVR_HANDLE(UEVR_FBoolPropertyHandle);
 
 /* OpenXR stuff */
 DECLARE_UEVR_HANDLE(UEVR_XrInstance);
@@ -295,6 +297,8 @@ typedef struct {
     UEVR_FFieldHandle (*get_child_properties)(UEVR_UStructHandle klass);
     UEVR_UFunctionHandle (*find_function)(UEVR_UStructHandle klass, const wchar_t* name);
     UEVR_FPropertyHandle (*find_property)(UEVR_UStructHandle klass, const wchar_t* name);
+    int (*get_properties_size)(UEVR_UStructHandle klass); /* size in bytes */
+    int (*get_min_alignment)(UEVR_UStructHandle klass);
 } UEVR_UStructFunctions;
 
 typedef struct {
@@ -393,6 +397,21 @@ typedef struct {
 } UEVR_UScriptStructFunctions;
 
 typedef struct {
+    UEVR_FPropertyHandle (*get_inner)(UEVR_FArrayPropertyHandle prop);
+} UEVR_FArrayPropertyFunctions;
+
+typedef struct {
+    unsigned int (*get_field_size)(UEVR_FBoolPropertyHandle prop);
+    unsigned int (*get_byte_offset)(UEVR_FBoolPropertyHandle prop);
+    unsigned int (*get_byte_mask)(UEVR_FBoolPropertyHandle prop);
+    unsigned int (*get_field_mask)(UEVR_FBoolPropertyHandle prop);
+    bool (*get_value_from_object)(UEVR_FBoolPropertyHandle prop, void* object);
+    bool (*get_value_from_propbase)(UEVR_FBoolPropertyHandle prop, void* addr);
+    void (*set_value_in_object)(UEVR_FBoolPropertyHandle prop, void* object, bool value);
+    void (*set_value_in_propbase)(UEVR_FBoolPropertyHandle prop, void* addr, bool value);
+} UEVR_FBoolPropertyFunctions;
+
+typedef struct {
     const UEVR_SDKFunctions* functions;
     const UEVR_SDKCallbacks* callbacks;
     const UEVR_UObjectFunctions* uobject;
@@ -411,6 +430,8 @@ typedef struct {
     const UEVR_FFakeStereoRenderingHookFunctions* stereo_hook;
     const UEVR_FRHITexture2DFunctions* frhitexture2d;
     const UEVR_UScriptStructFunctions* uscriptstruct;
+    const UEVR_FArrayPropertyFunctions* farrayproperty;
+    const UEVR_FBoolPropertyFunctions* fboolproperty;
 } UEVR_SDKData;
 
 DECLARE_UEVR_HANDLE(UEVR_IVRSystem);
