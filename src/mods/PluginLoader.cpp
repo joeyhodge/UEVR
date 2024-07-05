@@ -23,6 +23,8 @@
 #include <sdk/USceneComponent.hpp>
 #include <sdk/FArrayProperty.hpp>
 #include <sdk/FBoolProperty.hpp>
+#include <sdk/FStructProperty.hpp>
+#include <sdk/FEnumProperty.hpp>
 
 #include "pluginloader/FFakeStereoRenderingFunctions.hpp"
 #include "pluginloader/FRenderTargetPoolHook.hpp"
@@ -85,6 +87,27 @@ unsigned int get_persistent_dir(wchar_t* buffer, unsigned int buffer_size) {
     buffer[size] = L'\0';
 
     return (unsigned int)size;
+}
+
+int register_inline_hook(void* target, void* dst, void** original) {
+    if (target == nullptr || dst == nullptr || original == nullptr) {
+        return -1;
+    }
+
+    auto hook = safetyhook::create_inline(target, dst);
+
+    if (!hook) {
+        spdlog::error("Failed to create inline hook at {:x}", (uintptr_t)target);
+        return -1;
+    }
+
+    *original = hook.original<void*>();
+
+    return PluginLoader::get()->add_inline_hook(std::move(hook));
+}
+
+void unregister_inline_hook(int id) {
+    PluginLoader::get()->remove_inline_hook(id);
 }
 }
 
@@ -162,7 +185,9 @@ UEVR_PluginFunctions g_plugin_functions {
     uevr::log_info,
     uevr::is_drawing_ui,
     uevr::remove_callback,
-    uevr::get_persistent_dir
+    uevr::get_persistent_dir,
+    uevr::register_inline_hook,
+    uevr::unregister_inline_hook
 };
 
 #define GET_ENGINE_WORLD_RETNULL() \
@@ -473,22 +498,30 @@ namespace uobjecthook {
     }
 
     bool exists(UEVR_UObjectHandle obj) {
-        return UObjectHook::get()->exists((sdk::UObject*)obj);
+        auto& instance = UObjectHook::get();
+        instance->activate();
+
+        return instance->exists((sdk::UObject*)obj);
     }
 
     int get_objects_by_class(UEVR_UClassHandle klass, UEVR_UObjectHandle* out_objects, unsigned int max_objects, bool allow_default) {
-        const auto objects = UObjectHook::get()->get_objects_by_class((sdk::UClass*)klass);
+        auto& instance = UObjectHook::get();
+        instance->activate();
+
+        const auto objects = instance->get_objects_by_class((sdk::UClass*)klass);
 
         if (objects.empty()) {
             return 0;
         }
 
-        const auto default_object = ((sdk::UClass*)klass)->get_class_default_object();
-
         unsigned int i = 0;
         for (auto&& obj : objects) {
-            if (!allow_default && obj == default_object) {
-                continue;
+            if (!allow_default) {
+                const auto c = obj->get_class();
+
+                if (c == nullptr || c->get_class_default_object() == obj) {
+                    continue;
+                }
             }
 
             if (i < max_objects && out_objects != nullptr) {
@@ -512,7 +545,10 @@ namespace uobjecthook {
     }
 
     UEVR_UObjectHandle get_first_object_by_class(UEVR_UClassHandle klass, bool allow_default) {
-        const auto objects = UObjectHook::get()->get_objects_by_class((sdk::UClass*)klass);
+        auto& instance = UObjectHook::get();
+        instance->activate();
+
+        const auto objects = instance->get_objects_by_class((sdk::UClass*)klass);
 
         if (objects.empty()) {
             return nullptr;
@@ -522,12 +558,14 @@ namespace uobjecthook {
             return (UEVR_UObjectHandle)*objects.begin();
         }
 
-        const auto default_object = ((sdk::UClass*)klass)->get_class_default_object();
-
         for (auto&& obj : objects) {
-            if (obj != default_object) {
-                return (UEVR_UObjectHandle)obj;
+            const auto c = obj->get_class();
+
+            if (c == nullptr || c->get_class_default_object() == obj) {
+                continue;
             }
+
+            return (UEVR_UObjectHandle)obj;
         }
 
         return (UEVR_UObjectHandle)nullptr;
@@ -838,6 +876,21 @@ UEVR_FBoolPropertyFunctions g_fbool_property_functions {
     }
 };
 
+UEVR_FStructPropertyFunctions g_fstruct_property_functions {
+    .get_struct = [](UEVR_FStructPropertyHandle prop) -> UEVR_UScriptStructHandle {
+        return (UEVR_UScriptStructHandle)((sdk::FStructProperty*)prop)->get_struct();
+    }
+};
+
+UEVR_FEnumPropertyFunctions g_fenum_property_functions {
+    .get_underlying_prop = [](UEVR_FEnumPropertyHandle prop) -> UEVR_FNumericPropertyHandle {
+        return (UEVR_FNumericPropertyHandle)((sdk::FEnumProperty*)prop)->get_underlying_prop();
+    },
+    .get_enum = [](UEVR_FEnumPropertyHandle prop) -> UEVR_UEnumHandle {
+        return (UEVR_UEnumHandle)((sdk::FEnumProperty*)prop)->get_enum();
+    }
+};
+
 UEVR_SDKData g_sdk_data {
     &g_sdk_functions,
     &g_sdk_callbacks,
@@ -858,7 +911,9 @@ UEVR_SDKData g_sdk_data {
     &uevr::frhitexture2d::functions,
     &uevr::uscriptstruct::functions,
     &g_farray_property_functions,
-    &g_fbool_property_functions
+    &g_fbool_property_functions,
+    &g_fstruct_property_functions,
+    &g_fenum_property_functions
 };
 
 namespace uevr {
@@ -1566,6 +1621,7 @@ void PluginLoader::attempt_unload_plugins() {
         FreeLibrary(pair.second);
     }
 
+    m_inline_hooks.clear();
     m_plugins.clear();
 }
 
@@ -1720,7 +1776,6 @@ void PluginLoader::on_xinput_set_state(uint32_t* retval, uint32_t user_index, XI
         }
     }
 }
-
 
 void PluginLoader::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     std::shared_lock _{m_api_cb_mtx};
