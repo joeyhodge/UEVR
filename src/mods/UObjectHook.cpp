@@ -156,6 +156,73 @@ void UObjectHook::hook() {
     m_fully_hooked = true;
 }
 
+void UObjectHook::hook_process_event() {
+    if (m_attempted_hook_process_event) {
+        return;
+    }
+
+    m_attempted_hook_process_event = true;
+
+    auto uobjectarray = sdk::FUObjectArray::get();
+
+    if (uobjectarray == nullptr) {
+        return;
+    }
+
+    const auto process_event_index = sdk::UObject::get_process_event_index();
+
+    if (process_event_index == 0) {
+        return;
+    }
+
+    sdk::UObject* first_obj = nullptr;
+
+    for (auto i = 0; i < uobjectarray->get_object_count(); ++i) {
+        const auto object = uobjectarray->get_object(i);
+
+        if (object != nullptr && object->object != nullptr) {
+            first_obj = (sdk::UObject*)object->object;
+            break;
+        }
+    }
+
+    if (first_obj != nullptr) {
+        const auto vt = *(void***)first_obj;
+
+        if (vt != nullptr) {
+            std::unique_lock _{m_function_mutex};
+            auto fn = vt[process_event_index];
+            SPDLOG_INFO("[UObjectHook] ProcessEvent {:x}", (uintptr_t)fn);
+            m_process_event_hook = safetyhook::create_inline(fn, &process_event_hook);
+
+            if (m_process_event_hook) {
+                SPDLOG_INFO("[UObjectHook] Hooked UObject::ProcessEvent");
+                m_hooked_process_event = true;
+            } else {
+                SPDLOG_ERROR("[UObjectHook] Failed to hook UObject::ProcessEvent");
+            }
+        }
+    }
+}
+
+void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, void* params, void* r9) {
+    auto& hook = UObjectHook::get();
+
+    if (hook->m_process_event_listening) {
+        std::unique_lock _{hook->m_function_mutex};
+        hook->m_called_functions.insert(func);
+        hook->m_most_recent_functions.push_front(func);
+
+        if (hook->m_most_recent_functions.size() > 200) {
+            hook->m_most_recent_functions.pop_back();
+        }
+    }
+
+    auto result = hook->m_process_event_hook.unsafe_call<void*>(obj, func, params, r9);
+
+    return result;
+}
+
 void UObjectHook::add_new_object(sdk::UObjectBase* object) {
     std::unique_lock _{m_mutex};
     std::unique_ptr<MetaObject> meta_object{};
@@ -1706,6 +1773,7 @@ void UObjectHook::on_draw_ui() {
     }
 
     std::shared_lock _{m_mutex};
+    std::shared_lock __{m_function_mutex};
 
     if (m_uobject_hook_disabled) {
         ImGui::TextColored(ImVec4{1.0f, 0.0f, 0.0f, 1.0f}, "UObjectHook is disabled");
@@ -1772,6 +1840,51 @@ void UObjectHook::draw_developer() {
         // uint64_t
         ImGui::Text("Constructor calls: %llu", m_debug.constructor_calls);
         ImGui::Text("Destructor calls: %llu", m_debug.destructor_calls);
+
+        if (!m_attempted_hook_process_event) {
+            if (ImGui::Button("Create ProcessEvent hook")) {
+                GameThreadWorker::get().enqueue([this]() {
+                    hook_process_event();
+                });
+            }
+        } else if (m_hooked_process_event) {
+            ImGui::Checkbox("ProcessEvent Listener", &m_process_event_listening);
+
+            if (m_process_event_listening) {
+                ImGui::Text("Called functions: %llu", m_called_functions.size());
+
+                if (ImGui::TreeNode("Called Functions")) {
+                    for (auto ufunc : m_most_recent_functions) {
+                        if (ufunc == nullptr) {
+                            continue;
+                        }
+                        
+                        if (m_ignored_recent_functions.contains(ufunc)) {
+                            continue;
+                        }
+
+                        ImGui::PushID(ufunc);
+
+                        utility::ScopeGuard ___{[]() {
+                            ImGui::PopID();
+                        }};
+
+                        if (ImGui::Button("Ignore")) {
+                            m_ignored_recent_functions.insert(ufunc);
+                        }
+
+                        ImGui::SameLine();
+
+                        ImGui::Text("%s", utility::narrow(ufunc->get_full_name()).c_str());
+                    }
+
+                    ImGui::TreePop();
+                }
+            }
+        } else {
+            ImGui::Text("Failed to hook ProcessEvent!");
+        }
+
         ImGui::TreePop();
     }
 }
@@ -1975,6 +2088,8 @@ void UObjectHook::draw_main() {
     }
 
     if (ImGui::TreeNode("Objects by class")) {
+        ImGui::Checkbox("Hide Default Classes", &m_hide_default_classes);
+
         static char filter[256]{};
         ImGui::InputText("Filter", filter, sizeof(filter));
 
@@ -2043,6 +2158,18 @@ void UObjectHook::draw_main() {
                 continue;
             }
 
+            if (objects_ref.size() == 1 && m_hide_default_classes) {
+                auto first = *objects_ref.begin();
+
+                if (m_meta_objects.contains(first)) {
+                    auto fc = first != nullptr ? m_meta_objects[first]->uclass : nullptr;
+
+                    if (fc != nullptr && m_meta_objects.contains(fc) && fc->get_class_default_object() == first) {
+                        continue;
+                    }
+                }
+            }
+
             const auto uclass_name = utility::narrow(m_meta_objects[uclass]->full_name);
             bool valid = true;
 
@@ -2067,7 +2194,13 @@ void UObjectHook::draw_main() {
                 std::vector<sdk::UObjectBase*> objects{};
 
                 for (auto object : objects_ref) {
-                    objects.push_back(object);
+                    if (m_hide_default_classes) {
+                        if (auto c = m_meta_objects[object]->uclass; c != nullptr && m_meta_objects.contains(c) && c->get_class_default_object() != object) {
+                            objects.push_back(object);
+                        }
+                    } else {
+                        objects.push_back(object);   
+                    }
                 }
 
                 std::sort(objects.begin(), objects.end(), [this](sdk::UObjectBase* a, sdk::UObjectBase* b) {
@@ -2896,6 +3029,12 @@ void UObjectHook::ui_handle_functions(void* object, sdk::UStruct* uclass) {
     });
 
     for (auto func : sorted_functions) {
+        ImGui::PushID((void*)func);
+
+        utility::ScopeGuard pop_guard{[]() {
+            ImGui::PopID();
+        }};
+
         const auto made = ImGui::TreeNode(utility::narrow(func->get_fname().to_string()).data());
 
         if (ImGui::BeginPopupContextItem()) {
@@ -2927,6 +3066,11 @@ void UObjectHook::ui_handle_functions(void* object, sdk::UStruct* uclass) {
             }
 
             ImGui::EndPopup();
+        }
+
+        if (m_called_functions.contains(func)) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4{0.0f, 1.0f, 0.0f, 1.0f}, "[Called]");
         }
 
         if (is_real_object && made) {
