@@ -8,6 +8,7 @@
 
 #include "datatypes/Vector.hpp"
 #include "datatypes/StructObject.hpp"
+#include "datatypes/FFrame.hpp"
 
 #include "ScriptUtility.hpp"
 #include "ScriptContext.hpp"
@@ -468,7 +469,39 @@ int ScriptContext::setup_bindings() {
         sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UObject>(),
         "static_class", &uevr::API::UFunction::static_class,
         "call", &uevr::API::UFunction::call,
-        "get_native_function", &uevr::API::UFunction::get_native_function
+        "get_native_function", &uevr::API::UFunction::get_native_function,
+        "hook_ptr", [this](sol::this_state s, uevr::API::UFunction* fn, sol::function pre, sol::function post) {
+            if (fn == nullptr) {
+                return;
+            }
+
+            std::unique_lock _{ m_ufunction_hooks_mtx };
+
+            fn->hook_ptr(global_ufunction_pre_handler, global_ufunction_post_handler);
+
+            if (auto it = m_ufunction_hooks.find(fn); it != m_ufunction_hooks.end()) {
+                if (pre != sol::nil) {
+                    it->second->pre_hooks.push_back(pre);
+                }
+
+                if (post != sol::nil) {
+                    it->second->post_hooks.push_back(post);
+                }
+
+                return;
+            }
+
+            auto& hook = m_ufunction_hooks[fn];
+            hook = std::make_unique<UFunctionHookState>();
+
+            if (pre != sol::nil) {
+                hook->pre_hooks.push_back(pre);
+            }
+
+            if (post != sol::nil) {
+                hook->post_hooks.push_back(post);
+            }
+        }
     );
 
     m_lua.new_usertype<uevr::API::FField>("UEVR_FField",
@@ -628,6 +661,58 @@ int ScriptContext::setup_bindings() {
     out["sdk"] = m_plugin_initialize_param->sdk;
 
     return out.push(m_lua.lua_state());
+}
+
+bool ScriptContext::global_ufunction_pre_handler(uevr::API::UFunction* fn, uevr::API::UObject* obj, void* frame, void* out_result) {
+    bool any_false = false;
+
+    g_contexts.for_each([=, &any_false](auto ctx) {
+        std::scoped_lock _{ ctx->m_mtx };
+        std::scoped_lock __{ ctx->m_ufunction_hooks_mtx };
+
+        auto it = ctx->m_ufunction_hooks.find(fn);
+
+        if (it != ctx->m_ufunction_hooks.end()) {
+            auto fframe = (lua::datatypes::FFrame*)frame;
+            auto locals = lua::datatypes::StructObject{fframe->locals, fn};
+            auto locals_obj = sol::make_object(ctx->m_lua.lua_state(), &locals);
+
+            for (auto& cb : it->second->pre_hooks) try {
+                if (sol::object result = ctx->handle_protected_result(cb(fn, obj, locals_obj, out_result)); !result.is<sol::nil_t>() && result.is<bool>() && result.as<bool>() == false) {
+                    any_false = true;
+                }
+            } catch (const std::exception& e) {
+                ScriptContext::log("Exception in global_ufunction_pre_handler: " + std::string(e.what()));
+            } catch (...) {
+                ScriptContext::log("Unknown exception in global_ufunction_pre_handler");
+            }
+        }
+    });
+
+    return !any_false;
+}
+
+void ScriptContext::global_ufunction_post_handler(uevr::API::UFunction* fn, uevr::API::UObject* obj, void* frame, void* result) {
+    g_contexts.for_each([=](auto ctx) {
+        std::scoped_lock _{ ctx->m_mtx };
+        std::scoped_lock __{ ctx->m_ufunction_hooks_mtx };
+
+        auto it = ctx->m_ufunction_hooks.find(fn);
+
+        if (it != ctx->m_ufunction_hooks.end()) {
+            auto fframe = (lua::datatypes::FFrame*)frame;
+            auto locals = lua::datatypes::StructObject{fframe->locals, fn};
+            auto locals_obj = sol::make_object(ctx->m_lua.lua_state(), &locals);
+
+            for (auto& cb : it->second->post_hooks) try {
+                ctx->handle_protected_result(cb(fn, obj, locals_obj, result));
+            } catch (const std::exception& e) {
+                ScriptContext::log("Exception in global_ufunction_post_handler: " + std::string(e.what()));
+            } catch (...) {
+                ScriptContext::log("Unknown exception in global_ufunction_post_handler");
+            }
+        }
+    });
 }
 
 void ScriptContext::on_pre_engine_tick(UEVR_UGameEngineHandle engine, float delta_seconds) {
