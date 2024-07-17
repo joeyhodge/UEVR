@@ -6,6 +6,9 @@
 
 #include <windows.h>
 
+#include <Xinput.h>
+
+#include "datatypes/XInput.hpp"
 #include "datatypes/Vector.hpp"
 #include "datatypes/StructObject.hpp"
 #include "datatypes/FFrame.hpp"
@@ -101,6 +104,8 @@ void ScriptContext::setup_callback_bindings() {
 
         s_callbacks_to_remove.clear();
 
+        add_callback(m_plugin_initialize_param->callbacks->on_xinput_get_state, on_xinput_get_state);
+        add_callback(m_plugin_initialize_param->callbacks->on_xinput_set_state, on_xinput_set_state);
         add_callback(cbs->on_pre_engine_tick, on_pre_engine_tick);
         add_callback(cbs->on_post_engine_tick, on_post_engine_tick);
         add_callback(cbs->on_pre_slate_draw_window_render_thread, on_pre_slate_draw_window_render_thread);
@@ -112,6 +117,14 @@ void ScriptContext::setup_callback_bindings() {
     }
 
     m_lua.new_usertype<UEVR_SDKCallbacks>("UEVR_SDKCallbacks",
+        "on_xinput_get_state", [this](sol::function fn) {
+            std::scoped_lock _{ m_mtx };
+            m_on_xinput_get_state_callbacks.push_back(fn);
+        },
+        "on_xinput_set_state", [this](sol::function fn) {
+            std::scoped_lock _{ m_mtx };
+            m_on_xinput_set_state_callbacks.push_back(fn);
+        },
         "on_pre_engine_tick", [this](sol::function fn) {
             std::scoped_lock _{ m_mtx };
             m_on_pre_engine_tick_callbacks.push_back(fn);
@@ -162,6 +175,7 @@ void ScriptContext::setup_callback_bindings() {
 int ScriptContext::setup_bindings() {
     m_lua.registry()["uevr_context"] = this;
 
+    lua::datatypes::bind_xinput(m_lua);
     lua::datatypes::bind_vectors(m_lua);
     lua::datatypes::bind_struct_object(m_lua);
 
@@ -442,8 +456,13 @@ int ScriptContext::setup_bindings() {
         }
     );
 
-    m_lua.new_usertype<uevr::API::UStruct>("UEVR_UStruct",
+    m_lua.new_usertype<uevr::API::UField>("UEVR_UField",
         sol::base_classes, sol::bases<uevr::API::UObject>(),
+        "get_next", &uevr::API::UField::get_next
+    );
+
+    m_lua.new_usertype<uevr::API::UStruct>("UEVR_UStruct",
+        sol::base_classes, sol::bases<uevr::API::UField, uevr::API::UObject>(),
         "static_class", &uevr::API::UStruct::static_class,
         "get_super_struct", &uevr::API::UStruct::get_super_struct,
         "get_super", &uevr::API::UStruct::get_super,
@@ -451,11 +470,12 @@ int ScriptContext::setup_bindings() {
             return self.find_function(name);
         },
         "get_child_properties", &uevr::API::UStruct::get_child_properties,
-        "get_properties_size", &uevr::API::UStruct::get_properties_size
+        "get_properties_size", &uevr::API::UStruct::get_properties_size,
+        "get_children", &uevr::API::UStruct::get_children
     );
 
     m_lua.new_usertype<uevr::API::UClass>("UEVR_UClass",
-        sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UObject>(),
+        sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UField, uevr::API::UObject>(),
         "static_class", &uevr::API::UClass::static_class,
         "get_class_default_object", &uevr::API::UClass::get_class_default_object,
         "get_objects_matching", &uevr::API::UClass::get_objects_matching<uevr::API::UObject>,
@@ -466,7 +486,7 @@ int ScriptContext::setup_bindings() {
         sol::meta_function::call, [](sol::this_state s, uevr::API::UFunction* fn, uevr::API::UObject* obj, sol::variadic_args args) -> sol::object {
             return lua::utility::call_function(s, obj, fn, args);
         },
-        sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UObject>(),
+        sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UField, uevr::API::UObject>(),
         "static_class", &uevr::API::UFunction::static_class,
         "call", &uevr::API::UFunction::call,
         "get_native_function", &uevr::API::UFunction::get_native_function,
@@ -711,6 +731,34 @@ void ScriptContext::global_ufunction_post_handler(uevr::API::UFunction* fn, uevr
             } catch (...) {
                 ScriptContext::log("Unknown exception in global_ufunction_post_handler");
             }
+        }
+    });
+}
+
+void ScriptContext::on_xinput_get_state(uint32_t* retval, uint32_t user_index, void* state) {
+    g_contexts.for_each([=](auto ctx) {
+        std::scoped_lock _{ ctx->m_mtx };
+
+        for (auto& fn : ctx->m_on_xinput_get_state_callbacks) try {
+            ctx->handle_protected_result(fn(retval, user_index, (XINPUT_STATE*)state));
+        } catch (const std::exception& e) {
+            ScriptContext::log("Exception in on_xinput_get_state: " + std::string(e.what()));
+        } catch (...) {
+            ScriptContext::log("Unknown exception in on_xinput_get_state");
+        }
+    });
+}
+
+void ScriptContext::on_xinput_set_state(uint32_t* retval, uint32_t user_index, void* vibration) {
+    g_contexts.for_each([=](auto ctx) {
+        std::scoped_lock _{ ctx->m_mtx };
+
+        for (auto& fn : ctx->m_on_xinput_set_state_callbacks) try {
+            ctx->handle_protected_result(fn(retval, user_index, (XINPUT_VIBRATION*)vibration));
+        } catch (const std::exception& e) {
+            ScriptContext::log("Exception in on_xinput_set_state: " + std::string(e.what()));
+        } catch (...) {
+            ScriptContext::log("Unknown exception in on_xinput_set_state");
         }
     });
 }
