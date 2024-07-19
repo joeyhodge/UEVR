@@ -139,17 +139,6 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
             return sol::make_object(s, sol::lua_nil);
         }
 
-        /*const auto struct_name_hash = utility::hash(struct_desc->get_fname()->to_string());
-
-        switch (struct_name_hash) {
-        case L"Vector"_fnv:
-            if (is_ue5()) {
-                return sol::make_object(s, (lua::datatypes::Vector3f*)struct_data);
-            }
-
-            return sol::make_object(s, (lua::datatypes::Vector3f*)struct_data);
-        };*/
-
         if (struct_desc == get_vector_struct()) {
             if (is_ue5()) {
                 if (is_self_temporary) {
@@ -166,9 +155,14 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
             }
         }
 
-        auto struct_object = lua::datatypes::StructObject{struct_data, struct_desc};
+        if (is_self_temporary) {
+            auto new_object = std::make_unique<lua::datatypes::StructObject>(struct_desc);
+            memcpy(new_object->object, struct_data, new_object->created_object.size());
+            return sol::make_object(s, std::move(new_object));
+        }
 
-        return sol::make_object(s, struct_object);
+        auto new_object = std::make_unique<lua::datatypes::StructObject>(struct_data, struct_desc);
+        return sol::make_object(s, std::move(new_object));
     }
     case L"ArrayProperty"_fnv:
     {
@@ -187,7 +181,7 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
         const auto inner_name_hash = ::utility::hash(inner_c->get_fname()->to_string());
 
         switch (inner_name_hash) {
-        case "ObjectProperty"_fnv:
+        case L"ObjectProperty"_fnv:
         {
             const auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)((uintptr_t)self + offset);
 
@@ -542,18 +536,8 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
             case L"ObjectProperty"_fnv:
             {
                 const auto arg_obj = args[args_index++];
-
-                if (arg_obj.is<std::vector<uevr::API::UObject*>>()) {
-                    auto arg_arr = arg_obj.as<std::vector<uevr::API::UObject*>>();
-                    auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)&params[offset];
-
-                    //if (!prop_desc->is_out_param()) {
-                        arr.count = arg_arr.size();
-                        arr.data = arg_arr.data();
-                    //} else {
-                        //throw sol::error("Cannot set an out parameter with an array (yet)");
-                    //}
-                } else if (arg_obj.is<sol::table>()) {
+                
+                if (arg_obj.is<sol::table>()) {
                     const auto arg_table = arg_obj.as<sol::table>();
 
                     auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)&params[offset];
