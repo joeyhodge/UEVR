@@ -44,6 +44,8 @@ public:
     void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
     void on_pre_slate_draw_window(void* renderer, void* command_list, sdk::FViewportInfo* viewport_info) override;
     void on_post_slate_draw_window(void* renderer, void* command_list, sdk::FViewportInfo* viewport_info) override;
+    void on_early_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
+                                            const float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
                                              const float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_post_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
@@ -83,6 +85,7 @@ public:
     bool add_on_post_engine_tick(UEVR_Engine_TickCb cb);
     bool add_on_pre_slate_draw_window_render_thread(UEVR_Slate_DrawWindow_RenderThreadCb cb);
     bool add_on_post_slate_draw_window_render_thread(UEVR_Slate_DrawWindow_RenderThreadCb cb);
+    bool add_on_early_calculate_stereo_view_offset(UEVR_Stereo_CalculateStereoViewOffsetCb cb);
     bool add_on_pre_calculate_stereo_view_offset(UEVR_Stereo_CalculateStereoViewOffsetCb cb);
     bool add_on_post_calculate_stereo_view_offset(UEVR_Stereo_CalculateStereoViewOffsetCb cb);
     bool add_on_pre_viewport_client_draw(UEVR_ViewportClient_DrawCb cb);
@@ -157,6 +160,7 @@ private:
     std::vector<UEVR_Engine_TickCb> m_on_post_engine_tick_cbs{};
     std::vector<UEVR_Slate_DrawWindow_RenderThreadCb> m_on_pre_slate_draw_window_render_thread_cbs{};
     std::vector<UEVR_Slate_DrawWindow_RenderThreadCb> m_on_post_slate_draw_window_render_thread_cbs{};
+    std::vector<UEVR_Stereo_CalculateStereoViewOffsetCb> m_on_early_calculate_stereo_view_offset_cbs{};
     std::vector<UEVR_Stereo_CalculateStereoViewOffsetCb> m_on_pre_calculate_stereo_view_offset_cbs{};
     std::vector<UEVR_Stereo_CalculateStereoViewOffsetCb> m_on_post_calculate_stereo_view_offset_cbs{};
     std::vector<UEVR_ViewportClient_DrawCb> m_on_pre_viewport_client_draw_cbs{};
@@ -183,6 +187,7 @@ private:
         (std::vector<generic_std_function>*)&m_on_post_engine_tick_cbs,
         (std::vector<generic_std_function>*)&m_on_pre_slate_draw_window_render_thread_cbs,
         (std::vector<generic_std_function>*)&m_on_post_slate_draw_window_render_thread_cbs,
+        (std::vector<generic_std_function>*)&m_on_early_calculate_stereo_view_offset_cbs,
         (std::vector<generic_std_function>*)&m_on_pre_calculate_stereo_view_offset_cbs,
         (std::vector<generic_std_function>*)&m_on_post_calculate_stereo_view_offset_cbs,
         (std::vector<generic_std_function>*)&m_on_pre_viewport_client_draw_cbs,
