@@ -618,7 +618,13 @@ UEVR_UFunctionFunctions g_ufunction_functions {
     },
     .hook_ptr = [](UEVR_UFunctionHandle func, UEVR_UFunction_NativePreFn pre, UEVR_UFunction_NativePostFn post) -> bool {
         return PluginLoader::get()->hook_ufunction_ptr(func, pre, post);
-    }
+    },
+    .get_function_flags = [](UEVR_UFunctionHandle func) -> uint32_t {
+        return UFUNCTION(func)->get_function_flags();
+    },
+    .set_function_flags = [](UEVR_UFunctionHandle func, uint32_t flags) {
+        UFUNCTION(func)->get_function_flags() = flags;
+    },
 };
 
 namespace uevr {
@@ -737,6 +743,15 @@ namespace uobjecthook {
         return (UEVR_UObjectHookMotionControllerStateHandle)result->get();
     }
 
+    void remove_motion_controller_state(UEVR_UObjectHandle obj_handle) {
+        const auto obj = (sdk::USceneComponent*)obj_handle;
+        if (obj == nullptr || !obj->is_a(sdk::USceneComponent::static_class())) {
+            return;
+        }
+
+        UObjectHook::get()->remove_motion_controller_state(obj);
+    }
+
     bool disabled() {
         return UObjectHook::get()->is_disabled();
     }
@@ -812,7 +827,8 @@ UEVR_UObjectHookFunctions g_uobjecthook_functions {
     uevr::uobjecthook::get_motion_controller_state,
     &g_mc_functions,
     uevr::uobjecthook::disabled,
-    uevr::uobjecthook::set_disabled
+    uevr::uobjecthook::set_disabled,
+    uevr::uobjecthook::remove_motion_controller_state
 };
 
 #define FFIELDCLASS(x) ((sdk::FFieldClass*)x)

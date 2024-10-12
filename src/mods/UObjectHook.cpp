@@ -1653,6 +1653,7 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
 
             const auto prop_t_name = prop_t->get_name().to_string();
             switch (utility::hash(utility::narrow(prop_t_name))) {
+            case "InterfaceProperty"_fnv:
             case "ObjectProperty"_fnv:
             {
                 const auto obj_ptr = prop_desc->get_data<sdk::UObject*>(previous_data);
@@ -1699,7 +1700,7 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
                 const auto inner_c_type = utility::narrow(inner_c->get_name().to_string());
 
                 // only support ObjectProperty for now
-                if (inner_c_type != "ObjectProperty") {
+                if (inner_c_type != "ObjectProperty" && inner_c_type != "InterfaceProperty") {
                     return nullptr;
                 }
 
@@ -3175,7 +3176,17 @@ void UObjectHook::ui_handle_functions(void* object, sdk::UStruct* uclass) {
             }
 
             for (auto param = parameters; param != nullptr; param = param->get_next()) {
-                ImGui::Text("%s %s", utility::narrow(param->get_class()->get_name().to_string()), utility::narrow(param->get_field_name().to_string()).data());
+                const auto cname = utility::narrow(param->get_class()->get_name().to_string());
+                ImGui::Text("%s %s", cname.data(), utility::narrow(param->get_field_name().to_string()).data());
+
+                if (cname.contains("Property")) {
+                    const auto prop = (sdk::FProperty*)param;
+
+                    if (prop->is_out_param()) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4{0.0f, 1.0f, 0.0f, 1.0f}, "[Out]");
+                    }
+                }
             }
 
             ImGui::TreePop();
@@ -3366,6 +3377,7 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
                 display_context(value);
             }
             break;
+        case "InterfaceProperty"_fnv:
         case "ObjectProperty"_fnv:
             {
                 auto& value = *(sdk::UObject**)((uintptr_t)object + ((sdk::FProperty*)prop)->get_offset());
@@ -3469,6 +3481,7 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
     const auto inner_c_type = utility::narrow(inner_c->get_name().to_string());
 
     switch (utility::hash(inner_c_type)) {
+    case "InterfaceProperty"_fnv:
     case "ObjectProperty"_fnv:
     {
         const auto& array_obj = *(sdk::TArray<sdk::UObject*>*)((uintptr_t)addr + prop->get_offset());
