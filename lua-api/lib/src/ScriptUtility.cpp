@@ -129,6 +129,7 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
     }
     case L"NameProperty"_fnv:
         return sol::make_object(s, *(uevr::API::FName*)((uintptr_t)self + offset));
+    case L"InterfaceProperty"_fnv:
     case L"ObjectProperty"_fnv:
         if (*(uevr::API::UObject**)((uintptr_t)self + offset) == nullptr) {
             return sol::make_object(s, sol::lua_nil);
@@ -150,7 +151,7 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
             return sol::make_object(s, sol::lua_nil);
         }
 
-        if (struct_desc == get_vector_struct()) {
+        if (struct_desc == get_vector_struct() || struct_desc == get_rotator_struct()) {
             if (is_ue5()) {
                 if (is_self_temporary) {
                     return sol::make_object(s, *(lua::datatypes::Vector3d*)struct_data);
@@ -192,6 +193,7 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
         const auto inner_name_hash = ::utility::hash(inner_c->get_fname()->to_string());
 
         switch (inner_name_hash) {
+        case L"InterfaceProperty"_fnv:
         case L"ObjectProperty"_fnv:
         {
             const auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)((uintptr_t)self + offset);
@@ -371,6 +373,7 @@ void set_property(sol::this_state s, void* self, uevr::API::UStruct* owner_c, ue
         }
 
         return;
+    case L"InterfaceProperty"_fnv:
     case L"ObjectProperty"_fnv:
         *(uevr::API::UObject**)((uintptr_t)self + offset) = value.as<uevr::API::UObject*>();
         return;
@@ -544,12 +547,13 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
             const auto inner_name_hash = ::utility::hash(inner_c->get_fname()->to_string());
 
             switch (inner_name_hash) {
+            case L"InterfaceProperty"_fnv:
             case L"ObjectProperty"_fnv:
             {
                 const auto arg_obj = args[args_index++];
                 
-                if (arg_obj.is<sol::table>()) {
-                    const auto arg_table = arg_obj.as<sol::table>();
+                if (arg_obj.is<sol::lua_table>()) {
+                    const auto arg_table = arg_obj.as<sol::lua_table>();
 
                     auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)&params[offset];
 
@@ -562,6 +566,7 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
                         }
 
                         arr.count = dynamic_arr.size();
+                        arr.capacity = dynamic_arr.size();
                         arr.data = dynamic_arr.data();
                     //} else {
                        //throw sol::error("Cannot set an out parameter with an array (yet)");
@@ -574,6 +579,12 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
                 continue;
             }
         } else {
+            // Might need to check if this causes issues
+            if (prop_desc->is_out_param() && args[args_index].is<sol::lua_table>()) {
+                args_index++;
+                continue; // This means the caller wants to actually use this as an out parameter and not set it
+            }
+
             set_property(s, params.data(), fn, prop_desc, args[args_index++]);
         }
     }
@@ -603,8 +614,54 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
             }
 
             memcpy(arg.object, (void*)((uintptr_t)params.data() + prop->get_offset()), structprop->get_struct()->get_struct_size());
-        } else if (args[arg_index].is<sol::table>()) {
+        } else if (args[arg_index].is<sol::lua_table>()) {
+            auto tbl = args[arg_index].as<sol::lua_table>();
+            if (prop_name_hash == L"ClassProperty"_fnv) {
+                tbl["result"] = (uevr::API::UClass*)*(uevr::API::UClass**)((uintptr_t)params.data() + prop->get_offset());
+            } else if (prop_name_hash == L"ObjectProperty"_fnv || prop_name_hash == L"InterfaceProperty"_fnv) {
+                tbl["result"] = (uevr::API::UObject*)*(uevr::API::UObject**)((uintptr_t)params.data() + prop->get_offset());
+            } else if (prop_name_hash == L"ArrayProperty"_fnv) {
+                const auto tbl_was_empty = tbl.empty();
+                auto& arr = *(uevr::API::TArray<uevr::API::UObject*>*)((uintptr_t)params.data() + prop->get_offset());
+
+                if (!arr.empty()) {
+                    const auto inner_prop = ((uevr::API::FArrayProperty*)prop)->get_inner();
+
+                    if (inner_prop == nullptr) {
+                        continue;
+                    }
+
+                    const auto inner_c = inner_prop->get_class();
+
+                    if (inner_c == nullptr) {
+                        continue;
+                    }
+
+                    const auto inner_name_hash = ::utility::hash(inner_c->get_fname()->to_string());
+
+                    if (inner_name_hash == L"ObjectProperty"_fnv || inner_name_hash == L"InterfaceProperty"_fnv) {
+                        for (size_t i = 0; i < arr.count; ++i) {
+                            tbl[i + 1] = arr.data[i];
+                        }
+                    } else if (inner_name_hash == L"ClassProperty"_fnv) {
+                        for (size_t i = 0; i < arr.count; ++i) {
+                            tbl[i + 1] = (uevr::API::UClass*)arr.data[i];
+                        }
+                    } else {
+                        // TODO
+                    }
+
+                    if (tbl_was_empty) {
+                        arr.~TArray(); // This should be safe, as this is not our array
+                    }
+                }
+            } else {
+                //tbl["result"] = sol::make_object(s, sol::lua_nil);
+            }
+
             // TODO
+        } else if (args[args_index].is<sol::nil_t>()) {
+            // Do nothing
         } else {
             throw sol::error(std::format("Invalid argument type for argument {} ({})", arg_index, ::utility::narrow(prop_c->get_fname()->to_string())));
         }
@@ -634,6 +691,7 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
             const auto inner_name_hash = ::utility::hash(inner_c->get_fname()->to_string());
 
             switch (inner_name_hash) {
+            case L"InterfaceProperty"_fnv:
             case L"ObjectProperty"_fnv:
             {
                 //printf("ArrayProperty<ObjectProperty> cleanup\n");
