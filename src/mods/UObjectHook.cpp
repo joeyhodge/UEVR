@@ -3499,7 +3499,53 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
 
         break;
     }
+    case "StructProperty"_fnv:
+    {
+        // Not really an array of void* but we will skip over individual elements
+        // using pointer arithmetic.
+        const auto& array_obj = *(sdk::TArray<void*>*)((uintptr_t)addr + prop->get_offset());
 
+        if (array_obj.data == nullptr || array_obj.count == 0) {
+            ImGui::Text("Empty array");
+            return;
+        }
+
+        const auto struct_prop = (sdk::FStructProperty*)inner;
+        const auto strukt = struct_prop->get_struct();
+
+        if (strukt == nullptr) {
+            ImGui::Text("Cannot determine struct type");
+            return;
+        }
+        
+        auto element_size = strukt->get_struct_size();
+
+        if (element_size == 0) {
+            element_size = strukt->get_properties_size();
+
+            if (element_size == 0) {
+                ImGui::Text("Cannot determine struct size");
+                return;
+            }
+        }
+
+        for (size_t i = 0; i < array_obj.count; ++i) try {
+            auto element = (void*)((uintptr_t)array_obj.data + (i * element_size));
+
+            if (element != nullptr) {
+                if (ImGui::TreeNode((void*)element, "Element %d", i)) {
+                    // TODO: Figure out if this can be used with persistent states?
+                    //auto scope = m_path.enter("Element " + std::to_string(i));
+                    ui_handle_struct(element, strukt);
+                    ImGui::TreePop();
+                }
+            }
+        } catch(...) {
+            ImGui::Text("Failed to display element %d", i);
+        }
+
+        break;
+    }
     default:
         ImGui::Text("Array of %s (unsupported)", inner_c_type.data());
         break;
