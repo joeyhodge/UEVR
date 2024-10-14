@@ -174,6 +174,10 @@ void ScriptContext::setup_callback_bindings() {
         "on_script_reset", [this](sol::function fn) {
             std::scoped_lock _{ m_mtx };
             m_on_script_reset_callbacks.push_back(fn);
+        },
+        "on_lua_event", [this](sol::function fn) {
+            std::scoped_lock _{ m_mtx };
+            m_on_lua_event_callbacks.push_back(fn);
         }
     );
 }
@@ -464,6 +468,54 @@ int ScriptContext::setup_bindings() {
         },
         "call", [](sol::this_state s, uevr::API::UObject* self, const std::wstring& name, sol::variadic_args args) -> sol::object {
             return lua::utility::call_function(s, self, name, args);
+        },
+        "DANGEROUS_call_member_virtual", [](sol::this_state s, uevr::API::UObject* self, size_t index, sol::variadic_args args) -> sol::object {
+            if (args.size() > 3) {
+                throw sol::error("DANGEROUS_call_member_virtual: Too many arguments (max 3)");
+            }
+
+            if (index > 1000) { // Yeah right
+                throw sol::error("DANGEROUS_call_member_virtual: Index too high");
+            }
+
+            void* args_ptr[3]{};
+
+            for (size_t i = 0; i < args.size(); ++i) {
+                if (args[i].is<sol::nil_t>()) {
+                    args_ptr[i] = nullptr;
+                    continue;
+                }
+
+                // Only support basic arguments for now until we can test this more
+                if (args[i].is<uevr::API::UObject*>()) {
+                    args_ptr[i] = args[i].as<uevr::API::UObject*>();
+                } else {
+                    // We dont support floats for now because we'd need to JIT the function call
+                    throw sol::error("DANGEROUS_call_member_virtual: Invalid argument type");
+                }
+            }
+
+            void* result{};
+            using fn_t = void*(*)(uevr::API::UObject*, void*, void*, void*);
+            const auto vtable = *(void***)self;
+            if (vtable == nullptr) {
+                throw sol::error("DANGEROUS_call_member_virtual: Object has no vtable");
+            }
+
+            const auto fn = (fn_t)vtable[index];
+            if (fn == nullptr) {
+                throw sol::error("DANGEROUS_call_member_virtual: Function not found in vtable");
+            }
+
+            try {
+                // We need to wrap this in a try-catch block because who knows what the function does
+                result = fn(self, args_ptr[0], args_ptr[1], args_ptr[2]);
+            } catch (...) {
+                throw sol::error("DANGEROUS_call_member_virtual: Exception thrown");
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, result); // TODO: convert?
         },
         sol::meta_function::index, [](sol::this_state s, uevr::API::UObject* self, sol::object index_obj) -> sol::object {
             if (!index_obj.is<std::string>()) {
@@ -1051,6 +1103,23 @@ void ScriptContext::on_script_reset() {
             ScriptContext::log("Exception in on_script_reset: " + std::string(e.what()));
         } catch (...) {
             ScriptContext::log("Unknown exception in on_script_reset");
+        }
+    });
+}
+
+void ScriptContext::on_lua_event(std::string_view event_name, std::string_view event_data) {
+    g_contexts.for_each([=](auto ctx) {
+        std::scoped_lock _{ ctx->m_mtx };
+
+        const char* event_name_data = event_name.data();
+        const char* event_data_data = event_data.data();
+
+        for (auto& fn : ctx->m_on_lua_event_callbacks) try {
+            ctx->handle_protected_result(fn(event_name_data, event_data_data));
+        } catch (const std::exception& e) {
+            ScriptContext::log("Exception in on_lua_event: " + std::string(e.what()));
+        } catch (...) {
+            ScriptContext::log("Unknown exception in on_lua_event");
         }
     });
 }
