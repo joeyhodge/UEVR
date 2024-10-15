@@ -2291,7 +2291,7 @@ uint32_t VR::get_hmd_width() const {
         return g_framework->get_rt_size().x;
     }
 
-    return get_runtime()->get_width();
+    return std::max<uint32_t>(get_runtime()->get_width(), 128);
 }
 
 uint32_t VR::get_hmd_height() const {
@@ -2307,7 +2307,7 @@ uint32_t VR::get_hmd_height() const {
         return g_framework->get_rt_size().y;
     }
 
-    return get_runtime()->get_height();
+    return std::max<uint32_t>(get_runtime()->get_height(), 128);
 }
 
 void VR::on_draw_sidebar_entry(std::string_view name) {
