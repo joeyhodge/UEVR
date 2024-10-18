@@ -87,8 +87,10 @@ ScriptContext::~ScriptContext() {
 }
 
 void ScriptContext::log(const std::string& message) {
-    std::cout << "[LuaVR] " << message << std::endl;
-    API::get()->log_info("[LuaVR] %s", message.c_str());
+    auto msg = std::format("[LuaVR] {}", message);
+    OutputDebugStringA((msg + "\n").c_str());
+    fprintf(stderr, "%s\n", msg.c_str());
+    API::get()->log_info("%s", msg.c_str());
 }
 
 void ScriptContext::setup_callback_bindings() {
@@ -184,6 +186,48 @@ void ScriptContext::setup_callback_bindings() {
 
 int ScriptContext::setup_bindings() {
     m_lua.registry()["uevr_context"] = this;
+
+    // The purpose of multiple object pools is so we can do something like obj:as_class() and obj:as_struct()
+    // If we didn't do this, they would return the wrong type if called from for example, a cached UObject
+    m_lua.do_string(R"(
+        _sol_lua_push_objects_Object = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Struct = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_ScriptStruct = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Class = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Function = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Property = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Field = setmetatable({}, { __mode = "v" })
+        _sol_lua_push_objects_Enum = setmetatable({}, { __mode = "v" })
+
+        -- Not a real UObject but is cacheable
+        _sol_lua_push_objects_MotionControllerState = setmetatable({}, { __mode = "v" })
+
+        _sol_lua_push_usertypes = {}
+        _sol_lua_push_ref_counts = {}
+        _sol_lua_push_ephemeral_counts = {}
+    )");
+
+
+    // templated lambda
+    auto create_uobject_ptr_gc = [&]<detail::CacheablePointer T>(T* obj) {
+        m_lua["__UEVRCachePtrInternalCreate"] = [this]() -> sol::object {
+            return sol::make_object(m_lua, (T*)detail::FAKE_OBJECT_ADDR);
+        };
+
+        m_lua.do_string(R"(
+            local fake_obj = __UEVRCachePtrInternalCreate()
+            local mt = getmetatable(fake_obj)
+
+            fake_obj = nil
+            collectgarbage("collect")
+
+            mt.__gc = function(obj)
+                -- use for release function if we ever get one
+            end
+        )");
+
+        m_lua["__UEVRCachePtrInternalCreate"] = sol::make_object(m_lua, sol::nil);
+    };
 
     lua::datatypes::bind_xinput(m_lua);
     lua::datatypes::bind_vectors(m_lua);
@@ -414,33 +458,55 @@ int ScriptContext::setup_bindings() {
         "get_address", [](uevr::API::UObject& self) {
             return (uintptr_t)&self;
         },
-        "static_class", &uevr::API::UObject::static_class,
+        "static_class", [](sol::this_state s) -> sol::object {
+            return sol::make_object(s, uevr::API::UObject::static_class());
+        },
         "get_fname", &uevr::API::UObject::get_fname,
+        "get_short_name", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
+            const auto wstr = self.get_fname()->to_string();
+            return sol::make_object(s, utility::narrow(wstr));
+        },
         "get_full_name", &uevr::API::UObject::get_full_name,
         "is_a", &uevr::API::UObject::is_a,
-        "as_class", [](uevr::API::UObject& self) -> uevr::API::UClass* {
+        "as_class", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
             if (auto c = self.dcast<uevr::API::UClass>()) {
-                return c;
+                return sol::make_object(s, c);
             }
 
-            return nullptr;
+            return sol::make_object(s, sol::lua_nil);
         },
-        "as_struct", [](uevr::API::UObject& self) -> uevr::API::UStruct* {
+        "as_struct", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
             if (auto c = self.dcast<uevr::API::UStruct>()) {
-                return c;
+                return sol::make_object(s, c);
             }
 
-            return nullptr;
+            return sol::make_object(s, sol::lua_nil);
         },
-        "as_function", [](uevr::API::UObject& self) -> uevr::API::UFunction* {
+        "as_function", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
             if (auto c = self.dcast<uevr::API::UFunction>()) {
-                return c;
+                return sol::make_object(s, c);
             }
 
-            return nullptr;
+            return sol::make_object(s, sol::lua_nil);
         },
-        "get_class", &uevr::API::UObject::get_class,
-        "get_outer", &uevr::API::UObject::get_outer,
+        "get_class", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
+            auto c = self.get_class();
+
+            if (c == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, c);
+        },
+        "get_outer", [](sol::this_state s, uevr::API::UObject& self) -> sol::object {
+            auto c = self.get_outer();
+
+            if (c == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, c);
+        },
         "get_bool_property", &uevr::API::UObject::get_bool_property,
         "get_float_property", [](uevr::API::UObject& self, const std::wstring& name) {
             return self.get_property<float>(name);
@@ -536,38 +602,103 @@ int ScriptContext::setup_bindings() {
         }
     );
 
+    
+    create_uobject_ptr_gc((API::UObject*)nullptr);
+
     m_lua.new_usertype<uevr::API::UField>("UEVR_UField",
         sol::base_classes, sol::bases<uevr::API::UObject>(),
-        "get_next", &uevr::API::UField::get_next
+        "get_next", [](sol::this_state s, uevr::API::UField& self) -> sol::object {
+            auto next = self.get_next();
+
+            if (next == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, next);
+        }
     );
+    
+    create_uobject_ptr_gc((API::UField*)nullptr);
 
     m_lua.new_usertype<uevr::API::UStruct>("UEVR_UStruct",
         sol::base_classes, sol::bases<uevr::API::UField, uevr::API::UObject>(),
-        "static_class", &uevr::API::UStruct::static_class,
+        "static_class", [](sol::this_state s) -> sol::object {
+            return sol::make_object(s, uevr::API::UStruct::static_class());
+        },
         "get_super_struct", &uevr::API::UStruct::get_super_struct,
         "get_super", &uevr::API::UStruct::get_super,
-        "find_function", [](uevr::API::UStruct& self, const std::wstring& name) {
-            return self.find_function(name);
+        "find_function", [](sol::this_state s, uevr::API::UStruct& self, const std::wstring& name) {
+            auto f = self.find_function(name);
+
+            if (f == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, f);
         },
         "get_child_properties", &uevr::API::UStruct::get_child_properties,
         "get_properties_size", &uevr::API::UStruct::get_properties_size,
         "get_children", &uevr::API::UStruct::get_children
     );
 
+    create_uobject_ptr_gc((API::UStruct*)nullptr);
+
+    m_lua.new_usertype<uevr::API::UScriptStruct>("UEVR_UScriptStruct",
+        sol::base_classes, sol::bases<uevr::API::UStruct>(),
+        "static_class", [](sol::this_state s) -> sol::object {
+            return sol::make_object(s, uevr::API::UScriptStruct::static_class());
+        },
+        "get_struct_size", &uevr::API::UScriptStruct::get_struct_size
+    );
+
+    create_uobject_ptr_gc((API::UScriptStruct*)nullptr);
+
     m_lua.new_usertype<uevr::API::UClass>("UEVR_UClass",
         sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UField, uevr::API::UObject>(),
-        "static_class", &uevr::API::UClass::static_class,
-        "get_class_default_object", &uevr::API::UClass::get_class_default_object,
-        "get_objects_matching", &uevr::API::UClass::get_objects_matching<uevr::API::UObject>,
-        "get_first_object_matching", &uevr::API::UClass::get_first_object_matching<uevr::API::UObject>
+        "static_class", [](sol::this_state s) -> sol::object {
+            return sol::make_object(s, uevr::API::UClass::static_class());
+        },
+        "get_class_default_object", [](sol::this_state s, uevr::API::UClass& self) -> sol::object {
+            auto obj = self.get_class_default_object();
+
+            if (obj == nullptr) {
+                return sol::make_object(s, sol::nil);
+            }
+
+            return sol::make_object(s, obj); // So it goes through sol_lua_push for our pooling mechanism
+        },
+        "get_objects_matching", [](sol::this_state s, uevr::API::UClass& self, sol::function fn) -> sol::object {
+            auto tbl = sol::state_view{s}.create_table();
+            auto objects = self.get_objects_matching<uevr::API::UObject>();
+
+            for (auto obj : objects) {
+                tbl.add(sol::make_object(s, obj));
+            }
+
+            return sol::make_object(s, tbl);
+        },
+        "get_first_object_matching", [](sol::this_state s, uevr::API::UClass& self) -> sol::object {
+            auto object = self.get_first_object_matching<uevr::API::UObject>();
+
+            if (object == nullptr) {
+                return sol::make_object(s, sol::nil);
+            }
+
+            return sol::make_object(s, object); // So it goes through sol_lua_push for our pooling mechanism
+        }
     );
+
+    create_uobject_ptr_gc((API::UClass*)nullptr);
 
     m_lua.new_usertype<uevr::API::UFunction>("UEVR_UFunction",
         sol::meta_function::call, [](sol::this_state s, uevr::API::UFunction* fn, uevr::API::UObject* obj, sol::variadic_args args) -> sol::object {
             return lua::utility::call_function(s, obj, fn, args);
         },
         sol::base_classes, sol::bases<uevr::API::UStruct, uevr::API::UField, uevr::API::UObject>(),
-        "static_class", &uevr::API::UFunction::static_class,
+        //"static_class", &uevr::API::UFunction::static_class,
+        "static_class", [](sol::this_state s) -> sol::object {
+            return sol::make_object(s, uevr::API::UFunction::static_class());
+        },
         "call", &uevr::API::UFunction::call,
         "get_native_function", &uevr::API::UFunction::get_native_function,
         "hook_ptr", [this](sol::this_state s, uevr::API::UFunction* fn, sol::function pre, sol::function post) {
@@ -605,6 +736,8 @@ int ScriptContext::setup_bindings() {
         "get_function_flags", &uevr::API::UFunction::get_function_flags,
         "set_function_flags", &uevr::API::UFunction::set_function_flags
     );
+
+    create_uobject_ptr_gc((API::UFunction*)nullptr);
 
     m_lua.new_usertype<uevr::API::FField>("UEVR_FField",
         "get_next", &uevr::API::FField::get_next,
@@ -700,6 +833,12 @@ int ScriptContext::setup_bindings() {
                 const auto vq = (UEVR_Quaternionf*)&result;
 
                 state->set_rotation_offset(vq);
+            } else if (obj.is<lua::datatypes::Vector3d>()) { // Assume euler
+                const auto euler = obj.as<lua::datatypes::Vector3d>();
+                auto result = glm::quat{glm::yawPitchRoll((float)-euler.y, (float)euler.x, (float)-euler.z)};
+                const auto vq = (UEVR_Quaternionf*)&result;
+
+                state->set_rotation_offset(vq);
             } else {
                 throw sol::error("Invalid type for set_rotation_offset");
             }
@@ -725,6 +864,8 @@ int ScriptContext::setup_bindings() {
         "set_permanent", &uevr::API::UObjectHook::MotionControllerState::set_permanent
     );
 
+    create_uobject_ptr_gc((API::UObjectHook::MotionControllerState*)nullptr);
+
     m_lua.new_usertype<uevr::API::UObjectHook>("UEVR_UObjectHook",
         "activate", &uevr::API::UObjectHook::activate,
         "exists", &uevr::API::UObjectHook::exists,
@@ -748,15 +889,40 @@ int ScriptContext::setup_bindings() {
 
             return sol::make_object(s, result);
         },
-        "get_objects_by_class", [](uevr::API::UClass* c, sol::object allow_default_obj) {
+        "get_objects_by_class", [](sol::this_state s, uevr::API::UClass* c, sol::object allow_default_obj) -> sol::object {
             bool allow_default = false;
             if (allow_default_obj.is<bool>()) {
                 allow_default = allow_default_obj.as<bool>();
             }
-            return uevr::API::UObjectHook::get_objects_by_class(c, allow_default);
+            auto objects = uevr::API::UObjectHook::get_objects_by_class(c, allow_default);
+            auto tbl = sol::state_view{s}.create_table();
+
+            for (auto obj : objects) {
+                tbl.add(sol::make_object(s, obj));
+            }
+
+            return sol::make_object(s, tbl);
         },
-        "get_or_add_motion_controller_state", &uevr::API::UObjectHook::get_or_add_motion_controller_state,
-        "get_motion_controller_state", &uevr::API::UObjectHook::get_motion_controller_state,
+        //"get_or_add_motion_controller_state", &uevr::API::UObjectHook::get_or_add_motion_controller_state,
+        "get_or_add_motion_controller_state", [](sol::this_state s, API::UObject* obj) -> sol::object {
+            auto state = API::UObjectHook::get_or_add_motion_controller_state(obj);
+
+            if (state == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, state);
+        },
+        //"get_motion_controller_state", &uevr::API::UObjectHook::get_motion_controller_state,
+        "get_motion_controller_state", [](sol::this_state s, uevr::API::UObjectHook* self, API::UObject* obj) -> sol::object {
+            auto state = API::UObjectHook::get_motion_controller_state(obj);
+
+            if (state == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, state);
+        },
         "remove_motion_controller_state", &uevr::API::UObjectHook::remove_motion_controller_state
     );
 
@@ -775,10 +941,43 @@ int ScriptContext::setup_bindings() {
 
             return sol::make_object(s, result);
         },
-        "get_engine", &uevr::API::get_engine,
-        "get_player_controller", &uevr::API::get_player_controller,
-        "get_local_pawn", &uevr::API::get_local_pawn,
-        "spawn_object", &uevr::API::spawn_object,
+        // Context: We are using sol::make_object to ensure that the object is using our pooling mechanism
+        "get_engine", [](sol::this_state s, uevr::API* api) -> sol::object {
+            auto engine = (API::UObject*)api->get_engine();
+
+            if (engine == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, engine);
+        },
+        "get_player_controller", [](sol::this_state s, uevr::API* api, int32_t index) -> sol::object {
+            auto controller = (API::UObject*)api->get_player_controller(index);
+
+            if (controller == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, controller);
+        },
+        "get_local_pawn", [](sol::this_state s, uevr::API* api, int32_t index) -> sol::object {
+            auto pawn = api->get_local_pawn(index);
+
+            if (pawn == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, pawn);
+        },
+        "spawn_object", [](sol::this_state s, uevr::API* api, API::UClass* klass, API::UObject* outer) -> sol::object {
+            auto obj = api->spawn_object(klass, outer);
+
+            if (obj == nullptr) {
+                return sol::make_object(s, sol::lua_nil);
+            }
+
+            return sol::make_object(s, obj);
+        },
         "execute_command", [](uevr::API* api, const std::wstring& s) { api->execute_command(s.data()); },
         "get_uobject_array", &uevr::API::get_uobject_array,
         "get_console_manager", &uevr::API::get_console_manager
@@ -824,15 +1023,17 @@ bool ScriptContext::global_ufunction_pre_handler(uevr::API::UFunction* fn, uevr:
             auto fframe = (lua::datatypes::FFrame*)frame;
             auto locals = lua::datatypes::StructObject{fframe->locals, fn};
             auto locals_obj = sol::make_object(ctx->m_lua.lua_state(), &locals);
+            auto obj_obj = sol::make_object(ctx->m_lua.lua_state(), obj); // Doing this so it goes through our sol_lua_push
+            auto fn_obj = sol::make_object(ctx->m_lua.lua_state(), fn);
 
             for (auto& cb : it->second->pre_hooks) try {
-                if (sol::object result = ctx->handle_protected_result(cb(fn, obj, locals_obj, out_result)); !result.is<sol::nil_t>() && result.is<bool>() && result.as<bool>() == false) {
+                if (sol::object result = ctx->handle_protected_result(cb(fn_obj, obj_obj, locals_obj, out_result)); !result.is<sol::nil_t>() && result.is<bool>() && result.as<bool>() == false) {
                     any_false = true;
                 }
             } catch (const std::exception& e) {
-                ScriptContext::log("Exception in global_ufunction_pre_handler: " + std::string(e.what()));
+                ctx->log_error("Exception in global_ufunction_pre_handler: " + std::string(e.what()));
             } catch (...) {
-                ScriptContext::log("Unknown exception in global_ufunction_pre_handler");
+                ctx->log_error("Unknown exception in global_ufunction_pre_handler");
             }
         }
     });
@@ -851,13 +1052,15 @@ void ScriptContext::global_ufunction_post_handler(uevr::API::UFunction* fn, uevr
             auto fframe = (lua::datatypes::FFrame*)frame;
             auto locals = lua::datatypes::StructObject{fframe->locals, fn};
             auto locals_obj = sol::make_object(ctx->m_lua.lua_state(), &locals);
+            auto obj_obj = sol::make_object(ctx->m_lua.lua_state(), obj);
+            auto fn_obj = sol::make_object(ctx->m_lua.lua_state(), fn);
 
             for (auto& cb : it->second->post_hooks) try {
-                ctx->handle_protected_result(cb(fn, obj, locals_obj, result));
+                ctx->handle_protected_result(cb(fn_obj, obj_obj, locals_obj, result));
             } catch (const std::exception& e) {
-                ScriptContext::log("Exception in global_ufunction_post_handler: " + std::string(e.what()));
+                ctx->log_error("Exception in global_ufunction_post_handler: " + std::string(e.what()));
             } catch (...) {
-                ScriptContext::log("Unknown exception in global_ufunction_post_handler");
+                ctx->log_error("Unknown exception in global_ufunction_post_handler");
             }
         }
     });
@@ -870,9 +1073,9 @@ void ScriptContext::on_xinput_get_state(uint32_t* retval, uint32_t user_index, v
         for (auto& fn : ctx->m_on_xinput_get_state_callbacks) try {
             ctx->handle_protected_result(fn(retval, user_index, (XINPUT_STATE*)state));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_xinput_get_state: " + std::string(e.what()));
+            ctx->log_error("Exception in on_xinput_get_state: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_xinput_get_state");
+            ctx->log_error("Unknown exception in on_xinput_get_state");
         }
     });
 }
@@ -884,9 +1087,9 @@ void ScriptContext::on_xinput_set_state(uint32_t* retval, uint32_t user_index, v
         for (auto& fn : ctx->m_on_xinput_set_state_callbacks) try {
             ctx->handle_protected_result(fn(retval, user_index, (XINPUT_VIBRATION*)vibration));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_xinput_set_state: " + std::string(e.what()));
+            ctx->log_error("Exception in on_xinput_set_state: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_xinput_set_state");
+            ctx->log_error("Unknown exception in on_xinput_set_state");
         }
     });
 }
@@ -894,13 +1097,15 @@ void ScriptContext::on_xinput_set_state(uint32_t* retval, uint32_t user_index, v
 void ScriptContext::on_pre_engine_tick(UEVR_UGameEngineHandle engine, float delta_seconds) {
     g_contexts.for_each([=](auto ctx) {
         std::scoped_lock _{ ctx->m_mtx };
+        
+        auto engine_obj = sol::make_object(ctx->m_lua.lua_state(), (uevr::API::UObject*)engine);
 
         for (auto& fn : ctx->m_on_pre_engine_tick_callbacks) try {
-            ctx->handle_protected_result(fn(engine, delta_seconds));
+            ctx->handle_protected_result(fn(engine_obj, delta_seconds));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_pre_engine_tick: " + std::string(e.what()));
+            ctx->log_error("Exception in on_pre_engine_tick: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_pre_engine_tick");
+            ctx->log_error("Unknown exception in on_pre_engine_tick");
         }
     });
 }
@@ -909,12 +1114,14 @@ void ScriptContext::on_post_engine_tick(UEVR_UGameEngineHandle engine, float del
     g_contexts.for_each([=](auto ctx) {
         std::scoped_lock _{ ctx->m_mtx };
 
+        auto engine_obj = sol::make_object(ctx->m_lua.lua_state(), (uevr::API::UObject*)engine);
+
         for (auto& fn : ctx->m_on_post_engine_tick_callbacks) try {
-            ctx->handle_protected_result(fn(engine, delta_seconds));
+            ctx->handle_protected_result(fn(engine_obj, delta_seconds));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_post_engine_tick: " + std::string(e.what()));
+            ctx->log_error("Exception in on_post_engine_tick: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_post_engine_tick");
+            ctx->log_error("Unknown exception in on_post_engine_tick");
         }
     });
 }
@@ -926,9 +1133,9 @@ void ScriptContext::on_pre_slate_draw_window_render_thread(UEVR_FSlateRHIRendere
         for (auto& fn : ctx->m_on_pre_slate_draw_window_render_thread_callbacks) try {
             ctx->handle_protected_result(fn(renderer, viewport_info));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_pre_slate_draw_window_render_thread: " + std::string(e.what()));
+            ctx->log_error("Exception in on_pre_slate_draw_window_render_thread: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_pre_slate_draw_window_render_thread");
+            ctx->log_error("Unknown exception in on_pre_slate_draw_window_render_thread");
         }
     });
 }
@@ -940,9 +1147,9 @@ void ScriptContext::on_post_slate_draw_window_render_thread(UEVR_FSlateRHIRender
         for (auto& fn : ctx->m_on_post_slate_draw_window_render_thread_callbacks) try {
             ctx->handle_protected_result(fn(renderer, viewport_info));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_post_slate_draw_window_render_thread: " + std::string(e.what()));
+            ctx->log_error("Exception in on_post_slate_draw_window_render_thread: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_post_slate_draw_window_render_thread");
+            ctx->log_error("Unknown exception in on_post_slate_draw_window_render_thread");
         }
     });
 }
@@ -970,9 +1177,9 @@ void ScriptContext::on_early_calculate_stereo_view_offset(UEVR_StereoRenderingDe
                 ctx->handle_protected_result(fn(device, view_index, world_to_meters, ue4_position, ue4_rotation, is_double));
             }
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_early_calculate_stereo_view_offset: " + std::string(e.what()));
+            ctx->log_error("Exception in on_early_calculate_stereo_view_offset: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_early_calculate_stereo_view_offset");
+            ctx->log_error("Unknown exception in on_early_calculate_stereo_view_offset");
         }
     });
 }
@@ -1000,9 +1207,9 @@ void ScriptContext::on_pre_calculate_stereo_view_offset(UEVR_StereoRenderingDevi
                 ctx->handle_protected_result(fn(device, view_index, world_to_meters, ue4_position, ue4_rotation, is_double));
             }
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_pre_calculate_stereo_view_offset: " + std::string(e.what()));
+            ctx->log_error("Exception in on_pre_calculate_stereo_view_offset: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_pre_calculate_stereo_view_offset");
+            ctx->log_error("Unknown exception in on_pre_calculate_stereo_view_offset");
         }
     });
 }
@@ -1030,9 +1237,9 @@ void ScriptContext::on_post_calculate_stereo_view_offset(UEVR_StereoRenderingDev
                 ctx->handle_protected_result(fn(device, view_index, world_to_meters, ue4_position, ue4_rotation, is_double));
             }
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_post_calculate_stereo_view_offset: " + std::string(e.what()));
+            ctx->log_error("Exception in on_post_calculate_stereo_view_offset: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_post_calculate_stereo_view_offset");
+            ctx->log_error("Unknown exception in on_post_calculate_stereo_view_offset");
         }
     });
 }
@@ -1044,9 +1251,9 @@ void ScriptContext::on_pre_viewport_client_draw(UEVR_UGameViewportClientHandle v
         for (auto& fn : ctx->m_on_pre_viewport_client_draw_callbacks) try {
             ctx->handle_protected_result(fn(viewport_client, viewport, canvas));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_pre_viewport_client_draw: " + std::string(e.what()));
+            ctx->log_error("Exception in on_pre_viewport_client_draw: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_pre_viewport_client_draw");
+            ctx->log_error("Unknown exception in on_pre_viewport_client_draw");
         }
     });
 }
@@ -1058,9 +1265,9 @@ void ScriptContext::on_post_viewport_client_draw(UEVR_UGameViewportClientHandle 
         for (auto& fn : ctx->m_on_post_viewport_client_draw_callbacks) try {
             ctx->handle_protected_result(fn(viewport_client, viewport, canvas));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_post_viewport_client_draw: " + std::string(e.what()));
+            ctx->log_error("Exception in on_post_viewport_client_draw: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_post_viewport_client_draw");
+            ctx->log_error("Unknown exception in on_post_viewport_client_draw");
         }
     });
 }
@@ -1072,9 +1279,9 @@ void ScriptContext::on_frame() {
         for (auto& fn : ctx->m_on_frame_callbacks) try {
             ctx->handle_protected_result(fn());
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_frame: " + std::string(e.what()));
+            ctx->log_error("Exception in on_frame: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_frame");
+            ctx->log_error("Unknown exception in on_frame");
         }
     });
 }
@@ -1086,9 +1293,9 @@ void ScriptContext::on_draw_ui() {
         for (auto& fn : ctx->m_on_draw_ui_callbacks) try {
             ctx->handle_protected_result(fn());
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_draw_ui: " + std::string(e.what()));
+            ctx->log_error("Exception in on_draw_ui: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_draw_ui");
+            ctx->log_error("Unknown exception in on_draw_ui");
         }
     });
 }
@@ -1100,9 +1307,9 @@ void ScriptContext::on_script_reset() {
         for (auto& fn : ctx->m_on_script_reset_callbacks) try {
             ctx->handle_protected_result(fn());
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_script_reset: " + std::string(e.what()));
+            ctx->log_error("Exception in on_script_reset: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_script_reset");
+            ctx->log_error("Unknown exception in on_script_reset");
         }
     });
 }
@@ -1117,9 +1324,9 @@ void ScriptContext::on_lua_event(std::string_view event_name, std::string_view e
         for (auto& fn : ctx->m_on_lua_event_callbacks) try {
             ctx->handle_protected_result(fn(event_name_data, event_data_data));
         } catch (const std::exception& e) {
-            ScriptContext::log("Exception in on_lua_event: " + std::string(e.what()));
+            ctx->log_error("Exception in on_lua_event: " + std::string(e.what()));
         } catch (...) {
-            ScriptContext::log("Unknown exception in on_lua_event");
+            ctx->log_error("Unknown exception in on_lua_event");
         }
     });
 }
