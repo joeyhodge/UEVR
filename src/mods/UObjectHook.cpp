@@ -1442,6 +1442,12 @@ void UObjectHook::update_persistent_states() {
                         value = prop_state->data.u8;
                     }
                     break;
+                case "UInt16Property"_fnv:
+                    {
+                        auto& value = *(uint16_t*)(obj.as<uintptr_t>() + ((sdk::FProperty*)prop_desc)->get_offset());
+                        value = prop_state->data.u16;
+                    }
+                    break;
                 default:
                     // OH NO!!!!! anyways
                     break;
@@ -2348,6 +2354,20 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
     if (uclass == nullptr) {
         ImGui::Text("null class");
         return;
+    }
+
+    if (object->is_a(sdk::UClass::static_class())) {
+        if (ImGui::TreeNode("Default Object")) {
+            auto def = ((sdk::UClass*)object)->get_class_default_object();
+
+            if (def != nullptr) {
+                ui_handle_object(def);
+            } else {
+                ImGui::Text("Null default object");
+            }
+
+            ImGui::TreePop();
+        }
     }
 
     ImGui::Text("%s", utility::narrow(object->get_full_name()).data());
@@ -3365,6 +3385,16 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
                 display_context(value);
             }
             break;
+        case "UInt16Property"_fnv:
+            {
+                auto& value = *(uint16_t*)((uintptr_t)object + ((sdk::FProperty*)prop)->get_offset());
+                int converted = (int)value;
+                if (ImGui::SliderInt(utility::narrow(prop->get_field_name().to_string()).data(), (int*)&converted, 0, 65535)) {
+                    value = (uint16_t)converted;
+                }
+                display_context(value);
+            }
+            break;
         case "UInt32Property"_fnv:
         case "IntProperty"_fnv:
             {
@@ -3395,6 +3425,7 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
             break;
         case "InterfaceProperty"_fnv:
         case "ObjectProperty"_fnv:
+        case "ClassProperty"_fnv:
             {
                 auto& value = *(sdk::UObject**)((uintptr_t)object + ((sdk::FProperty*)prop)->get_offset());
                 
