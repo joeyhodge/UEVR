@@ -555,6 +555,8 @@ int ScriptContext::setup_bindings() {
                 // Only support basic arguments for now until we can test this more
                 if (args[i].is<uevr::API::UObject*>()) {
                     args_ptr[i] = args[i].as<uevr::API::UObject*>();
+                } else if (args[i].is<lua::datatypes::StructObject*>()) {
+                    args_ptr[i] = args[i].as<lua::datatypes::StructObject*>()->object;
                 } else {
                     // We dont support floats for now because we'd need to JIT the function call
                     throw sol::error("DANGEROUS_call_member_virtual: Invalid argument type");
@@ -583,6 +585,23 @@ int ScriptContext::setup_bindings() {
 
             return sol::make_object(s, result); // TODO: convert?
         },
+        "write_qword", [](API::UObject* self, size_t offset, uint64_t value) {
+                size_t size = 0;
+                const auto c = self->get_class();
+                if (c->is_a(uevr::API::UScriptStruct::static_class())) {
+                    auto script_struct = reinterpret_cast<uevr::API::UScriptStruct*>(c);
+
+                    size = script_struct->get_struct_size();
+                } else {
+                    size = c->get_properties_size();
+                }
+
+                if (offset + sizeof(uint64_t) > size) {
+                    throw sol::error("Offset out of bounds");
+                }
+
+                *(uint64_t*)((uintptr_t)self + offset) = value;
+            },
         sol::meta_function::index, [](sol::this_state s, uevr::API::UObject* self, sol::object index_obj) -> sol::object {
             if (!index_obj.is<std::string>()) {
                 return sol::make_object(s, sol::lua_nil);
@@ -667,9 +686,10 @@ int ScriptContext::setup_bindings() {
 
             return sol::make_object(s, obj); // So it goes through sol_lua_push for our pooling mechanism
         },
-        "get_objects_matching", [](sol::this_state s, uevr::API::UClass& self, sol::function fn) -> sol::object {
+        "get_objects_matching", [](sol::this_state s, uevr::API::UClass& self, sol::object allow_default_obj) -> sol::object {
+            const bool allow_default = allow_default_obj.is<bool>() ? allow_default_obj.as<bool>() : false;
             auto tbl = sol::state_view{s}.create_table();
-            auto objects = self.get_objects_matching<uevr::API::UObject>();
+            auto objects = self.get_objects_matching<uevr::API::UObject>(allow_default);
 
             for (auto obj : objects) {
                 tbl.add(sol::make_object(s, obj));
@@ -677,8 +697,9 @@ int ScriptContext::setup_bindings() {
 
             return sol::make_object(s, tbl);
         },
-        "get_first_object_matching", [](sol::this_state s, uevr::API::UClass& self) -> sol::object {
-            auto object = self.get_first_object_matching<uevr::API::UObject>();
+        "get_first_object_matching", [](sol::this_state s, uevr::API::UClass& self, sol::object allow_default_obj) -> sol::object {
+            const bool allow_default = allow_default_obj.is<bool>() ? allow_default_obj.as<bool>() : false;
+            auto object = self.get_first_object_matching<uevr::API::UObject>(allow_default);
 
             if (object == nullptr) {
                 return sol::make_object(s, sol::nil);
@@ -1176,7 +1197,7 @@ void ScriptContext::on_early_calculate_stereo_view_offset(UEVR_StereoRenderingDe
         const auto ue5_position = (lua::datatypes::Vector3d*)position;
         const auto ue4_position = (lua::datatypes::Vector3f*)position;
         const auto ue5_rotation = (lua::datatypes::Vector3d*)rotation;
-    const auto ue4_rotation = (lua::datatypes::Vector3f*)rotation;
+        const auto ue4_rotation = (lua::datatypes::Vector3f*)rotation;
         const auto is_ue5 = lua::utility::is_ue5();
 
         for (auto& fn : ctx->m_on_early_calculate_stereo_view_offset_callbacks) try {
