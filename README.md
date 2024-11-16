@@ -1,4 +1,4 @@
-# UEVR ![build](https://github.com/praydog/UEVR/actions/workflows/dev-release.yml/badge.svg)
+# UEVR[![Dev Release](https://github.com/joeyhodge/UEVR/actions/workflows/dev-release.yml/badge.svg)](https://github.com/joeyhodge/UEVR/actions/workflows/dev-release.yml)
 
 Universal Unreal Engine VR Mod (4/5)
 
