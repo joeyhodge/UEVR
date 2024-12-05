@@ -14,6 +14,7 @@ jobs:
         with:
           token: ${{ secrets.PAT_TOKEN }}
           submodules: recursive
+          persist-credentials: false
           fetch-depth: 0
 
       - name: Configure CMake
