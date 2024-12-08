@@ -7,10 +7,10 @@ exit /b 0
 
 FOR /F "tokens=*" %%g IN ('git rev-parse HEAD') DO (SET UEVR_COMMIT_HASH=%%g)
 
-FOR /F "tokens=*" %%t IN ('git describe --tags --always --all --abbrev^=0') DO (SET UEVR_TAG=%%t)
+FOR /F "tokens=*" %%t IN ('git describe --tags --abbrev^=0') DO (SET UEVR_TAG=%%t)
 IF "%UEVR_TAG%"=="" (SET UEVR_TAG=no_tag)
 
-FOR /F "tokens=*" %%c IN ('git describe --tags --always --all --long') DO (
+FOR /F "tokens=*" %%c IN ('git describe --tags --long') DO (
 FOR /F "tokens=1,2 delims=-" %%a IN ("%%c") DO (
 SET UEVR_TAG_LONG=%%a
 SET UEVR_COMMITS_PAST_TAG=%%b
