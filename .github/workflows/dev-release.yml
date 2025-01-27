@@ -79,7 +79,7 @@ jobs:
           repo: UEVR
           owner: joeyhodge
           token: ${{ secrets.PAT_TOKEN }}
-          name: ${{format('UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
+          name: ${{format('ALTDPAD UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
           tag: ${{format('nightly-{0}-{1}', env.RUN_NUMBER, github.sha)}}
           artifacts: "${{github.workspace}}/${{matrix.target}}.zip,${{github.workspace}}/${{matrix.target}}.zip.sha256"
           makeLatest: true
