@@ -2950,6 +2950,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family);
             return;
         }
+
+        // Waiting for RHI thread to finish creating the texture
+        if (rtm->get_scene_capture_utexture() == nullptr) {
+            g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family);
+            return;
+        }
     }
 
     auto& view_family_target = *(sdk::FRenderTarget**)((uintptr_t)&view_family + sizeof(sdk::TArray<void*>) + sizeof(void*));
@@ -6369,7 +6375,7 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
         this->scene_capture_target = nullptr;
     }
 
-    if (this->scene_capture_target != nullptr) {
+    if (this->scene_capture_target != nullptr && this->in_flight_target == nullptr) {
         this->scene_capture_target->remove_from_root();
         this->scene_capture_target = nullptr;
     }
@@ -6396,6 +6402,10 @@ FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() con
 }
 
 bool VRRenderTargetManager_Base::create_scene_capture_texture() try {
+    if (this->in_flight_target != nullptr) {
+        return false;
+    }
+
     destroy_scene_capture();
 
     SPDLOG_INFO("Creating scene capture texture!");
@@ -6423,38 +6433,54 @@ bool VRRenderTargetManager_Base::create_scene_capture_texture() try {
 
 
     const float clear_color[4] {0.0f, 0.0f, 0.0f, 1.0f};
-    this->scene_capture_target = kismet_rendering->create_render_target_2d(world, VR::get()->get_hmd_width(), VR::get()->get_hmd_height(), 2, clear_color, false);
+    auto tgt = kismet_rendering->create_render_target_2d(world, VR::get()->get_hmd_width(), VR::get()->get_hmd_height(), 2, clear_color, false);
 
-    if (this->scene_capture_target == nullptr) {
+    if (tgt == nullptr) {
         SPDLOG_ERROR("[VRRenderTargetManager] Failed to create texture!");
         return false;
     }
 
-    this->scene_capture_target->add_to_root();
+    tgt->add_to_root();
 
     UObjectHook::get()->activate();
 
+    static bool already_updated{false};
+
     // Enqueue offset lookup on the render thread because that's when the resource is actually created.
-    RHIThreadWorker::get().enqueue([tgt = this->scene_capture_target]() -> void {
-        if (!UObjectHook::get()->exists(tgt)) {
-            SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-            return;
-        }
+    if (!already_updated) {
+        this->in_flight_target = tgt;
 
-        if (sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
-            SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
+        RenderThreadWorker::get().enqueue([this, tgt]() -> void {
+            RHIThreadWorker::get().enqueue([this, tgt]() -> void {
+                if (!UObjectHook::get()->exists(tgt)) {
+                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                    return;
+                }
 
-            if (auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource(); rsrc != nullptr) {
-                sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
-            }
-        } else {
-            SPDLOG_ERROR("Failed to update render resource offset for scene capture target!");
-        }
-    });
+                if (sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                    SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
 
-    SPDLOG_INFO("Scene capture texture created!");
+                    if (auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource(); rsrc != nullptr) {
+                        already_updated = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+                        this->scene_capture_target = tgt;
 
-    return true;
+                        SPDLOG_INFO("Scene capture texture created!");
+                    }
+                } else {
+                    SPDLOG_ERROR("Failed to update render resource offset for scene capture target!");
+                }
+
+                this->in_flight_target = nullptr;
+            });
+        });
+    
+        SPDLOG_INFO("Waiting for scene capture texture to be created...");
+    } else {
+        this->scene_capture_target = tgt;
+        SPDLOG_INFO("Scene capture texture created!");
+    }
+
+    return this->scene_capture_target != nullptr;
 } catch (const std::exception& e) {
     SPDLOG_ERROR("[VRRenderTargetManager] Exception in create_scene_capture_texture: {}", e.what());
     return false;
@@ -6540,21 +6566,23 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     UObjectHook::get()->activate();
 
     // Enqueue offset lookup on the render thread because that's when the resource is actually created.
-    RHIThreadWorker::get().enqueue([tgt = this->scene_capture_target]() -> void {
-        if (!UObjectHook::get()->exists(tgt)) {
-            SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-            return;
-        }
-
-        if (sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
-            SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
-
-            if (auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource(); rsrc != nullptr) {
-                sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+    RenderThreadWorker::get().enqueue([tgt = this->scene_capture_target]() -> void {
+        RHIThreadWorker::get().enqueue([tgt = tgt]() -> void {
+            if (!UObjectHook::get()->exists(tgt)) {
+                SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                return;
             }
-        } else {
-            SPDLOG_ERROR("Failed to update render resource offset for scene capture target!");
-        }
+
+            if (sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
+
+                if (auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource(); rsrc != nullptr) {
+                    sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+                }
+            } else {
+                SPDLOG_ERROR("Failed to update render resource offset for scene capture target!");
+            }
+        });
     });
 
     SPDLOG_INFO("Scene capture created!");
