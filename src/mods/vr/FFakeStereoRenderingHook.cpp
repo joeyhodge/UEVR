@@ -105,13 +105,6 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
 
-    // TODO: see if this can be threaded; it might not be able to because of TLS or something
-    if (!VR::get()->should_skip_uobjectarray_init()) {
-        sdk::FName::get_constructor();
-        sdk::FName::get_to_string();
-        sdk::FUObjectArray::get();
-    }
-
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
     // we will fall back to doing it here.
@@ -233,6 +226,13 @@ void FFakeStereoRenderingHook::on_draw_ui() {
 void FFakeStereoRenderingHook::attempt_hooking() {
     if (m_finished_hooking || m_tried_hooking) {
         return;
+    }
+
+    // TODO: see if this can be threaded; it might not be able to because of TLS or something
+    if (!VR::get()->should_skip_uobjectarray_init()) {
+        sdk::FName::get_constructor();
+        sdk::FName::get_to_string();
+        sdk::FUObjectArray::get();
     }
 
     if (!m_injected_stereo_at_runtime) {
@@ -7268,7 +7268,16 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         memcpy(this->texture_create_insn_bytes.data(), (void*)ip, decoded->Length);
 
                         this->texture_hook = safetyhook::create_mid((void*)post_call, &VRRenderTargetManager::texture_hook_callback);
+
+                        if (!this->texture_hook) {
+                            SPDLOG_ERROR("Failed to create post texture hook!");
+                        }
+
                         this->pre_texture_hook = safetyhook::create_mid((void*)ip, &VRRenderTargetManager::pre_texture_hook_callback);
+                        if (!this->pre_texture_hook) {
+                            SPDLOG_ERROR("Failed to create pre texture hook!");
+                        }
+
                         this->set_up_texture_hook = true;
 
                         return false;
