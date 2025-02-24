@@ -305,15 +305,26 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (!is_afr) {
                 // Render right side to right screen tex
-                d3d12::render_srv_to_rtv(
-                    m_game_batch.get(),
-                    commands.cmd_list.Get(),
-                    m_game_tex,
-                    m_2d_screen_tex[1],
-                    RECT{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]},
-                    ENGINE_SRC_COLOR,
-                    ENGINE_SRC_COLOR
-                );
+                if (m_scene_capture_tex.texture.Get() != nullptr) {
+                    d3d12::render_srv_to_rtv(
+                        m_game_batch.get(),
+                        commands.cmd_list.Get(),
+                        m_scene_capture_tex,
+                        m_2d_screen_tex[1],
+                        ENGINE_SRC_COLOR,
+                        ENGINE_SRC_COLOR
+                    );
+                } else {
+                    d3d12::render_srv_to_rtv(
+                        m_game_batch.get(),
+                        commands.cmd_list.Get(),
+                        m_game_tex,
+                        m_2d_screen_tex[1],
+                        RECT{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]},
+                        ENGINE_SRC_COLOR,
+                        ENGINE_SRC_COLOR
+                    );
+                }
 
                 if (m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
                     d3d12::render_srv_to_rtv(
@@ -329,6 +340,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             // Clear the RT so the entire background is black when submitting to the compositor
             commands.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+            if (m_scene_capture_tex.texture.Get() != nullptr) {
+                commands.clear_rtv(m_scene_capture_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            }
         }
     };
 
@@ -876,8 +891,8 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     // only show one half of the double wide texture (right side)
     RECT source_rect{};
 
-    // Show left side when using AFR
-    if (vr->is_using_afr()) {
+    // Show left side when using AFR or native stereo fix
+    if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
         source_rect.left = 0;
         source_rect.top = 0;
         source_rect.right = m_backbuffer_size[0] / 2;
