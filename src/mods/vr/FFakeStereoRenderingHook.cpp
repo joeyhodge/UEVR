@@ -2794,14 +2794,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto is_ue5 = g_hook->has_double_precision();
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
-    const auto has_valid_svsi = init_options->get_scene_state();
+    const auto init_options_scene_state = init_options->get_scene_state();
 
-    if (has_valid_svsi) {
+    if (init_options_scene_state != nullptr) {
         if (is_ue5) {
-            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options->get_scene_state()];
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
             memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
         } else {
-            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue4[init_options->get_scene_state()];
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue4[init_options_scene_state];
             memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
         }
     }
@@ -2912,8 +2912,6 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             }
         }
     }
-
-    const auto init_options_scene_state = init_options->get_scene_state();
 
     bool new_scene_state_inserted_this_frame = false;
 
@@ -3045,13 +3043,13 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
     g_hook->m_localplayer_get_viewpoint_hook.call<void>(localplayer, view_info, pass);
 }
 
-void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily& view_family_candidate) {
+void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family_candidate) {
     ZoneScopedN("BeginRenderViewFamilyReal");
 
     SPDLOG_INFO_ONCE("Called BeginRenderViewFamilyReal for the first time");
 
     if (!g_framework->is_game_data_intialized()) {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
@@ -3061,7 +3059,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     if (!vr->is_hmd_active() || !vr->is_native_stereo_fix_enabled()) {
         rtm->destroy_scene_capture();
 
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
@@ -3070,20 +3068,20 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         uint32_t count;
     };
 
-    const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && *(void**)&view_family_candidate != sdk::FSceneViewFamily::get_vtable_ptr();
-    const auto ue5_view_family_array = (TArrayViewViewFamily*)&view_family_candidate;
+    const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && *(void**)view_family_candidate != sdk::FSceneViewFamily::get_vtable_ptr();
+    const auto ue5_view_family_array = (TArrayViewViewFamily*)view_family_candidate;
 
     if (uses_tarrayview && ue5_view_family_array->data == nullptr) {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
     // UE5 passes an TArrayView of ViewFamily pointers instead of a single ViewFamily
-    sdk::FSceneViewFamily& view_family = uses_tarrayview ? *ue5_view_family_array->data[0] : view_family_candidate;
+    sdk::FSceneViewFamily* view_family = uses_tarrayview ? ue5_view_family_array->data[0] : view_family_candidate;
 
-    auto views_ptr = view_family.get_views();
+    auto views_ptr = view_family->get_views();
     if (views_ptr == nullptr) {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
@@ -3099,15 +3097,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         // that gets unset after the texture is fully created. This function exits early otherwise.
         rtm->create_scene_capture();
         views.count = 1;
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         views.count = prev_count;
         return;
     }
 
-    auto view_family_target = view_family.get_render_target();
+    auto view_family_target = view_family->get_render_target();
 
     if (view_family_target == nullptr) {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
@@ -3153,8 +3151,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         view_family.views.data[1]->constructor((sdk::FSceneViewInitOptions*)init_options_copy2.data());*/
     }
 
-    // Call original. We're passing address of the reference because safetyhook doesn't call the function correctly with classes (not structs)
-    g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+    g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
 
     if (wants_swap) {
         // Swap out the existing render target for our custom one
@@ -3163,9 +3160,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         // because the engine is still working on the old render target
         const auto original_target = view_family_target;
 
-        view_family.set_render_target(rtfrt);
+        view_family->set_render_target(rtfrt);
 
-        auto scene = (sdk::FScene*)view_family.get_scene_interface();
+        auto scene = (sdk::FScene*)view_family->get_scene_interface();
 
         if (scene != nullptr) {
             // We decrement the frame count because it fixes motion vectors in the right eye.
@@ -3175,11 +3172,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         std::swap(views[0], views[1]);
 
         // Call it again
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, &view_family_candidate);
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
 
         std::swap(views[0], views[1]);
 
-        view_family.set_render_target(original_target);
+        view_family->set_render_target(original_target);
     }
 
     views.count = prev_count;
@@ -5085,10 +5082,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
     if (vr->is_native_stereo_fix_enabled()) {
         auto rtm = g_hook->get_render_target_manager();
-        if ((rtm->get_scene_capture_render_target() == nullptr || !g_hook->m_sceneview_data.constructor_hook)) {
+        if ((rtm->get_scene_capture_render_target() == nullptr || !g_hook->m_sceneview_data.constructor_hook || !g_hook->m_render_module_begin_render_viewfamily_hook)) {
             if (rtm->get_scene_capture_utexture() == nullptr) {
                 rtm->create_scene_capture();
             }
+
             return 1; // wait for the scene capture render target to be set and FSceneView constructor to be hooked
         }
     }
@@ -6541,14 +6539,17 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
         this->scene_capture_actor = nullptr;
         this->scene_capture_component = nullptr;
         this->scene_capture_target = nullptr;
+
+        RHIThreadWorker::get().enqueue([this]() -> void {
+            this->scene_capture_target_rhi_thread = nullptr;
+        });
     }
 } catch (const std::exception& e) {
     SPDLOG_ERROR("[VRRenderTargetManager] Exception in destroy_scene_capture: {}", e.what());
-    this->scene_capture_target_rhi_thread = nullptr;
     this->scene_capture_target = nullptr;
     this->scene_capture_actor = nullptr;
     this->scene_capture_component = nullptr;
-
+    
     RHIThreadWorker::get().enqueue([this]() -> void {
         this->scene_capture_target_rhi_thread = nullptr;
     });
@@ -6557,12 +6558,14 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
+    if (this->in_flight_target != nullptr) {
+        return nullptr;
+    }
+
     const auto is_same_as_rhi_thread = RHIThreadWorker::get().is_same_thread();
     const auto& sct = is_same_as_rhi_thread ? this->scene_capture_target_rhi_thread : this->scene_capture_target;
 
     if (sct != nullptr) try {
-        static auto utexture_c = sdk::UTexture::static_class();
-
         // I REALLY don't want to lock a mutex in a hot path so let's hope that our exception handler catches everything.
         if (!sct.valid()) {
             SPDLOG_WARN("[VRRenderTargetManager] Scene capture target is not a UTexture! Texture probably deleted on level change!");
@@ -6595,7 +6598,10 @@ FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
 }
 
 sdk::UTexture* VRRenderTargetManager_Base::get_scene_capture_utexture() {
-    static const auto utex_c = sdk::UTexture::static_class();
+    if (this->in_flight_target != nullptr) {
+        return nullptr;
+    }
+
     const auto& utex = this->scene_capture_target;
 
     if (utex != nullptr) try {
@@ -6774,6 +6780,11 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     
                         if (frt != nullptr) {
                             sdk::FRenderTarget::update_offsets(frt);
+
+                            if (frt->get_render_target_texture() == nullptr || *frt->get_render_target_texture() == nullptr) {
+                                SPDLOG_WARN("Waiting for render target texture to be valid...");
+                                return false;
+                            }
     
                             hook_frt(frt);
     
