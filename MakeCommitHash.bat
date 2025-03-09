@@ -15,15 +15,21 @@ FOR /F "tokens=*" %%t IN ('git describe --tags --always --abbrev^=0') DO (SET UE
 IF "%UEVR_TAG%"=="" (SET UEVR_TAG=no_tag)
 
 :: Extract tag and commit count since the last tag
+SET UEVR_COMMITS_PAST_TAG=0
 FOR /F "tokens=*" %%c IN ('git describe --tags --always --long') DO (
     FOR /F "tokens=1,2 delims=-" %%a IN ("%%c") DO (
         SET UEVR_TAG_LONG=%%a
-        SET /A UEVR_COMMITS_PAST_TAG=%%b  :: Ensure it's treated as a decimal number
+        SET UEVR_TMP_COMMITS_PAST_TAG=%%b
     )
 )
 
-:: Ensure the variable is set and default to 0 if empty
-IF "%UEVR_COMMITS_PAST_TAG%"=="" (SET UEVR_COMMITS_PAST_TAG=0)
+:: Ensure the commit count is a valid number
+SET /A TEST_NUM=UEVR_TMP_COMMITS_PAST_TAG 2>NUL
+IF ERRORLEVEL 1 (
+    SET UEVR_COMMITS_PAST_TAG=0
+) ELSE (
+    SET /A UEVR_COMMITS_PAST_TAG=UEVR_TMP_COMMITS_PAST_TAG
+)
 
 :: Get the current branch name
 FOR /F "tokens=*" %%b IN ('git rev-parse --abbrev-ref HEAD') DO (SET UEVR_BRANCH=%%b)
