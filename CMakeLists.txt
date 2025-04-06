@@ -28,6 +28,7 @@ if(CMKR_ROOT_PROJECT)
 endif()
 
  
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
 
 # Enable PDB generation in release mode, but without the extra crap that RelWithDebInfo adds
@@ -71,12 +72,12 @@ FetchContent_Declare(bddisasm
 )
 FetchContent_MakeAvailable(bddisasm)
 
-message(STATUS "Fetching kananlib (7ceca3f80a1ec4f89b613afb3f5b41832766609e)...")
+message(STATUS "Fetching kananlib (9e7acae3945e3b78f9261a0989283fa4b50ecf2e)...")
 FetchContent_Declare(kananlib
 	GIT_REPOSITORY
 		"https://github.com/cursey/kananlib"
 	GIT_TAG
-		7ceca3f80a1ec4f89b613afb3f5b41832766609e
+		9e7acae3945e3b78f9261a0989283fa4b50ecf2e
 )
 FetchContent_MakeAvailable(kananlib)
 
