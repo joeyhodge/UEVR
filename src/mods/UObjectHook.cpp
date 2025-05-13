@@ -211,7 +211,10 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
 
     if (hook->m_process_event_listening) {
         std::unique_lock _{hook->m_function_mutex};
-        hook->m_called_functions.insert(func);
+        
+        auto& data = hook->m_called_functions[func];
+        ++data.call_count;
+
         hook->m_most_recent_functions.push_front(func);
 
         if (hook->m_most_recent_functions.size() > 200) {
@@ -1904,9 +1907,15 @@ void UObjectHook::draw_developer() {
             ImGui::Checkbox("ProcessEvent Listener", &m_process_event_listening);
 
             if (m_process_event_listening) {
+                std::shared_lock __{m_function_mutex};
+
+                if (ImGui::Button("Clear Ignored Functions")) {
+                    m_ignored_recent_functions.clear();
+                }
+
                 ImGui::Text("Called functions: %llu", m_called_functions.size());
 
-                if (ImGui::TreeNode("Called Functions")) {
+                if (ImGui::TreeNode("Recent Functions")) {
                     for (auto ufunc : m_most_recent_functions) {
                         if (ufunc == nullptr) {
                             continue;
@@ -1929,6 +1938,43 @@ void UObjectHook::draw_developer() {
                         ImGui::SameLine();
 
                         ImGui::Text("%s", utility::narrow(ufunc->get_full_name()).c_str());
+                    }
+
+                    ImGui::TreePop();
+                }
+
+                if (ImGui::TreeNode("All Called Functions")) {
+                    std::vector<sdk::UFunction*> functions_sorted_by_call_count{};
+                    for (auto& [ufunc, data] : m_called_functions) {
+                        if (ufunc == nullptr) {
+                            continue;
+                        }
+
+                        functions_sorted_by_call_count.push_back(ufunc);
+                    }
+
+                    std::sort(functions_sorted_by_call_count.begin(), functions_sorted_by_call_count.end(), [this](sdk::UFunction* a, sdk::UFunction* b) {
+                        return m_called_functions[a].call_count > m_called_functions[b].call_count;
+                    });
+
+                    for (auto& ufunc : functions_sorted_by_call_count) {
+                        if (m_ignored_recent_functions.contains(ufunc)) {
+                            continue;
+                        }
+
+                        ImGui::PushID(ufunc);
+
+                        utility::ScopeGuard ___{[]() {
+                            ImGui::PopID();
+                        }};
+
+                        if (ImGui::Button("Ignore")) {
+                            m_ignored_recent_functions.insert(ufunc);
+                        }
+
+                        ImGui::SameLine();
+
+                        ImGui::Text("%s (%llu)", utility::narrow(ufunc->get_full_name()).c_str(), m_called_functions[ufunc].call_count);
                     }
 
                     ImGui::TreePop();
@@ -3243,6 +3289,22 @@ void UObjectHook::ui_handle_functions(void* object, sdk::UStruct* uclass) {
                         ImGui::SameLine();
                         ImGui::TextColored(ImVec4{0.0f, 1.0f, 0.0f, 1.0f}, "[Out]");
                     }
+
+                    // Display full name of StructProperty
+                    if (cname == "StructProperty") {
+                        const auto prop = (sdk::FStructProperty*)param;
+                        const auto s = prop->get_struct();
+
+                        if (s != nullptr) {
+                            const auto struct_name = utility::narrow(s->get_full_name());
+                            constexpr auto r = (float)78.0f / 255.0f;
+                            constexpr auto g = (float)201.0f / 255.0f;
+                            constexpr auto b = (float)176.0f / 255.0f;
+
+                            ImGui::SameLine();
+                            ImGui::TextColored(ImVec4{r, g, b, 1.0f}, "[%s]", struct_name.data());
+                        }
+                    }
                 }
             }
 
@@ -3447,6 +3509,13 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
             {
                 auto& value = *(int32_t*)((uintptr_t)object + ((sdk::FProperty*)prop)->get_offset());
                 ImGui::DragInt(utility::narrow(prop->get_field_name().to_string()).data(), &value, 1);
+                display_context(value);
+            }
+            break;
+        case L"UInt64Property"_fnv:
+            {
+                auto& value = *(uint64_t*)((uintptr_t)object + ((sdk::FProperty*)prop)->get_offset());
+                ImGui::DragScalar(utility::narrow(prop->get_field_name().to_string()).data(), ImGuiDataType_U64, &value, 1);
                 display_context(value);
             }
             break;
