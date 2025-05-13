@@ -129,6 +129,15 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
     }
     case L"NameProperty"_fnv:
         return sol::make_object(s, *(uevr::API::FName*)((uintptr_t)self + offset));
+    case L"StrProperty"_fnv:
+    {
+        using FString = uevr::API::TArray<wchar_t>;
+        const auto& str = *(FString*)((uintptr_t)self + offset);
+        if (str.data == nullptr || str.count == 0) {
+            return sol::make_object(s, "");
+        }
+        return sol::make_object(s, std::wstring(str.data, str.count));
+    }
     case L"InterfaceProperty"_fnv:
     case L"ObjectProperty"_fnv:
         if (*(uevr::API::UObject**)((uintptr_t)self + offset) == nullptr) {
@@ -408,7 +417,22 @@ void set_property(sol::this_state s, void* self, uevr::API::UStruct* owner_c, ue
             throw sol::error("Struct property has no struct");
         }
 
-        if (value.is<lua::datatypes::StructObject>()) {
+        if (value.is<sol::lua_table>()) {
+            // Go through each key in the table and set each property in the struct to the value (if it exists)
+            for (const auto& [key, val] : value.as<sol::table>()) {
+                if (!key.is<std::wstring>()) {
+                    throw sol::error("Invalid key type for struct property (expected string)");
+                }
+                
+                const auto prop = struct_desc->find_property(key.as<std::wstring>().c_str());
+
+                if (prop == nullptr) {
+                    throw sol::error(std::format("Struct property '{}' not found in {}", ::utility::narrow(key.as<std::wstring>()), ::utility::narrow(struct_desc->get_fname()->to_string())));
+                }
+
+                set_property(s, (void*)((uintptr_t)self + offset), struct_desc, prop, val);
+            }
+        } else if (value.is<lua::datatypes::StructObject>()) {
             const auto arg = value.as<lua::datatypes::StructObject>();
 
             if (arg.desc != struct_desc) {
