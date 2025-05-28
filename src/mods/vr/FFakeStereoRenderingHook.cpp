@@ -3516,7 +3516,8 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
                 {
                         if (is_ue5) {
                             // UE5 is NOT an old command list, we need to bruteforce the offset
-                            for (size_t i = 0; i < 0x50; i += sizeof(void*)) try {
+                            // Start at 0x10 because that's usually where the pointers in FMemStack end.
+                            for (size_t i = 0x10; i < 0x50; i += sizeof(void*)) try {
                                 const auto cur_l = (sdk::FRHICommandListBase*)((uintptr_t)command_list + i);
                                 if (utility::get_module_within(*(void**)cur_l->root).value_or(nullptr) != nullptr) {
                                     actual_offset = i;
@@ -5667,6 +5668,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             ctx.ctx->MemThreshold = 1000;
 
             uint32_t window_getter_callstack_level = 0;
+            std::span<uint8_t> window_bounds{(uint8_t*)window, (uint8_t*)window + 0x1000};
 
             utility::emulate(*module_within, ctx.ctx->Registers.RegRip, 1000, ctx, [&](const utility::ShemuContextExtended& ctx) -> utility::ExhaustionResult {
                 SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
@@ -5687,7 +5689,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
                     // Check if RCX != window first. We don't want to skip over the call if it is set to it.
                     // There are inlined and non-inlined versions of this function which is why we need to check this.
-                    if (ctx.ctx->ctx->Registers.RegRcx != window) {
+                    if ((uint8_t*)ctx.ctx->ctx->Registers.RegRcx < window_bounds.data() || (uint8_t*)ctx.ctx->ctx->Registers.RegRcx > window_bounds.data() + window_bounds.size()) {
                         SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping call!");
                         return utility::ExhaustionResult::STEP_OVER;
                     }
@@ -5718,10 +5720,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 {
                     uintptr_t* reg = (uintptr_t*)&((uint64_t*)&cctx->Registers.RegRax)[ix.Operands[1].Info.Memory.Base];
 
-                    if (*reg == window) try {
+                    // Instead of checking the window, we check if the register is within the bounds of the window's memory.
+                    // This should allow us to catch all sorts of compiler optimizations.
+                    if ((uint8_t*)*reg >= window_bounds.data() && (uint8_t*)*reg < window_bounds.data() + window_bounds.size()) try {
                         SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found window pointer at {:x}!", (uintptr_t)reg);
                         auto offset = ix.Operands[1].Info.Memory.Disp;
-                        const auto value = *(uintptr_t***)((uintptr_t)window + offset);
+                        const auto value = *(uintptr_t***)((uintptr_t)*reg + offset);
 
                         if (value == nullptr || IsBadReadPtr((void*)value, sizeof(void*))) {
                             SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping invalid offset at {:x}!", (uintptr_t)value);
@@ -5738,7 +5742,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                             return utility::ExhaustionResult::CONTINUE;
                         }
 
-                        const auto behind_value = *(uintptr_t***)((uintptr_t)window + offset - sizeof(void*));
+                        const auto behind_value = *(uintptr_t***)((uintptr_t)*reg + offset - sizeof(void*));
 
                         if (behind_value != nullptr && !IsBadReadPtr((void*)behind_value, sizeof(void*)) &&
                             *behind_value != nullptr && !IsBadReadPtr((void*)*behind_value, sizeof(void*)) &&
@@ -5748,9 +5752,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                             offset -= sizeof(void*);
                         }
 
-                        result = offset;
+                        result = (*reg + offset) - (uintptr_t)window;
 
-                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found viewport offset at {:x}!", offset);
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found viewport offset at {:x}!", *result);
                         return utility::ExhaustionResult::BREAK;
                     } catch (...) {
                         SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Exception while checking offset!");
