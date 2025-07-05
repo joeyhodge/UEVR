@@ -22,7 +22,7 @@ jobs:
         run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target ${{matrix.target}}
         
       - name: Build AltDPad plugin
-        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target altdpad_plugin
+        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target altdpad_plugin 
         
       - name: Upload artifacts
         uses: actions/upload-artifact@26f96dfa697d77e81fd5907df203aa23a56210a8
