@@ -29,9 +29,6 @@ jobs:
       - name: Build Lua API (shared DLL)
         run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target LuaVR
 
-      - name: Build AltDPad plugin
-        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target altdpad_plugin
-      
       - name: Checkout frontend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
@@ -54,7 +51,6 @@ jobs:
             ${{github.workspace}}/build/bin/${{matrix.target}}/*
             ${{github.workspace}}/build/bin/vr-plugin-nullifier/UEVRPluginNullifier.dll
             ${{github.workspace}}/build/bin/LuaVR/LuaVR.dll
-            ${{github.workspace}}/build/bin/altdpad_plugin/altdpad_plugin.dll
           if-no-files-found: error
 
       - name: Compress artifacts
@@ -63,7 +59,6 @@ jobs:
           7z a ${{github.workspace}}/${{matrix.target}}.zip ${{github.workspace}}/build/bin/${{matrix.target}}/*
           7z a ${{github.workspace}}/${{matrix.target}}.zip ${{github.workspace}}/build/bin/vr-plugin-nullifier/UEVRPluginNullifier.dll
           7z a ${{github.workspace}}/${{matrix.target}}.zip ${{github.workspace}}/build/bin/LuaVR/LuaVR.dll
-          7z a ${{github.workspace}}/${{matrix.target}}.zip ${{github.workspace}}/build/bin/altdpad_plugin/altdpad_plugin.dll
           7z a ${{github.workspace}}/${{matrix.target}}.zip ${{github.workspace}}/revision.txt
 
       - name: Hash zip
@@ -76,15 +71,15 @@ jobs:
           $paddedRunNumber = "{0:D5}" -f ${{ github.run_number }}
           echo "RUN_NUMBER=$paddedRunNumber" >> $env:GITHUB_ENV
         shell: powershell
-
+        
       - name: Create Release
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/plugin'
         uses: ncipollo/release-action@6c75be85e571768fa31b40abf38de58ba0397db5
         with:
           repo: UEVR
           owner: joeyhodge
-          name: ${{format('UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
+          token: ${{ secrets.PAT_TOKEN }}
+          name: ${{format('ALTDPAD UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
           tag: ${{format('nightly-{0}-{1}', env.RUN_NUMBER, github.sha)}}
           artifacts: "${{github.workspace}}/${{matrix.target}}.zip,${{github.workspace}}/${{matrix.target}}.zip.sha256"
           makeLatest: true
-          bodyFile: ${{github.workspace}}/nightly-body.md
