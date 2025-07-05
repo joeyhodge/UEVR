@@ -56,6 +56,15 @@ public:
 
         const bool main_menu_open = API::get()->is_drawing_ui();
 
+         // If the user toggled the menu off while the AltDPad window is open,
+        // close just the AltDPad window and re-open the main menu so the user
+        // can continue to interact with it.
+        if (!main_menu_open && m_prev_main_menu_open && m_window_open) {
+            m_window_open = false;
+            PostMessage(m_wnd, WM_KEYDOWN, VK_INSERT, 0);
+            PostMessage(m_wnd, WM_KEYUP, VK_INSERT, 0);
+        }
+
         if (main_menu_open && !m_prev_main_menu_open) {
             m_window_open = true;
         }
