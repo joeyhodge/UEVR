@@ -413,11 +413,44 @@ target_include_directories(example_plugin PUBLIC
 )
 
 target_link_libraries(example_plugin PUBLIC
-	plugin_renderlib
+	     plugin_renderlib
 )
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
+# Target altdpad_plugin
+set(CMKR_TARGET altdpad_plugin)
+set(altdpad_plugin_SOURCES "")
+
+list(APPEND altdpad_plugin_SOURCES
+        "examples/altdpad_plugin/Plugin.cpp"
+)
+
+list(APPEND altdpad_plugin_SOURCES
+        cmake.toml
+)
+
+set(CMKR_SOURCES ${altdpad_plugin_SOURCES})
+add_library(altdpad_plugin SHARED)
+
+if(altdpad_plugin_SOURCES)
+        target_sources(altdpad_plugin PRIVATE ${altdpad_plugin_SOURCES})
+endif()
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${altdpad_plugin_SOURCES})
+
+target_compile_features(altdpad_plugin PUBLIC
+        cxx_std_23
+)
+
+target_include_directories(altdpad_plugin PUBLIC
+        "include/"
+        "examples/renderlib"
+)
+
+target_link_libraries(altdpad_plugin PUBLIC
+        plugin_renderlib
+)
 
 # Target sdk-test
 set(CMKR_TARGET sdk-test)
