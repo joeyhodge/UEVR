@@ -102,7 +102,7 @@ public:
         auto right_axis = API::VR::get_joystick_axis(right_src);
 
         bool active = false;
-        uevr::Vector2f axis{};
+        UEVR_Vector2f axis{};
 
         if (m_method == AltDPadMethod::RIGHT_CLICK_LEFT_STICK && right_click && !left_click) {
             axis = left_axis;
