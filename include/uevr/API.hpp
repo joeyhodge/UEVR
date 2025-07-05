@@ -120,6 +120,10 @@ public:
     template <typename... Args> void log_warn(const char* format, Args... args) { m_param->functions->log_warn(format, args...); }
     template <typename... Args> void log_info(const char* format, Args... args) { m_param->functions->log_info(format, args...); }
 
+    bool is_drawing_ui() const {
+        return m_param->functions->is_drawing_ui();
+    }
+
 public:
     // C++ wrapper structs for the C structs
     struct UObject;
