@@ -175,3 +175,5 @@ private:
 };
 
 std::unique_ptr<AltDPadPlugin> g_plugin{std::make_unique<AltDPadPlugin>()};
+
+} // anonymous namespace
