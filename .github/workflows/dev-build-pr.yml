@@ -28,5 +28,8 @@ jobs:
         uses: actions/upload-artifact@26f96dfa697d77e81fd5907df203aa23a56210a8
         with:
           name: ${{matrix.target}}
-          path: ${{github.workspace}}/build/bin/${{matrix.target}}/*
+          
+          path: |
+            ${{github.workspace}}/build/bin/${{matrix.target}}/*
+            ${{github.workspace}}/build/bin/altdpad_plugin/altdpad_plugin.dll
           if-no-files-found: error
