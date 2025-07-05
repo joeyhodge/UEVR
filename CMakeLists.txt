@@ -418,6 +418,7 @@ target_link_libraries(example_plugin PUBLIC
 
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
+
 # Target altdpad_plugin
 set(CMKR_TARGET altdpad_plugin)
 set(altdpad_plugin_SOURCES "")
@@ -451,6 +452,7 @@ target_include_directories(altdpad_plugin PUBLIC
 target_link_libraries(altdpad_plugin PUBLIC
         plugin_renderlib
 )
+
 
 # Target sdk-test
 set(CMKR_TARGET sdk-test)
