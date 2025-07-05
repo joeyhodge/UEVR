@@ -453,6 +453,20 @@ target_link_libraries(altdpad_plugin PUBLIC
         plugin_renderlib
 )
 
+set_target_properties(altdpad_plugin PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY_RELEASE
+                "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+        RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+                "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+        LIBRARY_OUTPUT_DIRECTORY_RELEASE
+                "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+        LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
+                "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+        ARCHIVE_OUTPUT_DIRECTORY_RELEASE
+                "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+        ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
+                "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+)
 
 # Target sdk-test
 set(CMKR_TARGET sdk-test)
