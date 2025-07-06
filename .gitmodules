@@ -1,12 +1,15 @@
 [submodule "dependencies/submodules/glm"]
 	path = dependencies/submodules/glm
 	url = git@github.com:joeyhodge/glm.git
+	branch = updated
 [submodule "dependencies/submodules/spdlog"]
 	path = dependencies/submodules/spdlog
 	url = git@github.com:joeyhodge/spdlog.git
+	branch = updated
 [submodule "dependencies/submodules/imgui"]
 	path = dependencies/submodules/imgui
 	url = git@github.com:joeyhodge/imgui.git
+	branch = updated
 [submodule "dependencies/submodules/UESDK"]
 	path = dependencies/submodules/UESDK
 	url = git@github.com:joeyhodge/UESDK.git
