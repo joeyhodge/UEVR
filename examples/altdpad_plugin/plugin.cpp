@@ -92,6 +92,26 @@ public:
         }
     }
 
+    void on_post_render_vr_framework_dx11(ID3D11DeviceContext* context, ID3D11Texture2D*, ID3D11RenderTargetView* rtv) override {
+        if (!m_initialized) {
+            return;
+        }
+
+        std::scoped_lock _{m_imgui_mutex};
+        ImGui_ImplDX11_NewFrame();
+        g_d3d11.render_imgui_vr(context, rtv);
+    }
+
+    void on_post_render_vr_framework_dx12(ID3D12GraphicsCommandList* command_list, ID3D12Resource*, D3D12_CPU_DESCRIPTOR_HANDLE* rtv) override {
+        if (!m_initialized) {
+            return;
+        }
+
+        std::scoped_lock _{m_imgui_mutex};
+        ImGui_ImplDX12_NewFrame();
+        g_d3d12.render_imgui_vr(command_list, rtv);
+    }
+
     void on_xinput_get_state(uint32_t* retval, uint32_t /*user_index*/, XINPUT_STATE* state) override {
         if (*retval != ERROR_SUCCESS || !m_enabled) {
             return;
