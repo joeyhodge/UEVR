@@ -1,6 +1,3 @@
-#include <memory>
-#include <mutex>
-#include <uevr/Plugin.hpp>
 #include "imgui/imgui_impl_dx11.h"
 #include "imgui/imgui_impl_dx12.h"
 #include "imgui/imgui_impl_win32.h"
