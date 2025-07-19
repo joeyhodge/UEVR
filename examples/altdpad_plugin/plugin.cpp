@@ -6,6 +6,9 @@
 #include "imgui/imgui_impl_win32.h"
 #include "rendering/d3d11.hpp"
 #include "rendering/d3d12.hpp"
+#include <memory>
+#include <mutex>
+#include <uevr/Plugin.hpp>
 
 using namespace uevr;
 
@@ -102,7 +105,8 @@ public:
         g_d3d11.render_imgui_vr(context, rtv);
     }
 
-    void on_post_render_vr_framework_dx12(ID3D12GraphicsCommandList* command_list, ID3D12Resource*, D3D12_CPU_DESCRIPTOR_HANDLE* rtv) override {
+    void on_post_render_vr_framework_dx12(
+        ID3D12GraphicsCommandList* command_list, ID3D12Resource*, D3D12_CPU_DESCRIPTOR_HANDLE* rtv) override {
         if (!m_initialized) {
             return;
         }
@@ -110,6 +114,12 @@ public:
         std::scoped_lock _{m_imgui_mutex};
         ImGui_ImplDX12_NewFrame();
         g_d3d12.render_imgui_vr(command_list, rtv);
+    }
+
+     bool on_message(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) override {
+        ImGui_ImplWin32_WndProcHandler(hwnd, msg, wparam, lparam);
+
+        return !ImGui::GetIO().WantCaptureMouse && !ImGui::GetIO().WantCaptureKeyboard;
     }
 
     void on_xinput_get_state(uint32_t* retval, uint32_t /*user_index*/, XINPUT_STATE* state) override {
