@@ -349,8 +349,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // Draws the spectator view
     auto clear_rt = [&](d3d12::CommandContext& commands) {
-        const float ui_clear_color[] = { 0.0f, 0.0f, 0.0f, ui_should_invert_alpha ? 1.0f : 0.0f };
-        commands.clear_rtv(m_game_ui_tex, (float*)&ui_clear_color, ENGINE_SRC_COLOR);
+        const float ui_clear_color[] = {0.0f, 0.0f, 0.0f, 1.0f};
+		commands.clear_rtv(m_game_ui_tex, ui_clear_color, ENGINE_SRC_COLOR);
     };
 
     if (runtime->is_openvr() && m_openvr.ui_tex.texture.Get() != nullptr) {
