@@ -497,8 +497,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     utility::ScopeGuard engine_ui_guard([&]() {
-        // clear the game's UI texture
-        float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        // clear the game’s UI texture (opaque)
+        float clear_color[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
         m_engine_ui_ref.clear_rtv(clear_color);
     });
 
