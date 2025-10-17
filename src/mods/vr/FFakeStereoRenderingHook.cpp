@@ -7887,7 +7887,7 @@ bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t
     this->render_target = OutTargetableTexture.texture;
     this->ui_target = OutShaderResourceTexture.texture;
 
-    OutShaderResourceTexture.texture = OutTargetableTexture.texture;*/
+    OutShaderResourceTexture.texture = OutTargetableTexture.texture;
 
     m_last_allocate_render_target_return_address = (uintptr_t)_ReturnAddress();
     SPDLOG_INFO("AllocateRenderTargetTexture called from: {:x}", m_last_allocate_render_target_return_address - (uintptr_t)*utility::get_module_within((void*)m_last_allocate_render_target_return_address));
