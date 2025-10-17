@@ -7849,7 +7849,7 @@ bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t
     // to the engine that we are letting the engine itself
     // create the texture, rather than us creating it ourselves.
     // This should allow maximum compatibility across engine versions.
-    const auto dynamic_rhi = *(uintptr_t*)((uintptr_t)sdk::get_ue_module(L"Engine") + 0x3309C50);
+    /*const auto dynamic_rhi = *(uintptr_t*)((uintptr_t)sdk::get_ue_module(L"Engine") + 0x3309C50);
     const auto command_list = (uintptr_t)sdk::get_ue_module(L"Engine") + 0x330AE70;
     struct {
         void* bulk_data{nullptr};
