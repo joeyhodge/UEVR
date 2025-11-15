@@ -5,6 +5,7 @@
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
 #include <array>
+#include <DirectXMath.h>
 
 #include "Framework.hpp"
 #include "../VR.hpp"
@@ -272,15 +273,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     auto draw_2d_view = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
         if (ui_invert_alpha > 0.0f && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
             const std::array<float, 4> blend_factor{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
+            const DirectX::XMFLOAT4 invert_alpha_tint{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
             d3d12::render_srv_to_rtv(
                 m_ui_batch_alpha_invert.get(),
                 commands.cmd_list.Get(),
                 m_game_ui_tex,
                 m_game_ui_tex,
-                std::nullopt,
                 ENGINE_SRC_COLOR,
                 ENGINE_SRC_COLOR,
-                blend_factor);
+                blend_factor,
+                invert_alpha_tint);
         }
 
         draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
