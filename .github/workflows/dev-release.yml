@@ -73,13 +73,13 @@ jobs:
         shell: powershell
         
       - name: Create Release
-        if: github.ref == 'refs/heads/Altdpad'
+        if: github.ref == 'refs/heads/AlphaSliderFTW'
         uses: ncipollo/release-action@6c75be85e571768fa31b40abf38de58ba0397db5
         with:
           repo: UEVR
           owner: joeyhodge
           token: ${{ secrets.PAT_TOKEN }}
-          name: ${{format('ALTDPAD UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
+          name: ${{format('AlphaSliderFTW {0} ({1})', env.RUN_NUMBER, github.sha)}}
           tag: ${{format('nightly-{0}-{1}', env.RUN_NUMBER, github.sha)}}
           artifacts: "${{github.workspace}}/${{matrix.target}}.zip,${{github.workspace}}/${{matrix.target}}.zip.sha256"
           makeLatest: true
