@@ -1,3 +1,8 @@
+#include <algorithm>
+#include <cctype>
+#include <cstdlib>
+#include <string>
+
 #include <glm/gtx/intersect.hpp>
 #include <imgui_internal.h>
 
@@ -219,22 +224,67 @@ void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defau
         m_should_reserialize_ui_invert_alpha |= mark_for_reserialize;
     };
 
-    if (auto slider_value = cfg.get<float>(config_name)) {
-        // Legacy bool configs were serialized as 0 or 1 when read back as floats.
-        // If we encounter those sentinel values, treat them as the old toggle and migrate.
-        if ((*slider_value <= 0.0f || *slider_value >= 1.0f)) {
-            if (auto legacy_toggle = cfg.get<bool>(config_name)) {
-                apply_invert_alpha(*legacy_toggle ? 0.99f : 0.01f, true);
-                return;
+    auto try_apply_legacy_toggle = [&]() -> bool {
+        if (auto legacy_toggle = cfg.get<bool>(config_name)) {
+            apply_invert_alpha(*legacy_toggle ? 0.99f : 0.01f, true);
+            return true;
+        }
+
+        if (auto legacy_string = cfg.get(config_name)) {
+            auto trim_in_place = [](std::string& text) {
+                const auto is_not_space = [](unsigned char ch) { return std::isspace(ch) == 0; };
+
+                text.erase(text.begin(), std::find_if(text.begin(), text.end(), is_not_space));
+                text.erase(std::find_if(text.rbegin(), text.rend(), is_not_space).base(), text.end());
+            };
+
+            std::string value = *legacy_string;
+            trim_in_place(value);
+
+            if (value.empty()) {
+                return false;
+            }
+
+            std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+                return static_cast<char>(std::tolower(ch));
+            });
+
+            if (value == "true") {
+                apply_invert_alpha(0.99f, true);
+                return true;
+            }
+
+            if (value == "false") {
+                apply_invert_alpha(0.01f, true);
+                return true;
+            }
+
+            char* end{};
+            const float parsed_value = std::strtof(value.c_str(), &end);
+
+            if (end != value.c_str() && *end == '\0') {
+                apply_invert_alpha(parsed_value, true);
+                return true;
             }
         }
 
-        apply_invert_alpha(*slider_value, false);
+        return false;
+    };
+
+    if (try_apply_legacy_toggle()) {
         return;
     }
 
-    if (auto legacy_toggle = cfg.get<bool>(config_name)) {
-        apply_invert_alpha(*legacy_toggle ? 0.99f : 0.01f, true);
+    if (auto slider_value = cfg.get<float>(config_name)) {
+        const bool looks_like_toggle = *slider_value <= 0.0f || *slider_value >= 1.0f;
+
+        if (looks_like_toggle) {
+            apply_invert_alpha(*slider_value >= 0.5f ? 0.99f : 0.01f, true);
+            return;
+        }
+
+        const bool needs_reserialize = *slider_value < 0.01f || *slider_value > 0.99f;
+        apply_invert_alpha(*slider_value, needs_reserialize);
         return;
     }
 }
