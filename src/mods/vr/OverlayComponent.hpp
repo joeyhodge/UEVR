@@ -3,6 +3,7 @@
 #include <string>
 #include <optional>
 #include <cstdint>
+#include <algorithm>
 
 #include "Mod.hpp"
 
@@ -43,7 +44,7 @@ public:
     }
 
     float get_ui_invert_alpha() const {
-        return m_ui_invert_alpha->value();
+        return std::clamp(m_ui_invert_alpha->value(), 0.01f, 0.99f);
     }
 
 private:
