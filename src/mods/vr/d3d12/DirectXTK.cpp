@@ -5,11 +5,12 @@ namespace d3d12 {
 void render_srv_to_rtv(
     DirectX::DX12::SpriteBatch* batch,
     ID3D12GraphicsCommandList* command_list,
-	const d3d12::TextureContext& src,
+    const d3d12::TextureContext& src,
     const d3d12::TextureContext& dst,
     D3D12_RESOURCE_STATES src_state,
     D3D12_RESOURCE_STATES dst_state,
-    std::optional<std::array<float, 4>> blend_factor)
+    std::optional<std::array<float, 4>> blend_factor,
+    std::optional<DirectX::XMFLOAT4> tint)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -71,10 +72,12 @@ void render_srv_to_rtv(
     ID3D12DescriptorHeap* game_heaps[] = { src.srv_heap->Heap() };
     command_list->SetDescriptorHeaps(1, game_heaps);
 
-    batch->Draw(src.get_srv_gpu(), 
+    const auto draw_color = tint ? DirectX::XMLoadFloat4(&tint.value()) : DirectX::Colors::White;
+
+    batch->Draw(src.get_srv_gpu(),
         DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
         dest_rect,
-        DirectX::Colors::White);
+        draw_color);
 
     batch->End();
 
@@ -94,7 +97,8 @@ void render_srv_to_rtv(
     std::optional<RECT> src_rect,
     D3D12_RESOURCE_STATES src_state,
     D3D12_RESOURCE_STATES dst_state,
-    std::optional<std::array<float, 4>> blend_factor)
+    std::optional<std::array<float, 4>> blend_factor,
+    std::optional<DirectX::XMFLOAT4> tint)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -156,17 +160,19 @@ void render_srv_to_rtv(
     ID3D12DescriptorHeap* game_heaps[] = { src.srv_heap->Heap() };
     command_list->SetDescriptorHeaps(1, game_heaps);
 
+    const auto draw_color = tint ? DirectX::XMLoadFloat4(&tint.value()) : DirectX::Colors::White;
+
     if (src_rect) {
-        batch->Draw(src.get_srv_gpu(), 
+        batch->Draw(src.get_srv_gpu(),
             DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
             dest_rect,
             &*src_rect,
-            DirectX::Colors::White);
+            draw_color);
     } else {
-        batch->Draw(src.get_srv_gpu(), 
+        batch->Draw(src.get_srv_gpu(),
             DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
             dest_rect,
-            DirectX::Colors::White);
+            draw_color);
     }
 
     batch->End();
@@ -188,7 +194,8 @@ void render_srv_to_rtv(
     std::optional<RECT> dest_rect,
     D3D12_RESOURCE_STATES src_state,
     D3D12_RESOURCE_STATES dst_state,
-    std::optional<std::array<float, 4>> blend_factor)
+    std::optional<std::array<float, 4>> blend_factor,
+    std::optional<DirectX::XMFLOAT4> tint)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -256,17 +263,19 @@ void render_srv_to_rtv(
     ID3D12DescriptorHeap* game_heaps[] = { src.srv_heap->Heap() };
     command_list->SetDescriptorHeaps(1, game_heaps);
 
+    const auto draw_color = tint ? DirectX::XMLoadFloat4(&tint.value()) : DirectX::Colors::White;
+
     if (src_rect) {
-        batch->Draw(src.get_srv_gpu(), 
+        batch->Draw(src.get_srv_gpu(),
             DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
             *dest_rect,
             &*src_rect,
-            DirectX::Colors::White);
+            draw_color);
     } else {
-        batch->Draw(src.get_srv_gpu(), 
+        batch->Draw(src.get_srv_gpu(),
             DirectX::XMUINT2{ (uint32_t)src_desc.Width, (uint32_t)src_desc.Height },
             *dest_rect,
-            DirectX::Colors::White);
+            draw_color);
     }
 
     batch->End();

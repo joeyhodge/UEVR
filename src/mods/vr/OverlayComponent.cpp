@@ -193,11 +193,49 @@ void OverlayComponent::on_config_save(utility::Config& cfg) {
     for (IModValue& option : m_options) {
         option.config_save(cfg);
     }
+
+    if (m_should_reserialize_ui_invert_alpha) {
+        const auto clamped_value = std::clamp(m_ui_invert_alpha->value(), 0.01f, 0.99f);
+        cfg.set<float>(m_ui_invert_alpha->get_config_name(), clamped_value);
+        m_should_reserialize_ui_invert_alpha = false;
+    }
 }
 
 void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
         option.config_load(cfg, set_defaults);
+    }
+
+    if (set_defaults) {
+        m_ui_invert_alpha->value() = std::clamp(m_ui_invert_alpha->value(), 0.01f, 0.99f);
+        m_should_reserialize_ui_invert_alpha = false;
+        return;
+    }
+
+    const auto config_name = m_ui_invert_alpha->get_config_name();
+
+    auto apply_invert_alpha = [&](float new_value, bool mark_for_reserialize) {
+        m_ui_invert_alpha->value() = std::clamp(new_value, 0.01f, 0.99f);
+        m_should_reserialize_ui_invert_alpha |= mark_for_reserialize;
+    };
+
+    if (auto slider_value = cfg.get<float>(config_name)) {
+        // Legacy bool configs were serialized as 0 or 1 when read back as floats.
+        // If we encounter those sentinel values, treat them as the old toggle and migrate.
+        if ((*slider_value <= 0.0f || *slider_value >= 1.0f)) {
+            if (auto legacy_toggle = cfg.get<bool>(config_name)) {
+                apply_invert_alpha(*legacy_toggle ? 0.99f : 0.01f, true);
+                return;
+            }
+        }
+
+        apply_invert_alpha(*slider_value, false);
+        return;
+    }
+
+    if (auto legacy_toggle = cfg.get<bool>(config_name)) {
+        apply_invert_alpha(*legacy_toggle ? 0.99f : 0.01f, true);
+        return;
     }
 }
 
