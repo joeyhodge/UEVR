@@ -1,13 +1,15 @@
 #include "DirectXTK.hpp"
+#include <algorithm>
 
 namespace d3d12 {
 void render_srv_to_rtv(
     DirectX::DX12::SpriteBatch* batch,
-    ID3D12GraphicsCommandList* command_list, 
-    const d3d12::TextureContext& src, 
-    const d3d12::TextureContext& dst, 
-    D3D12_RESOURCE_STATES src_state, 
-    D3D12_RESOURCE_STATES dst_state)
+    ID3D12GraphicsCommandList* command_list,
+	const d3d12::TextureContext& src,
+    const d3d12::TextureContext& dst,
+    D3D12_RESOURCE_STATES src_state,
+    D3D12_RESOURCE_STATES dst_state,
+    std::optional<std::array<float, 4>> blend_factor)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -55,6 +57,13 @@ void render_srv_to_rtv(
     command_list->RSSetScissorRects(1, &scissor_rect);
 
     batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+	
+	float blend_factor_values[4]{ 1.0f, 1.0f, 1.0f, 1.0f };
+    if (blend_factor) {
+        std::copy(blend_factor->begin(), blend_factor->end(), blend_factor_values);
+    }
+
+    command_list->OMSetBlendFactor(blend_factor_values);
 
     RECT dest_rect{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
 
@@ -83,8 +92,9 @@ void render_srv_to_rtv(
     const d3d12::TextureContext& src, 
     const d3d12::TextureContext& dst,
     std::optional<RECT> src_rect,
-    D3D12_RESOURCE_STATES src_state, 
-    D3D12_RESOURCE_STATES dst_state)
+    D3D12_RESOURCE_STATES src_state,
+    D3D12_RESOURCE_STATES dst_state,
+    std::optional<std::array<float, 4>> blend_factor)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -132,6 +142,13 @@ void render_srv_to_rtv(
     command_list->RSSetScissorRects(1, &scissor_rect);
 
     batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+	
+	float blend_factor_values[4]{ 1.0f, 1.0f, 1.0f, 1.0f };
+    if (blend_factor) {
+        std::copy(blend_factor->begin(), blend_factor->end(), blend_factor_values);
+    }
+
+    command_list->OMSetBlendFactor(blend_factor_values);
 
     RECT dest_rect{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
 
@@ -169,8 +186,9 @@ void render_srv_to_rtv(
     const d3d12::TextureContext& dst,
     std::optional<RECT> src_rect,
     std::optional<RECT> dest_rect,
-    D3D12_RESOURCE_STATES src_state, 
-    D3D12_RESOURCE_STATES dst_state)
+    D3D12_RESOURCE_STATES src_state,
+    D3D12_RESOURCE_STATES dst_state,
+    std::optional<std::array<float, 4>> blend_factor)
 {
     if (src.texture == nullptr || dst.texture == nullptr) {
         return;
@@ -218,6 +236,13 @@ void render_srv_to_rtv(
     command_list->RSSetScissorRects(1, &scissor_rect);
 
     batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
+	
+	float blend_factor_values[4]{ 1.0f, 1.0f, 1.0f, 1.0f };
+    if (blend_factor) {
+        std::copy(blend_factor->begin(), blend_factor->end(), blend_factor_values);
+    }
+
+    command_list->OMSetBlendFactor(blend_factor_values);
 
     if (!dest_rect) {
         dest_rect = RECT{ 0, 0, (LONG)dst_desc.Width, (LONG)dst_desc.Height };
