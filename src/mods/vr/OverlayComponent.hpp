@@ -81,7 +81,6 @@ private:
     bool m_just_closed_ui{false};
     bool m_just_opened_ui{false};
     bool m_forced_aim{false};
-    bool m_should_reserialize_ui_invert_alpha{false};
     
     glm::vec2 m_last_mouse_pos{};
     std::chrono::steady_clock::time_point m_last_mouse_move_time{};
