@@ -1445,9 +1445,9 @@ void Framework::draw_ui() {
 }
 
 void Framework::draw_about() {
-    ImGui::Text("Author: praydog");
+    ImGui::Text("Author: joeyhodge");
     ImGui::Text("Unreal Engine VR");
-    ImGui::Text("https://github.com/praydog/UEVR");
+    ImGui::Text("https://github.com/joeyhodge/UEVR/altdpad");
     ImGui::Text("http://praydog.com");
     ImGui::Text("Branch: %s", UEVR_BRANCH);
     ImGui::Text("Commits: %i", UEVR_TOTAL_COMMITS);

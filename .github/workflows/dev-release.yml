@@ -12,7 +12,7 @@ jobs:
       - name: Checkout backend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
-          token: ${{ secrets.UESDK_PULLER }}
+          token: ${{ secrets.PAT_TOKEN }}
           submodules: recursive
           persist-credentials: false
           fetch-depth: 0
@@ -32,9 +32,8 @@ jobs:
       - name: Checkout frontend
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
-          repository: praydog/uevr-frontend
+          repository: joeyhodge/uevr-frontend
           path: frontend
-          persist-credentials: false
 
       - name: Set up dotnet
         uses: actions/setup-dotnet@v1
@@ -72,16 +71,15 @@ jobs:
           $paddedRunNumber = "{0:D5}" -f ${{ github.run_number }}
           echo "RUN_NUMBER=$paddedRunNumber" >> $env:GITHUB_ENV
         shell: powershell
-
+        
       - name: Create Release
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/AlphaSliderFTW'
         uses: ncipollo/release-action@6c75be85e571768fa31b40abf38de58ba0397db5
         with:
-          repo: UEVR-nightly
-          owner: praydog
-          token: ${{ secrets.CI_NIGHTLY }}
-          name: ${{format('UEVR Nightly {0} ({1})', env.RUN_NUMBER, github.sha)}}
+          repo: UEVR
+          owner: joeyhodge
+          token: ${{ secrets.PAT_TOKEN }}
+          name: ${{format('AlphaSliderFTW {0} ({1})', env.RUN_NUMBER, github.sha)}}
           tag: ${{format('nightly-{0}-{1}', env.RUN_NUMBER, github.sha)}}
           artifacts: "${{github.workspace}}/${{matrix.target}}.zip,${{github.workspace}}/${{matrix.target}}.zip.sha256"
           makeLatest: true
-          bodyFile: ${{github.workspace}}/nightly-body.md

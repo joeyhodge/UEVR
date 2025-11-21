@@ -35,7 +35,7 @@ struct CommandContext {
     void clear_rtv(TextureContext& tex, const float* color, D3D12_RESOURCE_STATES dst_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     void execute();
 
-    bool ready() const {
+	bool ready() const {
         return this->cmd_list != nullptr && this->cmd_allocator != nullptr && this->fence != nullptr;
     }
 
