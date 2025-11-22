@@ -2,7 +2,6 @@
 
 #include <iostream>
 #include <functional>
-#include <algorithm>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi")
@@ -112,12 +111,6 @@ protected:
     UINT m_display_height{ NULL };
     UINT m_render_width{ NULL };
     UINT m_render_height{ NULL };
-	
-	// Guard Present flag/sync modifications for a short period after a resize/retarget.
-    // Some games temporarily create unusual swapchain parameters (e.g., during cutscenes)
-    // that do not tolerate tearing or sync overrides.
-    uint32_t m_post_resize_present_guard{0};
-    uint32_t m_present_failure_guard{0};
 
     uint32_t m_command_queue_offset{};
     uint32_t m_proton_swapchain_offset{};
