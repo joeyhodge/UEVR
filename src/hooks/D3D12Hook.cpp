@@ -487,10 +487,13 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
         return S_OK;
     }
 
-    if (d3d12->m_on_present) {
+    const bool skipping_flag_overrides = d3d12->m_post_resize_present_guard > 0 || d3d12->m_present_failure_guard > 0;
+    const bool skipping_callbacks = d3d12->m_present_failure_guard > 0;
+
+    if (!skipping_callbacks && d3d12->m_on_present) {
         d3d12->m_on_present(*d3d12);
 
-        if (d3d12->m_next_present_interval) {
+        if (!skipping_flag_overrides && d3d12->m_next_present_interval) {
             sync_interval = *d3d12->m_next_present_interval;
             d3d12->m_next_present_interval = std::nullopt;
 
@@ -518,6 +521,13 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
 
         if (result != S_OK) {
             spdlog::error("Present failed: {:x}", result);
+			
+			// If the swapchain is in an unstable state (common after resize/letterboxing
+            // transitions) give it a few frames without any Present flag/sync overrides
+            // so the game can settle before we try again.
+            d3d12->m_post_resize_present_guard = std::max<uint32_t>(d3d12->m_post_resize_present_guard, 6);
+            d3d12->m_present_failure_guard = std::max<uint32_t>(d3d12->m_present_failure_guard, 8);
+            d3d12->m_next_present_interval = std::nullopt;
         }
     } else {
         d3d12->m_ignore_next_present = false;
@@ -525,7 +535,15 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
 
     --g_present_depth;
 
-    if (d3d12->m_on_post_present) {
+    if (d3d12->m_post_resize_present_guard > 0) {
+        --d3d12->m_post_resize_present_guard;
+    }
+
+    if (d3d12->m_present_failure_guard > 0) {
+        --d3d12->m_present_failure_guard;
+    }
+
+    if (!skipping_callbacks && d3d12->m_on_post_present) {
         d3d12->m_on_post_present(*d3d12);
     }
 
@@ -566,6 +584,9 @@ HRESULT WINAPI D3D12Hook::resize_buffers(IDXGISwapChain3* swap_chain, UINT buffe
     if (WindowFilter::get().is_filtered(swapchain_wnd)) {
         return resize_buffers_fn(swap_chain, buffer_count, width, height, new_format, swap_chain_flags);
     }
+	
+	const auto previous_width = d3d12->m_display_width;
+    const auto previous_height = d3d12->m_display_height;
 
     d3d12->m_display_width = width;
     d3d12->m_display_height = height;
@@ -635,9 +656,16 @@ HRESULT WINAPI D3D12Hook::resize_target(IDXGISwapChain3* swap_chain, const DXGI_
     if (WindowFilter::get().is_filtered(swapchain_wnd)) {
         return resize_target_fn(swap_chain, new_target_parameters);
     }
+	
+	const auto previous_render_width = d3d12->m_render_width;
+    const auto previous_render_height = d3d12->m_render_height;
 
     d3d12->m_render_width = new_target_parameters->Width;
     d3d12->m_render_height = new_target_parameters->Height;
+	
+	if (d3d12->m_render_width != previous_render_width || d3d12->m_render_height != previous_render_height) {
+        d3d12->m_post_resize_present_guard = std::max(d3d12->m_post_resize_present_guard, 2u);
+    }
 
     // Restore the original code to the resize_buffers function.
     if (g_resize_target_depth > 0) {
