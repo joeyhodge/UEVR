@@ -2958,8 +2958,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
 
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index) {
-        int32_t w = vr->get_hmd_width();
-        int32_t h = vr->get_hmd_height();
+        const bool is_splitscreen = vr->is_splitscreen_compatibility_enabled();
+
+        int32_t w = is_splitscreen ? vr->get_hmd_width() : 0;
+        int32_t h = is_splitscreen ? vr->get_hmd_height() : 0;
 
         int32_t x = 0;
         int32_t y = 0;
@@ -2973,11 +2975,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             x = rect_data[0];
             y = rect_data[1];
 
-            if (base_w > 0) {
+            if (!is_splitscreen && base_w > 0) {
                 w = base_w;
             }
 
-            if (base_h > 0) {
+            if (!is_splitscreen && base_h > 0) {
                 h = base_h;
             }
         } else {
@@ -2988,11 +2990,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             x = rect_data[0];
             y = rect_data[1];
 
-            if (base_w > 0) {
+            if (!is_splitscreen && base_w > 0) {
                 w = base_w;
             }
 
-            if (base_h > 0) {
+            if (!is_splitscreen && base_h > 0) {
                 h = base_h;
             }
         }
