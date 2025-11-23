@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <optional>
 
 #include <SafetyHook.hpp>
 
@@ -452,12 +453,16 @@ private:
         std::unordered_set<sdk::FSceneViewStateInterface*> known_scene_states;
         bool inside_post_init_properties{false};
 
+        bool constructing_synthetic_view{false};
+
         uint32_t last_frame_count{};
         uint32_t last_index{};
 
         // For keeping track of what the states were before our modifications.
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE4> view_init_options_ue4{};
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE5> view_init_options_ue5{};
+        std::optional<sdk::FSceneViewInitOptionsUE5> first_view_init_options_ue5{};
+        uint32_t first_view_init_options_frame{};
         std::unordered_set<uintptr_t> seen_retaddrs{};
     } m_sceneview_data;
 
