@@ -2960,6 +2960,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index) {
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
+        const bool splitscreen_enabled = vr->is_splitscreen_compatibility_enabled();
+
+        int32_t x = 0;
+        int32_t y = 0;
 
         if (is_ue5) {
             auto options_ue5 = (sdk::FSceneViewInitOptionsUE5*)options;
@@ -2967,33 +2971,40 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             const int32_t base_w = rect_data[2] - rect_data[0];
             const int32_t base_h = rect_data[3] - rect_data[1];
 
-            if (base_w > 0) {
-                w = base_w;
-            }
+            x = rect_data[0];
+            y = rect_data[1];
 
-            if (base_h > 0) {
-                h = base_h;
+            if (!splitscreen_enabled) {
+                if (base_w > 0) {
+                    w = base_w;
+                }
+
+                if (base_h > 0) {
+                    h = base_h;
+                }
             }
         } else {
             auto rect_data = (int32_t*)&options->view_rect;
             const int32_t base_w = rect_data[2] - rect_data[0];
             const int32_t base_h = rect_data[3] - rect_data[1];
 
-            if (base_w > 0) {
-                w = base_w;
-            }
+            x = rect_data[0];
+            y = rect_data[1];
 
-            if (base_h > 0) {
-                h = base_h;
+            if (!splitscreen_enabled) {
+                if (base_w > 0) {
+                    w = base_w;
+                }
+
+                if (base_h > 0) {
+                    h = base_h;
+                }
             }
         }
 
-        int32_t x = 0;
-        int32_t y = 0;
-
         const auto eye_index = vr->is_using_afr() ? (g_frame_count + view_index) % 2 : view_index;
 
-        if (!vr->is_using_afr() && eye_index == 1 && !vr->is_native_stereo_fix_enabled()) {
+        if (!vr->is_using_afr() && eye_index == 1 && (vr->is_splitscreen_compatibility_enabled() || !vr->is_native_stereo_fix_enabled())) {
             x += w;
         }
 
