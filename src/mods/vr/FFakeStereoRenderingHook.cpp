@@ -2961,11 +2961,17 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
 
+        int32_t x = 0;
+        int32_t y = 0;
+
         if (is_ue5) {
             auto options_ue5 = (sdk::FSceneViewInitOptionsUE5*)options;
             auto rect_data = (int32_t*)&options_ue5->view_rect;
             const int32_t base_w = rect_data[2] - rect_data[0];
             const int32_t base_h = rect_data[3] - rect_data[1];
+
+            x = rect_data[0];
+            y = rect_data[1];
 
             if (base_w > 0) {
                 w = base_w;
@@ -2979,6 +2985,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             const int32_t base_w = rect_data[2] - rect_data[0];
             const int32_t base_h = rect_data[3] - rect_data[1];
 
+            x = rect_data[0];
+            y = rect_data[1];
+
             if (base_w > 0) {
                 w = base_w;
             }
@@ -2987,9 +2996,6 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 h = base_h;
             }
         }
-
-        int32_t x = 0;
-        int32_t y = 0;
 
         const auto eye_index = vr->is_using_afr() ? (g_frame_count + view_index) % 2 : view_index;
 
