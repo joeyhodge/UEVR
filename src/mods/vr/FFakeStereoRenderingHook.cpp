@@ -2986,8 +2986,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index, const FIntRect& original_rect) {
         // Derive the render dimensions from the incoming rect so we match the game's
-        // mono render target. Split horizontally when both eyes render in the same frame
-        // to avoid stretching the content across a wider stereo surface.
+        // mono render target. Keep the original width so each eye renders at full
+        // resolution instead of shrinking the surface, which can cause zooming.
         const auto rect_vals = (const int32_t*)&original_rect;
         int32_t w = rect_vals[2] - rect_vals[0];
         int32_t h = rect_vals[3] - rect_vals[1];
@@ -2998,12 +2998,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             h = (int32_t)vr->get_hmd_height();
         }
 
-        // When rendering both eyes in the same frame, split the original width so we pack
-        // each view side-by-side instead of enlarging the surface and warping the image.
         const bool rendering_both_eyes_this_frame = !vr->is_using_afr() && !vr->is_native_stereo_fix_enabled();
-        if (rendering_both_eyes_this_frame && w > 0) {
-            w /= 2;
-        }
 
         int32_t base_x = rect_vals[0];
         int32_t base_y = rect_vals[1];
