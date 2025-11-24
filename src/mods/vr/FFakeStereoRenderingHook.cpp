@@ -3005,13 +3005,23 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             w /= 2;
         }
 
-        int32_t x = 0;
-        int32_t y = 0;
+        int32_t base_x = rect_vals[0];
+        int32_t base_y = rect_vals[1];
+
+        // If we had to fall back, keep the origin at 0 to avoid unintentionally offsetting the
+        // stereo views.
+        if (w == (int32_t)vr->get_hmd_width() && h == (int32_t)vr->get_hmd_height()) {
+            base_x = 0;
+            base_y = 0;
+        }
+
+        int32_t x = base_x;
+        int32_t y = base_y;
 
         const auto eye_index = vr->is_using_afr() ? (g_frame_count + view_index) % 2 : view_index;
 
         if (rendering_both_eyes_this_frame && eye_index == 1) {
-            x += w;
+            x = base_x + w;
         }
 
         FIntRect view_rect{x, y, x + w, y + h};
