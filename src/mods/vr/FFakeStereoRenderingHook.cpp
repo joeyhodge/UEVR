@@ -2983,8 +2983,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }();
 
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index, const FIntRect& original_rect) {
-        int32_t w = original_rect.max.x - original_rect.min.x;
-        int32_t h = original_rect.max.y - original_rect.min.y;
+        // Avoid depending on member names (Min/Max vs min/max) across engine SDKs by
+        // interpreting the rect as four contiguous int32 values: minX, minY, maxX, maxY.
+        const auto rect_vals = (const int32_t*)&original_rect;
+
+        int32_t w = rect_vals[2] - rect_vals[0];
+        int32_t h = rect_vals[3] - rect_vals[1];
 
         if (w <= 0 || h <= 0) {
             w = vr->get_hmd_width();
