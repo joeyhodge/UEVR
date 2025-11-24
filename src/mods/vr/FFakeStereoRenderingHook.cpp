@@ -2929,12 +2929,16 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto cache_first_view_init_options = [&]() {
             if (is_ue5) {
                 if (!g_hook->m_sceneview_data.first_view_init_options_ue5.has_value()) {
+                    // Uses existing FSceneViewInitOptionsUE5 layout from sdk; no engine-specific SDK
+                    // update is required so long as size checks in the header stay valid.
                     sdk::FSceneViewInitOptionsUE5 cached_options{};
                     memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
                     g_hook->m_sceneview_data.first_view_init_options_ue5 = cached_options;
                 }
             } else {
                 if (!g_hook->m_sceneview_data.first_view_init_options_ue4.has_value()) {
+                    // UE4 path also relies on the existing sdk::FSceneViewInitOptionsUE4 definition
+                    // so splitscreen caching stays self-contained in this hook.
                     sdk::FSceneViewInitOptionsUE4 cached_options{};
                     memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
                     g_hook->m_sceneview_data.first_view_init_options_ue4 = cached_options;
