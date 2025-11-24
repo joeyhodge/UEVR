@@ -3,6 +3,8 @@
 #include <windows.h>
 #include <winternl.h>
 
+#include <algorithm>
+
 #include <asmjit/asmjit.h>
 #include <future>
 
@@ -2993,6 +2995,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         if (w <= 0 || h <= 0) {
             w = vr->get_hmd_width();
             h = vr->get_hmd_height();
+        } else {
+            // Avoid stretching a mono view across the combined stereo target by keeping
+            // the rect aligned with the HMD per-eye dimensions.
+            w = std::min<int32_t>(w, (int32_t)vr->get_hmd_width());
+            h = std::min<int32_t>(h, (int32_t)vr->get_hmd_height());
         }
 
         int32_t x = 0;
