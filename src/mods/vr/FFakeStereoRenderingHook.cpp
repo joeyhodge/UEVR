@@ -2973,9 +2973,23 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
 
-    const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index) {
-        int32_t w = vr->get_hmd_width();
-        int32_t h = vr->get_hmd_height();
+    auto base_view_rect = [&]() -> FIntRect {
+        if (is_ue5) {
+            auto options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
+            return *(FIntRect*)&options_ue5->view_rect;
+        }
+
+        return *(FIntRect*)&init_options->view_rect;
+    }();
+
+    const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index, const FIntRect& original_rect) {
+        int32_t w = original_rect.max.x - original_rect.min.x;
+        int32_t h = original_rect.max.y - original_rect.min.y;
+
+        if (w <= 0 || h <= 0) {
+            w = vr->get_hmd_width();
+            h = vr->get_hmd_height();
+        }
 
         int32_t x = 0;
         int32_t y = 0;
@@ -3051,7 +3065,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     if (vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled()) {
         // Use the per-view index (true_index handles AFR) so projection and offsets stay aligned with the eye we are rendering.
-        apply_splitscreen_overrides(init_options, true_index);
+        apply_splitscreen_overrides(init_options, true_index, base_view_rect);
     }
 
     const auto init_options_stereo_pass = init_options->get_stereo_pass();
@@ -3116,9 +3130,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             if (additional_view != nullptr) {
                 if (is_ue5 && g_hook->m_sceneview_data.first_view_init_options_ue5.has_value()) {
                     auto cloned_options = g_hook->m_sceneview_data.first_view_init_options_ue5.value();
+                    auto cloned_rect = *(FIntRect*)&cloned_options.view_rect;
 
                     // Second eye is always index 1 in our synthetic path, so reuse that to keep AFR math consistent.
-                    apply_splitscreen_overrides((sdk::FSceneViewInitOptions*)&cloned_options, 1);
+                    apply_splitscreen_overrides((sdk::FSceneViewInitOptions*)&cloned_options, 1, cloned_rect);
 
                     g_hook->m_sceneview_data.constructing_synthetic_view = true;
                     views->count = 2;
@@ -3126,8 +3141,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     g_hook->m_sceneview_data.constructing_synthetic_view = false;
                 } else if (!is_ue5 && g_hook->m_sceneview_data.first_view_init_options_ue4.has_value()) {
                     auto cloned_options = g_hook->m_sceneview_data.first_view_init_options_ue4.value();
+                    auto cloned_rect = *(FIntRect*)&cloned_options.view_rect;
 
-                    apply_splitscreen_overrides((sdk::FSceneViewInitOptions*)&cloned_options, 1);
+                    apply_splitscreen_overrides((sdk::FSceneViewInitOptions*)&cloned_options, 1, cloned_rect);
 
                     g_hook->m_sceneview_data.constructing_synthetic_view = true;
                     views->count = 2;
