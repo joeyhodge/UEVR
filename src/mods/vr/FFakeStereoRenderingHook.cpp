@@ -2952,11 +2952,22 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto wants_splitscreen_compat = vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled();
 
     auto apply_splitscreen_overrides_ue4 = [&](sdk::FSceneViewInitOptions& opts, uint32_t eye_index) {
+        auto* original_rect = (int32_t*)&opts.constrained_view_rect;
+
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
 
-        int32_t x = 0;
-        int32_t y = 0;
+        // Clamp to the original view size so we don't stretch past the game's render target.
+        const auto original_w = original_rect[2] - original_rect[0];
+        const auto original_h = original_rect[3] - original_rect[1];
+
+        if (original_w > 0 && original_h > 0) {
+            w = std::min(w, original_w);
+            h = std::min(h, original_h);
+        }
+
+        int32_t x = original_rect[0];
+        int32_t y = original_rect[1];
 
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
@@ -3003,11 +3014,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     auto apply_splitscreen_overrides_ue5 = [&](sdk::FSceneViewInitOptionsUE5& opts, uint32_t eye_index) {
+        auto* original_rect = (int32_t*)&opts.constrained_view_rect;
+
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
 
-        int32_t x = 0;
-        int32_t y = 0;
+        const auto original_w = original_rect[2] - original_rect[0];
+        const auto original_h = original_rect[3] - original_rect[1];
+
+        if (original_w > 0 && original_h > 0) {
+            w = std::min(w, original_w);
+            h = std::min(h, original_h);
+        }
+
+        int32_t x = original_rect[0];
+        int32_t y = original_rect[1];
 
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
