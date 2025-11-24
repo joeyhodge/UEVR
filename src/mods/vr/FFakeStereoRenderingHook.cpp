@@ -35,6 +35,7 @@
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/FSceneViewFamily.hpp>
+#include <sdk/FScene.hpp>
 
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APawn.hpp>
