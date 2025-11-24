@@ -461,6 +461,12 @@ private:
         std::unordered_set<uintptr_t> seen_retaddrs{};
 
         struct {
+            sdk::FSceneViewInitOptionsUE4 init_options{};
+            uint32_t frame_count{};
+            bool valid{false};
+        } cached_ue4_init_options{};
+
+        struct {
             sdk::FSceneViewInitOptionsUE5 init_options{};
             uint32_t frame_count{};
             bool valid{false};
