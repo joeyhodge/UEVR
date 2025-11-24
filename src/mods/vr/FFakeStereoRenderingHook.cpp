@@ -2985,21 +2985,16 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }();
 
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index, const FIntRect& original_rect) {
-        // Avoid depending on member names (Min/Max vs min/max) across engine SDKs by
-        // interpreting the rect as four contiguous int32 values: minX, minY, maxX, maxY.
-        const auto rect_vals = (const int32_t*)&original_rect;
+        // Always render each eye at the HMD's per-eye resolution to avoid stretching
+        // or squashing caused by recycling the game's mono view dimensions.
+        int32_t w = (int32_t)vr->get_hmd_width();
+        int32_t h = (int32_t)vr->get_hmd_height();
 
-        int32_t w = rect_vals[2] - rect_vals[0];
-        int32_t h = rect_vals[3] - rect_vals[1];
-
+        // Fallback to the incoming rect if the runtime hasn't reported valid sizes.
         if (w <= 0 || h <= 0) {
-            w = vr->get_hmd_width();
-            h = vr->get_hmd_height();
-        } else {
-            // Avoid stretching a mono view across the combined stereo target by keeping
-            // the rect aligned with the HMD per-eye dimensions.
-            w = std::min<int32_t>(w, (int32_t)vr->get_hmd_width());
-            h = std::min<int32_t>(h, (int32_t)vr->get_hmd_height());
+            const auto rect_vals = (const int32_t*)&original_rect;
+            w = rect_vals[2] - rect_vals[0];
+            h = rect_vals[3] - rect_vals[1];
         }
 
         int32_t x = 0;
