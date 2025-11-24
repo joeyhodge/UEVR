@@ -2955,15 +2955,22 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     auto apply_splitscreen_overrides_ue4 = [&](sdk::FSceneViewInitOptions& opts, uint32_t eye_index) {
         auto* original_rect = (int32_t*)&opts.constrained_view_rect;
 
-        int32_t w = vr->get_hmd_width();
-        int32_t h = vr->get_hmd_height();
+        const auto view_family = opts.get_view_family();
+        const auto views = view_family != nullptr ? view_family->get_views() : nullptr;
+        const auto view_count = views != nullptr ? views->count : 0;
 
         // Clamp to the original view size so we don't stretch past the game's render target.
         const auto original_w = original_rect[2] - original_rect[0];
         const auto original_h = original_rect[3] - original_rect[1];
 
-        if (original_w > 0 && original_h > 0) {
-            w = std::min(w, original_w);
+        int32_t w = original_w > 0 ? original_w : vr->get_hmd_width();
+        int32_t h = original_h > 0 ? original_h : vr->get_hmd_height();
+
+        if (view_count == 1 && original_w > 0) {
+            w = std::max<int32_t>(1, original_w / 2);
+        }
+
+        if (original_h > 0) {
             h = std::min(h, original_h);
         }
 
@@ -2973,7 +2980,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
         if (!vr->is_using_afr() && effective_index == 1 && !vr->is_native_stereo_fix_enabled()) {
-            x += w;
+            if (view_count == 1 && original_w > 0) {
+                x += w;
+            } else if (x == 0 && original_w <= 0) {
+                x += w;
+            }
         }
 
         FIntRect view_rect{x, y, x + w, y + h};
@@ -3017,14 +3028,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     auto apply_splitscreen_overrides_ue5 = [&](sdk::FSceneViewInitOptionsUE5& opts, uint32_t eye_index) {
         auto* original_rect = (int32_t*)&opts.constrained_view_rect;
 
-        int32_t w = vr->get_hmd_width();
-        int32_t h = vr->get_hmd_height();
+        const auto view_family = opts.get_view_family();
+        const auto views = view_family != nullptr ? view_family->get_views() : nullptr;
+        const auto view_count = views != nullptr ? views->count : 0;
 
         const auto original_w = original_rect[2] - original_rect[0];
         const auto original_h = original_rect[3] - original_rect[1];
 
-        if (original_w > 0 && original_h > 0) {
-            w = std::min(w, original_w);
+        int32_t w = original_w > 0 ? original_w : vr->get_hmd_width();
+        int32_t h = original_h > 0 ? original_h : vr->get_hmd_height();
+
+        if (view_count == 1 && original_w > 0) {
+            w = std::max<int32_t>(1, original_w / 2);
+        }
+
+        if (original_h > 0) {
             h = std::min(h, original_h);
         }
 
@@ -3034,7 +3052,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
         if (!vr->is_using_afr() && effective_index == 1 && !vr->is_native_stereo_fix_enabled()) {
-            x += w;
+            if (view_count == 1 && original_w > 0) {
+                x += w;
+            } else if (x == 0 && original_w <= 0) {
+                x += w;
+            }
         }
 
         FIntRect view_rect{x, y, x + w, y + h};
