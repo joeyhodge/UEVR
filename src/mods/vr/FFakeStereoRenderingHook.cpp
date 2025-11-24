@@ -6,6 +6,7 @@
 #include <asmjit/asmjit.h>
 #include <future>
 #include <vector>
+#include <cstring>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -63,6 +64,83 @@
 #include <tracy/Tracy.hpp>
 
 //#define FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
+
+// Compatibility helpers: newer UESDK versions ship FSceneViewInitOptionsHelpers, but
+// older drops do not. Provide a local wrapper that mirrors the helper surface so the
+// splitscreen logic can build against either SDK revision.
+namespace {
+struct SceneViewInitOptionsHelpersCompat {
+    static ::FIntRect view_rect(const sdk::FSceneViewInitOptionsBase* options, bool is_ue5) {
+        if (options == nullptr) {
+            return {};
+        }
+
+        if (is_ue5) {
+            const auto opts = reinterpret_cast<const sdk::FSceneViewInitOptionsUE5*>(options);
+            return *reinterpret_cast<const ::FIntRect*>(&opts->view_rect);
+        }
+
+        const auto opts = reinterpret_cast<const sdk::FSceneViewInitOptions*>(options);
+        return *reinterpret_cast<const ::FIntRect*>(&opts->view_rect);
+    }
+
+    static ::FIntRect constrained_view_rect(const sdk::FSceneViewInitOptionsBase* options, bool is_ue5) {
+        if (options == nullptr) {
+            return {};
+        }
+
+        if (is_ue5) {
+            const auto opts = reinterpret_cast<const sdk::FSceneViewInitOptionsUE5*>(options);
+            return *reinterpret_cast<const ::FIntRect*>(&opts->constrained_view_rect);
+        }
+
+        const auto opts = reinterpret_cast<const sdk::FSceneViewInitOptions*>(options);
+        return *reinterpret_cast<const ::FIntRect*>(&opts->constrained_view_rect);
+    }
+
+    static void set_view_rect(sdk::FSceneViewInitOptionsBase* options, const ::FIntRect& rect, bool is_ue5) {
+        if (options == nullptr) {
+            return;
+        }
+
+        if (is_ue5) {
+            const auto opts = reinterpret_cast<sdk::FSceneViewInitOptionsUE5*>(options);
+            *reinterpret_cast<::FIntRect*>(&opts->view_rect) = rect;
+            return;
+        }
+
+        const auto opts = reinterpret_cast<sdk::FSceneViewInitOptions*>(options);
+        *reinterpret_cast<::FIntRect*>(&opts->view_rect) = rect;
+    }
+
+    static void set_constrained_view_rect(sdk::FSceneViewInitOptionsBase* options, const ::FIntRect& rect, bool is_ue5) {
+        if (options == nullptr) {
+            return;
+        }
+
+        if (is_ue5) {
+            const auto opts = reinterpret_cast<sdk::FSceneViewInitOptionsUE5*>(options);
+            *reinterpret_cast<::FIntRect*>(&opts->constrained_view_rect) = rect;
+            return;
+        }
+
+        const auto opts = reinterpret_cast<sdk::FSceneViewInitOptions*>(options);
+        *reinterpret_cast<::FIntRect*>(&opts->constrained_view_rect) = rect;
+    }
+
+    static size_t byte_size(bool is_ue5) {
+        return is_ue5 ? sizeof(sdk::FSceneViewInitOptionsUE5) : sizeof(sdk::FSceneViewInitOptions);
+    }
+
+    static void copy_typed(sdk::FSceneViewInitOptionsBase* dst, const sdk::FSceneViewInitOptionsBase* src, bool is_ue5) {
+        if (dst == nullptr || src == nullptr) {
+            return;
+        }
+
+        std::memcpy(dst, src, byte_size(is_ue5));
+    }
+};
+} // namespace
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
@@ -2924,10 +3002,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     if (init_options_scene_state != nullptr) {
         if (is_ue5) {
             auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
-            FSceneViewInitOptionsHelpers::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(&vio_entry), init_options_base, true);
+            SceneViewInitOptionsHelpersCompat::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(&vio_entry), init_options_base, true);
         } else {
             auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue4[init_options_scene_state];
-            FSceneViewInitOptionsHelpers::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(&vio_entry), init_options_base, false);
+            SceneViewInitOptionsHelpersCompat::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(&vio_entry), init_options_base, false);
         }
     }
 
@@ -2997,8 +3075,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
-        FSceneViewInitOptionsHelpers::set_view_rect(init_options_base, view_rect, is_ue5);
-        FSceneViewInitOptionsHelpers::set_constrained_view_rect(init_options_base, view_rect, is_ue5);
+        SceneViewInitOptionsHelpersCompat::set_view_rect(init_options_base, view_rect, is_ue5);
+        SceneViewInitOptionsHelpersCompat::set_constrained_view_rect(init_options_base, view_rect, is_ue5);
 
         if (is_ue5) {
             init_options_view_rotation_matrix_ue5 = view_rot_mat;
@@ -3359,14 +3437,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 auto init_options_b_typed = reinterpret_cast<sdk::FSceneViewInitOptionsUE5*>(init_options_b_base);
 
                 if (auto it = cached_init_options.find(init_options_a_typed->scene_view_state); it != cached_init_options.end()) {
-                    FSceneViewInitOptionsHelpers::copy_typed(init_options_b_base, reinterpret_cast<const sdk::FSceneViewInitOptionsBase*>(&it->second), true);
+                    SceneViewInitOptionsHelpersCompat::copy_typed(init_options_b_base, reinterpret_cast<const sdk::FSceneViewInitOptionsBase*>(&it->second), true);
                     return;
                 }
 
                 init_options_b_typed->view_origin = init_options_a_typed->view_origin;
                 init_options_b_typed->view_rotation_matrix = init_options_a_typed->view_rotation_matrix;
-                FSceneViewInitOptionsHelpers::set_view_rect(init_options_b_base, FSceneViewInitOptionsHelpers::view_rect(init_options_a_base, true), true);
-                FSceneViewInitOptionsHelpers::set_constrained_view_rect(init_options_b_base, FSceneViewInitOptionsHelpers::constrained_view_rect(init_options_a_base, true), true);
+                SceneViewInitOptionsHelpersCompat::set_view_rect(init_options_b_base, SceneViewInitOptionsHelpersCompat::view_rect(init_options_a_base, true), true);
+                SceneViewInitOptionsHelpersCompat::set_constrained_view_rect(init_options_b_base, SceneViewInitOptionsHelpersCompat::constrained_view_rect(init_options_a_base, true), true);
                 init_options_b_typed->projection_matrix = init_options_a_typed->projection_matrix;
             } else {
                 auto& cached_init_options = g_hook->m_sceneview_data.view_init_options_ue4;
@@ -3374,14 +3452,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 auto init_options_b_typed = reinterpret_cast<sdk::FSceneViewInitOptions*>(init_options_b_base);
 
                 if (auto it = cached_init_options.find(init_options_a_typed->scene_view_state); it != cached_init_options.end()) {
-                    FSceneViewInitOptionsHelpers::copy_typed(init_options_b_base, reinterpret_cast<const sdk::FSceneViewInitOptionsBase*>(&it->second), false);
+                    SceneViewInitOptionsHelpersCompat::copy_typed(init_options_b_base, reinterpret_cast<const sdk::FSceneViewInitOptionsBase*>(&it->second), false);
                     return;
                 }
 
                 init_options_b_typed->view_origin = init_options_a_typed->view_origin;
                 init_options_b_typed->view_rotation_matrix = init_options_a_typed->view_rotation_matrix;
-                FSceneViewInitOptionsHelpers::set_view_rect(init_options_b_base, FSceneViewInitOptionsHelpers::view_rect(init_options_a_base, false), false);
-                FSceneViewInitOptionsHelpers::set_constrained_view_rect(init_options_b_base, FSceneViewInitOptionsHelpers::constrained_view_rect(init_options_a_base, false), false);
+                SceneViewInitOptionsHelpersCompat::set_view_rect(init_options_b_base, SceneViewInitOptionsHelpersCompat::view_rect(init_options_a_base, false), false);
+                SceneViewInitOptionsHelpersCompat::set_constrained_view_rect(init_options_b_base, SceneViewInitOptionsHelpersCompat::constrained_view_rect(init_options_a_base, false), false);
                 init_options_b_typed->projection_matrix = init_options_a_typed->projection_matrix;
             }
         };
@@ -3410,17 +3488,27 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             const auto proj_mat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
 
             const auto is_ue5 = g_hook->has_double_precision();
-            std::vector<uint8_t> init_options_copy(FSceneViewInitOptionsHelpers::byte_size(is_ue5));
+            std::vector<uint8_t> init_options_copy(SceneViewInitOptionsHelpersCompat::byte_size(is_ue5));
 
             auto init_options_base = reinterpret_cast<sdk::FSceneViewInitOptionsBase*>((uintptr_t)view + INIT_OPTIONS_OFFSET);
             auto init_options = reinterpret_cast<sdk::FSceneViewInitOptions*>(init_options_base);
             auto init_options_ue5 = reinterpret_cast<sdk::FSceneViewInitOptionsUE5*>(init_options_base);
 
             auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&init_options_ue5->view_origin : init_options->view_origin;
-            auto& init_options_view_rotation_matrix = is_ue5 ? init_options_ue5->view_rotation_matrix : init_options->view_rotation_matrix;
-            auto& init_options_projection_matrix = is_ue5 ? init_options_ue5->projection_matrix : init_options->projection_matrix;
-            auto& init_options_stereo_pass = is_ue5 ? init_options_ue5->stereo_pass : init_options->stereo_pass;
-
+            auto set_view_rotation_matrix = [&](const glm::mat4& value) {
+                if (is_ue5) {
+                    init_options_ue5->view_rotation_matrix = value;
+                } else {
+                    init_options->view_rotation_matrix = value;
+                }
+            };
+            auto set_projection_matrix = [&](const glm::mat4& value) {
+                if (is_ue5) {
+                    init_options_ue5->projection_matrix = value;
+                } else {
+                    init_options->projection_matrix = value;
+                }
+            };
             // ADDENDUM: The sceneview constructor hook handles the rotation logic now.
             /*const auto conversion_mat = glm::mat4 {
                 0, 0, 1, 0,
@@ -3438,11 +3526,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             //const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
             //init_options_view_rotation_matrix = view_rot_mat;
 
-            FSceneViewInitOptionsHelpers::set_view_rect(init_options_base, view_rect, is_ue5);
-            FSceneViewInitOptionsHelpers::set_constrained_view_rect(init_options_base, view_rect, is_ue5);
-            init_options_projection_matrix = proj_mat;
+            SceneViewInitOptionsHelpersCompat::set_view_rect(init_options_base, view_rect, is_ue5);
+            SceneViewInitOptionsHelpersCompat::set_constrained_view_rect(init_options_base, view_rect, is_ue5);
+            set_projection_matrix(proj_mat);
 
-            FSceneViewInitOptionsHelpers::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(init_options_copy.data()), init_options_base, is_ue5);
+            SceneViewInitOptionsHelpersCompat::copy_typed(reinterpret_cast<sdk::FSceneViewInitOptionsBase*>(init_options_copy.data()), init_options_base, is_ue5);
             view->constructor(reinterpret_cast<sdk::FSceneViewInitOptions*>(init_options_copy.data())); // Triggers our hook as well
         };
 
