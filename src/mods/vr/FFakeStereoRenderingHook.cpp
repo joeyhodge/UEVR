@@ -2985,16 +2985,24 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }();
 
     const auto apply_splitscreen_overrides = [&](sdk::FSceneViewInitOptions* options, uint32_t view_index, const FIntRect& original_rect) {
-        // Always render each eye at the HMD's per-eye resolution to avoid stretching
-        // or squashing caused by recycling the game's mono view dimensions.
-        int32_t w = (int32_t)vr->get_hmd_width();
-        int32_t h = (int32_t)vr->get_hmd_height();
+        // Derive the render dimensions from the incoming rect so we match the game's
+        // mono render target. Split horizontally when both eyes render in the same frame
+        // to avoid stretching the content across a wider stereo surface.
+        const auto rect_vals = (const int32_t*)&original_rect;
+        int32_t w = rect_vals[2] - rect_vals[0];
+        int32_t h = rect_vals[3] - rect_vals[1];
 
-        // Fallback to the incoming rect if the runtime hasn't reported valid sizes.
+        // Fallback to runtime dimensions if the incoming rect is invalid.
         if (w <= 0 || h <= 0) {
-            const auto rect_vals = (const int32_t*)&original_rect;
-            w = rect_vals[2] - rect_vals[0];
-            h = rect_vals[3] - rect_vals[1];
+            w = (int32_t)vr->get_hmd_width();
+            h = (int32_t)vr->get_hmd_height();
+        }
+
+        // When rendering both eyes in the same frame, split the original width so we pack
+        // each view side-by-side instead of enlarging the surface and warping the image.
+        const bool rendering_both_eyes_this_frame = !vr->is_using_afr() && !vr->is_native_stereo_fix_enabled();
+        if (rendering_both_eyes_this_frame && w > 0) {
+            w /= 2;
         }
 
         int32_t x = 0;
@@ -3002,7 +3010,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto eye_index = vr->is_using_afr() ? (g_frame_count + view_index) % 2 : view_index;
 
-        if (!vr->is_using_afr() && eye_index == 1 && !vr->is_native_stereo_fix_enabled()) {
+        if (rendering_both_eyes_this_frame && eye_index == 1) {
             x += w;
         }
 
