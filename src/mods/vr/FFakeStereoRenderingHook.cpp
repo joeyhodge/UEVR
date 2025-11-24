@@ -2926,19 +2926,23 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             g_hook->m_sceneview_data.first_view_init_options_ue5.reset();
         }
 
-        if (is_ue5) {
-            if (!g_hook->m_sceneview_data.first_view_init_options_ue5.has_value()) {
-                sdk::FSceneViewInitOptionsUE5 cached_options{};
-                memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
-                g_hook->m_sceneview_data.first_view_init_options_ue5 = cached_options;
+        const auto cache_first_view_init_options = [&]() {
+            if (is_ue5) {
+                if (!g_hook->m_sceneview_data.first_view_init_options_ue5.has_value()) {
+                    sdk::FSceneViewInitOptionsUE5 cached_options{};
+                    memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
+                    g_hook->m_sceneview_data.first_view_init_options_ue5 = cached_options;
+                }
+            } else {
+                if (!g_hook->m_sceneview_data.first_view_init_options_ue4.has_value()) {
+                    sdk::FSceneViewInitOptionsUE4 cached_options{};
+                    memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
+                    g_hook->m_sceneview_data.first_view_init_options_ue4 = cached_options;
+                }
             }
-        } else {
-            if (!g_hook->m_sceneview_data.first_view_init_options_ue4.has_value()) {
-                sdk::FSceneViewInitOptionsUE4 cached_options{};
-                memcpy(&cached_options, init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
-                g_hook->m_sceneview_data.first_view_init_options_ue4 = cached_options;
-            }
-        }
+        };
+
+        cache_first_view_init_options();
     }
 
     const auto init_options_scene_state = init_options->get_scene_state();
@@ -3042,7 +3046,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     if (vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled()) {
-        apply_splitscreen_overrides(init_options, last_index);
+        // Use the per-view index (true_index handles AFR) so projection and offsets stay aligned with the eye we are rendering.
+        apply_splitscreen_overrides(init_options, true_index);
     }
 
     const auto init_options_stereo_pass = init_options->get_stereo_pass();
@@ -3108,6 +3113,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 if (is_ue5 && g_hook->m_sceneview_data.first_view_init_options_ue5.has_value()) {
                     auto cloned_options = g_hook->m_sceneview_data.first_view_init_options_ue5.value();
 
+                    // Second eye is always index 1 in our synthetic path, so reuse that to keep AFR math consistent.
                     apply_splitscreen_overrides((sdk::FSceneViewInitOptions*)&cloned_options, 1);
 
                     g_hook->m_sceneview_data.constructing_synthetic_view = true;
