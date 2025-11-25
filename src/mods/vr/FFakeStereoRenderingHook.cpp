@@ -2889,6 +2889,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto& vr = VR::get();
 
+    if (g_hook->m_sceneview_data.constructing_split_views) {
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
     if (!g_hook->is_in_viewport_client_draw() || !vr->is_hmd_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
@@ -2919,20 +2923,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto is_ue5 = g_hook->has_double_precision();
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
-    const auto init_options_scene_state = init_options->get_scene_state();
-
     auto view_family = init_options->get_view_family();
     auto views = view_family != nullptr ? view_family->get_views() : nullptr;
-
-    if (init_options_scene_state != nullptr) {
-        if (is_ue5) {
-            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
-            memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
-        } else {
-            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue4[init_options_scene_state];
-            memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
-        }
-    }
 
     auto& known_scene_states = g_hook->m_sceneview_data.known_scene_states;
     auto& last_frame_count = g_hook->m_sceneview_data.last_frame_count;
@@ -2946,10 +2938,23 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
 
-    auto adjust_view_for_eye = [&](sdk::FSceneViewInitOptions* target_init_options, uint32_t eye_index) {
+    FIntRect base_view_rect{};
+    FIntRect base_constrained_view_rect{};
+
+    if (is_ue5) {
+        base_view_rect = *(FIntRect*)&init_options_ue5->view_rect;
+        base_constrained_view_rect = *(FIntRect*)&init_options_ue5->constrained_view_rect;
+    } else {
+        base_view_rect = init_options->view_rect;
+        base_constrained_view_rect = init_options->constrained_view_rect;
+    }
+
+    auto adjust_view_for_eye = [&](sdk::FSceneViewInitOptions* target_init_options, uint32_t eye_index, const FIntRect* split_view_rect, const FIntRect* split_constrained_rect) {
         if (!vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled()) {
             return;
         }
+
+        auto target_init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)target_init_options;
 
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
@@ -2964,12 +2969,44 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
 
         FIntRect view_rect{x, y, x + w, y + h};
+        auto constrained_rect_override = view_rect;
+
+        if (split_view_rect != nullptr && vr->is_splitscreen_compatibility_enabled()) {
+            const auto rect_values = (int32_t*)split_view_rect;
+            const auto constrained_values = (int32_t*)split_constrained_rect;
+            const auto rect_min_x = rect_values[0];
+            const auto rect_min_y = rect_values[1];
+            const auto rect_max_x = rect_values[2];
+            const auto rect_max_y = rect_values[3];
+
+            const auto constrained_min_x = constrained_values[0];
+            const auto constrained_min_y = constrained_values[1];
+            const auto constrained_max_x = constrained_values[2];
+            const auto constrained_max_y = constrained_values[3];
+
+            const auto half_width = (rect_max_x - rect_min_x) / 2;
+            const auto constrained_half_width = (constrained_max_x - constrained_min_x) / 2;
+
+            const auto view_rect_min_x = eye_index == 0 ? rect_min_x : rect_min_x + half_width;
+            const auto constrained_rect_min_x = eye_index == 0 ? constrained_min_x : constrained_min_x + constrained_half_width;
+
+            view_rect = {view_rect_min_x, rect_min_y, view_rect_min_x + half_width, rect_max_y};
+
+            const FIntRect constrained_rect{constrained_rect_min_x, constrained_min_y, constrained_rect_min_x + constrained_half_width, constrained_max_y};
+
+            constrained_rect_override = constrained_rect;
+
+            if (is_ue5) {
+                target_init_options_ue5->constrained_view_rect = constrained_rect;
+            } else {
+                target_init_options->constrained_view_rect = constrained_rect;
+            }
+        }
 
         vr->get_runtime()->update_matrices(0.1f, 10000.0f);
 
         const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(compatibility_true_index));
 
-        auto target_init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)target_init_options;
         auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&target_init_options_ue5->view_origin : target_init_options->view_origin;
         auto& init_options_view_rect = is_ue5 ? target_init_options_ue5->view_rect : target_init_options->view_rect;
         auto& init_options_constrained_view_rect = is_ue5 ? target_init_options_ue5->constrained_view_rect : target_init_options->constrained_view_rect;
@@ -3008,7 +3045,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
         *(FIntRect*)&init_options_view_rect = view_rect;
-        *(FIntRect*)&init_options_constrained_view_rect = view_rect;
+        *(FIntRect*)&init_options_constrained_view_rect = constrained_rect_override;
 
         if (is_ue5) {
             init_options_view_rotation_matrix_ue5 = view_rot_mat;
@@ -3046,15 +3083,33 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     };
 
-    adjust_view_for_eye(init_options, true_index);
+    std::array<uint8_t, 0x500> left_init_options_data{};
+    memcpy(left_init_options_data.data(), init_options_base.data(), left_init_options_data.size());
 
-    const auto init_options_stereo_pass = init_options->get_stereo_pass();
+    auto left_init_options = (sdk::FSceneViewInitOptions*)left_init_options_data.data();
+
+    adjust_view_for_eye(left_init_options, true_index, &base_view_rect, &base_constrained_view_rect);
+    apply_scene_state_for_eye(left_init_options, true_index);
+
+    auto init_options_scene_state = left_init_options->get_scene_state();
+
+    if (init_options_scene_state != nullptr) {
+        if (is_ue5) {
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
+            memcpy(&vio_entry, left_init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
+        } else {
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue4[init_options_scene_state];
+            memcpy(&vio_entry, left_init_options, sizeof(sdk::FSceneViewInitOptionsUE4));
+        }
+    }
+
+    const auto init_options_stereo_pass = left_init_options->get_stereo_pass();
 
     std::optional<uint32_t> views_original_count{};
 
     if (vr->is_native_stereo_fix_enabled() && vr->is_native_stereo_fix_same_pass_enabled() && init_options_stereo_pass > EStereoscopicPass::eSSP_PRIMARY) {
         if (g_hook->get_render_target_manager()->get_scene_capture_render_target() != nullptr) {
-            init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+            left_init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
 
             if (views != nullptr) {
                 // Hide the fact that we have multiple views from the FSceneView constructor.
@@ -3081,13 +3136,13 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }
 
     if (init_options_scene_state != nullptr && !new_scene_state_inserted_this_frame && vr->is_ghosting_fix_enabled() && !known_scene_states.empty() && vr->is_using_afr() && true_index == 1) {
-        init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+        left_init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
 
         // Set the scene state to the one that isn't the current one
         for (auto scene_state : known_scene_states) {
             if (scene_state != init_options_scene_state) {
                 SPDLOG_INFO_ONCE("Setting scene state to {:x}", (uintptr_t)scene_state);
-                init_options->set_scene_state(scene_state);
+                left_init_options->set_scene_state(scene_state);
                 break;
             }
         }
@@ -3095,7 +3150,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     last_index++;
 
-    auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, left_init_options, a3, a4);
 
     // Reset the view count back to what it was.
     if (views_original_count.has_value() && views != nullptr) {
@@ -3112,8 +3167,18 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         memcpy(right_init_options_data.data(), init_options_base.data(), right_init_options_data.size());
 
         auto right_init_options = (sdk::FSceneViewInitOptions*)right_init_options_data.data();
-        adjust_view_for_eye(right_init_options, 1);
+
         apply_scene_state_for_eye(right_init_options, 1);
+        adjust_view_for_eye(right_init_options, 1, &base_view_rect, &base_constrained_view_rect);
+
+        if (right_init_options->get_scene_state() == left_init_options->get_scene_state() && known_scene_states.size() > 1) {
+            for (auto scene_state : known_scene_states) {
+                if (scene_state != left_init_options->get_scene_state()) {
+                    right_init_options->set_scene_state(scene_state);
+                    break;
+                }
+            }
+        }
 
         auto right_view = views->data[1];
         g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(right_view, right_init_options, a3, a4);
@@ -3124,6 +3189,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
 
         views->data[1] = right_view;
+
+        if (views->count < 2) {
+            views->count = 2;
+        }
 
         g_hook->m_sceneview_data.constructing_split_views = false;
     }
