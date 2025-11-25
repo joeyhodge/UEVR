@@ -452,6 +452,8 @@ private:
         std::unordered_set<sdk::FSceneViewStateInterface*> known_scene_states;
         bool inside_post_init_properties{false};
 
+        bool constructing_split_views{false};
+
         uint32_t last_frame_count{};
         uint32_t last_index{};
 
