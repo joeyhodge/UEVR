@@ -2977,20 +2977,38 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
 
-        // Respect the engine-provided view rect size when it is valid. This keeps the aspect ratio
-        // consistent with the viewport and avoids stretching when the HMD size differs from the
-        // backbuffer size (seen in UE4 "The Medium").
+        const auto choose_eye_dim = [&](int32_t base_dim, int32_t hmd_dim) {
+            if (base_dim <= 0) {
+                return hmd_dim;
+            }
+
+            const int32_t half_dim = base_dim / 2;
+            const int32_t full_diff = base_dim > hmd_dim ? base_dim - hmd_dim : hmd_dim - base_dim;
+            const int32_t half_diff = half_dim > hmd_dim ? half_dim - hmd_dim : hmd_dim - half_dim;
+
+            // Prefer halving when the engine gave us a full-width rect (typical splitscreen) or when
+            // the half size is closer to the HMD render target. This avoids double-width stretch on UE4 titles
+            // like "The Medium" while still honoring engine-provided dimensions when they already match.
+            if (half_dim > 0 && (base_dim >= hmd_dim * 2 || half_diff <= full_diff)) {
+                return half_dim;
+            }
+
+            return base_dim;
+        };
+
+        // Respect the engine-provided view rect size when it is valid, but allow halving for
+        // splitscreen layouts that report the full backbuffer width/height.
         if (g_hook->has_double_precision()) {
             auto rect_data = (int32_t*)&((sdk::FSceneViewInitOptionsUE5*)options)->view_rect;
             const int32_t base_w = rect_data[2] - rect_data[0];
             const int32_t base_h = rect_data[3] - rect_data[1];
 
             if (base_w > 0) {
-                w = base_w;
+                w = choose_eye_dim(base_w, vr->get_hmd_width());
             }
 
             if (base_h > 0) {
-                h = base_h;
+                h = choose_eye_dim(base_h, vr->get_hmd_height());
             }
         } else {
             auto rect_data = (int32_t*)&options->view_rect;
@@ -2998,11 +3016,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             const int32_t base_h = rect_data[3] - rect_data[1];
 
             if (base_w > 0) {
-                w = base_w;
+                w = choose_eye_dim(base_w, vr->get_hmd_width());
             }
 
             if (base_h > 0) {
-                h = base_h;
+                h = choose_eye_dim(base_h, vr->get_hmd_height());
             }
         }
 
