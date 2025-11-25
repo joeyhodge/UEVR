@@ -2938,15 +2938,36 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
 
+    auto rect_from_array = [](const int32_t (&values)[4]) -> FIntRect {
+        FIntRect rect{};
+        auto* rect_values = (int32_t*)&rect;
+
+        rect_values[0] = values[0];
+        rect_values[1] = values[1];
+        rect_values[2] = values[2];
+        rect_values[3] = values[3];
+
+        return rect;
+    };
+
+    auto set_array_from_rect = [](const FIntRect& rect, int32_t (&values)[4]) {
+        const auto* rect_values = (const int32_t*)&rect;
+
+        values[0] = rect_values[0];
+        values[1] = rect_values[1];
+        values[2] = rect_values[2];
+        values[3] = rect_values[3];
+    };
+
     FIntRect base_view_rect{};
     FIntRect base_constrained_view_rect{};
 
     if (is_ue5) {
-        base_view_rect = *(FIntRect*)&init_options_ue5->view_rect;
-        base_constrained_view_rect = *(FIntRect*)&init_options_ue5->constrained_view_rect;
+        base_view_rect = rect_from_array(init_options_ue5->view_rect);
+        base_constrained_view_rect = rect_from_array(init_options_ue5->constrained_view_rect);
     } else {
-        base_view_rect = init_options->view_rect;
-        base_constrained_view_rect = init_options->constrained_view_rect;
+        base_view_rect = rect_from_array(init_options->view_rect);
+        base_constrained_view_rect = rect_from_array(init_options->constrained_view_rect);
     }
 
     auto adjust_view_for_eye = [&](sdk::FSceneViewInitOptions* target_init_options, uint32_t eye_index, const FIntRect* split_view_rect, const FIntRect* split_constrained_rect) {
@@ -2997,9 +3018,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             constrained_rect_override = constrained_rect;
 
             if (is_ue5) {
-                target_init_options_ue5->constrained_view_rect = constrained_rect;
+                set_array_from_rect(constrained_rect, target_init_options_ue5->constrained_view_rect);
             } else {
-                target_init_options->constrained_view_rect = constrained_rect;
+                set_array_from_rect(constrained_rect, target_init_options->constrained_view_rect);
             }
         }
 
@@ -3008,8 +3029,6 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(compatibility_true_index));
 
         auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&target_init_options_ue5->view_origin : target_init_options->view_origin;
-        auto& init_options_view_rect = is_ue5 ? target_init_options_ue5->view_rect : target_init_options->view_rect;
-        auto& init_options_constrained_view_rect = is_ue5 ? target_init_options_ue5->constrained_view_rect : target_init_options->constrained_view_rect;
         auto& init_options_projection_matrix = target_init_options->projection_matrix;
         auto& init_options_projection_matrix_ue5 = target_init_options_ue5->projection_matrix;
 
@@ -3044,8 +3063,13 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
-        *(FIntRect*)&init_options_view_rect = view_rect;
-        *(FIntRect*)&init_options_constrained_view_rect = constrained_rect_override;
+        if (is_ue5) {
+            set_array_from_rect(view_rect, target_init_options_ue5->view_rect);
+            set_array_from_rect(constrained_rect_override, target_init_options_ue5->constrained_view_rect);
+        } else {
+            set_array_from_rect(view_rect, target_init_options->view_rect);
+            set_array_from_rect(constrained_rect_override, target_init_options->constrained_view_rect);
+        }
 
         if (is_ue5) {
             init_options_view_rotation_matrix_ue5 = view_rot_mat;
