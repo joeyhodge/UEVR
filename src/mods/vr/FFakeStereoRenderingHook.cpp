@@ -2953,41 +2953,81 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto wants_splitscreen_compat = vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled();
 
     auto apply_splitscreen_overrides_ue4 = [&](sdk::FSceneViewInitOptions& opts, uint32_t eye_index) {
-        auto* original_rect = (int32_t*)&opts.constrained_view_rect;
+        auto* constrained_rect = (int32_t*)&opts.constrained_view_rect;
+        auto* view_rect_orig = (int32_t*)&opts.view_rect;
 
         const auto view_family = opts.get_view_family();
         const auto views = view_family != nullptr ? view_family->get_views() : nullptr;
         const auto view_count = views != nullptr ? views->count : 0;
 
-        // Clamp to the original view size so we don't stretch past the game's render target.
-        const auto original_w = original_rect[2] - original_rect[0];
-        const auto original_h = original_rect[3] - original_rect[1];
+        const auto constrained_w = constrained_rect[2] - constrained_rect[0];
+        const auto constrained_h = constrained_rect[3] - constrained_rect[1];
 
-        int32_t w = original_w > 0 ? original_w : vr->get_hmd_width();
-        int32_t h = original_h > 0 ? original_h : vr->get_hmd_height();
+        int32_t base_x = view_rect_orig[0];
+        int32_t base_y = view_rect_orig[1];
+        int32_t base_w = view_rect_orig[2] - view_rect_orig[0];
+        int32_t base_h = view_rect_orig[3] - view_rect_orig[1];
 
-        if (view_count == 1 && original_w > 0) {
-            w = std::max<int32_t>(1, original_w / 2);
+        if (base_w <= 0 && constrained_w > 0) {
+            base_x = constrained_rect[0];
+            base_w = constrained_w;
         }
 
-        if (original_h > 0) {
-            h = std::min(h, original_h);
+        if (base_h <= 0 && constrained_h > 0) {
+            base_y = constrained_rect[1];
+            base_h = constrained_h;
         }
 
-        int32_t x = original_rect[0];
-        int32_t y = original_rect[1];
+        if (base_w <= 0) {
+            base_w = vr->get_hmd_width();
+        }
+
+        if (base_h <= 0) {
+            base_h = vr->get_hmd_height();
+        }
+
+        int32_t w = base_w;
+        int32_t h = base_h;
 
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
-        if (!vr->is_using_afr() && effective_index == 1 && !vr->is_native_stereo_fix_enabled()) {
-            if (view_count == 1 && original_w > 0) {
-                x += w;
-            } else if (x == 0 && original_w <= 0) {
-                x += w;
+        if (view_count == 1) {
+            if (constrained_w > 0 && base_w * 2 <= constrained_w + 1) {
+                // The original rect already represents a half; mirror it within the constrained bounds.
+                w = base_w;
+                base_x = constrained_rect[0] + effective_index * w;
+            } else if (constrained_w > 0) {
+                // Split the constrained rect evenly.
+                w = std::max<int32_t>(1, constrained_w / 2);
+                base_x = constrained_rect[0] + effective_index * w;
+            } else {
+                w = std::max<int32_t>(1, base_w / 2);
+                base_x += effective_index * w;
             }
         }
 
-        FIntRect view_rect{x, y, x + w, y + h};
+        if (constrained_w > 0) {
+            w = std::min(w, constrained_w);
+            base_x = std::max(base_x, constrained_rect[0]);
+        }
+
+        if (constrained_h > 0) {
+            h = std::min(h, constrained_h);
+            base_y = std::max(base_y, constrained_rect[1]);
+        }
+
+        auto max_x = base_x + w;
+        auto max_y = base_y + h;
+
+        if (constrained_w > 0) {
+            max_x = std::min(max_x, constrained_rect[0] + constrained_w);
+        }
+
+        if (constrained_h > 0) {
+            max_y = std::min(max_y, constrained_rect[1] + constrained_h);
+        }
+
+        FIntRect view_rect{base_x, base_y, max_x, max_y};
 
         vr->get_runtime()->update_matrices(0.1f, 10000.0f);
 
@@ -3026,40 +3066,79 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     auto apply_splitscreen_overrides_ue5 = [&](sdk::FSceneViewInitOptionsUE5& opts, uint32_t eye_index) {
-        auto* original_rect = (int32_t*)&opts.constrained_view_rect;
+        auto* constrained_rect = (int32_t*)&opts.constrained_view_rect;
+        auto* view_rect_orig = (int32_t*)&opts.view_rect;
 
         const auto view_family = opts.get_view_family();
         const auto views = view_family != nullptr ? view_family->get_views() : nullptr;
         const auto view_count = views != nullptr ? views->count : 0;
 
-        const auto original_w = original_rect[2] - original_rect[0];
-        const auto original_h = original_rect[3] - original_rect[1];
+        const auto constrained_w = constrained_rect[2] - constrained_rect[0];
+        const auto constrained_h = constrained_rect[3] - constrained_rect[1];
 
-        int32_t w = original_w > 0 ? original_w : vr->get_hmd_width();
-        int32_t h = original_h > 0 ? original_h : vr->get_hmd_height();
+        int32_t base_x = view_rect_orig[0];
+        int32_t base_y = view_rect_orig[1];
+        int32_t base_w = view_rect_orig[2] - view_rect_orig[0];
+        int32_t base_h = view_rect_orig[3] - view_rect_orig[1];
 
-        if (view_count == 1 && original_w > 0) {
-            w = std::max<int32_t>(1, original_w / 2);
+        if (base_w <= 0 && constrained_w > 0) {
+            base_x = constrained_rect[0];
+            base_w = constrained_w;
         }
 
-        if (original_h > 0) {
-            h = std::min(h, original_h);
+        if (base_h <= 0 && constrained_h > 0) {
+            base_y = constrained_rect[1];
+            base_h = constrained_h;
         }
 
-        int32_t x = original_rect[0];
-        int32_t y = original_rect[1];
+        if (base_w <= 0) {
+            base_w = vr->get_hmd_width();
+        }
+
+        if (base_h <= 0) {
+            base_h = vr->get_hmd_height();
+        }
+
+        int32_t w = base_w;
+        int32_t h = base_h;
 
         const auto effective_index = vr->is_using_afr() ? (g_frame_count + eye_index) % 2 : eye_index;
 
-        if (!vr->is_using_afr() && effective_index == 1 && !vr->is_native_stereo_fix_enabled()) {
-            if (view_count == 1 && original_w > 0) {
-                x += w;
-            } else if (x == 0 && original_w <= 0) {
-                x += w;
+        if (view_count == 1) {
+            if (constrained_w > 0 && base_w * 2 <= constrained_w + 1) {
+                w = base_w;
+                base_x = constrained_rect[0] + effective_index * w;
+            } else if (constrained_w > 0) {
+                w = std::max<int32_t>(1, constrained_w / 2);
+                base_x = constrained_rect[0] + effective_index * w;
+            } else {
+                w = std::max<int32_t>(1, base_w / 2);
+                base_x += effective_index * w;
             }
         }
 
-        FIntRect view_rect{x, y, x + w, y + h};
+        if (constrained_w > 0) {
+            w = std::min(w, constrained_w);
+            base_x = std::max(base_x, constrained_rect[0]);
+        }
+
+        if (constrained_h > 0) {
+            h = std::min(h, constrained_h);
+            base_y = std::max(base_y, constrained_rect[1]);
+        }
+
+        auto max_x = base_x + w;
+        auto max_y = base_y + h;
+
+        if (constrained_w > 0) {
+            max_x = std::min(max_x, constrained_rect[0] + constrained_w);
+        }
+
+        if (constrained_h > 0) {
+            max_y = std::min(max_y, constrained_rect[1] + constrained_h);
+        }
+
+        FIntRect view_rect{base_x, base_y, max_x, max_y};
 
         vr->get_runtime()->update_matrices(0.1f, 10000.0f);
 
