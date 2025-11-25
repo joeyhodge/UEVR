@@ -409,6 +409,7 @@ private:
 
     // FSceneView
     static sdk::FSceneView* sceneview_constructor(sdk::FSceneView* sceneview, sdk::FSceneViewInitOptions* init_options, void* a3, void* a4);
+    static void perform_sceneview_splitscreen(sdk::FSceneView* view, sdk::FSceneViewInitOptions* init_options);
     
     // IStereoRendering
     static bool is_stereo_enabled(FFakeStereoRendering* stereo);
@@ -451,6 +452,7 @@ private:
         safetyhook::InlineHook constructor_hook{};
         std::unordered_set<sdk::FSceneViewStateInterface*> known_scene_states;
         bool inside_post_init_properties{false};
+        bool splitting_views{false};
 
         uint32_t last_frame_count{};
         uint32_t last_index{};
