@@ -2993,7 +2993,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         if (is_ue5) {
             apply_view_overrides_ue5(*init_options_ue5, true_index);
 
-            if (current_index == 0) {
+            if (current_index == 0 && vr->is_splitscreen_compatibility_enabled()) {
                 g_hook->m_sceneview_data.cached_init_options_frame = g_frame_count;
 
                 if (init_options_scene_state != nullptr) {
