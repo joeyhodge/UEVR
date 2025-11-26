@@ -2996,6 +2996,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             if (current_index == 0 && vr->is_splitscreen_compatibility_enabled()) {
                 g_hook->m_sceneview_data.cached_init_options_frame = g_frame_count;
 
+                // Keep UE5 splitscreen on the same per-eye override path we already use for
+                // SceneView compatibility; the only difference from UE4 is that we synthesize
+                // the second view later in the constructor hook instead of relying on the old
+                // BeginRenderViewFamily hack.
+
                 if (init_options_scene_state != nullptr) {
                     if (auto it = g_hook->m_sceneview_data.view_init_options_ue5.find(init_options_scene_state);
                         it != g_hook->m_sceneview_data.view_init_options_ue5.end())
