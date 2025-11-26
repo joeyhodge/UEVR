@@ -2934,9 +2934,13 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     if (last_frame_count != g_frame_count || last_index > 1) {
         last_index = 0;
+        g_hook->m_sceneview_data.cached_splitscreen_init_options.reset();
+        g_hook->m_sceneview_data.cached_init_options_frame = g_frame_count;
     }
 
     last_frame_count = g_frame_count;
+
+    const auto current_index = last_index;
 
     const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
 
@@ -2951,61 +2955,93 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             x += w;
         }
 
-        FIntRect view_rect{x, y, x + w, y + h};
-
         vr->get_runtime()->update_matrices(0.1f, 10000.0f);
 
-        const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(true_index));
+        const auto apply_view_overrides_ue5 = [&](sdk::FSceneViewInitOptionsUE5& options, uint32_t view_index) {
+            const auto conversion_mat = glm::mat4 {
+                0, 0, 1, 0,
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1
+            };
 
-        auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&init_options_ue5->view_origin : init_options->view_origin;
-        auto& init_options_view_rect = is_ue5 ? init_options_ue5->view_rect : init_options->view_rect;
-        auto& init_options_constrained_view_rect = is_ue5 ? init_options_ue5->constrained_view_rect : init_options->constrained_view_rect;
-        auto& init_options_projection_matrix = init_options->projection_matrix;
-        auto& init_options_projection_matrix_ue5 = init_options_ue5->projection_matrix;
+            const auto conversion_mat_inverse = glm::inverse(conversion_mat);
 
-        auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
-        auto& init_options_view_rotation_matrix_ue5 = init_options_ue5->view_rotation_matrix;
+            auto& view_origin = *(glm::vec3*)&options.view_origin;
+            auto view_rotation_matrix = options.view_rotation_matrix;
 
-        const auto conversion_mat = glm::mat4 {
-            0, 0, 1, 0,
-            1, 0, 0, 0,
-            0, 1, 0, 0,
-            0, 0, 0, 1
-        };
+            auto euler = utility::math::ue_euler_from_rotation_matrix(
+                glm::inverse(conversion_mat_inverse * glm::mat4{view_rotation_matrix}));
 
-        const auto conversion_mat_inverse = glm::inverse(conversion_mat);
+            auto euler_d = glm::vec<3, double>{euler};
+            g_hook->calculate_stereo_view_offset_(view_index + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
 
-        // We need to "undo" the operations done to create the rotation matrix so we can get the original angle
-        // const auto view_rot_mat = conversion_mat * make_inverse_rot_matrix(euler); <-- this is the result of the conversion
-        glm::vec3 euler{};
-
-        if (is_ue5) {
-            euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * glm::mat4{init_options_view_rotation_matrix_ue5}));
-        } else {
-            euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * init_options_view_rotation_matrix));
-        }
-
-        auto euler_d = glm::vec<3, double>{euler};
-        auto euler_pointer = is_ue5 ? (Rotator<float>*)&euler_d : (Rotator<float>*)&euler;
-
-        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, &init_options_view_origin);
-
-        if (is_ue5) {
             euler = euler_d;
-        }
 
-        const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
+            const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
-        *(FIntRect*)&init_options_view_rect = view_rect;
-        *(FIntRect*)&init_options_constrained_view_rect = view_rect;
-
-        if (is_ue5) {
-            init_options_view_rotation_matrix_ue5 = view_rot_mat;
+            FIntRect updated_view_rect{x, y, x + w, y + h};
+            *(FIntRect*)&options.view_rect = updated_view_rect;
+            *(FIntRect*)&options.constrained_view_rect = updated_view_rect;
+            options.view_rotation_matrix = view_rot_mat;
 
             if (!vr->is_using_2d_screen()) {
-                init_options_projection_matrix_ue5 = proj_mat;
+                options.projection_matrix = vr->get_projection_matrix((VRRuntime::Eye)view_index);
+            }
+        };
+
+        if (is_ue5) {
+            apply_view_overrides_ue5(*init_options_ue5, true_index);
+
+            if (current_index == 0) {
+                g_hook->m_sceneview_data.cached_init_options_frame = g_frame_count;
+
+                if (init_options_scene_state != nullptr) {
+                    if (auto it = g_hook->m_sceneview_data.view_init_options_ue5.find(init_options_scene_state);
+                        it != g_hook->m_sceneview_data.view_init_options_ue5.end())
+                    {
+                        g_hook->m_sceneview_data.cached_splitscreen_init_options = it->second;
+                    } else {
+                        g_hook->m_sceneview_data.cached_splitscreen_init_options = *init_options_ue5;
+                    }
+                } else {
+                    g_hook->m_sceneview_data.cached_splitscreen_init_options = *init_options_ue5;
+                }
             }
         } else {
+            FIntRect view_rect{x, y, x + w, y + h};
+
+            vr->get_runtime()->update_matrices(0.1f, 10000.0f);
+
+            const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(true_index));
+
+            auto& init_options_view_origin = init_options->view_origin;
+            auto& init_options_view_rect = init_options->view_rect;
+            auto& init_options_constrained_view_rect = init_options->constrained_view_rect;
+            auto& init_options_projection_matrix = init_options->projection_matrix;
+
+            auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
+
+            const auto conversion_mat = glm::mat4 {
+                0, 0, 1, 0,
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1
+            };
+
+            const auto conversion_mat_inverse = glm::inverse(conversion_mat);
+
+            // We need to "undo" the operations done to create the rotation matrix so we can get the original angle
+            // const auto view_rot_mat = conversion_mat * make_inverse_rot_matrix(euler); <-- this is the result of the conversion
+            auto euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * init_options_view_rotation_matrix));
+
+            g_hook->calculate_stereo_view_offset_(true_index + 1, (Rotator<float>*)&euler, 100.0f, &init_options_view_origin);
+
+            const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
+
+            *(FIntRect*)&init_options_view_rect = view_rect;
+            *(FIntRect*)&init_options_constrained_view_rect = view_rect;
+
             init_options_view_rotation_matrix = view_rot_mat;
 
             if (!vr->is_using_2d_screen()) {
@@ -3065,6 +3101,63 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     last_index++;
 
     auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+
+    if (is_ue5 && vr->is_splitscreen_compatibility_enabled() && current_index == 0 && !vr->is_using_afr()) {
+        auto view_family = init_options->get_view_family();
+        auto views = view_family != nullptr ? view_family->get_views() : nullptr;
+
+        if (views != nullptr && views->count == 1 && g_hook->m_sceneview_data.cached_splitscreen_init_options.has_value() &&
+            g_hook->m_sceneview_data.cached_init_options_frame == g_frame_count)
+        {
+            auto synthetic_init_options = g_hook->m_sceneview_data.cached_splitscreen_init_options.value();
+
+            const auto conversion_mat = glm::mat4 {
+                0, 0, 1, 0,
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1
+            };
+
+            const auto conversion_mat_inverse = glm::inverse(conversion_mat);
+
+            auto& view_origin = *(glm::vec3*)&synthetic_init_options.view_origin;
+            auto view_rotation_matrix = synthetic_init_options.view_rotation_matrix;
+
+            auto euler = utility::math::ue_euler_from_rotation_matrix(
+                glm::inverse(conversion_mat_inverse * glm::mat4{view_rotation_matrix}));
+
+            auto euler_d = glm::vec<3, double>{euler};
+            g_hook->calculate_stereo_view_offset_(1 + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
+
+            euler = euler_d;
+
+            const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
+
+            FIntRect updated_view_rect{vr->get_hmd_width(), 0, vr->get_hmd_width() * 2, vr->get_hmd_height()};
+
+            *(FIntRect*)&synthetic_init_options.view_rect = updated_view_rect;
+            *(FIntRect*)&synthetic_init_options.constrained_view_rect = updated_view_rect;
+            synthetic_init_options.view_rotation_matrix = view_rot_mat;
+
+            if (!vr->is_using_2d_screen()) {
+                synthetic_init_options.projection_matrix = vr->get_projection_matrix(VRRuntime::Eye::RIGHT);
+            }
+
+            if (views->data != nullptr) {
+                auto secondary_view = views->data[views->count];
+
+                if (secondary_view != nullptr) {
+                    secondary_view->constructor((sdk::FSceneViewInitOptions*)&synthetic_init_options);
+
+                    if (views->count < 2) {
+                        views->count = 2;
+                    }
+                } else {
+                    SPDLOG_WARN_ONCE("Failed to synthesize secondary FSceneView for splitscreen compatibility on UE5");
+                }
+            }
+        }
+    }
 
     // Reset the view count back to what it was.
     if (views_original_count.has_value()) {
@@ -3342,7 +3435,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     // This is a HACKHACKHACK to get splitscreen working on around 4.20 to 4.27 something
     // This is completely borked on UE5
     // We can probably do it better inside the sceneview constructor hook, but that needs to be handled with care
-    if (vr->is_splitscreen_compatibility_enabled() && views_ptr != nullptr) {
+    if (vr->is_splitscreen_compatibility_enabled() && views_ptr != nullptr && !g_hook->has_double_precision()) {
         auto& views = *views_ptr;
         
         // B = dst, A = src
