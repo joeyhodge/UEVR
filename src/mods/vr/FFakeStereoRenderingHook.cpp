@@ -2886,7 +2886,7 @@ struct SceneViewInitOptionsAccessor {
 
     sdk::FSceneViewStateInterface* scene_state() const { return base->get_scene_state(); }
     sdk::FSceneViewFamily* view_family() const { return base->get_view_family(); }
-    EStereoscopicPass stereo_pass() const { return base->get_stereo_pass(); }
+    EStereoscopicPass stereo_pass() const { return static_cast<EStereoscopicPass>(base->get_stereo_pass()); }
     void set_stereo_pass(EStereoscopicPass pass) { base->set_stereo_pass(pass); }
 
     glm::vec3& view_origin() { return is_ue5 ? *(glm::vec3*)&ue5->view_origin : base->view_origin; }
