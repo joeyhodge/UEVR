@@ -2887,6 +2887,7 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE4_25_SHIPPING = 0x3B0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE4_25_SHIPPING = 0x98;
 [[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE4_25_SHIPPING = 0x28;
+[[maybe_unused]] constexpr auto SCENE_VIEW_EXTENSIONS_SIZE_UE4_25_SHIPPING = 0x10;
 
 // Shipping UE4.25 SceneViewProjectionData layout (base of FSceneViewInitOptions).
 // Useful for verifying float view/projection data used in the constructor hook.
@@ -2910,6 +2911,11 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_HORIZONTAL_UE4_25_SHIPPING = 0x9;
 [[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_COUNT_UE4_25_SHIPPING = 0xA;
 [[maybe_unused]] constexpr auto PER_PLAYER_SPLITSCREEN_DATA_SIZE_UE4_25_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_FULL_UE4_25_SHIPPING = 0x80020008;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_LEFT_EYE_UE4_25_SHIPPING = 0x1;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_RIGHT_EYE_UE4_25_SHIPPING = 0x2;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_LEFT_EYE_SIDE_UE4_25_SHIPPING = 0x3;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_RIGHT_EYE_SIDE_UE4_25_SHIPPING = 0x4;
 
 // Shipping UE5.4.4 SceneView layout helper (0x2700 bytes total, init options at +0x50).
 // Confirms UE5 keeps the same InitOptions offset even with larger double-precision matrices.
