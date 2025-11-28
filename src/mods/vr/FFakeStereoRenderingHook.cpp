@@ -2885,6 +2885,31 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE4_25_SHIPPING = 0x15B0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SIZE_UE4_25_SHIPPING = 0x1F0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE4_25_SHIPPING = 0x3B0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE4_25_SHIPPING = 0x98;
+[[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE4_25_SHIPPING = 0x28;
+
+// Shipping UE4.25 SceneViewProjectionData layout (base of FSceneViewInitOptions).
+// Useful for verifying float view/projection data used in the constructor hook.
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_SIZE_UE4_25_SHIPPING = 0xB0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ORIGIN_OFFSET_UE4_25_SHIPPING = 0x0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ROTATION_MATRIX_OFFSET_UE4_25_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_PROJECTION_MATRIX_OFFSET_UE4_25_SHIPPING = 0x50;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_RECT_OFFSET_UE4_25_SHIPPING = 0x90;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CONSTRAINED_VIEW_RECT_OFFSET_UE4_25_SHIPPING = 0xA0;
+
+// UE4.25 retail splitscreen helpers mirror the UE5 enum layout and per-player data stride.
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_NONE_UE4_25_SHIPPING = 0x80020008;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_TWO_PLAYER_HORIZONTAL_UE4_25_SHIPPING = 0x1;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_TWO_PLAYER_VERTICAL_UE4_25_SHIPPING = 0x2;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_FAVOR_TOP_UE4_25_SHIPPING = 0x3;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_FAVOR_BOTTOM_UE4_25_SHIPPING = 0x4;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_VERTICAL_UE4_25_SHIPPING = 0x5;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_HORIZONTAL_UE4_25_SHIPPING = 0x6;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_GRID_UE4_25_SHIPPING = 0x7;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_VERTICAL_UE4_25_SHIPPING = 0x8;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_HORIZONTAL_UE4_25_SHIPPING = 0x9;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_COUNT_UE4_25_SHIPPING = 0xA;
+[[maybe_unused]] constexpr auto PER_PLAYER_SPLITSCREEN_DATA_SIZE_UE4_25_SHIPPING = 0x10;
 
 // Shipping UE5.4.4 SceneView layout helper (0x2700 bytes total, init options at +0x50).
 // Confirms UE5 keeps the same InitOptions offset even with larger double-precision matrices.
