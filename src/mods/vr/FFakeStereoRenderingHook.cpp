@@ -2877,7 +2877,12 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 
 // 4.25something to 4.27
 // TODO: Add support for all versions via PDB dumps
-constexpr auto INIT_OPTIONS_OFFSET = 0x50;
+
+// Shipping UE4.25 SceneView layout helper (0x15B0 bytes total, init options at +0x50).
+// Kept for quick sanity checks/future PDB verification when dealing with retail builds
+// that do not expose symbols.
+[[maybe_unused]] constexpr auto INIT_OPTIONS_OFFSET = 0x50;
+[[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE4_25_SHIPPING = 0x15B0;
 
 bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
