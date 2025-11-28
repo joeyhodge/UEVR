@@ -2883,10 +2883,16 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 // that do not expose symbols.
 [[maybe_unused]] constexpr auto INIT_OPTIONS_OFFSET = 0x50;
 [[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE4_25_SHIPPING = 0x15B0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SIZE_UE4_25_SHIPPING = 0x1F0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE4_25_SHIPPING = 0x3B0;
 
 // Shipping UE5.4.4 SceneView layout helper (0x2700 bytes total, init options at +0x50).
 // Confirms UE5 keeps the same InitOptions offset even with larger double-precision matrices.
 [[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE5_4_4_SHIPPING = 0x2700;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SIZE_UE5_4_4_SHIPPING = 0x2F0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE5_4_4_SHIPPING = 0x7F0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE5_4_4_SHIPPING = 0x188;
+[[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE5_4_4_SHIPPING = 0x10;
 
 bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
