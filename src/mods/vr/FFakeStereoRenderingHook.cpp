@@ -2891,12 +2891,14 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 
 // Shipping UE4.25 SceneViewProjectionData layout (base of FSceneViewInitOptions).
 // Useful for verifying float view/projection data used in the constructor hook.
+// Retail PDBs also confirm FIntRect stays 0x10 bytes (Min/Max), matching helper casts.
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_SIZE_UE4_25_SHIPPING = 0xB0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ORIGIN_OFFSET_UE4_25_SHIPPING = 0x0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ROTATION_MATRIX_OFFSET_UE4_25_SHIPPING = 0x10;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_PROJECTION_MATRIX_OFFSET_UE4_25_SHIPPING = 0x50;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_RECT_OFFSET_UE4_25_SHIPPING = 0x90;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CONSTRAINED_VIEW_RECT_OFFSET_UE4_25_SHIPPING = 0xA0;
+[[maybe_unused]] constexpr auto FINT_RECT_SIZE_UE4_25_SHIPPING = 0x10;
 
 // UE4.25 retail splitscreen helpers mirror the UE5 enum layout and per-player data stride.
 [[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_NONE_UE4_25_SHIPPING = 0x80020008;
