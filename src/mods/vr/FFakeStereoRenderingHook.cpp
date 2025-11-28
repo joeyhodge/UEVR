@@ -2937,6 +2937,22 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CAMERA_TO_VIEW_TARGET_OFFSET_UE5_4_4_SHIPPING = 0x130;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CONSTRAINED_VIEW_RECT_OFFSET_UE5_4_4_SHIPPING = 0x148;
 
+// UE5.4.4 retail splitscreen helpers (enum values and per-player data stride).
+// Mirroring these alongside the UE4 block keeps constructor-side rect rebuilds consistent
+// when validating offsets on symbol-stripped titles.
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_NONE_UE5_4_4_SHIPPING = 0x80020008;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_TWO_PLAYER_HORIZONTAL_UE5_4_4_SHIPPING = 0x1;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_TWO_PLAYER_VERTICAL_UE5_4_4_SHIPPING = 0x2;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_FAVOR_TOP_UE5_4_4_SHIPPING = 0x3;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_FAVOR_BOTTOM_UE5_4_4_SHIPPING = 0x4;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_VERTICAL_UE5_4_4_SHIPPING = 0x5;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_THREE_PLAYER_HORIZONTAL_UE5_4_4_SHIPPING = 0x6;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_GRID_UE5_4_4_SHIPPING = 0x7;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_VERTICAL_UE5_4_4_SHIPPING = 0x8;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_HORIZONTAL_UE5_4_4_SHIPPING = 0x9;
+[[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_COUNT_UE5_4_4_SHIPPING = 0xA;
+[[maybe_unused]] constexpr auto PER_PLAYER_SPLITSCREEN_DATA_SIZE_UE5_4_4_SHIPPING = 0x10;
+
 // Shipping UE5.4.4 FSceneViewInitOptions fields we rely on for splitscreen/stereo patches.
 // These offsets are relative to the start of InitOptions (after the projection-data base).
 [[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_FAMILY_OFFSET_UE5_4_4_SHIPPING = 0x158;
