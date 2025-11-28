@@ -2894,6 +2894,49 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE5_4_4_SHIPPING = 0x188;
 [[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE5_4_4_SHIPPING = 0x10;
 
+// Shipping UE5.4.4 SceneViewProjectionData layout (base of FSceneViewInitOptions).
+// Useful for verifying double-precision view/projection data used in the constructor hook.
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_SIZE_UE5_4_4_SHIPPING = 0x160;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ORIGIN_OFFSET_UE5_4_4_SHIPPING = 0x0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_ROTATION_MATRIX_OFFSET_UE5_4_4_SHIPPING = 0x20;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_PROJECTION_MATRIX_OFFSET_UE5_4_4_SHIPPING = 0xA0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_RECT_OFFSET_UE5_4_4_SHIPPING = 0x120;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CAMERA_TO_VIEW_TARGET_OFFSET_UE5_4_4_SHIPPING = 0x130;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CONSTRAINED_VIEW_RECT_OFFSET_UE5_4_4_SHIPPING = 0x148;
+
+// Shipping UE5.4.4 FSceneViewInitOptions fields we rely on for splitscreen/stereo patches.
+// These offsets are relative to the start of InitOptions (after the projection-data base).
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_FAMILY_OFFSET_UE5_4_4_SHIPPING = 0x158;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SCENE_VIEW_STATE_OFFSET_UE5_4_4_SHIPPING = 0x160;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_ACTOR_OFFSET_UE5_4_4_SHIPPING = 0x168;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_PLAYER_INDEX_OFFSET_UE5_4_4_SHIPPING = 0x170;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_ELEMENT_DRAWER_OFFSET_UE5_4_4_SHIPPING = 0x178;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_BACKGROUND_COLOR_OFFSET_UE5_4_4_SHIPPING = 0x180;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_OVERLAY_COLOR_OFFSET_UE5_4_4_SHIPPING = 0x190;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_COLOR_SCALE_OFFSET_UE5_4_4_SHIPPING = 0x1A0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_STEREO_PASS_OFFSET_UE5_4_4_SHIPPING = 0x1B0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_STEREO_VIEW_INDEX_OFFSET_UE5_4_4_SHIPPING = 0x1B4;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_WORLD_TO_METERS_OFFSET_UE5_4_4_SHIPPING = 0x1B8;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_LOCATION_OFFSET_UE5_4_4_SHIPPING = 0x1C0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_VIEW_ROTATION_OFFSET_UE5_4_4_SHIPPING = 0x1D8;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_HIDDEN_PRIMITIVES_OFFSET_UE5_4_4_SHIPPING = 0x1F0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SHOW_ONLY_PRIMITIVES_OFFSET_UE5_4_4_SHIPPING = 0x240;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_CURSOR_POS_OFFSET_UE5_4_4_SHIPPING = 0x298;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_LOD_DISTANCE_FACTOR_OFFSET_UE5_4_4_SHIPPING = 0x2A0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_OVERRIDE_FAR_CLIP_OFFSET_UE5_4_4_SHIPPING = 0x2A4;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_ORIGIN_OFFSET_THIS_FRAME_OFFSET_UE5_4_4_SHIPPING = 0x2A8;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_IN_CAMERA_CUT_OFFSET_UE5_4_4_SHIPPING = 0x2C0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_USE_FOV_FOR_LOD_OFFSET_UE5_4_4_SHIPPING = 0x2C1;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_FOV_OFFSET_UE5_4_4_SHIPPING = 0x2C4;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_DESIRED_FOV_OFFSET_UE5_4_4_SHIPPING = 0x2C8;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_IS_SCENE_CAPTURE_OFFSET_UE5_4_4_SHIPPING = 0x2CC;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_IS_SCENE_CAPTURE_CUBE_OFFSET_UE5_4_4_SHIPPING = 0x2CD;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SCENE_CAPTURE_USES_RT_OFFSET_UE5_4_4_SHIPPING = 0x2CE;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_IS_REFLECTION_CAPTURE_OFFSET_UE5_4_4_SHIPPING = 0x2CF;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_IS_PLANAR_REFLECTION_OFFSET_UE5_4_4_SHIPPING = 0x2D0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_EDITOR_VIEW_BITFLAG_OFFSET_UE5_4_4_SHIPPING = 0x2D8;
+[[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_DISABLE_GAME_SCREEN_PERCENTAGE_OFFSET_UE5_4_4_SHIPPING = 0x2E0;
+
 bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
 }
