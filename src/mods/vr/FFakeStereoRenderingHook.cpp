@@ -2880,7 +2880,8 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 
 // Shipping UE4.25 SceneView layout helper (0x15B0 bytes total, init options at +0x50).
 // Kept for quick sanity checks/future PDB verification when dealing with retail builds
-// that do not expose symbols.
+// that do not expose symbols. These constexpr values live in metadata only and do not
+// add runtime overhead when the related compatibility toggles are disabled.
 [[maybe_unused]] constexpr auto INIT_OPTIONS_OFFSET = 0x50;
 [[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE4_25_SHIPPING = 0x15B0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SIZE_UE4_25_SHIPPING = 0x1F0;
@@ -2920,7 +2921,9 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_RIGHT_EYE_SIDE_UE4_25_SHIPPING = 0x4;
 
 // Shipping UE5.4.4 SceneView layout helper (0x2700 bytes total, init options at +0x50).
-// Confirms UE5 keeps the same InitOptions offset even with larger double-precision matrices.
+// Confirms UE5 keeps the same InitOptions offset even with larger double-precision matrices;
+// likewise, the constexpr offset tables remain no-op unless the compatibility paths request
+// them.
 [[maybe_unused]] constexpr auto SCENE_VIEW_SIZE_UE5_4_4_SHIPPING = 0x2700;
 [[maybe_unused]] constexpr auto SCENE_VIEW_INIT_OPTIONS_SIZE_UE5_4_4_SHIPPING = 0x2F0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE5_4_4_SHIPPING = 0x7F0;
