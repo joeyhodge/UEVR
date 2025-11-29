@@ -2929,6 +2929,9 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE5_4_4_SHIPPING = 0x7F0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE5_4_4_SHIPPING = 0x188;
 [[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE5_4_4_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto SCENE_VIEW_STEREO_PASS_OFFSET_UE5_4_4_SHIPPING = 0x14F0;
+[[maybe_unused]] constexpr auto SCENE_VIEW_STEREO_VIEW_INDEX_OFFSET_UE5_4_4_SHIPPING = 0x14F4;
+[[maybe_unused]] constexpr auto SCENE_VIEW_PRIMARY_VIEW_INDEX_OFFSET_UE5_4_4_SHIPPING = 0x14F8;
 [[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_SIZE_UE5_4_4_SHIPPING = 0x18;
 [[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_FOV_DEGREES_OFFSET_UE5_4_4_SHIPPING = 0x8;
 [[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_WIDTH_OFFSET_UE5_4_4_SHIPPING = 0xC;
@@ -2967,6 +2970,8 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_FOUR_PLAYER_HORIZONTAL_UE5_4_4_SHIPPING = 0x9;
 [[maybe_unused]] constexpr auto SPLITSCREEN_TYPE_COUNT_UE5_4_4_SHIPPING = 0xA;
 [[maybe_unused]] constexpr auto PER_PLAYER_SPLITSCREEN_DATA_SIZE_UE5_4_4_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto TWO_PLAYER_SPLITSCREEN_HORIZONTAL_UE5_4_4_SHIPPING = 0x80020008;
+[[maybe_unused]] constexpr auto TWO_PLAYER_SPLITSCREEN_VERTICAL_UE5_4_4_SHIPPING = 0x1;
 
 // Shipping UE5.4.4 FSceneViewInitOptions fields we rely on for splitscreen/stereo patches.
 // These offsets are relative to the start of InitOptions (after the projection-data base).
