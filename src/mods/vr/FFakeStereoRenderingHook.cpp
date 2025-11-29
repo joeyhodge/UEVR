@@ -2929,6 +2929,11 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_MATRICES_SIZE_UE5_4_4_SHIPPING = 0x7F0;
 [[maybe_unused]] constexpr auto SCENE_VIEW_FAMILY_SIZE_UE5_4_4_SHIPPING = 0x188;
 [[maybe_unused]] constexpr auto SCENE_VIEW_STATE_INTERFACE_SIZE_UE5_4_4_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_SIZE_UE5_4_4_SHIPPING = 0x18;
+[[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_FOV_DEGREES_OFFSET_UE5_4_4_SHIPPING = 0x8;
+[[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_WIDTH_OFFSET_UE5_4_4_SHIPPING = 0xC;
+[[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_HEIGHT_OFFSET_UE5_4_4_SHIPPING = 0x10;
+[[maybe_unused]] constexpr auto FAKE_STEREO_RENDERING_DEVICE_NUM_VIEWS_OFFSET_UE5_4_4_SHIPPING = 0x14;
 
 // Shipping UE5.4.4 SceneViewProjectionData layout (base of FSceneViewInitOptions).
 // Useful for verifying double-precision view/projection data used in the constructor hook.
@@ -2939,6 +2944,13 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_VIEW_RECT_OFFSET_UE5_4_4_SHIPPING = 0x120;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CAMERA_TO_VIEW_TARGET_OFFSET_UE5_4_4_SHIPPING = 0x130;
 [[maybe_unused]] constexpr auto SCENE_VIEW_PROJECTION_DATA_CONSTRAINED_VIEW_RECT_OFFSET_UE5_4_4_SHIPPING = 0x148;
+
+// UE5.4.4 retail stereoscopic pass enum values. These mirror the UE4 block but reflect the
+// UE5 naming and help validate constructor-side pass selection when toggling compatibility
+// options on double-precision builds.
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_FULL_UE5_4_4_SHIPPING = 0x80020008;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_PRIMARY_UE5_4_4_SHIPPING = 0x1;
+[[maybe_unused]] constexpr auto STEREOSCOPIC_PASS_SECONDARY_UE5_4_4_SHIPPING = 0x2;
 
 // UE5.4.4 retail splitscreen helpers (enum values and per-player data stride).
 // Mirroring these alongside the UE4 block keeps constructor-side rect rebuilds consistent
