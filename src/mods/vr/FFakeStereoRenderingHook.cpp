@@ -3077,7 +3077,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     // Handle splitscreen/view cloning as early as possible so we can feed the
     // corrected rects/projections into the constructor itself instead of trying
     // to rewrite an already-built FSceneView later (which breaks UE5 double
-    // precision paths and UE4 view-state caching).
+    // precision paths and UE4 view-state caching). The per-eye recompute here
+    // is just basic rect math and projection/rotation rebuilds (no extra heap
+    // allocations), so turning on the compatibility toggle only adds the small
+    // cost of this one constructor-side calculation per view.
     const auto view_init_accessors = get_view_init_accessors(init_options, init_options_ue5);
 
     const bool splitscreen_compat = vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled();
