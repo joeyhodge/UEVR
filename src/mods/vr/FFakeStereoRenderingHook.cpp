@@ -2981,7 +2981,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
             euler = euler_d;
 
-            const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
+            const auto view_rot_mat = conversion_mat * glm::dmat4{utility::math::ue_inverse_rotation_matrix(euler)};
 
             FIntRect updated_view_rect{x, y, x + w, y + h};
             *(FIntRect*)&options.view_rect = updated_view_rect;
@@ -3142,7 +3142,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
             euler = euler_d;
 
-            const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
+            const auto view_rot_mat = conversion_mat * glm::dmat4{utility::math::ue_inverse_rotation_matrix(euler)};
 
             FIntRect updated_view_rect{vr->get_hmd_width(), 0, vr->get_hmd_width() * 2, vr->get_hmd_height()};
 
