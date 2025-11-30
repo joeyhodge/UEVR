@@ -2971,8 +2971,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             auto& view_origin = *(glm::dvec3*)&options.view_origin;
             auto view_rotation_matrix = options.view_rotation_matrix;
 
+            auto view_rotation_matrix_d = glm::dmat4{view_rotation_matrix};
+
             auto euler = utility::math::ue_euler_from_rotation_matrix(
-                glm::inverse(conversion_mat_inverse * glm::dmat4{view_rotation_matrix}));
+                glm::inverse(conversion_mat_inverse * view_rotation_matrix_d));
 
             auto euler_d = glm::vec<3, double>{euler};
             g_hook->calculate_stereo_view_offset_(view_index + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
@@ -3130,8 +3132,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             auto& view_origin = *(glm::dvec3*)&synthetic_init_options.view_origin;
             auto view_rotation_matrix = synthetic_init_options.view_rotation_matrix;
 
+            auto view_rotation_matrix_d = glm::dmat4{view_rotation_matrix};
+
             auto euler = utility::math::ue_euler_from_rotation_matrix(
-                glm::inverse(conversion_mat_inverse * glm::dmat4{view_rotation_matrix}));
+                glm::inverse(conversion_mat_inverse * view_rotation_matrix_d));
 
             auto euler_d = glm::vec<3, double>{euler};
             g_hook->calculate_stereo_view_offset_(1 + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
