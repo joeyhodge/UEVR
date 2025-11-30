@@ -2977,7 +2977,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 glm::inverse(conversion_mat_inverse * view_rotation_matrix_d));
 
             auto euler_d = glm::vec<3, double>{euler};
-            g_hook->calculate_stereo_view_offset_(view_index + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
+
+            auto view_origin_f = glm::vec3{view_origin};
+            g_hook->calculate_stereo_view_offset_(view_index + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin_f);
+            view_origin = glm::dvec3{view_origin_f};
 
             euler = euler_d;
 
@@ -3139,14 +3142,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 glm::inverse(conversion_mat_inverse * view_rotation_matrix_d));
 
             auto euler_d = glm::vec<3, double>{euler};
-            g_hook->calculate_stereo_view_offset_(1 + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin);
+
+            auto view_origin_f = glm::vec3{view_origin};
+            g_hook->calculate_stereo_view_offset_(1 + 1, (Rotator<float>*)&euler_d, 100.0f, &view_origin_f);
+            view_origin = glm::dvec3{view_origin_f};
 
             euler = euler_d;
 
             const auto inverse_view_rot_mat_d = glm::dmat4{utility::math::ue_inverse_rotation_matrix(euler)};
             const auto view_rot_mat = conversion_mat * inverse_view_rot_mat_d;
 
-            FIntRect updated_view_rect{vr->get_hmd_width(), 0, vr->get_hmd_width() * 2, vr->get_hmd_height()};
+            FIntRect updated_view_rect{
+                static_cast<int32_t>(vr->get_hmd_width()),
+                0,
+                static_cast<int32_t>(vr->get_hmd_width() * 2),
+                static_cast<int32_t>(vr->get_hmd_height())};
 
             *(FIntRect*)&synthetic_init_options.view_rect = updated_view_rect;
             *(FIntRect*)&synthetic_init_options.constrained_view_rect = updated_view_rect;
