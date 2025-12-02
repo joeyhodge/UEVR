@@ -45,6 +45,7 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
     }
 
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        SPDLOG_INFO("Routing IXRTrackingSystem vtable to UE5.7 definitions");
         return ue5_7::IXRTrackingSystemVT::get();
     }
 
@@ -151,6 +152,7 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
     }
 
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        SPDLOG_INFO("Routing IXRCamera vtable to UE5.7 definitions");
         return ue5_7::IXRCameraVT::get();
     }
 
@@ -256,6 +258,7 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
 
     // 5.7
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        SPDLOG_INFO("Routing IHeadMountedDisplay vtable to UE5.7 definitions");
         return ue5_7::IHeadMountedDisplayVT::get();
     }
 

@@ -3876,21 +3876,31 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             // In UE5.7 optimized builds, the register load that feeds the null dereference can be
-            // separated from the dereference by more than one instruction. Walk back a few
-            // instructions to find a load that targets the same register and displacement so we can
-            // safely patch the crash site.
-            for (auto i = 0; i < 5 && matching_instruction; ++i) {
-                const auto& instrux = matching_instruction->instrux;
+            // separated from the dereference by more than one instruction. Walk back a larger
+            // instruction window to find a load that targets the same displacement, even if the
+            // compiler used a different base register along the way.
+            constexpr auto kMaxInstructionSearch = 15;
+            auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
+            std::vector<std::string> window_dump{};
 
-                if (instrux.OperandsCount >= 2 &&
-                    instrux.Operands[0].Type == ND_OP_REG &&
-                    instrux.Operands[0].Info.Register.Reg == op2.Info.Memory.Base)
-                {
+            for (auto i = 0; i < kMaxInstructionSearch && matching_instruction; ++i) {
+                const auto& instrux = matching_instruction->instrux;
+                window_dump.push_back(fmt::format("{:x}: {}", matching_instruction->addr, instrux.Mnemonic));
+
+                if (instrux.OperandsCount >= 2) {
                     const auto& prev_op2 = instrux.Operands[1];
 
                     if (prev_op2.Type == ND_OP_MEM && prev_op2.Info.Memory.HasBase && prev_op2.Info.Memory.HasDisp) {
                         if (prev_op2.Info.Memory.Disp == potential_hmd_device_offset) {
-                            break;
+                            if (instrux.Operands[0].Type == ND_OP_REG &&
+                                instrux.Operands[0].Info.Register.Reg == op2.Info.Memory.Base)
+                            {
+                                break;
+                            }
+
+                            if (!displacement_match) {
+                                displacement_match = matching_instruction;
+                            }
                         }
                     }
                 }
@@ -3902,33 +3912,36 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 matching_instruction->instrux.Operands[0].Type != ND_OP_REG ||
                 matching_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
-                if (current_op_mem_matches_offset) {
-                    SPDLOG_WARN("Falling back to current instruction displacement match for XRSystem/HMD dereference");
+                if (displacement_match) {
+                    matching_instruction = displacement_match;
+                    SPDLOG_WARN("Using displacement-only match for XRSystem/HMD dereference within {} instructions", kMaxInstructionSearch);
+                } else if (current_op_mem_matches_offset) {
+                    SPDLOG_WARN("Falling back to current instruction displacement match for XRSystem/HMD dereference (no register match within {} instructions)", kMaxInstructionSearch);
                 } else {
-                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference within {} instructions", kMaxInstructionSearch);
+
+                    if (!window_dump.empty()) {
+                        SPDLOG_WARN("Instruction window prior to crash site:");
+
+                        for (const auto& dump : window_dump) {
+                            SPDLOG_WARN("  {}", dump);
+                        }
+                    }
+
+                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match");
                 }
             }
 
             const auto& prev_op2 = matching_instruction ? matching_instruction->instrux.Operands[1] : decoded->Operands[1];
 
-            if (!current_op_mem_matches_offset) {
-                if (!matching_instruction || matching_instruction->instrux.OperandsCount < 2 ||
+            if (!current_op_mem_matches_offset && matching_instruction) {
+                if (matching_instruction->instrux.OperandsCount < 2 ||
                     prev_op2.Type != ND_OP_MEM ||
-                    !prev_op2.Info.Memory.HasBase)
+                    !prev_op2.Info.Memory.HasBase ||
+                    !prev_op2.Info.Memory.HasDisp ||
+                    prev_op2.Info.Memory.Disp != potential_hmd_device_offset)
                 {
-                    SPDLOG_ERROR("Previous instruction is not a memory dereference");
-                    return EXCEPTION_CONTINUE_SEARCH;
-                }
-
-                if (!prev_op2.Info.Memory.HasDisp) {
-                    SPDLOG_ERROR("Previous instruction does not have a displacement");
-                    return EXCEPTION_CONTINUE_SEARCH;
-                }
-
-                if (prev_op2.Info.Memory.Disp != potential_hmd_device_offset) {
-                    SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference");
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    SPDLOG_WARN("Resolved instruction at {:x} does not match XRSystem/HMD displacement, patching anyway", matching_instruction->addr);
                 }
             }
 
