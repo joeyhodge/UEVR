@@ -138,7 +138,10 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
     auto version = sdk::get_file_version_info();
 
     if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable", str_version);
         version.dwFileVersionMS = 0;
+    } else {
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
     }
 
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
@@ -236,7 +239,10 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
     auto version = sdk::get_file_version_info();
 
     if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable", str_version);
         version.dwFileVersionMS = 0;
+    } else {
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
     }
 
     // 5.7
