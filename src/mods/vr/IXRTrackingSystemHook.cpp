@@ -34,11 +34,14 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
-    if (str_version != "0.00") {
-        SPDLOG_INFO("Found version {} from executable", str_version);
-        version.dwFileVersionMS = 0;
+    const auto disk_major = HIWORD(version.dwFileVersionMS);
+    const auto disk_minor = LOWORD(version.dwFileVersionMS);
+    if (version_override.has_value()) {
+        SPDLOG_INFO("Using overridden version {} (disk {}.{})", str_version, disk_major, disk_minor);
+    } else if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable (disk {}.{})", str_version, disk_major, disk_minor);
     } else {
-        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", disk_major, disk_minor);
     }
 
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
@@ -137,11 +140,14 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
-    if (str_version != "0.00") {
-        SPDLOG_INFO("Found version {} from executable", str_version);
-        version.dwFileVersionMS = 0;
+    const auto disk_major = HIWORD(version.dwFileVersionMS);
+    const auto disk_minor = LOWORD(version.dwFileVersionMS);
+    if (version_override.has_value()) {
+        SPDLOG_INFO("Using overridden version {} (disk {}.{})", str_version, disk_major, disk_minor);
+    } else if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable (disk {}.{})", str_version, disk_major, disk_minor);
     } else {
-        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", disk_major, disk_minor);
     }
 
     if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
@@ -238,11 +244,14 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
 
-    if (str_version != "0.00") {
-        SPDLOG_INFO("Found version {} from executable", str_version);
-        version.dwFileVersionMS = 0;
+    const auto disk_major = HIWORD(version.dwFileVersionMS);
+    const auto disk_minor = LOWORD(version.dwFileVersionMS);
+    if (version_override.has_value()) {
+        SPDLOG_INFO("Using overridden version {} (disk {}.{})", str_version, disk_major, disk_minor);
+    } else if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable (disk {}.{})", str_version, disk_major, disk_minor);
     } else {
-        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", disk_major, disk_minor);
     }
 
     // 5.7
