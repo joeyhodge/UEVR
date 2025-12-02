@@ -3863,41 +3863,77 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
 
             // Get the start of the previous instruction
-            const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+            const auto current_op_mem_matches_offset =
+                decoded->Operands[1].Info.Memory.HasDisp &&
+                decoded->Operands[1].Info.Memory.Disp == potential_hmd_device_offset;
+
+            auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+            auto matching_instruction = previous_instruction;
 
             if (!previous_instruction) {
                 SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
-                previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
+            // In UE5.7 optimized builds, the register load that feeds the null dereference can be
+            // separated from the dereference by more than one instruction. Walk back a few
+            // instructions to find a load that targets the same register and displacement so we can
+            // safely patch the crash site.
+            for (auto i = 0; i < 5 && matching_instruction; ++i) {
+                const auto& instrux = matching_instruction->instrux;
+
+                if (instrux.OperandsCount >= 2 &&
+                    instrux.Operands[0].Type == ND_OP_REG &&
+                    instrux.Operands[0].Info.Register.Reg == op2.Info.Memory.Base)
+                {
+                    const auto& prev_op2 = instrux.Operands[1];
+
+                    if (prev_op2.Type == ND_OP_MEM && prev_op2.Info.Memory.HasBase && prev_op2.Info.Memory.HasDisp) {
+                        if (prev_op2.Info.Memory.Disp == potential_hmd_device_offset) {
+                            break;
+                        }
+                    }
+                }
+
+                matching_instruction = utility::resolve_instruction(matching_instruction->addr - 1);
+            }
+
+            if (!matching_instruction ||
+                matching_instruction->instrux.Operands[0].Type != ND_OP_REG ||
+                matching_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
-                SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
+                if (current_op_mem_matches_offset) {
+                    SPDLOG_WARN("Falling back to current instruction displacement match for XRSystem/HMD dereference");
+                } else {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
             }
 
-            const auto prev_op2 = previous_instruction->instrux.Operands[1];
+            const auto& prev_op2 = matching_instruction ? matching_instruction->instrux.Operands[1] : decoded->Operands[1];
 
-            if (previous_instruction->instrux.OperandsCount < 2 ||
-                prev_op2.Type != ND_OP_MEM ||
-                !prev_op2.Info.Memory.HasBase)
-            {
-                SPDLOG_ERROR("Previous instruction is not a memory dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
+            if (!current_op_mem_matches_offset) {
+                if (!matching_instruction || matching_instruction->instrux.OperandsCount < 2 ||
+                    prev_op2.Type != ND_OP_MEM ||
+                    !prev_op2.Info.Memory.HasBase)
+                {
+                    SPDLOG_ERROR("Previous instruction is not a memory dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                if (!prev_op2.Info.Memory.HasDisp) {
+                    SPDLOG_ERROR("Previous instruction does not have a displacement");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                if (prev_op2.Info.Memory.Disp != potential_hmd_device_offset) {
+                    SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
             }
 
-            if (!prev_op2.Info.Memory.HasDisp) {
-                SPDLOG_ERROR("Previous instruction does not have a displacement");
-                return EXCEPTION_CONTINUE_SEARCH;
-            }
-
-            if (prev_op2.Info.Memory.Disp != potential_hmd_device_offset) {
-                SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
-            }
-
-            SPDLOG_INFO("Found the dereference of the XRSystem or HMDDevice at {:x}", previous_instruction->addr);
+            const auto deref_origin = matching_instruction ? matching_instruction->addr : exception_address;
+            SPDLOG_INFO("Found the dereference of the XRSystem or HMDDevice at {:x}", deref_origin);
 
             // Patch the initial instruction that caused the crash
             SPDLOG_INFO("Creating first patch...");
