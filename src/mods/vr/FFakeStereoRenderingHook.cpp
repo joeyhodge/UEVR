@@ -3959,29 +3959,59 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
 
-            const auto next_instruction_addr = exception_address + decoded->Length;
-            const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+            // Patch a small window of instructions that immediately follow the null dereference.
+            // UE 5.7 often splits the dereference and the eventual call across multiple
+            // instructions, so we keep nopping anything that either reuses the same base
+            // register/displacement or eventually performs the call.
+            constexpr auto kMaxForwardPatchInstructions = 5;
+            auto current_addr = exception_address;
+            auto current_instruction = decoded;
 
-            if (!next_instruction) {
-                SPDLOG_ERROR("Could not decode next instruction at {:x}", exception_address + decoded->Length);
-                return EXCEPTION_CONTINUE_EXECUTION;
+            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction; ++i) {
+                current_addr += current_instruction->Length;
+
+                current_instruction = utility::decode_one((uint8_t*)current_addr);
+
+                if (!current_instruction) {
+                    SPDLOG_ERROR("Could not decode follow-up instruction at {:x}", current_addr);
+                    break;
+                }
+
+                const auto mnemonic = std::string_view{current_instruction->Mnemonic};
+                const auto is_call = mnemonic.starts_with("CALL");
+
+                auto uses_same_base_reg = false;
+                auto matches_disp = false;
+
+                for (auto op_idx = 0; op_idx < current_instruction->OperandsCount; ++op_idx) {
+                    const auto& operand = current_instruction->Operands[op_idx];
+
+                    if (operand.Type == ND_OP_MEM && operand.Info.Memory.HasBase) {
+                        uses_same_base_reg |= operand.Info.Memory.Base == op2.Info.Memory.Base;
+                        matches_disp |= operand.Info.Memory.HasDisp &&
+                                        operand.Info.Memory.Disp == potential_hmd_device_offset;
+                    }
+                }
+
+                if (!uses_same_base_reg && !matches_disp && !is_call) {
+                    continue;
+                }
+
+                SPDLOG_INFO("Creating follow-up patch at {:x} ({}{})", current_addr, mnemonic,
+                            is_call ? " - call" : "");
+
+                std::vector<int16_t> followup_patch{};
+                for (auto len = 0; len < current_instruction->Length; ++len) {
+                    followup_patch.push_back(0x90);
+                }
+
+                xrsystem_patches.push_back(Patch::create(current_addr, followup_patch));
+
+                if (is_call) {
+                    SPDLOG_INFO("Patched call following XRSystem/HMD dereference at {:x}", current_addr);
+                    break;
+                }
             }
-
-            if (!std::string_view{next_instruction->Mnemonic}.starts_with("CALL")) {
-                SPDLOG_ERROR("Next instruction is not a call, continuing anyways since we patched the dereference");
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-
-            // Patch the next instruction if it's a call
-            SPDLOG_INFO("Creating second patch...");
-
-            std::vector<int16_t> second_patch{};
-
-            for (auto i = 0; i < next_instruction->Length; ++i) {
-                second_patch.push_back(0x90);
-            }
-
-            xrsystem_patches.push_back(Patch::create(next_instruction_addr, second_patch));
 
             SPDLOG_INFO("Finished creating patches, continuing execution. Hopefully we don't crash...");
             return EXCEPTION_CONTINUE_EXECUTION;
