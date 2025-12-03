@@ -3992,7 +3992,9 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     }
                 }
 
-                if (!uses_same_base_reg && !matches_disp && !is_call) {
+                const auto mem_match = uses_same_base_reg && matches_disp;
+
+                if (!mem_match && !is_call) {
                     continue;
                 }
 
