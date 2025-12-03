@@ -3966,6 +3966,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             auto current_addr = exception_address;
             auto current_instruction = decoded;
 
+            auto saw_mem_match = current_op_mem_matches_offset;
+
             for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction; ++i) {
                 current_addr += current_instruction->Length;
 
@@ -3994,7 +3996,16 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
                 const auto mem_match = uses_same_base_reg && matches_disp;
 
+                if (mem_match) {
+                    saw_mem_match = true;
+                }
+
                 if (!mem_match && !is_call) {
+                    continue;
+                }
+
+                if (is_call && !saw_mem_match) {
+                    SPDLOG_INFO("Skipping call at {:x} before any XRSystem/HMD displacement match", current_addr);
                     continue;
                 }
 
