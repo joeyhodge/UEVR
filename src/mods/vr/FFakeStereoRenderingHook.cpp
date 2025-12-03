@@ -3881,7 +3881,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // UE 5.7 builds can hoist the base register setup far away from the
             // null dereference. Search a wider window so we can still capture
             // the displacement source and avoid noisy error logs.
-            constexpr auto kMaxInstructionSearch = 25;
+            //
+            // Some 5.7 builds have even longer register setup chains (especially with
+            // aggressive LTO), so expand the backwards search further to reduce the
+            // chances of bailing out before we find the displacement producer.
+            constexpr auto kMaxInstructionSearch = 50;
             auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
             std::vector<std::string> window_dump{};
 
@@ -3917,10 +3921,12 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 if (displacement_match) {
                     matching_instruction = displacement_match;
                     SPDLOG_WARN("Using displacement-only match for XRSystem/HMD dereference within {} instructions", kMaxInstructionSearch);
-                } else if (current_op_mem_matches_offset) {
-                    SPDLOG_WARN("Falling back to current instruction displacement match for XRSystem/HMD dereference (no register match within {} instructions)", kMaxInstructionSearch);
                 } else {
-                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference within {} instructions", kMaxInstructionSearch);
+                    // As a last resort, fall back to the current instruction to guarantee
+                    // we still patch the crashing site even when the producer can't be
+                    // identified (e.g., stripped builds with heavy inlining).
+                    matching_instruction = previous_instruction ? previous_instruction : decoded;
+                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match (no register match within {} instructions)", kMaxInstructionSearch);
 
                     if (!window_dump.empty()) {
                         SPDLOG_WARN("Instruction window prior to crash site:");
@@ -3929,8 +3935,6 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                             SPDLOG_WARN("  {}", dump);
                         }
                     }
-
-                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match");
                 }
             }
 
@@ -3966,7 +3970,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // across more than just a couple of instructions, so we keep nopping
             // anything that either reuses the same base register/displacement or
             // eventually performs the call.
-            constexpr auto kMaxForwardPatchInstructions = 10;
+            //
+            // With 5.7 builds the call site can be separated by a sizeable prologue,
+            // so increase the forward scan to cover more of the surrounding block.
+            constexpr auto kMaxForwardPatchInstructions = 20;
             auto current_addr = exception_address;
             auto current_instruction = decoded;
 
