@@ -3878,7 +3878,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // separated from the dereference by more than one instruction. Walk back a larger
             // instruction window to find a load that targets the same displacement, even if the
             // compiler used a different base register along the way.
-            constexpr auto kMaxInstructionSearch = 15;
+            // UE 5.7 builds can hoist the base register setup far away from the
+            // null dereference. Search a wider window so we can still capture
+            // the displacement source and avoid noisy error logs.
+            constexpr auto kMaxInstructionSearch = 25;
             auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
             std::vector<std::string> window_dump{};
 
@@ -3958,11 +3961,12 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
 
-            // Patch a small window of instructions that immediately follow the null dereference.
-            // UE 5.7 often splits the dereference and the eventual call across multiple
-            // instructions, so we keep nopping anything that either reuses the same base
-            // register/displacement or eventually performs the call.
-            constexpr auto kMaxForwardPatchInstructions = 5;
+            // Patch a larger window of instructions that immediately follow the null
+            // dereference. UE 5.7 often splits the dereference and the eventual call
+            // across more than just a couple of instructions, so we keep nopping
+            // anything that either reuses the same base register/displacement or
+            // eventually performs the call.
+            constexpr auto kMaxForwardPatchInstructions = 10;
             auto current_addr = exception_address;
             auto current_instruction = decoded;
 
