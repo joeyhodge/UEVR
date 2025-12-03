@@ -3885,7 +3885,13 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // Some 5.7 builds have even longer register setup chains (especially with
             // aggressive LTO), so expand the backwards search further to reduce the
             // chances of bailing out before we find the displacement producer.
-            constexpr auto kMaxInstructionSearch = 50;
+            // UE 5.7 builds sometimes hoist the XRSystem/HMD base register setup
+            // extremely far away from the eventual dereference (well beyond the
+            // tiny thunk-like windows we normally inspect). Search a lot farther
+            // back so we have a better chance of finding the real producer instead
+            // of falling back to a displacement-only match that could patch the
+            // wrong code and still crash.
+            constexpr auto kMaxInstructionSearch = 200;
             auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
             std::vector<std::string> window_dump{};
 
@@ -3973,7 +3979,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             //
             // With 5.7 builds the call site can be separated by a sizeable prologue,
             // so increase the forward scan to cover more of the surrounding block.
-            constexpr auto kMaxForwardPatchInstructions = 20;
+            constexpr auto kMaxForwardPatchInstructions = 32;
             auto current_addr = exception_address;
             auto current_instruction = decoded;
 
