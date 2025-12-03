@@ -3970,6 +3970,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             auto current_addr = exception_address;
             auto current_instruction = decoded;
 
+            // Track whether we've seen *any* instruction that references the same displacement
+            // as the original XRSystem/HMD dereference. UE5.7 builds sometimes use different
+            // base registers for the same displacement, so we consider a displacement-only
+            // match good enough to start patching follow-up calls.
             auto saw_mem_match = current_op_mem_matches_offset;
 
             for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction; ++i) {
@@ -3985,31 +3989,25 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 const auto mnemonic = std::string_view{current_instruction->Mnemonic};
                 const auto is_call = mnemonic.starts_with("CALL");
 
-                auto uses_same_base_reg = false;
                 auto matches_disp = false;
 
                 for (auto op_idx = 0; op_idx < current_instruction->OperandsCount; ++op_idx) {
                     const auto& operand = current_instruction->Operands[op_idx];
 
                     if (operand.Type == ND_OP_MEM && operand.Info.Memory.HasBase) {
-                        uses_same_base_reg |= operand.Info.Memory.Base == op2.Info.Memory.Base;
                         matches_disp |= operand.Info.Memory.HasDisp &&
                                         operand.Info.Memory.Disp == potential_hmd_device_offset;
                     }
                 }
 
-                const auto mem_match = uses_same_base_reg && matches_disp;
+                const auto mem_match = matches_disp;
 
                 if (mem_match) {
                     saw_mem_match = true;
                 }
 
+                // If this isn't a call and doesn't touch the displacement, skip it.
                 if (!mem_match && !is_call) {
-                    continue;
-                }
-
-                if (is_call && !saw_mem_match) {
-                    SPDLOG_INFO("Skipping call at {:x} before any XRSystem/HMD displacement match", current_addr);
                     continue;
                 }
 
