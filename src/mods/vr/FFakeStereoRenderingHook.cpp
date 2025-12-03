@@ -3871,8 +3871,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             auto matching_instruction = previous_instruction;
 
             if (!previous_instruction) {
-                SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
-                return EXCEPTION_CONTINUE_SEARCH;
+                SPDLOG_WARN("Could not resolve previous instruction at {:x}; proceeding with current decode", exception_address - 1);
             }
 
             // In UE5.7 optimized builds, the register load that feeds the null dereference can be
