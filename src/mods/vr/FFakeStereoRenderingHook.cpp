@@ -3883,7 +3883,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
     // Add a vectored exception handler that catches attempted dereferences of a null XRSystem or HMDDevice
     // The exception handler will then patch out the instructions causing the crash and continue execution
-    AddVectoredExceptionHandler(1, [](PEXCEPTION_POINTERS exception) -> LONG {
+    AddVectoredExceptionHandler(1, [potential_hmd_device_offset](PEXCEPTION_POINTERS exception) -> LONG {
         static std::vector<Patch::Ptr> xrsystem_patches{};
         static std::unordered_set<uintptr_t> ignored_addresses{};
 
