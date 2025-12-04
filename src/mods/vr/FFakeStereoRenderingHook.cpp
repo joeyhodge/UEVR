@@ -3893,6 +3893,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // wrong code and still crash.
             constexpr auto kMaxInstructionSearch = 200;
             auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
+            bool found_base_match = false;
+            auto base_reg = op2.Info.Memory.Base;
             std::vector<std::string> window_dump{};
 
             for (auto i = 0; i < kMaxInstructionSearch && matching_instruction; ++i) {
@@ -3900,19 +3902,47 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 window_dump.push_back(fmt::format("{:x}: {}", matching_instruction->addr, instrux.Mnemonic));
 
                 if (instrux.OperandsCount >= 2) {
-                    const auto& prev_op2 = instrux.Operands[1];
+                    const auto& dst = instrux.Operands[0];
+                    const auto& src = instrux.Operands[1];
 
-                    if (prev_op2.Type == ND_OP_MEM && prev_op2.Info.Memory.HasBase && prev_op2.Info.Memory.HasDisp) {
-                        if (prev_op2.Info.Memory.Disp == potential_hmd_device_offset) {
-                            if (instrux.Operands[0].Type == ND_OP_REG &&
-                                instrux.Operands[0].Info.Register.Reg == op2.Info.Memory.Base)
+                    // Track base-register data flow: if the instruction writes to the current
+                    // base register from another register, follow that new producer.
+                    if (dst.Type == ND_OP_REG && dst.Info.Register.Reg == base_reg) {
+                        if (src.Type == ND_OP_REG) {
+                            base_reg = src.Info.Register.Reg;
+                        }
+
+                        // If we have a LEA into the base register, follow the new base and
+                        // treat a matching displacement as a confirmed producer.
+                        if (src.Type == ND_OP_MEM && src.Info.Memory.HasBase) {
+                            if (src.Info.Memory.HasDisp &&
+                                src.Info.Memory.Disp == potential_hmd_device_offset)
                             {
+                                found_base_match = true;
                                 break;
                             }
 
-                            if (!displacement_match) {
-                                displacement_match = matching_instruction;
+                            base_reg = src.Info.Memory.Base;
+                        }
+
+                        // A direct load from memory into the base register with the correct
+                        // displacement is the confirmation we want.
+                        if (src.Type == ND_OP_MEM && src.Info.Memory.HasBase && src.Info.Memory.HasDisp) {
+                            if (src.Info.Memory.Disp == potential_hmd_device_offset) {
+                                found_base_match = true;
+                                break;
                             }
+                        }
+                    }
+
+                    // Even if the base register changes, remember the first instruction that
+                    // references the expected displacement so we can optionally fall back to it
+                    // for logging purposes.
+                    if (src.Type == ND_OP_MEM && src.Info.Memory.HasDisp &&
+                        src.Info.Memory.Disp == potential_hmd_device_offset)
+                    {
+                        if (!displacement_match) {
+                            displacement_match = matching_instruction;
                         }
                     }
                 }
@@ -3948,14 +3978,18 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 }
             }
 
-            const auto& prev_op2 = matching_instruction ? matching_instruction->instrux.Operands[1] : decoded->Operands[1];
+            const INSTRUX* prev_op2 = nullptr;
+            if (matching_instruction && matching_instruction->instrux.OperandsCount > 1) {
+                prev_op2 = &matching_instruction->instrux.Operands[1];
+            } else if (decoded && decoded->OperandsCount > 1) {
+                prev_op2 = &decoded->Operands[1];
+            }
 
-            if (!current_op_mem_matches_offset && matching_instruction) {
-                if (matching_instruction->instrux.OperandsCount < 2 ||
-                    prev_op2.Type != ND_OP_MEM ||
-                    !prev_op2.Info.Memory.HasBase ||
-                    !prev_op2.Info.Memory.HasDisp ||
-                    prev_op2.Info.Memory.Disp != potential_hmd_device_offset)
+            if (!current_op_mem_matches_offset && matching_instruction && prev_op2) {
+                if (prev_op2->Type != ND_OP_MEM ||
+                    !prev_op2->Info.Memory.HasBase ||
+                    !prev_op2->Info.Memory.HasDisp ||
+                    prev_op2->Info.Memory.Disp != potential_hmd_device_offset)
                 {
                     SPDLOG_WARN("Resolved instruction at {:x} does not match XRSystem/HMD displacement, patching anyway", matching_instruction->addr);
                 }
@@ -3993,7 +4027,19 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // match good enough to start patching follow-up calls.
             auto saw_mem_match = current_op_mem_matches_offset;
 
-            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction; ++i) {
+            // We only want to patch follow-up calls once we've seen at least one
+            // instruction that references the XRSystem/HMD displacement. UE 5.7
+            // binaries can have unrelated calls in the same block; skipping them
+            // avoids nopping unrelated code when no displacement match was found.
+            bool patched_followup = false;
+
+            const bool allow_followup_patching = found_base_match;
+
+            if (!allow_followup_patching) {
+                SPDLOG_WARN("Skipping follow-up patching because no XRSystem/HMD base-register producer was confirmed");
+            }
+
+            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction && allow_followup_patching; ++i) {
                 current_addr += current_instruction->Length;
 
                 current_instruction = utility::decode_one((uint8_t*)current_addr);
@@ -4028,6 +4074,13 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     continue;
                 }
 
+                // Skip calls until we've confirmed a displacement match somewhere in the
+                // forward window. This keeps us from nopping unrelated calls in tight
+                // UE 5.7 thunks that never actually reference the XR system.
+                if (is_call && !saw_mem_match) {
+                    continue;
+                }
+
                 SPDLOG_INFO("Creating follow-up patch at {:x} ({}{})", current_addr, mnemonic,
                             is_call ? " - call" : "");
 
@@ -4037,11 +4090,16 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 }
 
                 xrsystem_patches.push_back(Patch::create(current_addr, followup_patch));
+                patched_followup = true;
 
                 if (is_call) {
                     SPDLOG_INFO("Patched call following XRSystem/HMD dereference at {:x}", current_addr);
                     break;
                 }
+            }
+
+            if (!saw_mem_match && !patched_followup) {
+                SPDLOG_WARN("No XRSystem/HMD displacement seen in forward window; skipped patching unrelated calls");
             }
 
             SPDLOG_INFO("Finished creating patches, continuing execution. Hopefully we don't crash...");
