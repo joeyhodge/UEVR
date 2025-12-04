@@ -4059,10 +4059,17 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // avoids nopping unrelated code when no displacement match was found.
             bool patched_followup = false;
 
-            const bool allow_followup_patching = found_base_match;
+            // Even if we fail to trace the base register, a confirmed displacement match
+            // (either on the current dereference or a previous instruction in the window)
+            // is enough evidence to safely continue nopping nearby calls. UE5.7 builds
+            // often lose the base-producer trace due to aggressive register coalescing,
+            // and skipping the follow-up patch leaves the crashing call chain intact.
+            const bool allow_followup_patching = found_base_match || current_op_mem_matches_offset || displacement_match;
 
             if (!allow_followup_patching) {
-                SPDLOG_WARN("Skipping follow-up patching because no XRSystem/HMD base-register producer was confirmed");
+                SPDLOG_WARN("Skipping follow-up patching because no XRSystem/HMD displacement evidence was found");
+            } else if (!found_base_match) {
+                SPDLOG_WARN("Proceeding with follow-up patching using displacement-only evidence (no base register trace)");
             }
 
             for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction && allow_followup_patching; ++i) {
