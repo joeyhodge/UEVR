@@ -3871,15 +3871,27 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             auto matching_instruction = previous_instruction;
 
             if (!previous_instruction) {
-                SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
-                return EXCEPTION_CONTINUE_SEARCH;
+                SPDLOG_WARN("Could not resolve previous instruction at {:x}; proceeding with current decode", exception_address - 1);
             }
 
             // In UE5.7 optimized builds, the register load that feeds the null dereference can be
             // separated from the dereference by more than one instruction. Walk back a larger
             // instruction window to find a load that targets the same displacement, even if the
             // compiler used a different base register along the way.
-            constexpr auto kMaxInstructionSearch = 15;
+            // UE 5.7 builds can hoist the base register setup far away from the
+            // null dereference. Search a wider window so we can still capture
+            // the displacement source and avoid noisy error logs.
+            //
+            // Some 5.7 builds have even longer register setup chains (especially with
+            // aggressive LTO), so expand the backwards search further to reduce the
+            // chances of bailing out before we find the displacement producer.
+            // UE 5.7 builds sometimes hoist the XRSystem/HMD base register setup
+            // extremely far away from the eventual dereference (well beyond the
+            // tiny thunk-like windows we normally inspect). Search a lot farther
+            // back so we have a better chance of finding the real producer instead
+            // of falling back to a displacement-only match that could patch the
+            // wrong code and still crash.
+            constexpr auto kMaxInstructionSearch = 200;
             auto displacement_match = current_op_mem_matches_offset ? previous_instruction : decltype(previous_instruction){};
             std::vector<std::string> window_dump{};
 
@@ -3915,10 +3927,16 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 if (displacement_match) {
                     matching_instruction = displacement_match;
                     SPDLOG_WARN("Using displacement-only match for XRSystem/HMD dereference within {} instructions", kMaxInstructionSearch);
-                } else if (current_op_mem_matches_offset) {
-                    SPDLOG_WARN("Falling back to current instruction displacement match for XRSystem/HMD dereference (no register match within {} instructions)", kMaxInstructionSearch);
                 } else {
-                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference within {} instructions", kMaxInstructionSearch);
+                    // As a last resort, fall back to the current instruction to guarantee
+                    // we still patch the crashing site even when the producer can't be
+                    // identified (e.g., stripped builds with heavy inlining).
+                    if (previous_instruction) {
+                        matching_instruction = previous_instruction;
+                    } else if (decoded) {
+                        matching_instruction = utility::Resolved{exception_address, *decoded};
+                    }
+                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match (no register match within {} instructions)", kMaxInstructionSearch);
 
                     if (!window_dump.empty()) {
                         SPDLOG_WARN("Instruction window prior to crash site:");
@@ -3927,8 +3945,6 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                             SPDLOG_WARN("  {}", dump);
                         }
                     }
-
-                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match");
                 }
             }
 
@@ -3959,29 +3975,74 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
 
-            const auto next_instruction_addr = exception_address + decoded->Length;
-            const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+            // Patch a larger window of instructions that immediately follow the null
+            // dereference. UE 5.7 often splits the dereference and the eventual call
+            // across more than just a couple of instructions, so we keep nopping
+            // anything that either reuses the same base register/displacement or
+            // eventually performs the call.
+            //
+            // With 5.7 builds the call site can be separated by a sizeable prologue,
+            // so increase the forward scan to cover more of the surrounding block.
+            constexpr auto kMaxForwardPatchInstructions = 32;
+            auto current_addr = exception_address;
+            auto current_instruction = decoded;
 
-            if (!next_instruction) {
-                SPDLOG_ERROR("Could not decode next instruction at {:x}", exception_address + decoded->Length);
-                return EXCEPTION_CONTINUE_EXECUTION;
+            // Track whether we've seen *any* instruction that references the same displacement
+            // as the original XRSystem/HMD dereference. UE5.7 builds sometimes use different
+            // base registers for the same displacement, so we consider a displacement-only
+            // match good enough to start patching follow-up calls.
+            auto saw_mem_match = current_op_mem_matches_offset;
+
+            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction; ++i) {
+                current_addr += current_instruction->Length;
+
+                current_instruction = utility::decode_one((uint8_t*)current_addr);
+
+                if (!current_instruction) {
+                    SPDLOG_ERROR("Could not decode follow-up instruction at {:x}", current_addr);
+                    break;
+                }
+
+                const auto mnemonic = std::string_view{current_instruction->Mnemonic};
+                const auto is_call = mnemonic.starts_with("CALL");
+
+                auto matches_disp = false;
+
+                for (auto op_idx = 0; op_idx < current_instruction->OperandsCount; ++op_idx) {
+                    const auto& operand = current_instruction->Operands[op_idx];
+
+                    if (operand.Type == ND_OP_MEM && operand.Info.Memory.HasBase) {
+                        matches_disp |= operand.Info.Memory.HasDisp &&
+                                        operand.Info.Memory.Disp == potential_hmd_device_offset;
+                    }
+                }
+
+                const auto mem_match = matches_disp;
+
+                if (mem_match) {
+                    saw_mem_match = true;
+                }
+
+                // If this isn't a call and doesn't touch the displacement, skip it.
+                if (!mem_match && !is_call) {
+                    continue;
+                }
+
+                SPDLOG_INFO("Creating follow-up patch at {:x} ({}{})", current_addr, mnemonic,
+                            is_call ? " - call" : "");
+
+                std::vector<int16_t> followup_patch{};
+                for (auto len = 0; len < current_instruction->Length; ++len) {
+                    followup_patch.push_back(0x90);
+                }
+
+                xrsystem_patches.push_back(Patch::create(current_addr, followup_patch));
+
+                if (is_call) {
+                    SPDLOG_INFO("Patched call following XRSystem/HMD dereference at {:x}", current_addr);
+                    break;
+                }
             }
-
-            if (!std::string_view{next_instruction->Mnemonic}.starts_with("CALL")) {
-                SPDLOG_ERROR("Next instruction is not a call, continuing anyways since we patched the dereference");
-                return EXCEPTION_CONTINUE_EXECUTION;
-            }
-
-            // Patch the next instruction if it's a call
-            SPDLOG_INFO("Creating second patch...");
-
-            std::vector<int16_t> second_patch{};
-
-            for (auto i = 0; i < next_instruction->Length; ++i) {
-                second_patch.push_back(0x90);
-            }
-
-            xrsystem_patches.push_back(Patch::create(next_instruction_addr, second_patch));
 
             SPDLOG_INFO("Finished creating patches, continuing execution. Hopefully we don't crash...");
             return EXCEPTION_CONTINUE_EXECUTION;
