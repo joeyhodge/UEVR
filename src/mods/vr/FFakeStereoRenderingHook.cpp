@@ -66,6 +66,22 @@
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 
+// Known engine field offsets for newer Unreal builds. This lets us skip brittle
+// pointer walks when we already know where the StereoRenderingDevice resides
+// inside UEngine (and, by extension, where the XRSystem/TSharedPtr lives).
+static std::optional<uintptr_t> get_known_stereo_device_offset() {
+    const auto version_info = sdk::get_file_version_info();
+    const auto exe_version = sdk::search_for_version(utility::get_executable());
+    const auto version_string = utility::narrow(exe_version.value_or(L"0.00"));
+
+    // UE 5.7: StereoRenderingDevice at 0x15A0, XRSystem at 0x15B0
+    if (version_info.dwFileVersionMS == 0x50007 || version_string.starts_with("5.7")) {
+        return 0x15A0;
+    }
+
+    return std::nullopt;
+}
+
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
 bool is_using_double_precision(uintptr_t addr) {
@@ -1314,7 +1330,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // It is very rare that this should need to be done.
     if (!active_stereo_device) {
         SPDLOG_INFO("Attempting to create a stereo device without InitializeHMDDevice...");
-        const auto device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+        auto device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+
+        if (!device_offset) {
+            device_offset = get_known_stereo_device_offset();
+        }
 
         if (device_offset) {
             auto engine = sdk::UGameEngine::get();
@@ -1469,6 +1489,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
+        stereo_rendering_device_offset = get_known_stereo_device_offset();
+    }
+
+    if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAC8; // fallback for the engine this was originally made for.
     }
 
@@ -1532,6 +1556,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
     constexpr auto GET_RENDER_TARGET_MANAGER_INDEX = 23;
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    if (!stereo_rendering_device_offset) {
+        stereo_rendering_device_offset = get_known_stereo_device_offset();
+    }
+
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
@@ -1722,6 +1750,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_22() {
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
+        stereo_rendering_device_offset = get_known_stereo_device_offset();
+    }
+
+    if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAB8; // fallback for the engine this was originally made for.
     }
 
@@ -1859,6 +1891,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
     constexpr auto GET_RENDER_TARGET_MANAGER_INDEX = RENDER_TEXTURE_RENDER_THREAD_INDEX + 3;
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    if (!stereo_rendering_device_offset) {
+        stereo_rendering_device_offset = get_known_stereo_device_offset();
+    }
+
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAE8; // fallback for the engine this was originally made for.
     }
@@ -3814,9 +3850,9 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
     // older versions may not work or crash.
     // TODO: Figure out older versions.
     constexpr auto weak_ptr_size = sizeof(TWeakPtr<void*>);
-    static const auto potential_hmd_device_offset = s_stereo_rendering_device_offset + weak_ptr_size;
-    static const uintptr_t potential_hmd_device = (uintptr_t)engine + potential_hmd_device_offset;
-    static const uintptr_t potential_view_extensions = (uintptr_t)engine + s_stereo_rendering_device_offset + (weak_ptr_size * 2); // 2 to skip over the XRSystem
+    const auto potential_hmd_device_offset = s_stereo_rendering_device_offset + weak_ptr_size;
+    const uintptr_t potential_hmd_device = (uintptr_t)engine + potential_hmd_device_offset;
+    const uintptr_t potential_view_extensions = (uintptr_t)engine + s_stereo_rendering_device_offset + (weak_ptr_size * 2); // 2 to skip over the XRSystem
 
     // This can happen if the game left a VR plugin in it
     // Usually this isn't an issue, but some games can leave a valid HMDDevice or XRSystem laying around for whatever reason
@@ -4458,6 +4494,13 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_renderin
     if (!fake_stereo_device_vtable) {
         SPDLOG_ERROR("Failed to locate fake stereo rendering device vtable, cannot verify stereo rendering device is setup.");
         return std::nullopt;
+    }
+
+    if (s_stereo_rendering_device_offset == 0) {
+        if (const auto known_offset = get_known_stereo_device_offset()) {
+            s_stereo_rendering_device_offset = *known_offset;
+            SPDLOG_INFO("Using known engine offset {:x} for StereoRenderingDevice", s_stereo_rendering_device_offset);
+        }
     }
 
     if (s_stereo_rendering_device_offset != 0) {
