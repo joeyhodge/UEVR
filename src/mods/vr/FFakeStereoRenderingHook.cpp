@@ -55,6 +55,7 @@
 #include <sdk/threading/RHIThreadWorker.hpp>
 #include "../VR.hpp"
 #include "../../utility/Logging.hpp"
+#include "../../utility/UEVRBackendModuleValidation.h"
 
 #include "FFakeStereoRenderingHook.hpp"
 
@@ -378,6 +379,18 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
         once = false;
     }
 
+    auto call_original_tick = [&](sdk::UGameEngine* target_engine, float target_delta, bool is_idle) -> void* {
+        const auto original_tick = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>();
+
+        if (!IsValidFunctionPointer(reinterpret_cast<const void*>(original_tick))) {
+            SPDLOG_ERROR("[UGameEngine::Tick] Refusing to call invalid function pointer {:p}",
+                         reinterpret_cast<const void*>(original_tick));
+            return nullptr;
+        }
+
+        return original_tick(target_engine, target_delta, is_idle);
+    };
+
     if (!g_framework->is_game_data_intialized()) {
         // This allocates memory on the stack.
         static bool check_canary_once = true;
@@ -391,7 +404,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
         }
 #endif
         // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
-        void* result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
+        void* result = call_original_tick(engine, delta, idle);
 
         // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
         // But only do it once in release builds.
@@ -453,7 +466,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
         }
 #endif
         // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
-        result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
+        result = call_original_tick(engine, delta, idle);
 
         // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
         // But only do it once in release builds.
@@ -1958,7 +1971,15 @@ void* FFakeStereoRenderingHook::viewport_destructor_hook(void* viewport, void* a
     // Call the original destructor.
     auto call_orig = [&]() -> void* {
         ZoneScopedN("FViewport::~FViewport");
-        auto res = g_hook->m_viewport_destructor_hook->get_original<decltype(&viewport_destructor_hook)>()(viewport, a2, a3, a4);
+        const auto original = g_hook->m_viewport_destructor_hook->get_original<decltype(&viewport_destructor_hook)>();
+
+        if (!IsValidFunctionPointer(reinterpret_cast<const void*>(original))) {
+            SPDLOG_ERROR("[FViewport::~FViewport] Refusing to call invalid function pointer {:p}",
+                         reinterpret_cast<const void*>(original));
+            return nullptr;
+        }
+
+        auto res = original(viewport, a2, a3, a4);
         g_hook->m_last_destroyed_viewport = viewport;
 
         return res;
@@ -2049,6 +2070,11 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
     SPDLOG_INFO_ONCE("FViewport::GetRenderTargetTexture called!");
     const auto og = g_hook->m_viewport_get_render_target_texture_hook->get_original<decltype(&viewport_get_render_target_texture_hook)>();
+    if (!IsValidFunctionPointer(reinterpret_cast<const void*>(og))) {
+        SPDLOG_ERROR("[FViewport::GetRenderTargetTexture] Refusing to call invalid function pointer {:p}",
+                     reinterpret_cast<const void*>(og));
+        return nullptr;
+    }
     const auto& vr = VR::get();
 
     if (!vr->is_ahud_compatibility_enabled() || !vr->is_hmd_active() || g_hook->m_slate_draw_window_thread_id == 0) {
@@ -7484,7 +7510,15 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 // Usually there's only one call to UpdateViewportRHI inside of EnqueueBeginRenderFrame, but (very rarely) there can be two.
 __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(void* viewport, size_t destroyed, size_t new_size_x, size_t new_size_y, size_t new_window_mode, size_t preferred_pixel_format) {
     auto call_orig = [&]() {
-        g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>()(viewport, destroyed, new_size_x, new_size_y, new_window_mode, preferred_pixel_format);
+        const auto original = g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>();
+
+        if (!IsValidFunctionPointer(reinterpret_cast<const void*>(original))) {
+            SPDLOG_ERROR("[UpdateViewportRHI] Refusing to call invalid function pointer {:p}",
+                         reinterpret_cast<const void*>(original));
+            return;
+        }
+
+        original(viewport, destroyed, new_size_x, new_size_y, new_window_mode, preferred_pixel_format);
     };
 
     SPDLOG_INFO_ONCE("UpdateViewportRHI (embedded): {:x}", (uintptr_t)_ReturnAddress());
