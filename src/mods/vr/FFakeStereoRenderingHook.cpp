@@ -4004,7 +4004,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 }
             }
 
-            const INSTRUX* prev_op2 = nullptr;
+            const ND_OPERAND* prev_op2 = nullptr;
             if (matching_instruction && matching_instruction->instrux.OperandsCount > 1) {
                 prev_op2 = &matching_instruction->instrux.Operands[1];
             } else if (decoded && decoded->OperandsCount > 1) {
