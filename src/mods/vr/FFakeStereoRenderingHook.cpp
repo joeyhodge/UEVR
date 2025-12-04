@@ -3931,7 +3931,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     // As a last resort, fall back to the current instruction to guarantee
                     // we still patch the crashing site even when the producer can't be
                     // identified (e.g., stripped builds with heavy inlining).
-                    matching_instruction = previous_instruction ? previous_instruction : decoded;
+                    if (previous_instruction) {
+                        matching_instruction = previous_instruction;
+                    } else if (decoded) {
+                        matching_instruction = utility::Resolved{exception_address, *decoded};
+                    }
                     SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match (no register match within {} instructions)", kMaxInstructionSearch);
 
                     if (!window_dump.empty()) {
