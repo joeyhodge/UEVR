@@ -42,6 +42,8 @@
 #include <sdk/USceneCaptureComponent2D.hpp>
 #include <sdk/FTextureRenderTargetResource.hpp>
 
+#include <atomic>
+
 #include "Framework.hpp"
 #include "Mods.hpp"
 #include "mods/UObjectHook.hpp"
@@ -65,6 +67,7 @@
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
+static std::atomic<uintptr_t> g_potential_hmd_device_offset{0};
 
 // Known engine field offsets for newer Unreal builds. This lets us skip brittle
 // pointer walks when we already know where the StereoRenderingDevice resides
@@ -3883,9 +3886,17 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
     // Add a vectored exception handler that catches attempted dereferences of a null XRSystem or HMDDevice
     // The exception handler will then patch out the instructions causing the crash and continue execution
-    AddVectoredExceptionHandler(1, [potential_hmd_device_offset](PEXCEPTION_POINTERS exception) -> LONG {
+    g_potential_hmd_device_offset.store(potential_hmd_device_offset);
+
+    AddVectoredExceptionHandler(1, [](PEXCEPTION_POINTERS exception) -> LONG {
         static std::vector<Patch::Ptr> xrsystem_patches{};
         static std::unordered_set<uintptr_t> ignored_addresses{};
+
+        const auto potential_hmd_device_offset = g_potential_hmd_device_offset.load();
+
+        if (potential_hmd_device_offset == 0) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
 
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
