@@ -3844,9 +3844,18 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
     const auto active_stereo_device = locate_active_stereo_rendering_device();
 
-    if (!active_stereo_device || !s_stereo_rendering_device_offset) {
-        SPDLOG_ERROR("Failed to locate active stereo rendering device!");
+    // Older flows created the fake stereo device even when no device had been
+    // instantiated yet. UE5.7 can still arrive here before the engine field is
+    // populated, so tolerate a null device as long as we know the offset so we
+    // can proceed with manual setup instead of bailing out.
+    if (!s_stereo_rendering_device_offset) {
+        SPDLOG_ERROR("Failed to determine StereoRenderingDevice offset; cannot set up view extensions.");
         return false;
+    }
+
+    if (!active_stereo_device) {
+        SPDLOG_WARN("StereoRenderingDevice not yet initialized; continuing with manual setup using known offset {:x}",
+                    s_stereo_rendering_device_offset);
     }
 
     // This is a proof of concept at the moment for newer UE versions
