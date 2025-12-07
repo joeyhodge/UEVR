@@ -4114,15 +4114,17 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             // is enough evidence to safely continue nopping nearby calls. UE5.7 builds
             // often lose the base-producer trace due to aggressive register coalescing,
             // and skipping the follow-up patch leaves the crashing call chain intact.
-            const bool allow_followup_patching = found_base_match || current_op_mem_matches_offset || displacement_match;
+            const bool have_any_displacement_evidence = found_base_match || current_op_mem_matches_offset || displacement_match;
+            bool patch_followups = have_any_displacement_evidence;
 
-            if (!allow_followup_patching) {
-                SPDLOG_WARN("Skipping follow-up patching because no XRSystem/HMD displacement evidence was found");
+            if (!have_any_displacement_evidence) {
+                SPDLOG_WARN("Proceeding with follow-up patching without confirmed XRSystem/HMD displacement evidence (last resort)");
+                patch_followups = true; // Last-resort patching to keep the crash chain from executing.
             } else if (!found_base_match) {
                 SPDLOG_WARN("Proceeding with follow-up patching using displacement-only evidence (no base register trace)");
             }
 
-            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction && allow_followup_patching; ++i) {
+            for (auto i = 0; i < kMaxForwardPatchInstructions && current_instruction && patch_followups; ++i) {
                 current_addr += current_instruction->Length;
 
                 current_instruction = utility::decode_one((uint8_t*)current_addr);
