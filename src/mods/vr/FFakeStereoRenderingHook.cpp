@@ -4040,7 +4040,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     matching_instruction = displacement_match;
                     SPDLOG_WARN("Using displacement-only match for XRSystem/HMD dereference within {} instructions", kMaxInstructionSearch);
                 } else {
-                    SPDLOG_WARN("Skipping XRSystem/HMD dereference patch (no register or displacement evidence within {} instructions)", kMaxInstructionSearch);
+                    // As an absolute last resort, still patch the crash site so the game can
+                    // limp forward. We may not have any displacement evidence, but leaving the
+                    // dereference intact guarantees another crash. Fall back to the current
+                    // instruction if we couldn't resolve anything else.
+                    SPDLOG_WARN("Proceeding to patch crash site with no XRSystem/HMD evidence within {} instructions", kMaxInstructionSearch);
 
                     if (!window_dump.empty()) {
                         SPDLOG_WARN("Instruction window prior to crash site:");
@@ -4050,7 +4054,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                         }
                     }
 
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    if (!previous_instruction) {
+                        matching_instruction = decltype(previous_instruction){};
+                    } else {
+                        matching_instruction = previous_instruction;
+                    }
                 }
             }
 
