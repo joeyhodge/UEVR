@@ -4040,15 +4040,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     matching_instruction = displacement_match;
                     SPDLOG_WARN("Using displacement-only match for XRSystem/HMD dereference within {} instructions", kMaxInstructionSearch);
                 } else {
-                    // As a last resort, fall back to the current instruction to guarantee
-                    // we still patch the crashing site even when the producer can't be
-                    // identified (e.g., stripped builds with heavy inlining).
-                    if (previous_instruction) {
-                        matching_instruction = previous_instruction;
-                    } else if (decoded) {
-                        matching_instruction = utility::Resolved{exception_address, *decoded};
-                    }
-                    SPDLOG_WARN("Proceeding to patch crash site without a confirmed displacement match (no register match within {} instructions)", kMaxInstructionSearch);
+                    SPDLOG_WARN("Skipping XRSystem/HMD dereference patch (no register or displacement evidence within {} instructions)", kMaxInstructionSearch);
 
                     if (!window_dump.empty()) {
                         SPDLOG_WARN("Instruction window prior to crash site:");
@@ -4057,6 +4049,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                             SPDLOG_WARN("  {}", dump);
                         }
                     }
+
+                    return EXCEPTION_CONTINUE_SEARCH;
                 }
             }
 
