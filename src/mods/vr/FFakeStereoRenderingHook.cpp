@@ -4119,18 +4119,32 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             // Even if we fail to trace the base register, a confirmed displacement match
             // (either on the current dereference or a previous instruction in the window)
-            // is enough evidence to safely continue nopping nearby calls. UE5.7 builds
-            // often lose the base-producer trace due to aggressive register coalescing,
-            // but without any displacement evidence at all we avoid touching follow-up
-            // calls to reduce the risk of breaking unrelated code paths.
+            // Require some displacement evidence before patching anything. If neither the
+            // crashing instruction nor the backwards scan hits the expected XRSystem/HMD
+            // offset, bail out so we don't end up nopping unrelated AV sites (which can
+            // break the render pipeline and prevent the HMD from ever presenting).
             const bool have_any_displacement_evidence =
                 found_base_match || current_op_mem_matches_offset || displacement_match;
-            bool patch_followups = have_any_displacement_evidence;
 
             if (!have_any_displacement_evidence) {
                 SPDLOG_WARN(
-                    "Skipping follow-up patching without XRSystem/HMD displacement evidence (avoid nopping unrelated calls)");
-            } else if (!found_base_match) {
+                    "Skipping XRSystem/HMD crash patching (no displacement evidence within {} instructions)",
+                    kMaxInstructionSearch);
+
+                if (!window_dump.empty()) {
+                    SPDLOG_WARN("Instruction window prior to crash site:");
+
+                    for (const auto& dump : window_dump) {
+                        SPDLOG_WARN("  {}", dump);
+                    }
+                }
+
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            bool patch_followups = have_any_displacement_evidence;
+
+            if (!found_base_match) {
                 SPDLOG_WARN(
                     "Proceeding with follow-up patching using displacement-only evidence (no base register trace)");
             }
