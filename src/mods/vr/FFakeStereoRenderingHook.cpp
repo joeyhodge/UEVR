@@ -4054,10 +4054,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                         }
                     }
 
-                    if (!previous_instruction) {
-                        matching_instruction = decltype(previous_instruction){};
-                    } else {
+                    if (previous_instruction) {
                         matching_instruction = previous_instruction;
+                    } else if (decoded) {
+                        matching_instruction = utility::Resolved{exception_address, *decoded};
                     }
                 }
             }
@@ -4128,6 +4128,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             if (!have_any_displacement_evidence) {
                 SPDLOG_WARN("Proceeding with follow-up patching without confirmed XRSystem/HMD displacement evidence (last resort)");
                 patch_followups = true; // Last-resort patching to keep the crash chain from executing.
+                // Without displacement evidence, still allow call patching by pretending we already saw a match.
+                saw_mem_match = true;
             } else if (!found_base_match) {
                 SPDLOG_WARN("Proceeding with follow-up patching using displacement-only evidence (no base register trace)");
             }
