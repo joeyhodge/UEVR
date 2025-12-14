@@ -5694,6 +5694,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto viewport_info = (sdk::FViewportInfo*)a3;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
+    const auto is_valid_slate_viewport = [](sdk::ISlateViewport* viewport) {
+        if (viewport == nullptr) {
+            return false;
+        }
+
+        // If the vtable slot for GetViewportRenderTargetTexture has changed (UE 5.7+),
+        // dereferencing without validation can crash the injector. Make sure the
+        // vtable pointer itself is readable before using it; if it isn't, fall back to
+        // the viewport info brute-force path instead of hard-crashing.
+        __try {
+            return !IsBadReadPtr(viewport, sizeof(void*)) &&
+                   !IsBadReadPtr(*(void**)viewport, sizeof(void*));
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    };
     void** a4_ptr = (void**)a4;
 
     static bool a4_is_ue_5_5_variant = [&]() -> bool {
@@ -5860,6 +5876,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (viewport_offset) {
             slate_viewport = *(sdk::ISlateViewport**)((uintptr_t)window + *viewport_offset);
+
+            if (slate_viewport != nullptr && !is_valid_slate_viewport(slate_viewport)) {
+                SPDLOG_WARN(
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] Detected invalid ISlateViewport pointer at 0x{:x}; falling back to brute-force RT provider",
+                    (uintptr_t)slate_viewport);
+                slate_viewport = nullptr;
+            }
         }
     }
 
@@ -5900,7 +5923,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     sdk::FSlateResource* slate_resource = nullptr;
 
-    if (slate_viewport != nullptr) {
+    if (is_valid_slate_viewport(slate_viewport)) {
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
     } else {
         const auto viewport_rt_provider = viewport_info->get_rt_provider(g_hook->get_render_target_manager()->get_render_target());
