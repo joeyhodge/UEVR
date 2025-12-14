@@ -5503,7 +5503,14 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     INSTRUX ix{};
 
-    for (auto i = 1; i < 25; ++i) {
+    // UE 5.7 adds more virtuals to ULocalPlayer, so PostInitProperties can move
+    // past the historical <25 slots we previously scanned. Use a conservative
+    // hard cap, but stop earlier if we step outside the module that owns the
+    // first vfunc to avoid walking arbitrary memory.
+    constexpr auto max_vtable_scan = 512;
+    const auto vtable_module_within = utility::get_module_within(vtable[0]);
+
+    for (auto i = 1; i < max_vtable_scan; ++i) {
         if (idx) {
             break;
         }
@@ -5514,6 +5521,11 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
         if (vfunc == 0 || IsBadReadPtr((void*)vfunc, 1)) {
             SPDLOG_ERROR("Encountered invalid vfunc at index {}!", i);
+            break;
+        }
+
+        if (vtable_module_within && utility::get_module_within(vfunc) != vtable_module_within) {
+            SPDLOG_WARN("Vtable entry {} belongs to a different module, stopping scan.", i);
             break;
         }
 
