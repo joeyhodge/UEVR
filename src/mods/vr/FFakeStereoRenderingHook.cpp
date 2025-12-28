@@ -5719,6 +5719,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     } else {
         const auto window = (uintptr_t)a4_ptr[2];
 
+        constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
+
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
             std::optional<size_t> result{};
             const auto module_within = utility::get_module_within(g_hook->m_slate_thread_hook.target_address());
@@ -5858,8 +5860,41 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return result;
         }();
 
+        auto try_get_viewport = [&](size_t offset) -> sdk::ISlateViewport* {
+            auto candidate = *(sdk::ISlateViewport**)((uintptr_t)window + offset);
+
+            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                return nullptr;
+            }
+
+            auto vtable = *(uintptr_t**)candidate;
+
+            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                return nullptr;
+            }
+
+            if (!utility::get_module_within(vtable).has_value() || !utility::get_module_within(vtable[0]).has_value()) {
+                return nullptr;
+            }
+
+            return candidate;
+        };
+
         if (viewport_offset) {
-            slate_viewport = *(sdk::ISlateViewport**)((uintptr_t)window + *viewport_offset);
+            slate_viewport = try_get_viewport(*viewport_offset);
+        }
+
+        if (!slate_viewport) {
+            const size_t fallback_offsets[] = {kSWindowViewportOffsetUE57, kSWindowViewportOffsetUE57 + sizeof(void*)};
+
+            for (const auto offset : fallback_offsets) {
+                if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Using SWindow viewport fallback at 0x{:x}", offset);
+                    slate_viewport = candidate;
+                    viewport_offset = offset;
+                    break;
+                }
+            }
         }
     }
 
