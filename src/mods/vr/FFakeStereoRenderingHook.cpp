@@ -3870,16 +3870,83 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
-                previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
-            {
-                SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
+            auto xr_deref_instruction = previous_instruction;
+            auto expected_reg = op2.Info.Memory.Base;
+
+            const auto matches_xr_deref = [&](const auto& instr, uint32_t reg) -> bool {
+                if (instr->instrux.OperandsCount < 2) {
+                    return false;
+                }
+
+                const auto& dest = instr->instrux.Operands[0];
+                const auto& src = instr->instrux.Operands[1];
+
+                if (dest.Type != ND_OP_REG || dest.Info.Register.Reg != reg) {
+                    return false;
+                }
+
+                if (src.Type != ND_OP_MEM || !src.Info.Memory.HasBase || !src.Info.Memory.HasDisp) {
+                    return false;
+                }
+
+                return src.Info.Memory.Disp == potential_hmd_device_offset;
+            };
+
+            const auto follow_alias = [&](const auto& instr, uint32_t& reg) -> bool {
+                if (instr->instrux.OperandsCount < 2) {
+                    return false;
+                }
+
+                const auto& dest = instr->instrux.Operands[0];
+                const auto& src = instr->instrux.Operands[1];
+
+                if (dest.Type != ND_OP_REG || dest.Info.Register.Reg != reg) {
+                    return false;
+                }
+
+                if (src.Type == ND_OP_REG && instr->instrux.Instruction == ND_INS_MOV) {
+                    reg = src.Info.Register.Reg;
+                    return true;
+                }
+
+                return false;
+            };
+
+            if (!matches_xr_deref(xr_deref_instruction, expected_reg)) {
+                constexpr int kMaxBacktrack = 6;
+                auto scan_addr = exception_address;
+                auto alias_reg = expected_reg;
+                bool found = false;
+
+                for (auto i = 0; i < kMaxBacktrack; ++i) {
+                    auto candidate = utility::resolve_instruction(scan_addr - 1);
+
+                    if (!candidate) {
+                        break;
+                    }
+
+                    scan_addr = candidate->addr;
+
+                    if (matches_xr_deref(candidate, alias_reg)) {
+                        xr_deref_instruction = candidate;
+                        found = true;
+                        break;
+                    }
+
+                    if (follow_alias(candidate, alias_reg)) {
+                        continue;
+                    }
+                }
+
+                if (!found) {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
             }
 
-            const auto prev_op2 = previous_instruction->instrux.Operands[1];
+            const auto prev_op2 = xr_deref_instruction->instrux.Operands[1];
 
-            if (previous_instruction->instrux.OperandsCount < 2 ||
+            if (xr_deref_instruction->instrux.OperandsCount < 2 ||
                 prev_op2.Type != ND_OP_MEM ||
                 !prev_op2.Info.Memory.HasBase)
             {
@@ -3897,7 +3964,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            SPDLOG_INFO("Found the dereference of the XRSystem or HMDDevice at {:x}", previous_instruction->addr);
+            SPDLOG_INFO("Found the dereference of the XRSystem or HMDDevice at {:x}", xr_deref_instruction->addr);
 
             // Patch the initial instruction that caused the crash
             SPDLOG_INFO("Creating first patch...");
