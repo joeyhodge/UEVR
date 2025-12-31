@@ -98,6 +98,47 @@ bool is_using_double_precision(uintptr_t addr) {
     return result;
 }
 
+static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
+    static std::optional<uintptr_t> cached{};
+    static bool checked = false;
+
+    if (checked) {
+        return cached;
+    }
+
+    checked = true;
+
+    const auto version_info = sdk::get_file_version_info();
+    if (version_info.dwFileVersionMS != 0) {
+        const auto major = HIWORD(version_info.dwFileVersionMS);
+        const auto minor = LOWORD(version_info.dwFileVersionMS);
+
+        if (major == 5 && minor == 7) {
+            SPDLOG_INFO("Detected UE5.7 via file version; using StereoRenderingDevice offset 0x15A0");
+            cached = 0x15A0;
+            return cached;
+        }
+    }
+
+    if (const auto version = sdk::search_for_version(utility::get_executable()); version) {
+        if (*version == L"5.7") {
+            SPDLOG_INFO("Detected UE5.7 via version string; using StereoRenderingDevice offset 0x15A0");
+            cached = 0x15A0;
+            return cached;
+        }
+    }
+
+    return std::nullopt;
+}
+
+static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
+    if (const auto override = get_stereo_rendering_device_offset_override(); override) {
+        return override;
+    }
+
+    return sdk::UEngine::get_stereo_rendering_device_offset();
+}
+
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
     setup_options();
@@ -1304,7 +1345,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // It is very rare that this should need to be done.
     if (!active_stereo_device) {
         SPDLOG_INFO("Attempting to create a stereo device without InitializeHMDDevice...");
-        const auto device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+        const auto device_offset = get_stereo_rendering_device_offset();
 
         if (device_offset) {
             auto engine = sdk::UGameEngine::get();
@@ -1457,7 +1498,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
     m_manually_constructed = true;
     m_fallback_device.vtable = m_fallback_vtable.data();
 
-    auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    auto stereo_rendering_device_offset = get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAC8; // fallback for the engine this was originally made for.
     }
@@ -1521,7 +1562,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
     constexpr auto RENDER_TEXTURE_RENDER_THREAD_INDEX = 22;
     constexpr auto GET_RENDER_TARGET_MANAGER_INDEX = 23;
 
-    auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    auto stereo_rendering_device_offset = get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
@@ -1710,7 +1751,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_22() {
     constexpr auto RENDER_TEXTURE_RENDER_THREAD_INDEX = CALCULATE_STEREO_PROJECTION_MATRIX_INDEX + 2;
     constexpr auto GET_RENDER_TARGET_MANAGER_INDEX = RENDER_TEXTURE_RENDER_THREAD_INDEX + 1;
 
-    auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    auto stereo_rendering_device_offset = get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAB8; // fallback for the engine this was originally made for.
     }
@@ -1848,7 +1889,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
     constexpr auto RENDER_TEXTURE_RENDER_THREAD_INDEX = CALCULATE_STEREO_PROJECTION_MATRIX_INDEX + 3;
     constexpr auto GET_RENDER_TARGET_MANAGER_INDEX = RENDER_TEXTURE_RENDER_THREAD_INDEX + 3;
 
-    auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+    auto stereo_rendering_device_offset = get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
         stereo_rendering_device_offset = 0xAE8; // fallback for the engine this was originally made for.
     }
