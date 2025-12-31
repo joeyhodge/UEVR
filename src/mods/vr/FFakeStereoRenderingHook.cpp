@@ -3860,11 +3860,110 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
+            const auto reg_name = [](uint32_t reg) -> const char* {
+                switch (reg) {
+                case NDR_RAX:
+                case NDR_EAX: return "RAX";
+                case NDR_RBX:
+                case NDR_EBX: return "RBX";
+                case NDR_RCX:
+                case NDR_ECX: return "RCX";
+                case NDR_RDX:
+                case NDR_EDX: return "RDX";
+                case NDR_RSP:
+                case NDR_ESP: return "RSP";
+                case NDR_RBP:
+                case NDR_EBP: return "RBP";
+                case NDR_RSI:
+                case NDR_ESI: return "RSI";
+                case NDR_RDI:
+                case NDR_EDI: return "RDI";
+                case NDR_R8:
+                case NDR_R8D: return "R8";
+                case NDR_R9:
+                case NDR_R9D: return "R9";
+                case NDR_R10:
+                case NDR_R10D: return "R10";
+                case NDR_R11:
+                case NDR_R11D: return "R11";
+                case NDR_R12:
+                case NDR_R12D: return "R12";
+                case NDR_R13:
+                case NDR_R13D: return "R13";
+                case NDR_R14:
+                case NDR_R14D: return "R14";
+                case NDR_R15:
+                case NDR_R15D: return "R15";
+                default: return "UNK";
+                }
+            };
+
+            const auto reg_value = [&](uint32_t reg) -> std::optional<uintptr_t> {
+                switch (reg) {
+                case NDR_RAX:
+                case NDR_EAX: return exception->ContextRecord->Rax;
+                case NDR_RBX:
+                case NDR_EBX: return exception->ContextRecord->Rbx;
+                case NDR_RCX:
+                case NDR_ECX: return exception->ContextRecord->Rcx;
+                case NDR_RDX:
+                case NDR_EDX: return exception->ContextRecord->Rdx;
+                case NDR_RSP:
+                case NDR_ESP: return exception->ContextRecord->Rsp;
+                case NDR_RBP:
+                case NDR_EBP: return exception->ContextRecord->Rbp;
+                case NDR_RSI:
+                case NDR_ESI: return exception->ContextRecord->Rsi;
+                case NDR_RDI:
+                case NDR_EDI: return exception->ContextRecord->Rdi;
+                case NDR_R8:
+                case NDR_R8D: return exception->ContextRecord->R8;
+                case NDR_R9:
+                case NDR_R9D: return exception->ContextRecord->R9;
+                case NDR_R10:
+                case NDR_R10D: return exception->ContextRecord->R10;
+                case NDR_R11:
+                case NDR_R11D: return exception->ContextRecord->R11;
+                case NDR_R12:
+                case NDR_R12D: return exception->ContextRecord->R12;
+                case NDR_R13:
+                case NDR_R13D: return exception->ContextRecord->R13;
+                case NDR_R14:
+                case NDR_R14D: return exception->ContextRecord->R14;
+                case NDR_R15:
+                case NDR_R15D: return exception->ContextRecord->R15;
+                default: return std::nullopt;
+                }
+            };
+
+            const auto base_reg = op2.Info.Memory.Base;
+            const auto index_reg = op2.Info.Memory.Index;
+            const auto base_val = reg_value(base_reg);
+            const auto index_val = op2.Info.Memory.HasIndex ? reg_value(index_reg) : std::nullopt;
+            const auto disp_val = op2.Info.Memory.HasDisp ? (int64_t)op2.Info.Memory.Disp : 0;
+            const auto scale_val = op2.Info.Memory.Scale;
+            const auto eff_addr = base_val ? (uintptr_t)((int64_t)*base_val + disp_val +
+                (index_val ? ((int64_t)*index_val * (int64_t)scale_val) : 0)) : 0;
+
+            SPDLOG_INFO("XRSystem AV instr {} base {}({:x}) index {}({:x}) scale {} disp {:x} eff {:x}",
+                decoded->Mnemonic,
+                reg_name(base_reg),
+                base_val.value_or(0),
+                op2.Info.Memory.HasIndex ? reg_name(index_reg) : "none",
+                index_val.value_or(0),
+                scale_val,
+                (uint64_t)disp_val,
+                eff_addr);
+
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
             if (const auto module_within = utility::get_module_within(exception_address); module_within) {
                 if (const auto module_path = utility::get_module_path(*module_within)) {
                     SPDLOG_INFO_ONCE("XRSystem AV module: {:x} {}", (uintptr_t)*module_within, *module_path);
+                } else {
+                    SPDLOG_INFO_ONCE("XRSystem AV module: {:x}", (uintptr_t)*module_within);
                 }
+            } else {
+                SPDLOG_INFO_ONCE("XRSystem AV module: unknown");
             }
 
             // Get the start of the previous instruction
@@ -3920,6 +4019,71 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return matches_xr_disp(src.Info.Memory.Disp);
             };
 
+            const auto is_stack_base = [](uint32_t reg) -> bool {
+                switch (reg) {
+                case NDR_RSP:
+                case NDR_ESP:
+                case NDR_RBP:
+                case NDR_EBP:
+                    return true;
+                default:
+                    return false;
+                }
+            };
+
+            const auto get_stack_disp = [&](const ND_OPERAND& op, int64_t& disp_out) -> bool {
+                if (op.Type != ND_OP_MEM || !op.Info.Memory.HasBase || !op.Info.Memory.HasDisp) {
+                    return false;
+                }
+
+                if (!is_stack_base(op.Info.Memory.Base) || op.Info.Memory.HasIndex) {
+                    return false;
+                }
+
+                disp_out = (int64_t)op.Info.Memory.Disp;
+                return true;
+            };
+
+            const auto is_stack_store = [&](const auto& instr, uint32_t& src_reg, int64_t& disp_out) -> bool {
+                if (instr->instrux.OperandsCount < 2 || instr->instrux.Instruction != ND_INS_MOV) {
+                    return false;
+                }
+
+                const auto& dest = instr->instrux.Operands[0];
+                const auto& src = instr->instrux.Operands[1];
+
+                if (dest.Type != ND_OP_MEM || src.Type != ND_OP_REG) {
+                    return false;
+                }
+
+                if (!get_stack_disp(dest, disp_out)) {
+                    return false;
+                }
+
+                src_reg = src.Info.Register.Reg;
+                return true;
+            };
+
+            const auto is_stack_load = [&](const auto& instr, uint32_t& dst_reg, int64_t& disp_out) -> bool {
+                if (instr->instrux.OperandsCount < 2 || instr->instrux.Instruction != ND_INS_MOV) {
+                    return false;
+                }
+
+                const auto& dest = instr->instrux.Operands[0];
+                const auto& src = instr->instrux.Operands[1];
+
+                if (dest.Type != ND_OP_REG || src.Type != ND_OP_MEM) {
+                    return false;
+                }
+
+                if (!get_stack_disp(src, disp_out)) {
+                    return false;
+                }
+
+                dst_reg = dest.Info.Register.Reg;
+                return true;
+            };
+
             const auto follow_alias = [&](const auto& instr, uint32_t& reg) -> bool {
                 if (instr->instrux.OperandsCount < 2) {
                     return false;
@@ -3948,9 +4112,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             };
 
             if (!matches_xr_deref(xr_deref_instruction, expected_reg)) {
-                constexpr int kMaxBacktrack = 24;
+                constexpr int kMaxBacktrack = 64;
                 auto scan_addr = exception_address;
                 uint32_t alias_reg = expected_reg;
+                std::optional<int64_t> alias_stack_disp{};
                 bool found = false;
 
                 for (auto i = 0; i < kMaxBacktrack; ++i) {
@@ -3966,6 +4131,23 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                         xr_deref_instruction = candidate;
                         found = true;
                         break;
+                    }
+
+                    if (alias_stack_disp) {
+                        uint32_t store_reg{};
+                        int64_t store_disp{};
+                        if (is_stack_store(candidate, store_reg, store_disp) && store_disp == *alias_stack_disp) {
+                            alias_reg = store_reg;
+                            alias_stack_disp.reset();
+                            continue;
+                        }
+                    } else {
+                        uint32_t load_reg{};
+                        int64_t load_disp{};
+                        if (is_stack_load(candidate, load_reg, load_disp) && load_reg == alias_reg) {
+                            alias_stack_disp = load_disp;
+                            continue;
+                        }
                     }
 
                     if (follow_alias(candidate, alias_reg)) {
