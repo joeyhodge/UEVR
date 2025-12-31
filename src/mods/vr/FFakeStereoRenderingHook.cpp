@@ -4,7 +4,10 @@
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
+#include <algorithm>
+#include <cctype>
 #include <future>
+#include <mutex>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -3909,6 +3912,41 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto eff_addr = base_val ? (uintptr_t)((int64_t)*base_val + disp_val +
                 (index_val ? ((int64_t)*index_val * (int64_t)scale_val) : 0)) : 0;
 
+            const auto module_within = utility::get_module_within(exception_address);
+            const auto module_base = module_within ? (uintptr_t)*module_within : 0;
+            std::string module_path_str{};
+            if (module_within) {
+                if (const auto module_path = utility::get_module_path(*module_within)) {
+                    module_path_str = *module_path;
+                }
+            }
+
+            auto is_system_module = false;
+            if (!module_path_str.empty()) {
+                auto module_path_lower = module_path_str;
+                std::transform(module_path_lower.begin(), module_path_lower.end(), module_path_lower.begin(),
+                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                is_system_module = module_path_lower.find("\\windows\\") != std::string::npos ||
+                                   module_path_lower.find("\\system32\\") != std::string::npos ||
+                                   module_path_lower.find("\\syswow64\\") != std::string::npos;
+            }
+
+            {
+                static std::unordered_set<uintptr_t> logged_modules{};
+                static std::mutex logged_modules_mutex{};
+                std::lock_guard<std::mutex> lock{logged_modules_mutex};
+                const auto is_new = logged_modules.insert(module_base).second;
+                if (is_new) {
+                    if (!module_path_str.empty()) {
+                        SPDLOG_INFO("XRSystem AV module: {:x} {}", module_base, module_path_str);
+                    } else if (module_base != 0) {
+                        SPDLOG_INFO("XRSystem AV module: {:x}", module_base);
+                    } else {
+                        SPDLOG_INFO("XRSystem AV module: unknown");
+                    }
+                }
+            }
+
             SPDLOG_INFO("XRSystem AV instr {} base {}({:x}) index {}({:x}) scale {} disp {:x} eff {:x}",
                 decoded->Mnemonic,
                 reg_name(base_reg),
@@ -3920,14 +3958,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 eff_addr);
 
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
-            if (const auto module_within = utility::get_module_within(exception_address); module_within) {
-                if (const auto module_path = utility::get_module_path(*module_within)) {
-                    SPDLOG_INFO_ONCE("XRSystem AV module: {:x} {}", (uintptr_t)*module_within, *module_path);
-                } else {
-                    SPDLOG_INFO_ONCE("XRSystem AV module: {:x}", (uintptr_t)*module_within);
-                }
-            } else {
-                SPDLOG_INFO_ONCE("XRSystem AV module: unknown");
+            if (is_system_module) {
+                return EXCEPTION_CONTINUE_SEARCH;
             }
 
             // Get the start of the previous instruction
@@ -4119,6 +4151,37 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 }
 
                 if (!found) {
+                    const auto exe_module = (uintptr_t)utility::get_executable();
+                    const auto is_game_module = module_base != 0 && module_base == exe_module;
+                    const auto eff_module = utility::get_module_within((void*)eff_addr);
+
+                    if (is_game_module && !eff_module.has_value()) {
+                        SPDLOG_WARN("No XRSystem deref found; patching faulting instruction in game module (eff {:x})", eff_addr);
+                        std::vector<int16_t> first_patch{};
+                        for (auto j = 0; j < decoded->Length; ++j) {
+                            first_patch.push_back(0x90);
+                        }
+                        xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
+
+                        const auto next_instruction_addr = exception_address + decoded->Length;
+                        const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+
+                        if (!next_instruction) {
+                            SPDLOG_ERROR("Could not decode next instruction at {:x}", exception_address + decoded->Length);
+                            return EXCEPTION_CONTINUE_EXECUTION;
+                        }
+
+                        if (std::string_view{next_instruction->Mnemonic}.starts_with("CALL")) {
+                            std::vector<int16_t> second_patch{};
+                            for (auto j = 0; j < next_instruction->Length; ++j) {
+                                second_patch.push_back(0x90);
+                            }
+                            xrsystem_patches.push_back(Patch::create(next_instruction_addr, second_patch));
+                        }
+
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                    }
+
                     SPDLOG_ERROR("Failed to locate XRSystem dereference within backtrack window");
                     return EXCEPTION_CONTINUE_SEARCH;
                 }
