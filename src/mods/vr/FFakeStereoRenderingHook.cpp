@@ -101,6 +101,7 @@ bool is_using_double_precision(uintptr_t addr) {
 static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
     static std::optional<uintptr_t> cached{};
     static bool checked = false;
+    static bool logged_version = false;
 
     if (checked) {
         return cached;
@@ -110,6 +111,10 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
 
     const auto version_info = sdk::get_file_version_info();
     if (version_info.dwFileVersionMS != 0) {
+        if (!logged_version) {
+            SPDLOG_INFO("UE file version MS: {:x} LS: {:x}", version_info.dwFileVersionMS, version_info.dwFileVersionLS);
+            logged_version = true;
+        }
         const auto major = HIWORD(version_info.dwFileVersionMS);
         const auto minor = LOWORD(version_info.dwFileVersionMS);
 
@@ -121,6 +126,10 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
     }
 
     if (const auto version = sdk::search_for_version(utility::get_executable()); version) {
+        if (!logged_version) {
+            SPDLOG_INFO("UE version string: {}", utility::narrow(*version));
+            logged_version = true;
+        }
         if (*version == L"5.7") {
             SPDLOG_INFO("Detected UE5.7 via version string; using StereoRenderingDevice offset 0x15A0");
             cached = 0x15A0;
@@ -4610,16 +4619,32 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_renderin
         return std::nullopt;
     }
 
+    if (s_stereo_rendering_device_offset == 0) {
+        if (const auto device_offset = get_stereo_rendering_device_offset(); device_offset) {
+            s_stereo_rendering_device_offset = *device_offset;
+            SPDLOG_INFO("Using StereoRenderingDevice offset {:x}", *device_offset);
+        }
+    }
+
     if (s_stereo_rendering_device_offset != 0) {
         const auto result = *(uintptr_t*)(engine + s_stereo_rendering_device_offset);
 
         if (result == 0) {
-            return std::nullopt;
+            goto scan_for_device;
         }
 
-        return result;
+        if (!IsBadReadPtr((void*)result, sizeof(void*))) {
+            const auto potential_vtable = *(uintptr_t*)result;
+
+            if (potential_vtable == *fake_stereo_device_vtable) {
+                return result;
+            }
+
+            SPDLOG_WARN("StereoRenderingDevice vtable mismatch at offset {:x} (found {:x})", s_stereo_rendering_device_offset, potential_vtable);
+        }
     }
 
+scan_for_device:
     for (auto i = 0; i < 0x2000; i += sizeof(void*)) {
         const auto addr_of_ptr = engine + i;
 
