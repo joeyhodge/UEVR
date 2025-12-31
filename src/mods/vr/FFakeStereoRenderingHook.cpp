@@ -3892,6 +3892,20 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return src.Info.Memory.Disp == potential_hmd_device_offset;
             };
 
+            const auto matches_xr_deref_loose = [&](const auto& instr) -> bool {
+                if (instr->instrux.OperandsCount < 2) {
+                    return false;
+                }
+
+                const auto& src = instr->instrux.Operands[1];
+
+                if (src.Type != ND_OP_MEM || !src.Info.Memory.HasDisp) {
+                    return false;
+                }
+
+                return src.Info.Memory.Disp == potential_hmd_device_offset;
+            };
+
             const auto follow_alias = [&](const auto& instr, uint32_t& reg) -> bool {
                 if (instr->instrux.OperandsCount < 2) {
                     return false;
@@ -3909,11 +3923,18 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     return true;
                 }
 
+                if (src.Type == ND_OP_MEM && instr->instrux.Instruction == ND_INS_LEA &&
+                    src.Info.Memory.HasBase && src.Info.Memory.Disp == 0)
+                {
+                    reg = src.Info.Memory.Base;
+                    return true;
+                }
+
                 return false;
             };
 
             if (!matches_xr_deref(xr_deref_instruction, expected_reg)) {
-                constexpr int kMaxBacktrack = 6;
+                constexpr int kMaxBacktrack = 12;
                 auto scan_addr = exception_address;
                 uint32_t alias_reg = expected_reg;
                 bool found = false;
@@ -3936,10 +3957,17 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     if (follow_alias(candidate, alias_reg)) {
                         continue;
                     }
+
+                    if (matches_xr_deref_loose(candidate)) {
+                        SPDLOG_WARN("Using relaxed XRSystem deref backtrack at {:x}", candidate->addr);
+                        xr_deref_instruction = candidate;
+                        found = true;
+                        break;
+                    }
                 }
 
                 if (!found) {
-                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    SPDLOG_ERROR("Failed to locate XRSystem dereference within backtrack window");
                     return EXCEPTION_CONTINUE_SEARCH;
                 }
             }
