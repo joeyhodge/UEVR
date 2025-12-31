@@ -3871,7 +3871,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             auto xr_deref_instruction = previous_instruction;
-            auto expected_reg = op2.Info.Memory.Base;
+            uint32_t expected_reg = op2.Info.Memory.Base;
 
             const auto matches_xr_deref = [&](const auto& instr, uint32_t reg) -> bool {
                 if (instr->instrux.OperandsCount < 2) {
@@ -3915,7 +3915,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             if (!matches_xr_deref(xr_deref_instruction, expected_reg)) {
                 constexpr int kMaxBacktrack = 6;
                 auto scan_addr = exception_address;
-                auto alias_reg = expected_reg;
+                uint32_t alias_reg = expected_reg;
                 bool found = false;
 
                 for (auto i = 0; i < kMaxBacktrack; ++i) {
