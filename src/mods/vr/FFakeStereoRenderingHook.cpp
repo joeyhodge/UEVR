@@ -3861,79 +3861,43 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             const auto reg_name = [](uint32_t reg) -> const char* {
-                switch (reg) {
-                case NDR_RAX:
-                case NDR_EAX: return "RAX";
-                case NDR_RBX:
-                case NDR_EBX: return "RBX";
-                case NDR_RCX:
-                case NDR_ECX: return "RCX";
-                case NDR_RDX:
-                case NDR_EDX: return "RDX";
-                case NDR_RSP:
-                case NDR_ESP: return "RSP";
-                case NDR_RBP:
-                case NDR_EBP: return "RBP";
-                case NDR_RSI:
-                case NDR_ESI: return "RSI";
-                case NDR_RDI:
-                case NDR_EDI: return "RDI";
-                case NDR_R8:
-                case NDR_R8D: return "R8";
-                case NDR_R9:
-                case NDR_R9D: return "R9";
-                case NDR_R10:
-                case NDR_R10D: return "R10";
-                case NDR_R11:
-                case NDR_R11D: return "R11";
-                case NDR_R12:
-                case NDR_R12D: return "R12";
-                case NDR_R13:
-                case NDR_R13D: return "R13";
-                case NDR_R14:
-                case NDR_R14D: return "R14";
-                case NDR_R15:
-                case NDR_R15D: return "R15";
-                default: return "UNK";
-                }
+                if (reg == NDR_RAX || reg == NDR_EAX) return "RAX";
+                if (reg == NDR_RBX || reg == NDR_EBX) return "RBX";
+                if (reg == NDR_RCX || reg == NDR_ECX) return "RCX";
+                if (reg == NDR_RDX || reg == NDR_EDX) return "RDX";
+                if (reg == NDR_RSP || reg == NDR_ESP) return "RSP";
+                if (reg == NDR_RBP || reg == NDR_EBP) return "RBP";
+                if (reg == NDR_RSI || reg == NDR_ESI) return "RSI";
+                if (reg == NDR_RDI || reg == NDR_EDI) return "RDI";
+                if (reg == NDR_R8 || reg == NDR_R8D) return "R8";
+                if (reg == NDR_R9 || reg == NDR_R9D) return "R9";
+                if (reg == NDR_R10 || reg == NDR_R10D) return "R10";
+                if (reg == NDR_R11 || reg == NDR_R11D) return "R11";
+                if (reg == NDR_R12 || reg == NDR_R12D) return "R12";
+                if (reg == NDR_R13 || reg == NDR_R13D) return "R13";
+                if (reg == NDR_R14 || reg == NDR_R14D) return "R14";
+                if (reg == NDR_R15 || reg == NDR_R15D) return "R15";
+                return "UNK";
             };
 
             const auto reg_value = [&](uint32_t reg) -> std::optional<uintptr_t> {
-                switch (reg) {
-                case NDR_RAX:
-                case NDR_EAX: return exception->ContextRecord->Rax;
-                case NDR_RBX:
-                case NDR_EBX: return exception->ContextRecord->Rbx;
-                case NDR_RCX:
-                case NDR_ECX: return exception->ContextRecord->Rcx;
-                case NDR_RDX:
-                case NDR_EDX: return exception->ContextRecord->Rdx;
-                case NDR_RSP:
-                case NDR_ESP: return exception->ContextRecord->Rsp;
-                case NDR_RBP:
-                case NDR_EBP: return exception->ContextRecord->Rbp;
-                case NDR_RSI:
-                case NDR_ESI: return exception->ContextRecord->Rsi;
-                case NDR_RDI:
-                case NDR_EDI: return exception->ContextRecord->Rdi;
-                case NDR_R8:
-                case NDR_R8D: return exception->ContextRecord->R8;
-                case NDR_R9:
-                case NDR_R9D: return exception->ContextRecord->R9;
-                case NDR_R10:
-                case NDR_R10D: return exception->ContextRecord->R10;
-                case NDR_R11:
-                case NDR_R11D: return exception->ContextRecord->R11;
-                case NDR_R12:
-                case NDR_R12D: return exception->ContextRecord->R12;
-                case NDR_R13:
-                case NDR_R13D: return exception->ContextRecord->R13;
-                case NDR_R14:
-                case NDR_R14D: return exception->ContextRecord->R14;
-                case NDR_R15:
-                case NDR_R15D: return exception->ContextRecord->R15;
-                default: return std::nullopt;
-                }
+                if (reg == NDR_RAX || reg == NDR_EAX) return exception->ContextRecord->Rax;
+                if (reg == NDR_RBX || reg == NDR_EBX) return exception->ContextRecord->Rbx;
+                if (reg == NDR_RCX || reg == NDR_ECX) return exception->ContextRecord->Rcx;
+                if (reg == NDR_RDX || reg == NDR_EDX) return exception->ContextRecord->Rdx;
+                if (reg == NDR_RSP || reg == NDR_ESP) return exception->ContextRecord->Rsp;
+                if (reg == NDR_RBP || reg == NDR_EBP) return exception->ContextRecord->Rbp;
+                if (reg == NDR_RSI || reg == NDR_ESI) return exception->ContextRecord->Rsi;
+                if (reg == NDR_RDI || reg == NDR_EDI) return exception->ContextRecord->Rdi;
+                if (reg == NDR_R8 || reg == NDR_R8D) return exception->ContextRecord->R8;
+                if (reg == NDR_R9 || reg == NDR_R9D) return exception->ContextRecord->R9;
+                if (reg == NDR_R10 || reg == NDR_R10D) return exception->ContextRecord->R10;
+                if (reg == NDR_R11 || reg == NDR_R11D) return exception->ContextRecord->R11;
+                if (reg == NDR_R12 || reg == NDR_R12D) return exception->ContextRecord->R12;
+                if (reg == NDR_R13 || reg == NDR_R13D) return exception->ContextRecord->R13;
+                if (reg == NDR_R14 || reg == NDR_R14D) return exception->ContextRecord->R14;
+                if (reg == NDR_R15 || reg == NDR_R15D) return exception->ContextRecord->R15;
+                return std::nullopt;
             };
 
             const auto base_reg = op2.Info.Memory.Base;
