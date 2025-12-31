@@ -3984,15 +3984,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             };
 
             const auto is_stack_base = [](uint32_t reg) -> bool {
-                switch (reg) {
-                case NDR_RSP:
-                case NDR_ESP:
-                case NDR_RBP:
-                case NDR_EBP:
-                    return true;
-                default:
-                    return false;
-                }
+                return reg == NDR_RSP || reg == NDR_ESP || reg == NDR_RBP || reg == NDR_EBP;
             };
 
             const auto get_stack_disp = [&](const ND_OPERAND& op, int64_t& disp_out) -> bool {
