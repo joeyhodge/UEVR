@@ -148,6 +148,11 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
     return sdk::UEngine::get_stereo_rendering_device_offset();
 }
 
+static bool is_ue_57() {
+    const auto override = get_stereo_rendering_device_offset_override();
+    return override && *override == 0x15A0;
+}
+
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
     setup_options();
@@ -6575,6 +6580,11 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         } else if (!rtm->is_using_texture_desc) {
             *((uint8_t*)ctx.rsp + 0x28) = 2; // PF_B8G8R8A8
         }
+    }
+
+    if (is_ue_57()) {
+        SPDLOG_WARN("UE5.7 detected: skipping pre-texture JIT call to avoid double-create crash risk");
+        return;
     }
 
     // Now we are going to attempt to JIT a function that will call the original function
