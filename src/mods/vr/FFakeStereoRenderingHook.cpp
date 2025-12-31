@@ -3861,6 +3861,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
+            if (const auto module_within = utility::get_module_within(exception_address); module_within) {
+                if (const auto module_path = utility::get_module_path(*module_within)) {
+                    SPDLOG_INFO_ONCE("XRSystem AV module: {:x} {}", (uintptr_t)*module_within, *module_path);
+                }
+            }
 
             // Get the start of the previous instruction
             const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
@@ -3872,6 +3877,15 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             auto xr_deref_instruction = previous_instruction;
             uint32_t expected_reg = op2.Info.Memory.Base;
+            constexpr auto kWeakPtrSize = sizeof(TWeakPtr<void*>);
+            const auto xr_system_offset = s_stereo_rendering_device_offset;
+            const auto hmd_device_offset = s_stereo_rendering_device_offset + kWeakPtrSize;
+            const auto hmd_device_offset_alt = s_stereo_rendering_device_offset + sizeof(void*);
+            const auto matches_xr_disp = [&](uint64_t disp) -> bool {
+                return disp == xr_system_offset ||
+                       disp == hmd_device_offset ||
+                       disp == hmd_device_offset_alt;
+            };
 
             const auto matches_xr_deref = [&](const auto& instr, uint32_t reg) -> bool {
                 if (instr->instrux.OperandsCount < 2) {
@@ -3889,7 +3903,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     return false;
                 }
 
-                return src.Info.Memory.Disp == potential_hmd_device_offset;
+                return matches_xr_disp(src.Info.Memory.Disp);
             };
 
             const auto matches_xr_deref_loose = [&](const auto& instr) -> bool {
@@ -3903,7 +3917,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     return false;
                 }
 
-                return src.Info.Memory.Disp == potential_hmd_device_offset;
+                return matches_xr_disp(src.Info.Memory.Disp);
             };
 
             const auto follow_alias = [&](const auto& instr, uint32_t& reg) -> bool {
@@ -3934,7 +3948,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             };
 
             if (!matches_xr_deref(xr_deref_instruction, expected_reg)) {
-                constexpr int kMaxBacktrack = 12;
+                constexpr int kMaxBacktrack = 24;
                 auto scan_addr = exception_address;
                 uint32_t alias_reg = expected_reg;
                 bool found = false;
@@ -3987,8 +4001,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            if (prev_op2.Info.Memory.Disp != potential_hmd_device_offset) {
-                SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference");
+            if (!matches_xr_disp(prev_op2.Info.Memory.Disp)) {
+                SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference (disp: {:x})", prev_op2.Info.Memory.Disp);
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
