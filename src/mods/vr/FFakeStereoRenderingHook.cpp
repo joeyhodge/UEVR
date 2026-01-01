@@ -6582,8 +6582,29 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         }
     }
 
-    if (is_ue_57()) {
-        SPDLOG_WARN("UE5.7 detected: skipping pre-texture JIT call to avoid double-create crash risk");
+    if (rtm->is_pre_texture_call_create_texture) {
+        if (ctx.rcx == 0) {
+            SPDLOG_ERROR("PreTextureHook: ctx.rcx is null; cannot call CreateTexture");
+            return;
+        }
+
+        using CreateTextureInitFn = void(__fastcall*)(void* rhi, void* out_initializer, void* command_list, void* desc);
+        auto vtable = *reinterpret_cast<void***>(ctx.rcx);
+
+        if (vtable == nullptr) {
+            SPDLOG_ERROR("PreTextureHook: rhi vtable is null; cannot call CreateTexture");
+            return;
+        }
+
+        auto func = reinterpret_cast<CreateTextureInitFn>(*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vtable) + 0x190));
+
+        if (func == nullptr) {
+            SPDLOG_ERROR("PreTextureHook: CreateTexture vtable entry is null; cannot call CreateTexture");
+            return;
+        }
+
+        SPDLOG_INFO("CreateTexture vtable call detected (offset 0x190); calling directly");
+        func(reinterpret_cast<void*>(ctx.rcx), reinterpret_cast<void*>(ctx.rdx), reinterpret_cast<void*>(ctx.r8), reinterpret_cast<void*>(ctx.r9));
         return;
     }
 
@@ -7058,7 +7079,70 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
             SPDLOG_INFO("Weird form of E8 call detected...");
 
             // RDX check is to make sure RDX is a pointer and not something like the width which would be a relatively small integer
-            if (rtm->is_using_texture_desc && rtm->is_version_greq_5_1 && ctx.rdx >= 65535) {
+            const auto create_texture_call = func_ptr != 0
+                ? utility::scan(func_ptr, 0x200, "FF 90 90 01 00 00")
+                : std::optional<uintptr_t>{};
+
+            const bool is_create_texture =
+                rtm->is_using_texture_desc &&
+                rtm->is_version_greq_5_1 &&
+                create_texture_call.has_value() &&
+                ctx.r8 >= 65535;
+
+            if (is_create_texture) {
+                SPDLOG_INFO("CreateTexture (E8) detected; using command list + desc signature");
+
+                void (*func)(
+                    FTexture2DRHIRef* out,
+                    uintptr_t command_list,
+                    uintptr_t desc
+                ) = (decltype(func))func_ptr;
+
+                // Scan for the render target width and height in the desc
+                // and replace it with the desktop resolution (This is for the UI texture)
+                const auto scan_x = VR::get()->get_hmd_width() * 2;
+                const auto scan_y = VR::get()->get_hmd_height();
+
+                std::optional<int32_t> width_offset{};
+                std::optional<int32_t> height_offset{};
+
+                int32_t old_width{};
+                int32_t old_height{};
+
+                for (auto i = 0; i < 0x100; ++i) {
+                    auto& x = *(int32_t*)(ctx.r8 + i);
+                    auto& y = *(int32_t*)(ctx.r8 + i + 4);
+
+                    if (x == scan_x && y == scan_y) {
+                        SPDLOG_INFO("UE5: Found render target width and height at offset: {:x}", i);
+
+                        width_offset = i;
+                        height_offset = i + 4;
+
+                        old_width = x;
+                        old_height = y;
+
+                        x = size.x;
+                        y = size.y;
+                        break;
+                    }
+                }
+
+                func(&out, ctx.rdx, ctx.r8);
+
+                if (width_offset && height_offset) {
+                    auto& x = *(int32_t*)(ctx.r8 + *width_offset);
+                    auto& y = *(int32_t*)(ctx.r8 + *height_offset);
+
+                    x = old_width;
+                    y = old_height;
+                }
+
+                if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
+                    SPDLOG_INFO("Had to set texture hook ref in pre texture hook!");
+                    rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rcx;
+                }
+            } else if (rtm->is_using_texture_desc && rtm->is_version_greq_5_1 && ctx.rdx >= 65535) {
                 SPDLOG_INFO("Calling UE5 texture desc version of texture create");
 
                 void (*func)(
@@ -7941,6 +8025,7 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
     this->texture_hook_ref = tex;
     this->shader_resource_hook_ref = shader_resource;
     this->allocate_texture_called = true;
+    this->is_pre_texture_call_create_texture = false;
 
     if (!this->set_up_texture_hook) {
         ZoneScopedN("VRRenderTargetManager_Base::allocate_render_target_texture initialization");
@@ -8137,6 +8222,14 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                     if (is_call && !next_call_is_not_the_right_one) {
                         const auto post_call = (uintptr_t)ip + decoded->Length;
                         SPDLOG_INFO("AllocateRenderTargetTexture post_call: {:x}, rel {:x}", post_call, post_call - (uintptr_t)*utility::get_module_within((void*)post_call));
+
+                        if (decoded->Length >= 6 &&
+                            bytes[0] == 0xFF && bytes[1] == 0x90 &&
+                            bytes[2] == 0x90 && bytes[3] == 0x01 &&
+                            bytes[4] == 0x00 && bytes[5] == 0x00) {
+                            SPDLOG_INFO("Found CreateTexture vtable call (offset 0x190)");
+                            this->is_pre_texture_call_create_texture = true;
+                        }
 
                         if (*(uint8_t*)ip == 0xE8) {
                             SPDLOG_INFO("E8 call found!");
