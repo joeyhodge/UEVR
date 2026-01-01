@@ -7250,95 +7250,159 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
                     stack_args[7], stack_args[8], stack_args[9]);
             }
         } else {
-            ctx.r8 = 2; // PF_B8G8R8A8
+            bool handled = false;
+            const auto is_stack_like = [&](uintptr_t ptr) {
+                return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
+            };
 
-            std::optional<int> previous_stack_found_index{};
-            std::optional<int> previous_stack_repeating_index{};
+            if ((rtm->is_using_texture_desc && rtm->is_version_greq_5_1) || is_ue_57()) {
+                if (is_stack_like(ctx.rdx) && is_stack_like(ctx.r8) && !is_stack_like(ctx.rcx)) {
+                    SPDLOG_INFO("CreateTexture (E8) detected; using command list + out + desc signature");
 
-            std::optional<int> texture_argument_index{};
-            std::optional<int> shader_argument_index{};
+                    void (*func)(
+                        uintptr_t command_list,
+                        FTexture2DRHIRef* out,
+                        uintptr_t desc
+                    ) = (decltype(func))func_ptr;
 
-            for (auto i = 0; i < 10; ++i) {
-                const auto stack_ptr = stack_args[i];
+                    const auto scan_x = VR::get()->get_hmd_width() * 2;
+                    const auto scan_y = VR::get()->get_hmd_height();
 
-                if (std::abs((int64_t)stack_ptr - (int64_t)ctx.rsp) <= 0x300) {
-                    if (previous_stack_found_index && *previous_stack_found_index == i - 1) {
-                        previous_stack_repeating_index = i;
+                    std::optional<int32_t> width_offset{};
+                    std::optional<int32_t> height_offset{};
+
+                    int32_t old_width{};
+                    int32_t old_height{};
+
+                    for (auto i = 0; i < 0x100; ++i) {
+                        auto& x = *(int32_t*)(ctx.r8 + i);
+                        auto& y = *(int32_t*)(ctx.r8 + i + 4);
+
+                        if (x == scan_x && y == scan_y) {
+                            SPDLOG_INFO("UE5: Found render target width and height at offset: {:x}", i);
+
+                            width_offset = i;
+                            height_offset = i + 4;
+
+                            old_width = x;
+                            old_height = y;
+
+                            x = size.x;
+                            y = size.y;
+                            break;
+                        }
                     }
 
-                    previous_stack_found_index = i;
-                    SPDLOG_INFO("Stack pointer found at arg index {} ({} stack)", i + 4, i);
-                } else if (previous_stack_repeating_index && *previous_stack_repeating_index == i - 1) {
-                    texture_argument_index = i - 2;
-                    shader_argument_index = i - 1;
-                    SPDLOG_INFO("Texture argument may be at index {} ({} stack)", *texture_argument_index + 4, *texture_argument_index);
-                    SPDLOG_INFO("Shader argument may be at index {} ({} stack)", *shader_argument_index + 4, *shader_argument_index);
-                    break;
+                    func(ctx.rcx, &out, ctx.r8);
+
+                    if (width_offset && height_offset) {
+                        auto& x = *(int32_t*)(ctx.r8 + *width_offset);
+                        auto& y = *(int32_t*)(ctx.r8 + *height_offset);
+
+                        x = old_width;
+                        y = old_height;
+                    }
+
+                    if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
+                        SPDLOG_INFO("Had to set texture hook ref in pre texture hook!");
+                        rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rdx;
+                    }
+
+                    handled = true;
                 }
             }
 
-            if (!texture_argument_index && !shader_argument_index) {
-                // operate on a wild guess (hardcoded function signature)
-                SPDLOG_INFO("Calling E8 version of texture create with hardcoded function signature");
+            if (!handled) {
+                ctx.r8 = 2; // PF_B8G8R8A8
 
-                void (*func)(
-                    uint32_t w,
-                    uint32_t h,
-                    uint8_t format,
-                    uintptr_t mips,
-                    uintptr_t samples,
-                    uintptr_t flags,
-                    uintptr_t a7,
-                    uintptr_t a8,
-                    uintptr_t a9,
-                    FTexture2DRHIRef* out,
-                    FTexture2DRHIRef* shader_out,
-                    uintptr_t additional,
-                    uintptr_t additional2) = (decltype(func))func_ptr;
+                std::optional<int> previous_stack_found_index{};
+                std::optional<int> previous_stack_repeating_index{};
 
-                func((uint32_t)size.x, (uint32_t)size.y, 2, ctx.r9,
-                    stack_args[0], stack_args[1], 
-                    stack_args[2], stack_args[3],
-                    stack_args[4],
-                    &out, &shader_out,
-                    stack_args[7], stack_args[8]);
-            } else {
-                // dynamically generate the function call
-                SPDLOG_INFO("Calling E8 version of texture create with dynamically generated function signature");
+                std::optional<int> texture_argument_index{};
+                std::optional<int> shader_argument_index{};
 
-                void (*func)(
-                    uint32_t w,
-                    uint32_t h,
-                    uint8_t format,
-                    uintptr_t mips,
-                    uintptr_t stack_0,
-                    uintptr_t stack_1,
-                    uintptr_t stack_2,
-                    uintptr_t stack_3,
-                    uintptr_t stack_4,
-                    uintptr_t stack_5,
-                    uintptr_t stack_6,
-                    uintptr_t stack_7,
-                    uintptr_t stack_8) = (decltype(func))func_ptr;
+                for (auto i = 0; i < 10; ++i) {
+                    const auto stack_ptr = stack_args[i];
 
-                std::array<uintptr_t, 9> cloned_stack{};
-                for (auto i = 0; i < 9; ++i) {
-                    cloned_stack[i] = stack_args[i];
+                    if (std::abs((int64_t)stack_ptr - (int64_t)ctx.rsp) <= 0x300) {
+                        if (previous_stack_found_index && *previous_stack_found_index == i - 1) {
+                            previous_stack_repeating_index = i;
+                        }
+
+                        previous_stack_found_index = i;
+                        SPDLOG_INFO("Stack pointer found at arg index {} ({} stack)", i + 4, i);
+                    } else if (previous_stack_repeating_index && *previous_stack_repeating_index == i - 1) {
+                        texture_argument_index = i - 2;
+                        shader_argument_index = i - 1;
+                        SPDLOG_INFO("Texture argument may be at index {} ({} stack)", *texture_argument_index + 4, *texture_argument_index);
+                        SPDLOG_INFO("Shader argument may be at index {} ({} stack)", *shader_argument_index + 4, *shader_argument_index);
+                        break;
+                    }
                 }
 
-                cloned_stack[*texture_argument_index] = (uintptr_t)&out;
-                cloned_stack[*shader_argument_index] = (uintptr_t)&shader_out;
+                if (!texture_argument_index && !shader_argument_index) {
+                    // operate on a wild guess (hardcoded function signature)
+                    SPDLOG_INFO("Calling E8 version of texture create with hardcoded function signature");
 
-                func((uint32_t)size.x, (uint32_t)size.y, 2, ctx.r9,
-                    cloned_stack[0], cloned_stack[1], 
-                    cloned_stack[2], cloned_stack[3],
-                    cloned_stack[4],
-                    cloned_stack[5], cloned_stack[6],
-                    cloned_stack[7], cloned_stack[8]);
+                    void (*func)(
+                        uint32_t w,
+                        uint32_t h,
+                        uint8_t format,
+                        uintptr_t mips,
+                        uintptr_t samples,
+                        uintptr_t flags,
+                        uintptr_t a7,
+                        uintptr_t a8,
+                        uintptr_t a9,
+                        FTexture2DRHIRef* out,
+                        FTexture2DRHIRef* shader_out,
+                        uintptr_t additional,
+                        uintptr_t additional2) = (decltype(func))func_ptr;
 
-                if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
-                    SPDLOG_INFO("Had to set texture hook ref in pre texture hook!");
-                    rtm->texture_hook_ref = (FTexture2DRHIRef*)stack_args[*texture_argument_index];
+                    func((uint32_t)size.x, (uint32_t)size.y, 2, ctx.r9,
+                        stack_args[0], stack_args[1], 
+                        stack_args[2], stack_args[3],
+                        stack_args[4],
+                        &out, &shader_out,
+                        stack_args[7], stack_args[8]);
+                } else {
+                    // dynamically generate the function call
+                    SPDLOG_INFO("Calling E8 version of texture create with dynamically generated function signature");
+
+                    void (*func)(
+                        uint32_t w,
+                        uint32_t h,
+                        uint8_t format,
+                        uintptr_t mips,
+                        uintptr_t stack_0,
+                        uintptr_t stack_1,
+                        uintptr_t stack_2,
+                        uintptr_t stack_3,
+                        uintptr_t stack_4,
+                        uintptr_t stack_5,
+                        uintptr_t stack_6,
+                        uintptr_t stack_7,
+                        uintptr_t stack_8) = (decltype(func))func_ptr;
+
+                    std::array<uintptr_t, 9> cloned_stack{};
+                    for (auto i = 0; i < 9; ++i) {
+                        cloned_stack[i] = stack_args[i];
+                    }
+
+                    cloned_stack[*texture_argument_index] = (uintptr_t)&out;
+                    cloned_stack[*shader_argument_index] = (uintptr_t)&shader_out;
+
+                    func((uint32_t)size.x, (uint32_t)size.y, 2, ctx.r9,
+                        cloned_stack[0], cloned_stack[1], 
+                        cloned_stack[2], cloned_stack[3],
+                        cloned_stack[4],
+                        cloned_stack[5], cloned_stack[6],
+                        cloned_stack[7], cloned_stack[8]);
+
+                    if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
+                        SPDLOG_INFO("Had to set texture hook ref in pre texture hook!");
+                        rtm->texture_hook_ref = (FTexture2DRHIRef*)stack_args[*texture_argument_index];
+                    }
                 }
             }
         }
@@ -8116,6 +8180,12 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             this->is_version_greq_5_1 = false;
 
             next_call_is_not_the_right_one = true; // not seen a case where this isn't true (yet)
+        }
+
+        if (!this->is_using_texture_desc && is_ue_57()) {
+            SPDLOG_INFO("UE5.7 detected; assuming texture descriptors are used");
+            this->is_using_texture_desc = true;
+            this->is_version_greq_5_1 = true;
         }
 
         // Now, we need to emulate from where AllocateRenderTargetTexture returns from
