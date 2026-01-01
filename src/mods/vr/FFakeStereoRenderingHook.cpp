@@ -6538,6 +6538,12 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         SPDLOG_ERROR("Failed to find force separate rt offset! (Exception)");
     }
 
+    if (!m_viewport_force_separate_rt_offset && is_ue_57()) {
+        constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x278;
+        m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
+        SPDLOG_WARN_ONCE("Using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
+    }
+
     const auto w = VR::get()->get_hmd_width();
     const auto h = VR::get()->get_hmd_height();
 
@@ -6597,29 +6603,33 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     }
 
     if (rtm->is_pre_texture_call_create_texture) {
-        if (ctx.rcx == 0) {
-            SPDLOG_ERROR("PreTextureHook: ctx.rcx is null; cannot call CreateTexture");
+        if (is_ue_57()) {
+            SPDLOG_WARN_ONCE("UE5.7: skipping direct CreateTexture vtable call; falling back to emulation");
+        } else {
+            if (ctx.rcx == 0 || IsBadReadPtr((void*)ctx.rcx, sizeof(void*))) {
+                SPDLOG_ERROR("PreTextureHook: ctx.rcx is null or invalid; cannot call CreateTexture");
+                return;
+            }
+
+            using CreateTextureInitFn = void(__fastcall*)(void* rhi, void* out_initializer, void* command_list, void* desc);
+            auto vtable = *reinterpret_cast<void***>(ctx.rcx);
+
+            if (vtable == nullptr) {
+                SPDLOG_ERROR("PreTextureHook: rhi vtable is null; cannot call CreateTexture");
+                return;
+            }
+
+            auto func = reinterpret_cast<CreateTextureInitFn>(*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vtable) + 0x190));
+
+            if (func == nullptr) {
+                SPDLOG_ERROR("PreTextureHook: CreateTexture vtable entry is null; cannot call CreateTexture");
+                return;
+            }
+
+            SPDLOG_INFO("CreateTexture vtable call detected (offset 0x190); calling directly");
+            func(reinterpret_cast<void*>(ctx.rcx), reinterpret_cast<void*>(ctx.rdx), reinterpret_cast<void*>(ctx.r8), reinterpret_cast<void*>(ctx.r9));
             return;
         }
-
-        using CreateTextureInitFn = void(__fastcall*)(void* rhi, void* out_initializer, void* command_list, void* desc);
-        auto vtable = *reinterpret_cast<void***>(ctx.rcx);
-
-        if (vtable == nullptr) {
-            SPDLOG_ERROR("PreTextureHook: rhi vtable is null; cannot call CreateTexture");
-            return;
-        }
-
-        auto func = reinterpret_cast<CreateTextureInitFn>(*reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(vtable) + 0x190));
-
-        if (func == nullptr) {
-            SPDLOG_ERROR("PreTextureHook: CreateTexture vtable entry is null; cannot call CreateTexture");
-            return;
-        }
-
-        SPDLOG_INFO("CreateTexture vtable call detected (offset 0x190); calling directly");
-        func(reinterpret_cast<void*>(ctx.rcx), reinterpret_cast<void*>(ctx.rdx), reinterpret_cast<void*>(ctx.r8), reinterpret_cast<void*>(ctx.r9));
-        return;
     }
 
     // Now we are going to attempt to JIT a function that will call the original function
@@ -6910,6 +6920,11 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
         if (rtm->is_using_texture_desc && rtm->is_version_greq_5_1) {
             if (ctx.r9 == 0 || IsBadReadPtr((void*)ctx.r9, sizeof(void*))) {
+                if (is_ue_57()) {
+                    SPDLOG_WARN_ONCE("UE5.7: texture desc register invalid; skipping pre texture hook");
+                    return;
+                }
+
                 SPDLOG_INFO("Possible UE 5.0.3 detected, not 5.1 or above");
                 rtm->is_using_texture_desc = false;
                 rtm->is_version_5_0_3 = true;
