@@ -110,13 +110,20 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
     checked = true;
 
     const auto version_info = sdk::get_file_version_info();
-    if (version_info.dwFileVersionMS != 0) {
+    if (version_info.dwFileVersionMS != 0 || version_info.dwFileVersionLS != 0) {
+        auto major = HIWORD(version_info.dwFileVersionMS);
+        auto minor = LOWORD(version_info.dwFileVersionMS);
+
+        if (major == 0 && minor >= 10000) {
+            major = minor / 10000;
+            minor = minor % 10000;
+        }
+
         if (!logged_version) {
             SPDLOG_INFO("UE file version MS: {:x} LS: {:x}", version_info.dwFileVersionMS, version_info.dwFileVersionLS);
+            SPDLOG_INFO("UE parsed file version: {}.{}", major, minor);
             logged_version = true;
         }
-        const auto major = HIWORD(version_info.dwFileVersionMS);
-        const auto minor = LOWORD(version_info.dwFileVersionMS);
 
         if (major == 5 && minor == 7) {
             SPDLOG_INFO("Detected UE5.7 via file version; using StereoRenderingDevice offset 0x15A0");
@@ -130,7 +137,7 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
             SPDLOG_INFO("UE version string: {}", utility::narrow(*version));
             logged_version = true;
         }
-        if (*version == L"5.7") {
+        if (version->find(L"5.7") != std::wstring::npos) {
             SPDLOG_INFO("Detected UE5.7 via version string; using StereoRenderingDevice offset 0x15A0");
             cached = 0x15A0;
             return cached;
@@ -4029,12 +4036,14 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             uint32_t expected_reg = op2.Info.Memory.Base;
             constexpr auto kWeakPtrSize = sizeof(TWeakPtr<void*>);
             const auto xr_system_offset = s_stereo_rendering_device_offset;
+            const auto xr_system_offset_57 = is_ue_57() ? 0x15B0 : 0;
             const auto hmd_device_offset = s_stereo_rendering_device_offset + kWeakPtrSize;
             const auto hmd_device_offset_alt = s_stereo_rendering_device_offset + sizeof(void*);
             const auto matches_xr_disp = [&](uint64_t disp) -> bool {
                 return disp == xr_system_offset ||
                        disp == hmd_device_offset ||
-                       disp == hmd_device_offset_alt;
+                       disp == hmd_device_offset_alt ||
+                       (xr_system_offset_57 != 0 && disp == xr_system_offset_57);
             };
 
             const auto matches_xr_deref = [&](const auto& instr, uint32_t reg) -> bool {
@@ -5918,6 +5927,11 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
             return utility::ExhaustionResult::CONTINUE;
         });
+    }
+
+    if (!idx && is_ue_57()) {
+        SPDLOG_WARN("Using UE5.7 PostInitProperties vtable index 10");
+        idx = 10;
     }
 
     if (!idx) {
