@@ -6539,7 +6539,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
     }
 
     if (!m_viewport_force_separate_rt_offset && is_ue_57()) {
-        constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x278;
+        constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x1B8;
         m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
         SPDLOG_WARN_ONCE("Using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
     }
@@ -6600,7 +6600,7 @@ void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_v
         }
 
         const auto disp = static_cast<size_t>(op0.Info.Memory.Disp);
-        if (disp < 0x200 || disp > 0x400) {
+        if (disp < 0x100 || disp > 0x400) {
             return utility::ExhaustionResult::CONTINUE;
         }
 
@@ -6636,7 +6636,7 @@ void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_v
     dedupe(byte_offsets);
     dedupe(bitfield_offsets);
 
-    constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x278;
+    constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x1B8;
 
     auto pick_adjacent = [](const std::vector<size_t>& offsets) -> std::optional<size_t> {
         for (const auto offset : offsets) {
