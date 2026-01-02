@@ -6855,7 +6855,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
                 return false;
             }
 
-            if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
+            if (rtm->texture_hook_ref == nullptr) {
                 rtm->texture_hook_ref = (FTexture2DRHIRef*)ptr;
                 SPDLOG_INFO_ONCE("UE5.7: guessed texture hook ref from {}: {:x}", label, ptr);
             }
