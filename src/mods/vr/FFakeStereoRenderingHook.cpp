@@ -7628,20 +7628,78 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     }
 
     FRHITexture2D* texture = nullptr;
+    const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
+    const auto is_stack_like = [&](uintptr_t ptr) {
+        return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
+    };
+    const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
+        const auto addr = (uintptr_t)tex;
+        if (tex == nullptr || addr < 0x10000) {
+            return false;
+        }
+
+        if (IsBadReadPtr(tex, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable = *(void**)tex;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        return true;
+    };
+    const auto try_get_texture_from_ref = [&](FTexture2DRHIRef* ref, const char* label) -> FRHITexture2D* {
+        if (ref == nullptr || IsBadReadPtr(ref, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto tex = ref->texture;
+        if (!is_valid_texture_ptr(tex)) {
+            if (tex != nullptr) {
+                SPDLOG_WARN(" {} texture pointer invalid: {:x}", label, (uintptr_t)tex);
+            }
+            return nullptr;
+        }
+
+        rtm->texture_hook_ref = ref;
+        SPDLOG_INFO_ONCE("Using texture ref from {}", label);
+        return tex;
+    };
 
     if (rtm->texture_hook_ref != nullptr) {
-        texture = rtm->texture_hook_ref->texture;
+        texture = try_get_texture_from_ref(rtm->texture_hook_ref, "stored ref");
 
-        // happens?
         if (texture == nullptr) {
-            SPDLOG_INFO(" Texture is null, trying to get it from RAX...");
+            SPDLOG_INFO(" Stored ref invalid, trying to get it from RAX...");
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rax, "rax");
+        }
 
-            const auto ref = (FTexture2DRHIRef*)ctx.rax;
+        if (texture == nullptr) {
+            SPDLOG_INFO(" Stored ref still invalid, scanning registers/stack...");
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rcx, "rcx");
+            if (texture == nullptr) {
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rdx, "rdx");
+            }
+            if (texture == nullptr) {
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r8, "r8");
+            }
+            if (texture == nullptr) {
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r9, "r9");
+            }
 
-            if (!IsBadReadPtr(ref, sizeof(void*)) && !IsBadReadPtr(ref->texture, sizeof(void*))) {
-                texture = ref->texture;
-            } else {
-                SPDLOG_ERROR(" RAX is bad! Can't get texture!");
+            if (texture == nullptr) {
+                for (auto i = 0; i < 10; ++i) {
+                    const auto stack_ptr = stack_args[i];
+                    if (!is_stack_like(stack_ptr)) {
+                        continue;
+                    }
+
+                    texture = try_get_texture_from_ref((FTexture2DRHIRef*)stack_ptr, "stack");
+                    if (texture != nullptr) {
+                        break;
+                    }
+                }
             }
         }
 
