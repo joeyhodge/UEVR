@@ -55,6 +55,7 @@ public:
     void calculate_render_target_size(const sdk::FViewport& viewport, uint32_t& x, uint32_t& y);
     bool need_reallocate_view_target(const sdk::FViewport& Viewport);
     bool need_reallocate_depth_texture(const void* DepthTarget);
+    void try_find_force_separate_rt_offset_from_update_viewport(uintptr_t update_viewport_rhi);
 
 public:
     FRHITexture2D*& get_ui_target() { return ui_target; }
@@ -161,6 +162,7 @@ protected:
 
     std::optional<size_t> m_viewport_force_separate_rt_offset{};
     bool m_attempted_find_force_separate_rt{false};
+    bool m_attempted_find_force_separate_rt_from_update_viewport{false};
 
     sdk::UObjectReference<sdk::AActor> scene_capture_actor{nullptr};
     sdk::UObjectReference<sdk::USceneCaptureComponent2D> scene_capture_component{nullptr};

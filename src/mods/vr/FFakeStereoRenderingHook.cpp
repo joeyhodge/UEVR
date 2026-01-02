@@ -6452,7 +6452,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         return false;
     }
 
-    if (!m_attempted_find_force_separate_rt) try {
+    if (!m_viewport_force_separate_rt_offset && !m_attempted_find_force_separate_rt) try {
         m_attempted_find_force_separate_rt = true;
 
         // Go up the stack until we find something that isn't in our module.
@@ -6559,6 +6559,118 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
     }
 
     return false;
+}
+
+void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_viewport(uintptr_t update_viewport_rhi) {
+    if (m_viewport_force_separate_rt_offset || m_attempted_find_force_separate_rt_from_update_viewport || !is_ue_57()) {
+        return;
+    }
+
+    m_attempted_find_force_separate_rt_from_update_viewport = true;
+
+    if (update_viewport_rhi == 0) {
+        SPDLOG_ERROR("UpdateViewportRHI scan skipped: missing target address");
+        return;
+    }
+
+    std::vector<size_t> byte_offsets{};
+    std::vector<size_t> bitfield_offsets{};
+
+    utility::exhaustive_decode((uint8_t*)update_viewport_rhi, 5000, [&](INSTRUX& ix, uintptr_t ip) -> utility::ExhaustionResult {
+        (void)ip;
+        if (ix.Instruction == ND_INS_RETN) {
+            return utility::ExhaustionResult::BREAK;
+        }
+
+        if (ix.BranchInfo.IsBranch) {
+            return utility::ExhaustionResult::STEP_OVER;
+        }
+
+        if (ix.Instruction != ND_INS_MOV && ix.Instruction != ND_INS_AND && ix.Instruction != ND_INS_OR) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        const auto& op0 = ix.Operands[0];
+        if (op0.Type != ND_OP_MEM || !op0.Info.Memory.HasBase || !op0.Info.Memory.HasDisp || op0.Info.Memory.IsRipRel) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        if (op0.Info.Memory.Base != NDR_R15 && op0.Info.Memory.Base != NDR_RCX) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        const auto disp = static_cast<size_t>(op0.Info.Memory.Disp);
+        if (disp < 0x200 || disp > 0x400) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        if (op0.Size == 8) {
+            byte_offsets.push_back(disp);
+        } else if (op0.Size == 32) {
+            const auto& op1 = ix.Operands[1];
+            if (op1.Type == ND_OP_IMM) {
+                const auto imm32 = static_cast<uint32_t>(op1.Info.Immediate.Imm);
+                const auto cleared = ~imm32;
+                const auto is_single_bit = [](uint32_t value) {
+                    return value != 0 && (value & (value - 1)) == 0;
+                };
+
+                if ((ix.Instruction == ND_INS_OR && is_single_bit(imm32)) ||
+                    (ix.Instruction == ND_INS_AND && is_single_bit(cleared)))
+                {
+                    bitfield_offsets.push_back(disp);
+                }
+            } else {
+                bitfield_offsets.push_back(disp);
+            }
+        }
+
+        return utility::ExhaustionResult::CONTINUE;
+    });
+
+    auto dedupe = [](std::vector<size_t>& offsets) {
+        std::sort(offsets.begin(), offsets.end());
+        offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
+    };
+
+    dedupe(byte_offsets);
+    dedupe(bitfield_offsets);
+
+    constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x278;
+
+    auto pick_adjacent = [](const std::vector<size_t>& offsets) -> std::optional<size_t> {
+        for (const auto offset : offsets) {
+            if (offset > 0 && std::binary_search(offsets.begin(), offsets.end(), offset - 1)) {
+                return offset;
+            }
+        }
+        return std::nullopt;
+    };
+
+    std::optional<size_t> picked{};
+
+    if (auto adjacent = pick_adjacent(byte_offsets)) {
+        picked = adjacent;
+    } else if (std::binary_search(byte_offsets.begin(), byte_offsets.end(), kViewportForceSeparateRtOffsetUE57)) {
+        picked = kViewportForceSeparateRtOffsetUE57;
+    } else if (!byte_offsets.empty()) {
+        picked = byte_offsets.back();
+    } else if (!bitfield_offsets.empty()) {
+        if (std::binary_search(bitfield_offsets.begin(), bitfield_offsets.end(), kViewportForceSeparateRtOffsetUE57)) {
+            picked = kViewportForceSeparateRtOffsetUE57;
+        } else {
+            picked = bitfield_offsets.back();
+        }
+    }
+
+    if (!picked) {
+        m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
+        SPDLOG_WARN_ONCE("UpdateViewportRHI scan failed; using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
+        return;
+    }
+
+    m_viewport_force_separate_rt_offset = picked;
+    SPDLOG_INFO("UpdateViewportRHI scan selected force separate RT offset: 0x{:x}", *picked);
 }
 
 bool VRRenderTargetManager_Base::need_reallocate_depth_texture(const void* DepthTarget) {
@@ -7994,6 +8106,13 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
             const auto rtm = g_hook->get_render_target_manager();
 
             if (rtm != nullptr) {
+                if (!rtm->get_viewport_force_separate_rt_offset()) {
+                    const auto update_viewport_rhi = g_hook->m_update_viewport_rhi_hook ?
+                        g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>() :
+                        nullptr;
+                    rtm->try_find_force_separate_rt_offset_from_update_viewport(reinterpret_cast<uintptr_t>(update_viewport_rhi));
+                }
+
                 if (const auto offset = rtm->get_viewport_force_separate_rt_offset()) {
                     auto& should_force_separate_rt = *(bool*)((uintptr_t)viewport + *offset);
                     auto& use_separate_rt = *(bool*)((uintptr_t)viewport + (*offset - 1));
