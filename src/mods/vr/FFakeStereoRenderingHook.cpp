@@ -6383,11 +6383,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return true;
     };
 
-    // UE5.7: try to source targetable + shader resource textures directly from FSceneViewport.
-    if (slate_viewport != nullptr && is_ue_57()) {
+    const bool is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+
+    if (scene_tex != nullptr && !is_scene_tex_valid) {
+        SPDLOG_WARN_ONCE("Slate resource texture pointer invalid: {:x}", (uintptr_t)scene_tex);
+    }
+
+    // UE5.7: if Slate didn't give us a usable scene texture, fall back to FSceneViewport's render-thread target.
+    if (slate_viewport != nullptr && is_ue_57() && rtm.get_render_target() == nullptr && !is_scene_tex_valid) {
         static constexpr size_t kSlateViewportAdjustors[] = { 0xC8, 0xC0, 0xD0 };
-        static constexpr size_t kSceneTargetOffset = 0x8;
-        static constexpr size_t kShaderTargetOffset = 0x2D8;
+        static constexpr size_t kRenderTargetOffset = 0x2D8; // render-thread TRefCountPtr<FRHITexture>
 
         for (const auto adjustor : kSlateViewportAdjustors) {
             auto base = (uint8_t*)slate_viewport - adjustor;
@@ -6396,34 +6401,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 continue;
             }
 
-            auto targetable_candidate = *(FRHITexture2D**)(base + kSceneTargetOffset);
-            auto shader_candidate = *(FRHITexture2D**)(base + kShaderTargetOffset);
-            bool used = false;
-
-            if (rtm.get_render_target() == nullptr && is_valid_texture_ptr(targetable_candidate)) {
+            auto targetable_candidate = *(FRHITexture2D**)(base + kRenderTargetOffset);
+            if (is_valid_texture_ptr(targetable_candidate)) {
                 rtm.set_render_target(targetable_candidate);
-                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kSceneTargetOffset, (uintptr_t)targetable_candidate);
-                used = true;
-            }
-
-            if (ui_target == nullptr && is_valid_texture_ptr(shader_candidate)) {
-                ui_target = shader_candidate;
-                SPDLOG_INFO_ONCE("Set UI target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kShaderTargetOffset, (uintptr_t)shader_candidate);
-                used = true;
-            }
-
-            if (used) {
+                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kRenderTargetOffset, (uintptr_t)targetable_candidate);
                 break;
             }
         }
     }
 
-    if (scene_tex != nullptr && rtm.get_render_target() == nullptr) {
+    if (is_scene_tex_valid && rtm.get_render_target() == nullptr) {
         rtm.set_render_target(scene_tex);
         SPDLOG_INFO_ONCE("Set scene render target from Slate resource: {:x}", (uintptr_t)scene_tex);
     }
 
-    if (ui_target == nullptr && scene_tex != nullptr) {
+    if (ui_target == nullptr && is_scene_tex_valid) {
         ui_target = scene_tex;
         SPDLOG_INFO_ONCE("UI target missing; using scene render target as fallback");
     }
