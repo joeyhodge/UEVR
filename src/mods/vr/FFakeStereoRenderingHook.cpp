@@ -6358,6 +6358,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return false;
         }
 
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(tex, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0) {
+            return false;
+        }
+
         if (IsBadReadPtr(tex, sizeof(void*))) {
             return false;
         }
@@ -7707,6 +7720,19 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
         const auto addr = (uintptr_t)tex;
         if (tex == nullptr || addr < 0x10000) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(tex, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0) {
             return false;
         }
 
