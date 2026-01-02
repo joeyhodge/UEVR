@@ -6752,8 +6752,60 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         }
     }
 
+    const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
+
     if (is_ue_57() && rtm->is_pre_texture_call_e8) {
         SPDLOG_WARN_ONCE("UE5.7: skipping pre-texture JIT for E8 CreateTexture; using original only");
+
+        const auto is_stack_like = [&](uintptr_t ptr) {
+            return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
+        };
+
+        const auto try_set_ref = [&](uintptr_t ptr, const char* label) {
+            if (!is_stack_like(ptr)) {
+                return false;
+            }
+
+            if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
+                rtm->texture_hook_ref = (FTexture2DRHIRef*)ptr;
+                SPDLOG_INFO_ONCE("UE5.7: guessed texture hook ref from {}: {:x}", label, ptr);
+            }
+
+            return true;
+        };
+
+        bool set = false;
+        set = try_set_ref(ctx.rcx, "rcx") || try_set_ref(ctx.rdx, "rdx") || try_set_ref(ctx.r8, "r8");
+
+        if (!set) {
+            std::optional<int> texture_argument_index{};
+            std::optional<int> previous_stack_found_index{};
+            std::optional<int> previous_stack_repeating_index{};
+
+            for (auto i = 0; i < 10; ++i) {
+                const auto stack_ptr = stack_args[i];
+
+                if (is_stack_like(stack_ptr)) {
+                    if (previous_stack_found_index && *previous_stack_found_index == i - 1) {
+                        previous_stack_repeating_index = i;
+                    }
+
+                    previous_stack_found_index = i;
+                } else if (previous_stack_repeating_index && *previous_stack_repeating_index == i - 1) {
+                    texture_argument_index = i - 2;
+                    break;
+                }
+            }
+
+            if (texture_argument_index) {
+                set = try_set_ref(stack_args[*texture_argument_index], "stack");
+            }
+        }
+
+        if (!set) {
+            SPDLOG_WARN_ONCE("UE5.7: could not locate output ref for E8 CreateTexture");
+        }
+
         return;
     }
 
@@ -7036,7 +7088,6 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     static FTexture2DRHIRef shader_out{};
 
     const auto size = g_framework->is_dx11() ? g_framework->get_d3d11_rt_size() : g_framework->get_d3d12_rt_size();
-    const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
 
     SPDLOG_INFO("About to call the original!");
     
