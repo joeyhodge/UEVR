@@ -6752,6 +6752,11 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         }
     }
 
+    if (is_ue_57() && rtm->is_pre_texture_call_e8) {
+        SPDLOG_WARN_ONCE("UE5.7: skipping pre-texture JIT for E8 CreateTexture; using original only");
+        return;
+    }
+
     // Now we are going to attempt to JIT a function that will call the original function
     // using the context we have. This will call it twice, but allow us to
     // have control over one of the textures it generates. We need
