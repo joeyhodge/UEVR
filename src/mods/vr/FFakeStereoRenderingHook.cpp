@@ -6321,30 +6321,47 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    const auto ui_target = g_hook->get_render_target_manager()->get_ui_target();
-
-    if (ui_target == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
-        return call_orig();
-    }
-
+    auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
     sdk::FSlateResource* slate_resource = nullptr;
 
     if (slate_viewport != nullptr) {
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
     } else {
-        const auto viewport_rt_provider = viewport_info->get_rt_provider(g_hook->get_render_target_manager()->get_render_target());
-
-        if (viewport_rt_provider == nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
-            return call_orig();
+        auto known_tex = g_hook->get_render_target_manager()->get_render_target();
+        if (known_tex == nullptr) {
+            known_tex = ui_target;
         }
-    
-        slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
+
+        if (known_tex != nullptr) {
+            const auto viewport_rt_provider = viewport_info->get_rt_provider(known_tex);
+
+            if (viewport_rt_provider == nullptr) {
+                SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
+                return call_orig();
+            }
+        
+            slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
+        }
     }
 
     if (slate_resource == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
+        return call_orig();
+    }
+
+    const auto scene_tex = slate_resource->get_mutable_resource();
+    if (scene_tex != nullptr && g_hook->get_render_target_manager()->get_render_target() == nullptr) {
+        g_hook->get_render_target_manager()->set_render_target(scene_tex);
+        SPDLOG_INFO_ONCE("Set scene render target from Slate resource: {:x}", (uintptr_t)scene_tex);
+    }
+
+    if (ui_target == nullptr && scene_tex != nullptr) {
+        ui_target = scene_tex;
+        SPDLOG_INFO_ONCE("UI target missing; using scene render target as fallback");
+    }
+
+    if (ui_target == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
         return call_orig();
     }
     
