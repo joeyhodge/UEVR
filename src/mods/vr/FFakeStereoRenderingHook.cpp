@@ -6452,7 +6452,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         return false;
     }
 
-    if (!m_viewport_force_separate_rt_offset && !m_attempted_find_force_separate_rt) try {
+    if (!is_ue_57() && !m_viewport_force_separate_rt_offset && !m_attempted_find_force_separate_rt) try {
         m_attempted_find_force_separate_rt = true;
 
         // Go up the stack until we find something that isn't in our module.
@@ -6562,7 +6562,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
 }
 
 void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_viewport(uintptr_t update_viewport_rhi) {
-    if (m_viewport_force_separate_rt_offset || m_attempted_find_force_separate_rt_from_update_viewport || !is_ue_57()) {
+    if (m_attempted_find_force_separate_rt_from_update_viewport || !is_ue_57()) {
         return;
     }
 
@@ -6664,13 +6664,21 @@ void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_v
     }
 
     if (!picked) {
-        m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
-        SPDLOG_WARN_ONCE("UpdateViewportRHI scan failed; using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
+        if (!m_viewport_force_separate_rt_offset) {
+            m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
+            SPDLOG_WARN_ONCE("UpdateViewportRHI scan failed; using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
+        }
         return;
     }
 
+    if (m_viewport_force_separate_rt_offset && *m_viewport_force_separate_rt_offset != *picked) {
+        SPDLOG_INFO("UpdateViewportRHI scan overriding force separate RT offset: 0x{:x} -> 0x{:x}",
+            *m_viewport_force_separate_rt_offset, *picked);
+    } else {
+        SPDLOG_INFO("UpdateViewportRHI scan selected force separate RT offset: 0x{:x}", *picked);
+    }
+
     m_viewport_force_separate_rt_offset = picked;
-    SPDLOG_INFO("UpdateViewportRHI scan selected force separate RT offset: 0x{:x}", *picked);
 }
 
 bool VRRenderTargetManager_Base::need_reallocate_depth_texture(const void* DepthTarget) {
@@ -8106,12 +8114,10 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
             const auto rtm = g_hook->get_render_target_manager();
 
             if (rtm != nullptr) {
-                if (!rtm->get_viewport_force_separate_rt_offset()) {
-                    const auto update_viewport_rhi = g_hook->m_update_viewport_rhi_hook ?
-                        g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>() :
-                        nullptr;
-                    rtm->try_find_force_separate_rt_offset_from_update_viewport(reinterpret_cast<uintptr_t>(update_viewport_rhi));
-                }
+                const auto update_viewport_rhi = g_hook->m_update_viewport_rhi_hook ?
+                    g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>() :
+                    nullptr;
+                rtm->try_find_force_separate_rt_offset_from_update_viewport(reinterpret_cast<uintptr_t>(update_viewport_rhi));
 
                 if (const auto offset = rtm->get_viewport_force_separate_rt_offset()) {
                     auto& should_force_separate_rt = *(bool*)((uintptr_t)viewport + *offset);
