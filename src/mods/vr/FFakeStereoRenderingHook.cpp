@@ -6350,7 +6350,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    const auto scene_tex = slate_resource->get_mutable_resource();
     auto& rtm = *g_hook->get_render_target_manager();
 
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
@@ -6384,7 +6383,25 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return true;
     };
 
-    const bool is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+    auto scene_tex = slate_resource->get_mutable_resource();
+    bool is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+
+    if (!is_scene_tex_valid && is_ue_57()) {
+        static constexpr uint32_t kSlateResourceOffsetUE57 = 0x20;
+
+        if (sdk::FSlateResource::resource_offset != kSlateResourceOffsetUE57 &&
+            !IsBadReadPtr((void*)((uintptr_t)slate_resource + kSlateResourceOffsetUE57), sizeof(void*)))
+        {
+            auto candidate = *(FRHITexture2D**)((uintptr_t)slate_resource + kSlateResourceOffsetUE57);
+
+            if (is_valid_texture_ptr(candidate)) {
+                sdk::FSlateResource::resource_offset = kSlateResourceOffsetUE57;
+                scene_tex = candidate;
+                is_scene_tex_valid = true;
+                SPDLOG_INFO_ONCE("UE5.7: corrected FSlateResource::resource_offset to 0x20");
+            }
+        }
+    }
 
     if (scene_tex != nullptr && !is_scene_tex_valid) {
         SPDLOG_WARN_ONCE("Slate resource texture pointer invalid: {:x}", (uintptr_t)scene_tex);
@@ -6403,7 +6420,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // UE5.7: if Slate didn't give us a usable scene texture, fall back to FSceneViewport's render-thread target.
     if (slate_viewport != nullptr && is_ue_57() && rtm.get_render_target() == nullptr && !is_scene_tex_valid) {
-        static constexpr size_t kSlateViewportAdjustors[] = { 0xC8, 0xC0, 0xD0 };
+        static constexpr size_t kSlateViewportAdjustors[] = { 0x0, 0xC8, 0xC0, 0xD0 };
         static constexpr size_t kRenderTargetOffset = 0x2D8; // render-thread TRefCountPtr<FRHITexture>
 
         for (const auto adjustor : kSlateViewportAdjustors) {
