@@ -7666,7 +7666,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         return true;
     };
-    const auto try_get_texture_from_ref = [&](FTexture2DRHIRef* ref, const char* label) -> FRHITexture2D* {
+    const auto try_get_texture_from_ref = [&](FTexture2DRHIRef* ref, const char* label, bool update_ref) -> FRHITexture2D* {
         if (ref == nullptr || IsBadReadPtr(ref, sizeof(void*))) {
             return nullptr;
         }
@@ -7679,30 +7679,32 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return nullptr;
         }
 
-        rtm->texture_hook_ref = ref;
+        if (update_ref) {
+            rtm->texture_hook_ref = ref;
+        }
         SPDLOG_INFO_ONCE("Using texture ref from {}", label);
         return tex;
     };
 
     if (rtm->texture_hook_ref != nullptr) {
-        texture = try_get_texture_from_ref(rtm->texture_hook_ref, "stored ref");
+        texture = try_get_texture_from_ref(rtm->texture_hook_ref, "stored ref", true);
 
         if (texture == nullptr) {
             SPDLOG_INFO(" Stored ref invalid, trying to get it from RAX...");
-            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rax, "rax");
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rax, "rax", true);
         }
 
         if (texture == nullptr) {
             SPDLOG_INFO(" Stored ref still invalid, scanning registers/stack...");
-            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rcx, "rcx");
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rcx, "rcx", true);
             if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rdx, "rdx");
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rdx, "rdx", true);
             }
             if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r8, "r8");
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r8, "r8", true);
             }
             if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r9, "r9");
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r9, "r9", true);
             }
 
             if (texture == nullptr) {
@@ -7712,7 +7714,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
                         continue;
                     }
 
-                    texture = try_get_texture_from_ref((FTexture2DRHIRef*)stack_ptr, "stack");
+                    texture = try_get_texture_from_ref((FTexture2DRHIRef*)stack_ptr, "stack", true);
                     if (texture != nullptr) {
                         break;
                     }
@@ -7733,7 +7735,20 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
 
     rtm->render_target = texture;
-    //rtm->ui_target = texture;
+
+    FRHITexture2D* ui_texture = nullptr;
+    if (rtm->shader_resource_hook_ref != nullptr) {
+        ui_texture = try_get_texture_from_ref(rtm->shader_resource_hook_ref, "shader resource ref", false);
+    }
+
+    if (ui_texture != nullptr) {
+        rtm->ui_target = ui_texture;
+        if (ui_texture == texture) {
+            SPDLOG_INFO_ONCE("UI target matches scene render target");
+        } else {
+            SPDLOG_INFO_ONCE("UI target set from shader resource ref: {:x}", (uintptr_t)ui_texture);
+        }
+    }
     rtm->texture_hook_ref = nullptr;
     ++rtm->last_texture_index;
 }
