@@ -6372,18 +6372,36 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // UE5.7: try to source targetable + shader resource textures directly from FSceneViewport.
     if (slate_viewport != nullptr && is_ue_57()) {
-        auto base = (uint8_t*)slate_viewport;
-        auto targetable_candidate = *(FRHITexture2D**)(base + 0x8);
-        auto shader_candidate = *(FRHITexture2D**)(base + 0x2D8);
+        static constexpr size_t kSlateViewportAdjustors[] = { 0xC8, 0xC0, 0xD0 };
+        static constexpr size_t kSceneTargetOffset = 0x8;
+        static constexpr size_t kShaderTargetOffset = 0x2D8;
 
-        if (rtm.get_render_target() == nullptr && is_valid_texture_ptr(targetable_candidate)) {
-            rtm.set_render_target(targetable_candidate);
-            SPDLOG_INFO_ONCE("Set render target from FSceneViewport+0x8: {:x}", (uintptr_t)targetable_candidate);
-        }
+        for (const auto adjustor : kSlateViewportAdjustors) {
+            auto base = (uint8_t*)slate_viewport - adjustor;
 
-        if (ui_target == nullptr && is_valid_texture_ptr(shader_candidate)) {
-            ui_target = shader_candidate;
-            SPDLOG_INFO_ONCE("Set UI target from FSceneViewport+0x2D8: {:x}", (uintptr_t)shader_candidate);
+            if (IsBadReadPtr(base, sizeof(void*) * 4)) {
+                continue;
+            }
+
+            auto targetable_candidate = *(FRHITexture2D**)(base + kSceneTargetOffset);
+            auto shader_candidate = *(FRHITexture2D**)(base + kShaderTargetOffset);
+            bool used = false;
+
+            if (rtm.get_render_target() == nullptr && is_valid_texture_ptr(targetable_candidate)) {
+                rtm.set_render_target(targetable_candidate);
+                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kSceneTargetOffset, (uintptr_t)targetable_candidate);
+                used = true;
+            }
+
+            if (ui_target == nullptr && is_valid_texture_ptr(shader_candidate)) {
+                ui_target = shader_candidate;
+                SPDLOG_INFO_ONCE("Set UI target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kShaderTargetOffset, (uintptr_t)shader_candidate);
+                used = true;
+            }
+
+            if (used) {
+                break;
+            }
         }
     }
 
