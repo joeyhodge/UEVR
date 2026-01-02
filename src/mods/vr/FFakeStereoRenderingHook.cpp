@@ -6350,8 +6350,45 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     const auto scene_tex = slate_resource->get_mutable_resource();
-    if (scene_tex != nullptr && g_hook->get_render_target_manager()->get_render_target() == nullptr) {
-        g_hook->get_render_target_manager()->set_render_target(scene_tex);
+    auto& rtm = *g_hook->get_render_target_manager();
+
+    const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
+        const auto addr = (uintptr_t)tex;
+        if (tex == nullptr || addr < 0x10000) {
+            return false;
+        }
+
+        if (IsBadReadPtr(tex, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable = *(void**)tex;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        return true;
+    };
+
+    // UE5.7: try to source targetable + shader resource textures directly from FSceneViewport.
+    if (slate_viewport != nullptr && is_ue_57()) {
+        auto base = (uint8_t*)slate_viewport;
+        auto targetable_candidate = *(FRHITexture2D**)(base + 0x8);
+        auto shader_candidate = *(FRHITexture2D**)(base + 0x2D8);
+
+        if (rtm.get_render_target() == nullptr && is_valid_texture_ptr(targetable_candidate)) {
+            rtm.set_render_target(targetable_candidate);
+            SPDLOG_INFO_ONCE("Set render target from FSceneViewport+0x8: {:x}", (uintptr_t)targetable_candidate);
+        }
+
+        if (ui_target == nullptr && is_valid_texture_ptr(shader_candidate)) {
+            ui_target = shader_candidate;
+            SPDLOG_INFO_ONCE("Set UI target from FSceneViewport+0x2D8: {:x}", (uintptr_t)shader_candidate);
+        }
+    }
+
+    if (scene_tex != nullptr && rtm.get_render_target() == nullptr) {
+        rtm.set_render_target(scene_tex);
         SPDLOG_INFO_ONCE("Set scene render target from Slate resource: {:x}", (uintptr_t)scene_tex);
     }
 
