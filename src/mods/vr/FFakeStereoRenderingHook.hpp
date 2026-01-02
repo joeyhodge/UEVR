@@ -62,6 +62,7 @@ public:
     FRHITexture2D* get_render_target() {
         return render_target; 
     }
+    FTexture2DRHIRef* get_shader_resource_hook_ref() { return shader_resource_hook_ref; }
 
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }

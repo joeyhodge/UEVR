@@ -2291,9 +2291,10 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
     }
 
     // Finally redirect the call to the UI render target.
-    auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
+    auto& rtm = *g_hook->get_render_target_manager();
+    auto& ui_target = rtm.get_ui_target();
 
-    if (ui_target != nullptr) {
+    if (ui_target != nullptr && ui_target != rtm.get_render_target()) {
         return &ui_target;
     }
 
@@ -6387,6 +6388,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (scene_tex != nullptr && !is_scene_tex_valid) {
         SPDLOG_WARN_ONCE("Slate resource texture pointer invalid: {:x}", (uintptr_t)scene_tex);
+    }
+
+    if (ui_target == nullptr) {
+        auto shader_resource_ref = rtm.get_shader_resource_hook_ref();
+        if (shader_resource_ref != nullptr && !IsBadReadPtr(shader_resource_ref, sizeof(void*))) {
+            auto shader_tex = shader_resource_ref->texture;
+            if (is_valid_texture_ptr(shader_tex)) {
+                ui_target = shader_tex;
+                SPDLOG_INFO_ONCE("UI target set from shader resource ref (late): {:x}", (uintptr_t)shader_tex);
+            }
+        }
     }
 
     // UE5.7: if Slate didn't give us a usable scene texture, fall back to FSceneViewport's render-thread target.
