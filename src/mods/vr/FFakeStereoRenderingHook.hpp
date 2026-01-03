@@ -45,6 +45,9 @@ class FSceneView;
 struct VRRenderTargetManager_Base {
 public:
     bool allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource);
+    bool allocate_render_target_textures(uintptr_t return_address, TArray<TRefCountPtr<FRHITexture>>* targetable_textures,
+        TArray<TRefCountPtr<FRHITexture>>* shader_resource_textures);
+    bool setup_texture_hooks(uintptr_t return_address);
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
 
@@ -63,6 +66,8 @@ public:
         return render_target; 
     }
     FTexture2DRHIRef* get_shader_resource_hook_ref() { return shader_resource_hook_ref; }
+    TArray<TRefCountPtr<FRHITexture>>* get_targetable_texture_array_hook_ref() { return targetable_texture_array_hook_ref; }
+    TArray<TRefCountPtr<FRHITexture>>* get_shader_resource_texture_array_hook_ref() { return shader_resource_texture_array_hook_ref; }
 
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
@@ -140,6 +145,8 @@ protected:
 
     FTexture2DRHIRef* texture_hook_ref{nullptr};
     FTexture2DRHIRef* shader_resource_hook_ref{nullptr};
+    TArray<TRefCountPtr<FRHITexture>>* targetable_texture_array_hook_ref{nullptr};
+    TArray<TRefCountPtr<FRHITexture>>* shader_resource_texture_array_hook_ref{nullptr};
     safetyhook::MidHook pre_texture_hook{}; // only used if pixel format cvar is missing
     safetyhook::MidHook pre_texture_hook2{}; // only used if pixel format cvar is missing
     safetyhook::MidHook texture_hook{};
@@ -206,6 +213,38 @@ public:
     bool depth_analysis_passed{false};
 };
 
+struct VRRenderTargetManager_57 : IStereoRenderTargetManager_57, VRRenderTargetManager_Base {
+public:
+    uint32_t GetNumberOfBufferedFrames() const override { return VRRenderTargetManager_Base::get_number_of_buffered_frames(); }
+    virtual bool ShouldUseSeparateRenderTarget() const override { return VRRenderTargetManager_Base::should_use_separate_render_target(); }
+
+    virtual void UpdateViewport(
+        bool bUseSeparateRenderTarget, const sdk::FViewport& Viewport, class SViewport* ViewportWidget = nullptr) override 
+    {
+        VRRenderTargetManager_Base::update_viewport(bUseSeparateRenderTarget, Viewport, ViewportWidget);
+    }
+
+    virtual void CalculateRenderTargetSize(const sdk::FViewport& Viewport, uint32_t& InOutSizeX, uint32_t& InOutSizeY) override {
+        VRRenderTargetManager_Base::calculate_render_target_size(Viewport, InOutSizeX, InOutSizeY);
+    }
+
+    virtual bool NeedReAllocateDepthTexture(const void* DepthTarget) override {
+        return VRRenderTargetManager_Base::need_reallocate_depth_texture(DepthTarget);
+    }
+
+    virtual bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override {
+        return false;
+    }
+
+    virtual bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
+        return VRRenderTargetManager_Base::need_reallocate_view_target(Viewport);
+    }
+
+    bool AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<TRefCountPtr<FRHITexture>>& OutTargetableTextures,
+        TArray<TRefCountPtr<FRHITexture>>& OutShaderResourceTextures, uint32_t NumSamples = 1) override;
+};
+
 struct VRRenderTargetManager_418 : IStereoRenderTargetManager_418, VRRenderTargetManager_Base {
     uint32_t GetNumberOfBufferedFrames() const override { return VRRenderTargetManager_Base::get_number_of_buffered_frames(); }
     virtual bool ShouldUseSeparateRenderTarget() const override { return VRRenderTargetManager_Base::should_use_separate_render_target(); }
@@ -259,6 +298,10 @@ public:
     FFakeStereoRenderingHook();
 
     VRRenderTargetManager_Base* get_render_target_manager() {
+        if (is_ue_57()) {
+            return static_cast<VRRenderTargetManager_Base*>(&m_rtm_57);
+        }
+
         if (m_uses_old_rendertarget_manager) {
             return static_cast<VRRenderTargetManager_Base*>(&m_rtm_418);
         }
@@ -504,6 +547,7 @@ private:
         int32_t selected_retaddr{0};
     } m_viewport_rt_hook_data{};
 
+    VRRenderTargetManager_57 m_rtm_57{};
     VRRenderTargetManager m_rtm{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};

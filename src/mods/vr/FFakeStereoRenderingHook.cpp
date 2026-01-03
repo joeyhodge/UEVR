@@ -5673,6 +5673,11 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
+        if (is_ue_57()) {
+            auto rtm = static_cast<IStereoRenderTargetManager_57*>(&g_hook->m_rtm_57);
+            return reinterpret_cast<IStereoRenderTargetManager*>(rtm);
+        }
+
         if (g_hook->m_uses_old_rendertarget_manager) {
             return (IStereoRenderTargetManager*)&g_hook->m_rtm_418;
         }
@@ -6382,6 +6387,32 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         return true;
     };
+    const auto try_get_array_texture = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
+        if (arr == nullptr || IsBadReadPtr(arr, sizeof(*arr))) {
+            return nullptr;
+        }
+
+        const auto count = arr->count;
+        if (count <= 0 || count > 128) {
+            return nullptr;
+        }
+
+        auto data = arr->data;
+        if (data == nullptr || IsBadReadPtr(data, sizeof(TRefCountPtr<FRHITexture>))) {
+            return nullptr;
+        }
+
+        const auto max_count = std::min<int32_t>(count, 4);
+        for (int32_t i = 0; i < max_count; ++i) {
+            auto tex = reinterpret_cast<FRHITexture2D*>(data[i].reference);
+            if (is_valid_texture_ptr(tex)) {
+                SPDLOG_INFO_ONCE("Using texture from {} array: {:x}", label, (uintptr_t)tex);
+                return tex;
+            }
+        }
+
+        return nullptr;
+    };
 
     auto scene_tex = slate_resource->get_mutable_resource();
     bool is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
@@ -6415,6 +6446,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 ui_target = shader_tex;
                 SPDLOG_INFO_ONCE("UI target set from shader resource ref (late): {:x}", (uintptr_t)shader_tex);
             }
+        }
+    }
+
+    if (ui_target == nullptr && is_ue_57()) {
+        ui_target = try_get_array_texture(rtm.get_shader_resource_texture_array_hook_ref(), "shader resource");
+    }
+
+    if (rtm.get_render_target() == nullptr && is_ue_57()) {
+        auto targetable = try_get_array_texture(rtm.get_targetable_texture_array_hook_ref(), "targetable");
+        if (targetable != nullptr) {
+            rtm.set_render_target(targetable);
         }
     }
 
@@ -6862,6 +6904,11 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
     if (is_ue_57() && rtm->is_pre_texture_call_e8) {
         SPDLOG_WARN_ONCE("UE5.7: skipping pre-texture JIT for E8 CreateTexture; using original only");
+
+        if (rtm->get_targetable_texture_array_hook_ref() != nullptr) {
+            SPDLOG_INFO_ONCE("UE5.7: using array outputs for CreateTexture; skipping output ref scan");
+            return;
+        }
 
         const auto is_stack_like = [&](uintptr_t ptr) {
             return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
@@ -7798,6 +7845,32 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         SPDLOG_INFO_ONCE("Using texture ref from {}", label);
         return tex;
     };
+    const auto try_get_texture_from_array = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
+        if (arr == nullptr || IsBadReadPtr(arr, sizeof(*arr))) {
+            return nullptr;
+        }
+
+        const auto count = arr->count;
+        if (count <= 0 || count > 128) {
+            return nullptr;
+        }
+
+        auto data = arr->data;
+        if (data == nullptr || IsBadReadPtr(data, sizeof(TRefCountPtr<FRHITexture>))) {
+            return nullptr;
+        }
+
+        const auto max_count = std::min<int32_t>(count, 4);
+        for (int32_t i = 0; i < max_count; ++i) {
+            auto tex = reinterpret_cast<FRHITexture2D*>(data[i].reference);
+            if (is_valid_texture_ptr(tex)) {
+                SPDLOG_INFO_ONCE("Using {} texture from array: {:x}", label, (uintptr_t)tex);
+                return tex;
+            }
+        }
+
+        return nullptr;
+    };
 
     if (rtm->texture_hook_ref != nullptr) {
         texture = try_get_texture_from_ref(rtm->texture_hook_ref, "stored ref", true);
@@ -7845,6 +7918,10 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
     }
 
+    if (texture == nullptr && is_ue_57()) {
+        texture = try_get_texture_from_array(rtm->get_targetable_texture_array_hook_ref(), "targetable");
+    }
+
     if (texture == nullptr && is_ue_57() && rtm->last_texture_index < 2) {
         constexpr int32_t kStackScanBytes = 0x400;
         std::vector<std::pair<FTexture2DRHIRef*, FRHITexture2D*>> found{};
@@ -7887,6 +7964,10 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     FRHITexture2D* ui_texture = nullptr;
     if (rtm->shader_resource_hook_ref != nullptr) {
         ui_texture = try_get_texture_from_ref(rtm->shader_resource_hook_ref, "shader resource ref", false);
+    }
+
+    if (ui_texture == nullptr && is_ue_57()) {
+        ui_texture = try_get_texture_from_array(rtm->get_shader_resource_texture_array_hook_ref(), "shader resource");
     }
 
     if (ui_texture != nullptr) {
@@ -8536,9 +8617,27 @@ void FFakeStereoRenderingHook::attempt_hook_update_viewport_rhi(uintptr_t return
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
     this->texture_hook_ref = tex;
     this->shader_resource_hook_ref = shader_resource;
+    this->targetable_texture_array_hook_ref = nullptr;
+    this->shader_resource_texture_array_hook_ref = nullptr;
     this->allocate_texture_called = true;
     this->is_pre_texture_call_create_texture = false;
 
+    return this->setup_texture_hooks(return_address);
+}
+
+bool VRRenderTargetManager_Base::allocate_render_target_textures(uintptr_t return_address, TArray<TRefCountPtr<FRHITexture>>* targetable_textures,
+    TArray<TRefCountPtr<FRHITexture>>* shader_resource_textures) {
+    this->texture_hook_ref = nullptr;
+    this->shader_resource_hook_ref = nullptr;
+    this->targetable_texture_array_hook_ref = targetable_textures;
+    this->shader_resource_texture_array_hook_ref = shader_resource_textures;
+    this->allocate_texture_called = true;
+    this->is_pre_texture_call_create_texture = false;
+
+    return this->setup_texture_hooks(return_address);
+}
+
+bool VRRenderTargetManager_Base::setup_texture_hooks(uintptr_t return_address) {
     if (!this->set_up_texture_hook) {
         ZoneScopedN("VRRenderTargetManager_Base::allocate_render_target_texture initialization");
         SPDLOG_INFO("AllocateRenderTargetTexture retaddr: {:x}", return_address);
@@ -8874,6 +8973,13 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
     }
 
     return false;
+}
+
+bool VRRenderTargetManager_57::AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+    ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<TRefCountPtr<FRHITexture>>& OutTargetableTextures,
+    TArray<TRefCountPtr<FRHITexture>>& OutShaderResourceTextures, uint32_t NumSamples) 
+{
+    return this->allocate_render_target_textures((uintptr_t)_ReturnAddress(), &OutTargetableTextures, &OutShaderResourceTextures);
 }
 
 bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
