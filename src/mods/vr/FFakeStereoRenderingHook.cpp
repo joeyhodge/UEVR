@@ -498,6 +498,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     if (hook->m_tracking_system_hook != nullptr) {
         hook->m_tracking_system_hook->on_pre_engine_tick(engine, delta);
     }
+    }
 
     const auto& mods = g_framework->get_mods()->get_mods();
     for (auto& mod : mods) {
@@ -2391,6 +2392,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         } else {
             vr->update_hmd_state(false);
         }
+    }
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
@@ -6090,13 +6092,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindow_RenderThread called!");
 #endif
 
-    if (!g_framework->is_game_data_intialized() || a2 == nullptr) {
-        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
-    }
-
-    auto viewport_info = (sdk::FViewportInfo*)a3;
+    const bool is_ue57 = is_ue_57();
+    sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
-    void** a4_ptr = (void**)a4;
     const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
         if (ptr == nullptr) {
             return false;
@@ -6125,39 +6123,110 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         return true;
+};
+
+    void* command_list = is_ue57 ? a3 : a2;
+    sdk::FRHICommandListBase* command_list_rhi = nullptr;
+
+    if (is_ue57) {
+        constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
+        if (is_readable_ptr(a3, kRdgBuilderCommandListOffsetUE57 + sizeof(void*))) {
+            auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)a3 + kRdgBuilderCommandListOffsetUE57);
+            if (candidate != nullptr && is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase)) &&
+                candidate->root != nullptr && !IsBadReadPtr(candidate->root, sizeof(void*))) {
+                command_list_rhi = candidate;
+                command_list = candidate;
+            }
+        }
+    }
+
+    void* renderer_this = is_ue57 ? a2 : renderer;
+
+    if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
+        if (is_ue57) {
+            g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
+            return renderer;
+        }
+
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
+    const auto is_valid_slate_viewport = [&](sdk::ISlateViewport* candidate) -> bool {
+        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            return false;
+        }
+
+        auto vtable = *(uintptr_t**)candidate;
+
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
     };
 
-    static bool a4_is_ue_5_5_variant = [&]() -> bool {
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
+    if (is_ue57 && command_list_rhi != nullptr) {
+        g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)command_list_rhi);
+    }
 
-        __try {
-            if (a4_ptr[0] == renderer) {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
-                return true;
+    if (is_ue57) {
+        constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
+        constexpr size_t kSlatePassInputsDrawDataOffsetUE57 = 0x10;
+        constexpr size_t kSlateDrawDataViewportOffsetUE57 = 0x3A0;
+        constexpr size_t kSlateDrawDataViewportRefOffsetUE57 = 0x3A8;
+
+        if (is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
+            auto inputs = (uint8_t*)a4;
+            auto viewport_info_candidate = *(sdk::FViewportInfo**)(inputs + kSlatePassInputsViewportInfoOffsetUE57);
+
+            if (is_readable_ptr(viewport_info_candidate)) {
+                viewport_info = viewport_info_candidate;
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+
+            auto draw_data = *(uint8_t**)(inputs + kSlatePassInputsDrawDataOffsetUE57);
+
+            if (is_readable_ptr(draw_data, kSlateDrawDataViewportRefOffsetUE57 + sizeof(void*))) {
+                auto candidate = *(sdk::ISlateViewport**)(draw_data + kSlateDrawDataViewportOffsetUE57);
+                if (is_valid_slate_viewport(candidate)) {
+                    slate_viewport = candidate;
+                }
+            }
         }
-
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
-
-        return false;
-    }();
-
-    if (!a4_is_ue_5_5_variant) {
-        // How are we going to fix this on UE5.5?
-        g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
     } else {
-        if (!is_readable_ptr(a4_ptr, sizeof(void*) * 3)) {
-            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not readable; skipping viewport probe");
-            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
-        }
+        viewport_info = (sdk::FViewportInfo*)a3;
+        void** a4_ptr = (void**)a4;
 
-        const auto window = (uintptr_t)a4_ptr[2];
-        if (!is_readable_ptr((void*)window, sizeof(void*))) {
-            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] window pointer {:x} is invalid; skipping viewport probe", window);
-            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
-        }
+        static bool a4_is_ue_5_5_variant = [&]() -> bool {
+            SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
+
+            __try {
+                if (a4_ptr[0] == renderer) {
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
+                    return true;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+            }
+
+            SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
+
+            return false;
+        }();
+
+        if (!a4_is_ue_5_5_variant) {
+            // How are we going to fix this on UE5.5?
+            g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
+        } else {
+            if (!is_readable_ptr(a4_ptr, sizeof(void*) * 3)) {
+                SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not readable; skipping viewport probe");
+                return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+            }
+
+            const auto window = (uintptr_t)a4_ptr[2];
+            if (!is_readable_ptr((void*)window, sizeof(void*))) {
+                SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] window pointer {:x} is invalid; skipping viewport probe", window);
+                return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+            }
 
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
 
@@ -6348,19 +6417,31 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
+    void* mod_command_list = command_list_rhi != nullptr ? (void*)command_list_rhi : command_list;
 
     for (auto& mod : mods) {
-        mod->on_pre_slate_draw_window(renderer, a2, viewport_info);
+        mod->on_pre_slate_draw_window(renderer_this, mod_command_list, viewport_info);
     }
 
     g_hook->m_inside_slate_draw_window = true;
     g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
 
-    auto call_orig = [&]() {
+    auto call_orig = [&]() -> void* {
+        if (is_ue57) {
+            g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
+
+            for (auto& mod : mods) {
+                mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+            }
+
+            g_hook->m_inside_slate_draw_window = false;
+            return renderer;
+        }
+
         auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
 
         for (auto& mod : mods) {
-            mod->on_post_slate_draw_window(renderer, a2, viewport_info);
+            mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
         }
 
         g_hook->m_inside_slate_draw_window = false;
@@ -6381,6 +6462,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (slate_viewport != nullptr) {
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
     } else {
+        if (viewport_info == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "No viewport info, skipping!");
+            return call_orig();
+        }
+
         auto known_tex = g_hook->get_render_target_manager()->get_render_target();
         if (known_tex == nullptr) {
             known_tex = ui_target;
@@ -6551,13 +6637,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
     // are wildly different between UE versions.
-    const auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    void* ret = nullptr;
+    if (is_ue57) {
+        g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
+        ret = renderer;
+    } else {
+        ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
 
     // Restore the old texture.
     slate_resource->get_mutable_resource() = old_texture;
 
     for (auto& mod : mods) {
-        mod->on_post_slate_draw_window(renderer, a2, viewport_info);
+        mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
     }
     
     // After this we copy over the texture and clear it in the present hook. doing it here just seems to crash sometimes.
