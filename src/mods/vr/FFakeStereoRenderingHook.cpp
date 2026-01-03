@@ -6137,12 +6137,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    void* renderer_this = is_ue57 ? a2 : renderer;
+    void* renderer_this = renderer;
 
     if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
         if (is_ue57) {
             g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
-            return renderer;
+            return a2;
         }
 
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
@@ -6433,7 +6433,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             g_hook->m_inside_slate_draw_window = false;
-            return renderer;
+            return a2;
         }
 
         auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
@@ -6638,7 +6638,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     void* ret = nullptr;
     if (is_ue57) {
         g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
-        ret = renderer;
+        ret = a2;
     } else {
         ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
