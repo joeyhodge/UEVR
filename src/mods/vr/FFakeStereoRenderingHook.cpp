@@ -6,6 +6,7 @@
 #include <asmjit/asmjit.h>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <future>
 #include <mutex>
 
@@ -6096,6 +6097,35 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto viewport_info = (sdk::FViewportInfo*)a3;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     void** a4_ptr = (void**)a4;
+    const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
+        if (ptr == nullptr) {
+            return false;
+        }
+
+        const auto addr = (uintptr_t)ptr;
+        if (addr < 0x10000) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        if (IsBadReadPtr(ptr, size)) {
+            return false;
+        }
+
+        return true;
+    };
 
     static bool a4_is_ue_5_5_variant = [&]() -> bool {
         SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
@@ -6118,7 +6148,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         // How are we going to fix this on UE5.5?
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
     } else {
+        if (!is_readable_ptr(a4_ptr, sizeof(void*) * 3)) {
+            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not readable; skipping viewport probe");
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
+
         const auto window = (uintptr_t)a4_ptr[2];
+        if (!is_readable_ptr((void*)window, sizeof(void*))) {
+            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] window pointer {:x} is invalid; skipping viewport probe", window);
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
 
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
 
@@ -6215,7 +6254,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     if ((uint8_t*)*reg >= window_bounds.data() && (uint8_t*)*reg < window_bounds.data() + window_bounds.size()) try {
                         SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found window pointer at {:x}!", (uintptr_t)reg);
                         auto offset = ix.Operands[1].Info.Memory.Disp;
-                        const auto value = *(uintptr_t***)((uintptr_t)*reg + offset);
+                        const auto candidate_addr = (uintptr_t)((intptr_t)*reg + offset);
+
+                        if (!is_readable_ptr((void*)candidate_addr, sizeof(void*))) {
+                            SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping unreadable offset at {:x}!", candidate_addr);
+                            return utility::ExhaustionResult::CONTINUE;
+                        }
+
+                        const auto value = *(uintptr_t***)candidate_addr;
 
                         if (value == nullptr || IsBadReadPtr((void*)value, sizeof(void*))) {
                             SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping invalid offset at {:x}!", (uintptr_t)value);
@@ -6232,7 +6278,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                             return utility::ExhaustionResult::CONTINUE;
                         }
 
-                        const auto behind_value = *(uintptr_t***)((uintptr_t)*reg + offset - sizeof(void*));
+                        const auto behind_addr = (uintptr_t)((intptr_t)*reg + offset - sizeof(void*));
+                        const auto behind_value = is_readable_ptr((void*)behind_addr, sizeof(void*)) ?
+                            *(uintptr_t***)behind_addr : nullptr;
 
                         if (behind_value != nullptr && !IsBadReadPtr((void*)behind_value, sizeof(void*)) &&
                             *behind_value != nullptr && !IsBadReadPtr((void*)*behind_value, sizeof(void*)) &&
