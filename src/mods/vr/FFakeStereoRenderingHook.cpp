@@ -6868,20 +6868,31 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         };
 
         const auto try_set_ref = [&](uintptr_t ptr, const char* label) {
-            if (!is_stack_like(ptr)) {
+            if (!is_stack_like(ptr) || IsBadReadPtr((void*)ptr, sizeof(void*))) {
                 return false;
             }
 
-            if (rtm->texture_hook_ref == nullptr) {
+            const auto texture_ref_invalid = rtm->texture_hook_ref == nullptr ||
+                !is_stack_like((uintptr_t)rtm->texture_hook_ref) ||
+                IsBadReadPtr(rtm->texture_hook_ref, sizeof(void*));
+
+            if (texture_ref_invalid) {
                 rtm->texture_hook_ref = (FTexture2DRHIRef*)ptr;
                 SPDLOG_INFO_ONCE("UE5.7: guessed texture hook ref from {}: {:x}", label, ptr);
+                return true;
             }
 
-            return true;
+            if (rtm->shader_resource_hook_ref == nullptr && ptr != (uintptr_t)rtm->texture_hook_ref) {
+                rtm->shader_resource_hook_ref = (FTexture2DRHIRef*)ptr;
+                SPDLOG_INFO_ONCE("UE5.7: guessed shader resource ref from {}: {:x}", label, ptr);
+                return true;
+            }
+
+            return false;
         };
 
         bool set = false;
-        set = try_set_ref(ctx.rcx, "rcx") || try_set_ref(ctx.rdx, "rdx") || try_set_ref(ctx.r8, "r8");
+        set = try_set_ref(ctx.rcx, "rcx") || try_set_ref(ctx.rdx, "rdx") || try_set_ref(ctx.r8, "r8") || try_set_ref(ctx.r9, "r9");
 
         if (!set) {
             std::optional<int> texture_argument_index{};
@@ -7831,6 +7842,41 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             FRHITexture2D::set_vtable(*(void**)texture);
         } else {
             SPDLOG_INFO(" Texture is still null!");
+        }
+    }
+
+    if (texture == nullptr && is_ue_57() && rtm->last_texture_index < 2) {
+        constexpr int32_t kStackScanBytes = 0x400;
+        std::vector<std::pair<FTexture2DRHIRef*, FRHITexture2D*>> found{};
+
+        for (int32_t offset = -kStackScanBytes; offset <= kStackScanBytes; offset += (int32_t)sizeof(void*)) {
+            const auto addr = (uintptr_t)ctx.rsp + offset;
+            auto ref = (FTexture2DRHIRef*)addr;
+
+            if (IsBadReadPtr(ref, sizeof(void*))) {
+                continue;
+            }
+
+            auto tex = ref->texture;
+            if (is_valid_texture_ptr(tex)) {
+                found.emplace_back(ref, tex);
+                if (found.size() >= 2) {
+                    break;
+                }
+            }
+        }
+
+        if (!found.empty()) {
+            rtm->texture_hook_ref = found[0].first;
+            texture = found[0].second;
+            SPDLOG_INFO_ONCE("UE5.7: recovered texture ref from stack scan: {:x}", (uintptr_t)found[0].first);
+
+            if (found.size() > 1 && rtm->shader_resource_hook_ref == nullptr) {
+                rtm->shader_resource_hook_ref = found[1].first;
+                SPDLOG_INFO_ONCE("UE5.7: recovered shader resource ref from stack scan: {:x}", (uintptr_t)found[1].first);
+            }
+        } else {
+            SPDLOG_INFO_ONCE("UE5.7: stack scan found no valid texture refs");
         }
     }
 
