@@ -155,7 +155,7 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
     return sdk::UEngine::get_stereo_rendering_device_offset();
 }
 
-static bool is_ue_57() {
+bool is_ue_57() {
     const auto override = get_stereo_rendering_device_offset_override();
     return override && *override == 0x15A0;
 }

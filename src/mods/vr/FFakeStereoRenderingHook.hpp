@@ -26,6 +26,8 @@ struct VRRenderTargetManager_418;
 struct UCanvas;
 struct IStereoLayers;
 
+bool is_ue_57();
+
 namespace sdk {
 struct FSceneViewStateInterface;
 class FViewport;
