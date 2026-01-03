@@ -498,7 +498,6 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     if (hook->m_tracking_system_hook != nullptr) {
         hook->m_tracking_system_hook->on_pre_engine_tick(engine, delta);
     }
-
     const auto& mods = g_framework->get_mods()->get_mods();
     for (auto& mod : mods) {
         mod->on_pre_engine_tick(engine, delta);
@@ -2391,7 +2390,6 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         } else {
             vr->update_hmd_state(false);
         }
-    }
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
@@ -6412,6 +6410,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     break;
                 }
             }
+        }
         }
     }
 
