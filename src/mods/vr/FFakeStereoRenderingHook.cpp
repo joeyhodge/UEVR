@@ -498,7 +498,6 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     if (hook->m_tracking_system_hook != nullptr) {
         hook->m_tracking_system_hook->on_pre_engine_tick(engine, delta);
     }
-    }
 
     const auto& mods = g_framework->get_mods()->get_mods();
     for (auto& mod : mods) {
