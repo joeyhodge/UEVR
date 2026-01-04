@@ -6607,7 +6607,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // UE5.7: if Slate didn't give us a usable scene texture, fall back to FSceneViewport's render-thread target.
     if (slate_viewport != nullptr && is_ue_57() && rtm.get_render_target() == nullptr && !is_scene_tex_valid) {
         static constexpr size_t kSlateViewportAdjustors[] = { 0x0, 0xC8, 0xC0, 0xD0 };
-        static constexpr size_t kRenderTargetOffset = 0x2D8; // render-thread TRefCountPtr<FRHITexture>
+        static constexpr size_t kRenderTargetOffset = 0x2E0; // render-thread TRefCountPtr<FRHITexture> (SetRenderTargetTextureRenderThread)
 
         for (const auto adjustor : kSlateViewportAdjustors) {
             auto base = (uint8_t*)slate_viewport - adjustor;
