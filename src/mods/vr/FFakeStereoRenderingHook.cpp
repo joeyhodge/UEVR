@@ -6517,6 +6517,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return false;
         }
 
+        if (!utility::get_module_within(vtable).has_value() ||
+            !utility::get_module_within(((void**)vtable)[0]).has_value()) {
+            return false;
+        }
+
         return true;
     };
     const auto try_get_array_texture = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
@@ -6568,6 +6573,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (scene_tex != nullptr && !is_scene_tex_valid) {
         SPDLOG_WARN_ONCE("Slate resource texture pointer invalid: {:x}", (uintptr_t)scene_tex);
+    }
+
+    if (ui_target != nullptr && !is_valid_texture_ptr(ui_target)) {
+        SPDLOG_WARN_ONCE("UI target pointer invalid: {:x}", (uintptr_t)ui_target);
+        ui_target = nullptr;
     }
 
     if (ui_target == nullptr) {
@@ -6626,6 +6636,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (ui_target == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
         return call_orig();
+    }
+
+    auto expected_vtable = FRHITexture2D::get_vtable();
+    if (expected_vtable == nullptr && is_scene_tex_valid) {
+        expected_vtable = *(void**)scene_tex;
+    }
+
+    if (expected_vtable != nullptr) {
+        auto ui_vtable = *(void**)ui_target;
+        if (ui_vtable != expected_vtable) {
+            SPDLOG_WARN_ONCE("UI target vtable mismatch; skipping swap (ui {:x}, expected {:x})",
+                (uintptr_t)ui_vtable, (uintptr_t)expected_vtable);
+            return call_orig();
+        }
     }
     
     // Replace the texture with one we have control over.
@@ -7959,6 +7983,11 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         const auto vtable = *(void**)tex;
         if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        if (!utility::get_module_within(vtable).has_value() ||
+            !utility::get_module_within(((void**)vtable)[0]).has_value()) {
             return false;
         }
 
