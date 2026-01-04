@@ -6648,9 +6648,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (expected_vtable != nullptr) {
         auto ui_vtable = *(void**)ui_target;
         if (ui_vtable != expected_vtable) {
-            SPDLOG_WARN_ONCE("UI target vtable mismatch; skipping swap (ui {:x}, expected {:x})",
-                (uintptr_t)ui_vtable, (uintptr_t)expected_vtable);
-            return call_orig();
+            if (is_ue57) {
+                const auto native = ui_target->get_native_resource();
+                if (native == nullptr) {
+                    SPDLOG_WARN_ONCE("UE5.7 UI target vtable mismatch; native resource invalid, skipping swap (ui {:x}, expected {:x})",
+                        (uintptr_t)ui_vtable, (uintptr_t)expected_vtable);
+                    return call_orig();
+                }
+
+                SPDLOG_INFO_ONCE("UE5.7 UI target vtable mismatch but native resource valid; proceeding (ui {:x}, expected {:x}, native {:x})",
+                    (uintptr_t)ui_vtable, (uintptr_t)expected_vtable, (uintptr_t)native);
+            } else {
+                SPDLOG_WARN_ONCE("UI target vtable mismatch; skipping swap (ui {:x}, expected {:x})",
+                    (uintptr_t)ui_vtable, (uintptr_t)expected_vtable);
+                return call_orig();
+            }
         }
     }
     
@@ -8122,6 +8134,11 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             if (found.size() > 1 && rtm->shader_resource_hook_ref == nullptr) {
                 rtm->shader_resource_hook_ref = found[1].first;
                 SPDLOG_INFO_ONCE("UE5.7: recovered shader resource ref from stack scan: {:x}", (uintptr_t)found[1].first);
+            }
+
+            if (texture != nullptr && FRHITexture2D::get_vtable() == nullptr) {
+                FRHITexture2D::set_vtable(*(void**)texture);
+                SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from stack scan: {:x}", (uintptr_t)FRHITexture2D::get_vtable());
             }
         } else {
             SPDLOG_INFO_ONCE("UE5.7: stack scan found no valid texture refs");
