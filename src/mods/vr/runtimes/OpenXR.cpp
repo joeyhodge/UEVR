@@ -1791,6 +1791,78 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
+        // Clamp view bounds to avoid invalid swapchain rects on 5.7+ (XR_ERROR_SWAPCHAIN_RECT_INVALID).
+        auto clamp_bound = [](float value) {
+            if (!(value == value)) {
+                return 0.0f;
+            }
+            if (value < 0.0f) {
+                return 0.0f;
+            }
+            if (value > 1.0f) {
+                return 1.0f;
+            }
+            return value;
+        };
+
+        auto clamp_i32 = [](int32_t value, int32_t low, int32_t high) {
+            if (value < low) {
+                return low;
+            }
+            if (value > high) {
+                return high;
+            }
+            return value;
+        };
+
+        auto make_sub_image_rect = [&](const Swapchain& target, int eye) {
+            const int32_t sc_width = std::max<int32_t>(1, target.width);
+            const int32_t sc_height = std::max<int32_t>(1, target.height);
+            const int32_t area_width = is_afr ? sc_width : std::max<int32_t>(1, sc_width / 2);
+            const int32_t area_height = sc_height;
+            const int32_t base_x = is_afr ? 0 : (eye == 0 ? 0 : std::min<int32_t>(area_width, sc_width - 1));
+
+            float min_x = clamp_bound(view_bounds[eye][0]);
+            float max_x = clamp_bound(view_bounds[eye][1]);
+            float min_y = clamp_bound(view_bounds[eye][2]);
+            float max_y = clamp_bound(view_bounds[eye][3]);
+
+            if (min_x > max_x) {
+                const float tmp = min_x;
+                min_x = max_x;
+                max_x = tmp;
+            }
+            if (min_y > max_y) {
+                const float tmp = min_y;
+                min_y = max_y;
+                max_y = tmp;
+            }
+
+            const int32_t raw_min_x = static_cast<int32_t>(min_x * area_width);
+            const int32_t raw_max_x = static_cast<int32_t>(max_x * area_width);
+            const int32_t raw_min_y = static_cast<int32_t>(min_y * area_height);
+            const int32_t raw_max_y = static_cast<int32_t>(max_y * area_height);
+
+            int32_t offset_x = base_x + raw_min_x;
+            int32_t offset_y = raw_min_y;
+            int32_t extent_x = raw_max_x - raw_min_x;
+            int32_t extent_y = raw_max_y - raw_min_y;
+
+            offset_x = clamp_i32(offset_x, base_x, base_x + area_width - 1);
+            offset_y = clamp_i32(offset_y, 0, area_height - 1);
+
+            extent_x = std::max<int32_t>(1, extent_x);
+            extent_y = std::max<int32_t>(1, extent_y);
+
+            const int32_t max_extent_x = std::min<int32_t>(area_width - (offset_x - base_x), sc_width - offset_x);
+            const int32_t max_extent_y = std::min<int32_t>(area_height - offset_y, sc_height - offset_y);
+
+            extent_x = clamp_i32(extent_x, 1, std::max<int32_t>(1, max_extent_x));
+            extent_y = clamp_i32(extent_y, 1, std::max<int32_t>(1, max_extent_y));
+
+            return XrRect2Di{{offset_x, offset_y}, {extent_x, extent_y}};
+        };
+
         for (auto i = 0; i < projection_layer_views.size(); ++i) {            
             Swapchain* swapchain = nullptr;
 
@@ -1808,24 +1880,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             projection_layer_views[i].pose = pipelined_stage_views[i].pose;
             projection_layer_views[i].fov = pipelined_stage_views[i].fov;
             projection_layer_views[i].subImage.swapchain = swapchain->handle;
-
-            int32_t offset_x = 0, offset_y = 0, extent_x = 0, extent_y = 0;
-            // if we're working with a double-wide texture, use half the view bounds adjustment (as they apply to a single eye)
-            int texture_area_width = is_afr ? swapchain->width : swapchain->width / 2;
-            if (is_afr || i == 0) {
-                offset_x = view_bounds[i][0] * texture_area_width;
-                extent_x = view_bounds[i][1] * texture_area_width - offset_x;
-            } else {
-                // right eye double-wide
-                offset_x = texture_area_width + view_bounds[i][0] * texture_area_width;
-                extent_x = view_bounds[i][1] * texture_area_width - (offset_x - texture_area_width);
-            }
-            offset_y = view_bounds[i][2] * swapchain->height;
-            extent_y = view_bounds[i][3] * swapchain->height - offset_y;
-            
-            // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);
-            projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};
-            projection_layer_views[i].subImage.imageRect.extent = {extent_x, extent_y};
+            projection_layer_views[i].subImage.imageRect = make_sub_image_rect(*swapchain, (int)i);
 
             if (has_depth) {
                 Swapchain* depth_swapchain = nullptr;
@@ -1843,9 +1898,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
                 depth_layers[i].type = XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR;
                 depth_layers[i].next = nullptr;
                 depth_layers[i].subImage.swapchain = depth_swapchain->handle;
-
-                depth_layers[i].subImage.imageRect.offset = {offset_x, offset_y};
-                depth_layers[i].subImage.imageRect.extent = {std::min<int>(get_width(), extent_x), std::min<int>(get_height(), extent_y)};
+                depth_layers[i].subImage.imageRect = make_sub_image_rect(*depth_swapchain, (int)i);
                 depth_layers[i].minDepth = 0.0f;
                 depth_layers[i].maxDepth = 1.0f;
                 auto wtm = VR::get()->get_world_to_meters();
