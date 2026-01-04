@@ -6490,6 +6490,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto& rtm = *g_hook->get_render_target_manager();
 
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
+        static const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
         const auto addr = (uintptr_t)tex;
         if (tex == nullptr || addr < 0x10000) {
             return false;
@@ -6517,8 +6518,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return false;
         }
 
-        if (!utility::get_module_within(vtable).has_value() ||
-            !utility::get_module_within(((void**)vtable)[0]).has_value()) {
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        if (vtable_module == nullptr || vtable_module == uevr_module ||
+            utility::get_module_within(((void**)vtable)[0]).value_or(nullptr) == nullptr) {
             return false;
         }
 
@@ -7959,6 +7961,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
     };
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
+        static const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
         const auto addr = (uintptr_t)tex;
         if (tex == nullptr || addr < 0x10000) {
             return false;
@@ -7986,8 +7989,9 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return false;
         }
 
-        if (!utility::get_module_within(vtable).has_value() ||
-            !utility::get_module_within(((void**)vtable)[0]).has_value()) {
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        if (vtable_module == nullptr || vtable_module == uevr_module ||
+            utility::get_module_within(((void**)vtable)[0]).value_or(nullptr) == nullptr) {
             return false;
         }
 
