@@ -96,44 +96,72 @@ public:
 protected:
     struct VerifiedFTexture2D {
         VerifiedFTexture2D() = default;
-        VerifiedFTexture2D(FRHITexture2D* tex) 
-            : texture{tex}
-        {
-            if (tex != nullptr) {
-                original_vtable = *(void**)tex;
-            } else {
-                original_vtable = nullptr;
-            }
+        VerifiedFTexture2D(FRHITexture2D* tex) {
+            assign(tex);
         }
 
         VerifiedFTexture2D& operator=(FRHITexture2D* tex) {
-            texture = tex;
-            if (tex != nullptr) {
-                original_vtable = *(void**)tex;
-            } else {
-                original_vtable = nullptr;
-            }
-
+            assign(tex);
             return *this;
         }
 
-        operator FRHITexture2D*&() try {
+        operator FRHITexture2D*&() {
             if (texture == nullptr) {
                 return texture;
             }
 
-            // First line of defense against catching an exception
-            if (original_vtable != *(void**)texture) {
-                texture = nullptr;
-                original_vtable = nullptr;
+            if (!is_plausible_ptr(texture)) {
+                reset();
+                return texture;
+            }
+
+            void* current_vtable = nullptr;
+            __try {
+                current_vtable = *(void**)texture;
+            } __except (1) {
+                current_vtable = nullptr;
+            }
+
+            if (current_vtable == nullptr || current_vtable != original_vtable) {
+                reset();
             }
 
             return texture;
-        } catch (...) {
-            // welp
+        }
+
+    private:
+        static constexpr uintptr_t kMaxUserAddress = 0x00007FFFFFFFFFFFULL;
+
+        static bool is_plausible_ptr(const void* ptr) {
+            const auto addr = reinterpret_cast<uintptr_t>(ptr);
+            return addr >= 0x10000 && addr <= kMaxUserAddress;
+        }
+
+        void reset() {
             texture = nullptr;
             original_vtable = nullptr;
-            return texture;
+        }
+
+        void assign(FRHITexture2D* tex) {
+            if (!is_plausible_ptr(tex)) {
+                reset();
+                return;
+            }
+
+            void* vtable = nullptr;
+            __try {
+                vtable = *(void**)tex;
+            } __except (1) {
+                vtable = nullptr;
+            }
+
+            if (vtable == nullptr) {
+                reset();
+                return;
+            }
+
+            texture = tex;
+            original_vtable = vtable;
         }
 
         FRHITexture2D* texture{nullptr};
