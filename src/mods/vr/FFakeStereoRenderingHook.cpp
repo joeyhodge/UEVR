@@ -6137,7 +6137,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    void* renderer_this = renderer;
+    void* renderer_this = is_ue57 ? a2 : renderer;
 
     if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
         if (is_ue57) {
@@ -6168,9 +6168,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (is_ue57) {
         constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
-        constexpr size_t kSlatePassInputsDrawDataOffsetUE57 = 0x10;
-        constexpr size_t kSlateDrawDataViewportOffsetUE57 = 0x3A0;
-        constexpr size_t kSlateDrawDataViewportRefOffsetUE57 = 0x3A8;
+        constexpr size_t kSlatePassInputsWindowOffsetUE57 = 0x10;
+        constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
+        constexpr size_t kSWindowViewportOffsetAltUE57 = kSWindowViewportOffsetUE57 - sizeof(void*);
 
         if (is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
             auto inputs = (uint8_t*)a4;
@@ -6180,12 +6180,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 viewport_info = viewport_info_candidate;
             }
 
-            auto draw_data = *(uint8_t**)(inputs + kSlatePassInputsDrawDataOffsetUE57);
+            auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
 
-            if (is_readable_ptr(draw_data, kSlateDrawDataViewportRefOffsetUE57 + sizeof(void*))) {
-                auto candidate = *(sdk::ISlateViewport**)(draw_data + kSlateDrawDataViewportOffsetUE57);
+            if (is_readable_ptr(window_candidate, kSWindowViewportOffsetUE57 + sizeof(void*))) {
+                auto candidate = *(sdk::ISlateViewport**)(window_candidate + kSWindowViewportOffsetUE57);
                 if (is_valid_slate_viewport(candidate)) {
                     slate_viewport = candidate;
+                } else {
+                    candidate = *(sdk::ISlateViewport**)(window_candidate + kSWindowViewportOffsetAltUE57);
+                    if (is_valid_slate_viewport(candidate)) {
+                        slate_viewport = candidate;
+                    }
                 }
             }
         }
