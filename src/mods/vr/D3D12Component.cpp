@@ -1376,10 +1376,40 @@ bool D3D12Component::setup() {
 void D3D12Component::OpenXR::initialize(XrSessionCreateInfo& session_info) {
     std::scoped_lock _{this->mtx};
 
+    this->binding.device = nullptr;
+    this->binding.queue = nullptr;
+
+    if (g_framework == nullptr) {
+        spdlog::error("[VR] OpenXR D3D12 initialize called without framework");
+        return;
+    }
+
 	auto& hook = g_framework->get_d3d12_hook();
+    if (!hook) {
+        spdlog::error("[VR] OpenXR D3D12 initialize called without D3D12 hook");
+        return;
+    }
 
     auto device = hook->get_device();
     auto command_queue = hook->get_command_queue();
+
+    if (device == nullptr || command_queue == nullptr) {
+        spdlog::error("[VR] OpenXR D3D12 initialize missing device/queue (device={:#x}, queue={:#x})",
+            (uintptr_t)device, (uintptr_t)command_queue);
+        return;
+    }
+
+    if (IsBadReadPtr(device, sizeof(void*))) {
+        spdlog::error("[VR] OpenXR D3D12 initialize invalid device pointer (device={:#x})", (uintptr_t)device);
+        return;
+    }
+
+    auto* vtbl = *(void**)device;
+    if (vtbl == nullptr || IsBadReadPtr(vtbl, sizeof(void*))) {
+        spdlog::error("[VR] OpenXR D3D12 initialize invalid device vtable (device={:#x}, vtbl={:#x})",
+            (uintptr_t)device, (uintptr_t)vtbl);
+        return;
+    }
 
     this->binding.device = device;
     this->binding.queue = command_queue;
@@ -1387,6 +1417,11 @@ void D3D12Component::OpenXR::initialize(XrSessionCreateInfo& session_info) {
     spdlog::info("[VR] Searching for xrGetD3D12GraphicsRequirementsKHR...");
     PFN_xrGetD3D12GraphicsRequirementsKHR fn = nullptr;
     xrGetInstanceProcAddr(VR::get()->m_openxr->instance, "xrGetD3D12GraphicsRequirementsKHR", (PFN_xrVoidFunction*)(&fn));
+
+    if (fn == nullptr) {
+        spdlog::error("[VR] xrGetD3D12GraphicsRequirementsKHR not found");
+        return;
+    }
 
     XrGraphicsRequirementsD3D12KHR gr{XR_TYPE_GRAPHICS_REQUIREMENTS_D3D12_KHR};
     gr.adapterLuid = device->GetAdapterLuid();
@@ -1405,9 +1440,38 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
     this->destroy_swapchains();
     
+    if (g_framework == nullptr) {
+        spdlog::error("[VR] OpenXR D3D12 swapchain creation called without framework");
+        return "Framework is null.";
+    }
+
     auto& hook = g_framework->get_d3d12_hook();
+    if (!hook) {
+        spdlog::error("[VR] OpenXR D3D12 swapchain creation called without D3D12 hook");
+        return "D3D12 hook is null.";
+    }
+
     auto device = hook->get_device();
     auto swapchain = hook->get_swap_chain();
+
+    if (device == nullptr || swapchain == nullptr) {
+        spdlog::error("[VR] OpenXR D3D12 swapchain creation missing device/swapchain (device={:#x}, swapchain={:#x})",
+            (uintptr_t)device, (uintptr_t)swapchain);
+        return "D3D12 device/swapchain unavailable.";
+    }
+
+    if (IsBadReadPtr(device, sizeof(void*))) {
+        spdlog::error("[VR] OpenXR D3D12 swapchain creation invalid device pointer (device={:#x})",
+            (uintptr_t)device);
+        return "Invalid D3D12 device pointer.";
+    }
+
+    auto* device_vtbl = *(void**)device;
+    if (device_vtbl == nullptr || IsBadReadPtr(device_vtbl, sizeof(void*))) {
+        spdlog::error("[VR] OpenXR D3D12 swapchain creation invalid device vtable (device={:#x}, vtbl={:#x})",
+            (uintptr_t)device, (uintptr_t)device_vtbl);
+        return "Invalid D3D12 device vtable.";
+    }
 
     ComPtr<ID3D12Resource> backbuffer{};
 
@@ -1417,8 +1481,20 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     if (vr != nullptr && vr->m_fake_stereo_hook != nullptr) {
         auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
+        if (ue4_texture != nullptr && IsBadReadPtr(ue4_texture, sizeof(void*))) {
+            SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] UE render target pointer invalid; ignoring");
+            ue4_texture = nullptr;
+        }
+
         if (ue4_texture != nullptr) {
-            backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
+            auto* native = ue4_texture->get_native_resource();
+
+            if (native != nullptr && IsBadReadPtr(native, sizeof(void*))) {
+                SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] UE render target native resource invalid; ignoring");
+                native = nullptr;
+            }
+
+            backbuffer = (ID3D12Resource*)native;
             has_actual_vr_backbuffer = backbuffer != nullptr;
         }
     }
