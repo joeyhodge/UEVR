@@ -27,6 +27,11 @@ constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
 
 namespace vrmod {
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    if (vr == nullptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] VR is null in on_frame");
+        return vr::VRCompositorError_None;
+    }
+
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Could not set up, trying again next frame");
@@ -37,7 +42,19 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_last_afr_state = vr->is_using_afr();
     }
 
-    auto& hook = g_framework->get_d3d12_hook();
+    if (g_framework == nullptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Framework is null in on_frame");
+        return vr::VRCompositorError_None;
+    }
+
+    auto& hook_ptr = g_framework->get_d3d12_hook();
+    if (!hook_ptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] D3D12 hook is null in on_frame");
+        m_force_reset = true;
+        return vr::VRCompositorError_None;
+    }
+
+    auto* hook = hook_ptr.get();
 
     hook->set_next_present_interval(0); // disable vsync for vr
     
@@ -50,13 +67,39 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get swapchain
     auto swapchain = hook->get_swap_chain();
 
+    if (device == nullptr || command_queue == nullptr || swapchain == nullptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] D3D12 hook missing resources (device={:#x}, queue={:#x}, swapchain={:#x})",
+            (uintptr_t)device, (uintptr_t)command_queue, (uintptr_t)swapchain);
+        m_force_reset = true;
+        return vr::VRCompositorError_None;
+    }
+
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
-    auto ue4_texture = VR::get()->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
+    auto* ffsr = vr->m_fake_stereo_hook.get();
+
+    if (ffsr == nullptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Fake stereo hook is null in on_frame");
+        return vr::VRCompositorError_None;
+    }
+
+    auto ue4_texture = ffsr->get_render_target_manager()->get_render_target();
+
+    if (ue4_texture != nullptr && IsBadReadPtr(ue4_texture, sizeof(void*))) {
+        SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] UE render target pointer invalid; ignoring");
+        ue4_texture = nullptr;
+    }
 
     if (ue4_texture != nullptr) {
-        backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
+        auto* native = ue4_texture->get_native_resource();
+
+        if (native != nullptr && IsBadReadPtr(native, sizeof(void*))) {
+            SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] UE render target native resource invalid; ignoring");
+            native = nullptr;
+        }
+
+        backbuffer = (ID3D12Resource*)native;
     }
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -87,6 +130,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // Update the UI overlay.
     auto runtime = vr->get_runtime();
 
+    if (runtime == nullptr) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Runtime is null in on_frame");
+        return vr::VRCompositorError_None;
+    }
+
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
     m_last_rendered_frame = vr->m_render_frame_count;
 
@@ -101,7 +149,6 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         runtime->fix_frame();
     }
 
-    const auto& ffsr = VR::get()->m_fake_stereo_hook;
     const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
 
     const auto frame_count = vr->m_render_frame_count;
