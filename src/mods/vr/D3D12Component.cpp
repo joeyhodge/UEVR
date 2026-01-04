@@ -64,6 +64,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    if (backbuffer == nullptr) {
+        static bool warned_missing_rt = false;
+        if (!warned_missing_rt) {
+            spdlog::warn("[VR] UE render target missing; using real backbuffer.");
+            warned_missing_rt = true;
+        }
+        backbuffer = real_backbuffer;
+    }
+
     if (vr->is_extreme_compatibility_mode_enabled()) {
         backbuffer = real_backbuffer;
     }
@@ -1150,6 +1159,15 @@ bool D3D12Component::setup() {
         return false;
     }
 
+    if (backbuffer == nullptr) {
+        static bool warned_missing_rt = false;
+        if (!warned_missing_rt) {
+            spdlog::warn("[VR] UE render target missing; using real backbuffer (D3D12).");
+            warned_missing_rt = true;
+        }
+        backbuffer = real_backbuffer;
+    }
+
     if (vr->is_extreme_compatibility_mode_enabled()) {
         backbuffer = real_backbuffer;
     }
@@ -1173,7 +1191,9 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    const bool using_real_backbuffer = backbuffer.Get() == real_backbuffer.Get();
+
+    if (!vr->is_extreme_compatibility_mode_enabled() && !using_real_backbuffer) {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
     }
 
