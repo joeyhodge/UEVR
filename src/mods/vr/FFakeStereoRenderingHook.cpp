@@ -6173,8 +6173,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
         constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
         constexpr size_t kSWindowViewportOffsetAltUE57 = kSWindowViewportOffsetUE57 - sizeof(void*);
-        constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
-        constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
         constexpr size_t kSWindowViewportOffsetsUE57[] = {
             kSWindowViewportOffsetUE57,
             kSWindowViewportOffsetAltUE57,
@@ -6243,6 +6241,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
+        constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
+        constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
 
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
             std::optional<size_t> result{};
