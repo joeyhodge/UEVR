@@ -74,6 +74,7 @@ namespace {
 constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
 constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
+std::atomic<uint64_t> g_slate_draw_window_calls{0};
 
 EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
     const auto offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
@@ -598,6 +599,11 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     auto func = alternate ? sdk::slate::locate_draw_window_renderthread_fn_alternate() : sdk::slate::locate_draw_window_renderthread_fn();
 
     if (!func && return_address == 0) {
+        if (!alternate && is_ue_57()) {
+            SPDLOG_INFO("Default slate scan failed; attempting alternate scan");
+            attempt_hook_slate_thread(0, true);
+            return;
+        }
         SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindow_RenderThread");
         return;
     }
@@ -5501,6 +5507,67 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
 
     g_hook->get_slate_thread_worker()->execute(rhi_command_list);
 
+    if (is_ue_57()) {
+        auto& rtm = *g_hook->get_render_target_manager();
+        auto& ui_target = rtm.get_ui_target();
+
+        const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
+            const auto addr = (uintptr_t)tex;
+            if (tex == nullptr || addr < 0x10000) {
+                return false;
+            }
+
+            MEMORY_BASIC_INFORMATION mbi{};
+            if (VirtualQuery(tex, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+                return false;
+            }
+
+            if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+                return false;
+            }
+
+            if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+                return false;
+            }
+
+            if (IsBadReadPtr(tex, sizeof(void*))) {
+                return false;
+            }
+
+            const auto vtable = *(void**)tex;
+            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                return false;
+            }
+
+            const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+            if (vtable_module == nullptr || utility::get_module_within(((void**)vtable)[0]).value_or(nullptr) == nullptr) {
+                return false;
+            }
+
+            return true;
+        };
+
+        if (rtm.get_render_target() == nullptr) {
+            if (is_valid_texture_ptr(src_texture)) {
+                rtm.set_render_target(src_texture);
+                SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
+            } else if (is_valid_texture_ptr(backbuffer)) {
+                rtm.set_render_target(backbuffer);
+                SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
+            }
+        }
+
+        if (ui_target == nullptr) {
+            if (is_valid_texture_ptr(src_texture)) {
+                ui_target = src_texture;
+                SPDLOG_INFO_ONCE("UE5.7: UI target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
+            } else if (is_valid_texture_ptr(backbuffer)) {
+                ui_target = backbuffer;
+                SPDLOG_INFO_ONCE("UE5.7: UI target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
+            }
+        }
+    }
+
     /*const auto return_address = (uintptr_t)_ReturnAddress();
     const auto slate_cvar_usage_location = sdk::vr::get_slate_draw_to_vr_render_target_usage_location();
 
@@ -6107,6 +6174,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 #else
     SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindow_RenderThread called!");
 #endif
+    const auto slate_call_count = ++g_slate_draw_window_calls;
+    SPDLOG_INFO_EVERY_N_SEC(5, "SlateRHIRenderer::DrawWindow_RenderThread call count: {}", slate_call_count);
 
     const bool is_ue57 = is_ue_57();
     sdk::FViewportInfo* viewport_info = nullptr;
@@ -6156,7 +6225,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    void* renderer_this = is_ue57 ? a2 : renderer;
+    void* renderer_this = renderer;
+    if (is_ue57 && !is_readable_ptr(renderer_this, sizeof(void*))) {
+        renderer_this = a2;
+    }
 
     if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
         if (is_ue57) {
@@ -6199,17 +6271,49 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             kSWindowViewportOffsetLegacyAltUE57
         };
 
-        if (is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
-            auto inputs = (uint8_t*)a4;
-            auto viewport_info_candidate = *(sdk::FViewportInfo**)(inputs + kSlatePassInputsViewportInfoOffsetUE57);
-
-            if (is_readable_ptr(viewport_info_candidate)) {
-                viewport_info = viewport_info_candidate;
+        const auto is_valid_viewport_info = [&](sdk::FViewportInfo* candidate) -> bool {
+            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                return false;
             }
 
-            auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
+            auto vtable = *(uintptr_t**)candidate;
+            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                return false;
+            }
 
-            if (is_readable_ptr(window_candidate, sizeof(void*))) {
+            return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
+        };
+
+        const auto is_valid_swindow = [&](uint8_t* candidate) -> bool {
+            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                return false;
+            }
+
+            auto vtable = *(uintptr_t**)candidate;
+            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                return false;
+            }
+
+            return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
+        };
+
+        const auto try_inputs = [&](void* inputs_ptr) -> bool {
+            if (!is_readable_ptr(inputs_ptr, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
+                return false;
+            }
+
+            auto inputs = (uint8_t*)inputs_ptr;
+            auto viewport_info_candidate = *(sdk::FViewportInfo**)(inputs + kSlatePassInputsViewportInfoOffsetUE57);
+            auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
+            bool found = false;
+
+            if (viewport_info == nullptr && is_valid_viewport_info(viewport_info_candidate)) {
+                viewport_info = viewport_info_candidate;
+                found = true;
+            }
+
+            if (slate_viewport == nullptr && is_valid_swindow(window_candidate)) {
+                found = true;
                 for (const auto offset : kSWindowViewportOffsetsUE57) {
                     if (!is_readable_ptr(window_candidate + offset, sizeof(void*))) {
                         continue;
@@ -6221,6 +6325,23 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                         break;
                     }
                 }
+            }
+
+            if (found) {
+                SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x}", (uintptr_t)inputs_ptr);
+            }
+
+            return found;
+        };
+
+        const void* inputs_candidates[] = { a4, a3, a2, params };
+        for (const auto* candidate : inputs_candidates) {
+            if (candidate == nullptr) {
+                continue;
+            }
+
+            if (try_inputs(const_cast<void*>(candidate))) {
+                break;
             }
         }
     } else {
