@@ -1588,9 +1588,19 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
 
-    static constexpr auto FSCENEVIEW_STEREO_PASS_OFFSET = 0xAF0;
-    static auto get_stereo_pass = [](const sdk::FSceneView& view) -> EStereoscopicPass {
-        return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + FSCENEVIEW_STEREO_PASS_OFFSET);
+    constexpr auto kFSceneViewStereoPassOffsetLegacy = 0xAF0;
+    constexpr auto kFSceneViewStereoPassOffsetUE57 = 0xDE0;
+    const auto sceneview_stereo_pass_offset = []() {
+        if (const auto version = sdk::search_for_version(utility::get_executable());
+            version && version->rfind(L"5.7", 0) == 0) {
+            return kFSceneViewStereoPassOffsetUE57;
+        }
+
+        return kFSceneViewStereoPassOffsetLegacy;
+    }();
+    SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", sceneview_stereo_pass_offset);
+    const auto get_stereo_pass = [sceneview_stereo_pass_offset](const sdk::FSceneView& view) -> EStereoscopicPass {
+        return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + sceneview_stereo_pass_offset);
     };
 
     // Actually implement the ones we care about now.
