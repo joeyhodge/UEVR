@@ -657,6 +657,72 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
 }
 
+void FFakeStereoRenderingHook::attempt_hook_scene_viewport_set_render_target(sdk::FViewport* viewport) {
+    if (!is_ue_57() || m_scene_viewport_set_render_target_texture_hook != nullptr) {
+        return;
+    }
+
+    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return;
+    }
+
+    static bool searched_for_set_render_target = false;
+    static std::optional<uintptr_t> set_render_target_func{};
+
+    if (!searched_for_set_render_target) {
+        searched_for_set_render_target = true;
+        const auto engine_module = sdk::get_ue_module(L"Engine");
+        set_render_target_func = utility::find_function_from_string_ref(engine_module, L"SetRenderThreadViewportTarget");
+
+        if (set_render_target_func) {
+            SPDLOG_INFO("SetRenderThreadViewportTarget function: {:x}", *set_render_target_func);
+        } else {
+            SPDLOG_WARN("Failed to find SetRenderThreadViewportTarget string reference; will use fallback checks.");
+        }
+    }
+
+    auto base = reinterpret_cast<uint8_t*>(viewport);
+    static constexpr size_t kMaxScanBytes = 0x200;
+
+    if (IsBadReadPtr(base, kMaxScanBytes)) {
+        return;
+    }
+
+    for (size_t offset = 0; offset < kMaxScanBytes; offset += sizeof(void*)) {
+        auto vtable = *(void***)(base + offset);
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 4)) {
+            continue;
+        }
+
+        const auto module_within = utility::get_module_within(vtable).value_or(nullptr);
+        if (module_within == nullptr) {
+            continue;
+        }
+
+        const auto candidate = reinterpret_cast<uintptr_t>(vtable[2]);
+        if (candidate == 0 || IsBadReadPtr((void*)candidate, sizeof(void*))) {
+            continue;
+        }
+
+        const auto candidate_start = utility::find_function_start(candidate);
+        if (!candidate_start) {
+            continue;
+        }
+
+        if (set_render_target_func) {
+            if (*candidate_start != *set_render_target_func) {
+                continue;
+            }
+        } else if (!utility::find_string_reference_in_path(*candidate_start, L"SetRenderThreadViewportTarget", false)) {
+            continue;
+        }
+
+        m_scene_viewport_set_render_target_texture_hook = std::make_unique<PointerHook>(&vtable[2], &scene_viewport_set_render_target_texture_render_thread);
+        SPDLOG_INFO("Hooked FSceneViewport::SetRenderTargetTextureRenderThread (vtable+0x{:x})", offset + (2 * sizeof(void*)));
+        break;
+    }
+}
+
 namespace detail{
 bool pre_find_fsceneview_constructor() {
     sdk::FSceneView::get_constructor_address(); // Can take a while to find
@@ -2358,6 +2424,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     g_hook->m_in_viewport_client_draw = true;
     g_hook->m_was_in_viewport_client_draw = false;
     g_hook->get_render_target_manager()->set_viewport(viewport);
+    g_hook->attempt_hook_scene_viewport_set_render_target(viewport);
 
     utility::ScopeGuard _{ 
         []() { 
@@ -8782,6 +8849,80 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 } catch (...) {
     SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in create_scene_capture!");
     return false;
+}
+
+__declspec(noinline) void FFakeStereoRenderingHook::scene_viewport_set_render_target_texture_render_thread(void* viewport, TRefCountPtr<FRHITexture>* texture_ref) {
+    auto hook = g_hook->m_scene_viewport_set_render_target_texture_hook.get();
+    if (hook != nullptr) {
+        hook->get_original<void(*)(void*, TRefCountPtr<FRHITexture>*)>()(viewport, texture_ref);
+    }
+
+    if (!g_framework->is_game_data_intialized() || !is_ue_57()) {
+        return;
+    }
+
+    if (texture_ref == nullptr || IsBadReadPtr(texture_ref, sizeof(*texture_ref))) {
+        return;
+    }
+
+    auto tex = reinterpret_cast<FRHITexture2D*>(texture_ref->reference);
+    if (tex == nullptr) {
+        return;
+    }
+
+    const auto is_valid_texture_ptr = [&](FRHITexture2D* candidate) {
+        const auto addr = (uintptr_t)candidate;
+        if (candidate == nullptr || addr < 0x10000) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(candidate, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        if (IsBadReadPtr(candidate, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable = *(void**)candidate;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        if (vtable_module == nullptr || utility::get_module_within(((void**)vtable)[0]).value_or(nullptr) == nullptr) {
+            return false;
+        }
+
+        return true;
+    };
+
+    if (!is_valid_texture_ptr(tex)) {
+        return;
+    }
+
+    auto& rtm = *g_hook->get_render_target_manager();
+    auto& ui_target = rtm.get_ui_target();
+
+    const auto current_rt = rtm.get_render_target();
+    if (current_rt == nullptr || !is_valid_texture_ptr(current_rt)) {
+        rtm.set_render_target(tex);
+        SPDLOG_INFO_ONCE("UE5.7: render target set from FSceneViewport::SetRenderTargetTextureRenderThread: {:x}", (uintptr_t)tex);
+    }
+
+    if (ui_target == nullptr || !is_valid_texture_ptr(ui_target)) {
+        ui_target = tex;
+        SPDLOG_INFO_ONCE("UE5.7: UI target set from FSceneViewport::SetRenderTargetTextureRenderThread: {:x}", (uintptr_t)tex);
+    }
 }
 
 // This is a very special fix for cases where engine modifications

@@ -355,6 +355,7 @@ public:
     void attempt_hook_game_engine_tick(uintptr_t return_address = 0);
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
+    void attempt_hook_scene_viewport_set_render_target(sdk::FViewport* viewport);
     void attempt_hook_fsceneview_constructor();
     
 
@@ -519,6 +520,7 @@ private:
     static void game_viewport_client_draw_hook(sdk::UGameViewportClient*, sdk::FViewport*, sdk::FCanvas*, void*);
 
     // FSceneViewport
+    static void scene_viewport_set_render_target_texture_render_thread(void* viewport, TRefCountPtr<FRHITexture>* texture_ref);
     static void update_viewport_rhi_hook(void* viewport, size_t destroyed, size_t new_size_x, size_t new_size_y, size_t new_window_mode, size_t preferred_pixel_format);
 
     std::unique_ptr<ThreadWorker<FRHICommandListImmediate*>> m_slate_thread_worker{std::make_unique<ThreadWorker<FRHICommandListImmediate*>>()};
@@ -562,6 +564,7 @@ private:
     std::unique_ptr<PointerHook> m_init_canvas_hook{};
     std::unique_ptr<PointerHook> m_get_desired_number_of_views_hook{};
     std::unique_ptr<PointerHook> m_get_view_pass_for_index_hook{};
+    std::unique_ptr<PointerHook> m_scene_viewport_set_render_target_texture_hook{};
     std::unique_ptr<PointerHook> m_update_viewport_rhi_hook{};
     std::unique_ptr<PointerHook> m_viewport_get_render_target_texture_hook{};
     std::unique_ptr<PointerHook> m_viewport_destructor_hook{};
