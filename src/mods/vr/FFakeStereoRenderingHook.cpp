@@ -5,6 +5,7 @@
 
 #include <asmjit/asmjit.h>
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <future>
@@ -68,6 +69,17 @@
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
+
+namespace {
+constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
+constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
+std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
+
+EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
+    const auto offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
+    return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + offset);
+}
+}
 
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
@@ -1588,8 +1600,6 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
 
-    constexpr auto kFSceneViewStereoPassOffsetLegacy = 0xAF0;
-    constexpr auto kFSceneViewStereoPassOffsetUE57 = 0xDE0;
     const auto sceneview_stereo_pass_offset = []() {
         if (const auto version = sdk::search_for_version(utility::get_executable());
             version && version->rfind(L"5.7", 0) == 0) {
@@ -1598,10 +1608,8 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
 
         return kFSceneViewStereoPassOffsetLegacy;
     }();
+    g_sceneview_stereo_pass_offset.store(sceneview_stereo_pass_offset, std::memory_order_relaxed);
     SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", sceneview_stereo_pass_offset);
-    const auto get_stereo_pass = [sceneview_stereo_pass_offset](const sdk::FSceneView& view) -> EStereoscopicPass {
-        return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + sceneview_stereo_pass_offset);
-    };
 
     // Actually implement the ones we care about now.
     m_fallback_vtable[DESTRUCTOR_INDEX] = +[](FFakeStereoRendering* stereo) -> void { SPDLOG_INFO("Destructor called?");  }; // destructor.
@@ -1688,10 +1696,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
 
     m_fallback_vtable[DEVICE_IS_STEREO_EYE_VIEW_INDEX] = +[](FFakeStereoRendering* stereo, const sdk::FSceneView& view) -> bool {
     #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
-        SPDLOG_INFO("DeviceIsStereoEyeView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_stereo_pass(view));
+        SPDLOG_INFO("DeviceIsStereoEyeView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_sceneview_stereo_pass(view));
     #endif
 
-        return get_stereo_pass(view) != EStereoscopicPass::eSSP_FULL;
+        return get_sceneview_stereo_pass(view) != EStereoscopicPass::eSSP_FULL;
     }; // DeviceIsStereoEyePass
 
     m_fallback_vtable[DEVICE_IS_A_PRIMARY_PASS_INDEX] = +[](FFakeStereoRendering* stereo, const EStereoscopicPass pass) -> bool {
@@ -1704,10 +1712,11 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
 
     m_fallback_vtable[DEVICE_IS_A_PRIMARY_VIEW_INDEX] = +[](FFakeStereoRendering* stereo, const sdk::FSceneView& view) -> bool {
     #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
-        SPDLOG_INFO("DeviceIsAPrimaryView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_stereo_pass(view));
+        SPDLOG_INFO("DeviceIsAPrimaryView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_sceneview_stereo_pass(view));
     #endif
 
-        return get_stereo_pass(view) == EStereoscopicPass::eSSP_FULL || get_stereo_pass(view) == EStereoscopicPass::eSSP_PRIMARY;
+        return get_sceneview_stereo_pass(view) == EStereoscopicPass::eSSP_FULL ||
+            get_sceneview_stereo_pass(view) == EStereoscopicPass::eSSP_PRIMARY;
     }; // DeviceIsAPrimaryPass
 
     m_fallback_vtable[DEVICE_IS_A_SECONDARY_PASS_INDEX] = +[](FFakeStereoRendering* stereo, const EStereoscopicPass pass) -> bool {
@@ -1720,10 +1729,10 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
 
     m_fallback_vtable[DEVICE_IS_A_SECONDARY_VIEW_INDEX] = +[](FFakeStereoRendering* stereo, const sdk::FSceneView& view) -> bool {
     #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
-        SPDLOG_INFO("DeviceIsASecondaryView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_stereo_pass(view));
+        SPDLOG_INFO("DeviceIsASecondaryView called: {:x} {} ", (uintptr_t)_ReturnAddress(), (uint32_t)get_sceneview_stereo_pass(view));
     #endif
 
-        return get_stereo_pass(view) > EStereoscopicPass::eSSP_PRIMARY;
+        return get_sceneview_stereo_pass(view) > EStereoscopicPass::eSSP_PRIMARY;
     }; // DeviceIsASecondaryView
 
     m_special_detected_4_27 = true;
