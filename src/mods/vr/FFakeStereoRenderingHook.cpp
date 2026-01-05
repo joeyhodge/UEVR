@@ -6170,7 +6170,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
         constexpr size_t kSlatePassInputsWindowOffsetUE57 = 0x10;
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
+        constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
+        constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
         constexpr size_t kSWindowViewportOffsetAltUE57 = kSWindowViewportOffsetUE57 - sizeof(void*);
+        constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
+        constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
+        constexpr size_t kSWindowViewportOffsetsUE57[] = {
+            kSWindowViewportOffsetUE57,
+            kSWindowViewportOffsetAltUE57,
+            kSWindowViewportOffsetLegacyUE57,
+            kSWindowViewportOffsetLegacyAltUE57
+        };
 
         if (is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
             auto inputs = (uint8_t*)a4;
@@ -6182,14 +6192,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
 
-            if (is_readable_ptr(window_candidate, kSWindowViewportOffsetUE57 + sizeof(void*))) {
-                auto candidate = *(sdk::ISlateViewport**)(window_candidate + kSWindowViewportOffsetUE57);
-                if (is_valid_slate_viewport(candidate)) {
-                    slate_viewport = candidate;
-                } else {
-                    candidate = *(sdk::ISlateViewport**)(window_candidate + kSWindowViewportOffsetAltUE57);
+            if (is_readable_ptr(window_candidate, sizeof(void*))) {
+                for (const auto offset : kSWindowViewportOffsetsUE57) {
+                    if (!is_readable_ptr(window_candidate + offset, sizeof(void*))) {
+                        continue;
+                    }
+
+                    auto candidate = *(sdk::ISlateViewport**)(window_candidate + offset);
                     if (is_valid_slate_viewport(candidate)) {
                         slate_viewport = candidate;
+                        break;
                     }
                 }
             }
@@ -6405,7 +6417,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (!slate_viewport) {
-            const size_t fallback_offsets[] = {kSWindowViewportOffsetUE57, kSWindowViewportOffsetUE57 + sizeof(void*)};
+            const size_t fallback_offsets[] = {
+                kSWindowViewportOffsetUE57,
+                kSWindowViewportOffsetUE57 + sizeof(void*),
+                kSWindowViewportOffsetLegacyUE57,
+                kSWindowViewportOffsetLegacyAltUE57
+            };
 
             for (const auto offset : fallback_offsets) {
                 if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
@@ -6487,13 +6504,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    if (slate_resource == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
-        return call_orig();
-    }
-
-    auto& rtm = *g_hook->get_render_target_manager();
-
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
         static const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
         const auto addr = (uintptr_t)tex;
@@ -6531,6 +6541,44 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         return true;
     };
+    auto& rtm = *g_hook->get_render_target_manager();
+    const auto try_get_viewport_info_rt = [&]() -> FRHITexture2D* {
+        if (!is_ue57 || viewport_info == nullptr) {
+            return nullptr;
+        }
+
+        constexpr size_t kSlateViewportInfoRhiViewportOffsetUE57 = 0x10;
+        auto candidate_addr = (uint8_t*)viewport_info + kSlateViewportInfoRhiViewportOffsetUE57;
+        if (!is_readable_ptr(candidate_addr, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto candidate = *(FRHITexture2D**)candidate_addr;
+        if (is_valid_texture_ptr(candidate)) {
+            return candidate;
+        }
+
+        return nullptr;
+    };
+    auto viewport_info_rt = try_get_viewport_info_rt();
+
+    if (slate_resource == nullptr) {
+        if (viewport_info_rt != nullptr) {
+            if (rtm.get_render_target() == nullptr) {
+                rtm.set_render_target(viewport_info_rt);
+                SPDLOG_INFO_ONCE("UE5.7: set render target from FSlateViewportInfo+0x10 fallback: {:x}", (uintptr_t)viewport_info_rt);
+            }
+
+            if (ui_target == nullptr) {
+                ui_target = viewport_info_rt;
+                SPDLOG_INFO_ONCE("UE5.7: UI target set from FSlateViewportInfo+0x10 fallback: {:x}", (uintptr_t)viewport_info_rt);
+            }
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
+        }
+
+        return call_orig();
+    }
     const auto try_get_array_texture = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
         if (arr == nullptr || IsBadReadPtr(arr, sizeof(*arr))) {
             return nullptr;
@@ -6576,6 +6624,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 SPDLOG_INFO_ONCE("UE5.7: corrected FSlateResource::resource_offset to 0x20");
             }
         }
+    }
+
+    if (!is_scene_tex_valid && viewport_info_rt != nullptr) {
+        scene_tex = viewport_info_rt;
+        is_scene_tex_valid = true;
+        if (rtm.get_render_target() == nullptr) {
+            rtm.set_render_target(scene_tex);
+        }
+        SPDLOG_INFO_ONCE("UE5.7: using FSlateViewportInfo+0x10 render target fallback: {:x}", (uintptr_t)scene_tex);
     }
 
     if (scene_tex != nullptr && !is_scene_tex_valid) {
