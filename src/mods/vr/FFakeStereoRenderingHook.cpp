@@ -927,7 +927,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
-            constexpr size_t kRenderTextureVtableIndexUE57 = 14;
+            // UE5.7 source vtable puts FFakeStereoRenderingDevice::RenderTexture_RenderThread at index 13.
+            constexpr size_t kRenderTextureVtableIndexUE57 = 13;
             const auto candidate = reinterpret_cast<uintptr_t>(
                 reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57]);
 
@@ -993,7 +994,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         }
 
         if (is_ue57) {
-            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1;
+            // UE5.7 has two RenderTexture_RenderThread entries (FRDG + FRHI), so GetRenderTargetManager is +2.
+            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 2;
             get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
             SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
         } else {
