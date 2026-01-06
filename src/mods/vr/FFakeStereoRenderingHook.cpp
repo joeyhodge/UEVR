@@ -925,12 +925,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // Seems more robust than simply just checking the vtable index.
     m_uses_old_rendertarget_manager = *stereo_view_offset_index <= 11 && !render_texture_render_thread_func;
 
-    SPDLOG_INFO("Using old rendertarget manager: {}", m_uses_old_rendertarget_manager);
-
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
             constexpr size_t kRenderTextureVtableIndexUE57 = 14;
-            const auto candidate = ((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
+            const auto candidate = reinterpret_cast<uintptr_t>(
+                reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57]);
 
             if (candidate != 0 &&
                 !IsBadReadPtr((void*)candidate, 1) &&
@@ -939,6 +938,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 render_texture_render_thread_func = candidate;
                 rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57;
                 rendertexture_index_forced = true;
+                m_uses_old_rendertarget_manager = false;
                 SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57, candidate);
             } else {
                 SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found and vtable index {} invalid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.", kRenderTextureVtableIndexUE57);
@@ -972,6 +972,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         }
     }
 
+    SPDLOG_INFO("Using old rendertarget manager: {}", m_uses_old_rendertarget_manager);
+
     if (!skip_render_target_manager_hooks) {
         SPDLOG_INFO("RenderTexture_RenderThread: {:x}", (uintptr_t)*render_texture_render_thread_func);
 
@@ -990,99 +992,105 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             SPDLOG_INFO("RenderTexture_RenderThread VTable Index (forced): {}", rendertexture_fn_vtable_index);
         }
 
-        render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1 + (2 * (size_t)is_4_18_or_lower);
+        if (is_ue57) {
+            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1;
+            get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
+            SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
+        } else {
+            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1 + (2 * (size_t)is_4_18_or_lower);
 
-        // verify first that the render target manager index is returning a null pointer
-        // and if not, scan forward until we run into a vfunc that returns a null pointer
-        get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
+            // verify first that the render target manager index is returning a null pointer
+            // and if not, scan forward until we run into a vfunc that returns a null pointer
+            get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
 
-        bool is_4_11 = false;
+            bool is_4_11 = false;
 
-        //if (!sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "33 C0")) {
-            //SPDLOG_INFO("Expected GetRenderTargetManager function at index {} does not return null, scanning forward for return nullptr.", render_target_manager_vtable_index);
+            //if (!sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "33 C0")) {
+                //SPDLOG_INFO("Expected GetRenderTargetManager function at index {} does not return null, scanning forward for return nullptr.", render_target_manager_vtable_index);
 
-            for (;;++render_target_manager_vtable_index) {
-                get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
+                for (;;++render_target_manager_vtable_index) {
+                    get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
 
-                if (IsBadReadPtr(*(void**)get_render_target_manager_func_ptr, 1)) {
-                    SPDLOG_ERROR("Failed to find GetRenderTargetManager vtable index, a crash is imminent");
-                    return false;
-                }
+                    if (IsBadReadPtr(*(void**)get_render_target_manager_func_ptr, 1)) {
+                        SPDLOG_ERROR("Failed to find GetRenderTargetManager vtable index, a crash is imminent");
+                        return false;
+                    }
 
-                if (sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "33 C0") || (!uses_33_c0 && sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "31 C0"))) {
-                    const auto distance_from_rendertexture_fn = render_target_manager_vtable_index - rendertexture_fn_vtable_index;
+                    if (sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "33 C0") || (!uses_33_c0 && sdk::is_vfunc_pattern(*(uintptr_t*)get_render_target_manager_func_ptr, "31 C0"))) {
+                        const auto distance_from_rendertexture_fn = render_target_manager_vtable_index - rendertexture_fn_vtable_index;
 
-                    // means it's 4.17 I think. 12 means 4.11.
-                    if (distance_from_rendertexture_fn == 10 || distance_from_rendertexture_fn == 11 || distance_from_rendertexture_fn == 12) {
-                        is_4_11 = distance_from_rendertexture_fn == 12;
-                        m_rendertarget_manager_embedded_in_stereo_device = true;
-                        SPDLOG_INFO("Render target manager appears to be directly embedded in the stereo device vtable");
+                        // means it's 4.17 I think. 12 means 4.11.
+                        if (distance_from_rendertexture_fn == 10 || distance_from_rendertexture_fn == 11 || distance_from_rendertexture_fn == 12) {
+                            is_4_11 = distance_from_rendertexture_fn == 12;
+                            m_rendertarget_manager_embedded_in_stereo_device = true;
+                            SPDLOG_INFO("Render target manager appears to be directly embedded in the stereo device vtable");
+                        } else {
+                            // Now this may potentially be the correct index, but we're not quite done yet.
+                            // On 4.19 (and possibly others), the index is 1 higher than it should be.
+                            // We can tell by checking how many functions in front of this index return null.
+                            // if there are two functions in front of this index that return null, we need to add 1 to the index.
+                            SPDLOG_INFO("Found potential GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
+                            SPDLOG_INFO("Double checking GetRenderTargetManager index...");
+
+                            int32_t count = 0;
+                            for (auto i = render_target_manager_vtable_index + 1; i < render_target_manager_vtable_index + 5; ++i) {
+                                const auto addr_of_func = (uintptr_t)&((uintptr_t*)vtable)[i];
+                                const auto func = ((uintptr_t*)vtable)[i];
+
+                                if (func == 0 || IsBadReadPtr((void*)func, 1)) {
+                                    break;
+                                }
+
+                                // Make sure we didn't cross over into another vtable's boundaries.
+                                const auto module_within = utility::get_module_within(addr_of_func);
+
+                                if (module_within && utility::scan_displacement_reference(*module_within, addr_of_func)) {
+                                    SPDLOG_INFO("Crossed over into another vtable's boundaries, aborting double check");
+                                    SPDLOG_INFO("Reached end of double check at index {}, {} appears to be the correct index.", i, render_target_manager_vtable_index);
+                                    break;
+                                }
+
+                                if (!sdk::is_vfunc_pattern(func, "33 C0") && !sdk::is_vfunc_pattern(func, "31 C0")) {
+                                    SPDLOG_INFO("Reached end of double check at index {}, {} appears to be the correct index.", i, render_target_manager_vtable_index);
+                                    break;
+                                }
+
+                                if (++count >= 2) {
+                                    ++render_target_manager_vtable_index;
+                                    get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
+
+                                    SPDLOG_INFO("Adjusted GetRenderTargetManager index to {}", render_target_manager_vtable_index);
+                                    break;
+                                }
+                            }
+
+                            SPDLOG_INFO("Distance: {}", distance_from_rendertexture_fn);
+                        }
+
+                        break;
                     } else {
-                        // Now this may potentially be the correct index, but we're not quite done yet.
-                        // On 4.19 (and possibly others), the index is 1 higher than it should be.
-                        // We can tell by checking how many functions in front of this index return null.
-                        // if there are two functions in front of this index that return null, we need to add 1 to the index.
-                        SPDLOG_INFO("Found potential GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
-                        SPDLOG_INFO("Double checking GetRenderTargetManager index...");
-
-                        int32_t count = 0;
-                        for (auto i = render_target_manager_vtable_index + 1; i < render_target_manager_vtable_index + 5; ++i) {
-                            const auto addr_of_func = (uintptr_t)&((uintptr_t*)vtable)[i];
-                            const auto func = ((uintptr_t*)vtable)[i];
-
-                            if (func == 0 || IsBadReadPtr((void*)func, 1)) {
+                        try {
+                            using GetRenderTargetManagerFn = IStereoRenderTargetManager* (*)(void*, void*, void*, void*, void*, void*, void*, void*);
+                            const auto func = (GetRenderTargetManagerFn)(*get_render_target_manager_func_ptr);
+        
+                            // On UE5.5+ FFakeStereoRendering has a valid GetRenderTargetManager that doesn't return null.
+                            if (!is_4_18_or_lower && func(og_vtable.data(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == (IStereoRenderTargetManager*)&og_vtable[sizeof(void*)]) {
+                                m_uses_old_rendertarget_manager = false; // nope
+                                SPDLOG_INFO("Found UE5.5+ variant of GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
+                                SPDLOG_INFO("GetRenderTargetManager function at index {} appears to be valid.", render_target_manager_vtable_index);
                                 break;
                             }
-
-                            // Make sure we didn't cross over into another vtable's boundaries.
-                            const auto module_within = utility::get_module_within(addr_of_func);
-
-                            if (module_within && utility::scan_displacement_reference(*module_within, addr_of_func)) {
-                                SPDLOG_INFO("Crossed over into another vtable's boundaries, aborting double check");
-                                SPDLOG_INFO("Reached end of double check at index {}, {} appears to be the correct index.", i, render_target_manager_vtable_index);
-                                break;
-                            }
-
-                            if (!sdk::is_vfunc_pattern(func, "33 C0") && !sdk::is_vfunc_pattern(func, "31 C0")) {
-                                SPDLOG_INFO("Reached end of double check at index {}, {} appears to be the correct index.", i, render_target_manager_vtable_index);
-                                break;
-                            }
-
-                            if (++count >= 2) {
-                                ++render_target_manager_vtable_index;
-                                get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
-
-                                SPDLOG_INFO("Adjusted GetRenderTargetManager index to {}", render_target_manager_vtable_index);
-                                break;
-                            }
+                        } catch(...) {
+                            SPDLOG_WARN("Unknown exception while checking GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
                         }
-
-                        SPDLOG_INFO("Distance: {}", distance_from_rendertexture_fn);
-                    }
-
-                    break;
-                } else {
-                    try {
-                        using GetRenderTargetManagerFn = IStereoRenderTargetManager* (*)(void*, void*, void*, void*, void*, void*, void*, void*);
-                        const auto func = (GetRenderTargetManagerFn)(*get_render_target_manager_func_ptr);
-    
-                        // On UE5.5+ FFakeStereoRendering has a valid GetRenderTargetManager that doesn't return null.
-                        if (!is_4_18_or_lower && func(og_vtable.data(), nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == (IStereoRenderTargetManager*)&og_vtable[sizeof(void*)]) {
-                            m_uses_old_rendertarget_manager = false; // nope
-                            SPDLOG_INFO("Found UE5.5+ variant of GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
-                            SPDLOG_INFO("GetRenderTargetManager function at index {} appears to be valid.", render_target_manager_vtable_index);
-                            break;
-                        }
-                    } catch(...) {
-                        SPDLOG_WARN("Unknown exception while checking GetRenderTargetManager function at index {}", render_target_manager_vtable_index);
                     }
                 }
-            }
-        //} else {
-            //SPDLOG_INFO("GetRenderTargetManager function at index {} appears to be valid.", render_target_manager_vtable_index);
-        //}
+            //} else {
+                //SPDLOG_INFO("GetRenderTargetManager function at index {} appears to be valid.", render_target_manager_vtable_index);
+            //}
+        }
     
-        get_stereo_layers_func_ptr = (uintptr_t)(get_render_target_manager_func_ptr + sizeof(void*));
+        get_stereo_layers_func_ptr = (uintptr_t)(get_render_target_manager_func_ptr + 1);
 
         if (get_render_target_manager_func_ptr == 0) {
             SPDLOG_ERROR("Failed to find GetRenderTargetManager");
@@ -1416,24 +1424,23 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         SPDLOG_WARN("UE5.7: skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.");
     }
     
-    m_is_stereo_enabled_hook = std::make_unique<PointerHook>((void**)is_stereo_enabled_func_ptr, (void*)&is_stereo_enabled);
-
     // scan for GetDesiredNumberOfViews function, we use this function to perform AFR if needed
     SPDLOG_INFO("Searching for GetDesiredNumberOfViews function...");
     std::optional<uint32_t> get_desired_number_of_views_index{};
 
     for (auto i = 1; i < 20; ++i) {
         auto func_ptr = &((uintptr_t*)vtable)[i];
+        const auto og_func = ((uintptr_t*)og_vtable.data())[i];
 
-        if (IsBadReadPtr((void*)*func_ptr, sizeof(void*))) {
+        if (IsBadReadPtr((void*)og_func, sizeof(void*))) {
             SPDLOG_INFO("Could not locate GetDesiredNumberOfViews function, this is okay, not really needed");
             break;
         }
 
         // pretty consistent patterns
-        if (sdk::is_vfunc_pattern(*func_ptr, "0F B6 C2 FF C0 C3") ||
-            sdk::is_vfunc_pattern(*func_ptr, "33 C0 84 D2 0F 95 C0 FF C0 C3") || 
-            sdk::is_vfunc_pattern(*func_ptr, "84 D2 74 04 8B 41 ? C3 B8 01"))
+        if (sdk::is_vfunc_pattern(og_func, "0F B6 C2 FF C0 C3") ||
+            sdk::is_vfunc_pattern(og_func, "33 C0 84 D2 0F 95 C0 FF C0 C3") || 
+            sdk::is_vfunc_pattern(og_func, "84 D2 74 04 8B 41 ? C3 B8 01"))
         {
             SPDLOG_INFO("Found GetDesiredNumberOfViews function at index: {}", i);
             get_desired_number_of_views_index = i;
@@ -1441,6 +1448,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             break;
         }
     }
+
+    m_is_stereo_enabled_hook = std::make_unique<PointerHook>((void**)is_stereo_enabled_func_ptr, (void*)&is_stereo_enabled);
 
     // If double precision detected, it means it's >= UE 5.0.3
     if (m_has_double_precision && get_desired_number_of_views_index) {
