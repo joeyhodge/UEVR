@@ -916,6 +916,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     auto render_texture_render_thread_func = utility::find_virtual_function_from_string_ref(game, L"RenderTexture_RenderThread");
     const bool is_ue57 = is_ue_57();
     bool skip_render_target_manager_hooks = false;
+    bool rendertexture_index_forced = false;
+    size_t rendertexture_fn_vtable_index = 0;
+    size_t render_target_manager_vtable_index = 0;
+    uintptr_t* get_render_target_manager_func_ptr = nullptr;
+    uintptr_t get_stereo_layers_func_ptr = 0;
 
     // Seems more robust than simply just checking the vtable index.
     m_uses_old_rendertarget_manager = *stereo_view_offset_index <= 11 && !render_texture_render_thread_func;
@@ -924,8 +929,21 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
-            SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.");
-            skip_render_target_manager_hooks = true;
+            constexpr size_t kRenderTextureVtableIndexUE57 = 14;
+            const auto candidate = ((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
+
+            if (candidate != 0 &&
+                !IsBadReadPtr((void*)candidate, 1) &&
+                !sdk::is_vfunc_pattern(candidate, "33 C0") &&
+                !sdk::is_vfunc_pattern(candidate, "31 C0")) {
+                render_texture_render_thread_func = candidate;
+                rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57;
+                rendertexture_index_forced = true;
+                SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57, candidate);
+            } else {
+                SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found and vtable index {} invalid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.", kRenderTextureVtableIndexUE57);
+                skip_render_target_manager_hooks = true;
+            }
         } else {
             // Fallback scan to checking for the first non-default virtual function (<= 4.18)
             SPDLOG_INFO("Failed to find RenderTexture_RenderThread, falling back to first non-default virtual function");
@@ -954,24 +972,23 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         }
     }
 
-    size_t rendertexture_fn_vtable_index = 0;
-    size_t render_target_manager_vtable_index = 0;
-    uintptr_t* get_render_target_manager_func_ptr = nullptr;
-    uintptr_t get_stereo_layers_func_ptr = 0;
-
     if (!skip_render_target_manager_hooks) {
         SPDLOG_INFO("RenderTexture_RenderThread: {:x}", (uintptr_t)*render_texture_render_thread_func);
 
-        // Scan for the function pointer, it should be in the middle of the vtable.
-        auto rendertexture_fn_vtable_middle = utility::scan_ptr(vtable + ((stereo_projection_matrix_index + 2) * sizeof(void*)), 50 * sizeof(void*), *render_texture_render_thread_func);
+        if (!rendertexture_index_forced) {
+            // Scan for the function pointer, it should be in the middle of the vtable.
+            auto rendertexture_fn_vtable_middle = utility::scan_ptr(vtable + ((stereo_projection_matrix_index + 2) * sizeof(void*)), 50 * sizeof(void*), *render_texture_render_thread_func);
 
-        if (!rendertexture_fn_vtable_middle) {
-            SPDLOG_ERROR("Failed to find RenderTexture_RenderThread VTable Middle");
-            return false;
+            if (!rendertexture_fn_vtable_middle) {
+                SPDLOG_ERROR("Failed to find RenderTexture_RenderThread VTable Middle");
+                return false;
+            }
+
+            rendertexture_fn_vtable_index = (*rendertexture_fn_vtable_middle - vtable) / sizeof(uintptr_t);
+            SPDLOG_INFO("RenderTexture_RenderThread VTable Middle: {} {:x}", rendertexture_fn_vtable_index, (uintptr_t)*rendertexture_fn_vtable_middle);
+        } else {
+            SPDLOG_INFO("RenderTexture_RenderThread VTable Index (forced): {}", rendertexture_fn_vtable_index);
         }
-
-        rendertexture_fn_vtable_index = (*rendertexture_fn_vtable_middle - vtable) / sizeof(uintptr_t);
-        SPDLOG_INFO("RenderTexture_RenderThread VTable Middle: {} {:x}", rendertexture_fn_vtable_index, (uintptr_t)*rendertexture_fn_vtable_middle);
 
         render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1 + (2 * (size_t)is_4_18_or_lower);
 
