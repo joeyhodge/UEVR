@@ -930,13 +930,14 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
             constexpr size_t kRenderTextureVtableIndexUE57 = 14;
-            const auto candidate = ((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
+            auto* candidate_ptr = &((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
+            const auto candidate = *candidate_ptr;
 
             if (candidate != 0 &&
                 !IsBadReadPtr((void*)candidate, 1) &&
                 !sdk::is_vfunc_pattern(candidate, "33 C0") &&
                 !sdk::is_vfunc_pattern(candidate, "31 C0")) {
-                render_texture_render_thread_func = candidate;
+                render_texture_render_thread_func = candidate_ptr;
                 rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57;
                 rendertexture_index_forced = true;
                 SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57, candidate);
@@ -6807,6 +6808,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return nullptr;
     };
     auto viewport_info_rt = try_get_viewport_info_rt();
+    bool used_viewport_info_fallback = false;
 
     if (slate_resource == nullptr) {
         if (viewport_info_rt != nullptr) {
@@ -6875,6 +6877,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (!is_scene_tex_valid && viewport_info_rt != nullptr) {
         scene_tex = viewport_info_rt;
         is_scene_tex_valid = true;
+        used_viewport_info_fallback = true;
         if (rtm.get_render_target() == nullptr) {
             rtm.set_render_target(scene_tex);
         }
@@ -6962,10 +6965,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
     
+    const bool skip_swap = is_ue57 && used_viewport_info_fallback;
+    if (skip_swap) {
+        SPDLOG_WARN_ONCE("UE5.7: skipping Slate texture swap (viewport info fallback in use)");
+    }
+
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
     const auto old_texture = slate_resource->get_mutable_resource();
-    slate_resource->get_mutable_resource() = ui_target;
+    if (!skip_swap) {
+        slate_resource->get_mutable_resource() = ui_target;
+    }
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
     // are wildly different between UE versions.
@@ -6978,7 +6988,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     // Restore the old texture.
-    slate_resource->get_mutable_resource() = old_texture;
+    if (!skip_swap) {
+        slate_resource->get_mutable_resource() = old_texture;
+    }
 
     for (auto& mod : mods) {
         mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
