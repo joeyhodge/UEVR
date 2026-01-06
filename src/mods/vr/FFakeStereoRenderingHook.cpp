@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <future>
 #include <mutex>
+#include <type_traits>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -927,8 +928,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
-            // UE5.7 source vtable puts FFakeStereoRenderingDevice::RenderTexture_RenderThread at index 13.
-            constexpr size_t kRenderTextureVtableIndexUE57 = 13;
+            // UE5.7 source vtable puts FRHI RenderTexture_RenderThread at index 15 (FRDG overload is 14).
+            constexpr size_t kRenderTextureVtableIndexUE57 = 15;
             const auto candidate = reinterpret_cast<uintptr_t>(
                 reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57]);
 
@@ -980,7 +981,24 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
         if (!rendertexture_index_forced) {
             // Scan for the function pointer, it should be in the middle of the vtable.
-            auto rendertexture_fn_vtable_middle = utility::scan_ptr(vtable + ((stereo_projection_matrix_index + 2) * sizeof(void*)), 50 * sizeof(void*), *render_texture_render_thread_func);
+            const auto rendertexture_fn_vtable_middle_raw = utility::scan_ptr(
+                vtable + ((stereo_projection_matrix_index + 2) * sizeof(void*)),
+                50 * sizeof(void*),
+                *render_texture_render_thread_func);
+            std::optional<size_t> rendertexture_fn_vtable_middle{};
+
+            if constexpr (std::is_pointer_v<std::decay_t<decltype(rendertexture_fn_vtable_middle_raw)>>) {
+                if (rendertexture_fn_vtable_middle_raw != nullptr) {
+                    rendertexture_fn_vtable_middle = reinterpret_cast<size_t>(rendertexture_fn_vtable_middle_raw);
+                }
+            } else if (rendertexture_fn_vtable_middle_raw) {
+                using raw_value_t = std::decay_t<decltype(*rendertexture_fn_vtable_middle_raw)>;
+                if constexpr (std::is_pointer_v<raw_value_t>) {
+                    rendertexture_fn_vtable_middle = reinterpret_cast<size_t>(*rendertexture_fn_vtable_middle_raw);
+                } else {
+                    rendertexture_fn_vtable_middle = static_cast<size_t>(*rendertexture_fn_vtable_middle_raw);
+                }
+            }
 
             if (!rendertexture_fn_vtable_middle) {
                 SPDLOG_ERROR("Failed to find RenderTexture_RenderThread VTable Middle");
@@ -988,14 +1006,32 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             }
 
             rendertexture_fn_vtable_index = (*rendertexture_fn_vtable_middle - vtable) / sizeof(uintptr_t);
+
+            if (is_ue57) {
+                const auto frhi_index = rendertexture_fn_vtable_index + 1;
+                const auto frhi_candidate = reinterpret_cast<uintptr_t>(reinterpret_cast<void**>(vtable)[frhi_index]);
+
+                if (frhi_candidate != 0 &&
+                    !IsBadReadPtr((void*)frhi_candidate, 1) &&
+                    !sdk::is_vfunc_pattern(frhi_candidate, "33 C0") &&
+                    !sdk::is_vfunc_pattern(frhi_candidate, "31 C0"))
+                {
+                    rendertexture_fn_vtable_index = frhi_index;
+                    render_texture_render_thread_func = frhi_candidate;
+                    SPDLOG_INFO("UE5.7: using FRHI RenderTexture_RenderThread vtable index {} ({:x})", rendertexture_fn_vtable_index, frhi_candidate);
+                } else {
+                    SPDLOG_WARN("UE5.7: FRHI RenderTexture_RenderThread vtable index {} invalid; keeping index {}", frhi_index, rendertexture_fn_vtable_index);
+                }
+            }
+
             SPDLOG_INFO("RenderTexture_RenderThread VTable Middle: {} {:x}", rendertexture_fn_vtable_index, (uintptr_t)*rendertexture_fn_vtable_middle);
         } else {
             SPDLOG_INFO("RenderTexture_RenderThread VTable Index (forced): {}", rendertexture_fn_vtable_index);
         }
 
         if (is_ue57) {
-            // UE5.7 has two RenderTexture_RenderThread entries (FRDG + FRHI), so GetRenderTargetManager is +2.
-            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 2;
+            // UE5.7 has two RenderTexture_RenderThread entries (FRDG + FRHI); GetRenderTargetManager is after FRHI.
+            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1;
             get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
             SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
         } else {
