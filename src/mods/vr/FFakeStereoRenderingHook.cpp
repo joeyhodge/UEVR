@@ -930,14 +930,13 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
             constexpr size_t kRenderTextureVtableIndexUE57 = 14;
-            auto* candidate_ptr = &((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
-            const auto candidate = *candidate_ptr;
+            const auto candidate = ((uintptr_t*)vtable)[kRenderTextureVtableIndexUE57];
 
             if (candidate != 0 &&
                 !IsBadReadPtr((void*)candidate, 1) &&
                 !sdk::is_vfunc_pattern(candidate, "33 C0") &&
                 !sdk::is_vfunc_pattern(candidate, "31 C0")) {
-                render_texture_render_thread_func = candidate_ptr;
+                render_texture_render_thread_func = candidate;
                 rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57;
                 rendertexture_index_forced = true;
                 SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57, candidate);
