@@ -916,6 +916,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     auto render_texture_render_thread_func = utility::find_virtual_function_from_string_ref(game, L"RenderTexture_RenderThread");
     const bool is_ue57 = is_ue_57();
+    constexpr size_t kRenderTextureVtableIndexUE57FRDG = 14;
+    constexpr size_t kRenderTextureVtableIndexUE57FRHI = 15;
     bool skip_render_target_manager_hooks = false;
     bool rendertexture_index_forced = false;
     size_t rendertexture_fn_vtable_index = 0;
@@ -929,21 +931,20 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
             // UE5.7 source vtable puts FRHI RenderTexture_RenderThread at index 15 (FRDG overload is 14).
-            constexpr size_t kRenderTextureVtableIndexUE57 = 15;
             const auto candidate = reinterpret_cast<uintptr_t>(
-                reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57]);
+                reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRHI]);
 
             if (candidate != 0 &&
                 !IsBadReadPtr((void*)candidate, 1) &&
                 !sdk::is_vfunc_pattern(candidate, "33 C0") &&
                 !sdk::is_vfunc_pattern(candidate, "31 C0")) {
                 render_texture_render_thread_func = candidate;
-                rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57;
+                rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRHI;
                 rendertexture_index_forced = true;
                 m_uses_old_rendertarget_manager = false;
-                SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57, candidate);
+                SPDLOG_INFO("UE5.7: using RenderTexture_RenderThread vtable index {} ({:x})", kRenderTextureVtableIndexUE57FRHI, candidate);
             } else {
-                SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found and vtable index {} invalid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.", kRenderTextureVtableIndexUE57);
+                SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found and vtable index {} invalid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.", kRenderTextureVtableIndexUE57FRHI);
                 skip_render_target_manager_hooks = true;
             }
         } else {
@@ -994,19 +995,23 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             rendertexture_fn_vtable_index = (*rendertexture_fn_vtable_middle - vtable) / sizeof(uintptr_t);
 
             if (is_ue57) {
-                const auto frhi_index = rendertexture_fn_vtable_index + 1;
-                const auto frhi_candidate = reinterpret_cast<uintptr_t>(reinterpret_cast<void**>(vtable)[frhi_index]);
-
-                if (frhi_candidate != 0 &&
-                    !IsBadReadPtr((void*)frhi_candidate, 1) &&
-                    !sdk::is_vfunc_pattern(frhi_candidate, "33 C0") &&
-                    !sdk::is_vfunc_pattern(frhi_candidate, "31 C0"))
-                {
-                    rendertexture_fn_vtable_index = frhi_index;
-                    render_texture_render_thread_func = frhi_candidate;
-                    SPDLOG_INFO("UE5.7: using FRHI RenderTexture_RenderThread vtable index {} ({:x})", rendertexture_fn_vtable_index, frhi_candidate);
+                if (rendertexture_fn_vtable_index == kRenderTextureVtableIndexUE57FRHI) {
+                    SPDLOG_INFO("UE5.7: RenderTexture_RenderThread already points at FRHI index {}", rendertexture_fn_vtable_index);
                 } else {
-                    SPDLOG_WARN("UE5.7: FRHI RenderTexture_RenderThread vtable index {} invalid; keeping index {}", frhi_index, rendertexture_fn_vtable_index);
+                    const auto frhi_index = rendertexture_fn_vtable_index + 1;
+                    const auto frhi_candidate = reinterpret_cast<uintptr_t>(reinterpret_cast<void**>(vtable)[frhi_index]);
+
+                    if (frhi_candidate != 0 &&
+                        !IsBadReadPtr((void*)frhi_candidate, 1) &&
+                        !sdk::is_vfunc_pattern(frhi_candidate, "33 C0") &&
+                        !sdk::is_vfunc_pattern(frhi_candidate, "31 C0"))
+                    {
+                        rendertexture_fn_vtable_index = frhi_index;
+                        render_texture_render_thread_func = frhi_candidate;
+                        SPDLOG_INFO("UE5.7: using FRHI RenderTexture_RenderThread vtable index {} ({:x})", rendertexture_fn_vtable_index, frhi_candidate);
+                    } else {
+                        SPDLOG_WARN("UE5.7: FRHI RenderTexture_RenderThread vtable index {} invalid; keeping index {}", frhi_index, rendertexture_fn_vtable_index);
+                    }
                 }
             }
 
@@ -1017,9 +1022,14 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
         if (is_ue57) {
             // UE5.7 has two RenderTexture_RenderThread entries (FRDG + FRHI); GetRenderTargetManager is after FRHI.
-            render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1;
+            if (rendertexture_fn_vtable_index == kRenderTextureVtableIndexUE57FRDG) {
+                render_target_manager_vtable_index = rendertexture_fn_vtable_index + 2;
+                SPDLOG_INFO("UE5.7: RenderTexture_RenderThread at FRDG index {}, using GetRenderTargetManager index {}", rendertexture_fn_vtable_index, render_target_manager_vtable_index);
+            } else {
+                render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1;
+                SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
+            }
             get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
-            SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
         } else {
             render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1 + (2 * (size_t)is_4_18_or_lower);
 
