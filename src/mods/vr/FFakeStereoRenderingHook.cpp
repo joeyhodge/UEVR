@@ -981,24 +981,10 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
         if (!rendertexture_index_forced) {
             // Scan for the function pointer, it should be in the middle of the vtable.
-            const auto rendertexture_fn_vtable_middle_raw = utility::scan_ptr(
+            const auto rendertexture_fn_vtable_middle = utility::scan_ptr(
                 vtable + ((stereo_projection_matrix_index + 2) * sizeof(void*)),
                 50 * sizeof(void*),
                 *render_texture_render_thread_func);
-            std::optional<size_t> rendertexture_fn_vtable_middle{};
-
-            if constexpr (std::is_pointer_v<std::decay_t<decltype(rendertexture_fn_vtable_middle_raw)>>) {
-                if (rendertexture_fn_vtable_middle_raw != nullptr) {
-                    rendertexture_fn_vtable_middle = reinterpret_cast<size_t>(rendertexture_fn_vtable_middle_raw);
-                }
-            } else if (rendertexture_fn_vtable_middle_raw) {
-                using raw_value_t = std::decay_t<decltype(*rendertexture_fn_vtable_middle_raw)>;
-                if constexpr (std::is_pointer_v<raw_value_t>) {
-                    rendertexture_fn_vtable_middle = reinterpret_cast<size_t>(*rendertexture_fn_vtable_middle_raw);
-                } else {
-                    rendertexture_fn_vtable_middle = static_cast<size_t>(*rendertexture_fn_vtable_middle_raw);
-                }
-            }
 
             if (!rendertexture_fn_vtable_middle) {
                 SPDLOG_ERROR("Failed to find RenderTexture_RenderThread VTable Middle");
