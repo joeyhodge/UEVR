@@ -925,6 +925,32 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     uintptr_t* get_render_target_manager_func_ptr = nullptr;
     uintptr_t get_stereo_layers_func_ptr = 0;
 
+    const auto looks_like_get_render_target_manager = [](uintptr_t func) -> bool {
+        if (func == 0 || IsBadReadPtr((void*)func, 32)) {
+            return false;
+        }
+
+        const auto bytes = reinterpret_cast<const uint8_t*>(func);
+        bool has_lea_this_plus_8 = false;
+        bool has_ret = false;
+
+        for (size_t i = 0; i + 3 < 32; ++i) {
+            if (bytes[i] == 0x48 && bytes[i + 1] == 0x8D && bytes[i + 2] == 0x41 && bytes[i + 3] == 0x08) {
+                has_lea_this_plus_8 = true;
+                break;
+            }
+        }
+
+        for (size_t i = 0; i < 32; ++i) {
+            if (bytes[i] == 0xC3 || (bytes[i] == 0xC2 && i + 2 < 32 && bytes[i + 1] == 0x00 && bytes[i + 2] == 0x00)) {
+                has_ret = true;
+                break;
+            }
+        }
+
+        return has_lea_this_plus_8 && has_ret;
+    };
+
     // Seems more robust than simply just checking the vtable index.
     m_uses_old_rendertarget_manager = *stereo_view_offset_index <= 11 && !render_texture_render_thread_func;
 
@@ -1030,6 +1056,13 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 SPDLOG_INFO("UE5.7: using GetRenderTargetManager vtable index {}", render_target_manager_vtable_index);
             }
             get_render_target_manager_func_ptr = &((uintptr_t*)vtable)[render_target_manager_vtable_index];
+            const auto get_rtm_candidate = get_render_target_manager_func_ptr != nullptr ? *get_render_target_manager_func_ptr : 0;
+
+            if (!looks_like_get_render_target_manager(get_rtm_candidate)) {
+                SPDLOG_WARN("UE5.7: GetRenderTargetManager vtable entry at index {} does not look valid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.",
+                    render_target_manager_vtable_index);
+                skip_render_target_manager_hooks = true;
+            }
         } else {
             render_target_manager_vtable_index = rendertexture_fn_vtable_index + 1 + (2 * (size_t)is_4_18_or_lower);
 
@@ -1124,20 +1157,24 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             //}
         }
     
-        get_stereo_layers_func_ptr = (uintptr_t)(get_render_target_manager_func_ptr + 1);
+        if (skip_render_target_manager_hooks) {
+            SPDLOG_WARN("UE5.7: skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.");
+        } else {
+            get_stereo_layers_func_ptr = (uintptr_t)(get_render_target_manager_func_ptr + 1);
 
-        if (get_render_target_manager_func_ptr == 0) {
-            SPDLOG_ERROR("Failed to find GetRenderTargetManager");
-            return false;
+            if (get_render_target_manager_func_ptr == 0) {
+                SPDLOG_ERROR("Failed to find GetRenderTargetManager");
+                return false;
+            }
+
+            if (get_stereo_layers_func_ptr == 0) {
+                SPDLOG_ERROR("Failed to find GetStereoLayers");
+                return false;
+            }
+
+            SPDLOG_INFO("GetRenderTargetManagerptr: {:x}", (uintptr_t)get_render_target_manager_func_ptr);
+            SPDLOG_INFO("GetStereoLayersptr: {:x}", (uintptr_t)get_stereo_layers_func_ptr);
         }
-
-        if (get_stereo_layers_func_ptr == 0) {
-            SPDLOG_ERROR("Failed to find GetStereoLayers");
-            return false;
-        }
-
-        SPDLOG_INFO("GetRenderTargetManagerptr: {:x}", (uintptr_t)get_render_target_manager_func_ptr);
-        SPDLOG_INFO("GetStereoLayersptr: {:x}", (uintptr_t)get_stereo_layers_func_ptr);
     }
 
     const auto adjust_view_rect_distance = is_4_18_or_lower ? 2 : 3;
