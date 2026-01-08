@@ -9599,6 +9599,13 @@ bool VRRenderTargetManager_57::AllocateRenderTargetTextures(uint32_t SizeX, uint
     return this->allocate_render_target_textures((uintptr_t)_ReturnAddress(), &OutTargetableTextures, &OutShaderResourceTextures);
 }
 
+bool VRRenderTargetManager_57::AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+    ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
+    FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples)
+{
+    return this->allocate_render_target_texture((uintptr_t)_ReturnAddress(), &OutTargetableTexture, &OutShaderResourceTexture);
+}
+
 bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
     ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
     FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples) {

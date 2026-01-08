@@ -270,9 +270,36 @@ public:
         return VRRenderTargetManager_Base::need_reallocate_view_target(Viewport);
     }
 
+    bool AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
+        FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples = 1) override;
+
     bool AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
         ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<TRefCountPtr<FRHITexture>>& OutTargetableTextures,
         TArray<TRefCountPtr<FRHITexture>>& OutShaderResourceTextures, uint32_t NumSamples = 1) override;
+
+    EPixelFormat GetActualColorSwapchainFormat() const override { return EPixelFormat::PF_Unknown; }
+    int32_t AcquireColorTexture() override { return 0; }
+    int32_t AcquireDepthTexture() override { return 0; }
+    bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutOutputFormat, EDisplayColorGamut& OutColorGamut, bool& OutHDR) override {
+        OutOutputFormat = EDisplayOutputFormat::DOF_Unknown;
+        OutColorGamut = EDisplayColorGamut::DCG_Unknown;
+        OutHDR = false;
+        return false;
+    }
+    bool ReconfigureForShaderPlatform(EShaderPlatform ShaderPlatform) override { return false; }
+    bool GetRecommendedMotionVectorTextureSize(FIntPoint& OutTextureSize) override {
+        OutTextureSize = FIntPoint{0, 0};
+        return false;
+    }
+    bool GetMotionVectorTexture(uint32_t Index, const FIntPoint& RenderSize, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, TRefCountPtr<FRHITexture>& OutTexture, uint32_t NumSamples = 1) override {
+        return false;
+    }
+    bool GetMotionVectorDepthTexture(uint32_t Index, const FIntPoint& RenderSize, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, TRefCountPtr<FRHITexture>& OutTexture, uint32_t NumSamples = 1) override {
+        return false;
+    }
 };
 
 struct VRRenderTargetManager_418 : IStereoRenderTargetManager_418, VRRenderTargetManager_Base {
