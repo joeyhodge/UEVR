@@ -141,11 +141,11 @@ void UObjectHook::hook() {
     for (auto i = 0; i < uobjectarray->get_object_count(); ++i) {
         auto object = uobjectarray->get_object(i);
 
-        if (object == nullptr || object->object == nullptr) {
+        if (object == nullptr || object->get_object() == nullptr) {
             continue;
         }
 
-        add_new_object(object->object);
+        add_new_object(object->get_object());
     }
 
     SPDLOG_INFO("[UObjectHook] Added {} existing objects", m_objects.size());
@@ -181,8 +181,8 @@ void UObjectHook::hook_process_event() {
     for (auto i = 0; i < uobjectarray->get_object_count(); ++i) {
         const auto object = uobjectarray->get_object(i);
 
-        if (object != nullptr && object->object != nullptr) {
-            first_obj = (sdk::UObject*)object->object;
+        if (object != nullptr && object->get_object() != nullptr) {
+            first_obj = (sdk::UObject*)object->get_object();
             break;
         }
     }

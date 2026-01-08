@@ -40,7 +40,7 @@ UEVR_UObjectHandle get_object(UEVR_UObjectArrayHandle array, int index) {
         return nullptr;
     }
 
-    return (UEVR_UObjectHandle)item->object;
+    return (UEVR_UObjectHandle)item->get_object();
 }
 
 // messed up naming, I know
