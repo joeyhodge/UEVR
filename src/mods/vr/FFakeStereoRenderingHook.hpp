@@ -585,6 +585,8 @@ private:
     safetyhook::MidHook m_calculate_stereo_projection_matrix_post_hook{};
     safetyhook::MidHook m_get_projection_data_pre_hook{};
 
+    using GetRenderTargetManagerFn = IStereoRenderTargetManager* (*)(FFakeStereoRendering*);
+
     std::unique_ptr<PointerHook> m_is_stereo_enabled_hook{};
     std::unique_ptr<PointerHook> m_get_render_target_manager_hook{};
     std::unique_ptr<PointerHook> m_get_stereo_layers_hook{};
@@ -595,6 +597,7 @@ private:
     std::unique_ptr<PointerHook> m_update_viewport_rhi_hook{};
     std::unique_ptr<PointerHook> m_viewport_get_render_target_texture_hook{};
     std::unique_ptr<PointerHook> m_viewport_destructor_hook{};
+    GetRenderTargetManagerFn m_get_render_target_manager_original{nullptr};
 
     std::unique_ptr<IXRTrackingSystemHook> m_tracking_system_hook{};
 

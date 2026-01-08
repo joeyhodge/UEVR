@@ -1303,6 +1303,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // so it's not feasible to just detour it, we need to replace the pointer in the vtable.
     if (!skip_render_target_manager_hooks) {
         if (!m_rendertarget_manager_embedded_in_stereo_device) {
+            m_get_render_target_manager_original =
+                reinterpret_cast<FFakeStereoRenderingHook::GetRenderTargetManagerFn>(*get_render_target_manager_func_ptr);
             m_render_texture_render_thread_hook = safetyhook::create_inline((void*)*render_texture_render_thread_func, render_texture_render_thread);
 
             if (!m_render_texture_render_thread_hook) {
@@ -5934,14 +5936,22 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     SPDLOG_INFO_ONCE("get render target manager hook called!");
 #endif
 
-    if (!g_framework->is_game_data_intialized()) {
+    const auto fallback_to_original = [&]() -> IStereoRenderTargetManager* {
+        if (g_hook->m_get_render_target_manager_original != nullptr) {
+            return g_hook->m_get_render_target_manager_original(stereo);
+        }
+
         return nullptr;
+    };
+
+    if (!g_framework->is_game_data_intialized()) {
+        return is_ue_57() ? fallback_to_original() : nullptr;
     }
 
     auto vr = VR::get();
 
     if (vr->is_stereo_emulation_enabled() || vr->is_extreme_compatibility_mode_enabled()) {
-        return nullptr;
+        return is_ue_57() ? fallback_to_original() : nullptr;
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
@@ -5961,7 +5971,7 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
         return &g_hook->m_rtm;
     }
 
-    return nullptr;
+    return is_ue_57() ? fallback_to_original() : nullptr;
 }
 
 IStereoLayers* FFakeStereoRenderingHook::get_stereo_layers_hook(FFakeStereoRendering* stereo) {
