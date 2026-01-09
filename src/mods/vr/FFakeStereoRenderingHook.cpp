@@ -69,6 +69,7 @@
 //#define FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
 
 FFakeStereoRenderingHook* g_hook = nullptr;
+static safetyhook::InlineHook* g_render_texture_render_thread_hook_ptr = nullptr;
 uint32_t g_frame_count{};
 
 namespace {
@@ -177,6 +178,7 @@ bool is_ue_57() {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
+    g_render_texture_render_thread_hook_ptr = &m_render_texture_render_thread_hook;
     setup_options();
 }
 
@@ -5821,8 +5823,8 @@ static void call_original_frhi(void* context) {
         return;
     }
 
-    if (g_hook->m_render_texture_render_thread_hook) {
-        g_hook->m_render_texture_render_thread_hook->call<void>(
+    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
+        g_render_texture_render_thread_hook_ptr->call<void>(
             ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
     }
 }
@@ -5833,8 +5835,8 @@ static void call_original_frdg(void* context) {
         return;
     }
 
-    if (g_hook->m_render_texture_render_thread_hook) {
-        g_hook->m_render_texture_render_thread_hook->call<void>(
+    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
+        g_render_texture_render_thread_hook_ptr->call<void>(
             ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size);
     }
 }
@@ -5850,11 +5852,11 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         }
     };
 
-    if (g_hook->m_render_texture_render_thread_hook) {
+    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
         static bool logged_target = false;
         if (!logged_target) {
             logged_target = true;
-            const auto target_address = (uintptr_t)g_hook->m_render_texture_render_thread_hook.target_address();
+            const auto target_address = (uintptr_t)g_render_texture_render_thread_hook_ptr->target_address();
             const auto target_module = utility::get_module_within((void*)target_address).value_or(nullptr);
             const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
 
