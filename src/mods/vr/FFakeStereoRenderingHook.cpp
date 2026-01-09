@@ -5676,10 +5676,111 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
     FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) 
 {
     (void)window_size;
-    if (!g_framework->is_game_data_intialized()) {
+    const auto call_original = [&]() {
         if (g_hook->m_render_texture_render_thread_hook) {
             g_hook->m_render_texture_render_thread_hook->call<void>(stereo, rhi_command_list, backbuffer, src_texture, window_size);
         }
+    };
+
+    const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
+        if (ptr == nullptr) {
+            return false;
+        }
+
+        const auto addr = (uintptr_t)ptr;
+        if (addr < 0x10000) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        return !IsBadReadPtr(ptr, size);
+    };
+
+    const auto is_executable_ptr = [](const void* ptr) -> bool {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (ptr == nullptr || VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        constexpr DWORD kExecFlags = PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+        return (mbi.Protect & kExecFlags) != 0;
+    };
+
+    if (g_hook->m_render_texture_render_thread_hook) {
+        static bool logged_target = false;
+        if (!logged_target) {
+            logged_target = true;
+            const auto target_address = (uintptr_t)g_hook->m_render_texture_render_thread_hook.target_address();
+            const auto target_module = utility::get_module_within((void*)target_address).value_or(nullptr);
+            const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
+
+            if (!is_executable_ptr((void*)target_address)) {
+                SPDLOG_WARN("RenderTexture_RenderThread hook target not executable: {:x}", target_address);
+            }
+
+            if (target_module == nullptr) {
+                SPDLOG_WARN("RenderTexture_RenderThread hook target not in module: {:x}", target_address);
+            } else {
+                SPDLOG_INFO("RenderTexture_RenderThread hook target module: {:x} (+{:x})", (uintptr_t)target_module,
+                    target_address - (uintptr_t)target_module);
+            }
+
+            if (uevr_module != nullptr && target_module == uevr_module) {
+                SPDLOG_WARN("RenderTexture_RenderThread hook target points inside UEVR module: {:x}", target_address);
+            }
+        }
+    }
+
+    const auto is_valid_cmd_list = [&](FRHICommandListImmediate* cmd) -> bool {
+        if (!is_readable_ptr(cmd, sizeof(void*))) {
+            return false;
+        }
+
+        auto vtable = *(void***)cmd;
+        if (!is_readable_ptr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+        const auto vtable_first_module = utility::get_module_within(((void**)vtable)[0]).value_or(nullptr);
+
+        return vtable_module != nullptr && vtable_first_module != nullptr;
+    };
+
+    if (!is_valid_cmd_list(rhi_command_list)) {
+        SPDLOG_WARN_ONCE("RenderTexture_RenderThread: invalid FRHICommandListImmediate {:x} (ret {:x})",
+            (uintptr_t)rhi_command_list, (uintptr_t)_ReturnAddress());
+        call_original();
+        return;
+    } else {
+        static bool logged_cmd_list = false;
+        if (!logged_cmd_list) {
+            logged_cmd_list = true;
+            auto vtable = *(void***)rhi_command_list;
+            const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+            const auto vtable_first = ((void**)vtable)[0];
+            const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+
+            SPDLOG_INFO("RenderTexture_RenderThread cmdlist {:x} vtable {:x} (mod {:x}) first {:x} (mod {:x})",
+                (uintptr_t)rhi_command_list, (uintptr_t)vtable, (uintptr_t)vtable_module, (uintptr_t)vtable_first,
+                (uintptr_t)vtable_first_module);
+        }
+    }
+
+    if (!g_framework->is_game_data_intialized()) {
+        call_original();
         return;
     }
 
