@@ -921,6 +921,10 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     bool skip_render_target_manager_hooks = false;
     bool rendertexture_index_forced = false;
     bool rendertexture_is_frdg = false;
+    uintptr_t rendertexture_frdg_candidate = 0;
+    uintptr_t rendertexture_frhi_candidate = 0;
+    bool rendertexture_frdg_valid = false;
+    bool rendertexture_frhi_valid = false;
     size_t rendertexture_fn_vtable_index = 0;
     size_t render_target_manager_vtable_index = 0;
     uintptr_t* get_render_target_manager_func_ptr = nullptr;
@@ -955,6 +959,15 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         return !is_trivial_ret(func);
     };
 
+    if (is_ue57) {
+        rendertexture_frdg_candidate = reinterpret_cast<uintptr_t>(
+            reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRDG]);
+        rendertexture_frhi_candidate = reinterpret_cast<uintptr_t>(
+            reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRHI]);
+        rendertexture_frdg_valid = is_valid_render_texture_candidate(rendertexture_frdg_candidate);
+        rendertexture_frhi_valid = is_valid_render_texture_candidate(rendertexture_frhi_candidate);
+    }
+
     const auto looks_like_get_render_target_manager = [](uintptr_t func) -> bool {
         if (func == 0 || IsBadReadPtr((void*)func, 32)) {
             return false;
@@ -986,27 +999,22 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     if (!render_texture_render_thread_func) {
         if (is_ue57) {
-            const auto frdg_candidate = reinterpret_cast<uintptr_t>(
-                reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRDG]);
-            const auto frhi_candidate = reinterpret_cast<uintptr_t>(
-                reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRHI]);
-
-            if (is_valid_render_texture_candidate(frdg_candidate)) {
-                render_texture_render_thread_func = frdg_candidate;
-                rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRDG;
-                rendertexture_is_frdg = true;
-                rendertexture_index_forced = true;
-                m_uses_old_rendertarget_manager = false;
-                SPDLOG_INFO("UE5.7: using FRDG RenderTexture_RenderThread vtable index {} ({:x})",
-                    kRenderTextureVtableIndexUE57FRDG, frdg_candidate);
-            } else if (is_valid_render_texture_candidate(frhi_candidate)) {
-                render_texture_render_thread_func = frhi_candidate;
+            if (rendertexture_frhi_valid) {
+                render_texture_render_thread_func = rendertexture_frhi_candidate;
                 rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRHI;
                 rendertexture_is_frdg = false;
                 rendertexture_index_forced = true;
                 m_uses_old_rendertarget_manager = false;
                 SPDLOG_INFO("UE5.7: using FRHI RenderTexture_RenderThread vtable index {} ({:x})",
-                    kRenderTextureVtableIndexUE57FRHI, frhi_candidate);
+                    kRenderTextureVtableIndexUE57FRHI, rendertexture_frhi_candidate);
+            } else if (rendertexture_frdg_valid) {
+                render_texture_render_thread_func = rendertexture_frdg_candidate;
+                rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRDG;
+                rendertexture_is_frdg = true;
+                rendertexture_index_forced = true;
+                m_uses_old_rendertarget_manager = false;
+                SPDLOG_INFO("UE5.7: using FRDG RenderTexture_RenderThread vtable index {} ({:x})",
+                    kRenderTextureVtableIndexUE57FRDG, rendertexture_frdg_candidate);
             } else {
                 SPDLOG_WARN("UE5.7: RenderTexture_RenderThread string not found and vtable indices {} / {} invalid; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.",
                     kRenderTextureVtableIndexUE57FRDG, kRenderTextureVtableIndexUE57FRHI);
@@ -1060,33 +1068,26 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             rendertexture_fn_vtable_index = (*rendertexture_fn_vtable_middle - vtable) / sizeof(uintptr_t);
 
             if (is_ue57) {
-                const auto frdg_candidate = reinterpret_cast<uintptr_t>(
-                    reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRDG]);
-                const auto frhi_candidate = reinterpret_cast<uintptr_t>(
-                    reinterpret_cast<void**>(vtable)[kRenderTextureVtableIndexUE57FRHI]);
-                const bool frdg_valid = is_valid_render_texture_candidate(frdg_candidate);
-                const bool frhi_valid = is_valid_render_texture_candidate(frhi_candidate);
-
-                if (frdg_valid) {
-                    if (rendertexture_fn_vtable_index != kRenderTextureVtableIndexUE57FRDG) {
-                        SPDLOG_INFO("UE5.7: overriding RenderTexture_RenderThread index {} -> FRDG index {}",
-                            rendertexture_fn_vtable_index, kRenderTextureVtableIndexUE57FRDG);
-                    }
-                    rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRDG;
-                    render_texture_render_thread_func = frdg_candidate;
-                    rendertexture_is_frdg = true;
-                    SPDLOG_INFO("UE5.7: using FRDG RenderTexture_RenderThread vtable index {} ({:x})",
-                        rendertexture_fn_vtable_index, frdg_candidate);
-                } else if (frhi_valid) {
+                if (rendertexture_frhi_valid) {
                     if (rendertexture_fn_vtable_index != kRenderTextureVtableIndexUE57FRHI) {
                         SPDLOG_INFO("UE5.7: overriding RenderTexture_RenderThread index {} -> FRHI index {}",
                             rendertexture_fn_vtable_index, kRenderTextureVtableIndexUE57FRHI);
                     }
                     rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRHI;
-                    render_texture_render_thread_func = frhi_candidate;
+                    render_texture_render_thread_func = rendertexture_frhi_candidate;
                     rendertexture_is_frdg = false;
                     SPDLOG_INFO("UE5.7: using FRHI RenderTexture_RenderThread vtable index {} ({:x})",
-                        rendertexture_fn_vtable_index, frhi_candidate);
+                        rendertexture_fn_vtable_index, rendertexture_frhi_candidate);
+                } else if (rendertexture_frdg_valid) {
+                    if (rendertexture_fn_vtable_index != kRenderTextureVtableIndexUE57FRDG) {
+                        SPDLOG_INFO("UE5.7: overriding RenderTexture_RenderThread index {} -> FRDG index {}",
+                            rendertexture_fn_vtable_index, kRenderTextureVtableIndexUE57FRDG);
+                    }
+                    rendertexture_fn_vtable_index = kRenderTextureVtableIndexUE57FRDG;
+                    render_texture_render_thread_func = rendertexture_frdg_candidate;
+                    rendertexture_is_frdg = true;
+                    SPDLOG_INFO("UE5.7: using FRDG RenderTexture_RenderThread vtable index {} ({:x})",
+                        rendertexture_fn_vtable_index, rendertexture_frdg_candidate);
                 } else {
                     SPDLOG_WARN("UE5.7: no valid RenderTexture_RenderThread candidates at indices {} / {}; skipping RenderTexture_RenderThread/GetRenderTargetManager hooks.",
                         kRenderTextureVtableIndexUE57FRDG, kRenderTextureVtableIndexUE57FRHI);
@@ -1358,16 +1359,46 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         if (!m_rendertarget_manager_embedded_in_stereo_device) {
             m_get_render_target_manager_original =
                 reinterpret_cast<FFakeStereoRenderingHook::GetRenderTargetManagerFn>(*get_render_target_manager_func_ptr);
-            if (is_ue57 && rendertexture_is_frdg) {
-                m_render_texture_render_thread_hook = safetyhook::create_inline(
-                    (void*)*render_texture_render_thread_func, render_texture_render_thread_rdg);
+            if (is_ue57) {
+                if (rendertexture_frhi_valid) {
+                    m_render_texture_render_thread_hook = safetyhook::create_inline(
+                        (void*)rendertexture_frhi_candidate, render_texture_render_thread);
+                    if (!m_render_texture_render_thread_hook) {
+                        SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRHI hook");
+                    } else {
+                        SPDLOG_INFO("UE5.7: hooked FRHI RenderTexture_RenderThread at {:x}", rendertexture_frhi_candidate);
+                    }
+                }
+
+                if (rendertexture_frdg_valid) {
+                    if (rendertexture_frhi_valid) {
+                        m_render_texture_render_thread_rdg_hook = safetyhook::create_inline(
+                            (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
+                        if (!m_render_texture_render_thread_rdg_hook) {
+                            SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
+                        } else {
+                            SPDLOG_INFO("UE5.7: hooked FRDG RenderTexture_RenderThread at {:x}", rendertexture_frdg_candidate);
+                        }
+                    } else {
+                        m_render_texture_render_thread_hook = safetyhook::create_inline(
+                            (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
+                        if (!m_render_texture_render_thread_hook) {
+                            SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
+                        } else {
+                            SPDLOG_INFO("UE5.7: hooked FRDG RenderTexture_RenderThread at {:x}", rendertexture_frdg_candidate);
+                        }
+                    }
+                }
+
+                if (!m_render_texture_render_thread_hook && !m_render_texture_render_thread_rdg_hook) {
+                    SPDLOG_ERROR("Failed to create RenderTexture_RenderThread hooks");
+                }
             } else {
                 m_render_texture_render_thread_hook = safetyhook::create_inline(
                     (void*)*render_texture_render_thread_func, render_texture_render_thread);
-            }
-
-            if (!m_render_texture_render_thread_hook) {
-                SPDLOG_ERROR("Failed to create RenderTexture_RenderThread hook");
+                if (!m_render_texture_render_thread_hook) {
+                    SPDLOG_ERROR("Failed to create RenderTexture_RenderThread hook");
+                }
             }
 
             // Seems to exist in 4.18+
@@ -5753,6 +5784,14 @@ static safetyhook::InlineHook* get_render_texture_hook() {
     return g_hook->get_render_texture_render_thread_hook_ptr();
 }
 
+static safetyhook::InlineHook* get_render_texture_rdg_hook() {
+    if (g_hook == nullptr) {
+        return nullptr;
+    }
+
+    return g_hook->get_render_texture_render_thread_rdg_hook_ptr();
+}
+
 struct RenderTextureCallOriginalContextFRHI {
     FFakeStereoRendering* stereo{};
     FRHICommandListImmediate* rhi_command_list{};
@@ -5891,7 +5930,10 @@ static void call_original_frdg(void* context) {
         return;
     }
 
-    auto* hook = get_render_texture_hook();
+    auto* hook = get_render_texture_rdg_hook();
+    if (hook == nullptr || !*hook) {
+        hook = get_render_texture_hook();
+    }
     if (hook != nullptr && *hook) {
         (*hook).call<void>(
             ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size);
@@ -6113,6 +6155,11 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
 void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRendering* stereo, FRDGBuilder* graph_builder,
     FRDGTexture* backbuffer, FRDGTexture* src_texture, ::WindowSizeF window_size) 
 {
+#ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
+    SPDLOG_INFO("RenderTexture_RenderThread(FRDG) called!");
+#else
+    SPDLOG_INFO_ONCE("RenderTexture_RenderThread(FRDG) called!");
+#endif
     RenderTextureCallOriginalContextFRDG ctx{};
     ctx.stereo = stereo;
     ctx.graph_builder = graph_builder;

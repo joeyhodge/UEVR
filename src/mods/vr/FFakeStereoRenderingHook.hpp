@@ -540,6 +540,10 @@ public:
         return &m_render_texture_render_thread_hook;
     }
 
+    safetyhook::InlineHook* get_render_texture_render_thread_rdg_hook_ptr() {
+        return &m_render_texture_render_thread_rdg_hook;
+    }
+
     uintptr_t get_shadow_vtable_ptr() const {
         return m_shadow_vtable_ptr.load(std::memory_order_relaxed);
     }
@@ -612,6 +616,7 @@ private:
     std::unique_ptr<PointerHook> m_calculate_stereo_view_offset_hook_ptr{}; // some games have a short jmp which isnt supported by safetyhook right now so we use pointerhook
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
+    safetyhook::InlineHook m_render_texture_render_thread_rdg_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
