@@ -30,6 +30,16 @@ struct IStereoLayers;
 
 bool is_ue_57();
 
+struct WindowSizeD {
+    double x{};
+    double y{};
+};
+
+struct WindowSizeF {
+    float x{};
+    float y{};
+};
+
 namespace sdk {
 struct FSceneViewStateInterface;
 class FViewport;
@@ -525,14 +535,9 @@ private:
     static Matrix4x4f* calculate_stereo_projection_matrix(FFakeStereoRendering* stereo, Matrix4x4f* out, const int32_t view_index);
 
 public:
-    struct WindowSizeD {
-        double x{};
-        double y{};
-    };
-    struct WindowSizeF {
-        float x{};
-        float y{};
-    };
+    safetyhook::InlineHook* get_render_texture_render_thread_hook_ptr() {
+        return &m_render_texture_render_thread_hook;
+    }
 
 private:
     static void render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,

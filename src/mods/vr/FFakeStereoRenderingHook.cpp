@@ -69,7 +69,6 @@
 //#define FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
 
 FFakeStereoRenderingHook* g_hook = nullptr;
-static safetyhook::InlineHook* g_render_texture_render_thread_hook_ptr = nullptr;
 uint32_t g_frame_count{};
 
 namespace {
@@ -178,7 +177,6 @@ bool is_ue_57() {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
-    g_render_texture_render_thread_hook_ptr = &m_render_texture_render_thread_hook;
     setup_options();
 }
 
@@ -5740,9 +5738,15 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
 }
 
 namespace {
-using WindowSizeD = FFakeStereoRenderingHook::WindowSizeD;
-using WindowSizeF = FFakeStereoRenderingHook::WindowSizeF;
 using RenderTextureCallOriginalFn = void (*)(void*);
+
+static safetyhook::InlineHook* get_render_texture_hook() {
+    if (g_hook == nullptr) {
+        return nullptr;
+    }
+
+    return g_hook->get_render_texture_render_thread_hook_ptr();
+}
 
 struct RenderTextureCallOriginalContextFRHI {
     FFakeStereoRendering* stereo{};
@@ -5823,8 +5827,9 @@ static void call_original_frhi(void* context) {
         return;
     }
 
-    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
-        g_render_texture_render_thread_hook_ptr->call<void>(
+    auto* hook = get_render_texture_hook();
+    if (hook != nullptr && *hook) {
+        hook->call<void>(
             ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
     }
 }
@@ -5835,8 +5840,9 @@ static void call_original_frdg(void* context) {
         return;
     }
 
-    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
-        g_render_texture_render_thread_hook_ptr->call<void>(
+    auto* hook = get_render_texture_hook();
+    if (hook != nullptr && *hook) {
+        hook->call<void>(
             ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size);
     }
 }
@@ -5852,11 +5858,12 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         }
     };
 
-    if (g_render_texture_render_thread_hook_ptr != nullptr && *g_render_texture_render_thread_hook_ptr) {
+    auto* hook = get_render_texture_hook();
+    if (hook != nullptr && *hook) {
         static bool logged_target = false;
         if (!logged_target) {
             logged_target = true;
-            const auto target_address = (uintptr_t)g_render_texture_render_thread_hook_ptr->target_address();
+            const auto target_address = (uintptr_t)hook->target_address();
             const auto target_module = utility::get_module_within((void*)target_address).value_or(nullptr);
             const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
 
