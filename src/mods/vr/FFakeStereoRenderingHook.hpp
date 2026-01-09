@@ -1,7 +1,8 @@
 #pragma once
 
-#include <memory>
 #include <array>
+#include <atomic>
+#include <memory>
 
 #include <SafetyHook.hpp>
 
@@ -539,11 +540,27 @@ public:
         return &m_render_texture_render_thread_hook;
     }
 
+    uintptr_t get_shadow_vtable_ptr() const {
+        return m_shadow_vtable_ptr.load(std::memory_order_relaxed);
+    }
+
+    void set_shadow_vtable_ptr(uintptr_t value) {
+        m_shadow_vtable_ptr.store(value, std::memory_order_relaxed);
+    }
+
+    bool is_ue57_render_texture_validated() const {
+        return m_ue57_render_texture_validated.load(std::memory_order_relaxed);
+    }
+
+    void set_ue57_render_texture_validated(bool value) {
+        m_ue57_render_texture_validated.store(value, std::memory_order_relaxed);
+    }
+
 private:
     static void render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
-        FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size);
+        FRHITexture2D* backbuffer, FRHITexture2D* src_texture, ::WindowSizeD window_size);
     static void render_texture_render_thread_rdg(FFakeStereoRendering* stereo, FRDGBuilder* graph_builder,
-        FRDGTexture* backbuffer, FRDGTexture* src_texture, WindowSizeF window_size);
+        FRDGTexture* backbuffer, FRDGTexture* src_texture, ::WindowSizeF window_size);
     static void init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas);
     static uint32_t get_desired_number_of_views_hook(FFakeStereoRendering* stereo, bool is_stereo_enabled);
     static EStereoscopicPass get_view_pass_for_index_hook(FFakeStereoRendering* stereo, bool stereo_requested, int32_t view_index);
@@ -635,6 +652,9 @@ private:
     VRRenderTargetManager m_rtm{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};
+
+    std::atomic<bool> m_ue57_render_texture_validated{false};
+    std::atomic<uintptr_t> m_shadow_vtable_ptr{0};
 
     Rotator<float> m_last_afr_rotation{};
     Rotator<double> m_last_afr_rotation_double{};
