@@ -6277,12 +6277,13 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 #endif
 
     auto& vr = VR::get();
+    const bool force_stereo = is_ue_57() && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled();
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
         return 2;
     }
 
-    if (!is_stereo_enabled || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
+    if ((!is_stereo_enabled && !force_stereo) || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
         // We need to know about the second scene state to fix ghosting, so set the view count to 2
         // after we know about it, we can continue returning 1.
         if (is_stereo_enabled && vr->is_ghosting_fix_enabled() && vr->is_using_afr() &&
@@ -6294,6 +6295,10 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         }
 
         return 1;
+    }
+
+    if (force_stereo && !is_stereo_enabled) {
+        SPDLOG_INFO_ONCE("UE5.7: forcing desired view count to 2 while HMD active");
     }
 
     if (vr->is_native_stereo_fix_enabled()) {
@@ -6357,11 +6362,22 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
         if (is_ue_57()) {
             if (!g_hook->is_ue57_render_texture_validated()) {
-                SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
-                if (auto* original = fallback_to_original(); original != nullptr) {
-                    return original;
+                auto& rtm = *g_hook->get_render_target_manager();
+                auto candidate = rtm.get_render_target();
+                if (candidate == nullptr) {
+                    candidate = rtm.get_ui_target();
                 }
-                SPDLOG_WARN_ONCE("UE5.7: original GetRenderTargetManager returned null; falling back to custom.");
+
+                if (is_rhi_texture_vtable_match(candidate)) {
+                    g_hook->set_ue57_render_texture_validated(true);
+                    SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via Slate fallback; enabling custom RTM");
+                } else {
+                    SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
+                    if (auto* original = fallback_to_original(); original != nullptr) {
+                        return original;
+                    }
+                    SPDLOG_WARN_ONCE("UE5.7: original GetRenderTargetManager returned null; falling back to custom.");
+                }
             }
 
             auto rtm = static_cast<IStereoRenderTargetManager_57*>(&g_hook->m_rtm_57);
