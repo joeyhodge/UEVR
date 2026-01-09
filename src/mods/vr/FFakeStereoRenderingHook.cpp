@@ -1703,7 +1703,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
     idx++; // just leave this one as a placeholder for now. Returns false.
 
     m_fallback_vtable[idx++] = 
-    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
+    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) {
         return g_hook->render_texture_render_thread(stereo, rhi_command_list, backbuffer, src_texture, window_size);
     };
 
@@ -1842,7 +1842,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
     }; // CalculateStereoProjectionMatrix
 
     m_fallback_vtable[RENDER_TEXTURE_RENDER_THREAD_INDEX] = 
-    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
+    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) {
         return g_hook->render_texture_render_thread(stereo, rhi_command_list, backbuffer, src_texture, window_size);
     };
 
@@ -2027,7 +2027,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_22() {
     }; // CalculateStereoProjectionMatrix
 
     m_fallback_vtable[RENDER_TEXTURE_RENDER_THREAD_INDEX] = 
-    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
+    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) {
         return g_hook->render_texture_render_thread(stereo, rhi_command_list, backbuffer, src_texture, window_size);
     };
 
@@ -2164,7 +2164,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
     }; // CalculateStereoProjectionMatrix
 
     m_fallback_vtable[RENDER_TEXTURE_RENDER_THREAD_INDEX] = 
-    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
+    +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) {
         return g_hook->render_texture_render_thread(stereo, rhi_command_list, backbuffer, src_texture, window_size);
     };
 
@@ -5673,9 +5673,13 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
 }
 
 __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
-    FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) 
+    FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size) 
 {
+    (void)window_size;
     if (!g_framework->is_game_data_intialized()) {
+        if (g_hook->m_render_texture_render_thread_hook) {
+            g_hook->m_render_texture_render_thread_hook->call<void>(stereo, rhi_command_list, backbuffer, src_texture, window_size);
+        }
         return;
     }
 
@@ -5785,9 +5789,9 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
     // SPDLOG_INFO("{:x}", (uintptr_t)src_texture->GetNativeResource());
 
     // maybe the window size is actually a pointer we will find out later.
-    /*if (g_hook->m_render_texture_render_thread_hook) {
-        g_hook->m_render_texture_render_thread_hook->call<void*>(stereo, rhi_command_list, backbuffer, src_texture, window_size);
-    }*/
+    if (g_hook->m_render_texture_render_thread_hook) {
+        g_hook->m_render_texture_render_thread_hook->call<void>(stereo, rhi_command_list, backbuffer, src_texture, window_size);
+    }
 }
 
 void FFakeStereoRenderingHook::init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas) {
