@@ -22,6 +22,8 @@
 #include "Mod.hpp"
 
 struct FRHICommandListImmediate;
+struct FRDGBuilder;
+struct FRDGTexture;
 struct VRRenderTargetManager_418;
 struct UCanvas;
 struct IStereoLayers;
@@ -525,8 +527,14 @@ private:
         double x{};
         double y{};
     };
+    struct WindowSizeF {
+        float x{};
+        float y{};
+    };
     static void render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
         FRHITexture2D* backbuffer, FRHITexture2D* src_texture, WindowSizeD window_size);
+    static void render_texture_render_thread_rdg(FFakeStereoRendering* stereo, FRDGBuilder* graph_builder,
+        FRDGTexture* backbuffer, FRDGTexture* src_texture, WindowSizeF window_size);
     static void init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas);
     static uint32_t get_desired_number_of_views_hook(FFakeStereoRendering* stereo, bool is_stereo_enabled);
     static EStereoscopicPass get_view_pass_for_index_hook(FFakeStereoRendering* stereo, bool stereo_requested, int32_t view_index);
