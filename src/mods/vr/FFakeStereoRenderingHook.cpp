@@ -6428,7 +6428,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
         if (is_ue57) {
-            g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
+            g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
             return a2;
         }
 
@@ -6890,11 +6890,29 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         auto candidate = *(FRHITexture2D**)candidate_addr;
-        if (is_valid_texture_ptr(candidate)) {
-            return candidate;
+        if (!is_valid_texture_ptr(candidate)) {
+            return nullptr;
         }
 
-        return nullptr;
+        const auto expected_vtable = FRHITexture2D::get_vtable();
+        if (expected_vtable != nullptr && *(void**)candidate != expected_vtable) {
+            SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable mismatch; ignoring FSlateViewportInfo+0x10 fallback");
+            return nullptr;
+        }
+
+        if (expected_vtable == nullptr) {
+            const auto native = candidate->get_native_resource();
+            if (native == nullptr) {
+                SPDLOG_WARN_ONCE("UE5.7: viewport RT missing native resource; ignoring FSlateViewportInfo+0x10 fallback");
+                return nullptr;
+            }
+
+            FRHITexture2D::set_vtable(*(void**)candidate);
+            SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from FSlateViewportInfo fallback: {:x}",
+                (uintptr_t)FRHITexture2D::get_vtable());
+        }
+
+        return candidate;
     };
     auto viewport_info_rt = try_get_viewport_info_rt();
     bool used_viewport_info_fallback = false;
@@ -7070,7 +7088,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // are wildly different between UE versions.
     void* ret = nullptr;
     if (is_ue57) {
-        g_hook->m_slate_thread_hook.call<void>(renderer, a2, a3, a4);
+        g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
         ret = a2;
     } else {
         ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
