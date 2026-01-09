@@ -5800,6 +5800,52 @@ static bool is_executable_ptr_local(const void* ptr) {
     return (mbi.Protect & kExecFlags) != 0;
 }
 
+static std::optional<uintptr_t> get_dynamic_rhi_module_base_local() {
+    static std::optional<uintptr_t> cached{};
+    static bool tried = false;
+
+    if (tried) {
+        return cached;
+    }
+
+    tried = true;
+
+    auto* rhi = sdk::FDynamicRHI::get();
+    if (rhi == nullptr || !is_readable_ptr_local(rhi, sizeof(void*))) {
+        return cached;
+    }
+
+    auto* vtable = *(void**)rhi;
+    if (vtable == nullptr) {
+        return cached;
+    }
+
+    if (const auto module = utility::get_module_within(vtable); module) {
+        cached = (uintptr_t)*module;
+    }
+
+    return cached;
+}
+
+static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
+    if (texture == nullptr || !is_readable_ptr_local(texture, sizeof(void*))) {
+        return false;
+    }
+
+    auto* vtable = *(void**)texture;
+    if (vtable == nullptr) {
+        return false;
+    }
+
+    const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+    if (!rhi_module || vtable_module == nullptr) {
+        return false;
+    }
+
+    return (uintptr_t)vtable_module == *rhi_module;
+}
+
 // UE5.7 PDB layout: FRDGBuilder::RHICmdList @ 0xC0, FRDGResource::ResourceRHI @ 0x10.
 constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
 constexpr size_t kRdgTextureResourceRhiOffsetUE57 = 0x10;
@@ -7149,9 +7195,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (expected_vtable == nullptr) {
-            const auto native = candidate->get_native_resource();
-            if (native == nullptr) {
-                SPDLOG_WARN_ONCE("UE5.7: viewport RT missing native resource; ignoring FSlateViewportInfo+0x10 fallback");
+            if (!is_rhi_texture_vtable_match(candidate)) {
+                SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable not from RHI module; ignoring FSlateViewportInfo+0x10 fallback");
                 return nullptr;
             }
 
@@ -8756,9 +8801,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         if (texture != nullptr) {
             SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
-            SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
-            
-            FRHITexture2D::set_vtable(*(void**)texture);
+            if (FRHITexture2D::get_vtable() == nullptr) {
+                if (is_rhi_texture_vtable_match(texture)) {
+                    FRHITexture2D::set_vtable(*(void**)texture);
+                    SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from update viewport: {:x}",
+                        (uintptr_t)FRHITexture2D::get_vtable());
+                } else {
+                    SPDLOG_WARN_ONCE("UE5.7: update viewport texture vtable not from RHI module; skipping vtable capture");
+                }
+            }
         } else {
             SPDLOG_INFO(" Texture is still null!");
         }
@@ -8800,12 +8851,12 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             }
 
             if (texture != nullptr && FRHITexture2D::get_vtable() == nullptr) {
-                const auto native = texture->get_native_resource();
-                if (native != nullptr) {
+                if (is_rhi_texture_vtable_match(texture)) {
                     FRHITexture2D::set_vtable(*(void**)texture);
-                    SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from stack scan: {:x}", (uintptr_t)FRHITexture2D::get_vtable());
+                    SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from stack scan: {:x}",
+                        (uintptr_t)FRHITexture2D::get_vtable());
                 } else {
-                    SPDLOG_WARN_ONCE("UE5.7: stack scan texture missing native resource; skipping vtable capture");
+                    SPDLOG_WARN_ONCE("UE5.7: stack scan texture vtable not from RHI module; skipping vtable capture");
                 }
             }
         } else {
