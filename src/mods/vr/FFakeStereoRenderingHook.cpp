@@ -6893,7 +6893,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (is_ue57 && command_list_rhi != nullptr) {
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)command_list_rhi);
     } else if (is_ue57 && command_list_rhi == nullptr) {
-        SPDLOG_WARN_EVERY_N_SEC(5, "UE5.7: DrawWindow_RenderThread missing RHICmdList; continuing without it");
+        SPDLOG_INFO_EVERY_N_SEC(5, "UE5.7: DrawWindow_RenderThread missing RHICmdList; continuing without it");
     }
 
     if (is_ue57) {
