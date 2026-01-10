@@ -6833,31 +6833,41 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return true;
 };
 
-    void* command_list = is_ue57 ? a3 : a2;
+    void* command_list = is_ue57 ? nullptr : a2;
     sdk::FRHICommandListBase* command_list_rhi = nullptr;
 
     if (is_ue57) {
         constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
-        if (is_readable_ptr(a3, kRdgBuilderCommandListOffsetUE57 + sizeof(void*))) {
-            auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)a3 + kRdgBuilderCommandListOffsetUE57);
+        const auto try_rdg_builder = [&](void* builder, const char* label) -> sdk::FRHICommandListBase* {
+            if (!is_readable_ptr(builder, kRdgBuilderCommandListOffsetUE57 + sizeof(void*))) {
+                return nullptr;
+            }
+
+            auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)builder + kRdgBuilderCommandListOffsetUE57);
             if (candidate != nullptr && is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase)) &&
                 candidate->root != nullptr && !IsBadReadPtr(candidate->root, sizeof(void*))) {
-                command_list_rhi = candidate;
-                command_list = candidate;
+                SPDLOG_INFO_ONCE("UE5.7: FRDGBuilder RHICmdList resolved via {} (builder {:x}, cmd {:x})",
+                    label, (uintptr_t)builder, (uintptr_t)candidate);
+                return candidate;
             }
+
+            return nullptr;
+        };
+
+        command_list_rhi = try_rdg_builder(a2, "a2");
+        if (command_list_rhi == nullptr) {
+            command_list_rhi = try_rdg_builder(a3, "a3");
         }
+
+        command_list = command_list_rhi;
     }
 
-    if (is_ue57 && command_list_rhi == nullptr) {
-        command_list = nullptr;
-    }
-
-    void* renderer_this = is_ue57 ? a2 : renderer;
+    void* renderer_this = renderer;
     if (!is_readable_ptr(renderer_this, sizeof(void*))) {
-        renderer_this = is_ue57 ? renderer : a2;
+        renderer_this = is_ue57 ? a2 : renderer;
     }
 
-    if (!g_framework->is_game_data_intialized() || command_list == nullptr) {
+    if (!g_framework->is_game_data_intialized()) {
         if (is_ue57) {
             auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4);
             return ret != nullptr ? ret : renderer;
@@ -6882,6 +6892,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (is_ue57 && command_list_rhi != nullptr) {
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)command_list_rhi);
+    } else if (is_ue57 && command_list_rhi == nullptr) {
+        SPDLOG_WARN_EVERY_N_SEC(5, "UE5.7: DrawWindow_RenderThread missing RHICmdList; continuing without it");
     }
 
     if (is_ue57) {
@@ -6961,7 +6973,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return found;
         };
 
-        const void* inputs_candidates[] = { a4, a3, a2, params };
+        const void* inputs_candidates[] = { a3, a4, a2, params };
         for (const auto* candidate : inputs_candidates) {
             if (candidate == nullptr) {
                 continue;
@@ -7205,9 +7217,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     const auto& mods = g_framework->get_mods()->get_mods();
     void* mod_command_list = command_list_rhi != nullptr ? (void*)command_list_rhi : command_list;
+    const bool call_mods = !is_ue57 || mod_command_list != nullptr;
 
-    for (auto& mod : mods) {
-        mod->on_pre_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+    if (call_mods) {
+        for (auto& mod : mods) {
+            mod->on_pre_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+        }
     }
 
     g_hook->m_inside_slate_draw_window = true;
@@ -7217,8 +7232,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (is_ue57) {
             auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4);
 
-            for (auto& mod : mods) {
-                mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+            if (call_mods) {
+                for (auto& mod : mods) {
+                    mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+                }
             }
 
             g_hook->m_inside_slate_draw_window = false;
@@ -7227,8 +7244,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
 
-        for (auto& mod : mods) {
-            mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+        if (call_mods) {
+            for (auto& mod : mods) {
+                mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
+            }
         }
 
         g_hook->m_inside_slate_draw_window = false;
