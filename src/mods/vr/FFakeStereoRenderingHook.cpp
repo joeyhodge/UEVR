@@ -6172,7 +6172,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     ctx.graph_builder = graph_builder;
     ctx.backbuffer = backbuffer;
     ctx.src_texture = src_texture;
-    ctx.window_size = window_size;
+    ctx.window_size_f = window_size;
 
     const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder);
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
@@ -6192,6 +6192,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
             (uintptr_t)src_texture);
     }
     const ::WindowSizeD window_size_d{static_cast<double>(window_size.x), static_cast<double>(window_size.y)};
+    ctx.window_size_d = window_size_d;
 
     render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size_d,
         &call_original_frdg, &ctx);
