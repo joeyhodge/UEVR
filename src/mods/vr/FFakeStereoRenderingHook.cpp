@@ -7261,31 +7261,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
     sdk::FSlateResource* slate_resource = nullptr;
-
-    if (slate_viewport != nullptr) {
-        slate_resource = slate_viewport->GetViewportRenderTargetTexture();
-    } else {
-        if (viewport_info == nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(1, "No viewport info, skipping!");
-            return call_orig();
-        }
-
-        auto known_tex = g_hook->get_render_target_manager()->get_render_target();
-        if (known_tex == nullptr) {
-            known_tex = ui_target;
-        }
-
-        if (known_tex != nullptr) {
-            const auto viewport_rt_provider = viewport_info->get_rt_provider(known_tex);
-
-            if (viewport_rt_provider == nullptr) {
-                SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
-                return call_orig();
-            }
-        
-            slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
-        }
-    }
+    FRHITexture2D* scene_tex = nullptr;
+    bool is_scene_tex_valid = false;
 
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
         static const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
@@ -7349,31 +7326,55 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return nullptr;
         }
 
-        constexpr size_t kSlateViewportInfoRhiViewportOffsetUE57 = 0x10;
-        auto candidate_addr = (uint8_t*)viewport_info + kSlateViewportInfoRhiViewportOffsetUE57;
-        if (!is_readable_ptr(candidate_addr, sizeof(void*))) {
+        constexpr size_t kSlateViewportInfoViewportRhiOffsetUE57 = 0x28;
+        auto viewport_addr = (uint8_t*)viewport_info + kSlateViewportInfoViewportRhiOffsetUE57;
+        if (!is_readable_ptr(viewport_addr, sizeof(void*))) {
             return nullptr;
         }
 
-        auto candidate = *(FRHITexture2D**)candidate_addr;
+        auto viewport_rhi = *(void**)viewport_addr;
+        if (!is_readable_ptr(viewport_rhi, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto viewport_vtable = *(void***)viewport_rhi;
+        if (viewport_vtable == nullptr) {
+            return nullptr;
+        }
+
+        const auto viewport_module = utility::get_module_within(viewport_vtable).value_or(nullptr);
+        const auto rhi_module = get_dynamic_rhi_module_base_local();
+        if (!rhi_module || viewport_module == nullptr || (uintptr_t)viewport_module != *rhi_module) {
+            SPDLOG_WARN_ONCE("UE5.7: viewport RHI vtable not from RHI module; ignoring ViewportRHI fallback");
+            return nullptr;
+        }
+
+        constexpr size_t kGetOptionalSdrBackBufferIndex = 6;
+        auto get_optional_backbuffer = (FRHITexture* (__fastcall*)(void*))viewport_vtable[kGetOptionalSdrBackBufferIndex];
+        if (!is_executable_ptr_local((void*)get_optional_backbuffer)) {
+            SPDLOG_WARN_ONCE("UE5.7: viewport RHI optional backbuffer vfunc not executable; ignoring ViewportRHI fallback");
+            return nullptr;
+        }
+
+        auto candidate = reinterpret_cast<FRHITexture2D*>(get_optional_backbuffer(viewport_rhi));
         if (!is_valid_texture_ptr(candidate)) {
             return nullptr;
         }
 
         const auto expected_vtable = FRHITexture2D::get_vtable();
         if (expected_vtable != nullptr && *(void**)candidate != expected_vtable) {
-            SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable mismatch; ignoring FSlateViewportInfo+0x10 fallback");
+            SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable mismatch; ignoring ViewportRHI fallback");
             return nullptr;
         }
 
         if (expected_vtable == nullptr) {
             if (!is_rhi_texture_vtable_match(candidate)) {
-                SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable not from RHI module; ignoring FSlateViewportInfo+0x10 fallback");
+                SPDLOG_WARN_ONCE("UE5.7: viewport RT vtable not from RHI module; ignoring ViewportRHI fallback");
                 return nullptr;
             }
 
             FRHITexture2D::set_vtable(*(void**)candidate);
-            SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from FSlateViewportInfo fallback: {:x}",
+            SPDLOG_INFO_ONCE("UE5.7: captured FRHITexture2D vtable from ViewportRHI optional backbuffer: {:x}",
                 (uintptr_t)FRHITexture2D::get_vtable());
         }
 
@@ -7382,24 +7383,53 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto viewport_info_rt = try_get_viewport_info_rt();
     bool used_viewport_info_fallback = false;
 
+    if (is_ue57 && viewport_info_rt != nullptr) {
+        SPDLOG_INFO_ONCE("UE5.7: skipping Slate viewport resource lookup (ViewportRHI fallback available)");
+    } else if (slate_viewport != nullptr) {
+        slate_resource = slate_viewport->GetViewportRenderTargetTexture();
+    } else {
+        if (viewport_info == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "No viewport info, skipping!");
+            return call_orig();
+        }
+
+        auto known_tex = g_hook->get_render_target_manager()->get_render_target();
+        if (known_tex == nullptr) {
+            known_tex = ui_target;
+        }
+
+        if (known_tex != nullptr) {
+            const auto viewport_rt_provider = viewport_info->get_rt_provider(known_tex);
+
+            if (viewport_rt_provider == nullptr) {
+                SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
+                return call_orig();
+            }
+        
+            slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
+        }
+    }
+
     if (slate_resource == nullptr) {
         if (viewport_info_rt != nullptr) {
             if (rtm.get_render_target() == nullptr) {
                 rtm.set_render_target(viewport_info_rt);
-                SPDLOG_INFO_ONCE("UE5.7: set render target from FSlateViewportInfo+0x10 fallback: {:x}", (uintptr_t)viewport_info_rt);
+                SPDLOG_INFO_ONCE("UE5.7: set render target from ViewportRHI optional backbuffer: {:x}", (uintptr_t)viewport_info_rt);
             }
 
             if (ui_target == nullptr) {
                 ui_target = viewport_info_rt;
-                SPDLOG_INFO_ONCE("UE5.7: UI target set from FSlateViewportInfo+0x10 fallback: {:x}", (uintptr_t)viewport_info_rt);
+                SPDLOG_INFO_ONCE("UE5.7: UI target set from ViewportRHI optional backbuffer: {:x}", (uintptr_t)viewport_info_rt);
             }
 
-            maybe_validate_ue57_texture(viewport_info_rt, "FSlateViewportInfo+0x10");
+            scene_tex = viewport_info_rt;
+            is_scene_tex_valid = true;
+            used_viewport_info_fallback = true;
+            maybe_validate_ue57_texture(viewport_info_rt, "ViewportRHI optional backbuffer");
         } else {
             SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
+            return call_orig();
         }
-
-        return call_orig();
     }
     const auto try_get_array_texture = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
         if (arr == nullptr || IsBadReadPtr(arr, sizeof(*arr))) {
@@ -7428,10 +7458,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return nullptr;
     };
 
-    auto scene_tex = slate_resource->get_mutable_resource();
-    bool is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+    if (slate_resource != nullptr) {
+        scene_tex = slate_resource->get_mutable_resource();
+        is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+    }
 
-    if (!is_scene_tex_valid && is_ue_57()) {
+    if (!is_scene_tex_valid && is_ue_57() && slate_resource != nullptr) {
         static constexpr uint32_t kSlateResourceOffsetUE57 = 0x20;
 
         if (sdk::FSlateResource::resource_offset != kSlateResourceOffsetUE57 &&
@@ -7455,8 +7487,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (rtm.get_render_target() == nullptr) {
             rtm.set_render_target(scene_tex);
         }
-        SPDLOG_INFO_ONCE("UE5.7: using FSlateViewportInfo+0x10 render target fallback: {:x}", (uintptr_t)scene_tex);
-        maybe_validate_ue57_texture(scene_tex, "FSlateViewportInfo+0x10");
+        SPDLOG_INFO_ONCE("UE5.7: using ViewportRHI optional backbuffer fallback: {:x}", (uintptr_t)scene_tex);
+        maybe_validate_ue57_texture(scene_tex, "ViewportRHI optional backbuffer");
     }
 
     if (scene_tex != nullptr && !is_scene_tex_valid) {
@@ -7464,7 +7496,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_scene_tex_valid) {
-        const char* source = used_viewport_info_fallback ? "FSlateViewportInfo+0x10" : "Slate resource";
+        const char* source = used_viewport_info_fallback ? "ViewportRHI optional backbuffer" : "Slate resource";
         maybe_validate_ue57_texture(scene_tex, source);
     }
 
