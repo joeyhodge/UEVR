@@ -7271,6 +7271,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FSlateResource* slate_resource = nullptr;
     FRHITexture2D* scene_tex = nullptr;
     bool is_scene_tex_valid = false;
+    bool slate_resource_offset_verified = !is_ue57;
 
     const auto is_valid_slate_resource = [&](sdk::FSlateResource* resource) -> bool {
         if (resource == nullptr || IsBadReadPtr(resource, sizeof(void*))) {
@@ -7493,21 +7494,43 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         is_scene_tex_valid = is_valid_texture_ptr(scene_tex) && (!is_ue57 || is_rhi_texture_vtable_match(scene_tex));
     }
 
-    if (!is_scene_tex_valid && is_ue_57() && slate_resource != nullptr) {
-        static constexpr uint32_t kSlateResourceOffsetUE57 = 0x20;
+    if (slate_resource != nullptr) {
+        FRHITexture2D* typed_resource = nullptr;
+        __try {
+            typed_resource = slate_resource->get_typed_resource();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            typed_resource = nullptr;
+        }
 
-        if (sdk::FSlateResource::resource_offset != kSlateResourceOffsetUE57 &&
-            !IsBadReadPtr((void*)((uintptr_t)slate_resource + kSlateResourceOffsetUE57), sizeof(void*)))
-        {
-            auto candidate = *(FRHITexture2D**)((uintptr_t)slate_resource + kSlateResourceOffsetUE57);
-
-            if (is_valid_texture_ptr(candidate) && is_rhi_texture_vtable_match(candidate)) {
-                sdk::FSlateResource::resource_offset = kSlateResourceOffsetUE57;
-                scene_tex = candidate;
+        if (typed_resource != nullptr && is_valid_texture_ptr(typed_resource) &&
+            (!is_ue57 || is_rhi_texture_vtable_match(typed_resource))) {
+            if (!is_scene_tex_valid) {
+                scene_tex = typed_resource;
                 is_scene_tex_valid = true;
+            }
+
+            maybe_validate_ue57_texture(typed_resource, "Slate resource typed");
+
+            const auto matches_offset = [&](uint32_t offset) -> bool {
+                if (!is_readable_ptr((void*)((uintptr_t)slate_resource + offset), sizeof(void*))) {
+                    return false;
+                }
+                auto candidate = *(FRHITexture2D**)((uintptr_t)slate_resource + offset);
+                return candidate == typed_resource;
+            };
+
+            if (matches_offset(sdk::FSlateResource::resource_offset)) {
+                slate_resource_offset_verified = true;
+            } else if (matches_offset(sizeof(void*))) {
+                sdk::FSlateResource::resource_offset = sizeof(void*);
+                slate_resource_offset_verified = true;
+                SPDLOG_INFO_ONCE("UE5.7: corrected FSlateResource::resource_offset to 0x{:x}", sdk::FSlateResource::resource_offset);
+            } else if (matches_offset(0x20)) {
+                sdk::FSlateResource::resource_offset = 0x20;
+                slate_resource_offset_verified = true;
                 SPDLOG_INFO_ONCE("UE5.7: corrected FSlateResource::resource_offset to 0x20");
-            } else if (is_valid_texture_ptr(candidate)) {
-                SPDLOG_WARN_ONCE("UE5.7: Slate resource offset candidate failed RHI module check; keeping existing offset");
+            } else if (is_ue57) {
+                SPDLOG_WARN_ONCE("UE5.7: unable to verify FSlateResource::resource_offset; skipping texture swap");
             }
         }
     }
@@ -7628,6 +7651,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (is_ue57 && !is_scene_tex_valid) {
         SPDLOG_WARN_ONCE("UE5.7: Scene texture invalid; skipping texture swap");
+        return call_orig();
+    }
+
+    if (is_ue57 && !slate_resource_offset_verified) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate resource offset not verified; skipping texture swap");
         return call_orig();
     }
 
