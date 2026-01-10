@@ -7494,13 +7494,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         is_scene_tex_valid = is_valid_texture_ptr(scene_tex) && (!is_ue57 || is_rhi_texture_vtable_match(scene_tex));
     }
 
-    if (slate_resource != nullptr) {
-        FRHITexture2D* typed_resource = nullptr;
-        __try {
-            typed_resource = slate_resource->get_typed_resource();
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            typed_resource = nullptr;
-        }
+    if (slate_resource != nullptr && is_valid_slate_resource(slate_resource)) {
+        auto typed_resource = slate_resource->get_typed_resource();
 
         if (typed_resource != nullptr && is_valid_texture_ptr(typed_resource) &&
             (!is_ue57 || is_rhi_texture_vtable_match(typed_resource))) {
