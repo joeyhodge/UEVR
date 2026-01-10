@@ -7238,10 +7238,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
 
     auto vr = VR::get();
-
-    if (!vr->is_hmd_active() || vr->is_stereo_emulation_enabled()) {
-        return call_orig();
-    }
+    const bool allow_swap = vr->is_hmd_active() && !vr->is_stereo_emulation_enabled();
 
     auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
     sdk::FSlateResource* slate_resource = nullptr;
@@ -7318,8 +7315,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (!is_rhi_texture_vtable_match(tex)) {
-            SPDLOG_WARN_ONCE("UE5.7: {} texture vtable not from RHI module; skipping validation", source);
-            return;
+            SPDLOG_WARN_ONCE("UE5.7: {} texture vtable not from RHI module; accepting for validation", source);
         }
 
         if (!g_hook->is_ue57_render_texture_validated()) {
@@ -7518,6 +7514,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (ui_target == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
+        return call_orig();
+    }
+
+    if (!allow_swap) {
+        SPDLOG_INFO_ONCE("UE5.7: HMD inactive or stereo emulation enabled; skipping Slate texture swap");
         return call_orig();
     }
 
