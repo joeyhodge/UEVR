@@ -5805,7 +5805,8 @@ struct RenderTextureCallOriginalContextFRDG {
     FRDGBuilder* graph_builder{};
     FRDGTexture* backbuffer{};
     FRDGTexture* src_texture{};
-    ::WindowSizeF window_size{};
+    ::WindowSizeF window_size_f{};
+    ::WindowSizeD window_size_d{};
 };
 
 static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*)) {
@@ -5931,12 +5932,18 @@ static void call_original_frdg(void* context) {
     }
 
     auto* hook = get_render_texture_rdg_hook();
-    if (hook == nullptr || !*hook) {
+    const bool use_rdg_signature = hook != nullptr && *hook;
+    if (!use_rdg_signature) {
         hook = get_render_texture_hook();
     }
     if (hook != nullptr && *hook) {
-        (*hook).call<void>(
-            ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+        if (use_rdg_signature) {
+            (*hook).call<void>(
+                ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size_f);
+        } else {
+            (*hook).call<void>(
+                ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size_d);
+        }
     }
 }
 
@@ -7264,6 +7271,23 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     FRHITexture2D* scene_tex = nullptr;
     bool is_scene_tex_valid = false;
 
+    const auto is_valid_slate_resource = [&](sdk::FSlateResource* resource) -> bool {
+        if (resource == nullptr || IsBadReadPtr(resource, sizeof(void*))) {
+            return false;
+        }
+
+        auto vtable = *(void**)resource;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        const auto vtable_first = ((void**)vtable)[0];
+        const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+
+        return vtable_module != nullptr && vtable_first_module != nullptr;
+    };
+
     const auto is_valid_texture_ptr = [&](FRHITexture2D* tex) {
         static const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
         const auto addr = (uintptr_t)tex;
@@ -7431,6 +7455,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return call_orig();
         }
     }
+
+    if (slate_resource != nullptr && !is_valid_slate_resource(slate_resource)) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate resource failed validation; skipping resource usage");
+        slate_resource = nullptr;
+    }
     const auto try_get_array_texture = [&](TArray<TRefCountPtr<FRHITexture>>* arr, const char* label) -> FRHITexture2D* {
         if (arr == nullptr || IsBadReadPtr(arr, sizeof(*arr))) {
             return nullptr;
@@ -7460,7 +7489,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (slate_resource != nullptr) {
         scene_tex = slate_resource->get_mutable_resource();
-        is_scene_tex_valid = is_valid_texture_ptr(scene_tex);
+        is_scene_tex_valid = is_valid_texture_ptr(scene_tex) && (!is_ue57 || is_rhi_texture_vtable_match(scene_tex));
     }
 
     if (!is_scene_tex_valid && is_ue_57() && slate_resource != nullptr) {
@@ -7471,11 +7500,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         {
             auto candidate = *(FRHITexture2D**)((uintptr_t)slate_resource + kSlateResourceOffsetUE57);
 
-            if (is_valid_texture_ptr(candidate)) {
+            if (is_valid_texture_ptr(candidate) && is_rhi_texture_vtable_match(candidate)) {
                 sdk::FSlateResource::resource_offset = kSlateResourceOffsetUE57;
                 scene_tex = candidate;
                 is_scene_tex_valid = true;
                 SPDLOG_INFO_ONCE("UE5.7: corrected FSlateResource::resource_offset to 0x20");
+            } else if (is_valid_texture_ptr(candidate)) {
+                SPDLOG_WARN_ONCE("UE5.7: Slate resource offset candidate failed RHI module check; keeping existing offset");
             }
         }
     }
@@ -7584,6 +7615,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
+    if (slate_resource == nullptr) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate resource missing; skipping texture swap");
+        return call_orig();
+    }
+
+    if (!is_valid_slate_resource(slate_resource)) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate resource invalid; skipping texture swap");
+        return call_orig();
+    }
+
+    if (is_ue57 && !is_scene_tex_valid) {
+        SPDLOG_WARN_ONCE("UE5.7: Scene texture invalid; skipping texture swap");
+        return call_orig();
+    }
+
     auto expected_vtable = FRHITexture2D::get_vtable();
     if (expected_vtable == nullptr && is_scene_tex_valid) {
         expected_vtable = *(void**)scene_tex;
@@ -7601,14 +7647,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     const bool skip_swap = is_ue57 && used_viewport_info_fallback;
     if (skip_swap) {
         SPDLOG_WARN_ONCE("UE5.7: skipping Slate texture swap (viewport info fallback in use)");
+        return call_orig();
     }
 
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
-    const auto old_texture = slate_resource->get_mutable_resource();
-    if (!skip_swap) {
+    auto* old_texture = slate_resource->get_mutable_resource();
+    const bool do_swap = ui_target != nullptr && ui_target != old_texture;
+    if (do_swap) {
         slate_resource->get_mutable_resource() = ui_target;
     }
+    utility::ScopeGuard restore_swap{[&]() {
+        if (do_swap) {
+            slate_resource->get_mutable_resource() = old_texture;
+        }
+    }};
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
     // are wildly different between UE versions.
@@ -7622,14 +7675,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
-    // Restore the old texture.
-    if (!skip_swap) {
-        slate_resource->get_mutable_resource() = old_texture;
-    }
-
     for (auto& mod : mods) {
         mod->on_post_slate_draw_window(renderer_this, mod_command_list, viewport_info);
     }
+    g_hook->m_inside_slate_draw_window = false;
     
     // After this we copy over the texture and clear it in the present hook. doing it here just seems to crash sometimes.
     SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindow_RenderThread finished!");
