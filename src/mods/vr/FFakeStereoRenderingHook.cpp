@@ -7534,8 +7534,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // UE5.7: if Slate didn't give us a usable scene texture, fall back to FSceneViewport's render-thread target.
     if (slate_viewport != nullptr && is_ue_57() && rtm.get_render_target() == nullptr && !is_scene_tex_valid) {
-        static constexpr size_t kSlateViewportAdjustors[] = { 0x0, 0xC8, 0xC0, 0xD0 };
-        static constexpr size_t kRenderTargetOffset = 0x2E0; // render-thread TRefCountPtr<FRHITexture> (SetRenderTargetTextureRenderThread)
+        static constexpr size_t kSlateViewportAdjustors[] = { 0xE8, 0xE0, 0xF0, 0x0 };
+        static constexpr size_t kRenderTargetTextureRenderThreadOffset = 0x310; // RenderTargetTextureRenderThreadRHI
+        static constexpr size_t kBufferedRenderTargetsOffset = 0x2F0; // BufferedRenderTargetsRHI (TArray<TRefCountPtr<FRHITexture>>)
 
         for (const auto adjustor : kSlateViewportAdjustors) {
             auto base = (uint8_t*)slate_viewport - adjustor;
@@ -7544,10 +7545,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 continue;
             }
 
-            auto targetable_candidate = *(FRHITexture2D**)(base + kRenderTargetOffset);
+            auto targetable_candidate = *(FRHITexture2D**)(base + kRenderTargetTextureRenderThreadOffset);
             if (is_valid_texture_ptr(targetable_candidate)) {
                 rtm.set_render_target(targetable_candidate);
-                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x}: {:x}", adjustor, kRenderTargetOffset, (uintptr_t)targetable_candidate);
+                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x}: {:x}",
+                    adjustor, kRenderTargetTextureRenderThreadOffset, (uintptr_t)targetable_candidate);
+                break;
+            }
+
+            auto buffered_array = reinterpret_cast<TArray<TRefCountPtr<FRHITexture>>*>(base + kBufferedRenderTargetsOffset);
+            auto buffered_candidate = try_get_array_texture(buffered_array, "buffered render target");
+            if (is_valid_texture_ptr(buffered_candidate)) {
+                rtm.set_render_target(buffered_candidate);
+                SPDLOG_INFO_ONCE("Set render target from FSceneViewport-0x{:x}+0x{:x} buffered array: {:x}",
+                    adjustor, kBufferedRenderTargetsOffset, (uintptr_t)buffered_candidate);
                 break;
             }
         }
