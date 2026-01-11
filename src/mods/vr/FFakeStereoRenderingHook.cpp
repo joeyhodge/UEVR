@@ -6811,6 +6811,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     const bool is_ue57 = is_ue_57();
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
+
+    if (is_ue57) {
+        SPDLOG_WARN_ONCE("UE5.7: bypassing Slate draw hook to avoid RenderResource lifetime crashes");
+        auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4);
+        return ret != nullptr ? ret : renderer;
+    }
     const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
         if (ptr == nullptr) {
             return false;
