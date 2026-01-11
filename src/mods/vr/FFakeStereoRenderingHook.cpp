@@ -82,12 +82,44 @@ std::atomic<uint64_t> g_slate_draw_window_calls{0};
 
 static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*));
 
+static void initialize_sceneview_stereo_offsets() {
+    static bool initialized = false;
+    if (initialized) {
+        return;
+    }
+
+    initialized = true;
+
+    const auto is_ue57 = []() {
+        if (const auto version = sdk::search_for_version(utility::get_executable());
+            version && version->rfind(L"5.7", 0) == 0) {
+            return true;
+        }
+        return is_ue_57();
+    }();
+
+    const auto pass_offset = is_ue57 ? kFSceneViewStereoPassOffsetUE57 : kFSceneViewStereoPassOffsetLegacy;
+    const auto view_index_offset = is_ue57 ? kFSceneViewStereoViewIndexOffsetUE57 : 0u;
+
+    g_sceneview_stereo_pass_offset.store(pass_offset, std::memory_order_relaxed);
+    g_sceneview_stereo_view_index_offset.store(view_index_offset, std::memory_order_relaxed);
+
+    SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", pass_offset);
+    if (view_index_offset != 0) {
+        SPDLOG_INFO("Using FSceneView stereo view index offset {:x}", view_index_offset);
+    }
+}
+
 EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
     const auto offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
     if (offset == 0) {
         return EStereoscopicPass::eSSP_FULL;
     }
-    return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + offset);
+    const auto value = *(uint8_t*)((uintptr_t)&view + offset);
+    if (value > (uint8_t)EStereoscopicPass::eSSP_SECONDARY) {
+        return EStereoscopicPass::eSSP_FULL;
+    }
+    return (EStereoscopicPass)value;
 }
 }
 
@@ -204,6 +236,7 @@ bool is_ue_57() {
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
     setup_options();
+    initialize_sceneview_stereo_offsets();
 }
 
 void FFakeStereoRenderingHook::on_frame() {
@@ -1918,22 +1951,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
 
-    const auto is_ue57 = []() {
-        if (const auto version = sdk::search_for_version(utility::get_executable());
-            version && version->rfind(L"5.7", 0) == 0) {
-            return true;
-        }
-        return is_ue_57();
-    }();
-
-    const auto sceneview_stereo_pass_offset = is_ue57 ? kFSceneViewStereoPassOffsetUE57 : kFSceneViewStereoPassOffsetLegacy;
-    const auto sceneview_stereo_view_index_offset = is_ue57 ? kFSceneViewStereoViewIndexOffsetUE57 : 0u;
-    g_sceneview_stereo_pass_offset.store(sceneview_stereo_pass_offset, std::memory_order_relaxed);
-    g_sceneview_stereo_view_index_offset.store(sceneview_stereo_view_index_offset, std::memory_order_relaxed);
-    SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", sceneview_stereo_pass_offset);
-    if (sceneview_stereo_view_index_offset != 0) {
-        SPDLOG_INFO("Using FSceneView stereo view index offset {:x}", sceneview_stereo_view_index_offset);
-    }
+    initialize_sceneview_stereo_offsets();
 
     // Actually implement the ones we care about now.
     m_fallback_vtable[DESTRUCTOR_INDEX] = +[](FFakeStereoRendering* stereo) -> void { SPDLOG_INFO("Destructor called?");  }; // destructor.
@@ -3302,6 +3320,7 @@ bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
 // FSceneView constructor hook
 sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView* view, sdk::FSceneViewInitOptions* init_options, void* a3, void* a4) {
     SPDLOG_INFO_ONCE("Called FSceneView constructor for the first time");
+    initialize_sceneview_stereo_offsets();
 
     auto& vr = VR::get();
 
@@ -3441,6 +3460,19 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 rtm->get_render_target() != nullptr || rtm->get_ui_target() != nullptr;
         }
 
+        const bool allow_force_without_validation = !vr->is_stereo_emulation_enabled() && !vr->is_using_2d_screen();
+        if (!force_stereo_pass && allow_force_without_validation) {
+            static bool saw_stereo_views = false;
+            if (true_index > 0) {
+                saw_stereo_views = true;
+            }
+            force_stereo_pass = saw_stereo_views;
+
+            if (force_stereo_pass) {
+                SPDLOG_INFO_ONCE("UE5.7: forcing stereo pass without RTM validation");
+            }
+        }
+
         if (force_stereo_pass && init_options_stereo_pass == EStereoscopicPass::eSSP_FULL) {
             const auto forced_pass = true_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
             init_options->set_stereo_pass(forced_pass);
@@ -3520,7 +3552,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         if (pass_offset != 0) {
             auto* pass_ptr = reinterpret_cast<uint8_t*>(result) + pass_offset;
             if (is_readable_ptr_local(pass_ptr, sizeof(uint8_t))) {
-                *pass_ptr = static_cast<uint8_t>(init_options_stereo_pass);
+                const auto existing = *pass_ptr;
+                if (existing <= (uint8_t)EStereoscopicPass::eSSP_SECONDARY) {
+                    *pass_ptr = static_cast<uint8_t>(init_options_stereo_pass);
+                }
             }
         }
 
@@ -6391,8 +6426,12 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             return true;
         }
 
-        auto& rtm = *g_hook->get_render_target_manager();
-        return rtm.get_render_target() != nullptr || rtm.get_ui_target() != nullptr;
+        auto* rtm = g_hook->get_render_target_manager();
+        if (rtm != nullptr && (rtm->get_render_target() != nullptr || rtm->get_ui_target() != nullptr)) {
+            return true;
+        }
+
+        return !vr->is_using_2d_screen();
     }();
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
