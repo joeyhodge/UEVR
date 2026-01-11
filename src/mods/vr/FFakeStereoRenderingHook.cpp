@@ -73,12 +73,20 @@ uint32_t g_frame_count{};
 
 namespace {
 constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
-constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
+// UE5.7 PDB (UnrealEditor-Engine) shows StereoPass at +0x210 and StereoViewIndex at +0x214 in FSceneView.
+constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0x210;
+constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0x214;
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
+std::atomic<uint32_t> g_sceneview_stereo_view_index_offset{0};
 std::atomic<uint64_t> g_slate_draw_window_calls{0};
+
+static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*));
 
 EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
     const auto offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
+    if (offset == 0) {
+        return EStereoscopicPass::eSSP_FULL;
+    }
     return (EStereoscopicPass)*(uint8_t*)((uintptr_t)&view + offset);
 }
 }
@@ -1910,16 +1918,22 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_27() {
         stereo_rendering_device_offset = 0xB18; // fallback for the engine this was originally made for.
     }
 
-    const auto sceneview_stereo_pass_offset = []() {
+    const auto is_ue57 = []() {
         if (const auto version = sdk::search_for_version(utility::get_executable());
             version && version->rfind(L"5.7", 0) == 0) {
-            return kFSceneViewStereoPassOffsetUE57;
+            return true;
         }
-
-        return kFSceneViewStereoPassOffsetLegacy;
+        return is_ue_57();
     }();
+
+    const auto sceneview_stereo_pass_offset = is_ue57 ? kFSceneViewStereoPassOffsetUE57 : kFSceneViewStereoPassOffsetLegacy;
+    const auto sceneview_stereo_view_index_offset = is_ue57 ? kFSceneViewStereoViewIndexOffsetUE57 : 0u;
     g_sceneview_stereo_pass_offset.store(sceneview_stereo_pass_offset, std::memory_order_relaxed);
+    g_sceneview_stereo_view_index_offset.store(sceneview_stereo_view_index_offset, std::memory_order_relaxed);
     SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", sceneview_stereo_pass_offset);
+    if (sceneview_stereo_view_index_offset != 0) {
+        SPDLOG_INFO("Using FSceneView stereo view index offset {:x}", sceneview_stereo_view_index_offset);
+    }
 
     // Actually implement the ones we care about now.
     m_fallback_vtable[DESTRUCTOR_INDEX] = +[](FFakeStereoRendering* stereo) -> void { SPDLOG_INFO("Destructor called?");  }; // destructor.
@@ -3417,10 +3431,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }
 
     auto init_options_stereo_pass = init_options->get_stereo_pass();
+    bool force_stereo_pass = false;
 
     if (is_ue_57() && vr->is_hmd_active()) {
         const auto& rtm = *g_hook->get_render_target_manager();
-        const bool force_stereo_pass = g_hook->is_ue57_render_texture_validated() ||
+        force_stereo_pass = g_hook->is_ue57_render_texture_validated() ||
             rtm.get_render_target() != nullptr || rtm.get_ui_target() != nullptr;
 
         if (force_stereo_pass && init_options_stereo_pass == EStereoscopicPass::eSSP_FULL) {
@@ -3494,6 +3509,31 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         if (views != nullptr) {
             views->count = views_original_count.value();
+        }
+    }
+
+    if (force_stereo_pass && result != nullptr && init_options_stereo_pass != EStereoscopicPass::eSSP_FULL) {
+        const auto pass_offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
+        if (pass_offset != 0) {
+            auto* pass_ptr = reinterpret_cast<uint8_t*>(result) + pass_offset;
+            if (is_readable_ptr_local(pass_ptr, sizeof(uint8_t))) {
+                *pass_ptr = static_cast<uint8_t>(init_options_stereo_pass);
+            }
+        }
+
+        const auto view_index_offset = g_sceneview_stereo_view_index_offset.load(std::memory_order_relaxed);
+        if (view_index_offset != 0) {
+            auto* view_index_ptr = reinterpret_cast<uint8_t*>(result) + view_index_offset;
+            if (is_readable_ptr_local(view_index_ptr, sizeof(uint32_t))) {
+                *reinterpret_cast<uint32_t*>(view_index_ptr) = true_index;
+            }
+        }
+
+        static uint32_t patched_view_log_count = 0;
+        if (patched_view_log_count < 10) {
+            SPDLOG_INFO("UE5.7: patched FSceneView stereo fields (pass {}, view_index {})",
+                static_cast<uint32_t>(init_options_stereo_pass), true_index);
+            ++patched_view_log_count;
         }
     }
 
@@ -5860,7 +5900,7 @@ struct RenderTextureCallOriginalContextFRDG {
     ::WindowSizeD window_size_d{};
 };
 
-static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*)) {
+static bool is_readable_ptr_local(const void* ptr, size_t size) {
     if (ptr == nullptr) {
         return false;
     }
