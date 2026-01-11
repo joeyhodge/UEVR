@@ -171,8 +171,26 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
 }
 
 bool is_ue_57() {
-    const auto override = get_stereo_rendering_device_offset_override();
-    return override && *override == 0x15A0;
+    static std::optional<bool> cached{};
+    if (cached) {
+        return *cached;
+    }
+
+    if (const auto override = get_stereo_rendering_device_offset_override(); override) {
+        cached = (*override == 0x15A0);
+        return *cached;
+    }
+
+    if (const auto detected = sdk::UEngine::get_stereo_rendering_device_offset(); detected) {
+        cached = (*detected == 0x15A0);
+        if (*cached) {
+            SPDLOG_INFO("Detected UE5.7 via UESDK offset; using StereoRenderingDevice offset 0x15A0");
+        }
+        return *cached;
+    }
+
+    cached = false;
+    return *cached;
 }
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
@@ -2770,13 +2788,19 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     if (in_engine_tick && vr->is_using_synchronized_afr() && g_frame_count % 2 == 0) {
         GameThreadWorker::get().enqueue([=]() {
             if (g_hook->m_viewport_draw_hook && viewport != g_hook->m_last_destroyed_viewport) {
-                __try {
-                    if (*(void***)viewport != g_hook->m_last_viewport_vtable) {
-                        SPDLOG_ERROR("FViewport::Draw called on a viewport with a different vtable! This is not expected!");
-                        return;
-                    }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
                     SPDLOG_ERROR("FViewport::Draw called with a bad viewport pointer! This is not expected!");
+                    return;
+                }
+
+                auto vtable = *(void***)viewport;
+                if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                    SPDLOG_ERROR("FViewport::Draw called with a bad viewport vtable! This is not expected!");
+                    return;
+                }
+
+                if (vtable != g_hook->m_last_viewport_vtable) {
+                    SPDLOG_ERROR("FViewport::Draw called on a viewport with a different vtable! This is not expected!");
                     return;
                 }
 
@@ -2785,7 +2809,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
                 auto& vr = VR::get();
                 const auto method = vr->get_synced_sequential_method();
-                
+
                 if (method == VR::SyncedSequentialMethod::SKIP_TICK) {
                     g_hook->m_ignore_next_engine_tick = true;
                     //g_hook->m_ignore_next_viewport_draw = true;
@@ -6288,8 +6312,18 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 #endif
 
     auto& vr = VR::get();
-    const bool allow_force_stereo = is_ue_57() && vr->is_hmd_active() &&
-        !vr->is_stereo_emulation_enabled() && g_hook->is_ue57_render_texture_validated();
+    const bool allow_force_stereo = [&]() -> bool {
+        if (!is_ue_57() || !vr->is_hmd_active() || vr->is_stereo_emulation_enabled()) {
+            return false;
+        }
+
+        if (g_hook->is_ue57_render_texture_validated()) {
+            return true;
+        }
+
+        auto& rtm = *g_hook->get_render_target_manager();
+        return rtm.get_render_target() != nullptr || rtm.get_ui_target() != nullptr;
+    }();
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
         return 2;
@@ -6381,9 +6415,13 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
                     candidate = rtm.get_ui_target();
                 }
 
-                if (candidate != nullptr && is_rhi_texture_vtable_match(candidate)) {
+                if (candidate != nullptr) {
+                    if (!is_rhi_texture_vtable_match(candidate)) {
+                        SPDLOG_WARN_ONCE("UE5.7: RenderTexture validation from non-RHI vtable; allowing custom RTM");
+                    }
+
                     g_hook->set_ue57_render_texture_validated(true);
-                    SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via Slate fallback; enabling custom RTM");
+                    SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via RTM candidate; enabling custom RTM");
                 } else {
                     SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
                     if (auto* original = fallback_to_original(); original != nullptr) {
@@ -9708,6 +9746,15 @@ __declspec(noinline) void FFakeStereoRenderingHook::scene_viewport_set_render_ta
     if (ui_target == nullptr || !is_valid_texture_ptr(ui_target)) {
         ui_target = tex;
         SPDLOG_INFO_ONCE("UE5.7: UI target set from FSceneViewport::SetRenderTargetTextureRenderThread: {:x}", (uintptr_t)tex);
+    }
+
+    if (!g_hook->is_ue57_render_texture_validated()) {
+        if (!is_rhi_texture_vtable_match(tex)) {
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture validation from non-RHI vtable (SetRenderTargetTextureRenderThread)");
+        }
+
+        g_hook->set_ue57_render_texture_validated(true);
+        SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via SetRenderTargetTextureRenderThread");
     }
 }
 
