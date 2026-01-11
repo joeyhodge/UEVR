@@ -934,8 +934,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     auto render_texture_render_thread_func = utility::find_virtual_function_from_string_ref(game, L"RenderTexture_RenderThread");
     const bool is_ue57 = is_ue_57();
-    constexpr size_t kRenderTextureVtableIndexUE57FRDG = 14;
-    constexpr size_t kRenderTextureVtableIndexUE57FRHI = 15;
+    const size_t kRenderTextureVtableIndexUE57FRDG = stereo_projection_matrix_index + 2;
+    const size_t kRenderTextureVtableIndexUE57FRHI = kRenderTextureVtableIndexUE57FRDG + 1;
     bool skip_render_target_manager_hooks = false;
     bool rendertexture_index_forced = false;
     bool rendertexture_is_frdg = false;
