@@ -3416,7 +3416,26 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    const auto init_options_stereo_pass = init_options->get_stereo_pass();
+    auto init_options_stereo_pass = init_options->get_stereo_pass();
+
+    if (is_ue_57() && vr->is_hmd_active()) {
+        const auto& rtm = *g_hook->get_render_target_manager();
+        const bool force_stereo_pass = g_hook->is_ue57_render_texture_validated() ||
+            rtm.get_render_target() != nullptr || rtm.get_ui_target() != nullptr;
+
+        if (force_stereo_pass && init_options_stereo_pass == EStereoscopicPass::eSSP_FULL) {
+            const auto forced_pass = true_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
+            init_options->set_stereo_pass(forced_pass);
+            init_options_stereo_pass = forced_pass;
+
+            static uint32_t forced_pass_log_count = 0;
+            if (forced_pass_log_count < 10) {
+                SPDLOG_INFO("UE5.7: forcing stereo pass {} for view {} (frame {})",
+                    (int)forced_pass, true_index, g_frame_count);
+                ++forced_pass_log_count;
+            }
+        }
+    }
 
     std::optional<uint32_t> views_original_count{};
 
@@ -5346,7 +5365,15 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("calculate stereo view offset called! {}", view_index);
 #else
-    SPDLOG_INFO_ONCE("calculate stereo view offset called! {}", view_index);
+    if (is_ue_57()) {
+        static uint32_t view_offset_log_count = 0;
+        if (view_offset_log_count < 10) {
+            SPDLOG_INFO("UE5.7: calculate stereo view offset called! {}", view_index);
+            ++view_offset_log_count;
+        }
+    } else {
+        SPDLOG_INFO_ONCE("calculate stereo view offset called! {}", view_index);
+    }
 #endif
 
     if (!g_framework->is_game_data_intialized()) {
@@ -6369,7 +6396,11 @@ EStereoscopicPass FFakeStereoRenderingHook::get_view_pass_for_index_hook(FFakeSt
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("get view pass for index hook called! {} {}", stereo_requested, view_index);
 #else
-    SPDLOG_INFO_ONCE("get view pass for index hook called! {} {}", stereo_requested, view_index);
+    static uint32_t view_pass_log_count = 0;
+    if (view_pass_log_count < 10) {
+        SPDLOG_INFO("get view pass for index hook called! {} {}", stereo_requested, view_index);
+        ++view_pass_log_count;
+    }
 #endif
 
     // On 5.0.3 this check is not here, it was only added in 5.1
@@ -6378,7 +6409,22 @@ EStereoscopicPass FFakeStereoRenderingHook::get_view_pass_for_index_hook(FFakeSt
         return EStereoscopicPass::eSSP_FULL;
     }
 
-    return view_index % 2 == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
+    static bool index_starts_from_one = true;
+    static bool index_was_ever_two = false;
+
+    if (view_index == 2) {
+        index_starts_from_one = true;
+        index_was_ever_two = true;
+    } else if (view_index == 0 && !index_was_ever_two) {
+        index_starts_from_one = false;
+    }
+
+    const auto normalized_index = index_starts_from_one ? (view_index - 1) : view_index;
+    if (normalized_index < 0) {
+        return EStereoscopicPass::eSSP_FULL;
+    }
+
+    return normalized_index % 2 == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
 }
 
 IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_hook(FFakeStereoRendering* stereo) {
