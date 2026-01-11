@@ -3434,9 +3434,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     bool force_stereo_pass = false;
 
     if (is_ue_57() && vr->is_hmd_active()) {
-        const auto& rtm = *g_hook->get_render_target_manager();
-        force_stereo_pass = g_hook->is_ue57_render_texture_validated() ||
-            rtm.get_render_target() != nullptr || rtm.get_ui_target() != nullptr;
+        auto* rtm = g_hook->get_render_target_manager();
+        force_stereo_pass = g_hook->is_ue57_render_texture_validated();
+        if (rtm != nullptr) {
+            force_stereo_pass = force_stereo_pass ||
+                rtm->get_render_target() != nullptr || rtm->get_ui_target() != nullptr;
+        }
 
         if (force_stereo_pass && init_options_stereo_pass == EStereoscopicPass::eSSP_FULL) {
             const auto forced_pass = true_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
