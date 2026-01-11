@@ -6997,14 +6997,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         static bool a4_is_ue_5_5_variant = [&]() -> bool {
             SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
+            if (!is_readable_ptr(a4_ptr, sizeof(void*))) {
+                SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not readable; assuming non-UE5.5 variant");
+                return false;
+            }
 
-            __try {
-                if (a4_ptr[0] == renderer) {
-                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
-                    return true;
-                }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+            if (a4_ptr[0] == renderer) {
+                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
+                return true;
             }
 
             SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
@@ -7627,6 +7627,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (ui_target == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
+        return call_orig();
+    }
+
+    if (is_ue57) {
+        SPDLOG_WARN_ONCE("UE5.7: skipping Slate texture swap (RenderResource lifetime stability)");
         return call_orig();
     }
 
