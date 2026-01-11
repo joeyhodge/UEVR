@@ -6106,26 +6106,26 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
             return true;
         };
 
-        const auto src_is_rhi = is_rhi_texture_vtable_match(src_texture);
-        const auto back_is_rhi = is_rhi_texture_vtable_match(backbuffer);
-        const auto valid_src = src_is_rhi && is_valid_texture_ptr(src_texture);
-        const auto valid_back = back_is_rhi && is_valid_texture_ptr(backbuffer);
-        bool ue57_validated = valid_src || valid_back;
+    const auto src_is_rhi = is_rhi_texture_vtable_match(src_texture);
+    const auto back_is_rhi = is_rhi_texture_vtable_match(backbuffer);
+    const auto valid_src = is_valid_texture_ptr(src_texture);
+    const auto valid_back = is_valid_texture_ptr(backbuffer);
+    bool ue57_validated = valid_src || valid_back;
 
         if (!src_is_rhi && !back_is_rhi) {
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread textures do not match RHI module (src {:x}, back {:x})",
                 (uintptr_t)src_texture, (uintptr_t)backbuffer);
         }
 
-        if (rtm.get_render_target() == nullptr) {
-            if (valid_src) {
-                rtm.set_render_target(src_texture);
-                SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
-            } else if (valid_back) {
-                rtm.set_render_target(backbuffer);
-                SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
-            }
+    if (rtm.get_render_target() == nullptr) {
+        if (valid_src && src_is_rhi) {
+            rtm.set_render_target(src_texture);
+            SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
+        } else if (valid_back && back_is_rhi) {
+            rtm.set_render_target(backbuffer);
+            SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
         }
+    }
 
         if (ui_target == nullptr) {
             if (valid_src) {
@@ -6137,9 +6137,12 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
             }
         }
 
-        if (ue57_validated) {
-            g_hook->set_ue57_render_texture_validated(true);
+    if (ue57_validated) {
+        if (!src_is_rhi && !back_is_rhi) {
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread validation from non-RHI vtables; forcing stereo");
         }
+        g_hook->set_ue57_render_texture_validated(true);
+    }
     }
 
     call_original_fn();
@@ -7791,8 +7794,14 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
 
     SPDLOG_INFO("RenderTargetSize Before: {}x{}", x, y);
 
-    x = VR::get()->get_hmd_width() * 2;
-    y = VR::get()->get_hmd_height();
+    if (is_ue_57()) {
+        x = VR::get()->get_hmd_width();
+        y = VR::get()->get_hmd_height();
+        SPDLOG_INFO_ONCE("UE5.7: using array-style render target size {}x{}", x, y);
+    } else {
+        x = VR::get()->get_hmd_width() * 2;
+        y = VR::get()->get_hmd_height();
+    }
 
     SPDLOG_INFO("RenderTargetSize After: {}x{}", x, y);
 }
