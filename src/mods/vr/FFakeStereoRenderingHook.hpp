@@ -430,21 +430,21 @@ public:
 
     bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
         return handle_bool(3, [this, &Viewport]() {
-            const auto* real = m_real.load(std::memory_order_relaxed);
+            auto* real = m_real.load(std::memory_order_relaxed);
             return real != nullptr ? real->NeedReAllocateViewportRenderTarget(Viewport) : false;
         });
     }
 
     bool NeedReAllocateDepthTexture(const void* DepthTarget) override {
         return handle_bool(4, [this, DepthTarget]() {
-            const auto* real = m_real.load(std::memory_order_relaxed);
+            auto* real = m_real.load(std::memory_order_relaxed);
             return real != nullptr ? real->NeedReAllocateDepthTexture(DepthTarget) : false;
         });
     }
 
     bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override {
         return handle_bool(5, [this, ShadingRateTarget]() {
-            const auto* real = m_real.load(std::memory_order_relaxed);
+            auto* real = m_real.load(std::memory_order_relaxed);
             return real != nullptr ? real->NeedReAllocateShadingRateTexture(ShadingRateTarget) : false;
         });
     }
@@ -539,7 +539,7 @@ public:
 
     bool ReconfigureForShaderPlatform(EShaderPlatform ShaderPlatform) override {
         return handle_bool(15, [this, ShaderPlatform]() {
-            const auto* real = m_real.load(std::memory_order_relaxed);
+            auto* real = m_real.load(std::memory_order_relaxed);
             return real != nullptr ? real->ReconfigureForShaderPlatform(ShaderPlatform) : false;
         });
     }
