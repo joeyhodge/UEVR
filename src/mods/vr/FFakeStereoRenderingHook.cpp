@@ -7079,18 +7079,31 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     void* rdg_builder = nullptr;
 
     if (is_ue57) {
-        constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
+        constexpr size_t kRdgBuilderCommandListOffsetsUE57[] = { 0xC0, 0xC8, 0xB8, 0xD0 };
         const auto try_rdg_builder = [&](void* builder, const char* label) -> sdk::FRHICommandListBase* {
-            if (!is_readable_ptr(builder, kRdgBuilderCommandListOffsetUE57 + sizeof(void*))) {
-                return nullptr;
-            }
+            for (const auto offset : kRdgBuilderCommandListOffsetsUE57) {
+                if (!is_readable_ptr(builder, offset + sizeof(void*))) {
+                    continue;
+                }
 
-            auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)builder + kRdgBuilderCommandListOffsetUE57);
-            if (candidate != nullptr && is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase)) &&
-                candidate->root != nullptr && !IsBadReadPtr(candidate->root, sizeof(void*))) {
+                auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)builder + offset);
+                if (candidate == nullptr || !is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase))) {
+                    continue;
+                }
+
+                if (candidate->command_link == nullptr || IsBadReadPtr(candidate->command_link, sizeof(void*))) {
+                    continue;
+                }
+
+                const auto base = (uintptr_t)candidate;
+                const auto link_addr = (uintptr_t)candidate->command_link;
+                if (link_addr < base || link_addr >= base + sizeof(sdk::FRHICommandListBase)) {
+                    continue;
+                }
+
                 rdg_builder = builder;
-                SPDLOG_INFO_ONCE("UE5.7: FRDGBuilder RHICmdList resolved via {} (builder {:x}, cmd {:x})",
-                    label, (uintptr_t)builder, (uintptr_t)candidate);
+                SPDLOG_INFO_ONCE("UE5.7: FRDGBuilder RHICmdList resolved via {}+0x{:x} (builder {:x}, cmd {:x})",
+                    label, offset, (uintptr_t)builder, (uintptr_t)candidate);
                 return candidate;
             }
 
@@ -7140,10 +7153,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     };
 
     if (is_ue57) {
-        SPDLOG_WARN_ONCE("UE5.7: Slate hook running in validation-only mode (skipping RHICmdList work)");
-    }
-
-    if (is_ue57) {
         constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
         constexpr size_t kSlatePassInputsWindowOffsetUE57 = 0x10;
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
@@ -7183,7 +7192,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
         };
 
-        const auto try_inputs = [&](void* inputs_ptr) -> bool {
+        const auto try_inputs = [&](void* inputs_ptr, const char* label) -> bool {
             if (!is_readable_ptr(inputs_ptr, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
                 return false;
             }
@@ -7191,15 +7200,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             auto inputs = (uint8_t*)inputs_ptr;
             auto viewport_info_candidate = *(sdk::FViewportInfo**)(inputs + kSlatePassInputsViewportInfoOffsetUE57);
             auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
+            const bool viewport_info_valid = is_valid_viewport_info(viewport_info_candidate);
+            const bool window_valid = is_valid_swindow(window_candidate);
             bool found = false;
 
-            if (viewport_info == nullptr && is_valid_viewport_info(viewport_info_candidate)) {
+            if (viewport_info == nullptr && viewport_info_valid) {
                 viewport_info = viewport_info_candidate;
-                found = true;
             }
 
-            if (slate_viewport == nullptr && is_valid_swindow(window_candidate)) {
-                found = true;
+            if (slate_viewport == nullptr && window_valid) {
                 for (const auto offset : kSWindowViewportOffsetsUE57) {
                     if (!is_readable_ptr(window_candidate + offset, sizeof(void*))) {
                         continue;
@@ -7213,23 +7222,36 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 }
             }
 
+            found = viewport_info_valid && window_valid;
+
             if (found) {
                 if (ue57_inputs_ptr == nullptr) {
                     ue57_inputs_ptr = inputs_ptr;
                 }
-                SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x}", (uintptr_t)inputs_ptr);
+                SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x} ({})", (uintptr_t)inputs_ptr, label);
             }
 
             return found;
         };
 
-        const void* inputs_candidates[] = { a3, a4, a2, params };
-        for (const auto* candidate : inputs_candidates) {
-            if (candidate == nullptr) {
+        struct InputsCandidate {
+            void* ptr;
+            const char* label;
+        };
+
+        const InputsCandidate inputs_candidates[] = {
+            { a3, "a3" },
+            { a4, "a4" },
+            { a2, "a2" },
+            { params, "params" }
+        };
+
+        for (const auto& candidate : inputs_candidates) {
+            if (candidate.ptr == nullptr) {
                 continue;
             }
 
-            if (try_inputs(const_cast<void*>(candidate))) {
+            if (try_inputs(candidate.ptr, candidate.label)) {
                 break;
             }
         }
@@ -7465,6 +7487,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
+    if (is_ue57 && command_list_rhi == nullptr) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate hook running in validation-only mode (skipping RHICmdList work)");
+    }
+
     struct Ue57DrawWindowArgs {
         void* ret = nullptr;
         void* renderer = nullptr;
@@ -7546,8 +7572,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
+        constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
+        const bool a4_looks_like_inputs = is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*));
         if (ue57_inputs_ptr != nullptr) {
-            ue57_args.inputs = ue57_inputs_ptr;
+            if (!a4_looks_like_inputs) {
+                ue57_args.inputs = ue57_inputs_ptr;
+            } else if (ue57_inputs_ptr != a4 && ue57_inputs_ptr != a3) {
+                ue57_args.inputs = ue57_inputs_ptr;
+            } else if (ue57_inputs_ptr == a3) {
+                SPDLOG_WARN_ONCE("UE5.7: Inputs candidate matched a3; keeping a4 as inputs");
+            }
         }
 
         if (rdg_builder != nullptr && rdg_builder != ue57_args.inputs) {
