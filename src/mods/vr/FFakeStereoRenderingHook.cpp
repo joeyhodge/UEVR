@@ -6983,11 +6983,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
 
-    if (is_ue57) {
-        SPDLOG_WARN_ONCE("UE5.7: bypassing Slate draw hook to avoid RenderResource lifetime crashes");
-        auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4);
-        return ret != nullptr ? ret : renderer;
-    }
     const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
         if (ptr == nullptr) {
             return false;
@@ -7075,10 +7070,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
     };
 
-    if (is_ue57 && command_list_rhi != nullptr) {
-        g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)command_list_rhi);
-    } else if (is_ue57 && command_list_rhi == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(5, "UE5.7: DrawWindow_RenderThread missing RHICmdList; continuing without it");
+    if (is_ue57) {
+        SPDLOG_WARN_ONCE("UE5.7: Slate hook running in validation-only mode (skipping RHICmdList work)");
     }
 
     if (is_ue57) {
@@ -7585,6 +7578,26 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     };
     auto viewport_info_rt = try_get_viewport_info_rt();
     bool used_viewport_info_fallback = false;
+
+    if (is_ue57) {
+        if (viewport_info_rt != nullptr) {
+            if (rtm.get_render_target() == nullptr) {
+                rtm.set_render_target(viewport_info_rt);
+                SPDLOG_INFO_ONCE("UE5.7: set render target from ViewportRHI optional backbuffer: {:x}",
+                    (uintptr_t)viewport_info_rt);
+            }
+
+            if (ui_target == nullptr) {
+                ui_target = viewport_info_rt;
+                SPDLOG_INFO_ONCE("UE5.7: UI target set from ViewportRHI optional backbuffer: {:x}",
+                    (uintptr_t)viewport_info_rt);
+            }
+
+            maybe_validate_ue57_texture(viewport_info_rt, "ViewportRHI optional backbuffer");
+        }
+
+        return call_orig();
+    }
 
     if (is_ue57 && viewport_info_rt != nullptr) {
         SPDLOG_INFO_ONCE("UE5.7: skipping Slate viewport resource lookup (ViewportRHI fallback available)");
