@@ -7530,70 +7530,54 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     Ue57DrawWindowArgs ue57_args{};
     if (is_ue57) {
-        const void* renderer_candidates[] = { renderer, a2, a3, a4 };
-        for (const auto* candidate : renderer_candidates) {
-            if (candidate != nullptr && is_valid_renderer_ptr(const_cast<void*>(candidate))) {
-                ue57_args.renderer = const_cast<void*>(candidate);
-                break;
+        ue57_args.ret = renderer;
+        ue57_args.renderer = a2;
+        ue57_args.builder = a3;
+        ue57_args.inputs = a4;
+
+        if (!is_valid_renderer_ptr(ue57_args.renderer)) {
+            if (is_valid_renderer_ptr(renderer)) {
+                ue57_args.renderer = renderer;
+                ue57_args.ret = a2;
+            } else if (is_valid_renderer_ptr(a3)) {
+                ue57_args.renderer = a3;
+            } else if (is_valid_renderer_ptr(a4)) {
+                ue57_args.renderer = a4;
             }
         }
 
-        if (ue57_args.renderer == nullptr) {
-            ue57_args.renderer = renderer_this;
+        if (ue57_inputs_ptr != nullptr) {
+            ue57_args.inputs = ue57_inputs_ptr;
         }
 
-        ue57_args.builder = rdg_builder;
-        if (ue57_args.builder == nullptr) {
+        if (rdg_builder != nullptr && rdg_builder != ue57_args.inputs) {
+            ue57_args.builder = rdg_builder;
+        }
+
+        if (ue57_args.builder == ue57_args.inputs && a3 != nullptr && a3 != ue57_args.inputs) {
             ue57_args.builder = a3;
         }
 
-        ue57_args.inputs = ue57_inputs_ptr;
-        if (ue57_args.inputs == nullptr) {
-            constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
-            const void* inputs_candidates[] = { a4, a3, a2, params };
-            for (const auto* candidate : inputs_candidates) {
-                if (candidate == nullptr) {
-                    continue;
-                }
-
-                if (is_readable_ptr(candidate, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
-                    ue57_args.inputs = const_cast<void*>(candidate);
-                    break;
-                }
-            }
+        if (ue57_args.inputs == ue57_args.builder && a4 != nullptr && a4 != ue57_args.builder) {
+            ue57_args.inputs = a4;
         }
 
         if (ue57_args.inputs == nullptr) {
             ue57_args.inputs = a4;
         }
 
-        const void* ret_candidates[] = { renderer, a2, a3, a4 };
-        for (const auto* candidate : ret_candidates) {
-            if (candidate == nullptr) {
-                continue;
-            }
-
-            if (candidate == ue57_args.renderer || candidate == ue57_args.builder || candidate == ue57_args.inputs) {
-                continue;
-            }
-
-            if (is_likely_sret_ptr(const_cast<void*>(candidate))) {
-                ue57_args.ret = const_cast<void*>(candidate);
-                break;
-            }
+        if (ue57_args.builder == nullptr) {
+            ue57_args.builder = a3;
         }
 
-        if (ue57_args.ret == nullptr) {
-            for (const auto* candidate : ret_candidates) {
-                if (candidate != nullptr && candidate != ue57_args.renderer) {
-                    ue57_args.ret = const_cast<void*>(candidate);
-                    break;
-                }
+        if (!is_likely_sret_ptr(ue57_args.ret)) {
+            if (is_likely_sret_ptr(a2)) {
+                ue57_args.ret = a2;
+            } else if (is_likely_sret_ptr(a3)) {
+                ue57_args.ret = a3;
+            } else if (is_likely_sret_ptr(a4)) {
+                ue57_args.ret = a4;
             }
-        }
-
-        if (ue57_args.ret == nullptr) {
-            ue57_args.ret = renderer;
         }
 
         renderer_this = ue57_args.renderer;
