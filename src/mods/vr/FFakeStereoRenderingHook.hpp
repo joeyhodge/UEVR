@@ -128,12 +128,7 @@ protected:
                 return texture;
             }
 
-            void* current_vtable = nullptr;
-            __try {
-                current_vtable = *(void**)texture;
-            } __except (1) {
-                current_vtable = nullptr;
-            }
+            void* current_vtable = read_vtable(texture);
 
             if (current_vtable == nullptr || current_vtable != original_vtable) {
                 reset();
@@ -150,6 +145,20 @@ protected:
             return addr >= 0x10000 && addr <= kMaxUserAddress;
         }
 
+        static void* read_vtable(const void* ptr) {
+            if (ptr == nullptr || !is_plausible_ptr(ptr) || IsBadReadPtr(ptr, sizeof(void*))) {
+                return nullptr;
+            }
+
+            auto vtable = *(void**)ptr;
+
+            if (vtable == nullptr || !is_plausible_ptr(vtable)) {
+                return nullptr;
+            }
+
+            return vtable;
+        }
+
         void reset() {
             texture = nullptr;
             original_vtable = nullptr;
@@ -161,12 +170,7 @@ protected:
                 return;
             }
 
-            void* vtable = nullptr;
-            __try {
-                vtable = *(void**)tex;
-            } __except (1) {
-                vtable = nullptr;
-            }
+            void* vtable = read_vtable(tex);
 
             if (vtable == nullptr) {
                 reset();
