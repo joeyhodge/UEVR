@@ -356,6 +356,45 @@ void FFakeStereoRenderingHook::on_draw_ui() {
 
         }
 
+        if (ImGui::TreeNode("RTM Analyzer")) {
+            bool analyzer_enabled = m_rtm_analyzer_enabled.load(std::memory_order_relaxed);
+            if (ImGui::Checkbox("Enable RTM Analyzer (UE5.7)", &analyzer_enabled)) {
+                m_rtm_analyzer_enabled.store(analyzer_enabled, std::memory_order_relaxed);
+            }
+
+            if (!is_ue_57()) {
+                ImGui::TextDisabled("RTM Analyzer is currently UE5.7-only.");
+            }
+
+            auto& analyzer = m_rtm_analyzer_57;
+            ImGui::Text("RenderTargetManagerAnalyzer total calls: %llu",
+                static_cast<unsigned long long>(analyzer.total_calls()));
+
+            if (ImGui::Button("Reset RTM Analyzer Counters")) {
+                analyzer.reset_counts();
+            }
+
+            for (size_t i = 0; i < RTMAnalyzer_57::kSlotCount; ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                ImGui::Text("RTM[%zu]: %llu (%s)", i,
+                    static_cast<unsigned long long>(analyzer.get_call_count(i)),
+                    RTMAnalyzer_57::kSlotNames[i]);
+                ImGui::SameLine();
+                if (RTMAnalyzer_57::can_force_true(i)) {
+                    if (ImGui::Button("Return true")) {
+                        analyzer.set_action(i, RTMAnalyzer_57::Action::ForceTrue);
+                    }
+                    ImGui::SameLine();
+                }
+                if (ImGui::Button("Continue analyzing")) {
+                    analyzer.set_action(i, RTMAnalyzer_57::Action::CallThrough);
+                }
+                ImGui::PopID();
+            }
+
+            ImGui::TreePop();
+        }
+
         ImGui::TreePop();
     }
 
@@ -6526,14 +6565,31 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
         return nullptr;
     };
 
+    const auto wrap_rtm_57 = [&](IStereoRenderTargetManager_57* real) -> IStereoRenderTargetManager* {
+        if (g_hook->m_rtm_analyzer_enabled.load(std::memory_order_relaxed)) {
+            g_hook->m_rtm_analyzer_57.set_real(real);
+            return reinterpret_cast<IStereoRenderTargetManager*>(&g_hook->m_rtm_analyzer_57);
+        }
+
+        return reinterpret_cast<IStereoRenderTargetManager*>(real);
+    };
+
     if (!g_framework->is_game_data_intialized()) {
-        return is_ue_57() ? fallback_to_original() : nullptr;
+        if (is_ue_57()) {
+            auto* original = reinterpret_cast<IStereoRenderTargetManager_57*>(fallback_to_original());
+            return wrap_rtm_57(original);
+        }
+        return nullptr;
     }
 
     auto vr = VR::get();
 
     if (vr->is_stereo_emulation_enabled() || vr->is_extreme_compatibility_mode_enabled()) {
-        return is_ue_57() ? fallback_to_original() : nullptr;
+        if (is_ue_57()) {
+            auto* original = reinterpret_cast<IStereoRenderTargetManager_57*>(fallback_to_original());
+            return wrap_rtm_57(original);
+        }
+        return nullptr;
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
@@ -6555,7 +6611,7 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
                 } else {
                     SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
                     if (auto* original = fallback_to_original(); original != nullptr) {
-                        return original;
+                        return wrap_rtm_57(reinterpret_cast<IStereoRenderTargetManager_57*>(original));
                     }
 
                     SPDLOG_WARN_ONCE("UE5.7: original GetRenderTargetManager returned null; falling back to custom.");
@@ -6563,7 +6619,7 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
             }
 
             auto rtm = static_cast<IStereoRenderTargetManager_57*>(&g_hook->m_rtm_57);
-            return reinterpret_cast<IStereoRenderTargetManager*>(rtm);
+            return wrap_rtm_57(rtm);
         }
 
         if (g_hook->m_uses_old_rendertarget_manager) {
@@ -6577,7 +6633,11 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
         return &g_hook->m_rtm;
     }
 
-    return is_ue_57() ? fallback_to_original() : nullptr;
+    if (is_ue_57()) {
+        auto* original = reinterpret_cast<IStereoRenderTargetManager_57*>(fallback_to_original());
+        return wrap_rtm_57(original);
+    }
+    return nullptr;
 }
 
 IStereoLayers* FFakeStereoRenderingHook::get_stereo_layers_hook(FFakeStereoRendering* stereo) {

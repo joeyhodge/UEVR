@@ -315,6 +315,302 @@ public:
     }
 };
 
+struct RTMAnalyzer_57 : IStereoRenderTargetManager_57 {
+public:
+    static constexpr size_t kSlotCount = 19;
+    enum class Action : int8_t { CallThrough = 0, ForceTrue = 1, ForceFalse = -1 };
+
+    RTMAnalyzer_57() {
+        for (auto& counter : m_calls) {
+            counter.store(0, std::memory_order_relaxed);
+        }
+        for (auto& action : m_actions) {
+            action.store(static_cast<int8_t>(Action::CallThrough), std::memory_order_relaxed);
+        }
+    }
+
+    void set_real(IStereoRenderTargetManager_57* r) {
+        m_real.store(r, std::memory_order_relaxed);
+    }
+
+    void reset_counts() {
+        for (auto& counter : m_calls) {
+            counter.store(0, std::memory_order_relaxed);
+        }
+    }
+
+    uint64_t total_calls() const {
+        uint64_t total = 0;
+        for (const auto& counter : m_calls) {
+            total += counter.load(std::memory_order_relaxed);
+        }
+        return total;
+    }
+
+    uint64_t get_call_count(size_t idx) const {
+        if (idx >= kSlotCount) {
+            return 0;
+        }
+        return m_calls[idx].load(std::memory_order_relaxed);
+    }
+
+    Action get_action(size_t idx) const {
+        if (idx >= kSlotCount) {
+            return Action::CallThrough;
+        }
+        return static_cast<Action>(m_actions[idx].load(std::memory_order_relaxed));
+    }
+
+    void set_action(size_t idx, Action action) {
+        if (idx >= kSlotCount) {
+            return;
+        }
+        m_actions[idx].store(static_cast<int8_t>(action), std::memory_order_relaxed);
+    }
+
+    static constexpr std::array<const char*, kSlotCount> kSlotNames{
+        "ShouldUseSeparateRenderTarget",
+        "UpdateViewport",
+        "CalculateRenderTargetSize",
+        "NeedReAllocateViewportRenderTarget",
+        "NeedReAllocateDepthTexture",
+        "NeedReAllocateShadingRateTexture",
+        "GetNumberOfBufferedFrames",
+        "AllocateRenderTargetTexture",
+        "AllocateRenderTargetTextures",
+        "GetActualColorSwapchainFormat",
+        "AcquireColorTexture",
+        "AcquireDepthTexture",
+        "AllocateDepthTexture",
+        "AllocateShadingRateTexture",
+        "HDRGetMetaDataForStereo",
+        "ReconfigureForShaderPlatform",
+        "GetRecommendedMotionVectorTextureSize",
+        "GetMotionVectorTexture",
+        "GetMotionVectorDepthTexture",
+    };
+
+    static constexpr bool can_force_true(size_t idx) {
+        switch (idx) {
+        case 0:
+        case 3:
+        case 4:
+        case 5:
+        case 14:
+        case 15:
+        case 16:
+        case 17:
+        case 18:
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool ShouldUseSeparateRenderTarget() const override {
+        return handle_bool(0, [this]() {
+            const auto* real = m_real.load(std::memory_order_relaxed);
+            return real != nullptr ? real->ShouldUseSeparateRenderTarget() : true;
+        });
+    }
+
+    void UpdateViewport(bool bUseSeparateRenderTarget, const sdk::FViewport& Viewport, class SViewport* ViewportWidget = nullptr) override {
+        record(1);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            real->UpdateViewport(bUseSeparateRenderTarget, Viewport, ViewportWidget);
+        }
+    }
+
+    void CalculateRenderTargetSize(const sdk::FViewport& Viewport, uint32_t& InOutSizeX, uint32_t& InOutSizeY) override {
+        record(2);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            real->CalculateRenderTargetSize(Viewport, InOutSizeX, InOutSizeY);
+        }
+    }
+
+    bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
+        return handle_bool(3, [this, &Viewport]() {
+            const auto* real = m_real.load(std::memory_order_relaxed);
+            return real != nullptr ? real->NeedReAllocateViewportRenderTarget(Viewport) : false;
+        });
+    }
+
+    bool NeedReAllocateDepthTexture(const void* DepthTarget) override {
+        return handle_bool(4, [this, DepthTarget]() {
+            const auto* real = m_real.load(std::memory_order_relaxed);
+            return real != nullptr ? real->NeedReAllocateDepthTexture(DepthTarget) : false;
+        });
+    }
+
+    bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override {
+        return handle_bool(5, [this, ShadingRateTarget]() {
+            const auto* real = m_real.load(std::memory_order_relaxed);
+            return real != nullptr ? real->NeedReAllocateShadingRateTexture(ShadingRateTarget) : false;
+        });
+    }
+
+    uint32_t GetNumberOfBufferedFrames() const override {
+        record(6);
+        const auto* real = m_real.load(std::memory_order_relaxed);
+        return real != nullptr ? real->GetNumberOfBufferedFrames() : 1;
+    }
+
+    bool AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
+        FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples = 1) override {
+        record(7);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AllocateRenderTargetTexture(Index, SizeX, SizeY, Format, NumMips, Flags, TargetableTextureFlags,
+                OutTargetableTexture, OutShaderResourceTexture, NumSamples);
+        }
+        return false;
+    }
+
+    bool AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<TRefCountPtr<FRHITexture>>& OutTargetableTextures,
+        TArray<TRefCountPtr<FRHITexture>>& OutShaderResourceTextures, uint32_t NumSamples = 1) override {
+        record(8);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AllocateRenderTargetTextures(SizeX, SizeY, Format, NumMips, Flags, TargetableTextureFlags,
+                OutTargetableTextures, OutShaderResourceTextures, NumSamples);
+        }
+        return false;
+    }
+
+    EPixelFormat GetActualColorSwapchainFormat() const override {
+        record(9);
+        const auto* real = m_real.load(std::memory_order_relaxed);
+        return real != nullptr ? real->GetActualColorSwapchainFormat() : EPixelFormat::PF_Unknown;
+    }
+
+    int32_t AcquireColorTexture() override {
+        record(10);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AcquireColorTexture();
+        }
+        return 0;
+    }
+
+    int32_t AcquireDepthTexture() override {
+        record(11);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AcquireDepthTexture();
+        }
+        return 0;
+    }
+
+    bool AllocateDepthTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
+        FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples = 1) override {
+        record(12);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AllocateDepthTexture(Index, SizeX, SizeY, Format, NumMips, Flags, TargetableTextureFlags,
+                OutTargetableTexture, OutShaderResourceTexture, NumSamples);
+        }
+        return false;
+    }
+
+    bool AllocateShadingRateTexture(uint32_t Index, uint32_t RenderSizeX, uint32_t RenderSizeY, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTexture, FIntPoint& OutTextureSize) override {
+        record(13);
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->AllocateShadingRateTexture(Index, RenderSizeX, RenderSizeY, Format, NumMips, Flags, TargetableTextureFlags,
+                OutTexture, OutTextureSize);
+        }
+        return false;
+    }
+
+    bool HDRGetMetaDataForStereo(EDisplayOutputFormat& OutOutputFormat, EDisplayColorGamut& OutColorGamut, bool& OutHDR) override {
+        const auto action = record_and_action(14);
+        if (action != Action::CallThrough) {
+            OutOutputFormat = EDisplayOutputFormat::DOF_Unknown;
+            OutColorGamut = EDisplayColorGamut::DCG_Unknown;
+            OutHDR = false;
+            return action == Action::ForceTrue;
+        }
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->HDRGetMetaDataForStereo(OutOutputFormat, OutColorGamut, OutHDR);
+        }
+        OutOutputFormat = EDisplayOutputFormat::DOF_Unknown;
+        OutColorGamut = EDisplayColorGamut::DCG_Unknown;
+        OutHDR = false;
+        return false;
+    }
+
+    bool ReconfigureForShaderPlatform(EShaderPlatform ShaderPlatform) override {
+        return handle_bool(15, [this, ShaderPlatform]() {
+            const auto* real = m_real.load(std::memory_order_relaxed);
+            return real != nullptr ? real->ReconfigureForShaderPlatform(ShaderPlatform) : false;
+        });
+    }
+
+    bool GetRecommendedMotionVectorTextureSize(FIntPoint& OutTextureSize) override {
+        const auto action = record_and_action(16);
+        if (action != Action::CallThrough) {
+            OutTextureSize = FIntPoint{0, 0};
+            return action == Action::ForceTrue;
+        }
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->GetRecommendedMotionVectorTextureSize(OutTextureSize);
+        }
+        OutTextureSize = FIntPoint{0, 0};
+        return false;
+    }
+
+    bool GetMotionVectorTexture(uint32_t Index, const FIntPoint& RenderSize, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, TRefCountPtr<FRHITexture>& OutTexture, uint32_t NumSamples = 1) override {
+        const auto action = record_and_action(17);
+        if (action != Action::CallThrough) {
+            OutTexture.reference = nullptr;
+            return action == Action::ForceTrue;
+        }
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->GetMotionVectorTexture(Index, RenderSize, Format, NumMips, Flags, OutTexture, NumSamples);
+        }
+        OutTexture.reference = nullptr;
+        return false;
+    }
+
+    bool GetMotionVectorDepthTexture(uint32_t Index, const FIntPoint& RenderSize, uint8_t Format, uint32_t NumMips,
+        ETextureCreateFlags Flags, TRefCountPtr<FRHITexture>& OutTexture, uint32_t NumSamples = 1) override {
+        const auto action = record_and_action(18);
+        if (action != Action::CallThrough) {
+            OutTexture.reference = nullptr;
+            return action == Action::ForceTrue;
+        }
+        if (auto* real = m_real.load(std::memory_order_relaxed); real != nullptr) {
+            return real->GetMotionVectorDepthTexture(Index, RenderSize, Format, NumMips, Flags, OutTexture, NumSamples);
+        }
+        OutTexture.reference = nullptr;
+        return false;
+    }
+
+private:
+    Action record_and_action(size_t idx) const {
+        record(idx);
+        return get_action(idx);
+    }
+
+    void record(size_t idx) const {
+        if (idx < kSlotCount) {
+            m_calls[idx].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+
+    template <typename F>
+    bool handle_bool(size_t idx, F&& fn) const {
+        const auto action = record_and_action(idx);
+        if (action != Action::CallThrough) {
+            return action == Action::ForceTrue;
+        }
+        return fn();
+    }
+
+    std::atomic<IStereoRenderTargetManager_57*> m_real{nullptr};
+    mutable std::array<std::atomic<uint64_t>, kSlotCount> m_calls{};
+    mutable std::array<std::atomic<int8_t>, kSlotCount> m_actions{};
+};
+
 struct VRRenderTargetManager_418 : IStereoRenderTargetManager_418, VRRenderTargetManager_Base {
     uint32_t GetNumberOfBufferedFrames() const override { return VRRenderTargetManager_Base::get_number_of_buffered_frames(); }
     virtual bool ShouldUseSeparateRenderTarget() const override { return VRRenderTargetManager_Base::should_use_separate_render_target(); }
@@ -654,6 +950,8 @@ private:
     } m_viewport_rt_hook_data{};
 
     VRRenderTargetManager_57 m_rtm_57{};
+    RTMAnalyzer_57 m_rtm_analyzer_57{};
+    std::atomic_bool m_rtm_analyzer_enabled{false};
     VRRenderTargetManager m_rtm{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};
