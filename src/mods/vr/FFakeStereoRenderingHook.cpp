@@ -73,9 +73,10 @@ uint32_t g_frame_count{};
 
 namespace {
 constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
-// UE5.7 PDB (UnrealEditor-Engine) shows StereoPass at +0x210 and StereoViewIndex at +0x214 in FSceneView.
-constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0x210;
-constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0x214;
+// UE5.7 (UnrealEditor-Engine/Renderer PDBs): FSceneView::StereoPass sits at +0xDE0 (view index at +0xDE4).
+// Note: FSceneViewInitOptions::StereoPass remains at +0x1C0 inside the member stored at +0x50 in FSceneView.
+constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
+constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0xDE4;
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
 std::atomic<uint32_t> g_sceneview_stereo_view_index_offset{0};
 std::atomic<uint64_t> g_slate_draw_window_calls{0};
