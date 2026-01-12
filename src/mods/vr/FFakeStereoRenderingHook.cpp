@@ -7656,7 +7656,38 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             maybe_validate_ue57_texture(viewport_info_rt, "ViewportRHI optional backbuffer");
         }
 
-        return call_orig();
+        auto ret = call_orig();
+        constexpr size_t kSlateDrawWindowOutputsSizeUE57 = 0x18;
+        constexpr size_t kSlateDrawWindowOutputsViewportTextureOffsetUE57 = 0x8;
+        constexpr size_t kSlateDrawWindowOutputsOutputTextureOffsetUE57 = 0x10;
+        if (ret != nullptr && is_readable_ptr(ret, kSlateDrawWindowOutputsSizeUE57)) {
+            auto outputs = (uint8_t*)ret;
+            auto viewport_texture = *(FRHITexture2D**)(outputs + kSlateDrawWindowOutputsViewportTextureOffsetUE57);
+            auto output_texture = *(FRHITexture2D**)(outputs + kSlateDrawWindowOutputsOutputTextureOffsetUE57);
+
+            SPDLOG_INFO_ONCE("UE5.7: Slate outputs candidate ViewportTextureRHI {:x}, OutputTextureRHI {:x}",
+                (uintptr_t)viewport_texture, (uintptr_t)output_texture);
+
+            auto valid_output = is_valid_texture_ptr(output_texture) ? output_texture : nullptr;
+            auto valid_viewport = is_valid_texture_ptr(viewport_texture) ? viewport_texture : nullptr;
+            auto chosen = valid_output != nullptr ? valid_output : valid_viewport;
+
+            if (chosen != nullptr) {
+                if (rtm.get_render_target() == nullptr) {
+                    rtm.set_render_target(chosen);
+                    SPDLOG_INFO_ONCE("UE5.7: set render target from Slate outputs: {:x}", (uintptr_t)chosen);
+                }
+
+                if (ui_target == nullptr && valid_viewport != nullptr) {
+                    ui_target = valid_viewport;
+                    SPDLOG_INFO_ONCE("UE5.7: UI target set from Slate outputs: {:x}", (uintptr_t)valid_viewport);
+                }
+
+                maybe_validate_ue57_texture(chosen, "Slate outputs");
+            }
+        }
+
+        return ret;
     }
 
     if (is_ue57 && viewport_info_rt != nullptr) {
