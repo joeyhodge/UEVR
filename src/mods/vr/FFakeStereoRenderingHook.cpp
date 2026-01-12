@@ -7042,6 +7042,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     const bool is_ue57 = is_ue_57();
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
+    void* ue57_inputs_ptr = nullptr;
 
     const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
         if (ptr == nullptr) {
@@ -7075,6 +7076,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     void* command_list = is_ue57 ? nullptr : a2;
     sdk::FRHICommandListBase* command_list_rhi = nullptr;
+    void* rdg_builder = nullptr;
 
     if (is_ue57) {
         constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
@@ -7086,6 +7088,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)builder + kRdgBuilderCommandListOffsetUE57);
             if (candidate != nullptr && is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase)) &&
                 candidate->root != nullptr && !IsBadReadPtr(candidate->root, sizeof(void*))) {
+                rdg_builder = builder;
                 SPDLOG_INFO_ONCE("UE5.7: FRDGBuilder RHICmdList resolved via {} (builder {:x}, cmd {:x})",
                     label, (uintptr_t)builder, (uintptr_t)candidate);
                 return candidate;
@@ -7097,6 +7100,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         command_list_rhi = try_rdg_builder(a2, "a2");
         if (command_list_rhi == nullptr) {
             command_list_rhi = try_rdg_builder(a3, "a3");
+        }
+        if (command_list_rhi == nullptr) {
+            command_list_rhi = try_rdg_builder(a4, "a4");
+        }
+        if (command_list_rhi == nullptr && params != nullptr) {
+            command_list_rhi = try_rdg_builder(params, "params");
         }
 
         command_list = command_list_rhi;
@@ -7205,6 +7214,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             if (found) {
+                if (ue57_inputs_ptr == nullptr) {
+                    ue57_inputs_ptr = inputs_ptr;
+                }
                 SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x}", (uintptr_t)inputs_ptr);
             }
 
@@ -7453,6 +7465,146 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
+    struct Ue57DrawWindowArgs {
+        void* ret = nullptr;
+        void* renderer = nullptr;
+        void* builder = nullptr;
+        void* inputs = nullptr;
+    };
+
+    const auto is_valid_renderer_ptr = [&](void* ptr) -> bool {
+        if (!is_readable_ptr(ptr, sizeof(void*))) {
+            return false;
+        }
+
+        auto vtable = *(uintptr_t**)ptr;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        const auto vtable_first = vtable[0];
+        if (vtable_module == nullptr || !utility::get_module_within((void*)vtable_first).has_value()) {
+            return false;
+        }
+
+        const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
+        if (uevr_module != nullptr && vtable_module == uevr_module) {
+            return false;
+        }
+
+        return true;
+    };
+
+    const auto is_likely_sret_ptr = [&](void* ptr) -> bool {
+        if (!is_readable_ptr(ptr, sizeof(void*))) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Type & MEM_IMAGE) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        if ((mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0) {
+            return false;
+        }
+
+        auto vtable = *(void**)ptr;
+        if (vtable != nullptr && is_readable_ptr(vtable, sizeof(void*))) {
+            if (utility::get_module_within(vtable).has_value()) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
+    Ue57DrawWindowArgs ue57_args{};
+    if (is_ue57) {
+        const void* renderer_candidates[] = { renderer, a2, a3, a4 };
+        for (const auto* candidate : renderer_candidates) {
+            if (candidate != nullptr && is_valid_renderer_ptr(const_cast<void*>(candidate))) {
+                ue57_args.renderer = const_cast<void*>(candidate);
+                break;
+            }
+        }
+
+        if (ue57_args.renderer == nullptr) {
+            ue57_args.renderer = renderer_this;
+        }
+
+        ue57_args.builder = rdg_builder;
+        if (ue57_args.builder == nullptr) {
+            ue57_args.builder = a3;
+        }
+
+        ue57_args.inputs = ue57_inputs_ptr;
+        if (ue57_args.inputs == nullptr) {
+            constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
+            const void* inputs_candidates[] = { a4, a3, a2, params };
+            for (const auto* candidate : inputs_candidates) {
+                if (candidate == nullptr) {
+                    continue;
+                }
+
+                if (is_readable_ptr(candidate, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
+                    ue57_args.inputs = const_cast<void*>(candidate);
+                    break;
+                }
+            }
+        }
+
+        if (ue57_args.inputs == nullptr) {
+            ue57_args.inputs = a4;
+        }
+
+        const void* ret_candidates[] = { renderer, a2, a3, a4 };
+        for (const auto* candidate : ret_candidates) {
+            if (candidate == nullptr) {
+                continue;
+            }
+
+            if (candidate == ue57_args.renderer || candidate == ue57_args.builder || candidate == ue57_args.inputs) {
+                continue;
+            }
+
+            if (is_likely_sret_ptr(const_cast<void*>(candidate))) {
+                ue57_args.ret = const_cast<void*>(candidate);
+                break;
+            }
+        }
+
+        if (ue57_args.ret == nullptr) {
+            for (const auto* candidate : ret_candidates) {
+                if (candidate != nullptr && candidate != ue57_args.renderer) {
+                    ue57_args.ret = const_cast<void*>(candidate);
+                    break;
+                }
+            }
+        }
+
+        if (ue57_args.ret == nullptr) {
+            ue57_args.ret = renderer;
+        }
+
+        renderer_this = ue57_args.renderer;
+
+        SPDLOG_INFO_ONCE("UE5.7: DrawWindow args resolved ret {:x} renderer {:x} builder {:x} inputs {:x}",
+            (uintptr_t)ue57_args.ret,
+            (uintptr_t)ue57_args.renderer,
+            (uintptr_t)ue57_args.builder,
+            (uintptr_t)ue57_args.inputs);
+    }
+
     const auto& mods = g_framework->get_mods()->get_mods();
     void* mod_command_list = command_list_rhi != nullptr ? (void*)command_list_rhi : command_list;
     const bool call_mods = !is_ue57 || mod_command_list != nullptr;
@@ -7468,7 +7620,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto call_orig = [&]() -> void* {
         if (is_ue57) {
-            auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4);
+            auto ret = g_hook->m_slate_thread_hook.call<void*>(
+                ue57_args.ret,
+                ue57_args.renderer,
+                ue57_args.builder,
+                ue57_args.inputs);
 
             if (call_mods) {
                 for (auto& mod : mods) {
@@ -7477,7 +7633,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             g_hook->m_inside_slate_draw_window = false;
-            return ret != nullptr ? ret : renderer;
+            return ret != nullptr ? ret : ue57_args.ret;
         }
 
         auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
