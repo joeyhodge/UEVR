@@ -80,6 +80,7 @@ constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0xDE4;
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
 std::atomic<uint32_t> g_sceneview_stereo_view_index_offset{0};
 std::atomic<uint64_t> g_slate_draw_window_calls{0};
+std::atomic<bool> g_ue57_passthrough_mode{false};
 
 static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*));
 
@@ -3370,6 +3371,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
+    if (is_ue_57() && g_ue57_passthrough_mode.load(std::memory_order_relaxed)) {
+        SPDLOG_WARN_ONCE("UE5.7: passthrough active; skipping FSceneView constructor overrides.");
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
     if (g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) {
         SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
@@ -4066,6 +4072,10 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     auto& vr = VR::get();
 
     if (!vr->is_hmd_active()) {
+        return;
+    }
+
+    if (is_ue_57() && g_ue57_passthrough_mode.load(std::memory_order_relaxed)) {
         return;
     }
 
@@ -7532,6 +7542,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // resolve RDG/RHI or renderer pointers.
     if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
         SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist/renderer unresolved); calling original untouched.");
+        g_ue57_passthrough_mode.store(true, std::memory_order_relaxed);
         return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
     }
 
