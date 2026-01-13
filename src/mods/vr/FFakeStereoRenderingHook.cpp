@@ -7039,8 +7039,8 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     g_hook->m_fixed_localplayer_view_count = true;
 }
 
-void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
-                                                                void* a4, void* params, void* unk1, void* unk2) 
+void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,
+    void* a4, void* params, void* unk1, void* unk2)
 {
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("SlateRHIRenderer::DrawWindow_RenderThread called!");
@@ -7051,6 +7051,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     SPDLOG_INFO_EVERY_N_SEC(5, "SlateRHIRenderer::DrawWindow_RenderThread call count: {}", slate_call_count);
 
     const bool is_ue57 = is_ue_57();
+    if (is_ue57) {
+        SPDLOG_INFO_ONCE("UE5.7: DrawWindow entry raw args rcx(renderer) {:x} a2 {:x} a3 {:x} a4 {:x}",
+            (uintptr_t)renderer, (uintptr_t)a2, (uintptr_t)a3, (uintptr_t)a4);
+    }
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     void* ue57_inputs_ptr = nullptr;
@@ -7103,16 +7107,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
                 auto candidate = *(sdk::FRHICommandListBase**)((uint8_t*)builder + offset);
                 if (candidate == nullptr || !is_readable_ptr(candidate, sizeof(sdk::FRHICommandListBase))) {
+                    SPDLOG_DEBUG("UE5.7: FRDGBuilder probe {}+0x{:x} unreadable/null (builder {:x})", label, offset, (uintptr_t)builder);
                     continue;
                 }
 
                 if (candidate->command_link == nullptr || IsBadReadPtr(candidate->command_link, sizeof(void*))) {
+                    SPDLOG_DEBUG("UE5.7: FRDGBuilder probe {}+0x{:x} command_link invalid (builder {:x}, cmd {:x})",
+                        label, offset, (uintptr_t)builder, (uintptr_t)candidate);
                     continue;
                 }
 
                 const auto base = (uintptr_t)candidate;
                 const auto link_addr = (uintptr_t)candidate->command_link;
                 if (link_addr < base || link_addr >= base + sizeof(sdk::FRHICommandListBase)) {
+                    SPDLOG_DEBUG("UE5.7: FRDGBuilder probe {}+0x{:x} command_link out of bounds (builder {:x}, cmd {:x})",
+                        label, offset, (uintptr_t)builder, (uintptr_t)candidate);
                     continue;
                 }
 
@@ -7122,6 +7131,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return candidate;
             }
 
+            SPDLOG_DEBUG("UE5.7: FRDGBuilder probe {} failed (builder {:x})", label, (uintptr_t)builder);
             return nullptr;
         };
 
@@ -7541,7 +7551,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // with the untouched arguments. This avoids passing null/garbage into the engine when we fail to
     // resolve RDG/RHI or renderer pointers.
     if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
-        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist/renderer unresolved); calling original untouched.");
+        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist {:x}, renderer rcx {:x} a2 {:x}); calling original untouched.",
+            (uintptr_t)command_list_rhi, (uintptr_t)orig_renderer, (uintptr_t)orig_a2);
         g_ue57_passthrough_mode.store(true, std::memory_order_relaxed);
         return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
     }
