@@ -7044,6 +7044,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     void* ue57_inputs_ptr = nullptr;
+    void* orig_renderer = renderer;
+    void* orig_a2 = a2;
+    void* orig_a3 = a3;
+    void* orig_a4 = a4;
 
     const auto is_readable_ptr = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
         if (ptr == nullptr) {
@@ -7123,6 +7127,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         command_list = command_list_rhi;
+    }
+
+    // If we could not validate UE5.7 arguments at all, bail out and just call the original function
+    // with the untouched arguments. This avoids passing null/garbage into the engine when we fail to
+    // resolve RDG/RHI or renderer pointers.
+    if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
+        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist/renderer unresolved); calling original untouched.");
+        return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
     }
 
     void* renderer_this = renderer;
