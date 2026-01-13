@@ -7129,14 +7129,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         command_list = command_list_rhi;
     }
 
-    // If we could not validate UE5.7 arguments at all, bail out and just call the original function
-    // with the untouched arguments. This avoids passing null/garbage into the engine when we fail to
-    // resolve RDG/RHI or renderer pointers.
-    if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
-        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist/renderer unresolved); calling original untouched.");
-        return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
-    }
-
     void* renderer_this = renderer;
     if (!is_readable_ptr(renderer_this, sizeof(void*))) {
         renderer_this = is_ue57 ? a2 : renderer;
@@ -7534,6 +7526,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         return true;
     };
+
+    // If we could not validate UE5.7 arguments at all, bail out and just call the original function
+    // with the untouched arguments. This avoids passing null/garbage into the engine when we fail to
+    // resolve RDG/RHI or renderer pointers.
+    if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
+        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist/renderer unresolved); calling original untouched.");
+        return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+    }
 
     const auto is_likely_sret_ptr = [&](void* ptr) -> bool {
         if (!is_readable_ptr(ptr, sizeof(void*))) {
