@@ -4081,6 +4081,32 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
 
     static size_t execution_count{0};
 
+    // Retro-patch existing views once DrawWindow resolves (covers the case where the first call was passthrough).
+    if (is_ue_57()) {
+        auto* views_ptr = view_family.get_views();
+        const auto pass_offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
+        const auto view_index_offset = g_sceneview_stereo_view_index_offset.load(std::memory_order_relaxed);
+        if (views_ptr != nullptr && views_ptr->data != nullptr && views_ptr->count > 0 &&
+            pass_offset != 0 && view_index_offset != 0) {
+            const auto view_count = std::min<int32_t>(views_ptr->count, 2);
+            for (int32_t i = 0; i < view_count; ++i) {
+                auto* v = views_ptr->data[i];
+                if (v == nullptr) {
+                    continue;
+                }
+                auto* pass_ptr = reinterpret_cast<uint8_t*>(v) + pass_offset;
+                auto* view_index_ptr = reinterpret_cast<uint8_t*>(v) + view_index_offset;
+                if (!is_readable_ptr_local(pass_ptr, sizeof(uint8_t)) || !is_readable_ptr_local(view_index_ptr, sizeof(uint32_t))) {
+                    continue;
+                }
+                const auto desired_pass = i == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
+                *pass_ptr = static_cast<uint8_t>(desired_pass);
+                *reinterpret_cast<uint32_t*>(view_index_ptr) = i;
+            }
+            SPDLOG_INFO_ONCE("UE5.7: retro-patched FSceneView stereo fields in PreRenderViewFamily_RenderThread");
+        }
+    }
+
     // This should 100% only get executed if the headset is on, because
     // FFakeStereoRenderingHook::render_texture_render_thread is the first fallback for hooking
     // And we don't want to miss that unintentionally
