@@ -77,8 +77,10 @@ constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
 // Note: FSceneViewInitOptions::StereoPass remains at +0x1C0 inside the member stored at +0x50 in FSceneView.
 constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
 constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0xDE4;
+constexpr uint32_t kSceneViewInitOptionsOffset = 0x50;
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
 std::atomic<uint32_t> g_sceneview_stereo_view_index_offset{0};
+std::atomic<bool> g_sceneview_stereo_offsets_validated{false};
 std::atomic<uint64_t> g_slate_draw_window_calls{0};
 std::atomic<bool> g_ue57_drawwindow_resolved{false};
 
@@ -100,20 +102,38 @@ static void initialize_sceneview_stereo_offsets() {
         return is_ue_57();
     }();
 
-    const auto pass_offset = is_ue57 ? kFSceneViewStereoPassOffsetUE57 : kFSceneViewStereoPassOffsetLegacy;
-    const auto view_index_offset = is_ue57 ? kFSceneViewStereoViewIndexOffsetUE57 : 0u;
+    const auto pass_offset = is_ue57 ? 0u : kFSceneViewStereoPassOffsetLegacy;
+    const auto view_index_offset = is_ue57 ? 0u : 0u;
 
     g_sceneview_stereo_pass_offset.store(pass_offset, std::memory_order_relaxed);
     g_sceneview_stereo_view_index_offset.store(view_index_offset, std::memory_order_relaxed);
+    g_sceneview_stereo_offsets_validated.store(!is_ue57, std::memory_order_relaxed);
 
-    SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", pass_offset);
-    if (view_index_offset != 0) {
-        SPDLOG_INFO("Using FSceneView stereo view index offset {:x}", view_index_offset);
+    if (is_ue57) {
+        SPDLOG_INFO("UE5.7: deferring FSceneView stereo offsets until validated");
+    } else {
+        SPDLOG_INFO("Using FSceneView stereo pass offset {:x}", pass_offset);
+        if (view_index_offset != 0) {
+            SPDLOG_INFO("Using FSceneView stereo view index offset {:x}", view_index_offset);
+        }
     }
 }
 
 EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
     const auto offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
+    if (offset == 0 && is_ue_57()) {
+        const auto stereo_pass_offset = sdk::FSceneViewInitOptionsBase::get_stereo_pass_offset();
+        if (stereo_pass_offset) {
+            const auto copy_offset = kSceneViewInitOptionsOffset + *stereo_pass_offset;
+            auto* pass_ptr = reinterpret_cast<const uint8_t*>(&view) + copy_offset;
+            if (is_readable_ptr_local(pass_ptr, sizeof(uint32_t))) {
+                const auto value = *(const uint32_t*)pass_ptr;
+                if (value <= (uint32_t)EStereoscopicPass::eSSP_SECONDARY) {
+                    return (EStereoscopicPass)value;
+                }
+            }
+        }
+    }
     if (offset == 0) {
         return EStereoscopicPass::eSSP_FULL;
     }
@@ -122,6 +142,88 @@ EStereoscopicPass get_sceneview_stereo_pass(const sdk::FSceneView& view) {
         return EStereoscopicPass::eSSP_FULL;
     }
     return (EStereoscopicPass)value;
+}
+
+static void maybe_resolve_ue57_sceneview_offsets(sdk::FSceneView* view, sdk::FSceneViewInitOptions* init_options) {
+    if (!is_ue_57() || g_sceneview_stereo_offsets_validated.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    if (view == nullptr || init_options == nullptr) {
+        return;
+    }
+
+    const auto view_family_offset = sdk::FSceneViewInitOptionsBase::get_view_family_offset();
+    const auto scene_state_offset = sdk::FSceneViewInitOptionsBase::get_scene_state_offset();
+    const auto stereo_pass_offset = sdk::FSceneViewInitOptionsBase::get_stereo_pass_offset();
+    if (!view_family_offset || !scene_state_offset || !stereo_pass_offset) {
+        return;
+    }
+
+    const auto init_pass_addr = reinterpret_cast<uint8_t*>(init_options) + *stereo_pass_offset;
+    const auto init_view_index_addr = init_pass_addr + sizeof(uint32_t);
+    if (!is_readable_ptr_local(init_pass_addr, sizeof(uint32_t)) ||
+        !is_readable_ptr_local(init_view_index_addr, sizeof(int32_t))) {
+        return;
+    }
+
+    const auto init_pass = *(uint32_t*)init_pass_addr;
+    const auto init_view_index = *(int32_t*)init_view_index_addr;
+
+    const auto validate_candidate = [&](uint32_t pass_offset, const char* label) -> bool {
+        auto* pass_ptr = reinterpret_cast<uint8_t*>(view) + pass_offset;
+        auto* view_index_ptr = pass_ptr + sizeof(uint32_t);
+
+        if (!is_readable_ptr_local(pass_ptr, sizeof(uint8_t)) ||
+            !is_readable_ptr_local(view_index_ptr, sizeof(int32_t))) {
+            return false;
+        }
+
+        const auto pass_val = *(uint8_t*)pass_ptr;
+        const auto view_index_val = *(int32_t*)view_index_ptr;
+
+        if (pass_val > (uint8_t)EStereoscopicPass::eSSP_SECONDARY ||
+            view_index_val < -1 || view_index_val > 1) {
+            return false;
+        }
+
+        if (pass_val != init_pass || view_index_val != init_view_index) {
+            return false;
+        }
+
+        g_sceneview_stereo_pass_offset.store(pass_offset, std::memory_order_relaxed);
+        g_sceneview_stereo_view_index_offset.store(pass_offset + sizeof(uint32_t), std::memory_order_relaxed);
+        g_sceneview_stereo_offsets_validated.store(true, std::memory_order_relaxed);
+        SPDLOG_INFO("UE5.7: validated FSceneView stereo offsets via {} (pass 0x{:x}, view_index 0x{:x})",
+            label, pass_offset, pass_offset + sizeof(uint32_t));
+        return true;
+    };
+
+    if (validate_candidate(kFSceneViewStereoPassOffsetUE57, "hardcoded")) {
+        return;
+    }
+
+    const auto init_view_family = init_options->get_view_family();
+    const auto init_scene_state = init_options->get_scene_state();
+    if (init_view_family == nullptr || init_scene_state == nullptr) {
+        return;
+    }
+
+    const auto copy_view_family_addr = reinterpret_cast<uint8_t*>(view) + kSceneViewInitOptionsOffset + *view_family_offset;
+    const auto copy_scene_state_addr = reinterpret_cast<uint8_t*>(view) + kSceneViewInitOptionsOffset + *scene_state_offset;
+    if (!is_readable_ptr_local(copy_view_family_addr, sizeof(void*)) ||
+        !is_readable_ptr_local(copy_scene_state_addr, sizeof(void*))) {
+        return;
+    }
+
+    const auto copy_view_family = *(void**)copy_view_family_addr;
+    const auto copy_scene_state = *(void**)copy_scene_state_addr;
+    if (copy_view_family != init_view_family || copy_scene_state != init_scene_state) {
+        return;
+    }
+
+    const auto copy_pass_offset = kSceneViewInitOptionsOffset + *stereo_pass_offset;
+    validate_candidate(copy_pass_offset, "init-options-copy");
 }
 }
 
@@ -3354,7 +3456,6 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
 
 // 4.25something to 4.27
 // TODO: Add support for all versions via PDB dumps
-constexpr auto INIT_OPTIONS_OFFSET = 0x50;
 
 bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
@@ -3537,6 +3638,13 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 ++forced_pass_log_count;
             }
         }
+
+        if (auto stereo_pass_offset = sdk::FSceneViewInitOptionsBase::get_stereo_pass_offset(); stereo_pass_offset) {
+            auto* view_index_ptr = reinterpret_cast<int32_t*>((uintptr_t)init_options + *stereo_pass_offset + sizeof(uint32_t));
+            if (is_readable_ptr_local(view_index_ptr, sizeof(int32_t))) {
+                *view_index_ptr = true_index;
+            }
+        }
     }
 
     std::optional<uint32_t> views_original_count{};
@@ -3589,6 +3697,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
 
+    if (is_ue_57()) {
+        maybe_resolve_ue57_sceneview_offsets(result, init_options);
+    }
+
     // Reset the view count back to what it was.
     if (views_original_count.has_value()) {
         auto view_family = init_options->get_view_family();
@@ -3599,7 +3711,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    if (force_stereo_pass && result != nullptr && init_options_stereo_pass != EStereoscopicPass::eSSP_FULL) {
+    const bool can_patch_view = !is_ue_57() || g_sceneview_stereo_offsets_validated.load(std::memory_order_relaxed);
+    if (force_stereo_pass && result != nullptr && init_options_stereo_pass != EStereoscopicPass::eSSP_FULL && can_patch_view) {
         const auto pass_offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
         if (pass_offset != 0) {
             auto* pass_ptr = reinterpret_cast<uint8_t*>(result) + pass_offset;
@@ -3625,6 +3738,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 static_cast<uint32_t>(init_options_stereo_pass), true_index);
             ++patched_view_log_count;
         }
+    } else if (force_stereo_pass && is_ue_57() && !can_patch_view) {
+        SPDLOG_WARN_ONCE("UE5.7: skipping FSceneView stereo patch until offsets are validated");
     }
 
     return result;
@@ -3808,10 +3923,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
         }
 
-        /*auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[0] + INIT_OPTIONS_OFFSET);
+        /*auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[0] + kSceneViewInitOptionsOffset);
         init_options->stereo_pass = 0;
 
-        auto init_options2 = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[1] + INIT_OPTIONS_OFFSET);
+        auto init_options2 = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[1] + kSceneViewInitOptionsOffset);
         init_options2->stereo_pass = 0;
 
         std::array<uint8_t, 0x500> init_options_copy{};
@@ -3899,8 +4014,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         // B = dst, A = src
         static auto copy_init_options_from = [](const sdk::FSceneView& a, sdk::FSceneView& b) {
             std::scoped_lock _{g_hook->m_sceneview_data.mtx};
-            auto init_options_a = (sdk::FSceneViewInitOptions*)((uintptr_t)&a + INIT_OPTIONS_OFFSET);
-            auto init_options_b = (sdk::FSceneViewInitOptions*)((uintptr_t)&b + INIT_OPTIONS_OFFSET);
+            auto init_options_a = (sdk::FSceneViewInitOptions*)((uintptr_t)&a + kSceneViewInitOptionsOffset);
+            auto init_options_b = (sdk::FSceneViewInitOptions*)((uintptr_t)&b + kSceneViewInitOptionsOffset);
 
             auto& cached_init_options = g_hook->m_sceneview_data.view_init_options_ue4;
 
@@ -3948,7 +4063,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
             std::array<uint8_t, 0x500> init_options_copy{};
 
-            auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view + INIT_OPTIONS_OFFSET);
+            auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view + kSceneViewInitOptionsOffset);
 
             auto& init_options_view_origin = init_options->view_origin;
             auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
