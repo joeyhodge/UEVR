@@ -6471,7 +6471,9 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
     const auto back_is_rhi = is_rhi_texture_vtable_match(backbuffer);
     const auto valid_src = is_valid_texture_ptr(src_texture);
     const auto valid_back = is_valid_texture_ptr(backbuffer);
-    bool ue57_validated = valid_src || valid_back;
+    const auto valid_src_rhi = valid_src && src_is_rhi;
+    const auto valid_back_rhi = valid_back && back_is_rhi;
+    bool ue57_validated = valid_src_rhi || valid_back_rhi;
 
         if (!src_is_rhi && !back_is_rhi) {
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread textures do not match RHI module (src {:x}, back {:x})",
@@ -6479,20 +6481,20 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         }
 
     if (rtm.get_render_target() == nullptr) {
-        if (valid_src && src_is_rhi) {
+        if (valid_src_rhi) {
             rtm.set_render_target(src_texture);
             SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
-        } else if (valid_back && back_is_rhi) {
+        } else if (valid_back_rhi) {
             rtm.set_render_target(backbuffer);
             SPDLOG_INFO_ONCE("UE5.7: render target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
         }
     }
 
         if (ui_target == nullptr) {
-            if (valid_src) {
+            if (valid_src_rhi) {
                 ui_target = src_texture;
                 SPDLOG_INFO_ONCE("UE5.7: UI target set from RenderTexture_RenderThread src_texture: {:x}", (uintptr_t)src_texture);
-            } else if (valid_back) {
+            } else if (valid_back_rhi) {
                 ui_target = backbuffer;
                 SPDLOG_INFO_ONCE("UE5.7: UI target set from RenderTexture_RenderThread backbuffer: {:x}", (uintptr_t)backbuffer);
             }
@@ -6801,6 +6803,13 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
 
                     g_hook->set_ue57_render_texture_validated(true);
                     SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via RTM candidate; enabling custom RTM");
+                } else if (g_hook->has_ue57_seen_stereo_view()) {
+                    static uint32_t ue57_force_rtm_calls = 0;
+                    ++ue57_force_rtm_calls;
+                    if (ue57_force_rtm_calls >= 10) {
+                        g_hook->set_ue57_render_texture_validated(true);
+                        SPDLOG_INFO_ONCE("UE5.7: enabling custom RTM after observing stereo views; RenderTexture_RenderThread still unvalidated");
+                    }
                 } else {
                     SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
                     if (auto* original = fallback_to_original(); original != nullptr) {
