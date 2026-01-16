@@ -6175,17 +6175,19 @@ static bool is_executable_ptr_local(const void* ptr) {
 
 static std::optional<uintptr_t> get_dynamic_rhi_module_base_local() {
     static std::optional<uintptr_t> cached{};
-    static bool tried = false;
+    static uint32_t attempts = 0;
 
-    if (tried) {
+    if (cached.has_value()) {
         return cached;
     }
 
-    tried = true;
+    // Keep retrying until we successfully resolve the module once.
+    // Early calls can happen before FDynamicRHI is initialized.
+    ++attempts;
 
     auto* rhi = sdk::FDynamicRHI::get();
     if (rhi == nullptr || !is_readable_ptr_local(rhi, sizeof(void*))) {
-        return cached;
+        return cached; // unresolved
     }
 
     auto* vtable = *(void**)rhi;
@@ -6213,7 +6215,7 @@ static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
     const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
     const auto rhi_module = get_dynamic_rhi_module_base_local();
     if (!rhi_module || vtable_module == nullptr) {
-        return true;
+        return false;
     }
 
     return (uintptr_t)vtable_module == *rhi_module;
