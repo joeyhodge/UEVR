@@ -6368,6 +6368,8 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread: invalid FRHICommandListImmediate {:x} (ret {:x})",
             (uintptr_t)rhi_command_list, (uintptr_t)_ReturnAddress());
+        call_original_fn();
+        return;
     } else {
         auto vtable = *(void***)rhi_command_list;
         const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
