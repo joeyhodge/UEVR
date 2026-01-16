@@ -3613,17 +3613,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 rtm->get_render_target() != nullptr || rtm->get_ui_target() != nullptr;
         }
 
-        const bool allow_force_without_validation = !vr->is_stereo_emulation_enabled() && !vr->is_using_2d_screen();
-        if (!force_stereo_pass && allow_force_without_validation) {
-            if (true_index > 0) {
-                g_hook->set_ue57_seen_stereo_view(true);
-            }
-            force_stereo_pass = g_hook->has_ue57_seen_stereo_view();
-
-            if (force_stereo_pass) {
-                SPDLOG_INFO_ONCE("UE5.7: forcing stereo pass without RTM validation");
-            }
-        }
+        // Do not force stereo pass until we have validated RTM / render targets.
 
         if (force_stereo_pass && init_options_stereo_pass == EStereoscopicPass::eSSP_FULL) {
             const auto forced_pass = true_index == 0 ? EStereoscopicPass::eSSP_PRIMARY : EStereoscopicPass::eSSP_SECONDARY;
@@ -4197,7 +4187,7 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
 
     // Retro-patch existing views once DrawWindow resolves (covers the case where the first call was passthrough).
     const bool is_ue57 = is_ue_57();
-    if (is_ue57) {
+    if (is_ue57 && g_hook->is_ue57_render_texture_validated()) {
         auto* views_ptr = view_family.get_views();
         const auto pass_offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
         const auto view_index_offset = g_sceneview_stereo_view_index_offset.load(std::memory_order_relaxed);
@@ -6671,7 +6661,7 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             return true;
         }
 
-        return !vr->is_using_2d_screen();
+        return false;
     }();
 
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
