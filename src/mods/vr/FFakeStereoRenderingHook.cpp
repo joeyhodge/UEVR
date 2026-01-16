@@ -6220,15 +6220,64 @@ static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
 }
 
 // UE5.7 PDB layout: FRDGBuilder::RHICmdList @ 0xC0, FRDGResource::ResourceRHI @ 0x10.
-constexpr size_t kRdgBuilderCommandListOffsetUE57 = 0xC0;
+constexpr std::array<size_t, 4> kRdgBuilderCommandListOffsetsUE57{0xB8, 0xC0, 0xC8, 0xD0};
 constexpr size_t kRdgTextureResourceRhiOffsetUE57 = 0x10;
 
-static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder) {
-    if (!is_readable_ptr_local(builder, kRdgBuilderCommandListOffsetUE57 + sizeof(void*))) {
+static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
+    if (!is_readable_ptr_local(cmd, sizeof(void*))) {
+        return false;
+    }
+
+    auto vtable = *(void***)cmd;
+    if (!is_readable_ptr_local(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(((void**)vtable)[0]).value_or(nullptr);
+
+    return vtable_module != nullptr && vtable_first_module != nullptr;
+}
+
+static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
+    if (out_offset != nullptr) {
+        *out_offset = 0;
+    }
+    if (out_valid != nullptr) {
+        *out_valid = false;
+    }
+
+    if (builder == nullptr) {
         return nullptr;
     }
 
-    return *reinterpret_cast<FRHICommandListImmediate**>(reinterpret_cast<uint8_t*>(builder) + kRdgBuilderCommandListOffsetUE57);
+    FRHICommandListImmediate* fallback = nullptr;
+
+    for (const auto offset : kRdgBuilderCommandListOffsetsUE57) {
+        if (!is_readable_ptr_local(builder, offset + sizeof(void*))) {
+            continue;
+        }
+
+        const auto candidate = *reinterpret_cast<FRHICommandListImmediate**>(reinterpret_cast<uint8_t*>(builder) + offset);
+        if (fallback == nullptr && candidate != nullptr) {
+            fallback = candidate;
+            if (out_offset != nullptr) {
+                *out_offset = offset;
+            }
+        }
+
+        if (is_valid_rhi_cmd_list(candidate)) {
+            if (out_offset != nullptr) {
+                *out_offset = offset;
+            }
+            if (out_valid != nullptr) {
+                *out_valid = true;
+            }
+            return candidate;
+        }
+    }
+
+    return fallback;
 }
 
 static FRHITexture2D* get_rhi_texture_from_rdg_texture(FRDGTexture* texture) {
@@ -6312,29 +6361,11 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         }
     }
 
-    const auto is_valid_cmd_list = [&](FRHICommandListImmediate* cmd) -> bool {
-        if (!is_readable_ptr_local(cmd, sizeof(void*))) {
-            return false;
-        }
-
-        auto vtable = *(void***)cmd;
-        if (!is_readable_ptr_local(vtable, sizeof(void*))) {
-            return false;
-        }
-
-        const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
-        const auto vtable_first_module = utility::get_module_within(((void**)vtable)[0]).value_or(nullptr);
-
-        return vtable_module != nullptr && vtable_first_module != nullptr;
-    };
-
-    const auto cmd_list_valid = is_valid_cmd_list(rhi_command_list);
+    const auto cmd_list_valid = is_valid_rhi_cmd_list(rhi_command_list);
 
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread: invalid FRHICommandListImmediate {:x} (ret {:x})",
             (uintptr_t)rhi_command_list, (uintptr_t)_ReturnAddress());
-        call_original_fn();
-        return;
     } else {
         auto vtable = *(void***)rhi_command_list;
         const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
@@ -6392,7 +6423,9 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         g_hook->attempt_hook_slate_thread(return_address);
     }
 
-    g_hook->get_slate_thread_worker()->execute(rhi_command_list);
+    if (cmd_list_valid) {
+        g_hook->get_slate_thread_worker()->execute(rhi_command_list);
+    }
 
     if (is_ue_57()) {
         auto& rtm = *g_hook->get_render_target_manager();
@@ -6505,12 +6538,14 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     ctx.src_texture = src_texture;
     ctx.window_size_f = window_size;
 
-    const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder);
+    size_t cmd_list_offset = 0;
+    bool cmd_list_valid = false;
+    const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
-    if (rhi_command_list == nullptr) {
-        SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve RHICmdList from FRDGBuilder {:x}",
-            (uintptr_t)graph_builder);
+    if (!cmd_list_valid) {
+        SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
+            (uintptr_t)graph_builder, cmd_list_offset);
     }
 
     if (backbuffer != nullptr && backbuffer_rhi == nullptr) {
@@ -6766,9 +6801,6 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
 
                     g_hook->set_ue57_render_texture_validated(true);
                     SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via RTM candidate; enabling custom RTM");
-                } else if (g_hook->has_ue57_seen_stereo_view()) {
-                    g_hook->set_ue57_render_texture_validated(true);
-                    SPDLOG_INFO_ONCE("UE5.7: enabling custom RTM after observing stereo views; RenderTexture_RenderThread still unvalidated");
                 } else {
                     SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
                     if (auto* original = fallback_to_original(); original != nullptr) {
