@@ -860,6 +860,14 @@ public:
         m_ue57_render_texture_validated.store(value, std::memory_order_relaxed);
     }
 
+    bool has_ue57_seen_stereo_view() const {
+        return m_ue57_seen_stereo_view.load(std::memory_order_relaxed);
+    }
+
+    void set_ue57_seen_stereo_view(bool value) {
+        m_ue57_seen_stereo_view.store(value, std::memory_order_relaxed);
+    }
+
 private:
     static void render_texture_render_thread(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
         FRHITexture2D* backbuffer, FRHITexture2D* src_texture, ::WindowSizeD window_size);
@@ -961,6 +969,7 @@ private:
     VRRenderTargetManager_Special m_rtm_special{};
 
     std::atomic<bool> m_ue57_render_texture_validated{false};
+    std::atomic<bool> m_ue57_seen_stereo_view{false};
     std::atomic<uintptr_t> m_shadow_vtable_ptr{0};
 
     Rotator<float> m_last_afr_rotation{};

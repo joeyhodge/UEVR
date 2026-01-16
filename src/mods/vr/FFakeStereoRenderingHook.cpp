@@ -3615,11 +3615,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const bool allow_force_without_validation = !vr->is_stereo_emulation_enabled() && !vr->is_using_2d_screen();
         if (!force_stereo_pass && allow_force_without_validation) {
-            static bool saw_stereo_views = false;
             if (true_index > 0) {
-                saw_stereo_views = true;
+                g_hook->set_ue57_seen_stereo_view(true);
             }
-            force_stereo_pass = saw_stereo_views;
+            force_stereo_pass = g_hook->has_ue57_seen_stereo_view();
 
             if (force_stereo_pass) {
                 SPDLOG_INFO_ONCE("UE5.7: forcing stereo pass without RTM validation");
@@ -5686,6 +5685,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative;
 
     auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
+    if (is_ue_57() && true_index > 0) {
+        g_hook->set_ue57_seen_stereo_view(true);
+    }
     const auto has_double_precision = g_hook->m_has_double_precision;
     const auto rot_d = (Rotator<double>*)view_rotation;
 
@@ -6764,6 +6766,9 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
 
                     g_hook->set_ue57_render_texture_validated(true);
                     SPDLOG_INFO_ONCE("UE5.7: RenderTexture validation satisfied via RTM candidate; enabling custom RTM");
+                } else if (g_hook->has_ue57_seen_stereo_view()) {
+                    g_hook->set_ue57_render_texture_validated(true);
+                    SPDLOG_INFO_ONCE("UE5.7: enabling custom RTM after observing stereo views; RenderTexture_RenderThread still unvalidated");
                 } else {
                     SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread not validated yet; returning original GetRenderTargetManager.");
                     if (auto* original = fallback_to_original(); original != nullptr) {
