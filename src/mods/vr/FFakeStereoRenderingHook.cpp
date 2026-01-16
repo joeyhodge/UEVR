@@ -3366,19 +3366,23 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     initialize_sceneview_stereo_offsets();
 
     auto& vr = VR::get();
+    const bool is_ue57 = is_ue_57();
 
     if (!g_hook->is_in_viewport_client_draw() || !vr->is_hmd_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
-    if (is_ue_57() && !g_ue57_drawwindow_resolved.load(std::memory_order_relaxed)) {
-        SPDLOG_WARN_ONCE("UE5.7: DrawWindow unresolved; skipping FSceneView constructor overrides.");
-        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    if (is_ue57 && !g_ue57_drawwindow_resolved.load(std::memory_order_relaxed)) {
+        SPDLOG_WARN_ONCE("UE5.7: DrawWindow unresolved; continuing FSceneView constructor overrides.");
     }
 
     if (g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) {
-        SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
-        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+        if (is_ue57) {
+            SPDLOG_WARN_ONCE("UE5.7: view extensions not installed yet; continuing FSceneView constructor overrides.");
+        } else {
+            SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
+            return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+        }
     }
 
     std::scoped_lock ___{g_hook->m_sceneview_data.mtx};
@@ -4075,14 +4079,11 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         return;
     }
 
-    if (is_ue_57() && !g_ue57_drawwindow_resolved.load(std::memory_order_relaxed)) {
-        return;
-    }
-
     static size_t execution_count{0};
 
     // Retro-patch existing views once DrawWindow resolves (covers the case where the first call was passthrough).
-    if (is_ue_57()) {
+    const bool is_ue57 = is_ue_57();
+    if (is_ue57) {
         auto* views_ptr = view_family.get_views();
         const auto pass_offset = g_sceneview_stereo_pass_offset.load(std::memory_order_relaxed);
         const auto view_index_offset = g_sceneview_stereo_view_index_offset.load(std::memory_order_relaxed);
@@ -4105,6 +4106,9 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             }
             SPDLOG_INFO_ONCE("UE5.7: retro-patched FSceneView stereo fields in PreRenderViewFamily_RenderThread");
         }
+    }
+    if (is_ue57 && !g_ue57_drawwindow_resolved.load(std::memory_order_relaxed)) {
+        return;
     }
 
     // This should 100% only get executed if the headset is on, because
@@ -7075,6 +7079,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 #endif
     const auto slate_call_count = ++g_slate_draw_window_calls;
     SPDLOG_INFO_EVERY_N_SEC(5, "SlateRHIRenderer::DrawWindow_RenderThread call count: {}", slate_call_count);
+    RenderThreadWorker::get().execute();
 
     const bool is_ue57 = is_ue_57();
     if (is_ue57) {
