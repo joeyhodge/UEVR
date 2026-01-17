@@ -1612,22 +1612,12 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 }
 
                 if (rendertexture_frdg_valid) {
-                    if (rendertexture_frhi_valid) {
-                        m_render_texture_render_thread_rdg_hook = safetyhook::create_inline(
-                            (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
-                        if (!m_render_texture_render_thread_rdg_hook) {
-                            SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
-                        } else {
-                            SPDLOG_INFO("UE5.7: hooked FRDG RenderTexture_RenderThread at {:x}", rendertexture_frdg_candidate);
-                        }
+                    m_render_texture_render_thread_rdg_hook = safetyhook::create_inline(
+                        (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
+                    if (!m_render_texture_render_thread_rdg_hook) {
+                        SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
                     } else {
-                        m_render_texture_render_thread_hook = safetyhook::create_inline(
-                            (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
-                        if (!m_render_texture_render_thread_hook) {
-                            SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
-                        } else {
-                            SPDLOG_INFO("UE5.7: hooked FRDG RenderTexture_RenderThread at {:x}", rendertexture_frdg_candidate);
-                        }
+                        SPDLOG_INFO("UE5.7: hooked FRDG RenderTexture_RenderThread at {:x}", rendertexture_frdg_candidate);
                     }
                 }
 
