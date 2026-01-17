@@ -1621,7 +1621,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
                 if (rendertexture_frdg_valid) {
                     m_render_texture_render_thread_rdg_hook = safetyhook::create_inline(
-                        (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
+                        (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg_d);
                     if (!m_render_texture_render_thread_rdg_hook) {
                         SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
                     } else {
@@ -1672,7 +1672,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                     rendertexture_fn_vtable_index = i;
                     if (is_ue57 && rendertexture_is_frdg) {
                         m_render_texture_render_thread_hook = safetyhook::create_inline(
-                            (void*)*render_texture_render_thread_func, render_texture_render_thread_rdg);
+                            (void*)*render_texture_render_thread_func, render_texture_render_thread_rdg_d);
                     } else {
                         m_render_texture_render_thread_hook = safetyhook::create_inline(
                             (void*)*render_texture_render_thread_func, render_texture_render_thread);
@@ -6386,6 +6386,23 @@ static void call_original_frdg(void* context) {
     }
 }
 
+static void call_original_frdg_d(void* context) {
+    auto* ctx = static_cast<RenderTextureCallOriginalContextFRDG*>(context);
+    if (ctx == nullptr) {
+        return;
+    }
+
+    auto* hook = get_render_texture_rdg_hook();
+    if (hook == nullptr || !*hook) {
+        hook = get_render_texture_hook();
+    }
+
+    if (hook != nullptr && *hook) {
+        (*hook).call<void>(
+            ctx->stereo, ctx->graph_builder, ctx->backbuffer, ctx->src_texture, ctx->window_size_d);
+    }
+}
+
 static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list,
     FRHITexture2D* backbuffer, FRHITexture2D* src_texture, ::WindowSizeD window_size,
     RenderTextureCallOriginalFn call_original, void* call_original_ctx) 
@@ -6610,7 +6627,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
-    const bool looks_like_frhi = graph_builder_is_cmd_list;
+    const bool looks_like_frhi = graph_builder_is_cmd_list && (backbuffer_is_rhi || src_is_rhi);
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
@@ -6671,6 +6688,74 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
 
     render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size_d,
         &call_original_frdg, &ctx);
+}
+
+void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRendering* stereo, FRDGBuilder* graph_builder,
+    FRDGTexture* backbuffer, FRDGTexture* src_texture, ::WindowSizeD window_size)
+{
+#ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
+    SPDLOG_INFO("RenderTexture_RenderThread(FRDG/d) called!");
+#else
+    SPDLOG_INFO_ONCE("RenderTexture_RenderThread(FRDG/d) called!");
+#endif
+    RenderTextureCallOriginalContextFRDG ctx{};
+    ctx.stereo = stereo;
+    ctx.graph_builder = graph_builder;
+    ctx.backbuffer = backbuffer;
+    ctx.src_texture = src_texture;
+    ctx.window_size_d = window_size;
+    ctx.window_size_f = ::WindowSizeF{static_cast<float>(window_size.x), static_cast<float>(window_size.y)};
+
+    const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
+    const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
+    const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
+    const bool looks_like_frhi = graph_builder_is_cmd_list && (backbuffer_is_rhi || src_is_rhi);
+
+    size_t cmd_list_offset = 0;
+    bool cmd_list_valid = false;
+    const auto rhi_command_list = looks_like_frhi
+        ? as_cmd_list
+        : get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
+    const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
+    if (!cmd_list_valid) {
+        SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
+            (uintptr_t)graph_builder, cmd_list_offset);
+    }
+
+    if (looks_like_frhi) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
+        RenderTextureCallOriginalContextFRHI frhi_ctx{};
+        frhi_ctx.stereo = stereo;
+        frhi_ctx.rhi_command_list = as_cmd_list;
+        frhi_ctx.backbuffer = reinterpret_cast<FRHITexture2D*>(backbuffer);
+        frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
+        frhi_ctx.window_size = window_size;
+
+        render_texture_render_thread_internal(stereo, frhi_ctx.rhi_command_list, frhi_ctx.backbuffer, frhi_ctx.src_texture,
+            window_size,
+            [](void* context) {
+                auto* ctx = static_cast<RenderTextureCallOriginalContextFRHI*>(context);
+                if (ctx == nullptr) {
+                    return;
+                }
+
+                auto* hook = get_render_texture_rdg_hook();
+                if (hook == nullptr || !*hook) {
+                    hook = get_render_texture_hook();
+                }
+
+                if (hook != nullptr && *hook) {
+                    (*hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+                }
+            },
+            &frhi_ctx);
+        return;
+    }
+
+    render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size,
+        &call_original_frdg_d, &ctx);
 }
 
 void FFakeStereoRenderingHook::init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas) {
