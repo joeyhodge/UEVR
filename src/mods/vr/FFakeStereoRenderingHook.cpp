@@ -6368,6 +6368,8 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     return true;
 }
 
+static thread_local FRHICommandListImmediate* g_last_slate_cmd_list = nullptr;
+
 static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
     if (out_offset != nullptr) {
         *out_offset = 0;
@@ -6742,9 +6744,18 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
 
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
+        FRHICommandListImmediate* frhi_cmd = cmd_list_valid ? rhi_command_list : nullptr;
+        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
+            frhi_cmd = g_last_slate_cmd_list;
+        }
+        if (frhi_cmd == nullptr || !is_valid_rhi_cmd_list(frhi_cmd)) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but no valid RHICmdList available; skipping to avoid crash");
+            return;
+        }
+
         RenderTextureCallOriginalContextFRHI frhi_ctx{};
         frhi_ctx.stereo = stereo;
-        frhi_ctx.rhi_command_list = as_cmd_list;
+        frhi_ctx.rhi_command_list = frhi_cmd;
         frhi_ctx.backbuffer = reinterpret_cast<FRHITexture2D*>(backbuffer);
         frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
         frhi_ctx.window_size = window_size_d;
@@ -6835,9 +6846,18 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
 
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
+        FRHICommandListImmediate* frhi_cmd = cmd_list_valid ? rhi_command_list : nullptr;
+        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
+            frhi_cmd = g_last_slate_cmd_list;
+        }
+        if (frhi_cmd == nullptr || !is_valid_rhi_cmd_list(frhi_cmd)) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but no valid RHICmdList available; skipping to avoid crash");
+            return;
+        }
+
         RenderTextureCallOriginalContextFRHI frhi_ctx{};
         frhi_ctx.stereo = stereo;
-        frhi_ctx.rhi_command_list = as_cmd_list;
+        frhi_ctx.rhi_command_list = frhi_cmd;
         frhi_ctx.backbuffer = reinterpret_cast<FRHITexture2D*>(backbuffer);
         frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
         frhi_ctx.window_size = window_size;
@@ -7607,6 +7627,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (is_ue57) {
         constexpr size_t kRdgBuilderCommandListOffsetsUE57[] = { 0xC0, 0xC8, 0xB8, 0xD0 };
+        const auto try_direct_cmd_list = [&](void* candidate, const char* label) -> sdk::FRHICommandListBase* {
+            auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(candidate);
+            if (is_valid_rhi_cmd_list(cmd)) {
+                SPDLOG_INFO_ONCE("UE5.7: DrawWindow direct RHICmdList resolved via {} ({:x})", label, (uintptr_t)cmd);
+                g_ue57_drawwindow_resolved.store(true, std::memory_order_relaxed);
+                return reinterpret_cast<sdk::FRHICommandListBase*>(cmd);
+            }
+            return nullptr;
+        };
+
         const auto try_rdg_builder = [&](void* builder, const char* label) -> sdk::FRHICommandListBase* {
             for (const auto offset : kRdgBuilderCommandListOffsetsUE57) {
                 if (!is_readable_ptr(builder, offset + sizeof(void*))) {
@@ -7644,7 +7674,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return nullptr;
         };
 
-        command_list_rhi = try_rdg_builder(a2, "a2");
+        command_list_rhi = try_direct_cmd_list(a2, "a2");
+        if (command_list_rhi == nullptr) {
+            command_list_rhi = try_direct_cmd_list(a3, "a3");
+        }
+        if (command_list_rhi == nullptr) {
+            command_list_rhi = try_direct_cmd_list(a4, "a4");
+        }
+        if (command_list_rhi == nullptr && params != nullptr) {
+            command_list_rhi = try_direct_cmd_list(params, "params");
+        }
+
+        if (command_list_rhi == nullptr) {
+            command_list_rhi = try_rdg_builder(a2, "a2");
+        }
         if (command_list_rhi == nullptr) {
             command_list_rhi = try_rdg_builder(a3, "a3");
         }
@@ -7656,6 +7699,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         command_list = command_list_rhi;
+
+        if (command_list_rhi != nullptr) {
+            auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list_rhi);
+            if (is_valid_rhi_cmd_list(cmd)) {
+                g_last_slate_cmd_list = cmd;
+            }
+        }
     }
 
     void* renderer_this = renderer;
