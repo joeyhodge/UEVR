@@ -6596,9 +6596,19 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     ctx.src_texture = src_texture;
     ctx.window_size_f = window_size;
 
+    // Some UE5.7 shipping builds appear to route the FRHI signature through this vtable slot.
+    // Detect that case and call the original with the FRHI signature to avoid parameter corruption.
+    const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
+    const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
+    const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
+    const bool looks_like_frhi = graph_builder_is_cmd_list || backbuffer_is_rhi || src_is_rhi;
+
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
-    const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const auto rhi_command_list = looks_like_frhi
+        ? as_cmd_list
+        : get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     if (!cmd_list_valid) {
@@ -6617,6 +6627,36 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     }
     const ::WindowSizeD window_size_d{static_cast<double>(window_size.x), static_cast<double>(window_size.y)};
     ctx.window_size_d = window_size_d;
+
+    if (looks_like_frhi) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
+        RenderTextureCallOriginalContextFRHI frhi_ctx{};
+        frhi_ctx.stereo = stereo;
+        frhi_ctx.rhi_command_list = as_cmd_list;
+        frhi_ctx.backbuffer = reinterpret_cast<FRHITexture2D*>(backbuffer);
+        frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
+        frhi_ctx.window_size = window_size_d;
+
+        render_texture_render_thread_internal(stereo, frhi_ctx.rhi_command_list, frhi_ctx.backbuffer, frhi_ctx.src_texture,
+            window_size_d,
+            [](void* context) {
+                auto* ctx = static_cast<RenderTextureCallOriginalContextFRHI*>(context);
+                if (ctx == nullptr) {
+                    return;
+                }
+
+                auto* hook = get_render_texture_rdg_hook();
+                if (hook == nullptr || !*hook) {
+                    hook = get_render_texture_hook();
+                }
+
+                if (hook != nullptr && *hook) {
+                    (*hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+                }
+            },
+            &frhi_ctx);
+        return;
+    }
 
     render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size_d,
         &call_original_frdg, &ctx);
