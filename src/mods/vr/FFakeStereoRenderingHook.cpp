@@ -6467,6 +6467,13 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         return;
     } else {
         auto vtable = *(void***)rhi_command_list;
+        if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+            SPDLOG_WARN_ONCE("RenderTexture_RenderThread: cmdlist vtable invalid for {:x} (ret {:x}); skipping custom work",
+                (uintptr_t)rhi_command_list, (uintptr_t)_ReturnAddress());
+            call_original_fn();
+            return;
+        }
+
         const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
         const auto vtable_first = ((void**)vtable)[0];
         const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
