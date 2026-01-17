@@ -6281,6 +6281,43 @@ static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
     return (uintptr_t)vtable_module == *rhi_module;
 }
 
+static void log_rhi_texture_vtables_once(const char* tag, const void* backbuffer, const void* src_texture) {
+    static bool logged = false;
+    if (logged) {
+        return;
+    }
+    logged = true;
+
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+    if (rhi_module.has_value()) {
+        SPDLOG_INFO("{} RHI module base {:x}", tag, *rhi_module);
+    } else {
+        SPDLOG_INFO("{} RHI module base unresolved", tag);
+    }
+
+    const auto log_one = [&](const char* name, const void* ptr) {
+        if (!is_readable_ptr_local(ptr, sizeof(void*))) {
+            SPDLOG_INFO("{} {} {:x} unreadable", tag, name, (uintptr_t)ptr);
+            return;
+        }
+
+        auto* vtable = *(void**)ptr;
+        if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+            SPDLOG_INFO("{} {} {:x} vtable {:x} unreadable", tag, name, (uintptr_t)ptr, (uintptr_t)vtable);
+            return;
+        }
+
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        const bool matches_rhi = rhi_module.has_value() && vtable_module != nullptr
+            && (uintptr_t)vtable_module == *rhi_module;
+        SPDLOG_INFO("{} {} {:x} vtable {:x} module {:x} (rhi_match={})",
+            tag, name, (uintptr_t)ptr, (uintptr_t)vtable, (uintptr_t)vtable_module, matches_rhi);
+    };
+
+    log_one("backbuffer", backbuffer);
+    log_one("src_texture", src_texture);
+}
+
 // UE5.7 PDB layout: FRDGBuilder::RHICmdList @ 0xC0, FRDGResource::ResourceRHI @ 0x10.
 constexpr std::array<size_t, 4> kRdgBuilderCommandListOffsetsUE57{0xB8, 0xC0, 0xC8, 0xD0};
 constexpr size_t kRdgTextureResourceRhiOffsetUE57 = 0x10;
@@ -6663,6 +6700,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
+    log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG)", backbuffer, src_texture);
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
@@ -6767,6 +6805,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
+    log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG/d)", backbuffer, src_texture);
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
