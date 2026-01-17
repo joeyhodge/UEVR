@@ -6285,20 +6285,38 @@ static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
 constexpr std::array<size_t, 4> kRdgBuilderCommandListOffsetsUE57{0xB8, 0xC0, 0xC8, 0xD0};
 constexpr size_t kRdgTextureResourceRhiOffsetUE57 = 0x10;
 
+static bool is_image_ptr_local(const void* ptr) {
+    if (ptr == nullptr) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+
+    return (mbi.Type & MEM_IMAGE) != 0;
+}
+
 static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     if (!is_readable_ptr_local(cmd, sizeof(void*))) {
         return false;
     }
 
-    auto vtable = *(void***)cmd;
-    if (!is_readable_ptr_local(vtable, sizeof(void*))) {
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(cmd, &mbi, sizeof(mbi)) != sizeof(mbi)) {
         return false;
     }
 
-    const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
-    const auto vtable_first_module = utility::get_module_within(((void**)vtable)[0]).value_or(nullptr);
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return false;
+    }
 
-    return vtable_module != nullptr && vtable_first_module != nullptr;
+    if ((mbi.Type & MEM_IMAGE) != 0) {
+        return false;
+    }
+
+    return true;
 }
 
 static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
@@ -6624,24 +6642,25 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     // Some UE5.7 shipping builds appear to route the FRHI signature through this vtable slot.
     // Detect that case and call the original with the FRHI signature to avoid parameter corruption.
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
-    const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
-    const bool looks_like_frhi = graph_builder_is_cmd_list && (backbuffer_is_rhi || src_is_rhi);
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
-    const auto rhi_command_list = looks_like_frhi
-        ? as_cmd_list
-        : get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const bool cmd_list_is_image = is_image_ptr_local(rhi_command_list);
+    const bool looks_like_frhi = !cmd_list_valid && (backbuffer_is_rhi || src_is_rhi || cmd_list_is_image);
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
     }
-    if (!looks_like_frhi && (backbuffer_is_rhi || src_is_rhi)) {
-        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread FRDG args resemble RHI textures but cmdlist is invalid; treating as FRDG");
+    if (cmd_list_is_image) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; treating arg as FRHI");
+    }
+    if (looks_like_frhi && (backbuffer_is_rhi || src_is_rhi)) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread FRDG args resemble RHI textures; treating as FRHI signature");
     }
 
     if (backbuffer != nullptr && backbuffer_rhi == nullptr) {
@@ -6707,21 +6726,25 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     ctx.window_size_f = ::WindowSizeF{static_cast<float>(window_size.x), static_cast<float>(window_size.y)};
 
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
-    const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
-    const bool looks_like_frhi = graph_builder_is_cmd_list && (backbuffer_is_rhi || src_is_rhi);
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
-    const auto rhi_command_list = looks_like_frhi
-        ? as_cmd_list
-        : get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const auto rhi_command_list = get_rhi_cmd_list_from_rdg_builder(graph_builder, &cmd_list_offset, &cmd_list_valid);
+    const bool cmd_list_is_image = is_image_ptr_local(rhi_command_list);
+    const bool looks_like_frhi = !cmd_list_valid && (backbuffer_is_rhi || src_is_rhi || cmd_list_is_image);
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
+    }
+    if (cmd_list_is_image) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; treating arg as FRHI");
+    }
+    if (looks_like_frhi && (backbuffer_is_rhi || src_is_rhi)) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread FRDG args resemble RHI textures; treating as FRHI signature");
     }
 
     if (looks_like_frhi) {
