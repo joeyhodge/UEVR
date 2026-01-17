@@ -1621,7 +1621,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
                 if (rendertexture_frdg_valid) {
                     m_render_texture_render_thread_rdg_hook = safetyhook::create_inline(
-                        (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg_d);
+                        (void*)rendertexture_frdg_candidate, render_texture_render_thread_rdg);
                     if (!m_render_texture_render_thread_rdg_hook) {
                         SPDLOG_ERROR("Failed to create RenderTexture_RenderThread FRDG hook");
                     } else {
@@ -1672,7 +1672,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                     rendertexture_fn_vtable_index = i;
                     if (is_ue57 && rendertexture_is_frdg) {
                         m_render_texture_render_thread_hook = safetyhook::create_inline(
-                            (void*)*render_texture_render_thread_func, render_texture_render_thread_rdg_d);
+                            (void*)*render_texture_render_thread_func, render_texture_render_thread_rdg);
                     } else {
                         m_render_texture_render_thread_hook = safetyhook::create_inline(
                             (void*)*render_texture_render_thread_func, render_texture_render_thread);
