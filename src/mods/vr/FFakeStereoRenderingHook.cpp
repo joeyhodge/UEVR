@@ -6316,6 +6316,18 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
+    auto* vtable = *(void**)cmd;
+    if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    if (const auto rhi_module = get_dynamic_rhi_module_base_local(); rhi_module.has_value()) {
+        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+        if (vtable_module == nullptr || (uintptr_t)vtable_module != *rhi_module) {
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -6649,6 +6661,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     // Some UE5.7 shipping builds appear to route the FRHI signature through this vtable slot.
     // Detect that case and call the original with the FRHI signature to avoid parameter corruption.
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
+    const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
@@ -6657,13 +6671,18 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
-    const bool looks_like_frhi = !cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved;
+    const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
+    const bool looks_like_frhi = args_look_like_frhi || (!cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
     }
     if (cmd_list_is_image) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; treating arg as FRHI");
+    }
+    if (args_look_like_frhi) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args look like RHI textures (src {:x} back {:x}); treating as FRHI",
+            (uintptr_t)src_texture, (uintptr_t)backbuffer);
     }
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args resemble FRHI signature; treating as FRHI");
@@ -6692,14 +6711,36 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
         frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
         frhi_ctx.window_size = window_size_d;
 
-        const auto frhi_hook = get_render_texture_hook();
-        if (frhi_hook == nullptr || !*frhi_hook) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature suspected but FRHI hook missing; skipping custom work");
+        auto* hook = get_render_texture_rdg_hook();
+        if (hook == nullptr || !*hook) {
+            hook = get_render_texture_hook();
+        }
+
+        if (hook == nullptr || !*hook) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature suspected but no RenderTexture hook available; skipping custom work");
             return;
         }
 
+        auto call_original_frhi_from_rdg = [](void* context) {
+            auto* ctx = static_cast<RenderTextureCallOriginalContextFRHI*>(context);
+            if (ctx == nullptr) {
+                return;
+            }
+
+            auto* rdg_hook = get_render_texture_rdg_hook();
+            if (rdg_hook != nullptr && *rdg_hook) {
+                (*rdg_hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+                return;
+            }
+
+            auto* frhi_hook = get_render_texture_hook();
+            if (frhi_hook != nullptr && *frhi_hook) {
+                (*frhi_hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+            }
+        };
+
         render_texture_render_thread_internal(stereo, frhi_ctx.rhi_command_list, frhi_ctx.backbuffer, frhi_ctx.src_texture,
-            window_size_d, &call_original_frhi, &frhi_ctx);
+            window_size_d, call_original_frhi_from_rdg, &frhi_ctx);
         return;
     }
 
@@ -6724,6 +6765,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     ctx.window_size_f = ::WindowSizeF{static_cast<float>(window_size.x), static_cast<float>(window_size.y)};
 
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
+    const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
@@ -6732,13 +6775,18 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto backbuffer_rhi = get_rhi_texture_from_rdg_texture(backbuffer);
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
-    const bool looks_like_frhi = !cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved;
+    const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
+    const bool looks_like_frhi = args_look_like_frhi || (!cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
     }
     if (cmd_list_is_image) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; treating arg as FRHI");
+    }
+    if (args_look_like_frhi) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args look like RHI textures (src {:x} back {:x}); treating as FRHI",
+            (uintptr_t)src_texture, (uintptr_t)backbuffer);
     }
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args resemble FRHI signature; treating as FRHI");
@@ -6755,14 +6803,36 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
         frhi_ctx.src_texture = reinterpret_cast<FRHITexture2D*>(src_texture);
         frhi_ctx.window_size = window_size;
 
-        const auto frhi_hook = get_render_texture_hook();
-        if (frhi_hook == nullptr || !*frhi_hook) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature suspected but FRHI hook missing; skipping custom work");
+        auto* hook = get_render_texture_rdg_hook();
+        if (hook == nullptr || !*hook) {
+            hook = get_render_texture_hook();
+        }
+
+        if (hook == nullptr || !*hook) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature suspected but no RenderTexture hook available; skipping custom work");
             return;
         }
 
+        auto call_original_frhi_from_rdg = [](void* context) {
+            auto* ctx = static_cast<RenderTextureCallOriginalContextFRHI*>(context);
+            if (ctx == nullptr) {
+                return;
+            }
+
+            auto* rdg_hook = get_render_texture_rdg_hook();
+            if (rdg_hook != nullptr && *rdg_hook) {
+                (*rdg_hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+                return;
+            }
+
+            auto* frhi_hook = get_render_texture_hook();
+            if (frhi_hook != nullptr && *frhi_hook) {
+                (*frhi_hook).call<void>(ctx->stereo, ctx->rhi_command_list, ctx->backbuffer, ctx->src_texture, ctx->window_size);
+            }
+        };
+
         render_texture_render_thread_internal(stereo, frhi_ctx.rhi_command_list, frhi_ctx.backbuffer, frhi_ctx.src_texture,
-            window_size, &call_original_frhi, &frhi_ctx);
+            window_size, call_original_frhi_from_rdg, &frhi_ctx);
         return;
     }
 
