@@ -6602,7 +6602,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const bool graph_builder_is_cmd_list = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
-    const bool looks_like_frhi = graph_builder_is_cmd_list || backbuffer_is_rhi || src_is_rhi;
+    const bool looks_like_frhi = graph_builder_is_cmd_list;
 
     size_t cmd_list_offset = 0;
     bool cmd_list_valid = false;
@@ -6614,6 +6614,9 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
+    }
+    if (!looks_like_frhi && (backbuffer_is_rhi || src_is_rhi)) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread FRDG args resemble RHI textures but cmdlist is invalid; treating as FRDG");
     }
 
     if (backbuffer != nullptr && backbuffer_rhi == nullptr) {
