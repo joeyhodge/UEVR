@@ -78,6 +78,8 @@ constexpr uint32_t kFSceneViewStereoPassOffsetLegacy = 0xAF0;
 constexpr uint32_t kFSceneViewStereoPassOffsetUE57 = 0xDE0;
 constexpr uint32_t kFSceneViewStereoViewIndexOffsetUE57 = 0xDE4;
 constexpr uint32_t kSceneViewInitOptionsOffset = 0x50;
+
+static bool is_executable_ptr_local(const void* ptr);
 std::atomic<uint32_t> g_sceneview_stereo_pass_offset{kFSceneViewStereoPassOffsetLegacy};
 std::atomic<uint32_t> g_sceneview_stereo_view_index_offset{0};
 std::atomic<bool> g_sceneview_stereo_offsets_validated{false};
