@@ -1198,6 +1198,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         return has_lea_this_plus_8 && has_ret;
     };
 
+    if (is_ue57 && rendertexture_frhi_valid && looks_like_get_render_target_manager(rendertexture_frhi_candidate)) {
+        SPDLOG_WARN("UE5.7: FRHI RenderTexture_RenderThread candidate looks like GetRenderTargetManager; ignoring FRHI candidate");
+        rendertexture_frhi_valid = false;
+    }
+
     // Seems more robust than simply just checking the vtable index.
     m_uses_old_rendertarget_manager = *stereo_view_offset_index <= 11 && !render_texture_render_thread_func;
 
@@ -1305,8 +1310,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         }
 
         if (is_ue57) {
-            // UE5.7 has two RenderTexture_RenderThread entries (FRDG + FRHI); GetRenderTargetManager is after FRHI.
-            if (rendertexture_fn_vtable_index == kRenderTextureVtableIndexUE57FRDG) {
+            // UE5.7 editor PDB shows only the FRDG RenderTexture_RenderThread; FRHI slot may be RTM.
+            if (rendertexture_fn_vtable_index == kRenderTextureVtableIndexUE57FRDG && rendertexture_frhi_valid) {
                 render_target_manager_vtable_index = rendertexture_fn_vtable_index + 2;
                 SPDLOG_INFO("UE5.7: RenderTexture_RenderThread at FRDG index {}, using GetRenderTargetManager index {}", rendertexture_fn_vtable_index, render_target_manager_vtable_index);
             } else {
