@@ -3502,7 +3502,25 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }
 
     const auto is_ue5 = g_hook->has_double_precision();
+    const auto use_ue57_layout = is_ue57 && is_ue5;
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
+
+    Vector3d* ue57_view_origin = nullptr;
+    Matrix4x4d* ue57_view_rotation_matrix = nullptr;
+    Matrix4x4d* ue57_projection_matrix = nullptr;
+    FIntRect* ue57_view_rect = nullptr;
+    FIntRect* ue57_constrained_view_rect = nullptr;
+
+    if (use_ue57_layout) {
+        const auto init_bytes = reinterpret_cast<uint8_t*>(init_options);
+        // UE5.7 PDB layout: ViewOrigin 0x0, ViewRotationMatrix 0x20, ProjectionMatrix 0xA0,
+        // ViewRect 0x120, ConstrainedViewRect 0x148 (CameraToViewTarget sits at 0x130).
+        ue57_view_origin = reinterpret_cast<Vector3d*>(init_bytes + 0x0);
+        ue57_view_rotation_matrix = reinterpret_cast<Matrix4x4d*>(init_bytes + 0x20);
+        ue57_projection_matrix = reinterpret_cast<Matrix4x4d*>(init_bytes + 0xA0);
+        ue57_view_rect = reinterpret_cast<FIntRect*>(init_bytes + 0x120);
+        ue57_constrained_view_rect = reinterpret_cast<FIntRect*>(init_bytes + 0x148);
+    }
 
     const auto init_options_scene_state = init_options->get_scene_state();
 
@@ -3567,7 +3585,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         // const auto view_rot_mat = conversion_mat * make_inverse_rot_matrix(euler); <-- this is the result of the conversion
         glm::vec3 euler{};
 
-        if (is_ue5) {
+        if (use_ue57_layout) {
+            euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * glm::mat4{*ue57_view_rotation_matrix}));
+        } else if (is_ue5) {
             euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * glm::mat4{init_options_view_rotation_matrix_ue5}));
         } else {
             euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * init_options_view_rotation_matrix));
@@ -3576,7 +3596,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         auto euler_d = glm::vec<3, double>{euler};
         auto euler_pointer = is_ue5 ? (Rotator<float>*)&euler_d : (Rotator<float>*)&euler;
 
-        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, &init_options_view_origin);
+        if (use_ue57_layout) {
+            g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, (Vector3f*)ue57_view_origin);
+        } else {
+            g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, &init_options_view_origin);
+        }
 
         if (is_ue5) {
             euler = euler_d;
@@ -3584,20 +3608,31 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
-        *(FIntRect*)&init_options_view_rect = view_rect;
-        *(FIntRect*)&init_options_constrained_view_rect = view_rect;
+        if (use_ue57_layout) {
+            *ue57_view_rect = view_rect;
+            *ue57_constrained_view_rect = view_rect;
 
-        if (is_ue5) {
-            init_options_view_rotation_matrix_ue5 = view_rot_mat;
+            *ue57_view_rotation_matrix = view_rot_mat;
 
             if (!vr->is_using_2d_screen()) {
-                init_options_projection_matrix_ue5 = proj_mat;
+                *ue57_projection_matrix = proj_mat;
             }
         } else {
-            init_options_view_rotation_matrix = view_rot_mat;
+            *(FIntRect*)&init_options_view_rect = view_rect;
+            *(FIntRect*)&init_options_constrained_view_rect = view_rect;
 
-            if (!vr->is_using_2d_screen()) {
-                init_options_projection_matrix = proj_mat;
+            if (is_ue5) {
+                init_options_view_rotation_matrix_ue5 = view_rot_mat;
+
+                if (!vr->is_using_2d_screen()) {
+                    init_options_projection_matrix_ue5 = proj_mat;
+                }
+            } else {
+                init_options_view_rotation_matrix = view_rot_mat;
+
+                if (!vr->is_using_2d_screen()) {
+                    init_options_projection_matrix = proj_mat;
+                }
             }
         }
     }
