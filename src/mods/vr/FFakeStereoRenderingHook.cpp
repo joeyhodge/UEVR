@@ -1216,7 +1216,13 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 if (i > 0) {
                     const size_t rt_index = i - 1;
                     const auto rt_candidate = ((uintptr_t*)vtable)[rt_index];
-                    if (is_valid_render_texture_candidate(rt_candidate)) {
+                    const bool rt_executable = rt_candidate != 0 && is_executable_ptr_local((void*)rt_candidate);
+                    const bool rt_in_module = rt_candidate != 0 && utility::get_module_within((void*)rt_candidate).has_value();
+                    if (rt_executable && rt_in_module) {
+                        if (!is_valid_render_texture_candidate(rt_candidate)) {
+                            SPDLOG_WARN("UE5.7: RenderTexture_RenderThread candidate at index {} failed validation; forcing due to RTM pattern",
+                                rt_index);
+                        }
                         rendertexture_frdg_candidate = rt_candidate;
                         rendertexture_frdg_valid = true;
                         rendertexture_fn_vtable_index = rt_index;
@@ -1225,6 +1231,9 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                         render_texture_render_thread_func = rt_candidate;
                         SPDLOG_INFO("UE5.7: derived RenderTexture_RenderThread vtable index {} ({:x}) from RTM index {}",
                             rt_index, rt_candidate, i);
+                    } else {
+                        SPDLOG_WARN("UE5.7: RenderTexture_RenderThread candidate at index {} not executable/in module; skipping forced RTM-1 override",
+                            rt_index);
                     }
                 }
                 break;
