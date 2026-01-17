@@ -7280,6 +7280,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     void* ue57_inputs_ptr = nullptr;
     bool ue57_inputs_candidate_found = false;
+    void* ue57_inputs_renderer = nullptr;
+    constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
     void* orig_renderer = renderer;
     void* orig_a2 = a2;
     void* orig_a3 = a3;
@@ -7401,8 +7403,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     };
 
     if (is_ue57) {
-        constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
+        // UE5.7 PDB: FSlateDrawWindowPassInputs size 0x70
+        constexpr size_t kSlatePassInputsSizeUE57 = 0x70;
+        constexpr size_t kSlatePassInputsRendererOffsetUE57 = 0x0;
+        constexpr size_t kSlatePassInputsWindowElementListOffsetUE57 = 0x8;
         constexpr size_t kSlatePassInputsWindowOffsetUE57 = 0x10;
+        constexpr size_t kSlatePassInputsCursorPosOffsetUE57 = 0x20;
+        constexpr size_t kSlatePassInputsSceneViewRectOffsetUE57 = 0x28;
+        constexpr size_t kSlatePassInputsViewportScaleOffsetUE57 = 0x38;
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
         constexpr size_t kSWindowViewportOffsetLegacyUE57 = 0x3A0;
         constexpr size_t kSWindowViewportOffsetLegacyAltUE57 = kSWindowViewportOffsetLegacyUE57 + sizeof(void*);
@@ -7412,6 +7420,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             kSWindowViewportOffsetAltUE57,
             kSWindowViewportOffsetLegacyUE57,
             kSWindowViewportOffsetLegacyAltUE57
+        };
+
+        const auto is_valid_renderer_ptr = [&](void* ptr) -> bool {
+            if (!is_readable_ptr(ptr, sizeof(void*))) {
+                return false;
+            }
+
+            auto vtable = *(uintptr_t**)ptr;
+            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+                return false;
+            }
+
+            const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+            const auto vtable_first = vtable[0];
+            if (vtable_module == nullptr || !utility::get_module_within((void*)vtable_first).has_value()) {
+                return false;
+            }
+
+            const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
+            if (uevr_module != nullptr && vtable_module == uevr_module) {
+                return false;
+            }
+
+            return true;
         };
 
         const auto is_valid_viewport_info = [&](sdk::FViewportInfo* candidate) -> bool {
@@ -7441,15 +7473,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         const auto try_inputs = [&](void* inputs_ptr, const char* label) -> bool {
-            if (!is_readable_ptr(inputs_ptr, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*))) {
+            if (!is_readable_ptr(inputs_ptr, kSlatePassInputsSizeUE57)) {
                 return false;
             }
 
             auto inputs = (uint8_t*)inputs_ptr;
+            auto inputs_renderer_candidate = *(void**)(inputs + kSlatePassInputsRendererOffsetUE57);
+            auto window_element_list_candidate = *(void**)(inputs + kSlatePassInputsWindowElementListOffsetUE57);
             auto viewport_info_candidate = *(sdk::FViewportInfo**)(inputs + kSlatePassInputsViewportInfoOffsetUE57);
             auto window_candidate = *(uint8_t**)(inputs + kSlatePassInputsWindowOffsetUE57);
+            const auto viewport_scale = *(float*)(inputs + kSlatePassInputsViewportScaleOffsetUE57);
+
+            const auto rect_min_x = *(int32_t*)(inputs + kSlatePassInputsSceneViewRectOffsetUE57 + 0x0);
+            const auto rect_min_y = *(int32_t*)(inputs + kSlatePassInputsSceneViewRectOffsetUE57 + 0x4);
+            const auto rect_max_x = *(int32_t*)(inputs + kSlatePassInputsSceneViewRectOffsetUE57 + 0x8);
+            const auto rect_max_y = *(int32_t*)(inputs + kSlatePassInputsSceneViewRectOffsetUE57 + 0xC);
+            const auto rect_w = rect_max_x - rect_min_x;
+            const auto rect_h = rect_max_y - rect_min_y;
+
             const bool viewport_info_valid = is_valid_viewport_info(viewport_info_candidate);
             const bool window_valid = is_valid_swindow(window_candidate);
+            const bool renderer_valid = is_valid_renderer_ptr(inputs_renderer_candidate);
+            const bool window_list_valid = is_readable_ptr(window_element_list_candidate, sizeof(void*));
+            const bool scale_valid = viewport_scale > 0.0f && viewport_scale < 10.0f;
+            const bool rect_valid = rect_w > 0 && rect_h > 0 && rect_w <= 16384 && rect_h <= 16384;
             bool found = false;
 
             if (viewport_info == nullptr && viewport_info_valid) {
@@ -7470,11 +7517,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 }
             }
 
-            found = viewport_info_valid && window_valid;
+            found = viewport_info_valid && window_valid && renderer_valid && window_list_valid && scale_valid && rect_valid;
 
             if (found) {
                 if (ue57_inputs_ptr == nullptr) {
                     ue57_inputs_ptr = inputs_ptr;
+                }
+                if (ue57_inputs_renderer == nullptr && renderer_valid) {
+                    ue57_inputs_renderer = inputs_renderer_candidate;
                 }
                 ue57_inputs_candidate_found = true;
                 SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x} ({})", (uintptr_t)inputs_ptr, label);
@@ -7818,6 +7868,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         ue57_args.renderer = a2;
         ue57_args.builder = a3;
         ue57_args.inputs = a4;
+
+        if (ue57_inputs_renderer != nullptr && is_valid_renderer_ptr(ue57_inputs_renderer)) {
+            ue57_args.renderer = ue57_inputs_renderer;
+        }
 
         if (!is_valid_renderer_ptr(ue57_args.renderer)) {
             if (is_valid_renderer_ptr(renderer)) {
