@@ -6700,6 +6700,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     // Some UE5.7 shipping builds appear to route the FRHI signature through this vtable slot.
     // Detect that case and call the original with the FRHI signature to avoid parameter corruption.
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool as_cmd_list_valid = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
     log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG)", backbuffer, src_texture);
@@ -6712,7 +6713,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = args_look_like_frhi || (!cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved);
+    const bool looks_like_frhi = as_cmd_list_valid;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6744,12 +6745,9 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
 
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
-        FRHICommandListImmediate* frhi_cmd = cmd_list_valid ? rhi_command_list : nullptr;
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
-        }
-        if (frhi_cmd == nullptr || !is_valid_rhi_cmd_list(frhi_cmd)) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but no valid RHICmdList available; skipping to avoid crash");
+        FRHICommandListImmediate* frhi_cmd = as_cmd_list;
+        if (!as_cmd_list_valid) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist invalid; skipping to avoid crash");
             return;
         }
 
@@ -6793,7 +6791,13 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
         return;
     }
 
-    render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size_d,
+    FRHICommandListImmediate* effective_cmd_list = cmd_list_valid ? rhi_command_list : nullptr;
+    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
+        effective_cmd_list = g_last_slate_cmd_list;
+        SPDLOG_INFO_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)effective_cmd_list);
+    }
+
+    render_texture_render_thread_internal(stereo, effective_cmd_list, backbuffer_rhi, src_texture_rhi, window_size_d,
         &call_original_frdg, &ctx);
 }
 
@@ -6814,6 +6818,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     ctx.window_size_f = ::WindowSizeF{static_cast<float>(window_size.x), static_cast<float>(window_size.y)};
 
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
+    const bool as_cmd_list_valid = is_valid_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
     log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG/d)", backbuffer, src_texture);
@@ -6826,7 +6831,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = args_look_like_frhi || (!cmd_list_valid && cmd_list_is_image && !rdg_textures_resolved);
+    const bool looks_like_frhi = as_cmd_list_valid;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6846,12 +6851,9 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
 
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
-        FRHICommandListImmediate* frhi_cmd = cmd_list_valid ? rhi_command_list : nullptr;
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
-        }
-        if (frhi_cmd == nullptr || !is_valid_rhi_cmd_list(frhi_cmd)) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but no valid RHICmdList available; skipping to avoid crash");
+        FRHICommandListImmediate* frhi_cmd = as_cmd_list;
+        if (!as_cmd_list_valid) {
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist invalid; skipping to avoid crash");
             return;
         }
 
@@ -6895,7 +6897,13 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
         return;
     }
 
-    render_texture_render_thread_internal(stereo, rhi_command_list, backbuffer_rhi, src_texture_rhi, window_size,
+    FRHICommandListImmediate* effective_cmd_list = cmd_list_valid ? rhi_command_list : nullptr;
+    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
+        effective_cmd_list = g_last_slate_cmd_list;
+        SPDLOG_INFO_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)effective_cmd_list);
+    }
+
+    render_texture_render_thread_internal(stereo, effective_cmd_list, backbuffer_rhi, src_texture_rhi, window_size,
         &call_original_frdg_d, &ctx);
 }
 
