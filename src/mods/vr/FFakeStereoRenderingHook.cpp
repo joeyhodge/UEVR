@@ -7279,6 +7279,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     void* ue57_inputs_ptr = nullptr;
+    bool ue57_inputs_candidate_found = false;
     void* orig_renderer = renderer;
     void* orig_a2 = a2;
     void* orig_a3 = a3;
@@ -7475,6 +7476,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 if (ue57_inputs_ptr == nullptr) {
                     ue57_inputs_ptr = inputs_ptr;
                 }
+                ue57_inputs_candidate_found = true;
                 SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x} ({})", (uintptr_t)inputs_ptr, label);
             }
 
@@ -7877,6 +7879,18 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             (uintptr_t)ue57_args.renderer,
             (uintptr_t)ue57_args.builder,
             (uintptr_t)ue57_args.inputs);
+
+        const bool inputs_ptr_valid = is_readable_ptr(ue57_args.inputs, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*));
+        if (!ue57_inputs_candidate_found && !a4_looks_like_inputs && !inputs_ptr_valid) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved (a4 {:x}); passthrough original untouched.",
+                (uintptr_t)a4);
+            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+        }
+
+        if (!is_valid_renderer_ptr(ue57_args.renderer)) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow renderer unresolved; passthrough original untouched.");
+            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+        }
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
