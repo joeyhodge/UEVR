@@ -7880,10 +7880,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             (uintptr_t)ue57_args.builder,
             (uintptr_t)ue57_args.inputs);
 
-        const bool inputs_ptr_valid = is_readable_ptr(ue57_args.inputs, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*));
-        if (!ue57_inputs_candidate_found && !a4_looks_like_inputs && !inputs_ptr_valid) {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved (a4 {:x}); passthrough original untouched.",
-                (uintptr_t)a4);
+        if (!ue57_inputs_candidate_found) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
             return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
         }
 
