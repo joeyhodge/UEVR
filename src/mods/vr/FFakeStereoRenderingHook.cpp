@@ -7509,6 +7509,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
         };
 
+        const auto renderer_matches = [&](void* candidate) -> bool {
+            if (!is_valid_renderer_ptr(candidate)) {
+                return false;
+            }
+
+            if (is_readable_ptr(orig_renderer, sizeof(void*))) {
+                auto orig_vtable = *(void**)orig_renderer;
+                auto cand_vtable = *(void**)candidate;
+                if (orig_vtable != nullptr && cand_vtable != nullptr && orig_vtable == cand_vtable) {
+                    return true;
+                }
+            }
+
+            return candidate == orig_renderer;
+        };
+
         const auto try_inputs = [&](void* inputs_ptr, const char* label) -> bool {
             if (!is_readable_ptr(inputs_ptr, kSlatePassInputsSizeUE57)) {
                 return false;
@@ -7530,7 +7546,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             const bool viewport_info_valid = is_valid_viewport_info(viewport_info_candidate);
             const bool window_valid = is_valid_swindow(window_candidate);
-            const bool renderer_valid = is_valid_renderer_ptr(inputs_renderer_candidate);
+            const bool renderer_valid = renderer_matches(inputs_renderer_candidate);
             const bool window_list_valid = is_readable_ptr(window_element_list_candidate, sizeof(void*));
             const bool scale_valid = viewport_scale > 0.0f && viewport_scale < 10.0f;
             const bool rect_valid = rect_w > 0 && rect_h > 0 && rect_w <= 16384 && rect_h <= 16384;
