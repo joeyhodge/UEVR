@@ -6406,6 +6406,36 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     return true;
 }
 
+static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
+    if (!is_readable_ptr_local(cmd, sizeof(void*))) {
+        return false;
+    }
+
+    auto* vtable = *(void***)cmd;
+    if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto vtable_first = ((void**)vtable)[0];
+    if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
+        return false;
+    }
+
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+    if (rhi_module.has_value()) {
+        const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+        const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+        if (vtable_module == nullptr || vtable_first_module == nullptr) {
+            return false;
+        }
+        if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static thread_local FRHICommandListImmediate* g_last_slate_cmd_list = nullptr;
 
 static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
@@ -6744,6 +6774,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     // Detect that case and call the original with the FRHI signature to avoid parameter corruption.
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
     const bool as_cmd_list_valid = is_valid_rhi_cmd_list(as_cmd_list);
+    const bool as_cmd_list_plausible = is_plausible_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
     log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG)", backbuffer, src_texture);
@@ -6756,7 +6787,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = as_cmd_list_valid;
+    const bool looks_like_frhi = as_cmd_list_valid || (as_cmd_list_plausible && args_look_like_frhi);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6764,9 +6795,12 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     if (cmd_list_is_image) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; staying on FRDG path");
     }
-    if (args_look_like_frhi && !as_cmd_list_valid) {
+    if (args_look_like_frhi && !as_cmd_list_valid && !as_cmd_list_plausible) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args look like RHI textures (src {:x} back {:x}) but cmdlist invalid; staying on FRDG",
             (uintptr_t)src_texture, (uintptr_t)backbuffer);
+    }
+    if (args_look_like_frhi && as_cmd_list_plausible && !as_cmd_list_valid) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread cmdlist vtable matches RHI but base validation failed; using FRHI path");
     }
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to be FRHI signature; using FRHI path");
@@ -6858,6 +6892,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
 
     const auto as_cmd_list = reinterpret_cast<FRHICommandListImmediate*>(graph_builder);
     const bool as_cmd_list_valid = is_valid_rhi_cmd_list(as_cmd_list);
+    const bool as_cmd_list_plausible = is_plausible_rhi_cmd_list(as_cmd_list);
     const bool backbuffer_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(backbuffer));
     const bool src_is_rhi = is_rhi_texture_vtable_match(reinterpret_cast<FRHITexture2D*>(src_texture));
     log_rhi_texture_vtables_once("UE5.7: RenderTexture_RenderThread(FRDG/d)", backbuffer, src_texture);
@@ -6870,7 +6905,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = as_cmd_list_valid;
+    const bool looks_like_frhi = as_cmd_list_valid || (as_cmd_list_plausible && args_look_like_frhi);
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6878,9 +6913,12 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     if (cmd_list_is_image) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread RHICmdList field points inside image; staying on FRDG path");
     }
-    if (args_look_like_frhi && !as_cmd_list_valid) {
+    if (args_look_like_frhi && !as_cmd_list_valid && !as_cmd_list_plausible) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread args look like RHI textures (src {:x} back {:x}) but cmdlist invalid; staying on FRDG",
             (uintptr_t)src_texture, (uintptr_t)backbuffer);
+    }
+    if (args_look_like_frhi && as_cmd_list_plausible && !as_cmd_list_valid) {
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread cmdlist vtable matches RHI but base validation failed; using FRHI path");
     }
     if (looks_like_frhi) {
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to be FRHI signature; using FRHI path");
