@@ -6267,18 +6267,24 @@ static bool is_rhi_texture_vtable_match(const FRHITexture2D* texture) {
         return false;
     }
 
-    auto* vtable = *(void**)texture;
-    if (vtable == nullptr) {
+    auto* vtable = *(void***)texture;
+    if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto vtable_first = vtable[0];
+    if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
         return false;
     }
 
     const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
     const auto rhi_module = get_dynamic_rhi_module_base_local();
-    if (!rhi_module || vtable_module == nullptr) {
+    if (!rhi_module || vtable_module == nullptr || vtable_first_module == nullptr) {
         return false;
     }
 
-    return (uintptr_t)vtable_module == *rhi_module;
+    return (uintptr_t)vtable_module == *rhi_module && (uintptr_t)vtable_first_module == *rhi_module;
 }
 
 static void log_rhi_texture_vtables_once(const char* tag, const void* backbuffer, const void* src_texture) {
@@ -6301,17 +6307,28 @@ static void log_rhi_texture_vtables_once(const char* tag, const void* backbuffer
             return;
         }
 
-        auto* vtable = *(void**)ptr;
-        if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
-            SPDLOG_INFO("{} {} {:x} vtable {:x} unreadable", tag, name, (uintptr_t)ptr, (uintptr_t)vtable);
-            return;
+        void* vtable = nullptr;
+        void* vtable_first = nullptr;
+        if (is_readable_ptr_local(ptr, sizeof(void*))) {
+            vtable = *(void**)ptr;
+            if (vtable != nullptr && is_readable_ptr_local(vtable, sizeof(void*))) {
+                vtable_first = ((void**)vtable)[0];
+            }
         }
 
         const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
-        const bool matches_rhi = rhi_module.has_value() && vtable_module != nullptr
-            && (uintptr_t)vtable_module == *rhi_module;
-        SPDLOG_INFO("{} {} {:x} vtable {:x} module {:x} (rhi_match={})",
-            tag, name, (uintptr_t)ptr, (uintptr_t)vtable, (uintptr_t)vtable_module, matches_rhi);
+        const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+        const bool matches_rhi = rhi_module.has_value() && vtable_module != nullptr && vtable_first_module != nullptr
+            && (uintptr_t)vtable_module == *rhi_module && (uintptr_t)vtable_first_module == *rhi_module;
+        SPDLOG_INFO("{} {} {:x} vtable {:x} module {:x} vtable_first {:x} vtable_first_mod {:x} (rhi_match={})",
+            tag,
+            name,
+            (uintptr_t)ptr,
+            (uintptr_t)vtable,
+            (uintptr_t)vtable_module,
+            (uintptr_t)vtable_first,
+            (uintptr_t)vtable_first_module,
+            matches_rhi);
     };
 
     log_one("backbuffer", backbuffer);
