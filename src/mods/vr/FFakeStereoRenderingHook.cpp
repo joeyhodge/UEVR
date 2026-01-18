@@ -6371,7 +6371,6 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    const auto first_ptr = *(void**)cmd;
     if (first_ptr != nullptr && is_readable_ptr_local(first_ptr, sizeof(void*)) && is_executable_ptr_local(first_ptr)) {
         auto* vtable = (void**)first_ptr;
         const auto vtable_first = vtable[0];
