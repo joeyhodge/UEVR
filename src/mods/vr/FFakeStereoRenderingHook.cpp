@@ -6352,6 +6352,27 @@ static bool is_image_ptr_local(const void* ptr) {
     return (mbi.Type & MEM_IMAGE) != 0;
 }
 
+static bool has_internal_self_ptr_local(const void* obj, size_t scan_bytes = 0x80, size_t max_span = 0x200) {
+    if (obj == nullptr) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)obj;
+    const auto scan_end = base + scan_bytes;
+    for (auto addr = base + sizeof(void*); addr + sizeof(void*) <= scan_end; addr += sizeof(void*)) {
+        if (!is_readable_ptr_local(reinterpret_cast<void*>(addr), sizeof(void*))) {
+            continue;
+        }
+
+        const auto value = *reinterpret_cast<const uintptr_t*>(addr);
+        if (value >= base && value < base + max_span) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     if (!is_readable_ptr_local(cmd, sizeof(void*))) {
         return false;
@@ -6365,6 +6386,9 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
         return false;
     }
+    if ((mbi.Type & MEM_IMAGE) != 0) {
+        return false;
+    }
 
     const auto cmd_vtable = *(void**)cmd;
     if (cmd_vtable == nullptr || !is_readable_ptr_local(cmd_vtable, sizeof(void*))) {
@@ -6376,31 +6400,20 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    const auto base_addr = (uintptr_t)cmd + sizeof(void*);
-    const auto base = reinterpret_cast<sdk::FRHICommandListBase*>(base_addr);
-
-    if (!is_readable_ptr_local(base, sizeof(sdk::FRHICommandListBase))) {
-        return false;
-    }
-    if (base->command_link == nullptr || !is_readable_ptr_local(base->command_link, sizeof(void*))) {
-        return false;
-    }
-
-    MEMORY_BASIC_INFORMATION link_mbi{};
-    if (VirtualQuery(base->command_link, &link_mbi, sizeof(link_mbi)) != sizeof(link_mbi)) {
-        return false;
-    }
-
-    if (link_mbi.State != MEM_COMMIT || (link_mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
-        return false;
-    }
-
-    {
-        auto* vtable = (void**)cmd_vtable;
-        const auto vtable_first = vtable[0];
-        if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+    if (rhi_module.has_value()) {
+        const auto vtable_module = utility::get_module_within(cmd_vtable).value_or(nullptr);
+        const auto vtable_first_module = utility::get_module_within(cmd_vtable_first).value_or(nullptr);
+        if (vtable_module == nullptr || vtable_first_module == nullptr) {
             return false;
         }
+        if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
+            return false;
+        }
+    }
+
+    if (!has_internal_self_ptr_local(cmd)) {
+        return false;
     }
 
     return true;
@@ -6408,6 +6421,17 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
 
 static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     if (!is_readable_ptr_local(cmd, sizeof(void*))) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(cmd, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return false;
+    }
+    if ((mbi.Type & MEM_IMAGE) != 0) {
         return false;
     }
 
@@ -6431,6 +6455,10 @@ static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
             return false;
         }
+    }
+
+    if (!has_internal_self_ptr_local(cmd)) {
+        return false;
     }
 
     return true;
@@ -6841,6 +6869,10 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
             frhi_cmd = g_last_slate_cmd_list;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
+        if (frhi_cmd == nullptr && as_cmd_list_plausible) {
+            frhi_cmd = as_cmd_list;
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible FRHI cmdlist from builder {:x}", (uintptr_t)frhi_cmd);
+        }
         if (frhi_cmd == nullptr && as_cmd_list_valid) {
             frhi_cmd = as_cmd_list;
         }
@@ -6968,6 +7000,10 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
         if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
             frhi_cmd = g_last_slate_cmd_list;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
+        }
+        if (frhi_cmd == nullptr && as_cmd_list_plausible) {
+            frhi_cmd = as_cmd_list;
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible FRHI cmdlist from builder {:x}", (uintptr_t)frhi_cmd);
         }
         if (frhi_cmd == nullptr && as_cmd_list_valid) {
             frhi_cmd = as_cmd_list;
