@@ -6358,11 +6358,29 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    if (const auto rhi_module = get_dynamic_rhi_module_base_local(); rhi_module.has_value()) {
-        const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
-        if (vtable_module == nullptr || (uintptr_t)vtable_module != *rhi_module) {
-            return false;
-        }
+    const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+    if (vtable_module == nullptr) {
+        return false;
+    }
+
+    const auto vtable_first = ((void**)vtable)[0];
+    if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
+        return false;
+    }
+
+    if (!is_readable_ptr_local(cmd, sizeof(sdk::FRHICommandListBase))) {
+        return false;
+    }
+
+    const auto base = reinterpret_cast<sdk::FRHICommandListBase*>(cmd);
+    if (base->command_link == nullptr || !is_readable_ptr_local(base->command_link, sizeof(void*))) {
+        return false;
+    }
+
+    const auto base_addr = (uintptr_t)base;
+    const auto link_addr = (uintptr_t)base->command_link;
+    if (link_addr < base_addr || link_addr >= base_addr + sizeof(sdk::FRHICommandListBase)) {
+        return false;
     }
 
     return true;
