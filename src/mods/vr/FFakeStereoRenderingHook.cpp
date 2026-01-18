@@ -6349,10 +6349,6 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    if ((mbi.Type & MEM_IMAGE) != 0) {
-        return false;
-    }
-
     auto* vtable = *(void**)cmd;
     if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
         return false;
