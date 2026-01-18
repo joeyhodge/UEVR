@@ -348,6 +348,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
 void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
+    attempt_hook_slate_draw_windows_thread();
     attempt_hook_fsceneview_constructor();
 
     // Ideally we want to do all hooking
@@ -766,6 +767,7 @@ namespace detail{
 bool pre_find_slate_thread() {
     sdk::slate::locate_draw_window_renderthread_fn(); // Can take a while to find
     sdk::slate::locate_draw_window_renderthread_fn_alternate();
+    sdk::slate::locate_draw_windows_renderthread_fn();
     return true;
 }
 }
@@ -860,6 +862,60 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     }
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
+
+    if (!m_hooked_slate_draw_windows_thread) {
+        attempt_hook_slate_draw_windows_thread();
+    }
+}
+
+void FFakeStereoRenderingHook::attempt_hook_slate_draw_windows_thread(uintptr_t return_address) {
+    if (m_asynchronous_scan->value()) {
+        static std::future<bool> future = std::async(std::launch::async, detail::pre_find_slate_thread);
+
+        if (future.valid() && future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            future.get();
+        } else if (future.valid()) {
+            return;
+        }
+    }
+
+    if (m_hooked_slate_draw_windows_thread) {
+        return;
+    }
+
+    if (return_address == 0 && m_attempted_hook_slate_draw_windows_thread) {
+        return;
+    }
+
+    m_attempted_hook_slate_draw_windows_thread = true;
+    SPDLOG_INFO("Attempting to hook FSlateRHIRenderer::DrawWindows_RenderThread!");
+
+    auto func = sdk::slate::locate_draw_windows_renderthread_fn();
+
+    if (!func && return_address != 0) {
+        func = utility::find_function_start_with_call(return_address);
+    }
+
+    if (!func) {
+        SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindows_RenderThread");
+        return;
+    }
+
+    m_slate_draw_windows_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_windows_render_thread,
+        safetyhook::InlineHook::StartDisabled);
+
+    if (!m_slate_draw_windows_thread_hook) {
+        SPDLOG_ERROR("Failed to hook FSlateRHIRenderer::DrawWindows_RenderThread!");
+        return;
+    }
+
+    if (auto enable_result = m_slate_draw_windows_thread_hook.enable(); !enable_result.has_value()) {
+        SPDLOG_ERROR("Failed to enable FSlateRHIRenderer::DrawWindows_RenderThread hook! {}", (int)enable_result.error().type);
+        return;
+    }
+
+    m_hooked_slate_draw_windows_thread = true;
+    SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindows_RenderThread!");
 }
 
 void FFakeStereoRenderingHook::attempt_hook_scene_viewport_set_render_target(sdk::FViewport* viewport) {
@@ -7732,6 +7788,36 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     g_hook->m_sceneview_data.known_scene_states.clear();
     g_hook->m_fixed_localplayer_view_count = true;
+}
+
+void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* command_list, void* draw_window_args, void* update_contexts) {
+#ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
+    SPDLOG_INFO("SlateRHIRenderer::DrawWindows_RenderThread called!");
+#else
+    SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindows_RenderThread called!");
+#endif
+
+    RenderThreadWorker::get().execute();
+
+    if (command_list != nullptr) {
+        auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list);
+        if (is_valid_rhi_cmd_list(cmd)) {
+            g_last_slate_cmd_list = cmd;
+            SPDLOG_INFO_ONCE("UE5.7: DrawWindows RHICmdList cached {:x}", (uintptr_t)cmd);
+        } else if (is_plausible_rhi_cmd_list(cmd)) {
+            g_last_slate_cmd_list = cmd;
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList plausible {:x}", (uintptr_t)cmd);
+        } else {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList invalid {:x}", (uintptr_t)command_list);
+        }
+    }
+
+    auto* hook = g_hook;
+    if (hook == nullptr) {
+        return command_list;
+    }
+
+    return hook->m_slate_draw_windows_thread_hook.call<void*>(command_list, draw_window_args, update_contexts);
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,

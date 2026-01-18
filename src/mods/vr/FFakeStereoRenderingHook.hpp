@@ -694,6 +694,7 @@ public:
     void attempt_hooking();
     void attempt_hook_game_engine_tick(uintptr_t return_address = 0);
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
+    void attempt_hook_slate_draw_windows_thread(uintptr_t return_address = 0);
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_scene_viewport_set_render_target(sdk::FViewport* viewport);
     void attempt_hook_fsceneview_constructor();
@@ -889,6 +890,7 @@ private:
     // Slate
     static void* slate_draw_window_render_thread(void* renderer, void* command_list, void* viewport_info, 
                                                  void* elements, void* params, void* unk1, void* unk2);
+    static void* slate_draw_windows_render_thread(void* command_list, void* draw_window_args, void* update_contexts);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -928,6 +930,7 @@ private:
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_rdg_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
+    safetyhook::InlineHook m_slate_draw_windows_thread_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -991,9 +994,11 @@ private:
     bool m_finished_hooking{false};
     bool m_hooked_game_engine_tick{false};
     bool m_hooked_slate_thread{false};
+    bool m_hooked_slate_draw_windows_thread{false};
     bool m_attempted_hook_game_engine_tick{false};
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
+    bool m_attempted_hook_slate_draw_windows_thread{false};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
