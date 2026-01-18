@@ -6369,7 +6369,10 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     const auto cmd_first_ptr = *(void**)cmd;
     const bool cmd_first_ptr_exec = cmd_first_ptr != nullptr && is_readable_ptr_local(cmd_first_ptr, sizeof(void*))
         && is_executable_ptr_local(cmd_first_ptr);
-    const auto base_addr = (uintptr_t)cmd + (cmd_first_ptr_exec ? sizeof(void*) : 0u);
+    if (!cmd_first_ptr_exec) {
+        return false;
+    }
+    const auto base_addr = (uintptr_t)cmd + sizeof(void*);
     const auto base = reinterpret_cast<sdk::FRHICommandListBase*>(base_addr);
 
     if (!is_readable_ptr_local(base, sizeof(sdk::FRHICommandListBase))) {
