@@ -6366,12 +6366,16 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    const auto cmd_first_ptr = *(void**)cmd;
-    const bool cmd_first_ptr_exec = cmd_first_ptr != nullptr && is_readable_ptr_local(cmd_first_ptr, sizeof(void*))
-        && is_executable_ptr_local(cmd_first_ptr);
-    if (!cmd_first_ptr_exec) {
+    const auto cmd_vtable = *(void**)cmd;
+    if (cmd_vtable == nullptr || !is_readable_ptr_local(cmd_vtable, sizeof(void*))) {
         return false;
     }
+
+    const auto cmd_vtable_first = ((void**)cmd_vtable)[0];
+    if (cmd_vtable_first == nullptr || !is_executable_ptr_local(cmd_vtable_first)) {
+        return false;
+    }
+
     const auto base_addr = (uintptr_t)cmd + sizeof(void*);
     const auto base = reinterpret_cast<sdk::FRHICommandListBase*>(base_addr);
 
@@ -6391,8 +6395,8 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    if (cmd_first_ptr_exec) {
-        auto* vtable = (void**)cmd_first_ptr;
+    {
+        auto* vtable = (void**)cmd_vtable;
         const auto vtable_first = vtable[0];
         if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
             return false;
