@@ -6377,9 +6377,12 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    const auto base_addr = (uintptr_t)base;
-    const auto link_addr = (uintptr_t)base->command_link;
-    if (link_addr < base_addr || link_addr >= base_addr + sizeof(sdk::FRHICommandListBase)) {
+    MEMORY_BASIC_INFORMATION link_mbi{};
+    if (VirtualQuery(base->command_link, &link_mbi, sizeof(link_mbi)) != sizeof(link_mbi)) {
+        return false;
+    }
+
+    if (link_mbi.State != MEM_COMMIT || (link_mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
         return false;
     }
 
