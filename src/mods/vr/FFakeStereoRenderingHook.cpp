@@ -6349,10 +6349,10 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    const auto first_ptr = *(void**)cmd;
-    const bool first_ptr_exec = first_ptr != nullptr && is_readable_ptr_local(first_ptr, sizeof(void*))
-        && is_executable_ptr_local(first_ptr);
-    const auto base_addr = (uintptr_t)cmd + (first_ptr_exec ? sizeof(void*) : 0u);
+    const auto cmd_first_ptr = *(void**)cmd;
+    const bool cmd_first_ptr_exec = cmd_first_ptr != nullptr && is_readable_ptr_local(cmd_first_ptr, sizeof(void*))
+        && is_executable_ptr_local(cmd_first_ptr);
+    const auto base_addr = (uintptr_t)cmd + (cmd_first_ptr_exec ? sizeof(void*) : 0u);
     const auto base = reinterpret_cast<sdk::FRHICommandListBase*>(base_addr);
 
     if (!is_readable_ptr_local(base, sizeof(sdk::FRHICommandListBase))) {
@@ -6371,8 +6371,8 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
-    if (first_ptr != nullptr && is_readable_ptr_local(first_ptr, sizeof(void*)) && is_executable_ptr_local(first_ptr)) {
-        auto* vtable = (void**)first_ptr;
+    if (cmd_first_ptr_exec) {
+        auto* vtable = (void**)cmd_first_ptr;
         const auto vtable_first = vtable[0];
         if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
             return false;
@@ -6732,7 +6732,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = as_cmd_list_valid;
+    const bool looks_like_frhi = as_cmd_list_valid || args_look_like_frhi;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6766,8 +6766,11 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
         FRHICommandListImmediate* frhi_cmd = as_cmd_list;
         if (!as_cmd_list_valid) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist invalid; skipping to avoid crash");
-            return;
+            if (!is_readable_ptr_local(frhi_cmd, sizeof(void*))) {
+                SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist unreadable; skipping to avoid crash");
+                return;
+            }
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected; proceeding with unvalidated cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
 
         RenderTextureCallOriginalContextFRHI frhi_ctx{};
@@ -6850,7 +6853,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
-    const bool looks_like_frhi = as_cmd_list_valid;
+    const bool looks_like_frhi = as_cmd_list_valid || args_look_like_frhi;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
             (uintptr_t)graph_builder, cmd_list_offset);
@@ -6872,8 +6875,11 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread slot appears to use FRHI signature; calling original with FRHI args");
         FRHICommandListImmediate* frhi_cmd = as_cmd_list;
         if (!as_cmd_list_valid) {
-            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist invalid; skipping to avoid crash");
-            return;
+            if (!is_readable_ptr_local(frhi_cmd, sizeof(void*))) {
+                SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected but cmdlist unreadable; skipping to avoid crash");
+                return;
+            }
+            SPDLOG_WARN_ONCE("UE5.7: FRHI signature detected; proceeding with unvalidated cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
 
         RenderTextureCallOriginalContextFRHI frhi_ctx{};
