@@ -7763,6 +7763,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 g_ue57_drawwindow_resolved.store(true, std::memory_order_relaxed);
                 return reinterpret_cast<sdk::FRHICommandListBase*>(cmd);
             }
+            if (is_plausible_rhi_cmd_list(cmd)) {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow direct RHICmdList via {} is plausible ({:x})", label, (uintptr_t)cmd);
+                g_ue57_drawwindow_resolved.store(true, std::memory_order_relaxed);
+                return reinterpret_cast<sdk::FRHICommandListBase*>(cmd);
+            }
             return nullptr;
         };
 
@@ -7832,6 +7837,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (command_list_rhi != nullptr) {
             auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list_rhi);
             if (is_valid_rhi_cmd_list(cmd)) {
+                g_last_slate_cmd_list = cmd;
+            } else if (is_plausible_rhi_cmd_list(cmd)) {
                 g_last_slate_cmd_list = cmd;
             }
         }
