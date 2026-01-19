@@ -310,27 +310,27 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
     return sdk::UEngine::get_stereo_rendering_device_offset();
 }
 
+static std::optional<bool> g_cached_is_ue57{};
+
 bool is_ue_57() {
-    static std::optional<bool> cached{};
-    if (cached) {
-        return *cached;
+    if (g_cached_is_ue57) {
+        return *g_cached_is_ue57;
     }
 
     if (const auto override = get_stereo_rendering_device_offset_override(); override) {
-        cached = (*override == 0x15A0);
-        return *cached;
+        g_cached_is_ue57 = (*override == 0x15A0);
+        return *g_cached_is_ue57;
     }
 
     if (const auto detected = sdk::UEngine::get_stereo_rendering_device_offset(); detected) {
-        cached = (*detected == 0x15A0);
-        if (*cached) {
+        g_cached_is_ue57 = (*detected == 0x15A0);
+        if (*g_cached_is_ue57) {
             SPDLOG_INFO("Detected UE5.7 via UESDK offset; using StereoRenderingDevice offset 0x15A0");
         }
-        return *cached;
+        return *g_cached_is_ue57;
     }
 
-    cached = false;
-    return *cached;
+    return false;
 }
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
@@ -508,7 +508,22 @@ void FFakeStereoRenderingHook::attempt_hooking() {
     }
 
     // TODO: see if this can be threaded; it might not be able to because of TLS or something
-    if (!VR::get()->should_skip_uobjectarray_init()) {
+    bool can_init_uobject = true;
+    if (is_ue_57()) {
+        const bool drawwindow_ready = g_ue57_drawwindow_resolved.load(std::memory_order_relaxed);
+        const bool viewext_ready = !m_analyzing_view_extensions && m_has_view_extensions_installed;
+        const bool saw_drawwindow_call = g_slate_draw_window_calls.load(std::memory_order_relaxed) > 0;
+        if (!drawwindow_ready || !viewext_ready || !saw_drawwindow_call) {
+            static bool logged = false;
+            if (!logged) {
+                SPDLOG_WARN("UE5.7: delaying UObject init until DrawWindow is resolved, view extensions installed, and DrawWindow has been called");
+                logged = true;
+            }
+            can_init_uobject = false;
+        }
+    }
+
+    if (!VR::get()->should_skip_uobjectarray_init() && can_init_uobject) {
         static bool uobject_init_failed = false;
         if (!uobject_init_failed) {
 #ifdef _MSC_VER
