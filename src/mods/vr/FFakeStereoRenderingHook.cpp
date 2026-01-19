@@ -13,6 +13,7 @@
 #include <type_traits>
 
 #include <spdlog/spdlog.h>
+#include <spdlog/fmt/fmt.h>
 #include <utility/Memory.hpp>
 #include <utility/Module.hpp>
 #include <utility/Scan.hpp>
@@ -92,12 +93,20 @@ template <typename... Args>
 static void safe_spdlog(spdlog::level::level_enum level, const char* fmt, Args&&... args) {
 #ifdef _MSC_VER
     __try {
-        spdlog::log(level, fmt, std::forward<Args>(args)...);
+        if constexpr (sizeof...(Args) == 0) {
+            spdlog::log(level, fmt);
+        } else {
+            spdlog::log(level, spdlog::fmt_lib::runtime(fmt), std::forward<Args>(args)...);
+        }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         // Swallow logging exceptions (seen on some UE5.7 render-thread call sites).
     }
 #else
-    spdlog::log(level, fmt, std::forward<Args>(args)...);
+    if constexpr (sizeof...(Args) == 0) {
+        spdlog::log(level, fmt);
+    } else {
+        spdlog::log(level, spdlog::fmt_lib::runtime(fmt), std::forward<Args>(args)...);
+    }
 #endif
 }
 
