@@ -989,6 +989,19 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
     if (m_attempted_hook_fsceneview_constructor) {
         return;
     }
+
+    if (is_ue_57()) {
+        const bool drawwindow_ready = g_ue57_drawwindow_resolved.load(std::memory_order_relaxed);
+        const bool viewext_ready = !m_analyzing_view_extensions && m_has_view_extensions_installed;
+        if (!drawwindow_ready || !viewext_ready) {
+            static bool logged = false;
+            if (!logged) {
+                SPDLOG_WARN("UE5.7: delaying FSceneView constructor hook until DrawWindow + view extensions are ready");
+                logged = true;
+            }
+            return;
+        }
+    }
     
     // just try to find it before ghosting fix is even enabled
     if (m_asynchronous_scan->value()) {
