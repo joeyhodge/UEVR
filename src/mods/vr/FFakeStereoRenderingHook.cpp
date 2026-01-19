@@ -6689,6 +6689,12 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
     (void)window_size;
     const auto call_original_fn = [&]() {
         if (call_original != nullptr) {
+            static bool logged_call_original_cmd = false;
+            if (!logged_call_original_cmd) {
+                logged_call_original_cmd = true;
+                SPDLOG_INFO("RenderTexture_RenderThread: calling original with cmdlist {:x} (cached Slate {:x})",
+                    (uintptr_t)rhi_command_list, (uintptr_t)g_last_slate_cmd_list);
+            }
             call_original(call_original_ctx);
         }
     };
