@@ -127,8 +127,22 @@ static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
     const auto bytes = reinterpret_cast<const uint8_t*>(func);
     // mov qword ptr [r11-30h], rsi
     if (bytes[0] == 0x4D && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0) {
-        // Look backwards for: mov r11, rsp (4C 8B DC)
-        for (int back = 1; back <= 0x20; ++back) {
+        // Hotpatch stub pattern:
+        // 4D 89 73 D0  (mov [r11-30], rsi)
+        // 4D 89 7B C8  (mov [r11-38], rdi)
+        // E9 xx xx xx xx (jmp rel32)
+        if (bytes[4] == 0x4D && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8 && bytes[8] == 0xE9) {
+            const auto rel = *reinterpret_cast<const int32_t*>(bytes + 9);
+            const auto target = func + 13 + rel;
+            if (!IsBadReadPtr((void*)target, 3)) {
+                safe_spdlog(spdlog::level::warn,
+                    "UE5.7: Adjusted DrawWindows_RenderThread hotpatch stub {:x} -> {:x}", func, target);
+                return target;
+            }
+        }
+
+        // Fallback: look backwards for: mov r11, rsp (4C 8B DC)
+        for (int back = 1; back <= 0x40; ++back) {
             const auto candidate = func - back;
             if (IsBadReadPtr((void*)candidate, 3)) {
                 continue;
@@ -136,7 +150,8 @@ static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
 
             const auto cand_bytes = reinterpret_cast<const uint8_t*>(candidate);
             if (cand_bytes[0] == 0x4C && cand_bytes[1] == 0x8B && cand_bytes[2] == 0xDC) {
-                SPDLOG_WARN("UE5.7: Adjusted DrawWindows_RenderThread entry {:x} -> {:x}", func, candidate);
+                safe_spdlog(spdlog::level::warn,
+                    "UE5.7: Adjusted DrawWindows_RenderThread entry {:x} -> {:x}", func, candidate);
                 return candidate;
             }
         }
