@@ -509,9 +509,23 @@ void FFakeStereoRenderingHook::attempt_hooking() {
 
     // TODO: see if this can be threaded; it might not be able to because of TLS or something
     if (!VR::get()->should_skip_uobjectarray_init()) {
-        sdk::FName::get_constructor();
-        sdk::FName::get_to_string();
-        sdk::FUObjectArray::get();
+        static bool uobject_init_failed = false;
+        if (!uobject_init_failed) {
+#ifdef _MSC_VER
+            __try {
+                sdk::FName::get_constructor();
+                sdk::FName::get_to_string();
+                sdk::FUObjectArray::get();
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                uobject_init_failed = true;
+                SPDLOG_ERROR("UObject init threw an exception; continuing without UObject init");
+            }
+#else
+            sdk::FName::get_constructor();
+            sdk::FName::get_to_string();
+            sdk::FUObjectArray::get();
+#endif
+        }
     }
 
     if (!m_injected_stereo_at_runtime) {
