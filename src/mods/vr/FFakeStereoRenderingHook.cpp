@@ -8188,12 +8188,34 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return false;
         }
 
-        if (IsBadReadPtr(ptr, size)) {
+        const auto end = addr + size;
+        const auto region_end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        return end >= addr && end <= region_end;
+    };
+
+    const auto is_readable_ptr_any = [](const void* ptr, size_t size = sizeof(void*)) -> bool {
+        if (ptr == nullptr) {
             return false;
         }
 
-        return true;
-};
+        const auto addr = (uintptr_t)ptr;
+        if (addr < 0x10000) {
+            return false;
+        }
+
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (VirtualQuery(ptr, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        const auto end = addr + size;
+        const auto region_end = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        return end >= addr && end <= region_end;
+    };
 
     void* command_list = is_ue57 ? nullptr : a2;
     sdk::FRHICommandListBase* command_list_rhi = nullptr;
@@ -8308,17 +8330,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     const auto is_valid_slate_viewport = [&](sdk::ISlateViewport* candidate) -> bool {
-        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+        if (!is_readable_ptr_any(candidate, sizeof(void*))) {
             return false;
         }
 
         auto vtable = *(uintptr_t**)candidate;
 
-        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        if (!is_readable_ptr_any(vtable, sizeof(void*))) {
             return false;
         }
 
-        return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
+        const auto first = vtable[0];
+        if (!is_readable_ptr_any((void*)first, sizeof(void*))) {
+            return false;
+        }
+
+        return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
     };
 
     if (is_ue57) {
@@ -8342,18 +8369,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         const auto is_valid_renderer_ptr = [&](void* ptr) -> bool {
-            if (!is_readable_ptr(ptr, sizeof(void*))) {
+            if (!is_readable_ptr_any(ptr, sizeof(void*))) {
                 return false;
             }
 
             auto vtable = *(uintptr_t**)ptr;
-            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            if (!is_readable_ptr_any(vtable, sizeof(void*))) {
                 return false;
             }
 
             const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
             const auto vtable_first = vtable[0];
-            if (vtable_module == nullptr || !utility::get_module_within((void*)vtable_first).has_value()) {
+            if (vtable_module == nullptr || !is_readable_ptr_any((void*)vtable_first, sizeof(void*)) ||
+                !utility::get_module_within((void*)vtable_first).has_value()) {
                 return false;
             }
 
@@ -8366,29 +8394,39 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         const auto is_valid_viewport_info = [&](sdk::FViewportInfo* candidate) -> bool {
-            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            if (!is_readable_ptr_any(candidate, sizeof(void*))) {
                 return false;
             }
 
             auto vtable = *(uintptr_t**)candidate;
-            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            if (!is_readable_ptr_any(vtable, sizeof(void*))) {
                 return false;
             }
 
-            return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
+            const auto first = vtable[0];
+            if (!is_readable_ptr_any((void*)first, sizeof(void*))) {
+                return false;
+            }
+
+            return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
         };
 
         const auto is_valid_swindow = [&](uint8_t* candidate) -> bool {
-            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            if (!is_readable_ptr_any(candidate, sizeof(void*))) {
                 return false;
             }
 
             auto vtable = *(uintptr_t**)candidate;
-            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            if (!is_readable_ptr_any(vtable, sizeof(void*))) {
                 return false;
             }
 
-            return utility::get_module_within(vtable).has_value() && utility::get_module_within(vtable[0]).has_value();
+            const auto first = vtable[0];
+            if (!is_readable_ptr_any((void*)first, sizeof(void*))) {
+                return false;
+            }
+
+            return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
         };
 
         const auto renderer_matches = [&](void* candidate) -> bool {
