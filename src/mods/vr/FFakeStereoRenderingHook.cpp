@@ -142,14 +142,22 @@ static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
         }
 
         // Fallback: look backwards for: mov r11, rsp (4C 8B DC)
-        for (int back = 1; back <= 0x40; ++back) {
+        for (int back = 1; back <= 0x200; ++back) {
             const auto candidate = func - back;
-            if (IsBadReadPtr((void*)candidate, 3)) {
+            if (IsBadReadPtr((void*)candidate, 5)) {
                 continue;
             }
 
             const auto cand_bytes = reinterpret_cast<const uint8_t*>(candidate);
             if (cand_bytes[0] == 0x4C && cand_bytes[1] == 0x8B && cand_bytes[2] == 0xDC) {
+                const auto next = cand_bytes[3];
+                const auto next2 = cand_bytes[4];
+                const bool looks_like_prologue =
+                    next == 0x55 || next == 0x53 || next == 0x57 ||
+                    (next == 0x41 && (next2 == 0x55 || next2 == 0x56 || next2 == 0x57));
+                if (!looks_like_prologue) {
+                    continue;
+                }
                 safe_spdlog(spdlog::level::warn,
                     "UE5.7: Adjusted DrawWindows_RenderThread entry {:x} -> {:x}", func, candidate);
                 return candidate;
@@ -1121,8 +1129,17 @@ void FFakeStereoRenderingHook::attempt_hook_slate_draw_windows_thread(uintptr_t 
         *func = resolve_hook_entry(*func);
         log_function_bytes("UE5.7: DrawWindows resolved", *func);
 
-        if (IsBadReadPtr((void*)*func, 4)) {
+        if (IsBadReadPtr((void*)*func, 8)) {
             SPDLOG_ERROR("UE5.7: DrawWindows resolved entry unreadable; skipping hook");
+            return;
+        }
+        const auto resolved_bytes = reinterpret_cast<const uint8_t*>(*func);
+        const bool has_mov_r11_rsp =
+            resolved_bytes[0] == 0x4C && resolved_bytes[1] == 0x8B && resolved_bytes[2] == 0xDC;
+        if (is_hotpatch_stub_bytes(resolved_bytes) && !has_mov_r11_rsp) {
+            // Still a hotpatch stub entry: calling original will crash because r11 isn't initialized.
+            SPDLOG_WARN("UE5.7: DrawWindows entry still hotpatch-stubbed; skipping hook to avoid crash");
+            m_hooked_slate_draw_windows_thread = true;
             return;
         }
     }
