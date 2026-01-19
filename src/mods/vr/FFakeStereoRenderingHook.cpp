@@ -3549,10 +3549,20 @@ bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
 // FSceneView constructor hook
 sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView* view, sdk::FSceneViewInitOptions* init_options, void* a3, void* a4) {
     SPDLOG_INFO_ONCE("Called FSceneView constructor for the first time");
+    const bool is_ue57 = is_ue_57();
+    if (is_ue57) {
+        const bool drawwindow_ready = g_ue57_drawwindow_resolved.load(std::memory_order_relaxed);
+        const bool viewext_ready = !g_hook->m_analyzing_view_extensions && g_hook->m_has_view_extensions_installed;
+        if (!drawwindow_ready || !viewext_ready) {
+            SPDLOG_WARN_ONCE("UE5.7: deferring FSceneView constructor overrides (drawwindow_ready={} viewext_ready={})",
+                drawwindow_ready, viewext_ready);
+            return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+        }
+    }
+
     initialize_sceneview_stereo_offsets();
 
     auto& vr = VR::get();
-    const bool is_ue57 = is_ue_57();
 
     if (!g_hook->is_in_viewport_client_draw() || !vr->is_hmd_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
@@ -3563,12 +3573,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }
 
     if (g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) {
-        if (is_ue57) {
-            SPDLOG_WARN_ONCE("UE5.7: view extensions not installed yet; deferring FSceneView constructor overrides.");
-        } else {
+        if (!is_ue57) {
             SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
+            return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
         }
-        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
     if (!is_readable_ptr_local(init_options, sizeof(void*)) || !is_readable_ptr_local(view, sizeof(void*))) {
