@@ -96,13 +96,7 @@ static void initialize_sceneview_stereo_offsets() {
 
     initialized = true;
 
-    const auto is_ue57 = []() {
-        if (const auto version = sdk::search_for_version(utility::get_executable());
-            version && version->rfind(L"5.7", 0) == 0) {
-            return true;
-        }
-        return is_ue_57();
-    }();
+    const auto is_ue57 = is_ue_57();
 
     const auto pass_offset = is_ue57 ? 0u : kFSceneViewStereoPassOffsetLegacy;
     const auto view_index_offset = is_ue57 ? 0u : 0u;
@@ -3570,11 +3564,16 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     if (g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) {
         if (is_ue57) {
-            SPDLOG_WARN_ONCE("UE5.7: view extensions not installed yet; continuing FSceneView constructor overrides.");
+            SPDLOG_WARN_ONCE("UE5.7: view extensions not installed yet; deferring FSceneView constructor overrides.");
         } else {
             SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
-            return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
         }
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
+    if (!is_readable_ptr_local(init_options, sizeof(void*)) || !is_readable_ptr_local(view, sizeof(void*))) {
+        SPDLOG_WARN_ONCE("FSceneView constructor: init_options/view unreadable; skipping overrides");
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
     std::scoped_lock ___{g_hook->m_sceneview_data.mtx};
