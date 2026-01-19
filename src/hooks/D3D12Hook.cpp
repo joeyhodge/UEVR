@@ -1,6 +1,7 @@
 #include <thread>
 #include <future>
 #include <unordered_set>
+#include <typeinfo>
 
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
@@ -13,6 +14,51 @@
 #include "D3D12Hook.hpp"
 
 static D3D12Hook* g_d3d12_hook = nullptr;
+
+#if defined(_MSC_VER)
+static __declspec(noinline) HRESULT safe_query_interface(IUnknown* obj, REFIID riid, void** out) noexcept {
+    if (obj == nullptr || out == nullptr) {
+        return E_POINTER;
+    }
+
+    *out = nullptr;
+
+    __try {
+        return obj->QueryInterface(riid, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return E_FAIL;
+    }
+}
+
+static __declspec(noinline) const std::type_info* safe_get_type_info(void* obj) noexcept {
+    if (obj == nullptr) {
+        return nullptr;
+    }
+
+    __try {
+        return utility::rtti::get_type_info(obj);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+#else
+static HRESULT safe_query_interface(IUnknown* obj, REFIID riid, void** out) noexcept {
+    if (obj == nullptr || out == nullptr) {
+        return E_POINTER;
+    }
+
+    *out = nullptr;
+    return obj->QueryInterface(riid, out);
+}
+
+static const std::type_info* safe_get_type_info(void* obj) noexcept {
+    if (obj == nullptr) {
+        return nullptr;
+    }
+
+    return utility::rtti::get_type_info(obj);
+}
+#endif
 
 D3D12Hook::~D3D12Hook() {
     unhook();
@@ -219,15 +265,19 @@ bool D3D12Hook::hook() {
 
     spdlog::info("Querying dummy swapchain");
 
-    if (FAILED(swap_chain1->QueryInterface(IID_PPV_ARGS(&swap_chain)))) {
+    if (FAILED(safe_query_interface(swap_chain1, IID_PPV_ARGS(&swap_chain)))) {
         spdlog::error("Failed to retrieve D3D12 DXGI SwapChain");
         return false;
     }
 
     try {
-        const auto ti = utility::rtti::get_type_info(swap_chain1);
+        const auto ti = safe_get_type_info(swap_chain1);
         const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
         const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
+
+        if (ti == nullptr) {
+            spdlog::warn("Swapchain type info unavailable (SEH or null)");
+        }
 
         spdlog::info("Swapchain type info: {}", swapchain_classname);
         spdlog::info("Swapchain raw type info: {}", raw_name);
