@@ -126,12 +126,12 @@ static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
 
     const auto bytes = reinterpret_cast<const uint8_t*>(func);
     // mov qword ptr [r11-30h], rsi
-    if (bytes[0] == 0x4D && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0) {
+    if ((bytes[0] == 0x4D || bytes[0] == 0x49) && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0) {
         // Hotpatch stub pattern:
         // 4D 89 73 D0  (mov [r11-30], rsi)
         // 4D 89 7B C8  (mov [r11-38], rdi)
         // E9 xx xx xx xx (jmp rel32)
-        if (bytes[4] == 0x4D && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8 && bytes[8] == 0xE9) {
+        if ((bytes[4] == 0x4D || bytes[4] == 0x49) && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8 && bytes[8] == 0xE9) {
             const auto rel = *reinterpret_cast<const int32_t*>(bytes + 9);
             const auto target = func + 13 + rel;
             if (!IsBadReadPtr((void*)target, 3)) {
@@ -185,8 +185,10 @@ static void log_function_bytes(const char* label, uintptr_t addr) {
 }
 
 static bool is_hotpatch_stub_bytes(const uint8_t* bytes) {
-    return bytes[0] == 0x4D && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0 &&
-        bytes[4] == 0x4D && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8;
+    const bool rex1 = bytes[0] == 0x4D || bytes[0] == 0x49;
+    const bool rex2 = bytes[4] == 0x4D || bytes[4] == 0x49;
+    return rex1 && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0 &&
+        rex2 && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8;
 }
 
 static uintptr_t resolve_hook_entry(uintptr_t func) {
