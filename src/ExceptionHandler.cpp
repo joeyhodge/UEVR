@@ -2,6 +2,7 @@
 #include <DbgHelp.h>
 #include <ShlObj.h>
 #include <filesystem>
+#include <atomic>
 #include <spdlog/spdlog.h>
 
 #include <utility/Module.hpp>
@@ -11,6 +12,39 @@
 #include "Framework.hpp"
 
 #include "ExceptionHandler.hpp"
+
+namespace {
+std::atomic_bool g_in_exception_handler{false};
+PVOID g_vectored_exception_handler_handle{};
+
+LONG WINAPI vectored_exception_handler(struct _EXCEPTION_POINTERS* ei) {
+    if (ei == nullptr || ei->ExceptionRecord == nullptr || ei->ContextRecord == nullptr) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    const auto code = ei->ExceptionRecord->ExceptionCode;
+
+    switch (code) {
+    case EXCEPTION_ACCESS_VIOLATION:
+    case EXCEPTION_ARRAY_BOUNDS_EXCEEDED:
+    case EXCEPTION_ILLEGAL_INSTRUCTION:
+    case EXCEPTION_IN_PAGE_ERROR:
+    case EXCEPTION_STACK_OVERFLOW:
+        break;
+    default:
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    if (g_in_exception_handler.exchange(true, std::memory_order_relaxed)) {
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    framework::global_exception_handler(ei);
+    g_in_exception_handler.store(false, std::memory_order_relaxed);
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+}
 
 LONG WINAPI framework::global_exception_handler(struct _EXCEPTION_POINTERS* ei) {
     spdlog::flush_on(spdlog::level::err);
@@ -103,4 +137,12 @@ LONG WINAPI framework::global_exception_handler(struct _EXCEPTION_POINTERS* ei) 
 
 void framework::setup_exception_handler() {
     SetUnhandledExceptionFilter(global_exception_handler);
+
+    if (g_vectored_exception_handler_handle == nullptr) {
+        g_vectored_exception_handler_handle = AddVectoredExceptionHandler(1, vectored_exception_handler);
+
+        if (g_vectored_exception_handler_handle == nullptr) {
+            spdlog::error("Failed to register vectored exception handler");
+        }
+    }
 }
