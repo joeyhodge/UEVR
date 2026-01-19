@@ -7790,7 +7790,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     g_hook->m_fixed_localplayer_view_count = true;
 }
 
-void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* command_list, void* draw_window_args, void* update_contexts) {
+void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* renderer, void* command_list, void* draw_window_args, void* update_contexts) {
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("SlateRHIRenderer::DrawWindows_RenderThread called!");
 #else
@@ -7801,14 +7801,14 @@ void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* command_l
 
     if (command_list != nullptr) {
         auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list);
+        // Always cache the DrawWindows cmdlist; validation in UE5.7 can be overly strict.
+        g_last_slate_cmd_list = cmd;
         if (is_valid_rhi_cmd_list(cmd)) {
-            g_last_slate_cmd_list = cmd;
             SPDLOG_INFO_ONCE("UE5.7: DrawWindows RHICmdList cached {:x}", (uintptr_t)cmd);
         } else if (is_plausible_rhi_cmd_list(cmd)) {
-            g_last_slate_cmd_list = cmd;
             SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList plausible {:x}", (uintptr_t)cmd);
         } else {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList invalid {:x}", (uintptr_t)command_list);
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList cached (unvalidated) {:x}", (uintptr_t)command_list);
         }
     }
 
@@ -7817,7 +7817,7 @@ void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* command_l
         return command_list;
     }
 
-    return hook->m_slate_draw_windows_thread_hook.call<void*>(command_list, draw_window_args, update_contexts);
+    return hook->m_slate_draw_windows_thread_hook.call<void*>(renderer, command_list, draw_window_args, update_contexts);
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,

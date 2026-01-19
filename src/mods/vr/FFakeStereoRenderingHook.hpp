@@ -890,7 +890,7 @@ private:
     // Slate
     static void* slate_draw_window_render_thread(void* renderer, void* command_list, void* viewport_info, 
                                                  void* elements, void* params, void* unk1, void* unk2);
-    static void* slate_draw_windows_render_thread(void* command_list, void* draw_window_args, void* update_contexts);
+    static void* slate_draw_windows_render_thread(void* renderer, void* command_list, void* draw_window_args, void* update_contexts);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
