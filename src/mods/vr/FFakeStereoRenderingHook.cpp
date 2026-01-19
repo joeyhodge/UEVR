@@ -8250,7 +8250,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     continue;
                 }
 
-                if (candidate->command_link == nullptr || IsBadReadPtr(candidate->command_link, sizeof(void*))) {
+                if (candidate->command_link == nullptr || !is_readable_ptr_any(candidate->command_link, sizeof(void*))) {
                     SPDLOG_DEBUG("UE5.7: FRDGBuilder probe {}+0x{:x} command_link invalid (builder {:x}, cmd {:x})",
                         label, offset, (uintptr_t)builder, (uintptr_t)candidate);
                     continue;
