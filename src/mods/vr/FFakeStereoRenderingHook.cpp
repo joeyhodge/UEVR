@@ -160,6 +160,109 @@ static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
     return func;
 }
 
+static void log_function_bytes(const char* label, uintptr_t addr) {
+    if (addr == 0 || IsBadReadPtr((void*)addr, 12)) {
+        safe_spdlog(spdlog::level::warn, "{} bytes unreadable @ {:x}", label, addr);
+        return;
+    }
+
+    const auto bytes = reinterpret_cast<const uint8_t*>(addr);
+    safe_spdlog(spdlog::level::info,
+        "{} bytes @ {:x}: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
+        label,
+        addr,
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11]);
+}
+
+static bool is_hotpatch_stub_bytes(const uint8_t* bytes) {
+    return bytes[0] == 0x4D && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0 &&
+        bytes[4] == 0x4D && bytes[5] == 0x89 && bytes[6] == 0x7B && bytes[7] == 0xC8;
+}
+
+static uintptr_t resolve_hook_entry(uintptr_t func) {
+    if (func == 0) {
+        return func;
+    }
+
+    uintptr_t current = func;
+    for (int hop = 0; hop < 4; ++hop) {
+        if (IsBadReadPtr((void*)current, 12)) {
+            break;
+        }
+
+        const auto bytes = reinterpret_cast<const uint8_t*>(current);
+
+        // Skip int3 padding.
+        while (bytes[0] == 0xCC && !IsBadReadPtr((void*)(current + 1), 1)) {
+            ++current;
+        }
+
+        if (IsBadReadPtr((void*)current, 12)) {
+            break;
+        }
+
+        // Hotpatch stub with trailing jmp.
+        if (is_hotpatch_stub_bytes(bytes) && bytes[8] == 0xE9) {
+            const auto rel = *reinterpret_cast<const int32_t*>(bytes + 9);
+            const auto target = current + 13 + rel;
+            if (!IsBadReadPtr((void*)target, 3)) {
+                safe_spdlog(spdlog::level::warn,
+                    "UE5.7: Following DrawWindows hotpatch stub {:x} -> {:x}", current, target);
+                current = target;
+                continue;
+            }
+        }
+
+        // Direct relative jump.
+        if (bytes[0] == 0xE9) {
+            const auto rel = *reinterpret_cast<const int32_t*>(bytes + 1);
+            const auto target = current + 5 + rel;
+            if (!IsBadReadPtr((void*)target, 3)) {
+                safe_spdlog(spdlog::level::warn,
+                    "UE5.7: Following DrawWindows jmp {:x} -> {:x}", current, target);
+                current = target;
+                continue;
+            }
+        }
+
+        // Short jump.
+        if (bytes[0] == 0xEB) {
+            const auto rel = *reinterpret_cast<const int8_t*>(bytes + 1);
+            const auto target = current + 2 + rel;
+            if (!IsBadReadPtr((void*)target, 3)) {
+                safe_spdlog(spdlog::level::warn,
+                    "UE5.7: Following DrawWindows short jmp {:x} -> {:x}", current, target);
+                current = target;
+                continue;
+            }
+        }
+
+        // RIP-relative indirect jump: FF 25 rel32
+        if (bytes[0] == 0xFF && bytes[1] == 0x25) {
+            const auto rel = *reinterpret_cast<const int32_t*>(bytes + 2);
+            const auto slot = current + 6 + rel;
+            if (!IsBadReadPtr((void*)slot, sizeof(uintptr_t))) {
+                const auto target = *reinterpret_cast<const uintptr_t*>(slot);
+                if (target != 0 && !IsBadReadPtr((void*)target, 3)) {
+                    safe_spdlog(spdlog::level::warn,
+                        "UE5.7: Following DrawWindows jmp [rip] {:x} -> {:x}", current, target);
+                    current = target;
+                    continue;
+                }
+            }
+        }
+
+        break;
+    }
+
+    // Apply legacy fallback if still stuck on stub.
+    current = fixup_hotpatch_entry(current);
+
+    return current;
+}
+
 static void initialize_sceneview_stereo_offsets() {
     static bool initialized = false;
     if (initialized) {
@@ -1014,7 +1117,14 @@ void FFakeStereoRenderingHook::attempt_hook_slate_draw_windows_thread(uintptr_t 
     }
 
     if (is_ue_57()) {
-        *func = fixup_hotpatch_entry(*func);
+        log_function_bytes("UE5.7: DrawWindows initial", *func);
+        *func = resolve_hook_entry(*func);
+        log_function_bytes("UE5.7: DrawWindows resolved", *func);
+
+        if (IsBadReadPtr((void*)*func, 4)) {
+            SPDLOG_ERROR("UE5.7: DrawWindows resolved entry unreadable; skipping hook");
+            return;
+        }
     }
 
     m_slate_draw_windows_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_windows_render_thread,
