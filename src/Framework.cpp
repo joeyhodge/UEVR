@@ -194,6 +194,7 @@ Framework::Framework(HMODULE framework_module)
     std::scoped_lock __{m_constructor_mutex};
 
     spdlog::set_default_logger(m_logger);
+    framework::setup_exception_handler();
     spdlog::flush_on(spdlog::level::info);
     spdlog::info("UnrealVR entry");
     spdlog::info("Commit hash: {}", UEVR_COMMIT_HASH);
