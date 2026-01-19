@@ -521,6 +521,9 @@ void FFakeStereoRenderingHook::attempt_hooking() {
             }
             can_init_uobject = false;
         }
+        if (!drawwindow_ready || !viewext_ready || !saw_drawwindow_call) {
+            return;
+        }
     }
 
     if (!VR::get()->should_skip_uobjectarray_init() && can_init_uobject) {
