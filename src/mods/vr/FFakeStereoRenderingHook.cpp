@@ -88,6 +88,28 @@ std::atomic<bool> g_ue57_drawwindow_resolved{false};
 
 static bool is_readable_ptr_local(const void* ptr, size_t size = sizeof(void*));
 
+template <typename... Args>
+static void safe_spdlog(spdlog::level::level_enum level, const char* fmt, Args&&... args) {
+#ifdef _MSC_VER
+    __try {
+        spdlog::log(level, fmt, std::forward<Args>(args)...);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        // Swallow logging exceptions (seen on some UE5.7 render-thread call sites).
+    }
+#else
+    spdlog::log(level, fmt, std::forward<Args>(args)...);
+#endif
+}
+
+template <typename... Args>
+static void safe_spdlog_once(std::atomic_bool& flag, spdlog::level::level_enum level, const char* fmt, Args&&... args) {
+    if (flag.exchange(true)) {
+        return;
+    }
+
+    safe_spdlog(level, fmt, std::forward<Args>(args)...);
+}
+
 static void initialize_sceneview_stereo_offsets() {
     static bool initialized = false;
     if (initialized) {
@@ -7898,23 +7920,29 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
 void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* renderer, void* command_list, void* draw_window_args, void* update_contexts) {
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
-    SPDLOG_INFO("SlateRHIRenderer::DrawWindows_RenderThread called!");
+    safe_spdlog(spdlog::level::info, "SlateRHIRenderer::DrawWindows_RenderThread called!");
 #else
-    SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindows_RenderThread called!");
+    static std::atomic_bool logged_draw_windows_call{false};
+    safe_spdlog_once(logged_draw_windows_call, spdlog::level::info,
+        "SlateRHIRenderer::DrawWindows_RenderThread called!");
 #endif
 
     RenderThreadWorker::get().execute();
 
     if (command_list != nullptr) {
+        static std::atomic_bool logged_draw_windows_cmdlist{false};
         auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list);
         // Always cache the DrawWindows cmdlist; validation in UE5.7 can be overly strict.
         g_last_slate_cmd_list = cmd;
         if (is_valid_rhi_cmd_list(cmd)) {
-            SPDLOG_INFO_ONCE("UE5.7: DrawWindows RHICmdList cached {:x}", (uintptr_t)cmd);
+            safe_spdlog_once(logged_draw_windows_cmdlist, spdlog::level::info,
+                "UE5.7: DrawWindows RHICmdList cached {:x}", (uintptr_t)cmd);
         } else if (is_plausible_rhi_cmd_list(cmd)) {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList plausible {:x}", (uintptr_t)cmd);
+            safe_spdlog_once(logged_draw_windows_cmdlist, spdlog::level::warn,
+                "UE5.7: DrawWindows RHICmdList plausible {:x}", (uintptr_t)cmd);
         } else {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindows RHICmdList cached (unvalidated) {:x}", (uintptr_t)command_list);
+            safe_spdlog_once(logged_draw_windows_cmdlist, spdlog::level::warn,
+                "UE5.7: DrawWindows RHICmdList cached (unvalidated) {:x}", (uintptr_t)command_list);
         }
     }
 
