@@ -6508,13 +6508,14 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
+    const auto vtable_module = utility::get_module_within(cmd_vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(cmd_vtable_first).value_or(nullptr);
+    if (vtable_module == nullptr || vtable_first_module == nullptr) {
+        return false;
+    }
+
     const auto rhi_module = get_dynamic_rhi_module_base_local();
     if (rhi_module.has_value()) {
-        const auto vtable_module = utility::get_module_within(cmd_vtable).value_or(nullptr);
-        const auto vtable_first_module = utility::get_module_within(cmd_vtable_first).value_or(nullptr);
-        if (vtable_module == nullptr || vtable_first_module == nullptr) {
-            return false;
-        }
         if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
             return false;
         }
@@ -6556,13 +6557,14 @@ static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
 
+    const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+    if (vtable_module == nullptr || vtable_first_module == nullptr) {
+        return false;
+    }
+
     const auto rhi_module = get_dynamic_rhi_module_base_local();
     if (rhi_module.has_value()) {
-        const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
-        const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
-        if (vtable_module == nullptr || vtable_first_module == nullptr) {
-            return false;
-        }
         if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
             return false;
         }
@@ -6742,32 +6744,36 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
         const auto vtable_first = has_vtable ? ((void**)vtable)[0] : nullptr;
         const bool vtable_first_exec = vtable_first != nullptr && is_executable_ptr_local(vtable_first);
 
-        if (has_vtable && vtable_first_exec) {
-            const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
-            const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
-            const auto rhi_module = get_dynamic_rhi_module_base_local();
+        if (!has_vtable || !vtable_first_exec) {
+            SPDLOG_WARN_ONCE("RenderTexture_RenderThread: cmdlist {:x} has no executable vtable; skipping custom work",
+                (uintptr_t)rhi_command_list);
+            call_original_fn();
+            return;
+        }
 
-            if (rhi_module && vtable_module != nullptr && (uintptr_t)vtable_module != *rhi_module) {
-                SPDLOG_WARN_ONCE("RenderTexture_RenderThread cmdlist vtable module {:x} does not match RHI module {:x}; skipping custom work",
-                    (uintptr_t)vtable_module, *rhi_module);
-                call_original_fn();
-                return;
-            }
+        const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+        const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+        if (vtable_module == nullptr || vtable_first_module == nullptr) {
+            SPDLOG_WARN_ONCE("RenderTexture_RenderThread: cmdlist {:x} vtable/module resolution failed; skipping custom work",
+                (uintptr_t)rhi_command_list);
+            call_original_fn();
+            return;
+        }
 
-            static bool logged_cmd_list = false;
-            if (!logged_cmd_list) {
-                logged_cmd_list = true;
-                SPDLOG_INFO("RenderTexture_RenderThread cmdlist {:x} vtable {:x} (mod {:x}) first {:x} (mod {:x})",
-                    (uintptr_t)rhi_command_list, (uintptr_t)vtable, (uintptr_t)vtable_module, (uintptr_t)vtable_first,
-                    (uintptr_t)vtable_first_module);
-            }
-        } else if (!vtable_first_exec) {
-            static bool logged_cmd_list_no_vtable = false;
-            if (!logged_cmd_list_no_vtable) {
-                logged_cmd_list_no_vtable = true;
-                SPDLOG_INFO("RenderTexture_RenderThread cmdlist {:x} appears to have no vtable; skipping module checks",
-                    (uintptr_t)rhi_command_list);
-            }
+        const auto rhi_module = get_dynamic_rhi_module_base_local();
+        if (rhi_module && (uintptr_t)vtable_module != *rhi_module) {
+            SPDLOG_WARN_ONCE("RenderTexture_RenderThread cmdlist vtable module {:x} does not match RHI module {:x}; skipping custom work",
+                (uintptr_t)vtable_module, *rhi_module);
+            call_original_fn();
+            return;
+        }
+
+        static bool logged_cmd_list = false;
+        if (!logged_cmd_list) {
+            logged_cmd_list = true;
+            SPDLOG_INFO("RenderTexture_RenderThread cmdlist {:x} vtable {:x} (mod {:x}) first {:x} (mod {:x})",
+                (uintptr_t)rhi_command_list, (uintptr_t)vtable, (uintptr_t)vtable_module, (uintptr_t)vtable_first,
+                (uintptr_t)vtable_first_module);
         }
     }
 
