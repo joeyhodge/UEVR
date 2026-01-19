@@ -6521,7 +6521,10 @@ static bool is_valid_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     }
 
     if (!has_internal_self_ptr_local(cmd)) {
-        return false;
+        // UE5.7 appears to change internal cmd list layout; allow in that case.
+        if (!is_ue_57()) {
+            return false;
+        }
     }
 
     return true;
@@ -6566,7 +6569,10 @@ static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     }
 
     if (!has_internal_self_ptr_local(cmd)) {
-        return false;
+        // UE5.7 appears to change internal cmd list layout; allow in that case.
+        if (!is_ue_57()) {
+            return false;
+        }
     }
 
     return true;
@@ -6929,7 +6935,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
-        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list)));
+        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list))) ||
+        (g_last_slate_cmd_list != nullptr && is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list));
     const bool looks_like_frhi = args_look_like_frhi && any_cmd_list_candidate && !cmd_list_is_image;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
@@ -6979,6 +6986,16 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
         if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
             frhi_cmd = g_last_slate_cmd_list;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
+        }
+        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr &&
+            is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
+            frhi_cmd = g_last_slate_cmd_list;
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
+        }
+        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr &&
+            is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
+            frhi_cmd = g_last_slate_cmd_list;
+            SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
         if (frhi_cmd == nullptr && as_cmd_list_plausible) {
             frhi_cmd = as_cmd_list;
@@ -7038,6 +7055,16 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
         effective_cmd_list = g_last_slate_cmd_list;
         SPDLOG_INFO_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)effective_cmd_list);
     }
+    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr &&
+        is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
+        effective_cmd_list = g_last_slate_cmd_list;
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)effective_cmd_list);
+    }
+    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr &&
+        is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
+        effective_cmd_list = g_last_slate_cmd_list;
+        SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)effective_cmd_list);
+    }
 
     render_texture_render_thread_internal(stereo, effective_cmd_list, backbuffer_rhi, src_texture_rhi, window_size_d,
         &call_original_frdg, &ctx);
@@ -7076,7 +7103,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
-        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list)));
+        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list))) ||
+        (g_last_slate_cmd_list != nullptr && is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list));
     const bool looks_like_frhi = args_look_like_frhi && any_cmd_list_candidate && !cmd_list_is_image;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
@@ -8016,10 +8044,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (command_list_rhi != nullptr) {
             auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list_rhi);
+            // Cache even if validation fails; UE5.7 cmd list layout appears to differ.
+            g_last_slate_cmd_list = cmd;
             if (is_valid_rhi_cmd_list(cmd)) {
-                g_last_slate_cmd_list = cmd;
+                SPDLOG_INFO_ONCE("UE5.7: DrawWindow RHICmdList cached {:x}", (uintptr_t)cmd);
             } else if (is_plausible_rhi_cmd_list(cmd)) {
-                g_last_slate_cmd_list = cmd;
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow RHICmdList plausible {:x}", (uintptr_t)cmd);
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow RHICmdList cached (unvalidated) {:x}", (uintptr_t)cmd);
             }
         }
     }
