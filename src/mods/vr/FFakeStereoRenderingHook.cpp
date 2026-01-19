@@ -725,6 +725,20 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
 
     hook->attempt_hooking();
 
+    if (is_ue_57()) {
+        const bool drawwindow_ready = g_ue57_drawwindow_resolved.load(std::memory_order_relaxed);
+        const bool viewext_ready = !hook->m_analyzing_view_extensions && hook->m_has_view_extensions_installed;
+        const bool saw_drawwindow_call = g_slate_draw_window_calls.load(std::memory_order_relaxed) > 0;
+        if (!drawwindow_ready || !viewext_ready || !saw_drawwindow_call) {
+            static bool logged_delay_tick = false;
+            if (!logged_delay_tick) {
+                SPDLOG_WARN("UE5.7: skipping UGameEngine::Tick side-effects until DrawWindow has been called and view extensions are ready");
+                logged_delay_tick = true;
+            }
+            return hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
+        }
+    }
+
     // Best place to run game thread jobs.
     GameThreadWorker::get().execute();
 
