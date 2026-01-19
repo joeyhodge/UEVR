@@ -119,6 +119,32 @@ static void safe_spdlog_once(std::atomic_bool& flag, spdlog::level::level_enum l
     safe_spdlog(level, fmt, std::forward<Args>(args)...);
 }
 
+static uintptr_t fixup_hotpatch_entry(uintptr_t func) {
+    if (func == 0 || IsBadReadPtr((void*)func, 4)) {
+        return func;
+    }
+
+    const auto bytes = reinterpret_cast<const uint8_t*>(func);
+    // mov qword ptr [r11-30h], rsi
+    if (bytes[0] == 0x4D && bytes[1] == 0x89 && bytes[2] == 0x73 && bytes[3] == 0xD0) {
+        // Look backwards for: mov r11, rsp (4C 8B DC)
+        for (int back = 1; back <= 0x20; ++back) {
+            const auto candidate = func - back;
+            if (IsBadReadPtr((void*)candidate, 3)) {
+                continue;
+            }
+
+            const auto cand_bytes = reinterpret_cast<const uint8_t*>(candidate);
+            if (cand_bytes[0] == 0x4C && cand_bytes[1] == 0x8B && cand_bytes[2] == 0xDC) {
+                SPDLOG_WARN("UE5.7: Adjusted DrawWindows_RenderThread entry {:x} -> {:x}", func, candidate);
+                return candidate;
+            }
+        }
+    }
+
+    return func;
+}
+
 static void initialize_sceneview_stereo_offsets() {
     static bool initialized = false;
     if (initialized) {
@@ -970,6 +996,10 @@ void FFakeStereoRenderingHook::attempt_hook_slate_draw_windows_thread(uintptr_t 
     if (!func) {
         SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindows_RenderThread");
         return;
+    }
+
+    if (is_ue_57()) {
+        *func = fixup_hotpatch_entry(*func);
     }
 
     m_slate_draw_windows_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_windows_render_thread,
