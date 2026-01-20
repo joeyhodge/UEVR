@@ -6800,6 +6800,50 @@ static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
     return true;
 }
 
+static bool is_ue57_cmd_list_usable(FRHICommandListImmediate* cmd) {
+    if (!is_ue_57()) {
+        return false;
+    }
+
+    if (!is_readable_ptr_local(cmd, sizeof(void*))) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(cmd, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        return false;
+    }
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return false;
+    }
+    if ((mbi.Type & MEM_IMAGE) != 0) {
+        return false;
+    }
+
+    auto* vtable = *(void***)cmd;
+    if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto vtable_first = ((void**)vtable)[0];
+    if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
+        return false;
+    }
+
+    const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+    if (vtable_module == nullptr || vtable_first_module == nullptr) {
+        return false;
+    }
+
+    const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
+    if (uevr_module != nullptr && vtable_module == uevr_module) {
+        return false;
+    }
+
+    return true;
+}
+
 static thread_local FRHICommandListImmediate* g_last_slate_cmd_list = nullptr;
 
 static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
@@ -8765,11 +8809,23 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue57 && command_list_rhi == nullptr && g_last_slate_cmd_list != nullptr) {
-        if (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
+        const bool slate_cmd_valid = is_valid_rhi_cmd_list(g_last_slate_cmd_list);
+        const bool slate_cmd_plausible = !slate_cmd_valid && is_plausible_rhi_cmd_list(g_last_slate_cmd_list);
+        const bool slate_cmd_relaxed = !slate_cmd_valid && !slate_cmd_plausible && is_ue57_cmd_list_usable(g_last_slate_cmd_list);
+
+        if (slate_cmd_valid || slate_cmd_plausible || slate_cmd_relaxed) {
             command_list_rhi = reinterpret_cast<sdk::FRHICommandListBase*>(g_last_slate_cmd_list);
             command_list = command_list_rhi;
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindow using cached Slate cmdlist fallback {:x}",
-                (uintptr_t)g_last_slate_cmd_list);
+            if (slate_cmd_valid) {
+                SPDLOG_INFO_ONCE("UE5.7: DrawWindow using cached Slate cmdlist fallback {:x}",
+                    (uintptr_t)g_last_slate_cmd_list);
+            } else if (slate_cmd_plausible) {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow using plausible Slate cmdlist fallback {:x}",
+                    (uintptr_t)g_last_slate_cmd_list);
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow using relaxed Slate cmdlist fallback {:x}",
+                    (uintptr_t)g_last_slate_cmd_list);
+            }
         }
     }
 
