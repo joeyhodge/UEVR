@@ -8845,8 +8845,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     Ue57DrawWindowArgs ue57_args{};
     if (is_ue57) {
-        ue57_args.ret = renderer;
-        ue57_args.renderer = a2;
+        ue57_args.ret = a2;
+        ue57_args.renderer = renderer;
         ue57_args.builder = a3;
         ue57_args.inputs = a4;
 
@@ -8857,7 +8857,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (!is_valid_renderer_ptr(ue57_args.renderer)) {
             if (is_valid_renderer_ptr(renderer)) {
                 ue57_args.renderer = renderer;
-                ue57_args.ret = a2;
             } else if (is_valid_renderer_ptr(a3)) {
                 ue57_args.renderer = a3;
             } else if (is_valid_renderer_ptr(a4)) {
