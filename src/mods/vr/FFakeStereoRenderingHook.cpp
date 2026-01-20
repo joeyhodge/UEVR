@@ -8276,10 +8276,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return nullptr;
         };
 
-        command_list_rhi = try_direct_cmd_list(a2, "a2");
-        if (command_list_rhi == nullptr) {
-            command_list_rhi = try_direct_cmd_list(a3, "a3");
-        }
+        // UE5.7: avoid probing a2 for cmd list (a2 is the sret pointer in 5.7)
+        command_list_rhi = try_direct_cmd_list(a3, "a3");
         if (command_list_rhi == nullptr) {
             command_list_rhi = try_direct_cmd_list(a4, "a4");
         }
@@ -8287,9 +8285,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             command_list_rhi = try_direct_cmd_list(params, "params");
         }
 
-        if (command_list_rhi == nullptr) {
-            command_list_rhi = try_rdg_builder(a2, "a2");
-        }
         if (command_list_rhi == nullptr) {
             command_list_rhi = try_rdg_builder(a3, "a3");
         }
@@ -8899,6 +8894,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (ue57_args.builder == nullptr) {
             ue57_args.builder = a3;
+        }
+
+        if (ue57_args.builder == ue57_args.ret) {
+            if (ue57_args.builder != a3 && a3 != nullptr && a3 != ue57_args.ret) {
+                ue57_args.builder = a3;
+            } else if (ue57_args.builder != a4 && a4 != nullptr && a4 != ue57_args.ret) {
+                ue57_args.builder = a4;
+            }
+        }
+
+        if (ue57_args.inputs == ue57_args.ret) {
+            if (a4 != nullptr && a4 != ue57_args.ret) {
+                ue57_args.inputs = a4;
+            } else if (ue57_inputs_ptr != nullptr && ue57_inputs_ptr != ue57_args.ret) {
+                ue57_args.inputs = ue57_inputs_ptr;
+            }
         }
 
         if (!is_likely_sret_ptr(ue57_args.ret)) {
