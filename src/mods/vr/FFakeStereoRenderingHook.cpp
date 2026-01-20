@@ -8160,6 +8160,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     void* ue57_inputs_ptr = nullptr;
     bool ue57_inputs_candidate_found = false;
     void* ue57_inputs_renderer = nullptr;
+    static void* g_last_ue57_inputs_ptr = nullptr;
+    static void* g_last_ue57_inputs_renderer = nullptr;
     constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
     void* orig_renderer = renderer;
     void* orig_a2 = a2;
@@ -8444,6 +8446,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         check_inputs = [=, &viewport_info, &slate_viewport, &ue57_inputs_ptr, &ue57_inputs_renderer, &ue57_inputs_candidate_found](void* inputs_ptr, const char* label, bool assign_state) -> bool {
+            if (inputs_ptr == nullptr || inputs_ptr == orig_a2 || inputs_ptr == a3 || inputs_ptr == rdg_builder) {
+                return false;
+            }
+
             if (!is_readable_ptr(inputs_ptr, kSlatePassInputsSizeUE57)) {
                 return false;
             }
@@ -8498,6 +8504,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 }
                 if (ue57_inputs_renderer == nullptr && renderer_valid) {
                     ue57_inputs_renderer = inputs_renderer_candidate;
+                }
+                g_last_ue57_inputs_ptr = inputs_ptr;
+                if (renderer_valid) {
+                    g_last_ue57_inputs_renderer = inputs_renderer_candidate;
                 }
                 ue57_inputs_candidate_found = true;
                 SPDLOG_INFO_ONCE("UE5.7: Slate inputs candidate at {:x} ({})", (uintptr_t)inputs_ptr, label);
@@ -8874,6 +8884,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             } else if (ue57_inputs_ptr == a3) {
                 SPDLOG_WARN_ONCE("UE5.7: Inputs candidate matched a3; keeping a4 as inputs");
             }
+        } else if (g_last_ue57_inputs_ptr != nullptr) {
+            ue57_inputs_ptr = g_last_ue57_inputs_ptr;
+            if (ue57_inputs_renderer == nullptr && g_last_ue57_inputs_renderer != nullptr) {
+                ue57_inputs_renderer = g_last_ue57_inputs_renderer;
+            }
+            ue57_args.inputs = ue57_inputs_ptr;
         }
 
         if (rdg_builder != nullptr && rdg_builder != ue57_args.inputs) {
