@@ -8764,6 +8764,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
+    if (is_ue57 && command_list_rhi == nullptr && g_last_slate_cmd_list != nullptr) {
+        if (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
+            command_list_rhi = reinterpret_cast<sdk::FRHICommandListBase*>(g_last_slate_cmd_list);
+            command_list = command_list_rhi;
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow using cached Slate cmdlist fallback {:x}",
+                (uintptr_t)g_last_slate_cmd_list);
+        }
+    }
+
     if (is_ue57 && command_list_rhi == nullptr) {
         SPDLOG_WARN_ONCE("UE5.7: Slate hook running in validation-only mode (skipping RHICmdList work)");
     }
