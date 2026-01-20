@@ -7224,7 +7224,6 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
     auto* cached_slate_cmd = get_cached_slate_cmd_list();
-    auto* cached_slate_cmd = get_cached_slate_cmd_list();
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
         (cached_slate_cmd != nullptr && (is_valid_rhi_cmd_list(cached_slate_cmd) || is_plausible_rhi_cmd_list(cached_slate_cmd))) ||
@@ -7393,6 +7392,7 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
+    auto* cached_slate_cmd = get_cached_slate_cmd_list();
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
         (cached_slate_cmd != nullptr && (is_valid_rhi_cmd_list(cached_slate_cmd) || is_plausible_rhi_cmd_list(cached_slate_cmd))) ||
