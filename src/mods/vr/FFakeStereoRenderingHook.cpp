@@ -8280,18 +8280,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         // UE5.7: avoid probing a2 for cmd list (a2 is the sret pointer in 5.7)
         command_list_rhi = try_direct_cmd_list(a3, "a3");
-        if (command_list_rhi == nullptr) {
-            command_list_rhi = try_direct_cmd_list(a4, "a4");
-        }
         if (command_list_rhi == nullptr && params != nullptr) {
             command_list_rhi = try_direct_cmd_list(params, "params");
         }
 
         if (command_list_rhi == nullptr) {
             command_list_rhi = try_rdg_builder(a3, "a3");
-        }
-        if (command_list_rhi == nullptr) {
-            command_list_rhi = try_rdg_builder(a4, "a4");
         }
         if (command_list_rhi == nullptr && params != nullptr) {
             command_list_rhi = try_rdg_builder(params, "params");
@@ -8522,10 +8516,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         const InputsCandidate inputs_candidates[] = {
-            { a4, "a4" },
-            { a3, "a3" },
-            { a2, "a2" },
-            { params, "params" }
+            { a4, "a4" }
         };
 
         for (const auto& candidate : inputs_candidates) {
@@ -8865,67 +8856,38 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (!is_valid_renderer_ptr(ue57_args.renderer)) {
-            if (is_valid_renderer_ptr(renderer)) {
-                ue57_args.renderer = renderer;
-            } else if (is_valid_renderer_ptr(a3)) {
-                ue57_args.renderer = a3;
-            } else if (is_valid_renderer_ptr(a4)) {
-                ue57_args.renderer = a4;
-            }
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow renderer invalid; passthrough original untouched.");
+            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
         }
 
-        constexpr size_t kSlatePassInputsViewportInfoOffsetUE57 = 0x18;
-        const bool a4_looks_like_inputs = is_readable_ptr(a4, kSlatePassInputsViewportInfoOffsetUE57 + sizeof(void*));
-        if (ue57_inputs_ptr != nullptr) {
-            if (!a4_looks_like_inputs) {
-                ue57_args.inputs = ue57_inputs_ptr;
-            } else if (ue57_inputs_ptr != a4 && ue57_inputs_ptr != a3) {
-                ue57_args.inputs = ue57_inputs_ptr;
-            } else if (ue57_inputs_ptr == a3) {
-                SPDLOG_WARN_ONCE("UE5.7: Inputs candidate matched a3; keeping a4 as inputs");
-            }
-        } else if (g_last_ue57_inputs_ptr != nullptr) {
-            ue57_inputs_ptr = g_last_ue57_inputs_ptr;
-            if (ue57_inputs_renderer == nullptr && g_last_ue57_inputs_renderer != nullptr) {
-                ue57_inputs_renderer = g_last_ue57_inputs_renderer;
-            }
-            ue57_args.inputs = ue57_inputs_ptr;
-        }
-
-        if (rdg_builder != nullptr && rdg_builder != ue57_args.inputs) {
-            ue57_args.builder = rdg_builder;
-        }
-
-        if (ue57_args.builder == ue57_args.inputs && a3 != nullptr && a3 != ue57_args.inputs) {
-            ue57_args.builder = a3;
-        }
-
-        if (ue57_args.inputs == ue57_args.builder && a4 != nullptr && a4 != ue57_args.builder) {
-            ue57_args.inputs = a4;
-        }
-
-        if (ue57_args.inputs == nullptr) {
-            ue57_args.inputs = a4;
-        }
-
-        if (ue57_args.builder == nullptr) {
-            ue57_args.builder = a3;
-        }
-
-        if (ue57_args.builder == ue57_args.ret) {
-            if (ue57_args.builder != a3 && a3 != nullptr && a3 != ue57_args.ret) {
-                ue57_args.builder = a3;
-            } else if (ue57_args.builder != a4 && a4 != nullptr && a4 != ue57_args.ret) {
-                ue57_args.builder = a4;
-            }
-        }
-
-        if (ue57_args.inputs == ue57_args.ret) {
-            if (a4 != nullptr && a4 != ue57_args.ret) {
+        if (check_inputs) {
+            if (check_inputs(a4, "a4", false)) {
                 ue57_args.inputs = a4;
-            } else if (ue57_inputs_ptr != nullptr && ue57_inputs_ptr != ue57_args.ret) {
-                ue57_args.inputs = ue57_inputs_ptr;
+            } else if (g_last_ue57_inputs_ptr != nullptr && check_inputs(g_last_ue57_inputs_ptr, "cached-inputs", false)) {
+                ue57_args.inputs = g_last_ue57_inputs_ptr;
+                if (ue57_inputs_renderer == nullptr && g_last_ue57_inputs_renderer != nullptr &&
+                    is_valid_renderer_ptr(g_last_ue57_inputs_renderer)) {
+                    ue57_inputs_renderer = g_last_ue57_inputs_renderer;
+                    ue57_args.renderer = ue57_inputs_renderer;
+                }
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
+                return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
             }
+        }
+
+        if (ue57_args.builder == nullptr || ue57_args.builder == ue57_args.ret) {
+            if (a3 != nullptr && a3 != ue57_args.ret) {
+                ue57_args.builder = a3;
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow builder unresolved; passthrough original untouched.");
+                return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+            }
+        }
+
+        if (ue57_args.inputs == ue57_args.builder) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs matched builder; passthrough original untouched.");
+            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
         }
 
         if (!is_likely_sret_ptr(ue57_args.ret)) {
@@ -8946,19 +8908,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             (uintptr_t)ue57_args.builder,
             (uintptr_t)ue57_args.inputs);
 
-        if (!check_inputs || !check_inputs(ue57_args.inputs, "resolved", false)) {
-            if (check_inputs && check_inputs(a4, "a4-fallback", false)) {
-                ue57_args.inputs = a4;
-            } else if (check_inputs && ue57_inputs_ptr != nullptr && check_inputs(ue57_inputs_ptr, "cached-inputs", false)) {
-                ue57_args.inputs = ue57_inputs_ptr;
-            } else {
-                SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
-                return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
-            }
-        }
-
-        if (!is_valid_renderer_ptr(ue57_args.renderer)) {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindow renderer unresolved; passthrough original untouched.");
+        if (check_inputs && !check_inputs(ue57_args.inputs, "resolved", false)) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved after resolve; passthrough original untouched.");
             return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
         }
     }
