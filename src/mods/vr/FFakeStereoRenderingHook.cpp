@@ -6845,6 +6845,19 @@ static bool is_ue57_cmd_list_usable(FRHICommandListImmediate* cmd) {
 }
 
 static thread_local FRHICommandListImmediate* g_last_slate_cmd_list = nullptr;
+static std::atomic<FRHICommandListImmediate*> g_last_slate_cmd_list_any{nullptr};
+
+static FRHICommandListImmediate* get_cached_slate_cmd_list() {
+    auto* cmd = g_last_slate_cmd_list;
+    if (cmd == nullptr) {
+        cmd = g_last_slate_cmd_list_any.load(std::memory_order_relaxed);
+        if (cmd != nullptr) {
+            g_last_slate_cmd_list = cmd;
+            g_last_slate_cmd_list_any.store(cmd, std::memory_order_relaxed);
+        }
+    }
+    return cmd;
+}
 
 static FRHICommandListImmediate* get_rhi_cmd_list_from_rdg_builder(FRDGBuilder* builder, size_t* out_offset = nullptr, bool* out_valid = nullptr) {
     if (out_offset != nullptr) {
@@ -6958,8 +6971,9 @@ static void render_texture_render_thread_internal(FFakeStereoRendering* stereo, 
             static bool logged_call_original_cmd = false;
             if (!logged_call_original_cmd) {
                 logged_call_original_cmd = true;
+                const auto cached_cmd = get_cached_slate_cmd_list();
                 SPDLOG_INFO("RenderTexture_RenderThread: calling original with cmdlist {:x} (cached Slate {:x})",
-                    (uintptr_t)rhi_command_list, (uintptr_t)g_last_slate_cmd_list);
+                    (uintptr_t)rhi_command_list, (uintptr_t)cached_cmd);
             }
             call_original(call_original_ctx);
         }
@@ -7209,10 +7223,12 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     const auto src_texture_rhi = get_rhi_texture_from_rdg_texture(src_texture);
     const bool rdg_textures_resolved = backbuffer_rhi != nullptr || src_texture_rhi != nullptr;
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
+    auto* cached_slate_cmd = get_cached_slate_cmd_list();
+    auto* cached_slate_cmd = get_cached_slate_cmd_list();
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
-        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list))) ||
-        (g_last_slate_cmd_list != nullptr && is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list));
+        (cached_slate_cmd != nullptr && (is_valid_rhi_cmd_list(cached_slate_cmd) || is_plausible_rhi_cmd_list(cached_slate_cmd))) ||
+        (cached_slate_cmd != nullptr && is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd));
     const bool looks_like_frhi = args_look_like_frhi && any_cmd_list_candidate && !cmd_list_is_image;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
@@ -7255,22 +7271,22 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
             frhi_cmd = rhi_command_list;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr && is_valid_rhi_cmd_list(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr && is_plausible_rhi_cmd_list(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr &&
-            is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr &&
+            is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr &&
-            is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr &&
+            is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
         if (frhi_cmd == nullptr && as_cmd_list_plausible) {
@@ -7327,18 +7343,18 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg(FFakeStereoRende
     }
 
     FRHICommandListImmediate* effective_cmd_list = cmd_list_valid ? rhi_command_list : nullptr;
-    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-        effective_cmd_list = g_last_slate_cmd_list;
+    if (effective_cmd_list == nullptr && cached_slate_cmd != nullptr && is_valid_rhi_cmd_list(cached_slate_cmd)) {
+        effective_cmd_list = cached_slate_cmd;
         SPDLOG_INFO_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)effective_cmd_list);
     }
-    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr &&
-        is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
-        effective_cmd_list = g_last_slate_cmd_list;
+    if (effective_cmd_list == nullptr && cached_slate_cmd != nullptr &&
+        is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd)) {
+        effective_cmd_list = cached_slate_cmd;
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)effective_cmd_list);
     }
-    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr &&
-        is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list)) {
-        effective_cmd_list = g_last_slate_cmd_list;
+    if (effective_cmd_list == nullptr && cached_slate_cmd != nullptr &&
+        is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd)) {
+        effective_cmd_list = cached_slate_cmd;
         SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using unvalidated Slate cmdlist {:x}", (uintptr_t)effective_cmd_list);
     }
 
@@ -7379,8 +7395,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     const bool args_look_like_frhi = backbuffer_is_rhi || src_is_rhi;
     const bool any_cmd_list_candidate = cmd_list_valid || as_cmd_list_valid || as_cmd_list_plausible ||
         (rhi_command_list != nullptr && is_plausible_rhi_cmd_list(rhi_command_list)) ||
-        (g_last_slate_cmd_list != nullptr && (is_valid_rhi_cmd_list(g_last_slate_cmd_list) || is_plausible_rhi_cmd_list(g_last_slate_cmd_list))) ||
-        (g_last_slate_cmd_list != nullptr && is_readable_ptr_local(g_last_slate_cmd_list, sizeof(void*)) && !is_image_ptr_local(g_last_slate_cmd_list));
+        (cached_slate_cmd != nullptr && (is_valid_rhi_cmd_list(cached_slate_cmd) || is_plausible_rhi_cmd_list(cached_slate_cmd))) ||
+        (cached_slate_cmd != nullptr && is_readable_ptr_local(cached_slate_cmd, sizeof(void*)) && !is_image_ptr_local(cached_slate_cmd));
     const bool looks_like_frhi = args_look_like_frhi && any_cmd_list_candidate && !cmd_list_is_image;
     if (!cmd_list_valid) {
         SPDLOG_WARN_ONCE("RenderTexture_RenderThread(FRDG/d): failed to resolve valid RHICmdList from FRDGBuilder {:x} (offset 0x{:x})",
@@ -7411,12 +7427,12 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
             frhi_cmd = rhi_command_list;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr && is_valid_rhi_cmd_list(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)frhi_cmd);
         }
-        if (frhi_cmd == nullptr && g_last_slate_cmd_list != nullptr && is_plausible_rhi_cmd_list(g_last_slate_cmd_list)) {
-            frhi_cmd = g_last_slate_cmd_list;
+        if (frhi_cmd == nullptr && cached_slate_cmd != nullptr && is_plausible_rhi_cmd_list(cached_slate_cmd)) {
+            frhi_cmd = cached_slate_cmd;
             SPDLOG_WARN_ONCE("UE5.7: RenderTexture_RenderThread using plausible Slate cmdlist {:x}", (uintptr_t)frhi_cmd);
         }
         if (frhi_cmd == nullptr && as_cmd_list_plausible) {
@@ -7473,8 +7489,8 @@ void FFakeStereoRenderingHook::render_texture_render_thread_rdg_d(FFakeStereoRen
     }
 
     FRHICommandListImmediate* effective_cmd_list = cmd_list_valid ? rhi_command_list : nullptr;
-    if (effective_cmd_list == nullptr && g_last_slate_cmd_list != nullptr && is_valid_rhi_cmd_list(g_last_slate_cmd_list)) {
-        effective_cmd_list = g_last_slate_cmd_list;
+    if (effective_cmd_list == nullptr && cached_slate_cmd != nullptr && is_valid_rhi_cmd_list(cached_slate_cmd)) {
+        effective_cmd_list = cached_slate_cmd;
         SPDLOG_INFO_ONCE("UE5.7: RenderTexture_RenderThread using Slate cmdlist fallback {:x}", (uintptr_t)effective_cmd_list);
     }
 
@@ -8162,6 +8178,7 @@ void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* renderer,
         auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list);
         // Always cache the DrawWindows cmdlist; validation in UE5.7 can be overly strict.
         g_last_slate_cmd_list = cmd;
+        g_last_slate_cmd_list_any.store(cmd, std::memory_order_relaxed);
         if (is_valid_rhi_cmd_list(cmd)) {
             safe_spdlog_once(logged_draw_windows_cmdlist, spdlog::level::info,
                 "UE5.7: DrawWindows RHICmdList cached {:x}", (uintptr_t)cmd);
@@ -8341,6 +8358,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list_rhi);
             // Cache even if validation fails; UE5.7 cmd list layout appears to differ.
             g_last_slate_cmd_list = cmd;
+            g_last_slate_cmd_list_any.store(cmd, std::memory_order_relaxed);
             if (is_valid_rhi_cmd_list(cmd)) {
                 SPDLOG_INFO_ONCE("UE5.7: DrawWindow RHICmdList cached {:x}", (uintptr_t)cmd);
             } else if (is_plausible_rhi_cmd_list(cmd)) {
@@ -8808,23 +8826,26 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    if (is_ue57 && command_list_rhi == nullptr && g_last_slate_cmd_list != nullptr) {
-        const bool slate_cmd_valid = is_valid_rhi_cmd_list(g_last_slate_cmd_list);
-        const bool slate_cmd_plausible = !slate_cmd_valid && is_plausible_rhi_cmd_list(g_last_slate_cmd_list);
-        const bool slate_cmd_relaxed = !slate_cmd_valid && !slate_cmd_plausible && is_ue57_cmd_list_usable(g_last_slate_cmd_list);
+    if (is_ue57 && command_list_rhi == nullptr) {
+        auto* cached_slate_cmd = get_cached_slate_cmd_list();
+        if (cached_slate_cmd != nullptr) {
+            const bool slate_cmd_valid = is_valid_rhi_cmd_list(cached_slate_cmd);
+            const bool slate_cmd_plausible = !slate_cmd_valid && is_plausible_rhi_cmd_list(cached_slate_cmd);
+            const bool slate_cmd_relaxed = !slate_cmd_valid && !slate_cmd_plausible && is_ue57_cmd_list_usable(cached_slate_cmd);
 
-        if (slate_cmd_valid || slate_cmd_plausible || slate_cmd_relaxed) {
-            command_list_rhi = reinterpret_cast<sdk::FRHICommandListBase*>(g_last_slate_cmd_list);
+            if (slate_cmd_valid || slate_cmd_plausible || slate_cmd_relaxed) {
+                command_list_rhi = reinterpret_cast<sdk::FRHICommandListBase*>(cached_slate_cmd);
             command_list = command_list_rhi;
             if (slate_cmd_valid) {
                 SPDLOG_INFO_ONCE("UE5.7: DrawWindow using cached Slate cmdlist fallback {:x}",
-                    (uintptr_t)g_last_slate_cmd_list);
+                        (uintptr_t)cached_slate_cmd);
             } else if (slate_cmd_plausible) {
                 SPDLOG_WARN_ONCE("UE5.7: DrawWindow using plausible Slate cmdlist fallback {:x}",
-                    (uintptr_t)g_last_slate_cmd_list);
+                        (uintptr_t)cached_slate_cmd);
             } else {
                 SPDLOG_WARN_ONCE("UE5.7: DrawWindow using relaxed Slate cmdlist fallback {:x}",
-                    (uintptr_t)g_last_slate_cmd_list);
+                        (uintptr_t)cached_slate_cmd);
+                }
             }
         }
     }
