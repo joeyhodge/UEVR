@@ -8,6 +8,7 @@
 #include <atomic>
 #include <cctype>
 #include <cstdint>
+#include <functional>
 #include <future>
 #include <mutex>
 #include <type_traits>
@@ -8348,6 +8349,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
     };
 
+    std::function<bool(void*, const char*, bool)> check_inputs;
+
     if (is_ue57) {
         // UE5.7 PDB: FSlateDrawWindowPassInputs size 0x70
         constexpr size_t kSlatePassInputsSizeUE57 = 0x70;
@@ -8429,7 +8432,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
         };
 
-        const auto renderer_matches = [&](void* candidate) -> bool {
+        const auto renderer_matches = [orig_renderer, is_valid_renderer_ptr](void* candidate) -> bool {
             if (!is_valid_renderer_ptr(candidate)) {
                 return false;
             }
@@ -8445,7 +8448,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return candidate == orig_renderer;
         };
 
-        const auto check_inputs = [&](void* inputs_ptr, const char* label, bool assign_state) -> bool {
+        check_inputs = [=, &viewport_info, &slate_viewport, &ue57_inputs_ptr, &ue57_inputs_renderer, &ue57_inputs_candidate_found](void* inputs_ptr, const char* label, bool assign_state) -> bool {
             if (!is_readable_ptr(inputs_ptr, kSlatePassInputsSizeUE57)) {
                 return false;
             }
@@ -8916,10 +8919,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             (uintptr_t)ue57_args.builder,
             (uintptr_t)ue57_args.inputs);
 
-        if (!check_inputs(ue57_args.inputs, "resolved", false)) {
-            if (check_inputs(a4, "a4-fallback", false)) {
+        if (!check_inputs || !check_inputs(ue57_args.inputs, "resolved", false)) {
+            if (check_inputs && check_inputs(a4, "a4-fallback", false)) {
                 ue57_args.inputs = a4;
-            } else if (ue57_inputs_ptr != nullptr && check_inputs(ue57_inputs_ptr, "cached-inputs", false)) {
+            } else if (check_inputs && ue57_inputs_ptr != nullptr && check_inputs(ue57_inputs_ptr, "cached-inputs", false)) {
                 ue57_args.inputs = ue57_inputs_ptr;
             } else {
                 SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
