@@ -8445,7 +8445,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return candidate == orig_renderer;
         };
 
-        const auto try_inputs = [&](void* inputs_ptr, const char* label) -> bool {
+        const auto check_inputs = [&](void* inputs_ptr, const char* label, bool assign_state) -> bool {
             if (!is_readable_ptr(inputs_ptr, kSlatePassInputsSizeUE57)) {
                 return false;
             }
@@ -8472,27 +8472,29 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const bool rect_valid = rect_w > 0 && rect_h > 0 && rect_w <= 16384 && rect_h <= 16384;
             bool found = false;
 
-            if (viewport_info == nullptr && viewport_info_valid) {
-                viewport_info = viewport_info_candidate;
-            }
+            if (assign_state) {
+                if (viewport_info == nullptr && viewport_info_valid) {
+                    viewport_info = viewport_info_candidate;
+                }
 
-            if (slate_viewport == nullptr && window_valid) {
-                for (const auto offset : kSWindowViewportOffsetsUE57) {
-                    if (!is_readable_ptr(window_candidate + offset, sizeof(void*))) {
-                        continue;
-                    }
+                if (slate_viewport == nullptr && window_valid) {
+                    for (const auto offset : kSWindowViewportOffsetsUE57) {
+                        if (!is_readable_ptr(window_candidate + offset, sizeof(void*))) {
+                            continue;
+                        }
 
-                    auto candidate = *(sdk::ISlateViewport**)(window_candidate + offset);
-                    if (is_valid_slate_viewport(candidate)) {
-                        slate_viewport = candidate;
-                        break;
+                        auto candidate = *(sdk::ISlateViewport**)(window_candidate + offset);
+                        if (is_valid_slate_viewport(candidate)) {
+                            slate_viewport = candidate;
+                            break;
+                        }
                     }
                 }
             }
 
             found = viewport_info_valid && window_valid && renderer_valid && window_list_valid && scale_valid && rect_valid;
 
-            if (found) {
+            if (found && assign_state) {
                 if (ue57_inputs_ptr == nullptr) {
                     ue57_inputs_ptr = inputs_ptr;
                 }
@@ -8512,8 +8514,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         const InputsCandidate inputs_candidates[] = {
-            { a3, "a3" },
             { a4, "a4" },
+            { a3, "a3" },
             { a2, "a2" },
             { params, "params" }
         };
@@ -8523,7 +8525,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 continue;
             }
 
-            if (try_inputs(candidate.ptr, candidate.label)) {
+            if (check_inputs(candidate.ptr, candidate.label, true)) {
                 break;
             }
         }
@@ -8914,9 +8916,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             (uintptr_t)ue57_args.builder,
             (uintptr_t)ue57_args.inputs);
 
-        if (!ue57_inputs_candidate_found) {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
-            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+        if (!check_inputs(ue57_args.inputs, "resolved", false)) {
+            if (check_inputs(a4, "a4-fallback", false)) {
+                ue57_args.inputs = a4;
+            } else if (ue57_inputs_ptr != nullptr && check_inputs(ue57_inputs_ptr, "cached-inputs", false)) {
+                ue57_args.inputs = ue57_inputs_ptr;
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: DrawWindow inputs unresolved; passthrough original untouched.");
+                return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+            }
         }
 
         if (!is_valid_renderer_ptr(ue57_args.renderer)) {
