@@ -8432,7 +8432,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return utility::get_module_within(vtable).has_value() && utility::get_module_within(first).has_value();
         };
 
-        const auto renderer_matches = [orig_renderer, is_valid_renderer_ptr](void* candidate) -> bool {
+        const auto renderer_matches = [orig_renderer, is_valid_renderer_ptr, is_readable_ptr](void* candidate) -> bool {
             if (!is_valid_renderer_ptr(candidate)) {
                 return false;
             }
