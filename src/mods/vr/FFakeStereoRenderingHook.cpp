@@ -8718,13 +8718,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         auto try_get_viewport = [&](size_t offset) -> sdk::ISlateViewport* {
             auto candidate = *(sdk::ISlateViewport**)((uintptr_t)window + offset);
 
-            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            if (!is_readable_ptr_any(candidate, sizeof(void*))) {
                 return nullptr;
             }
 
             auto vtable = *(uintptr_t**)candidate;
 
-            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            if (!is_readable_ptr_any(vtable, sizeof(void*))) {
+                return nullptr;
+            }
+
+            if (!is_readable_ptr_any((void*)vtable[0], sizeof(void*))) {
                 return nullptr;
             }
 
@@ -8771,18 +8775,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     };
 
     const auto is_valid_renderer_ptr = [&](void* ptr) -> bool {
-        if (!is_readable_ptr(ptr, sizeof(void*))) {
+        if (!is_readable_ptr_any(ptr, sizeof(void*))) {
             return false;
         }
 
         auto vtable = *(uintptr_t**)ptr;
-        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        if (!is_readable_ptr_any(vtable, sizeof(void*))) {
             return false;
         }
 
         const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
         const auto vtable_first = vtable[0];
-        if (vtable_module == nullptr || !utility::get_module_within((void*)vtable_first).has_value()) {
+        if (vtable_module == nullptr || !is_readable_ptr_any((void*)vtable_first, sizeof(void*)) ||
+            !utility::get_module_within((void*)vtable_first).has_value()) {
             return false;
         }
 
@@ -8797,10 +8802,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // If we could not validate UE5.7 arguments at all, bail out and just call the original function
     // with the untouched arguments. This avoids passing null/garbage into the engine when we fail to
     // resolve RDG/RHI or renderer pointers.
-    if (is_ue57 && (command_list_rhi == nullptr || !is_valid_renderer_ptr(orig_a2))) {
-        SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist {:x}, renderer rcx {:x} a2 {:x}); calling original untouched.",
-            (uintptr_t)command_list_rhi, (uintptr_t)orig_renderer, (uintptr_t)orig_a2);
-        return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+    if (is_ue57) {
+        const auto renderer_candidate = ue57_inputs_renderer != nullptr ? ue57_inputs_renderer : orig_renderer;
+        if (command_list_rhi == nullptr || !is_valid_renderer_ptr(renderer_candidate)) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist {:x}, renderer rcx {:x} a2 {:x}); calling original untouched.",
+                (uintptr_t)command_list_rhi, (uintptr_t)orig_renderer, (uintptr_t)orig_a2);
+            return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+        }
     }
 
     const auto is_likely_sret_ptr = [&](void* ptr) -> bool {
