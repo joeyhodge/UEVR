@@ -41,6 +41,30 @@ static __declspec(noinline) const std::type_info* safe_get_type_info(void* obj) 
         return nullptr;
     }
 }
+
+static __declspec(noinline) const char* safe_get_type_info_name(const std::type_info* ti) noexcept {
+    if (ti == nullptr) {
+        return nullptr;
+    }
+
+    __try {
+        return ti->name();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+static __declspec(noinline) const char* safe_get_type_info_raw_name(const std::type_info* ti) noexcept {
+    if (ti == nullptr) {
+        return nullptr;
+    }
+
+    __try {
+        return ti->raw_name();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
 #else
 static HRESULT safe_query_interface(IUnknown* obj, REFIID riid, void** out) noexcept {
     if (obj == nullptr || out == nullptr) {
@@ -57,6 +81,14 @@ static const std::type_info* safe_get_type_info(void* obj) noexcept {
     }
 
     return utility::rtti::get_type_info(obj);
+}
+
+static const char* safe_get_type_info_name(const std::type_info* ti) noexcept {
+    return ti != nullptr ? ti->name() : nullptr;
+}
+
+static const char* safe_get_type_info_raw_name(const std::type_info* ti) noexcept {
+    return safe_get_type_info_name(ti);
 }
 #endif
 
@@ -272,8 +304,12 @@ bool D3D12Hook::hook() {
 
     try {
         const auto ti = safe_get_type_info(swap_chain1);
-        const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
-        const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
+        const auto swapchain_classname = safe_get_type_info_name(ti) != nullptr
+            ? std::string_view{safe_get_type_info_name(ti)}
+            : "unknown";
+        const auto raw_name = safe_get_type_info_raw_name(ti) != nullptr
+            ? std::string_view{safe_get_type_info_raw_name(ti)}
+            : "unknown";
 
         if (ti == nullptr) {
             spdlog::warn("Swapchain type info unavailable (SEH or null)");

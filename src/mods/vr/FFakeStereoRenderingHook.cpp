@@ -6663,6 +6663,46 @@ static void log_rhi_texture_vtables_once(const char* tag, const void* backbuffer
     log_one("src_texture", src_texture);
 }
 
+static void log_cmd_list_vtable_info(const char* tag, FRHICommandListImmediate* cmd) {
+    if (cmd == nullptr) {
+        SPDLOG_INFO("{} cmdlist <null>", tag);
+        return;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(cmd, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        SPDLOG_INFO("{} cmdlist {:x} (VirtualQuery failed)", tag, (uintptr_t)cmd);
+        return;
+    }
+
+    void* vtable = nullptr;
+    void* vtable_first = nullptr;
+    if (is_readable_ptr_local(cmd, sizeof(void*))) {
+        vtable = *(void**)cmd;
+        if (vtable != nullptr && is_readable_ptr_local(vtable, sizeof(void*))) {
+            vtable_first = ((void**)vtable)[0];
+        }
+    }
+
+    const auto cmd_module = utility::get_module_within((void*)cmd).value_or(nullptr);
+    const auto vtable_module = utility::get_module_within(vtable).value_or(nullptr);
+    const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+
+    SPDLOG_INFO("{} cmdlist {:x} mbi state {:x} protect {:x} type {:x} cmd_mod {:x} vtable {:x} vtable_mod {:x} vtable_first {:x} vtable_first_mod {:x} rhi_mod {:x}",
+        tag,
+        (uintptr_t)cmd,
+        mbi.State,
+        mbi.Protect,
+        mbi.Type,
+        (uintptr_t)cmd_module,
+        (uintptr_t)vtable,
+        (uintptr_t)vtable_module,
+        (uintptr_t)vtable_first,
+        (uintptr_t)vtable_first_module,
+        rhi_module.has_value() ? *rhi_module : 0);
+}
+
 // UE5.7 PDB layout: FRDGBuilder::RHICmdList @ 0xC0, FRDGResource::ResourceRHI @ 0x10.
 constexpr std::array<size_t, 4> kRdgBuilderCommandListOffsetsUE57{0xB8, 0xC0, 0xC8, 0xD0};
 constexpr size_t kRdgTextureResourceRhiOffsetUE57 = 0x10;
@@ -8179,8 +8219,11 @@ void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* renderer,
 
     RenderThreadWorker::get().execute();
 
+    const bool is_ue57 = is_ue_57();
+
     if (command_list != nullptr) {
         static std::atomic_bool logged_draw_windows_cmdlist{false};
+        static std::atomic_bool logged_draw_windows_cmdlist_vtable{false};
         auto* cmd = reinterpret_cast<FRHICommandListImmediate*>(command_list);
         // Always cache the DrawWindows cmdlist; validation in UE5.7 can be overly strict.
         g_last_slate_cmd_list = cmd;
@@ -8194,6 +8237,10 @@ void* FFakeStereoRenderingHook::slate_draw_windows_render_thread(void* renderer,
         } else {
             safe_spdlog_once(logged_draw_windows_cmdlist, spdlog::level::warn,
                 "UE5.7: DrawWindows RHICmdList cached (unvalidated) {:x}", (uintptr_t)command_list);
+        }
+
+        if (is_ue57 && !logged_draw_windows_cmdlist_vtable.exchange(true)) {
+            log_cmd_list_vtable_info("UE5.7: DrawWindows cmdlist vtable", cmd);
         }
     }
 
