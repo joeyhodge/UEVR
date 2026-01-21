@@ -6866,20 +6866,31 @@ static bool is_ue57_cmd_list_usable(FRHICommandListImmediate* cmd) {
         }
     }
 
+    const auto cmd_module = utility::get_module_within((void*)cmd).value_or(nullptr);
+    const auto rhi_module = get_dynamic_rhi_module_base_local();
+    if (!rhi_module.has_value() || cmd_module == nullptr || (uintptr_t)cmd_module != *rhi_module) {
+        return false;
+    }
+
     auto* vtable = *(void***)cmd;
     if (vtable == nullptr || !is_readable_ptr_local(vtable, sizeof(void*))) {
-        return false;
+        SPDLOG_INFO_ONCE("UE5.7: cmdlist usable without readable vtable (cmd_mod {:x})", (uintptr_t)cmd_module);
+        return true;
     }
 
     const auto vtable_first = ((void**)vtable)[0];
     if (vtable_first == nullptr || !is_executable_ptr_local(vtable_first)) {
-        return false;
+        SPDLOG_INFO_ONCE("UE5.7: cmdlist usable without executable vtable (cmd_mod {:x}, vtable {:x})",
+            (uintptr_t)cmd_module, (uintptr_t)vtable);
+        return true;
     }
 
     const auto vtable_module = utility::get_module_within((void*)vtable).value_or(nullptr);
     const auto vtable_first_module = utility::get_module_within(vtable_first).value_or(nullptr);
-    if (vtable_module == nullptr || vtable_first_module == nullptr) {
-        return false;
+    if (vtable_module != nullptr && vtable_first_module != nullptr) {
+        if ((uintptr_t)vtable_module != *rhi_module || (uintptr_t)vtable_first_module != *rhi_module) {
+            return false;
+        }
     }
 
     const auto uevr_module = utility::get_module_within((uintptr_t)&g_hook).value_or(nullptr);
