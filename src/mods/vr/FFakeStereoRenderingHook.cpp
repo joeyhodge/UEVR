@@ -8891,10 +8891,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // resolve RDG/RHI or renderer pointers.
     if (is_ue57) {
         const auto renderer_candidate = ue57_inputs_renderer != nullptr ? ue57_inputs_renderer : orig_renderer;
-        if (command_list_rhi == nullptr || !is_valid_renderer_ptr(renderer_candidate)) {
-            SPDLOG_WARN_ONCE("UE5.7: DrawWindow running in passthrough mode (cmdlist {:x}, renderer rcx {:x} a2 {:x}); calling original untouched.",
-                (uintptr_t)command_list_rhi, (uintptr_t)orig_renderer, (uintptr_t)orig_a2);
+        if (!is_valid_renderer_ptr(renderer_candidate)) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow renderer invalid; passthrough original untouched.");
             return g_hook->m_slate_thread_hook.call<void*>(orig_renderer, orig_a2, orig_a3, orig_a4);
+        }
+        if (command_list_rhi == nullptr) {
+            SPDLOG_WARN_ONCE("UE5.7: DrawWindow proceeding without RHICmdList (will skip mod hooks)");
         }
     }
 
