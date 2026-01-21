@@ -6764,7 +6764,10 @@ static bool is_plausible_rhi_cmd_list(FRHICommandListImmediate* cmd) {
         return false;
     }
     if ((mbi.Type & MEM_IMAGE) != 0) {
-        return false;
+        // UE5.7 command list can live in module .data (MEM_IMAGE).
+        if (!is_ue_57()) {
+            return false;
+        }
     }
 
     auto* vtable = *(void***)cmd;
@@ -6817,7 +6820,10 @@ static bool is_ue57_cmd_list_usable(FRHICommandListImmediate* cmd) {
         return false;
     }
     if ((mbi.Type & MEM_IMAGE) != 0) {
-        return false;
+        // UE5.7 command list can live in module .data (MEM_IMAGE).
+        if (!is_ue_57()) {
+            return false;
+        }
     }
 
     auto* vtable = *(void***)cmd;
