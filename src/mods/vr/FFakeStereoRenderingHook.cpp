@@ -9017,9 +9017,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto call_orig = [&]() -> void* {
         if (is_ue57) {
+            // UE5.7 uses sret in RDX; pass (this, sret, builder, inputs)
             auto ret = g_hook->m_slate_thread_hook.call<void*>(
-                ue57_args.ret,
                 ue57_args.renderer,
+                ue57_args.ret,
                 ue57_args.builder,
                 ue57_args.inputs);
 
