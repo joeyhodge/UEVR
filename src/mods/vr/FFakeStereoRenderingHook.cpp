@@ -699,7 +699,7 @@ void FFakeStereoRenderingHook::attempt_hooking() {
         const bool drawwindow_ready = g_ue57_drawwindow_resolved.load(std::memory_order_relaxed);
         const bool viewext_ready = !m_analyzing_view_extensions && m_has_view_extensions_installed;
         const bool saw_drawwindow_call = g_slate_draw_window_calls.load(std::memory_order_relaxed) > 0;
-        if (!drawwindow_ready || !viewext_ready || !saw_drawwindow_call) {
+        if (!drawwindow_ready || !saw_drawwindow_call) {
             static bool logged = false;
             if (!logged) {
                 SPDLOG_WARN("UE5.7: delaying UObject init until DrawWindow is resolved, view extensions installed, and DrawWindow has been called");
@@ -707,8 +707,16 @@ void FFakeStereoRenderingHook::attempt_hooking() {
             }
             can_init_uobject = false;
         }
-        if (!drawwindow_ready || !viewext_ready || !saw_drawwindow_call) {
+        if (!drawwindow_ready || !saw_drawwindow_call) {
             return;
+        }
+        if (!viewext_ready) {
+            static bool logged_viewext = false;
+            if (!logged_viewext) {
+                SPDLOG_WARN("UE5.7: view extensions not ready yet; continuing to hook so we can install them");
+                logged_viewext = true;
+            }
+            can_init_uobject = false;
         }
     }
 
