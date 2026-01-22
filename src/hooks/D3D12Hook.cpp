@@ -2,6 +2,8 @@
 #include <future>
 #include <unordered_set>
 #include <typeinfo>
+#include <cstring>
+#include <optional>
 
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
@@ -64,6 +66,23 @@ static __declspec(noinline) const char* safe_get_type_info_raw_name(const std::t
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return nullptr;
     }
+}
+
+static std::optional<std::string_view> safe_string_view_from_cstr(const char* str, size_t max_len = 512) noexcept {
+    if (str == nullptr) {
+        return std::nullopt;
+    }
+
+#if defined(_MSC_VER)
+    __try {
+        const size_t len = strnlen_s(str, max_len);
+        return std::string_view{ str, len };
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+#else
+    return std::string_view{ str };
+#endif
 }
 #else
 static HRESULT safe_query_interface(IUnknown* obj, REFIID riid, void** out) noexcept {
@@ -304,12 +323,10 @@ bool D3D12Hook::hook() {
 
     try {
         const auto ti = safe_get_type_info(swap_chain1);
-        const auto swapchain_classname = safe_get_type_info_name(ti) != nullptr
-            ? std::string_view{safe_get_type_info_name(ti)}
-            : "unknown";
-        const auto raw_name = safe_get_type_info_raw_name(ti) != nullptr
-            ? std::string_view{safe_get_type_info_raw_name(ti)}
-            : "unknown";
+        const auto swapchain_name_view = safe_string_view_from_cstr(safe_get_type_info_name(ti));
+        const auto raw_name_view = safe_string_view_from_cstr(safe_get_type_info_raw_name(ti));
+        const auto swapchain_classname = swapchain_name_view.value_or("unknown");
+        const auto raw_name = raw_name_view.value_or("unknown");
 
         if (ti == nullptr) {
             spdlog::warn("Swapchain type info unavailable (SEH or null)");
