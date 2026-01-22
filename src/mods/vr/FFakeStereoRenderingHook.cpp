@@ -8917,6 +8917,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (slate_cmd_valid || slate_cmd_plausible || slate_cmd_relaxed) {
                 command_list_rhi = reinterpret_cast<sdk::FRHICommandListBase*>(cached_slate_cmd);
                 command_list = command_list_rhi;
+                if (!g_ue57_drawwindow_resolved.exchange(true, std::memory_order_relaxed)) {
+                    SPDLOG_INFO_ONCE("UE5.7: DrawWindow resolved via cached Slate cmdlist fallback");
+                }
                 {
                     static std::atomic_bool logged_cached_cmd_vtable{false};
                     bool expected = false;
@@ -9316,6 +9319,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             auto chosen = valid_output != nullptr ? valid_output : valid_viewport;
 
             if (chosen != nullptr) {
+                if (!g_ue57_drawwindow_resolved.exchange(true, std::memory_order_relaxed)) {
+                    SPDLOG_INFO_ONCE("UE5.7: DrawWindow resolved via Slate outputs");
+                }
                 if (rtm.get_render_target() == nullptr) {
                     rtm.set_render_target(chosen);
                     SPDLOG_INFO_ONCE("UE5.7: set render target from Slate outputs: {:x}", (uintptr_t)chosen);

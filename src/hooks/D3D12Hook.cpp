@@ -74,8 +74,39 @@ static std::optional<std::string_view> safe_string_view_from_cstr(const char* st
     }
 
 #if defined(_MSC_VER)
+    if (max_len == 0) {
+        return std::string_view{ str, 0 };
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(str, &mbi, sizeof(mbi)) != sizeof(mbi)) {
+        return std::nullopt;
+    }
+
+    if (mbi.State != MEM_COMMIT) {
+        return std::nullopt;
+    }
+
+    if ((mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+        return std::nullopt;
+    }
+
+    const auto start = reinterpret_cast<uintptr_t>(str);
+    const auto region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+    if (region_end <= start) {
+        return std::nullopt;
+    }
+
+    const size_t region_limit = static_cast<size_t>(region_end - start);
+    const size_t max_scan = (std::min)(max_len, region_limit);
+
     __try {
-        const size_t len = strnlen_s(str, max_len);
+        size_t len = 0;
+        for (; len < max_scan; ++len) {
+            if (str[len] == '\0') {
+                break;
+            }
+        }
         return std::string_view{ str, len };
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return std::nullopt;
