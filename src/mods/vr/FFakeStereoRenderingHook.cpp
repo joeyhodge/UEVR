@@ -693,6 +693,14 @@ void FFakeStereoRenderingHook::attempt_hooking() {
         return;
     }
 
+    static auto last_attempt = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (last_attempt != std::chrono::steady_clock::time_point{} &&
+        now - last_attempt < std::chrono::seconds(2)) {
+        return;
+    }
+    last_attempt = now;
+
     // TODO: see if this can be threaded; it might not be able to because of TLS or something
     bool can_init_uobject = true;
     if (is_ue_57()) {
@@ -745,7 +753,16 @@ void FFakeStereoRenderingHook::attempt_hooking() {
         m_injected_stereo_at_runtime = true;
     }
     
+    m_tried_hooking = true;
+    static uint32_t hook_attempts = 0;
+    ++hook_attempts;
+    SPDLOG_INFO("Attempting FFakeStereoRenderingHook::hook (attempt {})", hook_attempts);
+
     m_hooked = hook();
+    if (!m_hooked) {
+        SPDLOG_WARN("FFakeStereoRenderingHook::hook returned false; will retry");
+        m_tried_hooking = false;
+    }
 }
 
 namespace detail{
@@ -1312,8 +1329,6 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
 
 bool FFakeStereoRenderingHook::hook() {
     SPDLOG_INFO("Entering FFakeStereoRenderingHook::hook");
-
-    m_tried_hooking = true;
 
     // Locking the hook monitor mutex stops our code from trying to re-hook DX11 and 12 after
     // Long pauses in code execution, due to us doing massive scans for code in this function.
