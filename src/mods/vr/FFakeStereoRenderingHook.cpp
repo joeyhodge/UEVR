@@ -6355,9 +6355,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SPDLOG_INFO_ONCE("Set scene render target from Slate resource: {:x}", (uintptr_t)scene_tex);
     }
 
-    if (ui_target == nullptr && scene_tex != nullptr) {
+    if (ui_target == nullptr && scene_tex != nullptr && !is_ue_57()) {
         ui_target = scene_tex;
         SPDLOG_INFO_ONCE("UI target missing; using scene render target as fallback");
+    }
+
+    if (is_ue_57() && (ui_target == nullptr || ui_target == scene_tex)) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "UE5.7: UI target missing or matches scene; leaving Slate resource untouched");
+        return call_orig();
     }
 
     if (ui_target == nullptr) {

@@ -93,7 +93,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
-    const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
+    auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
+    const auto scene_target = ffsr->get_render_target_manager()->get_render_target();
+    if (ui_target != nullptr && ui_target == scene_target) {
+        // Avoid treating the scene/backbuffer as UI. Clearing/copying it can black out the desktop view.
+        SPDLOG_INFO_ONCE("[VR] UI target matches scene render target; disabling UI copy/clear for this frame");
+        ui_target = nullptr;
+    }
 
     const auto frame_count = vr->m_render_frame_count;
 
