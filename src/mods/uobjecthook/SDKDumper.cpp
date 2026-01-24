@@ -45,7 +45,7 @@ std::vector<sdk::UStruct*> get_all_structs() {
             continue;
         }
 
-        const auto object = entry->object;
+        const auto object = entry->get_object();
 
         if (object == nullptr) {
             continue;
