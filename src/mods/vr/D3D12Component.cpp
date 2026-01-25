@@ -405,6 +405,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
             } else if (ui_target != nullptr) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, (ID3D12Resource*)ui_target->get_native_resource(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+            } else if (vr->m_desktop_fix->value()) {
+                SPDLOG_INFO_ONCE("[VR] UI target missing; drawing spectator view via OpenXR UI swapchain");
+                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, nullptr, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
             }
 
             auto fw_rt = g_framework->get_rendertarget_d3d12();
@@ -775,17 +778,17 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
 }
 
 void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame) {
-    if (command_list == nullptr || m_game_ui_tex.texture == nullptr) {
-        return;
-    }
-
-    if (m_game_ui_tex.srv_heap == nullptr || m_game_ui_tex.srv_heap->Heap() == nullptr) {
+    if (command_list == nullptr) {
         return;
     }
 
     if (m_game_tex.texture == nullptr || m_game_tex.srv_heap == nullptr || m_game_tex.srv_heap->Heap() == nullptr) {
         return;
     }
+
+    const bool has_ui_tex = m_game_ui_tex.texture != nullptr &&
+        m_game_ui_tex.srv_heap != nullptr &&
+        m_game_ui_tex.srv_heap->Heap() != nullptr;
 
     const auto& vr = VR::get();
 
@@ -952,16 +955,20 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
         DirectX::Colors::White);
 
     //////
-    // UI
+    // UI (optional)
     //////
-    // Set descriptor heaps
-    ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
-    command_list->SetDescriptorHeaps(1, ui_heaps);
+    if (has_ui_tex) {
+        // Set descriptor heaps
+        ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
+        command_list->SetDescriptorHeaps(1, ui_heaps);
 
-    batch->Draw(m_game_ui_tex.get_srv_gpu(), 
-        DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height },
-        dest_rect, 
-        DirectX::Colors::White);
+        batch->Draw(m_game_ui_tex.get_srv_gpu(), 
+            DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height },
+            dest_rect, 
+            DirectX::Colors::White);
+    } else {
+        SPDLOG_INFO_ONCE("[VR] No UI texture available for spectator view; drawing scene only");
+    }
 
     batch->End();
 

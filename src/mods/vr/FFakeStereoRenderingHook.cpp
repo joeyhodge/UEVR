@@ -6087,33 +6087,55 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
-    auto viewport_info = (sdk::FViewportInfo*)a3;
+    sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
-    void** a4_ptr = (void**)a4;
+    uintptr_t window = 0;
 
-    static bool a4_is_ue_5_5_variant = [&]() -> bool {
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
+    if (is_ue_57()) {
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs");
 
         __try {
-            if (a4_ptr[0] == renderer) {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
-                return true;
-            }
+            const auto inputs = reinterpret_cast<uint8_t*>(a3);
+            window = *(uintptr_t*)(inputs + 0x10);
+            viewport_info = *(sdk::FViewportInfo**)(inputs + 0x18);
         } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] Exception while reading UE5.7 DrawWindow inputs!");
         }
-
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
-
-        return false;
-    }();
-
-    if (!a4_is_ue_5_5_variant) {
-        // How are we going to fix this on UE5.5?
-        g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
     } else {
-        const auto window = (uintptr_t)a4_ptr[2];
+        viewport_info = (sdk::FViewportInfo*)a3;
+        void** a4_ptr = (void**)a4;
 
+        static bool a4_is_ue_5_5_variant = [&]() -> bool {
+            SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
+
+            __try {
+                if (a4_ptr[0] == renderer) {
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
+                    return true;
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+            }
+
+            SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
+
+            return false;
+        }();
+
+        if (!a4_is_ue_5_5_variant) {
+            // How are we going to fix this on UE5.5?
+            g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
+        } else {
+            window = (uintptr_t)a4_ptr[2];
+        }
+    }
+
+    if (viewport_info == nullptr) {
+        SPDLOG_WARN_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
+    if (window != 0) {
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
 
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
