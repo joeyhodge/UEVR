@@ -6094,12 +6094,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (is_ue_57()) {
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs");
 
-        __try {
+        if (a3 != nullptr && !IsBadReadPtr(a3, 0x20)) {
             const auto inputs = reinterpret_cast<uint8_t*>(a3);
             window = *(uintptr_t*)(inputs + 0x10);
             viewport_info = *(sdk::FViewportInfo**)(inputs + 0x18);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] Exception while reading UE5.7 DrawWindow inputs!");
+        } else {
+            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 DrawWindow inputs invalid");
         }
     } else {
         viewport_info = (sdk::FViewportInfo*)a3;
@@ -6108,13 +6108,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         static bool a4_is_ue_5_5_variant = [&]() -> bool {
             SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
 
-            __try {
+            if (a4_ptr != nullptr && !IsBadReadPtr(a4_ptr, sizeof(void*))) {
                 if (a4_ptr[0] == renderer) {
                     SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
                     return true;
                 }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-                SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
+            } else {
+                SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] a4 pointer invalid while checking UE5.5 variant");
             }
 
             SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
@@ -6131,7 +6131,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (viewport_info == nullptr) {
-        SPDLOG_WARN_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
+        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
