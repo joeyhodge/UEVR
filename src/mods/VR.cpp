@@ -1,6 +1,8 @@
 #define NOMINMAX
 
 #include <fstream>
+#include <cmath>
+#include <algorithm>
 
 #include <windows.h>
 #include <dbt.h>
@@ -15,6 +17,9 @@
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
+#include <sdk/UEngine.hpp>
+#include <sdk/UClass.hpp>
+#include <sdk/FStructProperty.hpp>
 
 #include <tracy/Tracy.hpp>
 
@@ -28,6 +33,97 @@
 std::shared_ptr<VR>& VR::get() {
     //static std::shared_ptr<VR> instance = std::make_shared<VR>();
     return g_framework->vr();
+}
+
+namespace {
+struct GameFovResolver {
+    int32_t camera_cache_offset{-1};
+    int32_t pov_offset{-1};
+    int32_t fov_offset{-1};
+    bool attempted{false};
+    bool valid{false};
+};
+
+GameFovResolver g_game_fov_resolver{};
+
+bool resolve_game_fov_offsets() {
+    if (g_game_fov_resolver.attempted) {
+        return g_game_fov_resolver.valid;
+    }
+
+    g_game_fov_resolver.attempted = true;
+
+    auto pcm_class = sdk::APlayerCameraManager::static_class();
+    if (pcm_class == nullptr) {
+        return false;
+    }
+
+    const wchar_t* cache_candidates[] = {
+        L"CameraCachePrivate",
+        L"CameraCache",
+        L"LastFrameCameraCache"
+    };
+
+    sdk::FStructProperty* cache_prop = nullptr;
+    for (const auto* name : cache_candidates) {
+        if (auto prop = pcm_class->find_property(name); prop != nullptr) {
+            cache_prop = (sdk::FStructProperty*)prop;
+            break;
+        }
+    }
+
+    if (cache_prop == nullptr) {
+        return false;
+    }
+
+    auto cache_struct = cache_prop->get_struct();
+    if (cache_struct == nullptr) {
+        return false;
+    }
+
+    auto pov_prop = (sdk::FStructProperty*)cache_struct->find_property(L"POV");
+    if (pov_prop == nullptr) {
+        return false;
+    }
+
+    auto pov_struct = pov_prop->get_struct();
+    if (pov_struct == nullptr) {
+        return false;
+    }
+
+    auto fov_prop = pov_struct->find_property(L"FOV");
+    if (fov_prop == nullptr) {
+        return false;
+    }
+
+    g_game_fov_resolver.camera_cache_offset = cache_prop->get_offset();
+    g_game_fov_resolver.pov_offset = pov_prop->get_offset();
+    g_game_fov_resolver.fov_offset = fov_prop->get_offset();
+    g_game_fov_resolver.valid = true;
+    return true;
+}
+
+std::optional<float> read_game_fov(sdk::APlayerCameraManager* pcm) {
+    if (pcm == nullptr) {
+        return std::nullopt;
+    }
+
+    if (!resolve_game_fov_offsets()) {
+        return std::nullopt;
+    }
+
+    const auto base = (uint8_t*)pcm;
+    const auto fov_ptr = (float*)(base + g_game_fov_resolver.camera_cache_offset +
+                                  g_game_fov_resolver.pov_offset +
+                                  g_game_fov_resolver.fov_offset);
+    const auto fov = *fov_ptr;
+
+    if (!std::isfinite(fov)) {
+        return std::nullopt;
+    }
+
+    return fov;
+}
 }
 
 // Called when the mod is initialized
@@ -1409,12 +1505,88 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
 
     update_statistics_overlay(engine);
+    update_game_fov();
 
     // Dont update action states on AFR frames
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->is_ignoring_next_viewport_draw()) {
         update_action_states();
     }
+}
+
+void VR::update_game_fov() {
+    if (!m_match_game_fov->value()) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    auto engine = sdk::UEngine::get();
+    auto world = engine != nullptr ? engine->get_world() : nullptr;
+    auto gameplay = sdk::UGameplayStatics::get();
+
+    if (world == nullptr || gameplay == nullptr) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    auto pc = gameplay->get_player_controller(world, 0);
+    if (pc == nullptr) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    auto pcm = pc->get_player_camera_manager();
+    if (pcm == nullptr) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    auto fov = read_game_fov(pcm);
+    if (!fov.has_value()) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    if (!std::isfinite(*fov) || *fov <= 1.0f || *fov >= 179.0f) {
+        m_game_fov_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    m_game_fov.store(*fov, std::memory_order_relaxed);
+    m_game_fov_valid.store(true, std::memory_order_relaxed);
+}
+
+float VR::get_game_fov() const {
+    return m_game_fov.load(std::memory_order_relaxed);
+}
+
+float VR::get_game_fov_scale(float base_half_fov) const {
+    if (!m_game_fov_valid.load(std::memory_order_relaxed)) {
+        return 1.0f;
+    }
+
+    auto game_fov = get_game_fov() * m_match_game_fov_multiplier->value();
+
+    if (!std::isfinite(game_fov)) {
+        return 1.0f;
+    }
+
+    game_fov = std::clamp(game_fov, 5.0f, 175.0f);
+
+    const auto desired_half = glm::radians(game_fov) * 0.5f;
+    const auto base_tan = std::tan(base_half_fov);
+    const auto desired_tan = std::tan(desired_half);
+
+    if (base_tan <= 0.0f || desired_tan <= 0.0f) {
+        return 1.0f;
+    }
+
+    const auto scale = base_tan / desired_tan;
+    if (!std::isfinite(scale) || scale <= 0.01f || scale >= 100.0f) {
+        return 1.0f;
+    }
+
+    return scale;
 }
 
 void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
@@ -2595,6 +2767,21 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
+        if (ImGui::TreeNode("Game FOV")) {
+            m_match_game_fov->draw("Match Game FOV");
+
+            if (m_match_game_fov->value()) {
+                m_match_game_fov_multiplier->draw("FOV Multiplier");
+
+                const auto fov = get_game_fov();
+                const bool fov_valid = m_game_fov_valid.load(std::memory_order_relaxed);
+                ImGui::Text("Current Game FOV: %.2f (%s)", fov, fov_valid ? "valid" : "invalid");
+            }
+
+            ImGui::TreePop();
+        }
+
+        ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Camera Lerp")) {
             m_lerp_camera_pitch->draw("Lerp Pitch");
             ImGui::SameLine();
@@ -3099,11 +3286,23 @@ Matrix4x4f VR::get_projection_matrix(VRRuntime::Eye eye, bool flip) {
 
     std::shared_lock _{get_runtime()->eyes_mtx};
 
-    if ((eye == VRRuntime::Eye::LEFT && !flip) || (eye == VRRuntime::Eye::RIGHT && flip)) {
-        return get_runtime()->projections[(uint32_t)VRRuntime::Eye::LEFT];
+    auto out = ((eye == VRRuntime::Eye::LEFT && !flip) || (eye == VRRuntime::Eye::RIGHT && flip))
+        ? get_runtime()->projections[(uint32_t)VRRuntime::Eye::LEFT]
+        : get_runtime()->projections[(uint32_t)VRRuntime::Eye::RIGHT];
+
+    if (m_match_game_fov->value()) {
+        const auto m00 = out[0][0];
+        if (std::isfinite(m00) && m00 != 0.0f) {
+            const auto base_half_fov = std::atan(1.0f / std::abs(m00));
+            const auto scale = get_game_fov_scale(base_half_fov);
+            if (scale != 1.0f) {
+                out[0][0] *= scale;
+                out[1][1] *= scale;
+            }
+        }
     }
 
-    return get_runtime()->projections[(uint32_t)VRRuntime::Eye::RIGHT];
+    return out;
 }
 
 Matrix4x4f VR::get_current_projection_matrix(bool flip) {

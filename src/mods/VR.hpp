@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <atomic>
 
 #include <sdk/Math.hpp>
 
@@ -950,6 +951,8 @@ private:
     const ModSlider::Ptr m_camera_forward_offset{ ModSlider::create(generate_name("CameraForwardOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModSlider::Ptr m_camera_right_offset{ ModSlider::create(generate_name("CameraRightOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModSlider::Ptr m_camera_up_offset{ ModSlider::create(generate_name("CameraUpOffset"), -4000.0f, 4000.0f, 0.0f) };
+    const ModToggle::Ptr m_match_game_fov{ ModToggle::create(generate_name("MatchGameFOV"), false) };
+    const ModSlider::Ptr m_match_game_fov_multiplier{ ModSlider::create(generate_name("MatchGameFOVMultiplier"), 0.1f, 3.0f, 1.0f) };
     const ModSlider::Ptr m_camera_fov_distance_multiplier{ ModSlider::create(generate_name("CameraFOVDistanceMultiplier"), 0.00f, 1000.0f, 0.0f) };
     const ModSlider::Ptr m_world_scale{ ModSlider::create(generate_name("WorldScale"), 0.01f, 10.0f, 1.0f) };
     const ModSlider::Ptr m_depth_scale{ ModSlider::create(generate_name("DepthScale"), 0.01f, 1.0f, 1.0f) };
@@ -1026,8 +1029,12 @@ private:
     void load_cameras();
     void load_camera(int index);
     void save_camera(int index);
-	
-	public:
+
+    void update_game_fov();
+    float get_game_fov() const;
+    float get_game_fov_scale(float base_half_fov) const;
+
+public:
     VR() {
         m_options = {
             *m_rendering_method,
@@ -1068,6 +1075,8 @@ private:
             *m_camera_forward_offset,
             *m_camera_right_offset,
             *m_camera_up_offset,
+            *m_match_game_fov,
+            *m_match_game_fov_multiplier,
             *m_world_scale,
             *m_depth_scale,
             *m_custom_z_near,
@@ -1109,6 +1118,8 @@ private:
     bool m_wait_for_present{true};
     const ModToggle::Ptr m_controllers_allowed{ ModToggle::create(generate_name("ControllersAllowed"), true) };
     bool m_controller_test_mode{false};
+    std::atomic<float> m_game_fov{0.0f};
+    std::atomic<bool> m_game_fov_valid{false};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{ false };
