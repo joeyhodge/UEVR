@@ -40,6 +40,7 @@ struct GameFovResolver {
     int32_t camera_cache_offset{-1};
     int32_t pov_offset{-1};
     int32_t fov_offset{-1};
+    int32_t default_fov_offset{-1};
     bool attempted{false};
     bool valid{false};
 };
@@ -99,6 +100,11 @@ bool resolve_game_fov_offsets() {
     g_game_fov_resolver.camera_cache_offset = cache_prop->get_offset();
     g_game_fov_resolver.pov_offset = pov_prop->get_offset();
     g_game_fov_resolver.fov_offset = fov_prop->get_offset();
+
+    if (auto default_prop = pcm_class->find_property(L"DefaultFOV"); default_prop != nullptr) {
+        g_game_fov_resolver.default_fov_offset = default_prop->get_offset();
+    }
+
     g_game_fov_resolver.valid = true;
     return true;
 }
@@ -116,6 +122,30 @@ std::optional<float> read_game_fov(sdk::APlayerCameraManager* pcm) {
     const auto fov_ptr = (float*)(base + g_game_fov_resolver.camera_cache_offset +
                                   g_game_fov_resolver.pov_offset +
                                   g_game_fov_resolver.fov_offset);
+    const auto fov = *fov_ptr;
+
+    if (!std::isfinite(fov)) {
+        return std::nullopt;
+    }
+
+    return fov;
+}
+
+std::optional<float> read_default_fov(sdk::APlayerCameraManager* pcm) {
+    if (pcm == nullptr) {
+        return std::nullopt;
+    }
+
+    if (!resolve_game_fov_offsets()) {
+        return std::nullopt;
+    }
+
+    if (g_game_fov_resolver.default_fov_offset < 0) {
+        return std::nullopt;
+    }
+
+    const auto base = (uint8_t*)pcm;
+    const auto fov_ptr = (float*)(base + g_game_fov_resolver.default_fov_offset);
     const auto fov = *fov_ptr;
 
     if (!std::isfinite(fov)) {
@@ -1517,6 +1547,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 void VR::update_game_fov() {
     if (!m_match_game_fov->value()) {
         m_game_fov_valid.store(false, std::memory_order_relaxed);
+        m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
         return;
     }
 
@@ -1544,16 +1575,61 @@ void VR::update_game_fov() {
     auto fov = read_game_fov(pcm);
     if (!fov.has_value()) {
         m_game_fov_valid.store(false, std::memory_order_relaxed);
+        m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
         return;
     }
 
     if (!std::isfinite(*fov) || *fov <= 1.0f || *fov >= 179.0f) {
         m_game_fov_valid.store(false, std::memory_order_relaxed);
+        m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
         return;
     }
 
     m_game_fov.store(*fov, std::memory_order_relaxed);
     m_game_fov_valid.store(true, std::memory_order_relaxed);
+
+    if (m_match_game_fov_dolly->value()) {
+        auto base_fov = read_default_fov(pcm).value_or(m_game_fov_base.load(std::memory_order_relaxed));
+        if (!std::isfinite(base_fov) || base_fov <= 1.0f || base_fov >= 179.0f) {
+            base_fov = *fov;
+        }
+
+        m_game_fov_base.store(base_fov, std::memory_order_relaxed);
+
+        auto current_fov = (*fov) * m_match_game_fov_multiplier->value();
+        if (!std::isfinite(current_fov)) {
+            m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
+            return;
+        }
+
+        current_fov = std::clamp(current_fov, 5.0f, 175.0f);
+        base_fov = std::clamp(base_fov, 5.0f, 175.0f);
+
+        const auto current_half = glm::radians(current_fov) * 0.5f;
+        const auto base_half = glm::radians(base_fov) * 0.5f;
+        const auto base_tan = std::tan(base_half);
+        const auto current_tan = std::tan(current_half);
+
+        if (base_tan <= 0.0f || current_tan <= 0.0f) {
+            m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
+            return;
+        }
+
+        const auto scale = current_tan / base_tan;
+        const auto focus_distance = m_match_game_fov_dolly_distance->value();
+        auto dolly_offset = focus_distance * (1.0f - scale);
+        const auto max_offset = focus_distance * 2.0f;
+        dolly_offset = std::clamp(dolly_offset, -max_offset, max_offset);
+
+        if (!std::isfinite(dolly_offset)) {
+            m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
+            return;
+        }
+
+        m_game_fov_dolly_offset.store(dolly_offset, std::memory_order_relaxed);
+    } else {
+        m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
+    }
 }
 
 float VR::get_game_fov() const {
@@ -1562,6 +1638,10 @@ float VR::get_game_fov() const {
 
 float VR::get_game_fov_scale(float base_half_fov) const {
     if (!m_game_fov_valid.load(std::memory_order_relaxed)) {
+        return 1.0f;
+    }
+
+    if (m_match_game_fov_dolly->value()) {
         return 1.0f;
     }
 
@@ -1587,6 +1667,10 @@ float VR::get_game_fov_scale(float base_half_fov) const {
     }
 
     return scale;
+}
+
+float VR::get_game_fov_dolly_offset() const {
+    return m_game_fov_dolly_offset.load(std::memory_order_relaxed);
 }
 
 void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
@@ -2771,7 +2855,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_match_game_fov->draw("Match Game FOV");
 
             if (m_match_game_fov->value()) {
+                m_match_game_fov_dolly->draw("Use Dolly Instead of FOV");
                 m_match_game_fov_multiplier->draw("FOV Multiplier");
+
+                if (m_match_game_fov_dolly->value()) {
+                    m_match_game_fov_dolly_distance->draw("Dolly Focus Distance");
+                    ImGui::Text("Dolly Offset: %.2f", get_game_fov_dolly_offset());
+                }
 
                 const auto fov = get_game_fov();
                 const bool fov_valid = m_game_fov_valid.load(std::memory_order_relaxed);
@@ -3290,7 +3380,7 @@ Matrix4x4f VR::get_projection_matrix(VRRuntime::Eye eye, bool flip) {
         ? get_runtime()->projections[(uint32_t)VRRuntime::Eye::LEFT]
         : get_runtime()->projections[(uint32_t)VRRuntime::Eye::RIGHT];
 
-    if (m_match_game_fov->value()) {
+    if (m_match_game_fov->value() && !m_match_game_fov_dolly->value()) {
         const auto m00 = out[0][0];
         if (std::isfinite(m00) && m00 != 0.0f) {
             const auto base_half_fov = std::atan(1.0f / std::abs(m00));

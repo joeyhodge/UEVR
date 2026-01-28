@@ -363,6 +363,10 @@ public:
     }
 
     auto get_camera_forward_offset() const {
+        if (m_match_game_fov->value() && m_match_game_fov_dolly->value()) {
+            return m_camera_forward_offset->value() + m_game_fov_dolly_offset.load(std::memory_order_relaxed);
+        }
+
         return m_camera_forward_offset->value();
     }
 
@@ -952,7 +956,9 @@ private:
     const ModSlider::Ptr m_camera_right_offset{ ModSlider::create(generate_name("CameraRightOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModSlider::Ptr m_camera_up_offset{ ModSlider::create(generate_name("CameraUpOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModToggle::Ptr m_match_game_fov{ ModToggle::create(generate_name("MatchGameFOV"), false) };
+    const ModToggle::Ptr m_match_game_fov_dolly{ ModToggle::create(generate_name("MatchGameFOVDolly"), false) };
     const ModSlider::Ptr m_match_game_fov_multiplier{ ModSlider::create(generate_name("MatchGameFOVMultiplier"), 0.1f, 3.0f, 1.0f) };
+    const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModSlider::Ptr m_camera_fov_distance_multiplier{ ModSlider::create(generate_name("CameraFOVDistanceMultiplier"), 0.00f, 1000.0f, 0.0f) };
     const ModSlider::Ptr m_world_scale{ ModSlider::create(generate_name("WorldScale"), 0.01f, 10.0f, 1.0f) };
     const ModSlider::Ptr m_depth_scale{ ModSlider::create(generate_name("DepthScale"), 0.01f, 1.0f, 1.0f) };
@@ -1033,6 +1039,7 @@ private:
     void update_game_fov();
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
+    float get_game_fov_dolly_offset() const;
 
 public:
     VR() {
@@ -1076,7 +1083,9 @@ public:
             *m_camera_right_offset,
             *m_camera_up_offset,
             *m_match_game_fov,
+            *m_match_game_fov_dolly,
             *m_match_game_fov_multiplier,
+            *m_match_game_fov_dolly_distance,
             *m_world_scale,
             *m_depth_scale,
             *m_custom_z_near,
@@ -1119,6 +1128,8 @@ private:
     const ModToggle::Ptr m_controllers_allowed{ ModToggle::create(generate_name("ControllersAllowed"), true) };
     bool m_controller_test_mode{false};
     std::atomic<float> m_game_fov{0.0f};
+    std::atomic<float> m_game_fov_base{0.0f};
+    std::atomic<float> m_game_fov_dolly_offset{0.0f};
     std::atomic<bool> m_game_fov_valid{false};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
