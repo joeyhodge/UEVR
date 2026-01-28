@@ -1574,7 +1574,8 @@ void VR::update_game_fov() {
             return;
         }
 
-        current_fov = std::clamp(current_fov, 5.0f, 175.0f);
+        const auto min_fov = m_match_game_fov_min_enabled->value() ? m_match_game_fov_min->value() : 5.0f;
+        current_fov = std::clamp(current_fov, min_fov, 175.0f);
         base_fov = std::clamp(base_fov, 5.0f, 175.0f);
 
         const auto current_half = glm::radians(current_fov) * 0.5f;
@@ -1623,7 +1624,8 @@ float VR::get_game_fov_scale(float base_half_fov) const {
         return 1.0f;
     }
 
-    game_fov = std::clamp(game_fov, 5.0f, 175.0f);
+    const auto min_fov = m_match_game_fov_min_enabled->value() ? m_match_game_fov_min->value() : 5.0f;
+    game_fov = std::clamp(game_fov, min_fov, 175.0f);
 
     const auto desired_half = glm::radians(game_fov) * 0.5f;
     const auto base_tan = std::tan(base_half_fov);
@@ -2829,6 +2831,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             if (m_match_game_fov->value()) {
                 m_match_game_fov_dolly->draw("Use Dolly Instead of FOV");
                 m_match_game_fov_multiplier->draw("FOV Multiplier");
+                m_match_game_fov_min_enabled->draw("Clamp Minimum FOV");
+                if (m_match_game_fov_min_enabled->value()) {
+                    m_match_game_fov_min->draw("Minimum FOV");
+                }
 
                 if (m_match_game_fov_dolly->value()) {
                     m_match_game_fov_dolly_distance->draw("Dolly Focus Distance");
