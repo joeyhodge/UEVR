@@ -17,6 +17,7 @@
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
+#include <sdk/APlayerCameraManager.hpp>
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FStructProperty.hpp>
@@ -66,7 +67,8 @@ bool resolve_game_fov_offsets() {
 
     sdk::FStructProperty* cache_prop = nullptr;
     for (const auto* name : cache_candidates) {
-        if (auto prop = pcm_class->find_property(name); prop != nullptr) {
+        auto prop = pcm_class->find_property(name);
+        if (prop != nullptr) {
             cache_prop = (sdk::FStructProperty*)prop;
             break;
         }
