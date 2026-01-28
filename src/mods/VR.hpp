@@ -959,6 +959,8 @@ private:
     const ModToggle::Ptr m_match_game_fov_dolly{ ModToggle::create(generate_name("MatchGameFOVDolly"), false) };
     const ModSlider::Ptr m_match_game_fov_multiplier{ ModSlider::create(generate_name("MatchGameFOVMultiplier"), 0.1f, 3.0f, 1.0f) };
     const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
+    const ModToggle::Ptr m_match_game_fov_min_enabled{ ModToggle::create(generate_name("MatchGameFOVMinEnabled"), false) };
+    const ModSlider::Ptr m_match_game_fov_min{ ModSlider::create(generate_name("MatchGameFOVMin"), 5.0f, 120.0f, 40.0f) };
     const ModSlider::Ptr m_camera_fov_distance_multiplier{ ModSlider::create(generate_name("CameraFOVDistanceMultiplier"), 0.00f, 1000.0f, 0.0f) };
     const ModSlider::Ptr m_world_scale{ ModSlider::create(generate_name("WorldScale"), 0.01f, 10.0f, 1.0f) };
     const ModSlider::Ptr m_depth_scale{ ModSlider::create(generate_name("DepthScale"), 0.01f, 1.0f, 1.0f) };
@@ -1086,6 +1088,8 @@ public:
             *m_match_game_fov_dolly,
             *m_match_game_fov_multiplier,
             *m_match_game_fov_dolly_distance,
+            *m_match_game_fov_min_enabled,
+            *m_match_game_fov_min,
             *m_world_scale,
             *m_depth_scale,
             *m_custom_z_near,
