@@ -900,6 +900,7 @@ private:
     const ModToggle::Ptr m_decoupled_pitch_ui_adjust{ ModToggle::create(generate_name("DecoupledPitchUIAdjust"), true) };
     const ModToggle::Ptr m_load_blueprint_code{ ModToggle::create(generate_name("LoadBlueprintCode"), false, true) };
     const ModToggle::Ptr m_2d_screen_mode{ ModToggle::create(generate_name("2DScreenMode"), false) };
+    const ModToggle::Ptr m_auto_2d_cutscene{ ModToggle::create(generate_name("Auto2DScreenCutscene"), false) };
     const ModToggle::Ptr m_roomscale_movement{ ModToggle::create(generate_name("RoomscaleMovement"), false) };
     const ModToggle::Ptr m_roomscale_sweep{ ModToggle::create(generate_name("RoomscaleMovementSweep"), true) };
     const ModToggle::Ptr m_swap_controllers{ ModToggle::create(generate_name("SwapControllerInputs"), false) };
@@ -1072,6 +1073,7 @@ public:
             *m_decoupled_pitch_ui_adjust,
             *m_load_blueprint_code,
             *m_2d_screen_mode,
+            *m_auto_2d_cutscene,
             *m_roomscale_movement,
             *m_roomscale_sweep,
             *m_swap_controllers,
@@ -1165,7 +1167,11 @@ private:
     const ModToggle::Ptr m_show_statistics{ ModToggle::create(generate_name("ShowStatsOverlay"), false) };
     bool m_show_statistics_state{false};
 
+    bool m_auto_2d_cutscene_active{false};
+    bool m_auto_2d_cutscene_prev{false};
+
     void update_statistics_overlay(sdk::UGameEngine* engine);
+    void update_auto_2d_cutscene();
 
     int m_game_frame_count{};
     int m_frame_count{};

@@ -383,6 +383,36 @@ std::optional<float> read_actor_fov_property(sdk::AActor* actor) {
     return std::nullopt;
 }
 
+bool is_end_cutscene_playing() {
+    static sdk::UClass* cut_api_class{nullptr};
+    static sdk::UObject* cut_api_cdo{nullptr};
+    static sdk::UFunction* is_playing_fn{nullptr};
+    static auto last_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+
+    const auto now = std::chrono::steady_clock::now();
+    if ((cut_api_class == nullptr || cut_api_cdo == nullptr || is_playing_fn == nullptr) && (now - last_attempt > std::chrono::seconds(5))) {
+        last_attempt = now;
+
+        cut_api_class = (sdk::UClass*)sdk::find_uobject(L"Class /Script/EndGame.EndCutAPI");
+
+        if (cut_api_class != nullptr) {
+            cut_api_cdo = cut_api_class->get_class_default_object();
+            is_playing_fn = cut_api_class->find_function(L"IsPlaying");
+        }
+    }
+
+    if (cut_api_class == nullptr || cut_api_cdo == nullptr || is_playing_fn == nullptr) {
+        return false;
+    }
+
+    struct {
+        bool return_value{false};
+    } params{};
+
+    cut_api_cdo->process_event(is_playing_fn, &params);
+    return params.return_value;
+}
+
 std::optional<float> read_camera_component_fov_from_actor(sdk::AActor* actor) {
     if (actor == nullptr) {
         return std::nullopt;
@@ -2627,6 +2657,8 @@ void VR::on_frame() {
         return;
     }
 
+    update_auto_2d_cutscene();
+
     const auto now = std::chrono::steady_clock::now();
     const auto is_allowed_draw_window = now - m_last_xinput_update < std::chrono::seconds(2);
 
@@ -3050,6 +3082,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_desktop_fix->draw("Desktop Spectator View");
         ImGui::SameLine();
         m_2d_screen_mode->draw("2D Screen Mode");
+        m_auto_2d_cutscene->draw("Auto 2D (Cutscenes)");
 
         ImGui::TextWrapped("Render Resolution (per-eye): %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
         ImGui::TextWrapped("Total Render Resolution: %d x %d", get_runtime()->get_width() * 2, get_runtime()->get_height());
@@ -4037,5 +4070,43 @@ void VR::update_statistics_overlay(sdk::UGameEngine* engine) {
     if (m_show_statistics_state != m_show_statistics->value()) {
         engine->exec(L"stat unit");
         m_show_statistics_state = m_show_statistics->value();
+    }
+}
+
+void VR::update_auto_2d_cutscene() {
+    if (!m_auto_2d_cutscene->value()) {
+        if (m_auto_2d_cutscene_active) {
+            if (!m_auto_2d_cutscene_prev && m_2d_screen_mode->value()) {
+                m_2d_screen_mode->value() = false;
+                spdlog::info("[FF7R] Auto 2D screen disabled (auto toggle off)");
+            }
+
+            m_auto_2d_cutscene_active = false;
+        }
+
+        return;
+    }
+
+    const auto is_cutscene_playing = is_end_cutscene_playing();
+
+    if (is_cutscene_playing && !m_auto_2d_cutscene_active) {
+        m_auto_2d_cutscene_prev = m_2d_screen_mode->value();
+
+        if (!m_2d_screen_mode->value()) {
+            m_2d_screen_mode->value() = true;
+            spdlog::info("[FF7R] Cutscene detected: enabling 2D screen mode");
+        }
+
+        m_auto_2d_cutscene_active = true;
+        return;
+    }
+
+    if (!is_cutscene_playing && m_auto_2d_cutscene_active) {
+        if (!m_auto_2d_cutscene_prev && m_2d_screen_mode->value()) {
+            m_2d_screen_mode->value() = false;
+            spdlog::info("[FF7R] Cutscene ended: restoring 2D screen mode");
+        }
+
+        m_auto_2d_cutscene_active = false;
     }
 }
