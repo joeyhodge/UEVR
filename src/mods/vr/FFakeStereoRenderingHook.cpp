@@ -4999,6 +4999,34 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         }
     }
 
+    Matrix4x4f game_proj{};
+    Matrix4x4d game_proj_d{};
+    bool has_game_proj = false;
+
+    if (out != nullptr) {
+        if (g_hook->m_has_double_precision) {
+            game_proj_d = *(Matrix4x4d*)out;
+            has_game_proj = true;
+        } else {
+            game_proj = *out;
+            has_game_proj = true;
+        }
+    }
+
+    if (has_game_proj && vr->is_match_game_projection_enabled()) {
+        const auto game_m00 = g_hook->m_has_double_precision ? (float)game_proj_d[0][0] : game_proj[0][0];
+        const auto game_m11 = g_hook->m_has_double_precision ? (float)game_proj_d[1][1] : game_proj[1][1];
+        const auto game_m20 = g_hook->m_has_double_precision ? (float)game_proj_d[2][0] : game_proj[2][0];
+        const auto game_m21 = g_hook->m_has_double_precision ? (float)game_proj_d[2][1] : game_proj[2][1];
+
+        if (std::isfinite(game_m00) && std::isfinite(game_m11) && game_m00 != 0.0f && game_m11 != 0.0f) {
+            const auto half_fov = std::atan(1.0f / std::abs(game_m00));
+            const auto fov = glm::degrees(half_fov * 2.0f);
+            const auto aspect = game_m11 / game_m00;
+            vr->set_game_projection_data(fov, std::abs(aspect), game_m20, game_m21);
+        }
+    }
+
     if (VR::get()->is_using_2d_screen()) {
         float fov = 90.0f; // todo, get from FMinimalViewInfo
 
@@ -5054,6 +5082,53 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         } else {
             const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
             double_matrix = fmat;
+        }
+
+        if (vr->is_match_game_projection_enabled() && has_game_proj) {
+            const auto game_m00 = g_hook->m_has_double_precision ? (float)game_proj_d[0][0] : game_proj[0][0];
+            const auto game_m11 = g_hook->m_has_double_precision ? (float)game_proj_d[1][1] : game_proj[1][1];
+            const auto game_m20 = g_hook->m_has_double_precision ? (float)game_proj_d[2][0] : game_proj[2][0];
+            const auto game_m21 = g_hook->m_has_double_precision ? (float)game_proj_d[2][1] : game_proj[2][1];
+
+            const bool apply_fov = vr->is_match_game_projection_fov_enabled();
+            const bool apply_aspect = vr->is_match_game_projection_aspect_enabled() && !apply_fov;
+            const bool apply_offsets = vr->is_match_game_projection_offsets_enabled();
+
+            if (!g_hook->m_has_double_precision) {
+                if (apply_fov && std::isfinite(game_m00) && std::isfinite(game_m11)) {
+                    (*out)[0][0] = game_m00;
+                    (*out)[1][1] = game_m11;
+                } else if (apply_aspect && std::isfinite(game_m00) && std::isfinite(game_m11)) {
+                    const auto game_aspect = game_m11 / game_m00;
+                    const auto vr_aspect = (*out)[1][1] / (*out)[0][0];
+                    if (std::isfinite(game_aspect) && std::isfinite(vr_aspect) && vr_aspect != 0.0f) {
+                        const auto scale_x = game_aspect / vr_aspect;
+                        (*out)[0][0] *= scale_x;
+                    }
+                }
+
+                if (apply_offsets && std::isfinite(game_m20) && std::isfinite(game_m21)) {
+                    (*out)[2][0] = game_m20;
+                    (*out)[2][1] = game_m21;
+                }
+            } else {
+                if (apply_fov && std::isfinite(game_m00) && std::isfinite(game_m11)) {
+                    double_matrix[0][0] = game_m00;
+                    double_matrix[1][1] = game_m11;
+                } else if (apply_aspect && std::isfinite(game_m00) && std::isfinite(game_m11)) {
+                    const auto game_aspect = game_m11 / game_m00;
+                    const auto vr_aspect = double_matrix[1][1] / double_matrix[0][0];
+                    if (std::isfinite(game_aspect) && std::isfinite(vr_aspect) && vr_aspect != 0.0f) {
+                        const auto scale_x = game_aspect / vr_aspect;
+                        double_matrix[0][0] *= scale_x;
+                    }
+                }
+
+                if (apply_offsets && std::isfinite(game_m20) && std::isfinite(game_m21)) {
+                    double_matrix[2][0] = game_m20;
+                    double_matrix[2][1] = game_m21;
+                }
+            }
         }
     } else {
         SPDLOG_ERROR("CalculateStereoProjectionMatrix returned nullptr!");

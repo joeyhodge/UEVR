@@ -1769,6 +1769,13 @@ void VR::update_game_fov() {
         fov = comp_fov;
     }
 
+    if (m_match_game_projection->value() && m_game_projection_valid.load(std::memory_order_relaxed)) {
+        const auto proj_fov = m_game_projection_fov.load(std::memory_order_relaxed);
+        if (std::isfinite(proj_fov) && proj_fov > 1.0f && proj_fov < 179.0f) {
+            fov = proj_fov;
+        }
+    }
+
     if (!fov.has_value()) {
         m_game_fov_valid.store(false, std::memory_order_relaxed);
         m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
@@ -1869,6 +1876,40 @@ float VR::get_game_fov_scale(float base_half_fov) const {
 
 float VR::get_game_fov_dolly_offset() const {
     return m_game_fov_dolly_offset.load(std::memory_order_relaxed);
+}
+
+void VR::set_game_projection_data(float fov, float aspect, float offset_x, float offset_y) {
+    if (!std::isfinite(fov) || fov <= 0.0f || fov >= 180.0f ||
+        !std::isfinite(aspect) || aspect <= 0.0f) {
+        m_game_projection_valid.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    m_game_projection_fov.store(fov, std::memory_order_relaxed);
+    m_game_projection_aspect.store(aspect, std::memory_order_relaxed);
+    m_game_projection_offset_x.store(offset_x, std::memory_order_relaxed);
+    m_game_projection_offset_y.store(offset_y, std::memory_order_relaxed);
+    m_game_projection_valid.store(true, std::memory_order_relaxed);
+}
+
+bool VR::has_game_projection_data() const {
+    return m_game_projection_valid.load(std::memory_order_relaxed);
+}
+
+float VR::get_game_projection_fov() const {
+    return m_game_projection_fov.load(std::memory_order_relaxed);
+}
+
+float VR::get_game_projection_aspect() const {
+    return m_game_projection_aspect.load(std::memory_order_relaxed);
+}
+
+float VR::get_game_projection_offset_x() const {
+    return m_game_projection_offset_x.load(std::memory_order_relaxed);
+}
+
+float VR::get_game_projection_offset_y() const {
+    return m_game_projection_offset_y.load(std::memory_order_relaxed);
 }
 
 void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
@@ -3051,6 +3092,24 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Game FOV")) {
             m_match_game_fov->draw("Match Game FOV");
+
+            m_match_game_projection->draw("Use Game Projection (Aspect/Offsets)");
+
+            if (m_match_game_projection->value()) {
+                m_match_game_projection_aspect->draw("Match Game Aspect");
+                m_match_game_projection_offsets->draw("Match Game Projection Offsets");
+                m_match_game_projection_fov->draw("Use Game Projection FOV");
+
+                if (has_game_projection_data()) {
+                    ImGui::Text("Game Projection FOV: %.2f | Aspect: %.3f | Offsets: (%.3f, %.3f)",
+                        get_game_projection_fov(),
+                        get_game_projection_aspect(),
+                        get_game_projection_offset_x(),
+                        get_game_projection_offset_y());
+                } else {
+                    ImGui::Text("Game Projection: unavailable");
+                }
+            }
 
             if (m_match_game_fov->value()) {
                 m_match_game_fov_use_camera_component->draw("Use Camera Component FOV");

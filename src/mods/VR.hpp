@@ -954,6 +954,10 @@ private:
     const ModSlider::Ptr m_camera_up_offset{ ModSlider::create(generate_name("CameraUpOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModToggle::Ptr m_match_game_fov{ ModToggle::create(generate_name("MatchGameFOV"), false) };
     const ModToggle::Ptr m_match_game_fov_use_camera_component{ ModToggle::create(generate_name("MatchGameFOVUseCameraComponent"), true) };
+    const ModToggle::Ptr m_match_game_projection{ ModToggle::create(generate_name("MatchGameProjection"), true) };
+    const ModToggle::Ptr m_match_game_projection_aspect{ ModToggle::create(generate_name("MatchGameProjectionAspect"), true) };
+    const ModToggle::Ptr m_match_game_projection_offsets{ ModToggle::create(generate_name("MatchGameProjectionOffsets"), true) };
+    const ModToggle::Ptr m_match_game_projection_fov{ ModToggle::create(generate_name("MatchGameProjectionFOV"), false) };
     const ModToggle::Ptr m_match_game_fov_dolly{ ModToggle::create(generate_name("MatchGameFOVDolly"), false) };
     const ModSlider::Ptr m_match_game_fov_multiplier{ ModSlider::create(generate_name("MatchGameFOVMultiplier"), 0.1f, 3.0f, 1.0f) };
     const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
@@ -1040,6 +1044,16 @@ private:
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
     float get_game_fov_dolly_offset() const;
+    void set_game_projection_data(float fov, float aspect, float offset_x, float offset_y);
+    bool has_game_projection_data() const;
+    float get_game_projection_fov() const;
+    float get_game_projection_aspect() const;
+    float get_game_projection_offset_x() const;
+    float get_game_projection_offset_y() const;
+    bool is_match_game_projection_enabled() const { return m_match_game_projection->value(); }
+    bool is_match_game_projection_aspect_enabled() const { return m_match_game_projection_aspect->value(); }
+    bool is_match_game_projection_offsets_enabled() const { return m_match_game_projection_offsets->value(); }
+    bool is_match_game_projection_fov_enabled() const { return m_match_game_projection_fov->value(); }
 
 public:
     VR() {
@@ -1084,6 +1098,10 @@ public:
             *m_camera_up_offset,
             *m_match_game_fov,
             *m_match_game_fov_use_camera_component,
+            *m_match_game_projection,
+            *m_match_game_projection_aspect,
+            *m_match_game_projection_offsets,
+            *m_match_game_projection_fov,
             *m_match_game_fov_dolly,
             *m_match_game_fov_multiplier,
             *m_match_game_fov_dolly_distance,
@@ -1135,6 +1153,11 @@ private:
     std::atomic<float> m_game_fov_base{0.0f};
     std::atomic<float> m_game_fov_dolly_offset{0.0f};
     std::atomic<bool> m_game_fov_valid{false};
+    std::atomic<float> m_game_projection_fov{0.0f};
+    std::atomic<float> m_game_projection_aspect{0.0f};
+    std::atomic<float> m_game_projection_offset_x{0.0f};
+    std::atomic<float> m_game_projection_offset_y{0.0f};
+    std::atomic<bool> m_game_projection_valid{false};
     
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{false};
