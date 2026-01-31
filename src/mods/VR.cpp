@@ -387,6 +387,8 @@ bool is_end_cutscene_playing() {
     static sdk::UClass* cut_api_class{nullptr};
     static sdk::UObject* cut_api_cdo{nullptr};
     static sdk::UFunction* is_playing_fn{nullptr};
+    static sdk::UFunction* is_playing_type_fn{nullptr};
+    static bool logged_fn{false};
     static auto last_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
 
     const auto now = std::chrono::steady_clock::now();
@@ -398,19 +400,61 @@ bool is_end_cutscene_playing() {
         if (cut_api_class != nullptr) {
             cut_api_cdo = cut_api_class->get_class_default_object();
             is_playing_fn = cut_api_class->find_function(L"IsPlaying");
+            is_playing_type_fn = cut_api_class->find_function(L"IsPlaying_TypeSpecify");
         }
     }
 
-    if (cut_api_class == nullptr || cut_api_cdo == nullptr || is_playing_fn == nullptr) {
+    if (cut_api_class == nullptr || cut_api_cdo == nullptr || (is_playing_fn == nullptr && is_playing_type_fn == nullptr)) {
         return false;
     }
 
-    struct {
-        bool return_value{false};
-    } params{};
+    if (!logged_fn) {
+        logged_fn = true;
+        if (is_playing_type_fn != nullptr) {
+            spdlog::info("[FF7R] Cutscene detection via EndCutAPI::IsPlaying_TypeSpecify");
+        } else if (is_playing_fn != nullptr) {
+            spdlog::info("[FF7R] Cutscene detection via EndCutAPI::IsPlaying");
+        }
+    }
 
-    cut_api_cdo->process_event(is_playing_fn, &params);
-    return params.return_value;
+    bool is_playing = false;
+
+    if (is_playing_type_fn != nullptr) {
+        struct {
+            bool ev{true};
+            bool lv{true};
+            bool mv{true};
+            bool fv{true};
+            bool return_value{false};
+        } params_all{};
+
+        cut_api_cdo->process_event(is_playing_type_fn, &params_all);
+        is_playing = is_playing || params_all.return_value;
+
+        if (!is_playing) {
+            struct {
+                bool ev{false};
+                bool lv{false};
+                bool mv{true};
+                bool fv{false};
+                bool return_value{false};
+            } params_movie{};
+
+            cut_api_cdo->process_event(is_playing_type_fn, &params_movie);
+            is_playing = is_playing || params_movie.return_value;
+        }
+    }
+
+    if (!is_playing && is_playing_fn != nullptr) {
+        struct {
+            bool return_value{false};
+        } params{};
+
+        cut_api_cdo->process_event(is_playing_fn, &params);
+        is_playing = is_playing || params.return_value;
+    }
+
+    return is_playing;
 }
 
 std::optional<float> read_camera_component_fov_from_actor(sdk::AActor* actor) {
