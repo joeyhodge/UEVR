@@ -901,6 +901,7 @@ private:
     const ModToggle::Ptr m_load_blueprint_code{ ModToggle::create(generate_name("LoadBlueprintCode"), false, true) };
     const ModToggle::Ptr m_2d_screen_mode{ ModToggle::create(generate_name("2DScreenMode"), false) };
     const ModToggle::Ptr m_auto_2d_cutscene{ ModToggle::create(generate_name("Auto2DScreenCutscene"), false) };
+    const ModToggle::Ptr m_auto_2d_cutscene_movie_only{ ModToggle::create(generate_name("Auto2DScreenCutsceneMovieOnly"), true) };
     const ModToggle::Ptr m_roomscale_movement{ ModToggle::create(generate_name("RoomscaleMovement"), false) };
     const ModToggle::Ptr m_roomscale_sweep{ ModToggle::create(generate_name("RoomscaleMovementSweep"), true) };
     const ModToggle::Ptr m_swap_controllers{ ModToggle::create(generate_name("SwapControllerInputs"), false) };
@@ -1074,6 +1075,7 @@ public:
             *m_load_blueprint_code,
             *m_2d_screen_mode,
             *m_auto_2d_cutscene,
+            *m_auto_2d_cutscene_movie_only,
             *m_roomscale_movement,
             *m_roomscale_sweep,
             *m_swap_controllers,

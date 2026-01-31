@@ -383,13 +383,20 @@ std::optional<float> read_actor_fov_property(sdk::AActor* actor) {
     return std::nullopt;
 }
 
-bool is_end_cutscene_playing() {
+struct EndCutsceneState {
+    bool any{false};
+    bool movie{false};
+    bool valid{false};
+};
+
+EndCutsceneState get_end_cutscene_state() {
     static sdk::UClass* cut_api_class{nullptr};
     static sdk::UObject* cut_api_cdo{nullptr};
     static sdk::UFunction* is_playing_fn{nullptr};
     static sdk::UFunction* is_playing_type_fn{nullptr};
     static bool logged_fn{false};
     static auto last_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+    EndCutsceneState state{};
 
     const auto now = std::chrono::steady_clock::now();
     if ((cut_api_class == nullptr || cut_api_cdo == nullptr || is_playing_fn == nullptr) && (now - last_attempt > std::chrono::seconds(5))) {
@@ -405,7 +412,7 @@ bool is_end_cutscene_playing() {
     }
 
     if (cut_api_class == nullptr || cut_api_cdo == nullptr || (is_playing_fn == nullptr && is_playing_type_fn == nullptr)) {
-        return false;
+        return state;
     }
 
     if (!logged_fn) {
@@ -417,7 +424,8 @@ bool is_end_cutscene_playing() {
         }
     }
 
-    bool is_playing = false;
+    bool any_playing = false;
+    bool movie_playing = false;
 
     if (is_playing_type_fn != nullptr) {
         struct {
@@ -429,32 +437,35 @@ bool is_end_cutscene_playing() {
         } params_all{};
 
         cut_api_cdo->process_event(is_playing_type_fn, &params_all);
-        is_playing = is_playing || params_all.return_value;
+        any_playing = any_playing || params_all.return_value;
+        state.valid = true;
 
-        if (!is_playing) {
-            struct {
-                bool ev{false};
-                bool lv{false};
-                bool mv{true};
-                bool fv{false};
-                bool return_value{false};
-            } params_movie{};
+        struct {
+            bool ev{false};
+            bool lv{false};
+            bool mv{true};
+            bool fv{false};
+            bool return_value{false};
+        } params_movie{};
 
-            cut_api_cdo->process_event(is_playing_type_fn, &params_movie);
-            is_playing = is_playing || params_movie.return_value;
-        }
+        cut_api_cdo->process_event(is_playing_type_fn, &params_movie);
+        movie_playing = movie_playing || params_movie.return_value;
+        state.valid = true;
     }
 
-    if (!is_playing && is_playing_fn != nullptr) {
+    if (!any_playing && is_playing_fn != nullptr) {
         struct {
             bool return_value{false};
         } params{};
 
         cut_api_cdo->process_event(is_playing_fn, &params);
-        is_playing = is_playing || params.return_value;
+        any_playing = any_playing || params.return_value;
+        state.valid = true;
     }
 
-    return is_playing;
+    state.any = any_playing;
+    state.movie = movie_playing;
+    return state;
 }
 
 std::optional<float> read_camera_component_fov_from_actor(sdk::AActor* actor) {
@@ -3127,6 +3138,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SameLine();
         m_2d_screen_mode->draw("2D Screen Mode");
         m_auto_2d_cutscene->draw("Auto 2D (Cutscenes)");
+        if (m_auto_2d_cutscene->value()) {
+            ImGui::SameLine();
+            m_auto_2d_cutscene_movie_only->draw("Movie Only");
+        }
 
         ImGui::TextWrapped("Render Resolution (per-eye): %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
         ImGui::TextWrapped("Total Render Resolution: %d x %d", get_runtime()->get_width() * 2, get_runtime()->get_height());
@@ -4131,14 +4146,16 @@ void VR::update_auto_2d_cutscene() {
         return;
     }
 
-    const auto is_cutscene_playing = is_end_cutscene_playing();
+    const auto cutscene_state = get_end_cutscene_state();
+    const auto movie_only = m_auto_2d_cutscene_movie_only->value();
+    const auto is_cutscene_playing = movie_only ? cutscene_state.movie : cutscene_state.any;
 
     if (is_cutscene_playing && !m_auto_2d_cutscene_active) {
         m_auto_2d_cutscene_prev = m_2d_screen_mode->value();
 
         if (!m_2d_screen_mode->value()) {
             m_2d_screen_mode->value() = true;
-            spdlog::info("[FF7R] Cutscene detected: enabling 2D screen mode");
+            spdlog::info("[FF7R] {} detected: enabling 2D screen mode", movie_only ? "Movie" : "Cutscene");
         }
 
         m_auto_2d_cutscene_active = true;
@@ -4148,7 +4165,7 @@ void VR::update_auto_2d_cutscene() {
     if (!is_cutscene_playing && m_auto_2d_cutscene_active) {
         if (!m_auto_2d_cutscene_prev && m_2d_screen_mode->value()) {
             m_2d_screen_mode->value() = false;
-            spdlog::info("[FF7R] Cutscene ended: restoring 2D screen mode");
+            spdlog::info("[FF7R] {} ended: restoring 2D screen mode", movie_only ? "Movie" : "Cutscene");
         }
 
         m_auto_2d_cutscene_active = false;
