@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <unordered_map>
 
 #include <windows.h>
 #include <dbt.h>
@@ -21,6 +22,10 @@
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FStructProperty.hpp>
+#include <sdk/FProperty.hpp>
+#include <sdk/UFunction.hpp>
+#include <sdk/AActor.hpp>
+#include <sdk/UCameraComponent.hpp>
 
 #include <tracy/Tracy.hpp>
 
@@ -47,6 +52,33 @@ struct GameFovResolver {
 };
 
 GameFovResolver g_game_fov_resolver{};
+
+struct ViewTargetResolver {
+    int32_t view_target_offset{-1};
+    int32_t target_offset{-1};
+    bool attempted{false};
+    bool valid{false};
+};
+
+ViewTargetResolver g_view_target_resolver{};
+
+struct MainCameraResolver {
+    int32_t main_camera_offset{-1};
+    bool attempted{false};
+    bool valid{false};
+};
+
+MainCameraResolver g_main_camera_resolver{};
+
+struct CameraComponentFovCacheEntry {
+    bool attempted{false};
+    int32_t focal_length_offset{-1};
+    int32_t film_width_offset{-1};
+    int32_t fov_offset{-1};
+    sdk::UFunction* horizontal_fov_fn{nullptr};
+};
+
+std::unordered_map<sdk::UClass*, CameraComponentFovCacheEntry> g_camera_component_fov_cache{};
 
 bool resolve_game_fov_offsets() {
     if (g_game_fov_resolver.attempted) {
@@ -109,6 +141,192 @@ bool resolve_game_fov_offsets() {
 
     g_game_fov_resolver.valid = true;
     return true;
+}
+
+bool resolve_view_target_offsets() {
+    if (g_view_target_resolver.attempted) {
+        return g_view_target_resolver.valid;
+    }
+
+    g_view_target_resolver.attempted = true;
+
+    auto pcm_class = sdk::APlayerCameraManager::static_class();
+    if (pcm_class == nullptr) {
+        return false;
+    }
+
+    auto view_target_prop = pcm_class->find_property(L"ViewTarget");
+    if (view_target_prop == nullptr) {
+        return false;
+    }
+
+    auto view_target_struct = ((sdk::FStructProperty*)view_target_prop)->get_struct();
+    if (view_target_struct == nullptr) {
+        return false;
+    }
+
+    auto target_prop = view_target_struct->find_property(L"Target");
+    if (target_prop == nullptr) {
+        return false;
+    }
+
+    g_view_target_resolver.view_target_offset = view_target_prop->get_offset();
+    g_view_target_resolver.target_offset = target_prop->get_offset();
+    g_view_target_resolver.valid = true;
+    return true;
+}
+
+bool resolve_main_camera_offset(sdk::UClass* pcm_class) {
+    if (g_main_camera_resolver.attempted) {
+        return g_main_camera_resolver.valid;
+    }
+
+    g_main_camera_resolver.attempted = true;
+
+    if (pcm_class == nullptr) {
+        return false;
+    }
+
+    if (auto main_cam_prop = pcm_class->find_property(L"MainCameraActor"); main_cam_prop != nullptr) {
+        g_main_camera_resolver.main_camera_offset = main_cam_prop->get_offset();
+        g_main_camera_resolver.valid = true;
+        return true;
+    }
+
+    return false;
+}
+
+sdk::AActor* read_view_target_actor(sdk::APlayerCameraManager* pcm) {
+    if (pcm == nullptr) {
+        return nullptr;
+    }
+
+    if (!resolve_view_target_offsets()) {
+        return nullptr;
+    }
+
+    const auto base = (uint8_t*)pcm + g_view_target_resolver.view_target_offset + g_view_target_resolver.target_offset;
+    auto target = *(sdk::UObject**)base;
+    if (target == nullptr) {
+        return nullptr;
+    }
+
+    if (!target->is_a(sdk::AActor::static_class())) {
+        return nullptr;
+    }
+
+    return (sdk::AActor*)target;
+}
+
+sdk::AActor* read_main_camera_actor(sdk::APlayerCameraManager* pcm) {
+    if (pcm == nullptr) {
+        return nullptr;
+    }
+
+    auto pcm_class = pcm->get_class();
+    if (!resolve_main_camera_offset(pcm_class)) {
+        return nullptr;
+    }
+
+    const auto base = (uint8_t*)pcm + g_main_camera_resolver.main_camera_offset;
+    auto target = *(sdk::UObject**)base;
+    if (target == nullptr) {
+        return nullptr;
+    }
+
+    if (!target->is_a(sdk::AActor::static_class())) {
+        return nullptr;
+    }
+
+    return (sdk::AActor*)target;
+}
+
+std::optional<float> read_fov_from_camera_component(sdk::UCameraComponent* camera_component) {
+    if (camera_component == nullptr) {
+        return std::nullopt;
+    }
+
+    auto cls = camera_component->get_class();
+    if (cls == nullptr) {
+        return std::nullopt;
+    }
+
+    auto& cache = g_camera_component_fov_cache[cls];
+    if (!cache.attempted) {
+        cache.attempted = true;
+        cache.horizontal_fov_fn = cls->find_function(L"GetHorizontalFieldOfView");
+
+        if (auto prop = cls->find_property(L"FocalLength"); prop != nullptr) {
+            cache.focal_length_offset = prop->get_offset();
+        }
+
+        if (auto prop = cls->find_property(L"FilmWidth"); prop != nullptr) {
+            cache.film_width_offset = prop->get_offset();
+        }
+
+        if (auto prop = cls->find_property(L"FieldOfView"); prop != nullptr) {
+            cache.fov_offset = prop->get_offset();
+        }
+    }
+
+    if (cache.horizontal_fov_fn != nullptr) {
+        struct {
+            float return_value{0.0f};
+        } params{};
+
+        camera_component->process_event(cache.horizontal_fov_fn, &params);
+
+        if (std::isfinite(params.return_value)) {
+            return params.return_value;
+        }
+    }
+
+    const auto base = (uint8_t*)camera_component;
+    if (cache.focal_length_offset >= 0 && cache.film_width_offset >= 0) {
+        const auto focal_length = *(float*)(base + cache.focal_length_offset);
+        const auto film_width = *(float*)(base + cache.film_width_offset);
+
+        if (std::isfinite(focal_length) && std::isfinite(film_width) && focal_length > 0.0f && film_width > 0.0f) {
+            const auto fov_radians = 2.0f * std::atan(film_width / (2.0f * focal_length));
+            const auto fov_degrees = glm::degrees(fov_radians);
+            if (std::isfinite(fov_degrees)) {
+                return fov_degrees;
+            }
+        }
+    }
+
+    if (cache.fov_offset >= 0) {
+        const auto fov = *(float*)(base + cache.fov_offset);
+        if (std::isfinite(fov)) {
+            return fov;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<float> read_camera_component_fov(sdk::APlayerCameraManager* pcm) {
+    if (pcm == nullptr) {
+        return std::nullopt;
+    }
+
+    if (auto target = read_view_target_actor(pcm); target != nullptr) {
+        if (auto comp = target->get_camera_component(); comp != nullptr) {
+            if (auto fov = read_fov_from_camera_component(comp); fov.has_value()) {
+                return fov;
+            }
+        }
+    }
+
+    if (auto target = read_main_camera_actor(pcm); target != nullptr) {
+        if (auto comp = target->get_camera_component(); comp != nullptr) {
+            if (auto fov = read_fov_from_camera_component(comp); fov.has_value()) {
+                return fov;
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
 std::optional<float> read_game_fov(sdk::APlayerCameraManager* pcm) {
@@ -1545,6 +1763,12 @@ void VR::update_game_fov() {
     }
 
     auto fov = read_game_fov(pcm);
+    auto comp_fov = m_match_game_fov_use_camera_component->value() ? read_camera_component_fov(pcm) : std::nullopt;
+
+    if (comp_fov.has_value()) {
+        fov = comp_fov;
+    }
+
     if (!fov.has_value()) {
         m_game_fov_valid.store(false, std::memory_order_relaxed);
         m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
@@ -2829,6 +3053,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_match_game_fov->draw("Match Game FOV");
 
             if (m_match_game_fov->value()) {
+                m_match_game_fov_use_camera_component->draw("Use Camera Component FOV");
                 m_match_game_fov_dolly->draw("Use Dolly Instead of FOV");
                 m_match_game_fov_multiplier->draw("FOV Multiplier");
                 m_match_game_fov_min_enabled->draw("Clamp Minimum FOV");

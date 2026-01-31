@@ -953,6 +953,7 @@ private:
     const ModSlider::Ptr m_camera_right_offset{ ModSlider::create(generate_name("CameraRightOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModSlider::Ptr m_camera_up_offset{ ModSlider::create(generate_name("CameraUpOffset"), -4000.0f, 4000.0f, 0.0f) };
     const ModToggle::Ptr m_match_game_fov{ ModToggle::create(generate_name("MatchGameFOV"), false) };
+    const ModToggle::Ptr m_match_game_fov_use_camera_component{ ModToggle::create(generate_name("MatchGameFOVUseCameraComponent"), true) };
     const ModToggle::Ptr m_match_game_fov_dolly{ ModToggle::create(generate_name("MatchGameFOVDolly"), false) };
     const ModSlider::Ptr m_match_game_fov_multiplier{ ModSlider::create(generate_name("MatchGameFOVMultiplier"), 0.1f, 3.0f, 1.0f) };
     const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
@@ -1082,6 +1083,7 @@ public:
             *m_camera_right_offset,
             *m_camera_up_offset,
             *m_match_game_fov,
+            *m_match_game_fov_use_camera_component,
             *m_match_game_fov_dolly,
             *m_match_game_fov_multiplier,
             *m_match_game_fov_dolly_distance,
