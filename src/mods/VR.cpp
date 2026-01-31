@@ -4,6 +4,7 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
+#include <string>
 
 #include <windows.h>
 #include <dbt.h>
@@ -72,6 +73,9 @@ MainCameraResolver g_main_camera_resolver{};
 
 struct CameraComponentFovCacheEntry {
     bool attempted{false};
+    bool class_name_checked{false};
+    bool is_end_camera_component{false};
+    bool is_cine_camera_component{false};
     int32_t focal_length_offset{-1};
     int32_t film_width_offset{-1};
     int32_t fov_offset{-1};
@@ -79,6 +83,16 @@ struct CameraComponentFovCacheEntry {
 };
 
 std::unordered_map<sdk::UClass*, CameraComponentFovCacheEntry> g_camera_component_fov_cache{};
+
+struct ActorFovCacheEntry {
+    bool attempted{false};
+    bool class_name_checked{false};
+    bool is_end_battle_camera_actor{false};
+    int32_t eye_target_movable_fov_offset{-1};
+    int32_t fov_offset{-1};
+};
+
+std::unordered_map<sdk::UClass*, ActorFovCacheEntry> g_actor_fov_cache{};
 
 bool resolve_game_fov_offsets() {
     if (g_game_fov_resolver.attempted) {
@@ -269,6 +283,17 @@ std::optional<float> read_fov_from_camera_component(sdk::UCameraComponent* camer
         }
     }
 
+    if (!cache.class_name_checked) {
+        cache.class_name_checked = true;
+        const auto class_name = cls->get_full_name();
+        if (class_name.find(L"EndCameraComponent") != std::wstring::npos) {
+            cache.is_end_camera_component = true;
+        }
+        if (class_name.find(L"CineCameraComponent") != std::wstring::npos) {
+            cache.is_cine_camera_component = true;
+        }
+    }
+
     if (cache.horizontal_fov_fn != nullptr) {
         struct {
             float return_value{0.0f};
@@ -305,24 +330,129 @@ std::optional<float> read_fov_from_camera_component(sdk::UCameraComponent* camer
     return std::nullopt;
 }
 
+std::optional<float> read_actor_fov_property(sdk::AActor* actor) {
+    if (actor == nullptr) {
+        return std::nullopt;
+    }
+
+    auto cls = actor->get_class();
+    if (cls == nullptr) {
+        return std::nullopt;
+    }
+
+    auto& cache = g_actor_fov_cache[cls];
+    if (!cache.attempted) {
+        cache.attempted = true;
+
+        if (auto prop = cls->find_property(L"EyeTargetMovableFOV"); prop != nullptr) {
+            cache.eye_target_movable_fov_offset = prop->get_offset();
+        }
+
+        if (auto prop = cls->find_property(L"FieldOfView"); prop != nullptr) {
+            cache.fov_offset = prop->get_offset();
+        } else if (auto prop_alt = cls->find_property(L"FOV"); prop_alt != nullptr) {
+            cache.fov_offset = prop_alt->get_offset();
+        } else if (auto prop_alt2 = cls->find_property(L"Fov"); prop_alt2 != nullptr) {
+            cache.fov_offset = prop_alt2->get_offset();
+        }
+    }
+
+    if (!cache.class_name_checked) {
+        cache.class_name_checked = true;
+        const auto class_name = cls->get_full_name();
+        if (class_name.find(L"EndBattleCameraActor") != std::wstring::npos) {
+            cache.is_end_battle_camera_actor = true;
+        }
+    }
+
+    const auto base = (uint8_t*)actor;
+    if (cache.eye_target_movable_fov_offset >= 0) {
+        const auto fov = *(float*)(base + cache.eye_target_movable_fov_offset);
+        if (std::isfinite(fov) && fov > 0.1f && fov < 179.0f) {
+            return fov;
+        }
+    }
+
+    if (cache.fov_offset >= 0) {
+        const auto fov = *(float*)(base + cache.fov_offset);
+        if (std::isfinite(fov) && fov > 0.1f && fov < 179.0f) {
+            return fov;
+        }
+    }
+
+    return std::nullopt;
+}
+
+std::optional<float> read_camera_component_fov_from_actor(sdk::AActor* actor) {
+    if (actor == nullptr) {
+        return std::nullopt;
+    }
+
+    auto components = actor->get_components_by_class(sdk::UCameraComponent::static_class());
+    std::optional<float> best_fov{};
+    int best_score{-1};
+
+    for (auto* comp_base : components) {
+        auto* comp = (sdk::UCameraComponent*)comp_base;
+        auto fov = read_fov_from_camera_component(comp);
+        if (!fov.has_value()) {
+            continue;
+        }
+
+        int score = 0;
+        if (auto cls = comp->get_class(); cls != nullptr) {
+            auto& cache = g_camera_component_fov_cache[cls];
+            if (cache.is_end_camera_component) {
+                score += 20;
+            }
+            if (cache.is_cine_camera_component) {
+                score += 10;
+            }
+        }
+
+        if (*fov > 1.0f && *fov < 179.0f) {
+            score += 1;
+        }
+
+        if (!best_fov.has_value() || score > best_score) {
+            best_fov = fov;
+            best_score = score;
+        }
+    }
+
+    if (best_fov.has_value()) {
+        return best_fov;
+    }
+
+    if (auto comp = actor->get_camera_component(); comp != nullptr) {
+        return read_fov_from_camera_component(comp);
+    }
+
+    return std::nullopt;
+}
+
 std::optional<float> read_camera_component_fov(sdk::APlayerCameraManager* pcm) {
     if (pcm == nullptr) {
         return std::nullopt;
     }
 
     if (auto target = read_view_target_actor(pcm); target != nullptr) {
-        if (auto comp = target->get_camera_component(); comp != nullptr) {
-            if (auto fov = read_fov_from_camera_component(comp); fov.has_value()) {
-                return fov;
-            }
+        if (auto fov = read_camera_component_fov_from_actor(target); fov.has_value()) {
+            return fov;
+        }
+
+        if (auto fov = read_actor_fov_property(target); fov.has_value()) {
+            return fov;
         }
     }
 
     if (auto target = read_main_camera_actor(pcm); target != nullptr) {
-        if (auto comp = target->get_camera_component(); comp != nullptr) {
-            if (auto fov = read_fov_from_camera_component(comp); fov.has_value()) {
-                return fov;
-            }
+        if (auto fov = read_camera_component_fov_from_actor(target); fov.has_value()) {
+            return fov;
+        }
+
+        if (auto fov = read_actor_fov_property(target); fov.has_value()) {
+            return fov;
         }
     }
 
