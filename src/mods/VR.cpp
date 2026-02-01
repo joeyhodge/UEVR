@@ -3141,6 +3141,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         if (m_auto_2d_cutscene->value()) {
             ImGui::SameLine();
             m_auto_2d_cutscene_movie_only->draw("Movie Only");
+            if (!m_auto_2d_cutscene_movie_only->value()) {
+                ImGui::SameLine();
+                m_auto_2d_cutscene_end_on_movie_end->draw("End 2D after Movie");
+            }
         }
 
         ImGui::TextWrapped("Render Resolution (per-eye): %d x %d", get_runtime()->get_width(), get_runtime()->get_height());
@@ -4141,12 +4145,22 @@ void VR::update_auto_2d_cutscene() {
             }
 
             m_auto_2d_cutscene_active = false;
+            m_auto_2d_cutscene_entered_from_movie = false;
+            m_auto_2d_cutscene_movie_off_since.reset();
         }
 
         return;
     }
 
     const auto cutscene_state = get_end_cutscene_state();
+    const auto now = std::chrono::steady_clock::now();
+    static std::optional<EndCutsceneState> last_state{};
+    if (cutscene_state.valid) {
+        if (!last_state || last_state->any != cutscene_state.any || last_state->movie != cutscene_state.movie) {
+            spdlog::info("[FF7R] Cutscene state: any={} movie={}", cutscene_state.any, cutscene_state.movie);
+            last_state = cutscene_state;
+        }
+    }
     const auto movie_only = m_auto_2d_cutscene_movie_only->value();
     const auto is_cutscene_playing = movie_only ? cutscene_state.movie : cutscene_state.any;
 
@@ -4159,7 +4173,30 @@ void VR::update_auto_2d_cutscene() {
         }
 
         m_auto_2d_cutscene_active = true;
+        m_auto_2d_cutscene_entered_from_movie = cutscene_state.movie;
+        m_auto_2d_cutscene_movie_off_since.reset();
         return;
+    }
+
+    if (m_auto_2d_cutscene_active && !movie_only && m_auto_2d_cutscene_end_on_movie_end->value() &&
+        m_auto_2d_cutscene_entered_from_movie && cutscene_state.valid) {
+        if (!cutscene_state.movie) {
+            if (!m_auto_2d_cutscene_movie_off_since) {
+                m_auto_2d_cutscene_movie_off_since = now;
+            } else if (now - *m_auto_2d_cutscene_movie_off_since > std::chrono::milliseconds(500)) {
+                if (!m_auto_2d_cutscene_prev && m_2d_screen_mode->value()) {
+                    m_2d_screen_mode->value() = false;
+                    spdlog::info("[FF7R] Movie ended during cutscene: restoring 2D screen mode");
+                }
+
+                m_auto_2d_cutscene_active = false;
+                m_auto_2d_cutscene_entered_from_movie = false;
+                m_auto_2d_cutscene_movie_off_since.reset();
+                return;
+            }
+        } else {
+            m_auto_2d_cutscene_movie_off_since.reset();
+        }
     }
 
     if (!is_cutscene_playing && m_auto_2d_cutscene_active) {
@@ -4169,5 +4206,7 @@ void VR::update_auto_2d_cutscene() {
         }
 
         m_auto_2d_cutscene_active = false;
+        m_auto_2d_cutscene_entered_from_movie = false;
+        m_auto_2d_cutscene_movie_off_since.reset();
     }
 }
