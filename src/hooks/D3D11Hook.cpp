@@ -2,6 +2,9 @@
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
+#include <utility/Scan.hpp>
+
+#include <SafetyHook.hpp>
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
@@ -11,6 +14,38 @@
 using namespace std;
 
 static D3D11Hook* g_d3d11_hook = nullptr;
+
+static uintptr_t recursive_resolve_jmp(uint8_t* instr) {
+    try {
+        const auto decoded = utility::decode_one(instr);
+
+        if (decoded) {
+            const auto mnem = std::string_view{decoded->Mnemonic};
+
+            if (mnem.starts_with("JMP")) {
+                const auto target = utility::resolve_displacement((uintptr_t)instr);
+
+                if (target.has_value()) {
+                    if (instr[0] == 0xFF && instr[1] == 0x25) {
+                        const auto real_target = *(uintptr_t*)*target;
+
+                        if (real_target == 0) {
+                            return (uintptr_t)instr;
+                        }
+
+                        return recursive_resolve_jmp((uint8_t*)real_target);
+                    }
+
+                    return recursive_resolve_jmp((uint8_t*)target.value());
+                }
+            }
+        }
+    } catch (...) {
+        SPDLOG_ERROR("[D3D11Hook] recursive_resolve_jmp exception");
+    }
+
+    return (uintptr_t)instr;
+}
 
 D3D11Hook::~D3D11Hook() {
     unhook();
@@ -90,6 +125,44 @@ bool D3D11Hook::hook() {
         m_hooked = false;
     }
 
+    if (m_hooked && device != nullptr) {
+        hook_create_uav(device);
+    }
+
+    if (m_hooked) {
+        const auto d3d11_dll = GetModuleHandleW(L"d3d11.dll");
+        if (d3d11_dll != nullptr) {
+            const auto create_device_fn = (void*)GetProcAddress(d3d11_dll, "D3D11CreateDevice");
+            const auto create_device_sc_fn = (void*)GetProcAddress(d3d11_dll, "D3D11CreateDeviceAndSwapChain");
+
+            if (create_device_sc_fn != nullptr) {
+                m_create_device_and_swapchain_hook = safetyhook::create_inline(create_device_sc_fn, &D3D11Hook::create_device_and_swapchain);
+                if (!m_create_device_and_swapchain_hook) {
+                    spdlog::error("Failed to hook D3D11CreateDeviceAndSwapChain, trying jmp");
+                    const auto jmp_addr = recursive_resolve_jmp((uint8_t*)create_device_sc_fn);
+                    if (jmp_addr != (uintptr_t)create_device_sc_fn) {
+                        m_create_device_and_swapchain_hook = safetyhook::create_inline((void*)jmp_addr, &D3D11Hook::create_device_and_swapchain);
+                    }
+                }
+            } else {
+                spdlog::error("Failed to locate D3D11CreateDeviceAndSwapChain");
+            }
+
+            if (create_device_fn != nullptr) {
+                m_create_device_hook = safetyhook::create_inline(create_device_fn, &D3D11Hook::create_device);
+                if (!m_create_device_hook) {
+                    spdlog::error("Failed to hook D3D11CreateDevice, trying jmp");
+                    const auto jmp_addr = recursive_resolve_jmp((uint8_t*)create_device_fn);
+                    if (jmp_addr != (uintptr_t)create_device_fn) {
+                        m_create_device_hook = safetyhook::create_inline((void*)jmp_addr, &D3D11Hook::create_device);
+                    }
+                }
+            } else {
+                spdlog::error("Failed to locate D3D11CreateDevice");
+            }
+        }
+    }
+
     device->Release();
     context->Release();
     swap_chain->Release();
@@ -144,17 +217,7 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
     }*/
 
     swap_chain->GetDevice(__uuidof(d3d11->m_device), (void**)&d3d11->m_device);
-
-    if (d3d11->m_device != nullptr && d3d11->m_device != d3d11->m_uav_hook_device) {
-        try {
-            auto& create_uav_fn = (*(void***)d3d11->m_device)[8];
-            d3d11->m_create_uav_hook = std::make_unique<PointerHook>(&create_uav_fn, (void*)&D3D11Hook::create_unordered_access_view);
-            d3d11->m_uav_hook_device = d3d11->m_device;
-            spdlog::info("Hooked ID3D11Device::CreateUnorderedAccessView");
-        } catch (const std::exception& e) {
-            spdlog::error("Failed to hook CreateUnorderedAccessView: {}", e.what());
-        }
-    }
+    d3d11->hook_create_uav(d3d11->m_device);
 
     /*if (d3d11->m_set_render_targets_hook == nullptr) {
         ComPtr<ID3D11DeviceContext> context{};
@@ -303,6 +366,83 @@ void WINAPI D3D11Hook::set_render_targets(
     auto set_render_targets_fn = d3d11->m_set_render_targets_hook->get_original<decltype(set_render_targets)*>();
 
     return set_render_targets_fn(context, num_views, rtvs, dsv);
+}
+
+void D3D11Hook::hook_create_uav(ID3D11Device* device) {
+    if (device == nullptr || device == m_uav_hook_device) {
+        return;
+    }
+
+    try {
+        auto& create_uav_fn = (*(void***)device)[8];
+        if (create_uav_fn == (void*)&D3D11Hook::create_unordered_access_view) {
+            m_uav_hook_device = device;
+            return;
+        }
+        m_create_uav_hook = std::make_unique<PointerHook>(&create_uav_fn, (void*)&D3D11Hook::create_unordered_access_view);
+        m_uav_hook_device = device;
+        spdlog::info("Hooked ID3D11Device::CreateUnorderedAccessView");
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to hook CreateUnorderedAccessView: {}", e.what());
+    }
+}
+
+HRESULT WINAPI D3D11Hook::create_device(
+    IDXGIAdapter* adapter,
+    D3D_DRIVER_TYPE driver_type,
+    HMODULE software,
+    UINT flags,
+    const D3D_FEATURE_LEVEL* feature_levels,
+    UINT feature_levels_count,
+    UINT sdk_version,
+    ID3D11Device** device,
+    D3D_FEATURE_LEVEL* feature_level,
+    ID3D11DeviceContext** immediate_context)
+{
+    auto d3d11 = g_d3d11_hook;
+    if (d3d11 == nullptr) {
+        return E_FAIL;
+    }
+
+    const auto hr = d3d11->m_create_device_hook.call<HRESULT>(
+        adapter, driver_type, software, flags, feature_levels, feature_levels_count, sdk_version,
+        device, feature_level, immediate_context);
+
+    if (SUCCEEDED(hr) && driver_type != D3D_DRIVER_TYPE_NULL && device != nullptr && *device != nullptr) {
+        d3d11->hook_create_uav(*device);
+    }
+
+    return hr;
+}
+
+HRESULT WINAPI D3D11Hook::create_device_and_swapchain(
+    IDXGIAdapter* adapter,
+    D3D_DRIVER_TYPE driver_type,
+    HMODULE software,
+    UINT flags,
+    const D3D_FEATURE_LEVEL* feature_levels,
+    UINT feature_levels_count,
+    UINT sdk_version,
+    const DXGI_SWAP_CHAIN_DESC* swap_chain_desc,
+    IDXGISwapChain** swap_chain,
+    ID3D11Device** device,
+    D3D_FEATURE_LEVEL* feature_level,
+    ID3D11DeviceContext** immediate_context)
+{
+    auto d3d11 = g_d3d11_hook;
+    if (d3d11 == nullptr) {
+        return E_FAIL;
+    }
+
+    const auto hr = d3d11->m_create_device_and_swapchain_hook.call<HRESULT>(
+        adapter, driver_type, software, flags, feature_levels, feature_levels_count, sdk_version,
+        swap_chain_desc, swap_chain, device, feature_level, immediate_context);
+
+    if (SUCCEEDED(hr) && driver_type != D3D_DRIVER_TYPE_NULL && device != nullptr && *device != nullptr) {
+        d3d11->hook_create_uav(*device);
+    }
+
+    return hr;
 }
 
 static const char* to_resource_dim_name(D3D11_RESOURCE_DIMENSION dim) {

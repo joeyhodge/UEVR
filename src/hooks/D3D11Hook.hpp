@@ -5,6 +5,7 @@
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl.h>
+#include <safetyhook.hpp>
 
 #include "utility/PointerHook.hpp"
 
@@ -63,6 +64,8 @@ protected:
     std::unique_ptr<PointerHook> m_set_render_targets_hook{};
     std::unique_ptr<PointerHook> m_create_uav_hook{};
     ID3D11Device* m_uav_hook_device{nullptr};
+    safetyhook::InlineHook m_create_device_hook{};
+    safetyhook::InlineHook m_create_device_and_swapchain_hook{};
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
@@ -77,4 +80,30 @@ protected:
         ID3D11Resource* resource,
         const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
         ID3D11UnorderedAccessView** uav);
+    static HRESULT WINAPI create_device(
+        IDXGIAdapter* adapter,
+        D3D_DRIVER_TYPE driver_type,
+        HMODULE software,
+        UINT flags,
+        const D3D_FEATURE_LEVEL* feature_levels,
+        UINT feature_levels_count,
+        UINT sdk_version,
+        ID3D11Device** device,
+        D3D_FEATURE_LEVEL* feature_level,
+        ID3D11DeviceContext** immediate_context);
+    static HRESULT WINAPI create_device_and_swapchain(
+        IDXGIAdapter* adapter,
+        D3D_DRIVER_TYPE driver_type,
+        HMODULE software,
+        UINT flags,
+        const D3D_FEATURE_LEVEL* feature_levels,
+        UINT feature_levels_count,
+        UINT sdk_version,
+        const DXGI_SWAP_CHAIN_DESC* swap_chain_desc,
+        IDXGISwapChain** swap_chain,
+        ID3D11Device** device,
+        D3D_FEATURE_LEVEL* feature_level,
+        ID3D11DeviceContext** immediate_context);
+
+    void hook_create_uav(ID3D11Device* device);
 };
