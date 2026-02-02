@@ -3820,8 +3820,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         static std::vector<Patch::Ptr> xrsystem_patches{};
         static std::unordered_set<uintptr_t> ignored_addresses{};
 
-        const auto build_zero_reg_patch = [](ND_REG reg, size_t instr_len, std::vector<int16_t>& out) -> bool {
-            auto reg_to_index = [](ND_REG r) -> int {
+        const auto build_zero_reg_patch = [](int reg, size_t instr_len, std::vector<int16_t>& out) -> bool {
+            auto reg_to_index = [](int r) -> int {
                 switch (r) {
                 case ND_REG_RAX:
                 case ND_REG_EAX:
@@ -3971,7 +3971,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 prev_op2.Info.Memory.Disp == 0x450)
             {
                 std::vector<int16_t> patch_bytes{};
-                if (build_zero_reg_patch(op1.Info.Register.Reg, decoded->Length, patch_bytes)) {
+                if (build_zero_reg_patch(static_cast<int>(op1.Info.Register.Reg), decoded->Length, patch_bytes)) {
                     SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                     return EXCEPTION_CONTINUE_EXECUTION;
