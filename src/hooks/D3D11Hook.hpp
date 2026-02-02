@@ -64,6 +64,7 @@ protected:
     std::unique_ptr<PointerHook> m_set_render_targets_hook{};
     std::unique_ptr<PointerHook> m_create_uav_hook{};
     ID3D11Device* m_uav_hook_device{nullptr};
+    safetyhook::InlineHook m_create_uav_inline_hook{};
     safetyhook::InlineHook m_create_device_hook{};
     safetyhook::InlineHook m_create_device_and_swapchain_hook{};
     OnPresentFn m_on_present{ nullptr };
@@ -76,6 +77,11 @@ protected:
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
     static HRESULT WINAPI create_unordered_access_view(
+        ID3D11Device* device,
+        ID3D11Resource* resource,
+        const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
+        ID3D11UnorderedAccessView** uav);
+    static HRESULT WINAPI create_unordered_access_view_inline(
         ID3D11Device* device,
         ID3D11Resource* resource,
         const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
@@ -106,4 +112,5 @@ protected:
         ID3D11DeviceContext** immediate_context);
 
     void hook_create_uav(ID3D11Device* device);
+    void hook_create_uav_inline(ID3D11Device* device);
 };

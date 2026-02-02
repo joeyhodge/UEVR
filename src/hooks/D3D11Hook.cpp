@@ -126,6 +126,7 @@ bool D3D11Hook::hook() {
     }
 
     if (m_hooked && device != nullptr) {
+        hook_create_uav_inline(device);
         hook_create_uav(device);
     }
 
@@ -144,6 +145,9 @@ bool D3D11Hook::hook() {
                         m_create_device_and_swapchain_hook = safetyhook::create_inline((void*)jmp_addr, &D3D11Hook::create_device_and_swapchain);
                     }
                 }
+                if (m_create_device_and_swapchain_hook) {
+                    spdlog::info("Hooked D3D11CreateDeviceAndSwapChain");
+                }
             } else {
                 spdlog::error("Failed to locate D3D11CreateDeviceAndSwapChain");
             }
@@ -156,6 +160,9 @@ bool D3D11Hook::hook() {
                     if (jmp_addr != (uintptr_t)create_device_fn) {
                         m_create_device_hook = safetyhook::create_inline((void*)jmp_addr, &D3D11Hook::create_device);
                     }
+                }
+                if (m_create_device_hook) {
+                    spdlog::info("Hooked D3D11CreateDevice");
                 }
             } else {
                 spdlog::error("Failed to locate D3D11CreateDevice");
@@ -373,6 +380,11 @@ void D3D11Hook::hook_create_uav(ID3D11Device* device) {
         return;
     }
 
+    if (m_create_uav_inline_hook) {
+        m_uav_hook_device = device;
+        return;
+    }
+
     try {
         auto& create_uav_fn = (*(void***)device)[8];
         if (create_uav_fn == (void*)&D3D11Hook::create_unordered_access_view) {
@@ -384,6 +396,31 @@ void D3D11Hook::hook_create_uav(ID3D11Device* device) {
         spdlog::info("Hooked ID3D11Device::CreateUnorderedAccessView");
     } catch (const std::exception& e) {
         spdlog::error("Failed to hook CreateUnorderedAccessView: {}", e.what());
+    }
+}
+
+void D3D11Hook::hook_create_uav_inline(ID3D11Device* device) {
+    if (device == nullptr || m_create_uav_inline_hook) {
+        return;
+    }
+
+    try {
+        auto& create_uav_fn = (*(void***)device)[8];
+        if (create_uav_fn != nullptr) {
+            m_create_uav_inline_hook = safetyhook::create_inline(create_uav_fn, &D3D11Hook::create_unordered_access_view_inline);
+            if (!m_create_uav_inline_hook) {
+                spdlog::error("Failed to hook ID3D11Device::CreateUnorderedAccessView (inline), trying jmp");
+                const auto jmp_addr = recursive_resolve_jmp((uint8_t*)create_uav_fn);
+                if (jmp_addr != (uintptr_t)create_uav_fn) {
+                    m_create_uav_inline_hook = safetyhook::create_inline((void*)jmp_addr, &D3D11Hook::create_unordered_access_view_inline);
+                }
+            }
+            if (m_create_uav_inline_hook) {
+                spdlog::info("Inline-hooked ID3D11Device::CreateUnorderedAccessView");
+            }
+        }
+    } catch (const std::exception& e) {
+        spdlog::error("Failed to inline-hook CreateUnorderedAccessView: {}", e.what());
     }
 }
 
@@ -462,12 +499,19 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
     ID3D11UnorderedAccessView** uav)
 {
     auto d3d11 = g_d3d11_hook;
-    if (d3d11 == nullptr || d3d11->m_create_uav_hook == nullptr) {
+    if (d3d11 == nullptr) {
         return E_FAIL;
     }
 
-    auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
-    const auto result = original(device, resource, desc, uav);
+    HRESULT result = E_FAIL;
+    if (d3d11->m_create_uav_inline_hook) {
+        result = d3d11->m_create_uav_inline_hook.call<HRESULT>(device, resource, desc, uav);
+    } else if (d3d11->m_create_uav_hook) {
+        auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
+        result = original(device, resource, desc, uav);
+    } else {
+        return E_FAIL;
+    }
 
     if (FAILED(result)) {
         D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
@@ -499,4 +543,13 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
     }
 
     return result;
+}
+
+HRESULT WINAPI D3D11Hook::create_unordered_access_view_inline(
+    ID3D11Device* device,
+    ID3D11Resource* resource,
+    const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
+    ID3D11UnorderedAccessView** uav)
+{
+    return create_unordered_access_view(device, resource, desc, uav);
 }
