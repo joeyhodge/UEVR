@@ -633,6 +633,10 @@ public:
         return m_disable_separate_render_target->value();
     }
 
+    bool should_log_render_target_names() const {
+        return m_log_render_target_names->value();
+    }
+
     auto get_horizontal_projection_override() const {
         return m_horizontal_projection_override->value();
     }
@@ -894,6 +898,7 @@ private:
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
     const ModToggle::Ptr m_disable_separate_render_target{ ModToggle::create(generate_name("DisableSeparateRenderTarget"), true) };
     const ModToggle::Ptr m_disable_temporal_aa{ ModToggle::create(generate_name("DisableTemporalAA"), true) };
+    const ModToggle::Ptr m_log_render_target_names{ ModToggle::create(generate_name("LogRenderTargetNames"), true) };
     const ModToggle::Ptr m_uncap_framerate{ ModToggle::create(generate_name("UncapFramerate"), true) };
     const ModToggle::Ptr m_disable_blur_widgets{ ModToggle::create(generate_name("DisableBlurWidgets"), true) };
     const ModToggle::Ptr m_disable_hdr_compositing{ ModToggle::create(generate_name("DisableHDRCompositing"), true, true) };

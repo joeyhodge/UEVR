@@ -1,5 +1,8 @@
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
+#include <cwctype>
+
 #include <utility/Scan.hpp>
 #include <utility/String.hpp>
 
@@ -18,7 +21,10 @@ RenderTargetPoolHook::RenderTargetPoolHook() {
 }
 
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
-    if (!m_attempted_hook && VR::get()->is_depth_enabled()) {
+    const auto want_depth = VR::get()->is_depth_enabled();
+    const auto want_log = VR::get()->should_log_render_target_names();
+
+    if (!m_attempted_hook && (want_depth || want_log)) {
         m_wants_activate = true;
     }
 
@@ -67,13 +73,21 @@ void RenderTargetPoolHook::on_post_find_free_element(
     TRefCountPtr<IPooledRenderTarget>* out, 
     const wchar_t* name)
 {
+    const auto want_depth = VR::get()->is_depth_enabled();
+    const auto want_log = VR::get()->should_log_render_target_names();
+
     // Right now we are only using this for depth
     // and on some games it will crash if we mess with anything
     // so, TODO: fix the games that crash with depth enabled
-    if (!m_wants_activate) {
+    if (!want_depth && !want_log) {
         std::scoped_lock _{g_hook->m_mutex};
         m_render_targets.clear();
         return;
+    }
+
+    if (!want_depth) {
+        std::scoped_lock _{g_hook->m_mutex};
+        m_render_targets.clear();
     }
 
     if (name != nullptr) {
@@ -81,15 +95,32 @@ void RenderTargetPoolHook::on_post_find_free_element(
 
         std::scoped_lock _{g_hook->m_mutex};
 
-        if (out != nullptr) {
-            g_hook->m_render_targets[name] = out->reference;
-        } else {
-            g_hook->m_render_targets.erase(name);
+        if (want_depth) {
+            if (out != nullptr) {
+                g_hook->m_render_targets[name] = out->reference;
+            } else {
+                g_hook->m_render_targets.erase(name);
+            }
         }
 
         if (!g_hook->m_seen_names.contains(name)) {
             g_hook->m_seen_names.insert(name);
-            SPDLOG_INFO("FRenderTargetPool::FindFreeElement called with name {}", utility::narrow(name));
+            if (want_log) {
+                std::wstring lower{name};
+                std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return std::towlower(c); });
+
+                const auto interesting =
+                    lower.find(L"temporal") != std::wstring::npos ||
+                    lower.find(L"history") != std::wstring::npos ||
+                    lower.find(L"bend") != std::wstring::npos ||
+                    lower.find(L"aa") != std::wstring::npos;
+
+                if (interesting) {
+                    SPDLOG_WARN("FRenderTargetPool::FindFreeElement name (match): {}", utility::narrow(name));
+                } else {
+                    SPDLOG_INFO("FRenderTargetPool::FindFreeElement name: {}", utility::narrow(name));
+                }
+            }
         }
     }
 }
