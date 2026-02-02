@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <optional>
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
@@ -14,6 +15,55 @@
 using namespace std;
 
 static D3D11Hook* g_d3d11_hook = nullptr;
+
+static bool is_depth_or_stencil_format(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static std::optional<DXGI_FORMAT> choose_uav_format(DXGI_FORMAT format) {
+    if (is_depth_or_stencil_format(format)) {
+        return std::nullopt;
+    }
+
+    switch (format) {
+    case DXGI_FORMAT_R8_TYPELESS:
+        return DXGI_FORMAT_R8_UNORM;
+    case DXGI_FORMAT_R16_TYPELESS:
+        return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_R32_TYPELESS:
+        return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R8G8_TYPELESS:
+        return DXGI_FORMAT_R8G8_UNORM;
+    case DXGI_FORMAT_R16G16_TYPELESS:
+        return DXGI_FORMAT_R16G16_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS:
+        return DXGI_FORMAT_R32G32_FLOAT;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case DXGI_FORMAT_R32G32B32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32_FLOAT;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    default:
+        return std::nullopt;
+    }
+}
 
 static uintptr_t recursive_resolve_jmp(uint8_t* instr) {
     try {
@@ -503,15 +553,20 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
         return E_FAIL;
     }
 
-    HRESULT result = E_FAIL;
-    if (d3d11->m_create_uav_inline_hook) {
-        result = d3d11->m_create_uav_inline_hook.call<HRESULT>(device, resource, desc, uav);
-    } else if (d3d11->m_create_uav_hook) {
-        auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
-        result = original(device, resource, desc, uav);
-    } else {
+    const auto call_original = [&](const D3D11_UNORDERED_ACCESS_VIEW_DESC* use_desc) -> HRESULT {
+        if (d3d11->m_create_uav_inline_hook) {
+            return d3d11->m_create_uav_inline_hook.call<HRESULT>(device, resource, use_desc, uav);
+        }
+
+        if (d3d11->m_create_uav_hook) {
+            auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
+            return original(device, resource, use_desc, uav);
+        }
+
         return E_FAIL;
-    }
+    };
+
+    HRESULT result = call_original(desc);
 
     if (FAILED(result)) {
         D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
@@ -530,6 +585,27 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                 spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex2d desc: WxH={}x{} Mips={} Array={} Format={} SampleCount={} BindFlags=0x{:X} Misc=0x{:X}"),
                     tex_desc.Width, tex_desc.Height, tex_desc.MipLevels, tex_desc.ArraySize,
                     (uint32_t)tex_desc.Format, tex_desc.SampleDesc.Count, tex_desc.BindFlags, tex_desc.MiscFlags);
+
+                if (desc != nullptr) {
+                    DXGI_FORMAT src_format = desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : tex_desc.Format;
+                    auto mapped = choose_uav_format(src_format);
+                    if (!mapped.has_value() && desc->Format == DXGI_FORMAT_UNKNOWN) {
+                        mapped = choose_uav_format(tex_desc.Format);
+                    }
+
+                    if (mapped.has_value() && *mapped != src_format) {
+                        auto retry_desc = *desc;
+                        retry_desc.Format = *mapped;
+                        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry: format {} -> {}"),
+                            (uint32_t)src_format, (uint32_t)*mapped);
+                        const auto retry_result = call_original(&retry_desc);
+                        if (SUCCEEDED(retry_result)) {
+                            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry succeeded"));
+                            return retry_result;
+                        }
+                        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
+                    }
+                }
             }
         }
 
