@@ -605,6 +605,34 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                         }
                         spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
                     }
+                } else {
+                    if (tex_desc.SampleDesc.Count > 1) {
+                        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry skipped: MSAA textures cannot have UAVs"));
+                    } else {
+                        auto mapped = choose_uav_format(tex_desc.Format);
+                        if (mapped.has_value()) {
+                            D3D11_UNORDERED_ACCESS_VIEW_DESC retry_desc{};
+                            retry_desc.Format = *mapped;
+                            if (tex_desc.ArraySize > 1) {
+                                retry_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2DARRAY;
+                                retry_desc.Texture2DArray.MipSlice = 0;
+                                retry_desc.Texture2DArray.FirstArraySlice = 0;
+                                retry_desc.Texture2DArray.ArraySize = tex_desc.ArraySize;
+                            } else {
+                                retry_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+                                retry_desc.Texture2D.MipSlice = 0;
+                            }
+
+                            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry (null desc): format {}"),
+                                (uint32_t)*mapped);
+                            const auto retry_result = call_original(&retry_desc);
+                            if (SUCCEEDED(retry_result)) {
+                                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry succeeded"));
+                                return retry_result;
+                            }
+                            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
+                        }
+                    }
                 }
             }
         }
