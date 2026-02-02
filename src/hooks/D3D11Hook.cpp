@@ -145,6 +145,17 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
 
     swap_chain->GetDevice(__uuidof(d3d11->m_device), (void**)&d3d11->m_device);
 
+    if (d3d11->m_device != nullptr && d3d11->m_device != d3d11->m_uav_hook_device) {
+        try {
+            auto& create_uav_fn = (*(void***)d3d11->m_device)[8];
+            d3d11->m_create_uav_hook = std::make_unique<PointerHook>(&create_uav_fn, (void*)&D3D11Hook::create_unordered_access_view);
+            d3d11->m_uav_hook_device = d3d11->m_device;
+            spdlog::info("Hooked ID3D11Device::CreateUnorderedAccessView");
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to hook CreateUnorderedAccessView: {}", e.what());
+        }
+    }
+
     /*if (d3d11->m_set_render_targets_hook == nullptr) {
         ComPtr<ID3D11DeviceContext> context{};
 
@@ -292,4 +303,60 @@ void WINAPI D3D11Hook::set_render_targets(
     auto set_render_targets_fn = d3d11->m_set_render_targets_hook->get_original<decltype(set_render_targets)*>();
 
     return set_render_targets_fn(context, num_views, rtvs, dsv);
+}
+
+static const char* to_resource_dim_name(D3D11_RESOURCE_DIMENSION dim) {
+    switch (dim) {
+    case D3D11_RESOURCE_DIMENSION_BUFFER: return "BUFFER";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D: return "TEX1D";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D: return "TEX2D";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D: return "TEX3D";
+    default: return "UNKNOWN";
+    }
+}
+
+HRESULT WINAPI D3D11Hook::create_unordered_access_view(
+    ID3D11Device* device,
+    ID3D11Resource* resource,
+    const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
+    ID3D11UnorderedAccessView** uav)
+{
+    auto d3d11 = g_d3d11_hook;
+    if (d3d11 == nullptr || d3d11->m_create_uav_hook == nullptr) {
+        return E_FAIL;
+    }
+
+    auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
+    const auto result = original(device, resource, desc, uav);
+
+    if (FAILED(result)) {
+        D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+        if (resource != nullptr) {
+            resource->GetType(&dim);
+        }
+
+        spdlog::error("[D3D11] CreateUnorderedAccessView failed: hr=0x{:08X} dim={}", (uint32_t)result, to_resource_dim_name(dim));
+
+        if (resource != nullptr && dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> tex2d{};
+            if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&tex2d)))) {
+                D3D11_TEXTURE2D_DESC tex_desc{};
+                tex2d->GetDesc(&tex_desc);
+                spdlog::error("[D3D11] UAV tex2d desc: WxH={}x{} Mips={} Array={} Format={} SampleCount={} BindFlags=0x{:X} Misc=0x{:X}",
+                    tex_desc.Width, tex_desc.Height, tex_desc.MipLevels, tex_desc.ArraySize,
+                    (uint32_t)tex_desc.Format, tex_desc.SampleDesc.Count, tex_desc.BindFlags, tex_desc.MiscFlags);
+            }
+        }
+
+        if (desc != nullptr) {
+            spdlog::error("[D3D11] UAV desc: Format={} ViewDim={} MipSlice={} FirstArray={} ArraySize={} Flags=0x{:X}",
+                (uint32_t)desc->Format, (uint32_t)desc->ViewDimension,
+                desc->Texture2D.MipSlice, desc->Texture2DArray.FirstArraySlice, desc->Texture2DArray.ArraySize,
+                (uint32_t)desc->Texture2DArray.Flags);
+        } else {
+            spdlog::error("[D3D11] UAV desc: <null>");
+        }
+    }
+
+    return result;
 }

@@ -1798,6 +1798,21 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
         }
     }
 
+    if (m_disable_temporal_aa->value()) {
+        if (!m_temporal_aa_forced) {
+            if (auto aa = sdk::get_cvar_int(L"Renderer", L"r.DefaultFeature.AntiAliasing"); !aa || *aa != 1) {
+                sdk::set_cvar_int(L"Renderer", L"r.DefaultFeature.AntiAliasing", 1);
+            }
+
+            sdk::set_cvar_int(L"Renderer", L"r.PostProcessAAQuality", 2);
+            sdk::set_cvar_int(L"Renderer", L"r.TemporalAA.Algorithm", 0);
+            sdk::set_cvar_int(L"Renderer", L"r.TemporalAA.Upsampling", 0);
+            m_temporal_aa_forced = true;
+        }
+    } else {
+        m_temporal_aa_forced = false;
+    }
+
     if (!is_using_afr()) {
         const auto is_hzbo_frozen_by_cvm = m_cvar_manager != nullptr && m_cvar_manager->is_hzbo_frozen_and_enabled();
 
@@ -2912,6 +2927,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
             m_disable_separate_render_target->draw("Disable Separate Render Target (Backbuffer)");
+            m_disable_temporal_aa->draw("Disable Temporal AA (Force FXAA)");
 
             // changes to any of these options should trigger a regeneration of the eye projection matrices
             const auto horizontal_projection_changed = m_horizontal_projection_override->draw("Horizontal Projection");

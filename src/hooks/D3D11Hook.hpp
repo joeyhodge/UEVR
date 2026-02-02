@@ -61,6 +61,8 @@ protected:
     std::unique_ptr<PointerHook> m_present_hook{};
     std::unique_ptr<PointerHook> m_resize_buffers_hook{};
     std::unique_ptr<PointerHook> m_set_render_targets_hook{};
+    std::unique_ptr<PointerHook> m_create_uav_hook{};
+    ID3D11Device* m_uav_hook_device{nullptr};
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
@@ -70,4 +72,9 @@ protected:
     static HRESULT WINAPI resize_buffers(IDXGISwapChain* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
+    static HRESULT WINAPI create_unordered_access_view(
+        ID3D11Device* device,
+        ID3D11Resource* resource,
+        const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
+        ID3D11UnorderedAccessView** uav);
 };
