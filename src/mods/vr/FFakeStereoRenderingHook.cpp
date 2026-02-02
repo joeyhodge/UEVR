@@ -6004,6 +6004,11 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
 
     SPDLOG_INFO("RenderTargetSize Before: {}x{}", x, y);
 
+    if (!should_use_separate_render_target()) {
+        SPDLOG_INFO_ONCE("RT size override skipped (separate RT disabled): keeping {}x{}", x, y);
+        return;
+    }
+
     x = VR::get()->get_hmd_width() * 2;
     y = VR::get()->get_hmd_height();
 
