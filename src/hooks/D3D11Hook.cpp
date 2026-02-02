@@ -519,50 +519,52 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
             resource->GetType(&dim);
         }
 
-        spdlog::error("[D3D11] CreateUnorderedAccessView failed: hr=0x{:08X} dim={}", (uint32_t)result, to_resource_dim_name(dim));
+        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] CreateUnorderedAccessView failed: hr=0x{:08X} dim={}"),
+            (uint32_t)result, to_resource_dim_name(dim));
 
         if (resource != nullptr && dim == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
             Microsoft::WRL::ComPtr<ID3D11Texture2D> tex2d{};
             if (SUCCEEDED(resource->QueryInterface(IID_PPV_ARGS(&tex2d)))) {
                 D3D11_TEXTURE2D_DESC tex_desc{};
                 tex2d->GetDesc(&tex_desc);
-                spdlog::error("[D3D11] UAV tex2d desc: WxH={}x{} Mips={} Array={} Format={} SampleCount={} BindFlags=0x{:X} Misc=0x{:X}",
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex2d desc: WxH={}x{} Mips={} Array={} Format={} SampleCount={} BindFlags=0x{:X} Misc=0x{:X}"),
                     tex_desc.Width, tex_desc.Height, tex_desc.MipLevels, tex_desc.ArraySize,
                     (uint32_t)tex_desc.Format, tex_desc.SampleDesc.Count, tex_desc.BindFlags, tex_desc.MiscFlags);
             }
         }
 
         if (desc != nullptr) {
-            spdlog::error("[D3D11] UAV desc: Format={} ViewDim={}", (uint32_t)desc->Format, (uint32_t)desc->ViewDimension);
+            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV desc: Format={} ViewDim={}"),
+                (uint32_t)desc->Format, (uint32_t)desc->ViewDimension);
 
             switch (desc->ViewDimension) {
             case D3D11_UAV_DIMENSION_BUFFER:
-                spdlog::error("[D3D11] UAV buffer: FirstElement={} NumElements={} Flags=0x{:X}",
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV buffer: FirstElement={} NumElements={} Flags=0x{:X}"),
                     desc->Buffer.FirstElement, desc->Buffer.NumElements, (uint32_t)desc->Buffer.Flags);
                 break;
             case D3D11_UAV_DIMENSION_TEXTURE1D:
-                spdlog::error("[D3D11] UAV tex1d: MipSlice={}", desc->Texture1D.MipSlice);
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex1d: MipSlice={}"), desc->Texture1D.MipSlice);
                 break;
             case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:
-                spdlog::error("[D3D11] UAV tex1darray: MipSlice={} FirstArray={} ArraySize={}",
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex1darray: MipSlice={} FirstArray={} ArraySize={}"),
                     desc->Texture1DArray.MipSlice, desc->Texture1DArray.FirstArraySlice, desc->Texture1DArray.ArraySize);
                 break;
             case D3D11_UAV_DIMENSION_TEXTURE2D:
-                spdlog::error("[D3D11] UAV tex2d: MipSlice={}", desc->Texture2D.MipSlice);
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex2d: MipSlice={}"), desc->Texture2D.MipSlice);
                 break;
             case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:
-                spdlog::error("[D3D11] UAV tex2darray: MipSlice={} FirstArray={} ArraySize={}",
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex2darray: MipSlice={} FirstArray={} ArraySize={}"),
                     desc->Texture2DArray.MipSlice, desc->Texture2DArray.FirstArraySlice, desc->Texture2DArray.ArraySize);
                 break;
             case D3D11_UAV_DIMENSION_TEXTURE3D:
-                spdlog::error("[D3D11] UAV tex3d: MipSlice={} FirstWSlice={} WSize={}",
+                spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV tex3d: MipSlice={} FirstWSlice={} WSize={}"),
                     desc->Texture3D.MipSlice, desc->Texture3D.FirstWSlice, desc->Texture3D.WSize);
                 break;
             default:
                 break;
             }
         } else {
-            spdlog::error("[D3D11] UAV desc: <null>");
+            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV desc: <null>"));
         }
     }
 
