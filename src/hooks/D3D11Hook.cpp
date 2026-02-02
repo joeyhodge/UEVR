@@ -533,10 +533,34 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
         }
 
         if (desc != nullptr) {
-            spdlog::error("[D3D11] UAV desc: Format={} ViewDim={} MipSlice={} FirstArray={} ArraySize={} Flags=0x{:X}",
-                (uint32_t)desc->Format, (uint32_t)desc->ViewDimension,
-                desc->Texture2D.MipSlice, desc->Texture2DArray.FirstArraySlice, desc->Texture2DArray.ArraySize,
-                (uint32_t)desc->Texture2DArray.Flags);
+            spdlog::error("[D3D11] UAV desc: Format={} ViewDim={}", (uint32_t)desc->Format, (uint32_t)desc->ViewDimension);
+
+            switch (desc->ViewDimension) {
+            case D3D11_UAV_DIMENSION_BUFFER:
+                spdlog::error("[D3D11] UAV buffer: FirstElement={} NumElements={} Flags=0x{:X}",
+                    desc->Buffer.FirstElement, desc->Buffer.NumElements, (uint32_t)desc->Buffer.Flags);
+                break;
+            case D3D11_UAV_DIMENSION_TEXTURE1D:
+                spdlog::error("[D3D11] UAV tex1d: MipSlice={}", desc->Texture1D.MipSlice);
+                break;
+            case D3D11_UAV_DIMENSION_TEXTURE1DARRAY:
+                spdlog::error("[D3D11] UAV tex1darray: MipSlice={} FirstArray={} ArraySize={}",
+                    desc->Texture1DArray.MipSlice, desc->Texture1DArray.FirstArraySlice, desc->Texture1DArray.ArraySize);
+                break;
+            case D3D11_UAV_DIMENSION_TEXTURE2D:
+                spdlog::error("[D3D11] UAV tex2d: MipSlice={}", desc->Texture2D.MipSlice);
+                break;
+            case D3D11_UAV_DIMENSION_TEXTURE2DARRAY:
+                spdlog::error("[D3D11] UAV tex2darray: MipSlice={} FirstArray={} ArraySize={}",
+                    desc->Texture2DArray.MipSlice, desc->Texture2DArray.FirstArraySlice, desc->Texture2DArray.ArraySize);
+                break;
+            case D3D11_UAV_DIMENSION_TEXTURE3D:
+                spdlog::error("[D3D11] UAV tex3d: MipSlice={} FirstWSlice={} WSize={}",
+                    desc->Texture3D.MipSlice, desc->Texture3D.FirstWSlice, desc->Texture3D.WSize);
+                break;
+            default:
+                break;
+            }
         } else {
             spdlog::error("[D3D11] UAV desc: <null>");
         }
