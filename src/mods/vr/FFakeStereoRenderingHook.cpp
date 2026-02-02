@@ -1191,19 +1191,14 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
             #else
                 SPDLOG_INFO_ONCE("ShouldUseSeparateRenderTarget (embedded): {:x}", (uintptr_t)_ReturnAddress());
             #endif
-            
-                auto vr = VR::get();
+                const auto rtm = g_hook->get_render_target_manager();
+                const auto use_separate_rt = rtm != nullptr && rtm->should_use_separate_render_target();
 
-                if (vr->is_extreme_compatibility_mode_enabled()) {
-                    return false;
-                }
-
-                if (vr->is_hmd_active() && !vr->is_stereo_emulation_enabled()) {
+                if (use_separate_rt) {
                     g_hook->get_embedded_rtm().should_use_separate_rt_called = true;
-                    return true;
                 }
 
-                return false;
+                return use_separate_rt;
             }
         );
 
@@ -6013,6 +6008,25 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
     y = VR::get()->get_hmd_height();
 
     SPDLOG_INFO("RenderTargetSize After: {}x{}", x, y);
+}
+
+bool VRRenderTargetManager_Base::should_use_separate_render_target() const {
+    auto vr = VR::get();
+
+    if (vr == nullptr) {
+        return true;
+    }
+
+    if (vr->should_disable_separate_render_target()) {
+        SPDLOG_INFO_ONCE("[VR] Separate render target disabled by compatibility option");
+        return false;
+    }
+
+    if (vr->is_extreme_compatibility_mode_enabled()) {
+        return false;
+    }
+
+    return vr->is_hmd_active() && !vr->is_stereo_emulation_enabled();
 }
 
 bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewport& Viewport) {

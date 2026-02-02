@@ -629,6 +629,10 @@ public:
         return m_extreme_compat_mode->value();
     }
 
+    bool should_disable_separate_render_target() const {
+        return m_disable_separate_render_target->value();
+    }
+
     auto get_horizontal_projection_override() const {
         return m_horizontal_projection_override->value();
     }
@@ -888,6 +892,7 @@ private:
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
+    const ModToggle::Ptr m_disable_separate_render_target{ ModToggle::create(generate_name("DisableSeparateRenderTarget"), true) };
     const ModToggle::Ptr m_uncap_framerate{ ModToggle::create(generate_name("UncapFramerate"), true) };
     const ModToggle::Ptr m_disable_blur_widgets{ ModToggle::create(generate_name("DisableBlurWidgets"), true) };
     const ModToggle::Ptr m_disable_hdr_compositing{ ModToggle::create(generate_name("DisableHDRCompositing"), true, true) };
@@ -1046,6 +1051,7 @@ public:
             *m_rendering_method,
             *m_synced_afr_method,
             *m_extreme_compat_mode,
+            *m_disable_separate_render_target,
             *m_uncap_framerate,
             *m_disable_hdr_compositing,
             *m_disable_hzbocclusion,

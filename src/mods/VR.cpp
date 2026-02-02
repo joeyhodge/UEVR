@@ -2911,6 +2911,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
+            m_disable_separate_render_target->draw("Disable Separate Render Target (Backbuffer)");
 
             // changes to any of these options should trigger a regeneration of the eye projection matrices
             const auto horizontal_projection_changed = m_horizontal_projection_override->draw("Horizontal Projection");

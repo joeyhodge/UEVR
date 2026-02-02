@@ -48,7 +48,7 @@ public:
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
 
-    bool should_use_separate_render_target() const { return true; }
+    bool should_use_separate_render_target() const;
 
     void update_viewport(bool use_separate_rt, const sdk::FViewport& vp, class SViewport* vp_widget = nullptr);
 
@@ -60,6 +60,9 @@ public:
     FRHITexture2D*& get_ui_target() { return ui_target; }
     FRHITexture2D* get_render_target() {
         return render_target; 
+    }
+    std::pair<uint32_t, uint32_t> get_last_requested_rt_size() const {
+        return {last_requested_rt_width, last_requested_rt_height};
     }
 
     FRHITexture2D* get_scene_capture_render_target();
@@ -133,6 +136,10 @@ protected:
 
     VerifiedFTexture2D ui_target{};
     VerifiedFTexture2D render_target{};
+
+    // Last size requested by the engine before any overrides.
+    uint32_t last_requested_rt_width{0};
+    uint32_t last_requested_rt_height{0};
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 
