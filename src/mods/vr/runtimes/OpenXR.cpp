@@ -1,6 +1,7 @@
 #include <Windows.h>
 #include <TlHelp32.h>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -568,6 +569,35 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         this->raw_projections[1][1] = tan(right_fov.angleRight);
         this->raw_projections[1][2] = tan(right_fov.angleUp);
         this->raw_projections[1][3] = tan(right_fov.angleDown);
+
+        auto is_bad = [](float v) {
+            return !std::isfinite(v) || std::abs(v) < 1e-6f;
+        };
+
+        const bool invalid_left =
+            is_bad(this->raw_projections[0][0]) || is_bad(this->raw_projections[0][1]) ||
+            is_bad(this->raw_projections[0][2]) || is_bad(this->raw_projections[0][3]);
+        const bool invalid_right =
+            is_bad(this->raw_projections[1][0]) || is_bad(this->raw_projections[1][1]) ||
+            is_bad(this->raw_projections[1][2]) || is_bad(this->raw_projections[1][3]);
+
+        if (invalid_left || invalid_right) {
+            static bool logged = false;
+            if (!logged) {
+                SPDLOG_WARN("[OpenXR] Invalid view FOVs detected; using fallback projections.");
+                logged = true;
+            }
+
+            this->raw_projections[0][0] = -1.0f;
+            this->raw_projections[0][1] = 1.0f;
+            this->raw_projections[0][2] = 1.0f;
+            this->raw_projections[0][3] = -1.0f;
+            this->raw_projections[1][0] = -1.0f;
+            this->raw_projections[1][1] = 1.0f;
+            this->raw_projections[1][2] = 1.0f;
+            this->raw_projections[1][3] = -1.0f;
+        }
+
         this->projections[0] = get_mat(0);
         this->projections[1] = get_mat(1);
         this->should_recalculate_eye_projections = false;
