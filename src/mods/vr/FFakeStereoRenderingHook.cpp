@@ -3866,6 +3866,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
+            const auto& prev_mem = previous_instruction->instrux.Operands[1];
+
             // Days Gone: guard known null deref chain
             //   mov rax, [r15+0x450]
             //   mov rbx, [rax+0x8]  <-- crash when rax == nullptr

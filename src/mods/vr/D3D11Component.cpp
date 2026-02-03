@@ -247,7 +247,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     if (backbuffer == nullptr && real_backbuffer != nullptr) {
         backbuffer = real_backbuffer;
         m_force_real_backbuffer = true;
-        SPDLOG_WARN_EVERY_N_SEC(1, "[VR] UE4 render target missing; using real back buffer.");
+        SPDLOG_WARN("[VR] UE4 render target missing; using real back buffer.");
     }
 
     const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
@@ -1255,7 +1255,7 @@ bool D3D11Component::setup() {
     if (backbuffer == nullptr && real_backbuffer != nullptr) {
         backbuffer = real_backbuffer;
         m_force_real_backbuffer = true;
-        SPDLOG_WARN_EVERY_N_SEC(1, "[VR] UE4 render target missing; using real back buffer.");
+        SPDLOG_WARN("[VR] UE4 render target missing; using real back buffer.");
     }
 
     const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
