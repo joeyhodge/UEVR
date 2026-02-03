@@ -239,11 +239,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     ComPtr<ID3D11Texture2D> backbuffer{};
     auto ue4_texture = VR::get()->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
+    m_force_real_backbuffer = false;
     if (ue4_texture != nullptr) {
         backbuffer = (ID3D11Texture2D*)ue4_texture->get_native_resource();
     }
 
-    if (vr->is_extreme_compatibility_mode_enabled()) {
+    if (backbuffer == nullptr && real_backbuffer != nullptr) {
+        backbuffer = real_backbuffer;
+        m_force_real_backbuffer = true;
+        SPDLOG_WARN_EVERY_N_SEC(1, "[VR] UE4 render target missing; using real back buffer.");
+    }
+
+    const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
+    if (is_extreme_compat) {
         backbuffer = real_backbuffer;
     }
 
@@ -271,7 +279,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!is_extreme_compat) {
         m_engine_tex_ref.set(backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
     } else {
         // We need to use a shader to convert the real backbuffer
@@ -349,7 +357,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         m_engine_ui_ref.set((ID3D11Texture2D*)ui_target->get_native_resource(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
 
         // Recreate UI texture if needed
-        if (!vr->is_extreme_compatibility_mode_enabled()) {
+        if (!is_extreme_compat) {
             const auto native = (ID3D11Texture2D*)ui_target->get_native_resource();
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
@@ -541,7 +549,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             src_box.front = 0;
             src_box.back = 1;
 
-            if (vr->is_extreme_compatibility_mode_enabled()) {
+            if (is_extreme_compat) {
                 src_box.right = m_backbuffer_size[0];
             } else {
                 src_box.right = m_backbuffer_size[0] / 2;
@@ -566,7 +574,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             src_box.front = 0;
             src_box.back = 1;
 
-            if (vr->is_extreme_compatibility_mode_enabled()) {
+            if (is_extreme_compat) {
                 src_box.right = m_backbuffer_size[0];
             } else {
                 src_box.right = m_backbuffer_size[0] / 2;
@@ -612,7 +620,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (vr->is_extreme_compatibility_mode_enabled()) {
+                if (is_extreme_compat) {
                     src_box.right = m_backbuffer_size[0];
                 } else {
                     src_box.right = m_backbuffer_size[0] / 2;
@@ -629,7 +637,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             if (is_actually_afr) {
                 D3D11_BOX src_box{};
-                if (!vr->is_extreme_compatibility_mode_enabled()) {
+                if (!is_extreme_compat) {
                     if (!is_afr) {
                         src_box.left = m_backbuffer_size[0] / 2;
                         src_box.right = m_backbuffer_size[0];
@@ -736,7 +744,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (vr->is_extreme_compatibility_mode_enabled()) {
+                if (is_extreme_compat) {
                     src_box.right = m_backbuffer_size[0];
                 } else {
                     src_box.right = m_backbuffer_size[0] / 2;
@@ -769,7 +777,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             // Copy the back buffer to the right eye texture.
             if (!m_scene_capture_tex_ref.has_texture()) {
                 D3D11_BOX src_box{};
-                if (!vr->is_extreme_compatibility_mode_enabled()) {
+                if (!is_extreme_compat) {
                     if (!is_afr) {
                         src_box.left = m_backbuffer_size[0] / 2;
                         src_box.right = m_backbuffer_size[0];
@@ -1239,11 +1247,19 @@ bool D3D11Component::setup() {
     ComPtr<ID3D11Texture2D> backbuffer{};
     auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
+    m_force_real_backbuffer = false;
     if (ue4_texture != nullptr) {
         backbuffer = (ID3D11Texture2D*)ue4_texture->get_native_resource();
     }
 
-    if (vr->is_extreme_compatibility_mode_enabled()) {
+    if (backbuffer == nullptr && real_backbuffer != nullptr) {
+        backbuffer = real_backbuffer;
+        m_force_real_backbuffer = true;
+        SPDLOG_WARN_EVERY_N_SEC(1, "[VR] UE4 render target missing; using real back buffer.");
+    }
+
+    const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
+    if (is_extreme_compat) {
         backbuffer = real_backbuffer;
     }
 
@@ -1271,7 +1287,7 @@ bool D3D11Component::setup() {
         m_real_backbuffer_size[1] = real_backbuffer_desc.Height;
     }
 
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!is_extreme_compat) {
         backbuffer_desc.Width = backbuffer_desc.Width / 2;
     } else {
         backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
@@ -1307,7 +1323,7 @@ bool D3D11Component::setup() {
 
         std::optional<DXGI_FORMAT> tex_format{};
         
-        if (!vr->is_extreme_compatibility_mode_enabled()) {
+        if (!is_extreme_compat) {
             tex_format = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
 
@@ -1321,7 +1337,7 @@ bool D3D11Component::setup() {
     clear_tex(m_ui_tex.Get());
 
     // copy backbuffer into right eye
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!is_extreme_compat) {
         context->CopyResource(m_right_eye_tex.Get(), backbuffer.Get());
         context->CopyResource(m_left_eye_tex.Get(), backbuffer.Get());
     }
