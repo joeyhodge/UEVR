@@ -3820,97 +3820,6 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         static std::vector<Patch::Ptr> xrsystem_patches{};
         static std::unordered_set<uintptr_t> ignored_addresses{};
 
-        const auto build_zero_reg_patch = [](int reg, size_t instr_len, std::vector<int16_t>& out) -> bool {
-            auto reg_to_index = [](int r) -> int {
-                switch (r) {
-                case ND_REG_RAX:
-                case ND_REG_EAX:
-                    return 0;
-                case ND_REG_RCX:
-                case ND_REG_ECX:
-                    return 1;
-                case ND_REG_RDX:
-                case ND_REG_EDX:
-                    return 2;
-                case ND_REG_RBX:
-                case ND_REG_EBX:
-                    return 3;
-                case ND_REG_RSP:
-                case ND_REG_ESP:
-                    return 4;
-                case ND_REG_RBP:
-                case ND_REG_EBP:
-                    return 5;
-                case ND_REG_RSI:
-                case ND_REG_ESI:
-                    return 6;
-                case ND_REG_RDI:
-                case ND_REG_EDI:
-                    return 7;
-                case ND_REG_R8:
-                case ND_REG_R8D:
-                    return 8;
-                case ND_REG_R9:
-                case ND_REG_R9D:
-                    return 9;
-                case ND_REG_R10:
-                case ND_REG_R10D:
-                    return 10;
-                case ND_REG_R11:
-                case ND_REG_R11D:
-                    return 11;
-                case ND_REG_R12:
-                case ND_REG_R12D:
-                    return 12;
-                case ND_REG_R13:
-                case ND_REG_R13D:
-                    return 13;
-                case ND_REG_R14:
-                case ND_REG_R14D:
-                    return 14;
-                case ND_REG_R15:
-                case ND_REG_R15D:
-                    return 15;
-                default:
-                    return -1;
-                }
-            };
-
-            const auto index = reg_to_index(reg);
-            if (index < 0) {
-                return false;
-            }
-
-            std::vector<uint8_t> bytes{};
-            auto modrm_index = index;
-            uint8_t rex = 0x40;
-
-            if (index >= 8) {
-                rex |= 0x01; // B
-                rex |= 0x04; // R
-                modrm_index = index - 8;
-                bytes.push_back(rex);
-            }
-
-            bytes.push_back(0x31); // xor r32, r32
-            bytes.push_back(static_cast<uint8_t>(0xC0 | (modrm_index << 3) | modrm_index));
-
-            if (bytes.size() > instr_len) {
-                return false;
-            }
-
-            out.clear();
-            for (const auto b : bytes) {
-                out.push_back(b);
-            }
-
-            for (size_t i = bytes.size(); i < instr_len; ++i) {
-                out.push_back(0x90);
-            }
-
-            return true;
-        };
-
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
 
@@ -3956,26 +3865,34 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            // Days Gone: guard known null deref chain (r15+0x450 -> rax, then [rax+8])
+            // Days Gone: guard known null deref chain (r15+0x450 -> rax, then mov rbx, [rax+8])
             const auto& op1 = decoded->Operands[0];
             const auto& prev_op1 = previous_instruction->instrux.Operands[0];
-            const auto& prev_op2 = previous_instruction->instrux.Operands[1];
+            const auto& prev_mem = previous_instruction->instrux.Operands[1];
+            const auto* instr_bytes = reinterpret_cast<uint8_t*>(exception_address);
 
             if (op1.Type == ND_OP_REG &&
                 previous_instruction->instrux.OperandsCount == 2 &&
                 prev_op1.Type == ND_OP_REG &&
-                prev_op2.Type == ND_OP_MEM &&
-                prev_op2.Info.Memory.HasBase &&
-                prev_op2.Info.Memory.HasDisp &&
+                prev_mem.Type == ND_OP_MEM &&
+                prev_mem.Info.Memory.HasBase &&
+                prev_mem.Info.Memory.HasDisp &&
                 prev_op1.Info.Register.Reg == op2.Info.Memory.Base &&
-                prev_op2.Info.Memory.Disp == 0x450)
+                prev_mem.Info.Memory.Disp == 0x450 &&
+                decoded->Length >= 4 &&
+                instr_bytes[0] == 0x48 && instr_bytes[1] == 0x8B &&
+                instr_bytes[2] == 0x58 && instr_bytes[3] == 0x08)
             {
                 std::vector<int16_t> patch_bytes{};
-                if (build_zero_reg_patch(static_cast<int>(op1.Info.Register.Reg), decoded->Length, patch_bytes)) {
-                    SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
-                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
-                    return EXCEPTION_CONTINUE_EXECUTION;
+                patch_bytes.push_back(0x31); // xor ebx, ebx
+                patch_bytes.push_back(0xDB);
+                for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
+                    patch_bytes.push_back(0x90);
                 }
+
+                SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                return EXCEPTION_CONTINUE_EXECUTION;
             }
 
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
@@ -3985,22 +3902,20 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            const auto prev_op2 = previous_instruction->instrux.Operands[1];
-
             if (previous_instruction->instrux.OperandsCount < 2 ||
-                prev_op2.Type != ND_OP_MEM ||
-                !prev_op2.Info.Memory.HasBase)
+                prev_mem.Type != ND_OP_MEM ||
+                !prev_mem.Info.Memory.HasBase)
             {
                 SPDLOG_ERROR("Previous instruction is not a memory dereference");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            if (!prev_op2.Info.Memory.HasDisp) {
+            if (!prev_mem.Info.Memory.HasDisp) {
                 SPDLOG_ERROR("Previous instruction does not have a displacement");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            if (prev_op2.Info.Memory.Disp != potential_hmd_device_offset) {
+            if (prev_mem.Info.Memory.Disp != potential_hmd_device_offset) {
                 SPDLOG_ERROR("Previous instruction is not the XRSystem or HMDDevice dereference");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
