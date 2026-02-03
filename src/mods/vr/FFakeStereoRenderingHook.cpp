@@ -3869,13 +3869,43 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto& prev_mem = previous_instruction->instrux.Operands[1];
 
             // Days Gone: guard known null deref chains
-            //   mov rax, [r15+0x450|0x458|0x460]
-            //   mov rbx, [rax+0x8]  <-- crash when rax == nullptr
+            //   mov rax, [r15+0x4xx]
+            //   mov r?, [rax+0x8]  <-- crash when rax == nullptr
             const auto* instr_bytes = reinterpret_cast<uint8_t*>(exception_address);
+            const bool is_rex = (instr_bytes[0] & 0xF0) == 0x40;
+            const uint8_t rex = is_rex ? instr_bytes[0] : 0;
             if (decoded->Length >= 4 &&
-                instr_bytes[0] == 0x48 && instr_bytes[1] == 0x8B &&
-                instr_bytes[2] == 0x58 && instr_bytes[3] == 0x08)
+                is_rex &&
+                instr_bytes[1] == 0x8B)
             {
+                const uint8_t modrm = instr_bytes[2];
+                const bool is_rax_disp8 = ((modrm & 0xC7) == 0x40) && (instr_bytes[3] == 0x08 || instr_bytes[3] == 0x10);
+
+                // Directly patch any mov reg, [rax+8] when rax is null
+                if (is_rax_disp8 && exception->ContextRecord->Rax == 0) {
+                    const uint8_t dest_low = (modrm >> 3) & 0x7;
+                    const uint8_t dest = dest_low | ((rex & 0x4) ? 8 : 0);
+
+                    std::vector<int16_t> patch_bytes{};
+                    if (dest < 8) {
+                        patch_bytes.push_back(0x31); // xor r32, r32
+                        patch_bytes.push_back((int16_t)(0xC0 | (dest << 3) | dest));
+                    } else {
+                        patch_bytes.push_back(0x45); // REX.R|REX.B
+                        patch_bytes.push_back(0x31); // xor r32, r32
+                        const uint8_t r = dest - 8;
+                        patch_bytes.push_back((int16_t)(0xC0 | (r << 3) | r));
+                    }
+
+                    for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
+                        patch_bytes.push_back(0x90);
+                    }
+
+                    SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
                 const auto* prev_bytes = instr_bytes - 7;
                 if (prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
                     prev_bytes[0] == 0x49 && prev_bytes[1] == 0x8B && prev_bytes[2] == 0x87 &&
