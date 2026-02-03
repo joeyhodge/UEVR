@@ -3868,16 +3868,36 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             const auto& prev_mem = previous_instruction->instrux.Operands[1];
 
-            // Days Gone: guard known null deref chain
-            //   mov rax, [r15+0x450]
+            // Days Gone: guard known null deref chains
+            //   mov rax, [r15+0x450|0x458|0x460]
             //   mov rbx, [rax+0x8]  <-- crash when rax == nullptr
             const auto* instr_bytes = reinterpret_cast<uint8_t*>(exception_address);
             if (decoded->Length >= 4 &&
                 instr_bytes[0] == 0x48 && instr_bytes[1] == 0x8B &&
                 instr_bytes[2] == 0x58 && instr_bytes[3] == 0x08)
             {
-                const uint8_t pattern[] = { 0x49, 0x8B, 0x87, 0x50, 0x04, 0x00, 0x00, 0x48, 0x8B, 0x58, 0x08 };
                 const auto* prev_bytes = instr_bytes - 7;
+                if (prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
+                    prev_bytes[0] == 0x49 && prev_bytes[1] == 0x8B && prev_bytes[2] == 0x87 &&
+                    prev_bytes[4] == 0x04 && prev_bytes[5] == 0x00 && prev_bytes[6] == 0x00)
+                {
+                    const auto disp = prev_bytes[3];
+                    if (disp == 0x50 || disp == 0x58 || disp == 0x60) {
+                        std::vector<int16_t> patch_bytes{};
+                        patch_bytes.push_back(0x31); // xor ebx, ebx
+                        patch_bytes.push_back(0xDB);
+                        for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
+                            patch_bytes.push_back(0x90);
+                        }
+
+                        SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                        xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                        return EXCEPTION_CONTINUE_EXECUTION;
+                    }
+                }
+
+                // Fallback exact match for 0x450 if we ever see it unaligned
+                const uint8_t pattern[] = { 0x49, 0x8B, 0x87, 0x50, 0x04, 0x00, 0x00, 0x48, 0x8B, 0x58, 0x08 };
                 if (prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
                     std::memcmp(prev_bytes, pattern, sizeof(pattern)) == 0)
                 {
