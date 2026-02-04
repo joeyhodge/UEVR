@@ -3916,7 +3916,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto& prev_mem = previous_instruction->instrux.Operands[1];
 
             // Days Gone: guard known null deref chains
-            //   mov rax, [r15+0x4xx]
+            //   mov rax, [r15+0x450/0x458/0x460]
             //   mov r?, [rax+0x8]  <-- crash when rax == nullptr
             const auto* instr_bytes = reinterpret_cast<uint8_t*>(exception_address);
             const bool is_rex = (instr_bytes[0] & 0xF0) == 0x40;
@@ -3926,11 +3926,22 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 instr_bytes[1] == 0x8B)
             {
                 const uint8_t modrm = instr_bytes[2];
-                const bool is_rax_disp8 = ((modrm & 0xC7) == 0x40) && (instr_bytes[3] == 0x08 || instr_bytes[3] == 0x10);
-                const bool is_mem_load = (modrm & 0xC0) != 0xC0;
+                const uint8_t mod = (modrm >> 6) & 0x3;
+                const uint8_t rm = modrm & 0x7;
+                const uint8_t base = rm | ((rex & 0x1) ? 8 : 0);
+                const bool is_mem_load = mod != 0x3;
+                const bool is_disp8 = mod == 0x1;
+                const bool is_rax_base = base == 0; // RAX
+                const bool is_disp_8_or_10 = instr_bytes[3] == 0x08 || instr_bytes[3] == 0x10;
 
-                // Directly patch any mov reg, [rax+8/10] that faulted (Days Gone sometimes has null or invalid pointer here)
-                if (is_rax_disp8 || (is_mem_load && is_nullish_read)) {
+                const auto* prev_bytes = instr_bytes - 7;
+                const bool prev_is_r15_4xx =
+                    prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
+                    prev_bytes[0] == 0x49 && prev_bytes[1] == 0x8B && prev_bytes[2] == 0x87 &&
+                    prev_bytes[4] == 0x04 && prev_bytes[5] == 0x00 && prev_bytes[6] == 0x00 &&
+                    (prev_bytes[3] == 0x50 || prev_bytes[3] == 0x58 || prev_bytes[3] == 0x60);
+
+                if (is_mem_load && is_disp8 && is_rax_base && is_disp_8_or_10 && prev_is_r15_4xx) {
                     const uint8_t dest_low = (modrm >> 3) & 0x7;
                     const uint8_t dest = dest_low | ((rex & 0x4) ? 8 : 0);
 
@@ -3954,58 +3965,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
-
-                const auto* prev_bytes = instr_bytes - 7;
-                if (prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
-                    prev_bytes[0] == 0x49 && prev_bytes[1] == 0x8B && prev_bytes[2] == 0x87 &&
-                    prev_bytes[4] == 0x04 && prev_bytes[5] == 0x00 && prev_bytes[6] == 0x00)
-                {
-                    const auto disp = prev_bytes[3];
-                    if (disp == 0x50 || disp == 0x58 || disp == 0x60) {
-                        std::vector<int16_t> patch_bytes{};
-                        patch_bytes.push_back(0x31); // xor ebx, ebx
-                        patch_bytes.push_back(0xDB);
-                        for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
-                            patch_bytes.push_back(0x90);
-                        }
-
-                        SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
-                        ignored_addresses.insert(exception_address);
-                        xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
-                        return EXCEPTION_CONTINUE_EXECUTION;
-                    }
-                }
-
-                // Fallback exact match for 0x450 if we ever see it unaligned
-                const uint8_t pattern[] = { 0x49, 0x8B, 0x87, 0x50, 0x04, 0x00, 0x00, 0x48, 0x8B, 0x58, 0x08 };
-                if (prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
-                    std::memcmp(prev_bytes, pattern, sizeof(pattern)) == 0)
-                {
-                    std::vector<int16_t> patch_bytes{};
-                    patch_bytes.push_back(0x31); // xor ebx, ebx
-                    patch_bytes.push_back(0xDB);
-                    for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
-                        patch_bytes.push_back(0x90);
-                    }
-
-                    SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
-                    ignored_addresses.insert(exception_address);
-                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
-                    return EXCEPTION_CONTINUE_EXECUTION;
-                }
             }
 
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
                 previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
-                if (is_nullish_read) {
-                    SPDLOG_WARN("Applying last-resort NOP patch for null deref at {:x}", exception_address);
-                    std::vector<int16_t> patch_bytes(decoded->Length, 0x90);
-                    ignored_addresses.insert(exception_address);
-                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
-                    return EXCEPTION_CONTINUE_EXECUTION;
-                }
-
                 SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
