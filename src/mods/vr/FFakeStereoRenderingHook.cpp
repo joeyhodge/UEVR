@@ -3915,36 +3915,39 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             const auto& prev_mem = previous_instruction->instrux.Operands[1];
 
-            // Days Gone: guard known null deref chains
-            //   mov rax, [r15+0x450/0x458/0x460]
-            //   mov r?, [rax+0x8]  <-- crash when rax == nullptr
-            const auto* instr_bytes = reinterpret_cast<uint8_t*>(exception_address);
-            const bool is_rex = (instr_bytes[0] & 0xF0) == 0x40;
-            const uint8_t rex = is_rex ? instr_bytes[0] : 0;
-            if (decoded->Length >= 4 &&
-                is_rex &&
-                instr_bytes[1] == 0x8B)
+            // Days Gone: guard null deref of [rax+8/10] regardless of preceding instruction
+            if (decoded->OperandsCount >= 2 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                decoded->Operands[1].Type == ND_OP_MEM &&
+                decoded->Operands[1].Info.Memory.HasBase &&
+                decoded->Operands[1].Info.Memory.Base == NDR_RAX &&
+                decoded->Operands[1].Info.Memory.HasDisp &&
+                (decoded->Operands[1].Info.Memory.Disp == 0x8 || decoded->Operands[1].Info.Memory.Disp == 0x10) &&
+                is_read_access)
             {
-                const uint8_t modrm = instr_bytes[2];
-                const uint8_t mod = (modrm >> 6) & 0x3;
-                const uint8_t rm = modrm & 0x7;
-                const uint8_t base = rm | ((rex & 0x1) ? 8 : 0);
-                const bool is_mem_load = mod != 0x3;
-                const bool is_disp8 = mod == 0x1;
-                const bool is_rax_base = base == 0; // RAX
-                const bool is_disp_8_or_10 = instr_bytes[3] == 0x08 || instr_bytes[3] == 0x10;
+                auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
+                    if (reg == NDR_RAX || reg == NDR_EAX) return 0;
+                    if (reg == NDR_RCX || reg == NDR_ECX) return 1;
+                    if (reg == NDR_RDX || reg == NDR_EDX) return 2;
+                    if (reg == NDR_RBX || reg == NDR_EBX) return 3;
+                    if (reg == NDR_RSP || reg == NDR_ESP) return 4;
+                    if (reg == NDR_RBP || reg == NDR_EBP) return 5;
+                    if (reg == NDR_RSI || reg == NDR_ESI) return 6;
+                    if (reg == NDR_RDI || reg == NDR_EDI) return 7;
+                    if (reg == NDR_R8 || reg == NDR_R8D) return 8;
+                    if (reg == NDR_R9 || reg == NDR_R9D) return 9;
+                    if (reg == NDR_R10 || reg == NDR_R10D) return 10;
+                    if (reg == NDR_R11 || reg == NDR_R11D) return 11;
+                    if (reg == NDR_R12 || reg == NDR_R12D) return 12;
+                    if (reg == NDR_R13 || reg == NDR_R13D) return 13;
+                    if (reg == NDR_R14 || reg == NDR_R14D) return 14;
+                    if (reg == NDR_R15 || reg == NDR_R15D) return 15;
+                    return std::nullopt;
+                };
 
-                const auto* prev_bytes = instr_bytes - 7;
-                const bool prev_is_r15_4xx =
-                    prev_bytes >= reinterpret_cast<uint8_t*>(0x1000) &&
-                    prev_bytes[0] == 0x49 && prev_bytes[1] == 0x8B && prev_bytes[2] == 0x87 &&
-                    prev_bytes[4] == 0x04 && prev_bytes[5] == 0x00 && prev_bytes[6] == 0x00 &&
-                    (prev_bytes[3] == 0x50 || prev_bytes[3] == 0x58 || prev_bytes[3] == 0x60);
-
-                if (is_mem_load && is_disp8 && is_rax_base && is_disp_8_or_10 && prev_is_r15_4xx) {
-                    const uint8_t dest_low = (modrm >> 3) & 0x7;
-                    const uint8_t dest = dest_low | ((rex & 0x4) ? 8 : 0);
-
+                const auto dest_opt = reg_to_index(decoded->Operands[0].Info.Register.Reg);
+                if (dest_opt) {
+                    const uint8_t dest = *dest_opt;
                     std::vector<int16_t> patch_bytes{};
                     if (dest < 8) {
                         patch_bytes.push_back(0x31); // xor r32, r32
