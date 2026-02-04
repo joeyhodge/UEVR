@@ -3823,12 +3823,14 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
+            const auto exrec = exception->ExceptionRecord;
+            const bool is_read_access = exrec->NumberParameters >= 2 && exrec->ExceptionInformation[0] == 0;
+            const auto fault_target = (uintptr_t)(exrec->NumberParameters >= 2 ? exrec->ExceptionInformation[1] : 0);
+            const bool is_nullish_read = is_read_access && fault_target <= 0x10000;
 
             if (ignored_addresses.contains(exception_address)) {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
-
-            ignored_addresses.insert(exception_address);
 
             if (exception_address == 0) {
                 SPDLOG_INFO("[Exception Handler] Exception address is null");
@@ -3880,9 +3882,10 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             {
                 const uint8_t modrm = instr_bytes[2];
                 const bool is_rax_disp8 = ((modrm & 0xC7) == 0x40) && (instr_bytes[3] == 0x08 || instr_bytes[3] == 0x10);
+                const bool is_mem_load = (modrm & 0xC0) != 0xC0;
 
-                // Directly patch any mov reg, [rax+8] when rax is null
-                if (is_rax_disp8 && exception->ContextRecord->Rax == 0) {
+                // Directly patch any mov reg, [rax+8/10] that faulted (Days Gone sometimes has null or invalid pointer here)
+                if (is_rax_disp8 || (is_mem_load && is_nullish_read)) {
                     const uint8_t dest_low = (modrm >> 3) & 0x7;
                     const uint8_t dest = dest_low | ((rex & 0x4) ? 8 : 0);
 
@@ -3902,6 +3905,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     }
 
                     SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                    ignored_addresses.insert(exception_address);
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
@@ -3921,6 +3925,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                         }
 
                         SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                        ignored_addresses.insert(exception_address);
                         xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                         return EXCEPTION_CONTINUE_EXECUTION;
                     }
@@ -3939,6 +3944,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                     }
 
                     SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                    ignored_addresses.insert(exception_address);
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
@@ -3947,6 +3953,14 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
                 previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
+                if (is_nullish_read) {
+                    SPDLOG_WARN("Applying last-resort NOP patch for null deref at {:x}", exception_address);
+                    std::vector<int16_t> patch_bytes(decoded->Length, 0x90);
+                    ignored_addresses.insert(exception_address);
+                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
                 SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
                 return EXCEPTION_CONTINUE_SEARCH;
             }
@@ -3980,6 +3994,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 first_patch.push_back(0x90);
             }
 
+            ignored_addresses.insert(exception_address);
             xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
 
             const auto next_instruction_addr = exception_address + decoded->Length;
