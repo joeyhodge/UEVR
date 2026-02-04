@@ -3820,6 +3820,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
     AddVectoredExceptionHandler(1, [](PEXCEPTION_POINTERS exception) -> LONG {
         static std::vector<Patch::Ptr> xrsystem_patches{};
         static std::unordered_set<uintptr_t> ignored_addresses{};
+        static std::unordered_set<uintptr_t> skipped_addresses{};
 
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
@@ -3839,6 +3840,50 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             if (IsBadReadPtr((void*)exception_address, sizeof(void*))) {
                 SPDLOG_INFO("[Exception Handler] Bad read pointer at {:x}", exception_address);
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            const auto module_within = utility::get_module_within(exception_address);
+
+            if (!module_within) {
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            const auto module = *module_within;
+            const auto exe_module = utility::get_executable();
+            const auto framework_module = g_framework != nullptr ? g_framework->get_framework_module() : nullptr;
+            const auto engine_module = sdk::get_ue_module(L"Engine");
+            const auto renderer_module = sdk::get_ue_module(L"Renderer");
+            const auto rhi_module = sdk::get_ue_module(L"RHI");
+            const auto core_module = sdk::get_ue_module(L"Core");
+            const auto core_uobject_module = sdk::get_ue_module(L"CoreUObject");
+            const auto rendercore_module = sdk::get_ue_module(L"RenderCore");
+            const auto d3d11rhi_module = sdk::get_ue_module(L"D3D11RHI");
+            const auto slate_module = sdk::get_ue_module(L"Slate");
+            const auto slaterhirenderer_module = sdk::get_ue_module(L"SlateRHIRenderer");
+
+            const bool is_allowed_module =
+                module == exe_module ||
+                module == framework_module ||
+                module == engine_module ||
+                module == renderer_module ||
+                module == rhi_module ||
+                module == core_module ||
+                module == core_uobject_module ||
+                module == rendercore_module ||
+                module == d3d11rhi_module ||
+                module == slate_module ||
+                module == slaterhirenderer_module;
+
+            if (!is_allowed_module) {
+                if (!skipped_addresses.contains(exception_address)) {
+                    if (const auto module_path = utility::get_module_path(module); module_path) {
+                        SPDLOG_WARN("[Exception Handler] Skipping null-deref patch in module {:x} {}", (uintptr_t)module, *module_path);
+                    } else {
+                        SPDLOG_WARN("[Exception Handler] Skipping null-deref patch in module {:x}", (uintptr_t)module);
+                    }
+                    skipped_addresses.insert(exception_address);
+                }
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
