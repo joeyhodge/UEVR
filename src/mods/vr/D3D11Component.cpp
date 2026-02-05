@@ -252,7 +252,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     bool using_rt_pool = false;
-    if (m_force_real_backbuffer || vr->should_disable_separate_render_target()) {
+    const bool force_rt_pool = true;
+    if (force_rt_pool || m_force_real_backbuffer || vr->should_disable_separate_render_target()) {
         auto& rt_pool = vr->get_render_target_pool_hook();
         std::wstring chosen_name{};
 
@@ -261,15 +262,22 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             real_backbuffer->GetDesc(&real_desc);
         }
 
-        const auto min_w = real_desc.Width > 0 ? real_desc.Width / 2 : 0;
-        const auto min_h = real_desc.Height > 0 ? real_desc.Height / 2 : 0;
+        const auto min_w = real_desc.Width > 0 ? real_desc.Width : m_backbuffer_size[0];
+        const auto min_h = real_desc.Height > 0 ? real_desc.Height : m_backbuffer_size[1];
         auto pool_tex = rt_pool->get_best_color_texture(min_w, min_h, &chosen_name);
 
         if (pool_tex != nullptr) {
+            D3D11_TEXTURE2D_DESC pool_desc{};
+            pool_tex->GetDesc(&pool_desc);
             backbuffer = pool_tex;
             m_force_real_backbuffer = false;
             using_rt_pool = true;
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using RenderTargetPool color target: {}", utility::narrow(chosen_name));
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                                    "[VR] Using RenderTargetPool color target: {} ({}x{}, fmt={}, bind=0x{:X})",
+                                    utility::narrow(chosen_name), pool_desc.Width, pool_desc.Height,
+                                    (uint32_t)pool_desc.Format, pool_desc.BindFlags);
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] RenderTargetPool color target not found (min {}x{})", min_w, min_h);
         }
     }
 

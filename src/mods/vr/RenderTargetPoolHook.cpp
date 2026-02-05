@@ -147,6 +147,18 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
             continue;
         }
 
+        if ((desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0) {
+            continue;
+        }
+
+        if ((desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
+            continue;
+        }
+
+        if (desc.SampleDesc.Count > 1) {
+            continue;
+        }
+
         std::wstring lower{name};
         std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return std::towlower(c); });
 
@@ -156,7 +168,9 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
 
         uint64_t score = static_cast<uint64_t>(desc.Width) * static_cast<uint64_t>(desc.Height);
 
-        if (lower.find(L"postoutput") != std::wstring::npos) score += 1000000000ULL;
+        if (lower.find(L"bendpostprocessupscalefull") != std::wstring::npos) score += 3000000000ULL;
+        if (lower.find(L"postoutput") != std::wstring::npos) score += 2000000000ULL;
+        if (lower.find(L"postprocessoutput") != std::wstring::npos) score += 1500000000ULL;
         if (lower.find(L"upscale") != std::wstring::npos) score += 800000000ULL;
         if (lower.find(L"postprocess") != std::wstring::npos) score += 400000000ULL;
         if (lower.find(L"scenecolor") != std::wstring::npos) score += 200000000ULL;
