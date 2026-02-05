@@ -32,6 +32,28 @@ static bool is_depth_or_stencil_format(DXGI_FORMAT format) {
     }
 }
 
+static bool is_typeless_format(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R8_TYPELESS:
+    case DXGI_FORMAT_R16_TYPELESS:
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_R8G8_TYPELESS:
+    case DXGI_FORMAT_R16G16_TYPELESS:
+    case DXGI_FORMAT_R32G32_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+    case DXGI_FORMAT_R32G32B32_TYPELESS:
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
 static std::optional<DXGI_FORMAT> choose_uav_format(DXGI_FORMAT format) {
     if (is_depth_or_stencil_format(format)) {
         return std::nullopt;
@@ -639,11 +661,9 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
 
                 if (desc != nullptr) {
                     DXGI_FORMAT src_format = desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : tex_desc.Format;
-                    auto mapped = choose_uav_format(src_format);
-                    if (!mapped.has_value() && desc->Format == DXGI_FORMAT_UNKNOWN) {
-                        mapped = choose_uav_format(tex_desc.Format);
-                    }
+                    const bool src_typeless = is_typeless_format(src_format);
 
+                    auto mapped = choose_uav_format(src_format);
                     if (mapped.has_value() && *mapped != src_format) {
                         auto retry_desc = *desc;
                         retry_desc.Format = *mapped;
@@ -657,7 +677,7 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                         spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
                     }
 
-                    if (tex_desc.Format != DXGI_FORMAT_UNKNOWN && tex_desc.Format != src_format) {
+                    if (desc->Format == DXGI_FORMAT_UNKNOWN && !is_typeless_format(tex_desc.Format) && tex_desc.Format != src_format) {
                         auto retry_desc = *desc;
                         retry_desc.Format = tex_desc.Format;
                         spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry: format {} -> {}"),
