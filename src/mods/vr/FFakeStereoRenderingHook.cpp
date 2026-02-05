@@ -3919,6 +3919,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return std::nullopt;
             };
 
+            const bool allow_generic_null_patch = false; // Days Gone: avoid generic null-deref patching to prevent render graph corruption.
+
             const ND_OPERAND* mem_op = nullptr;
             if (decoded->OperandsCount >= 1 && op0.Type == ND_OP_MEM) {
                 mem_op = &op0;
@@ -3926,7 +3928,14 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 mem_op = &op1;
             }
 
-            if (is_nullish_access && mem_op && mem_op->Info.Memory.HasBase)
+            if (!allow_generic_null_patch && is_nullish_access && mem_op && mem_op->Info.Memory.HasBase)
+            {
+                SPDLOG_INFO(
+                    "Skipping generic null-deref patch at {:x} (Days Gone disabled)",
+                    exception_address);
+            }
+
+            if (allow_generic_null_patch && is_nullish_access && mem_op && mem_op->Info.Memory.HasBase)
             {
                 std::vector<int16_t> patch_bytes{};
                 bool patched = false;

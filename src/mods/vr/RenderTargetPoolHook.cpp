@@ -21,6 +21,20 @@ RenderTargetPoolHook::RenderTargetPoolHook() {
     g_hook = this;
 }
 
+namespace {
+inline void add_ref(IPooledRenderTarget* rt) {
+    if (rt != nullptr) {
+        rt->AddRef();
+    }
+}
+
+inline void release_ref(IPooledRenderTarget* rt) {
+    if (rt != nullptr) {
+        rt->Release();
+    }
+}
+} // namespace
+
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     const auto want_depth = VR::get()->is_depth_enabled();
     const auto want_log = VR::get()->should_log_render_target_names();
@@ -88,10 +102,23 @@ void RenderTargetPoolHook::on_post_find_free_element(
         std::scoped_lock _{g_hook->m_mutex};
 
         if (out != nullptr && out->reference != nullptr) {
-            g_hook->m_render_targets[name] = out->reference;
+            auto* new_rt = out->reference;
+            if (auto it = g_hook->m_render_targets.find(name); it != g_hook->m_render_targets.end()) {
+                if (it->second != new_rt) {
+                    release_ref(it->second);
+                    it->second = new_rt;
+                    add_ref(new_rt);
+                }
+            } else {
+                g_hook->m_render_targets.emplace(name, new_rt);
+                add_ref(new_rt);
+            }
             VR::get()->set_force_skip_rt_size_override(true);
         } else {
-            g_hook->m_render_targets.erase(name);
+            if (auto it = g_hook->m_render_targets.find(name); it != g_hook->m_render_targets.end()) {
+                release_ref(it->second);
+                g_hook->m_render_targets.erase(it);
+            }
         }
 
         if (!g_hook->m_seen_names.contains(name)) {
@@ -133,13 +160,7 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
             continue;
         }
 
-        ID3D11Texture2D* native = nullptr;
-        __try {
-            native = (ID3D11Texture2D*)tex->get_native_resource();
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SPDLOG_WARN("RenderTargetPoolHook: exception while reading native resource for {}", utility::narrow(name));
-            continue;
-        }
+        ID3D11Texture2D* native = (ID3D11Texture2D*)tex->get_native_resource();
         if (native == nullptr) {
             continue;
         }
