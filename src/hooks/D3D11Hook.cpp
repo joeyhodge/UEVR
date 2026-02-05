@@ -1,5 +1,7 @@
 #include <algorithm>
+#include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <spdlog/spdlog.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
@@ -586,6 +588,55 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                     tex_desc.Width, tex_desc.Height, tex_desc.MipLevels, tex_desc.ArraySize,
                     (uint32_t)tex_desc.Format, tex_desc.SampleDesc.Count, tex_desc.BindFlags, tex_desc.MiscFlags);
 
+                const auto try_return_dummy_uav = [&]() -> bool {
+                    if (device == nullptr || uav == nullptr) {
+                        return false;
+                    }
+
+                    static std::mutex s_dummy_mutex{};
+                    struct DummyUavEntry {
+                        Microsoft::WRL::ComPtr<ID3D11Texture2D> tex;
+                        Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> uav;
+                    };
+                    static std::unordered_map<ID3D11Resource*, DummyUavEntry> s_dummy_uavs{};
+
+                    std::scoped_lock lock{s_dummy_mutex};
+                    if (auto it = s_dummy_uavs.find(resource); it != s_dummy_uavs.end()) {
+                        *uav = it->second.uav.Get();
+                        (*uav)->AddRef();
+                        return true;
+                    }
+
+                    D3D11_TEXTURE2D_DESC dummy_desc = tex_desc;
+                    dummy_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+                    dummy_desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+                    dummy_desc.MiscFlags = 0;
+                    dummy_desc.MipLevels = 1;
+                    dummy_desc.ArraySize = 1;
+                    dummy_desc.SampleDesc.Count = 1;
+                    dummy_desc.SampleDesc.Quality = 0;
+
+                    DummyUavEntry entry{};
+                    if (FAILED(device->CreateTexture2D(&dummy_desc, nullptr, &entry.tex))) {
+                        return false;
+                    }
+
+                    D3D11_UNORDERED_ACCESS_VIEW_DESC dummy_uav_desc{};
+                    dummy_uav_desc.Format = dummy_desc.Format;
+                    dummy_uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+                    dummy_uav_desc.Texture2D.MipSlice = 0;
+
+                    if (FAILED(device->CreateUnorderedAccessView(entry.tex.Get(), &dummy_uav_desc, &entry.uav))) {
+                        return false;
+                    }
+
+                    *uav = entry.uav.Get();
+                    (*uav)->AddRef();
+                    s_dummy_uavs.emplace(resource, std::move(entry));
+                    spdlog::warn("[D3D11] Returned dummy UAV for unsupported UAV format");
+                    return true;
+                };
+
                 if (desc != nullptr) {
                     DXGI_FORMAT src_format = desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : tex_desc.Format;
                     auto mapped = choose_uav_format(src_format);
@@ -604,6 +655,23 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                             return retry_result;
                         }
                         spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
+                    }
+
+                    if (tex_desc.Format != DXGI_FORMAT_UNKNOWN && tex_desc.Format != src_format) {
+                        auto retry_desc = *desc;
+                        retry_desc.Format = tex_desc.Format;
+                        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry: format {} -> {}"),
+                            (uint32_t)src_format, (uint32_t)tex_desc.Format);
+                        const auto retry_result = call_original(&retry_desc);
+                        if (SUCCEEDED(retry_result)) {
+                            spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry succeeded"));
+                            return retry_result;
+                        }
+                        spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
+                    }
+
+                    if (try_return_dummy_uav()) {
+                        return S_OK;
                     }
                 } else {
                     if (tex_desc.SampleDesc.Count > 1) {
@@ -631,6 +699,9 @@ HRESULT WINAPI D3D11Hook::create_unordered_access_view(
                                 return retry_result;
                             }
                             spdlog::error(SPDLOG_FMT_RUNTIME("[D3D11] UAV retry failed: hr=0x{:08X}"), (uint32_t)retry_result);
+                        }
+                        if (try_return_dummy_uav()) {
+                            return S_OK;
                         }
                     }
                 }
