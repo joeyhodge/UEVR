@@ -281,6 +281,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }
     }
 
+    // Avoid forcing double-wide RT sizes when we're sourcing from the RenderTargetPool;
+    // Days Gone (UE4.11) will continuously reallocate otherwise.
+    vr->set_force_skip_rt_size_override(using_rt_pool);
+
     bool use_extreme_compat = vr->is_extreme_compatibility_mode_enabled();
     if (using_rt_pool) {
         use_extreme_compat = false;

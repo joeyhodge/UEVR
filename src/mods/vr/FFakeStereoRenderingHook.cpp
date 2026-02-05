@@ -6156,6 +6156,11 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
 
     SPDLOG_INFO("RenderTargetSize Before: {}x{}", x, y);
 
+    if (VR::get()->should_skip_rt_size_override()) {
+        SPDLOG_INFO_ONCE("RT size override skipped (RT pool active): keeping {}x{}", x, y);
+        return;
+    }
+
     if (!should_use_separate_render_target()) {
         SPDLOG_INFO_ONCE("RT size override skipped (separate RT disabled): keeping {}x{}", x, y);
         return;
