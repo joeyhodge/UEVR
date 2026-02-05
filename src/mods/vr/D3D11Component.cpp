@@ -361,10 +361,34 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         if ((backbuffer_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
             spdlog::warn("[VR] Backbuffer is missing SRV bind flag; forcing extreme compatibility copy");
             use_extreme_compat = true;
-        } else if (!m_engine_tex_ref.set(backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-            spdlog::warn("[VR] Failed to create SRV/RTV for backbuffer; forcing extreme compatibility copy");
-            m_engine_tex_ref.reset();
-            use_extreme_compat = true;
+        } else {
+            std::optional<DXGI_FORMAT> rtv_format{};
+            std::optional<DXGI_FORMAT> srv_format{};
+
+            // Only force BGRA formats when we know the backbuffer is BGRA.
+            if (!using_rt_pool &&
+                (backbuffer_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                 backbuffer_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) {
+                rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+                srv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            }
+
+            if (!m_engine_tex_ref.set(backbuffer.Get(), rtv_format, srv_format)) {
+                spdlog::warn("[VR] Failed to create SRV/RTV for backbuffer; forcing extreme compatibility copy");
+                m_engine_tex_ref.reset();
+                use_extreme_compat = true;
+                if (real_backbuffer != nullptr) {
+                    backbuffer = real_backbuffer;
+                    m_force_real_backbuffer = true;
+                    D3D11_TEXTURE2D_DESC real_desc{};
+                    real_backbuffer->GetDesc(&real_desc);
+                    backbuffer_desc = real_desc;
+                    m_backbuffer_size[0] = real_desc.Width;
+                    m_backbuffer_size[1] = real_desc.Height;
+                    const auto aspect = (m_backbuffer_size[1] != 0) ? ((float)m_backbuffer_size[0] / (float)m_backbuffer_size[1]) : 0.0f;
+                    m_backbuffer_is_doublewide = aspect > 2.4f;
+                }
+            }
         }
     }
 
