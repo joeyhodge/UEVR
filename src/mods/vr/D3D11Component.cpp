@@ -262,6 +262,36 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    const auto& ffsr = VR::get()->m_fake_stereo_hook;
+
+    // Update backbuffer sizes in case we swapped between UE4 RT and real backbuffer.
+    D3D11_TEXTURE2D_DESC backbuffer_desc{};
+    backbuffer->GetDesc(&backbuffer_desc);
+    const bool backbuffer_size_changed = (m_backbuffer_size[0] != backbuffer_desc.Width ||
+                                          m_backbuffer_size[1] != backbuffer_desc.Height);
+    m_backbuffer_size[0] = backbuffer_desc.Width;
+    m_backbuffer_size[1] = backbuffer_desc.Height;
+
+    if (real_backbuffer != nullptr) {
+        D3D11_TEXTURE2D_DESC real_backbuffer_desc{};
+        real_backbuffer->GetDesc(&real_backbuffer_desc);
+        const bool real_size_changed = (m_real_backbuffer_size[0] != real_backbuffer_desc.Width ||
+                                        m_real_backbuffer_size[1] != real_backbuffer_desc.Height);
+        m_real_backbuffer_size[0] = real_backbuffer_desc.Width;
+        m_real_backbuffer_size[1] = real_backbuffer_desc.Height;
+
+        if (real_size_changed || backbuffer_size_changed) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Backbuffer size changed to {}x{} (real {}x{}), recreating textures",
+                                    m_backbuffer_size[0], m_backbuffer_size[1],
+                                    m_real_backbuffer_size[0], m_real_backbuffer_size[1]);
+            ffsr->set_should_recreate_textures(true);
+        }
+    } else if (backbuffer_size_changed) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Backbuffer size changed to {}x{}, recreating textures",
+                                m_backbuffer_size[0], m_backbuffer_size[1]);
+        ffsr->set_should_recreate_textures(true);
+    }
+
     auto runtime = vr->get_runtime();
 
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
@@ -332,8 +362,6 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
         backbuffer = m_converted_backbuffer;
     }
-
-    const auto& ffsr = VR::get()->m_fake_stereo_hook;
 
     if (vr->is_native_stereo_fix_enabled()) {
         const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
