@@ -3825,9 +3825,9 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
             const auto exrec = exception->ExceptionRecord;
-            const bool is_read_access = exrec->NumberParameters >= 2 && exrec->ExceptionInformation[0] == 0;
+            const auto access_type = exrec->NumberParameters >= 1 ? exrec->ExceptionInformation[0] : ~0ULL;
             const auto fault_target = (uintptr_t)(exrec->NumberParameters >= 2 ? exrec->ExceptionInformation[1] : 0);
-            const bool is_nullish_read = is_read_access && fault_target <= 0x10000;
+            const bool is_nullish_access = fault_target <= 0x10000;
 
             if (ignored_addresses.contains(exception_address)) {
                 return EXCEPTION_CONTINUE_SEARCH;
@@ -3894,11 +3894,12 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
-            const auto& op2 = decoded->Operands[1];
+            const auto& op0 = decoded->Operands[0];
+            const auto& op1 = decoded->Operands[1];
 
             if (decoded->OperandsCount != 2 || 
-                 op2.Type != ND_OP_MEM      || 
-                !op2.Info.Memory.HasBase)
+                 op1.Type != ND_OP_MEM      || 
+                !op1.Info.Memory.HasBase)
             {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
@@ -3906,47 +3907,33 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
 
             // Get the start of the previous instruction
-            const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+            auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
+                if (reg == NDR_RAX || reg == NDR_EAX) return 0;
+                if (reg == NDR_RCX || reg == NDR_ECX) return 1;
+                if (reg == NDR_RDX || reg == NDR_EDX) return 2;
+                if (reg == NDR_RBX || reg == NDR_EBX) return 3;
+                if (reg == NDR_RSP || reg == NDR_ESP) return 4;
+                if (reg == NDR_RBP || reg == NDR_EBP) return 5;
+                if (reg == NDR_RSI || reg == NDR_ESI) return 6;
+                if (reg == NDR_RDI || reg == NDR_EDI) return 7;
+                if (reg == NDR_R8 || reg == NDR_R8D) return 8;
+                if (reg == NDR_R9 || reg == NDR_R9D) return 9;
+                if (reg == NDR_R10 || reg == NDR_R10D) return 10;
+                if (reg == NDR_R11 || reg == NDR_R11D) return 11;
+                if (reg == NDR_R12 || reg == NDR_R12D) return 12;
+                if (reg == NDR_R13 || reg == NDR_R13D) return 13;
+                if (reg == NDR_R14 || reg == NDR_R14D) return 14;
+                if (reg == NDR_R15 || reg == NDR_R15D) return 15;
+                return std::nullopt;
+            };
 
-            if (!previous_instruction) {
-                SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
-                return EXCEPTION_CONTINUE_SEARCH;
-            }
-
-            const auto& prev_mem = previous_instruction->instrux.Operands[1];
-
-            // Days Gone: guard null deref of [rax+8/10] regardless of preceding instruction
-            if (decoded->OperandsCount >= 2 &&
-                decoded->Operands[0].Type == ND_OP_REG &&
-                decoded->Operands[1].Type == ND_OP_MEM &&
-                decoded->Operands[1].Info.Memory.HasBase &&
-                decoded->Operands[1].Info.Memory.Base == NDR_RAX &&
-                decoded->Operands[1].Info.Memory.HasDisp &&
-                (decoded->Operands[1].Info.Memory.Disp == 0x8 || decoded->Operands[1].Info.Memory.Disp == 0x10) &&
-                is_read_access)
+            if (is_nullish_access &&
+                decoded->OperandsCount >= 2 &&
+                op0.Type == ND_OP_REG &&
+                op1.Type == ND_OP_MEM &&
+                op1.Info.Memory.HasBase)
             {
-                auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
-                    if (reg == NDR_RAX || reg == NDR_EAX) return 0;
-                    if (reg == NDR_RCX || reg == NDR_ECX) return 1;
-                    if (reg == NDR_RDX || reg == NDR_EDX) return 2;
-                    if (reg == NDR_RBX || reg == NDR_EBX) return 3;
-                    if (reg == NDR_RSP || reg == NDR_ESP) return 4;
-                    if (reg == NDR_RBP || reg == NDR_EBP) return 5;
-                    if (reg == NDR_RSI || reg == NDR_ESI) return 6;
-                    if (reg == NDR_RDI || reg == NDR_EDI) return 7;
-                    if (reg == NDR_R8 || reg == NDR_R8D) return 8;
-                    if (reg == NDR_R9 || reg == NDR_R9D) return 9;
-                    if (reg == NDR_R10 || reg == NDR_R10D) return 10;
-                    if (reg == NDR_R11 || reg == NDR_R11D) return 11;
-                    if (reg == NDR_R12 || reg == NDR_R12D) return 12;
-                    if (reg == NDR_R13 || reg == NDR_R13D) return 13;
-                    if (reg == NDR_R14 || reg == NDR_R14D) return 14;
-                    if (reg == NDR_R15 || reg == NDR_R15D) return 15;
-                    return std::nullopt;
-                };
-
-                const auto dest_opt = reg_to_index(decoded->Operands[0].Info.Register.Reg);
-                if (dest_opt) {
+                if (const auto dest_opt = reg_to_index(op0.Info.Register.Reg); dest_opt) {
                     const uint8_t dest = *dest_opt;
                     std::vector<int16_t> patch_bytes{};
                     if (dest < 8) {
@@ -3963,15 +3950,31 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                         patch_bytes.push_back(0x90);
                     }
 
-                    SPDLOG_INFO("Applying null-safe patch for render target pointer deref at {:x}", exception_address);
+                    SPDLOG_INFO(
+                        "Applying null-safe patch for mem deref at {:x} base={} disp={:x} access={} target={:x}",
+                        exception_address,
+                        (int)op1.Info.Memory.Base,
+                        op1.Info.Memory.Disp,
+                        access_type,
+                        fault_target);
                     ignored_addresses.insert(exception_address);
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
             }
 
+            const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+
+            if (!previous_instruction) {
+                SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            const auto& prev_mem = previous_instruction->instrux.Operands[1];
+
+            // Days Gone: guard null deref of [rax+8/10] regardless of preceding instruction
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
-                previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
+                previous_instruction->instrux.Operands[0].Info.Register.Reg != op1.Info.Memory.Base)
             {
                 SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
                 return EXCEPTION_CONTINUE_SEARCH;
