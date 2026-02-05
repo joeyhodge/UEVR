@@ -176,6 +176,7 @@ private:
     bool m_is_shader_setup{false};
     bool m_last_afr_state{false};
     bool m_force_real_backbuffer{false};
+    bool m_backbuffer_is_doublewide{true};
 
     struct OpenXR {
         OpenXR(D3D11Component* p) : parent(p) {}
