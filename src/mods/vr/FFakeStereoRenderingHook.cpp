@@ -3897,16 +3897,8 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto& op0 = decoded->Operands[0];
             const auto& op1 = decoded->Operands[1];
 
-            if (decoded->OperandsCount != 2 || 
-                 op1.Type != ND_OP_MEM      || 
-                !op1.Info.Memory.HasBase)
-            {
-                return EXCEPTION_CONTINUE_SEARCH;
-            }
-
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
 
-            // Get the start of the previous instruction
             auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
                 if (reg == NDR_RAX || reg == NDR_EAX) return 0;
                 if (reg == NDR_RCX || reg == NDR_ECX) return 1;
@@ -3927,42 +3919,95 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return std::nullopt;
             };
 
-            if (is_nullish_access &&
-                decoded->OperandsCount >= 2 &&
-                op0.Type == ND_OP_REG &&
-                op1.Type == ND_OP_MEM &&
-                op1.Info.Memory.HasBase)
-            {
-                if (const auto dest_opt = reg_to_index(op0.Info.Register.Reg); dest_opt) {
-                    const uint8_t dest = *dest_opt;
-                    std::vector<int16_t> patch_bytes{};
-                    if (dest < 8) {
-                        patch_bytes.push_back(0x31); // xor r32, r32
-                        patch_bytes.push_back((int16_t)(0xC0 | (dest << 3) | dest));
-                    } else {
-                        patch_bytes.push_back(0x45); // REX.R|REX.B
-                        patch_bytes.push_back(0x31); // xor r32, r32
-                        const uint8_t r = dest - 8;
-                        patch_bytes.push_back((int16_t)(0xC0 | (r << 3) | r));
-                    }
+            const ND_OPERAND* mem_op = nullptr;
+            if (decoded->OperandsCount >= 1 && op0.Type == ND_OP_MEM) {
+                mem_op = &op0;
+            } else if (decoded->OperandsCount >= 2 && op1.Type == ND_OP_MEM) {
+                mem_op = &op1;
+            }
 
+            if (is_nullish_access && mem_op && mem_op->Info.Memory.HasBase)
+            {
+                std::vector<int16_t> patch_bytes{};
+                bool patched = false;
+
+                if (op0.Type == ND_OP_REG) {
+                    if (const auto dest_opt = reg_to_index(op0.Info.Register.Reg); dest_opt) {
+                        const uint8_t dest = *dest_opt;
+                        if (dest < 8) {
+                            patch_bytes.push_back(0x31); // xor r32, r32
+                            patch_bytes.push_back((int16_t)(0xC0 | (dest << 3) | dest));
+                        } else {
+                            patch_bytes.push_back(0x45); // REX.R|REX.B
+                            patch_bytes.push_back(0x31); // xor r32, r32
+                            const uint8_t r = dest - 8;
+                            patch_bytes.push_back((int16_t)(0xC0 | (r << 3) | r));
+                        }
+                        patched = true;
+                    } else {
+                        // Non-GPR destination (e.g., XMM). NOP the instruction.
+                        patched = true;
+                    }
+                } else if (op0.Type == ND_OP_MEM) {
+                    // Indirect call/jmp or store to [mem]. NOP it.
+                    patched = true;
+                }
+
+                if (patched) {
                     for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
                         patch_bytes.push_back(0x90);
                     }
 
                     SPDLOG_INFO(
-                        "Applying null-safe patch for mem deref at {:x} base={} disp={:x} access={} target={:x}",
+                        "Applying null-safe patch for mem deref at {:x} base={} disp={:x} access={} target={:x} mnem={}",
                         exception_address,
-                        (int)op1.Info.Memory.Base,
-                        op1.Info.Memory.Disp,
+                        (int)mem_op->Info.Memory.Base,
+                        mem_op->Info.Memory.Disp,
                         access_type,
-                        fault_target);
+                        fault_target,
+                        decoded->Mnemonic);
                     ignored_addresses.insert(exception_address);
                     xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+
+                    // If the next instruction is an indirect call/jmp via the same base register,
+                    // patch it too to avoid calling through a null pointer.
+                    if (op0.Type == ND_OP_REG) {
+                        const auto next_addr = exception_address + decoded->Length;
+                        const auto next_ix = utility::decode_one((uint8_t*)next_addr);
+                        if (next_ix) {
+                            const bool is_call = std::string_view{next_ix->Mnemonic}.starts_with("CALL");
+                            const bool is_jmp  = std::string_view{next_ix->Mnemonic}.starts_with("JMP");
+                            if (is_call || is_jmp) {
+                                for (uint8_t op_i = 0; op_i < next_ix->OperandsCount; ++op_i) {
+                                    const auto& nop = next_ix->Operands[op_i];
+                                    if (nop.Type == ND_OP_MEM && nop.Info.Memory.HasBase &&
+                                        nop.Info.Memory.Base == op0.Info.Register.Reg)
+                                    {
+                                        std::vector<int16_t> next_patch{};
+                                        for (size_t i = 0; i < next_ix->Length; ++i) {
+                                            next_patch.push_back(0x90);
+                                        }
+                                        ignored_addresses.insert(next_addr);
+                                        xrsystem_patches.push_back(Patch::create(next_addr, next_patch));
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     return EXCEPTION_CONTINUE_EXECUTION;
                 }
             }
 
+            if (decoded->OperandsCount != 2 || 
+                 op1.Type != ND_OP_MEM      || 
+                !op1.Info.Memory.HasBase)
+            {
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+
+            // Get the start of the previous instruction
             const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
 
             if (!previous_instruction) {
