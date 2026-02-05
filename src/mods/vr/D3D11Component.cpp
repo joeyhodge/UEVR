@@ -250,8 +250,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         SPDLOG_WARN("[VR] UE4 render target missing; using real back buffer.");
     }
 
-    const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
-    if (is_extreme_compat) {
+    bool use_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
+    if (use_extreme_compat) {
         backbuffer = real_backbuffer;
     }
 
@@ -321,16 +321,30 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         runtime->fix_frame();
     }
 
+    if (!use_extreme_compat) {
+        if ((backbuffer_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
+            spdlog::warn("[VR] Backbuffer is missing SRV bind flag; forcing extreme compatibility copy");
+            use_extreme_compat = true;
+        } else if (!m_engine_tex_ref.set(backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM)) {
+            spdlog::warn("[VR] Failed to create SRV/RTV for backbuffer; forcing extreme compatibility copy");
+            m_engine_tex_ref.reset();
+            use_extreme_compat = true;
+        }
+    }
+
     // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
-    if (!is_extreme_compat) {
-        m_engine_tex_ref.set(backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
-    } else {
+    if (use_extreme_compat) {
         // We need to use a shader to convert the real backbuffer
         // to a VR compatible format.
         DX11StateBackup backup{context.Get()};
 
         // this backbuffer is a copy of the real backbuffer
         // except it can be used as a shader resource
+        if (real_backbuffer == nullptr) {
+            spdlog::error("[VR] Extreme compatibility requested but real backbuffer is null");
+            return vr::VRCompositorError_None;
+        }
+
         if (m_extreme_compat_backbuffer == nullptr) {
             D3D11_TEXTURE2D_DESC desc{};
             real_backbuffer->GetDesc(&desc);
@@ -398,7 +412,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         m_engine_ui_ref.set((ID3D11Texture2D*)ui_target->get_native_resource(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
 
         // Recreate UI texture if needed
-        if (!is_extreme_compat) {
+        if (!use_extreme_compat) {
             const auto native = (ID3D11Texture2D*)ui_target->get_native_resource();
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
@@ -592,7 +606,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             src_box.front = 0;
             src_box.back = 1;
 
-            if (is_extreme_compat || !m_backbuffer_is_doublewide) {
+            if (use_extreme_compat || !m_backbuffer_is_doublewide) {
                 src_box.right = m_backbuffer_size[0];
             } else {
                 src_box.right = eye_width;
@@ -617,7 +631,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             src_box.front = 0;
             src_box.back = 1;
 
-            if (is_extreme_compat || !m_backbuffer_is_doublewide) {
+            if (use_extreme_compat || !m_backbuffer_is_doublewide) {
                 src_box.right = m_backbuffer_size[0];
             } else {
                 src_box.right = eye_width;
@@ -663,7 +677,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (is_extreme_compat || !m_backbuffer_is_doublewide) {
+                if (use_extreme_compat || !m_backbuffer_is_doublewide) {
                     src_box.right = m_backbuffer_size[0];
                 } else {
                     src_box.right = eye_width;
@@ -680,7 +694,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             if (is_actually_afr) {
                 D3D11_BOX src_box{};
-                if (!is_extreme_compat && m_backbuffer_is_doublewide) {
+                if (!use_extreme_compat && m_backbuffer_is_doublewide) {
                     if (!is_afr) {
                         src_box.left = eye_width;
                         src_box.right = m_backbuffer_size[0];
@@ -816,7 +830,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (is_extreme_compat || !m_backbuffer_is_doublewide) {
+                if (use_extreme_compat || !m_backbuffer_is_doublewide) {
                     src_box.right = m_backbuffer_size[0];
                 } else {
                     src_box.right = eye_width;
@@ -849,7 +863,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             // Copy the back buffer to the right eye texture.
             if (!m_scene_capture_tex_ref.has_texture()) {
                 D3D11_BOX src_box{};
-                if (!is_extreme_compat && m_backbuffer_is_doublewide) {
+                if (!use_extreme_compat && m_backbuffer_is_doublewide) {
                     if (!is_afr) {
                         src_box.left = eye_width;
                         src_box.right = m_backbuffer_size[0];
@@ -1335,8 +1349,8 @@ bool D3D11Component::setup() {
         SPDLOG_WARN("[VR] UE4 render target missing; using real back buffer.");
     }
 
-    const auto is_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
-    if (is_extreme_compat) {
+    const auto use_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
+    if (use_extreme_compat) {
         backbuffer = real_backbuffer;
     }
 
@@ -1364,7 +1378,7 @@ bool D3D11Component::setup() {
         m_real_backbuffer_size[1] = real_backbuffer_desc.Height;
     }
 
-    if (!is_extreme_compat) {
+    if (!use_extreme_compat) {
         if (m_backbuffer_is_doublewide) {
             backbuffer_desc.Width = backbuffer_desc.Width / 2;
         }
@@ -1402,7 +1416,7 @@ bool D3D11Component::setup() {
 
         std::optional<DXGI_FORMAT> tex_format{};
         
-        if (!is_extreme_compat) {
+        if (!use_extreme_compat) {
             tex_format = DXGI_FORMAT_B8G8R8A8_UNORM;
         }
 
@@ -1416,7 +1430,7 @@ bool D3D11Component::setup() {
     clear_tex(m_ui_tex.Get());
 
     // copy backbuffer into right eye
-    if (!is_extreme_compat) {
+    if (!use_extreme_compat) {
         context->CopyResource(m_right_eye_tex.Get(), backbuffer.Get());
         context->CopyResource(m_left_eye_tex.Get(), backbuffer.Get());
     }
