@@ -1061,6 +1061,12 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 void D3D11Component::on_post_present(VR* vr) {
     // Clear the (real) backbuffer if VR is enabled. Otherwise it will flicker and all sorts of nasty things.
     if (vr->is_hmd_active()) {
+        // Days Gone uses the real backbuffer heavily; clearing here can blank the scene.
+        // Skip the clear when we're forced onto the real backbuffer or extreme compat.
+        if (m_force_real_backbuffer || vr->is_extreme_compatibility_mode_enabled()) {
+            return;
+        }
+
         auto& hook = g_framework->get_d3d11_hook();
         auto device = hook->get_device();
         auto swapchain = hook->get_swap_chain();
