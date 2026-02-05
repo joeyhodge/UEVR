@@ -2,6 +2,7 @@
 
 #include <mutex>
 #include <wrl.h>
+#include <d3d11.h>
 
 #include "../../Mod.hpp"
 
@@ -54,6 +55,8 @@ public:
 
         return nullptr;
     }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> get_best_color_texture(uint32_t min_width = 0, uint32_t min_height = 0, std::wstring* out_name = nullptr);
 
 private:
     bool hook();

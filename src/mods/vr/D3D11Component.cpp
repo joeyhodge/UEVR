@@ -13,6 +13,7 @@ namespace pixel_shader1 {
 
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/String.hpp>
 
 #include "Framework.hpp"
 #include "../VR.hpp"
@@ -250,7 +251,34 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         SPDLOG_WARN("[VR] UE4 render target missing; using real back buffer.");
     }
 
-    bool use_extreme_compat = vr->is_extreme_compatibility_mode_enabled() || m_force_real_backbuffer;
+    bool using_rt_pool = false;
+    if (m_force_real_backbuffer || vr->should_disable_separate_render_target()) {
+        auto& rt_pool = vr->get_render_target_pool_hook();
+        std::wstring chosen_name{};
+
+        D3D11_TEXTURE2D_DESC real_desc{};
+        if (real_backbuffer != nullptr) {
+            real_backbuffer->GetDesc(&real_desc);
+        }
+
+        const auto min_w = real_desc.Width > 0 ? real_desc.Width / 2 : 0;
+        const auto min_h = real_desc.Height > 0 ? real_desc.Height / 2 : 0;
+        auto pool_tex = rt_pool->get_best_color_texture(min_w, min_h, &chosen_name);
+
+        if (pool_tex != nullptr) {
+            backbuffer = pool_tex;
+            m_force_real_backbuffer = false;
+            using_rt_pool = true;
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using RenderTargetPool color target: {}", utility::narrow(chosen_name));
+        }
+    }
+
+    bool use_extreme_compat = vr->is_extreme_compatibility_mode_enabled();
+    if (using_rt_pool) {
+        use_extreme_compat = false;
+    } else if (m_force_real_backbuffer) {
+        use_extreme_compat = true;
+    }
     if (use_extreme_compat) {
         backbuffer = real_backbuffer;
     }

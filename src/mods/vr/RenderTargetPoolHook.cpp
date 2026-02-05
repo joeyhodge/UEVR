@@ -75,19 +75,10 @@ void RenderTargetPoolHook::on_post_find_free_element(
 {
     const auto want_depth = VR::get()->is_depth_enabled();
     const auto want_log = VR::get()->should_log_render_target_names();
+    const auto want_capture = g_hook->m_wants_activate;
 
-    // Right now we are only using this for depth
-    // and on some games it will crash if we mess with anything
-    // so, TODO: fix the games that crash with depth enabled
-    if (!want_depth && !want_log) {
-        std::scoped_lock _{g_hook->m_mutex};
-        m_render_targets.clear();
+    if (!want_depth && !want_log && !want_capture) {
         return;
-    }
-
-    if (!want_depth) {
-        std::scoped_lock _{g_hook->m_mutex};
-        m_render_targets.clear();
     }
 
     if (name != nullptr) {
@@ -95,12 +86,10 @@ void RenderTargetPoolHook::on_post_find_free_element(
 
         std::scoped_lock _{g_hook->m_mutex};
 
-        if (want_depth) {
-            if (out != nullptr) {
-                g_hook->m_render_targets[name] = out->reference;
-            } else {
-                g_hook->m_render_targets.erase(name);
-            }
+        if (out != nullptr) {
+            g_hook->m_render_targets[name] = out->reference;
+        } else {
+            g_hook->m_render_targets.erase(name);
         }
 
         if (!g_hook->m_seen_names.contains(name)) {
@@ -123,6 +112,69 @@ void RenderTargetPoolHook::on_post_find_free_element(
             }
         }
     }
+}
+
+Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_texture(uint32_t min_width, uint32_t min_height, std::wstring* out_name) {
+    std::scoped_lock _{m_mutex};
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> best{};
+    uint64_t best_score = 0;
+    std::wstring best_name{};
+
+    for (const auto& [name, rt] : m_render_targets) {
+        if (rt == nullptr) {
+            continue;
+        }
+
+        const auto& tex = rt->item.texture.texture;
+        if (tex == nullptr) {
+            continue;
+        }
+
+        auto native = (ID3D11Texture2D*)tex->get_native_resource();
+        if (native == nullptr) {
+            continue;
+        }
+
+        D3D11_TEXTURE2D_DESC desc{};
+        native->GetDesc(&desc);
+
+        if (desc.Width < min_width || desc.Height < min_height) {
+            continue;
+        }
+
+        if ((desc.BindFlags & D3D11_BIND_DEPTH_STENCIL) != 0) {
+            continue;
+        }
+
+        std::wstring lower{name};
+        std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return std::towlower(c); });
+
+        if (lower.find(L"depth") != std::wstring::npos) {
+            continue;
+        }
+
+        uint64_t score = static_cast<uint64_t>(desc.Width) * static_cast<uint64_t>(desc.Height);
+
+        if (lower.find(L"postoutput") != std::wstring::npos) score += 1000000000ULL;
+        if (lower.find(L"upscale") != std::wstring::npos) score += 800000000ULL;
+        if (lower.find(L"postprocess") != std::wstring::npos) score += 400000000ULL;
+        if (lower.find(L"scenecolor") != std::wstring::npos) score += 200000000ULL;
+        if (lower.find(L"fog") != std::wstring::npos) score += 100000000ULL;
+        if (lower.find(L"ui") != std::wstring::npos) score -= 500000000ULL;
+
+        if (score > best_score) {
+            best_score = score;
+            best = native;
+            best_name = name;
+        }
+    }
+
+    if (out_name != nullptr) {
+        *out_name = best_name;
+    }
+
+    return best;
 }
 
 bool RenderTargetPoolHook::find_free_element_hook(

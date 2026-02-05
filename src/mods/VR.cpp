@@ -1504,6 +1504,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 
     SPDLOG_INFO_ONCE("VR: Pre-engine tick");
 
+    m_render_target_pool_hook->activate();
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
 
     update_statistics_overlay(engine);
