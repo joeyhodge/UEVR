@@ -1151,7 +1151,7 @@ private:
     const ModToggle::Ptr m_controllers_allowed{ ModToggle::create(generate_name("ControllersAllowed"), true) };
     bool m_controller_test_mode{false};
 
-    std::atomic<bool> m_force_skip_rt_size_override{false};
+    std::atomic<bool> m_force_skip_rt_size_override{true};
 
     std::atomic<float> m_game_fov{0.0f};
     std::atomic<float> m_game_fov_base{0.0f};

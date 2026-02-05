@@ -1,4 +1,5 @@
 #include <spdlog/spdlog.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <cwctype>
@@ -24,7 +25,7 @@ void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float de
     const auto want_depth = VR::get()->is_depth_enabled();
     const auto want_log = VR::get()->should_log_render_target_names();
 
-    if (!m_attempted_hook && (want_depth || want_log)) {
+    if (!m_attempted_hook) {
         m_wants_activate = true;
     }
 
@@ -86,8 +87,9 @@ void RenderTargetPoolHook::on_post_find_free_element(
 
         std::scoped_lock _{g_hook->m_mutex};
 
-        if (out != nullptr) {
+        if (out != nullptr && out->reference != nullptr) {
             g_hook->m_render_targets[name] = out->reference;
+            VR::get()->set_force_skip_rt_size_override(true);
         } else {
             g_hook->m_render_targets.erase(name);
         }
@@ -122,16 +124,22 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
     std::wstring best_name{};
 
     for (const auto& [name, rt] : m_render_targets) {
-        if (rt == nullptr) {
+        if (rt == nullptr || IsBadReadPtr(rt, sizeof(void*))) {
             continue;
         }
 
         const auto& tex = rt->item.texture.texture;
-        if (tex == nullptr) {
+        if (tex == nullptr || IsBadReadPtr(tex, sizeof(void*))) {
             continue;
         }
 
-        auto native = (ID3D11Texture2D*)tex->get_native_resource();
+        ID3D11Texture2D* native = nullptr;
+        __try {
+            native = (ID3D11Texture2D*)tex->get_native_resource();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            SPDLOG_WARN("RenderTargetPoolHook: exception while reading native resource for {}", utility::narrow(name));
+            continue;
+        }
         if (native == nullptr) {
             continue;
         }
