@@ -94,4 +94,5 @@ private:
     SafetyHookInline m_find_free_element_hook{};
     std::unordered_map<std::wstring, IPooledRenderTarget*> m_render_targets{};
     std::unordered_set<std::wstring> m_seen_names{};
+    std::wstring m_last_best_name{};
 };

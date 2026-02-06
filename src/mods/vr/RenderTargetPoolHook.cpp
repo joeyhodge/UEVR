@@ -147,6 +147,7 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
     std::scoped_lock _{m_mutex};
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> best{};
+    D3D11_TEXTURE2D_DESC best_desc{};
     uint64_t best_score = 0;
     std::wstring best_name{};
 
@@ -210,12 +211,23 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
             best_score = score;
             best = native;
             best_name = name;
+            best_desc = desc;
         }
     }
 
     if (out_name != nullptr) {
         *out_name = best_name;
     }
+    if (best_name != m_last_best_name) {
+        if (best) {
+            SPDLOG_INFO("[RenderTargetPoolHook] Selected color target: {} ({}x{})",
+                        utility::narrow(best_name),
+                        best_desc.Width, best_desc.Height);
+        } else {
+            SPDLOG_INFO("[RenderTargetPoolHook] Selected color target: <none>");
+        }
+    }
+    m_last_best_name = best_name;
 
     return best;
 }
