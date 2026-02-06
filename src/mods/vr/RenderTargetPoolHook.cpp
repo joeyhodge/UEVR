@@ -6,6 +6,7 @@
 
 #include <utility/Scan.hpp>
 #include <utility/String.hpp>
+#include <utility/Module.hpp>
 
 #include <sdk/FRenderTargetPool.hpp>
 #include <sdk/EngineModule.hpp>
@@ -32,6 +33,76 @@ inline void release_ref(IPooledRenderTarget* rt) {
     if (rt != nullptr) {
         rt->Release();
     }
+}
+
+inline bool is_readable_ptr(const void* ptr, size_t size = sizeof(void*)) {
+    if (ptr == nullptr) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    if ((mbi.Protect & PAGE_NOACCESS) || (mbi.Protect & PAGE_GUARD)) {
+        return false;
+    }
+
+    const auto start = reinterpret_cast<uintptr_t>(ptr);
+    const auto end = start + size;
+    const auto region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+
+    return end <= region_end;
+}
+
+inline bool is_game_object(const void* obj) {
+    if (obj == nullptr || !is_readable_ptr(obj)) {
+        return false;
+    }
+    auto vtable = *(void**)obj;
+    if (vtable == nullptr || !is_readable_ptr(vtable)) {
+        return false;
+    }
+    const auto module_within = utility::get_module_within(vtable);
+    if (!module_within) {
+        return false;
+    }
+    const auto module_path = utility::get_module_path(*module_within);
+    if (!module_path) {
+        return false;
+    }
+    auto lower = std::string(*module_path);
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower.ends_with(".exe");
+}
+
+inline bool is_d3d_object(const void* obj) {
+    if (obj == nullptr || !is_readable_ptr(obj)) {
+        return false;
+    }
+    auto vtable = *(void**)obj;
+    if (vtable == nullptr || !is_readable_ptr(vtable)) {
+        return false;
+    }
+    const auto module_within = utility::get_module_within(vtable);
+    if (!module_within) {
+        return false;
+    }
+    const auto module_path = utility::get_module_path(*module_within);
+    if (!module_path) {
+        return false;
+    }
+    auto lower = std::string(*module_path);
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower.ends_with("d3d11.dll") ||
+           lower.ends_with("dxgi.dll") ||
+           lower.ends_with("d3d12.dll") ||
+           lower.ends_with("d3d12core.dll");
 }
 } // namespace
 
@@ -150,14 +221,17 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
     D3D11_TEXTURE2D_DESC best_desc{};
     uint64_t best_score = 0;
     std::wstring best_name{};
+    std::vector<std::wstring> to_remove{};
 
     for (const auto& [name, rt] : m_render_targets) {
-        if (rt == nullptr || IsBadReadPtr(rt, sizeof(void*))) {
+        if (!is_game_object(rt)) {
+            to_remove.push_back(name);
             continue;
         }
 
         const auto& tex = rt->item.texture.texture;
-        if (tex == nullptr || IsBadReadPtr(tex, sizeof(void*))) {
+        if (!is_game_object(tex)) {
+            to_remove.push_back(name);
             continue;
         }
 
@@ -165,9 +239,16 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
         if (native == nullptr) {
             continue;
         }
+        if (!is_d3d_object(native)) {
+            continue;
+        }
 
         D3D11_TEXTURE2D_DESC desc{};
-        native->GetDesc(&desc);
+        __try {
+            native->GetDesc(&desc);
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            continue;
+        }
 
         if (desc.Width < min_width || desc.Height < min_height) {
             continue;
@@ -212,6 +293,13 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
             best = native;
             best_name = name;
             best_desc = desc;
+        }
+    }
+
+    for (const auto& name : to_remove) {
+        if (auto it = m_render_targets.find(name); it != m_render_targets.end()) {
+            release_ref(it->second);
+            m_render_targets.erase(it);
         }
     }
 
