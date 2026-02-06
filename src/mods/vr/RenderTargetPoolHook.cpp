@@ -104,6 +104,15 @@ inline bool is_d3d_object(const void* obj) {
            lower.ends_with("d3d12.dll") ||
            lower.ends_with("d3d12core.dll");
 }
+
+inline bool safe_get_desc(ID3D11Texture2D* tex, D3D11_TEXTURE2D_DESC& out) {
+    __try {
+        tex->GetDesc(&out);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 } // namespace
 
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -244,9 +253,7 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
         }
 
         D3D11_TEXTURE2D_DESC desc{};
-        __try {
-            native->GetDesc(&desc);
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (!safe_get_desc(native, desc)) {
             continue;
         }
 
