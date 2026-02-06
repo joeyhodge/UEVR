@@ -2335,10 +2335,48 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
-                if (src_box == nullptr) {
-                    context->CopyResource(ctx.textures[texture_index].texture, resource);
+                auto dst_tex = ctx.textures[texture_index].texture;
+                bool needs_blit = false;
+                D3D11_TEXTURE2D_DESC src_desc{};
+                D3D11_TEXTURE2D_DESC dst_desc{};
+                resource->GetDesc(&src_desc);
+                dst_tex->GetDesc(&dst_desc);
+
+                if (src_desc.Format != dst_desc.Format ||
+                    src_desc.Width != dst_desc.Width ||
+                    src_desc.Height != dst_desc.Height) {
+                    needs_blit = true;
+                }
+
+                if (needs_blit && parent != nullptr && parent->m_backbuffer_batch) {
+                    // Use a shader blit for format/size conversion.
+                    TextureContext srv_ctx{resource, std::nullopt, src_desc.Format};
+                    TextureContext rtv_ctx{dst_tex, dst_desc.Format, std::nullopt};
+
+                    if (srv_ctx.has_srv() && rtv_ctx.has_rtv()) {
+                        if (src_box != nullptr) {
+                            RECT src_rect{};
+                            src_rect.left = (LONG)src_box->left;
+                            src_rect.top = (LONG)src_box->top;
+                            src_rect.right = (LONG)src_box->right;
+                            src_rect.bottom = (LONG)src_box->bottom;
+                            parent->render_srv_to_rtv(parent->m_backbuffer_batch.get(), srv_ctx, rtv_ctx, src_rect);
+                        } else {
+                            parent->render_srv_to_rtv(parent->m_backbuffer_batch.get(), srv_ctx, rtv_ctx);
+                        }
+                    } else {
+                        if (src_box == nullptr) {
+                            context->CopyResource(dst_tex, resource);
+                        } else {
+                            context->CopySubresourceRegion(dst_tex, 0, 0, 0, 0, resource, 0, src_box);
+                        }
+                    }
                 } else {
-                    context->CopySubresourceRegion(ctx.textures[texture_index].texture, 0, 0, 0, 0, resource, 0, src_box);
+                    if (src_box == nullptr) {
+                        context->CopyResource(dst_tex, resource);
+                    } else {
+                        context->CopySubresourceRegion(dst_tex, 0, 0, 0, 0, resource, 0, src_box);
+                    }
                 }
             }
 
