@@ -113,6 +113,17 @@ inline bool safe_get_desc(ID3D11Texture2D* tex, D3D11_TEXTURE2D_DESC& out) {
         return false;
     }
 }
+
+inline void* safe_get_native_resource(FRHITexture* tex) {
+    if (tex == nullptr) {
+        return nullptr;
+    }
+    __try {
+        return tex->get_native_resource();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
 } // namespace
 
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -223,6 +234,54 @@ void RenderTargetPoolHook::on_post_find_free_element(
     }
 }
 
+void* RenderTargetPoolHook::get_native_resource(IPooledRenderTarget* rt) {
+    if (!is_game_object(rt)) {
+        return nullptr;
+    }
+
+    auto try_tex = [](FRHITexture* tex) -> void* {
+        if (!is_game_object(tex)) {
+            return nullptr;
+        }
+        auto native = safe_get_native_resource(tex);
+        if (native == nullptr) {
+            return nullptr;
+        }
+        if (!is_d3d_object(native)) {
+            return nullptr;
+        }
+        return native;
+    };
+
+    // If we already discovered an offset, try it first.
+    if (m_rt_tex_offset) {
+        auto candidate = *(FRHITexture**)((uintptr_t)rt + *m_rt_tex_offset);
+        if (auto native = try_tex(candidate)) {
+            return native;
+        }
+        m_rt_tex_offset.reset();
+    }
+
+    // Try the SDK layout directly.
+    if (auto native = try_tex(rt->item.texture.texture)) {
+        const auto offset = (uintptr_t)(&rt->item.texture.texture) - (uintptr_t)rt;
+        m_rt_tex_offset = offset;
+        return native;
+    }
+
+    // Scan a small range for a plausible FRHITexture pointer.
+    constexpr size_t scan_limit = 0x200;
+    for (size_t offset = 0; offset < scan_limit; offset += sizeof(void*)) {
+        auto candidate = *(FRHITexture**)((uintptr_t)rt + offset);
+        if (auto native = try_tex(candidate)) {
+            m_rt_tex_offset = offset;
+            return native;
+        }
+    }
+
+    return nullptr;
+}
+
 Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_texture(uint32_t min_width, uint32_t min_height, std::wstring* out_name) {
     std::scoped_lock _{m_mutex};
 
@@ -238,17 +297,8 @@ Microsoft::WRL::ComPtr<ID3D11Texture2D> RenderTargetPoolHook::get_best_color_tex
             continue;
         }
 
-        const auto& tex = rt->item.texture.texture;
-        if (!is_game_object(tex)) {
-            to_remove.push_back(name);
-            continue;
-        }
-
-        ID3D11Texture2D* native = (ID3D11Texture2D*)tex->get_native_resource();
+        ID3D11Texture2D* native = (ID3D11Texture2D*)get_native_resource(rt);
         if (native == nullptr) {
-            continue;
-        }
-        if (!is_d3d_object(native)) {
             continue;
         }
 

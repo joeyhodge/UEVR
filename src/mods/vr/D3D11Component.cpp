@@ -135,22 +135,52 @@ bool D3D11Component::TextureContext::set(ID3D11Resource* in_tex, std::optional<D
         auto device = g_framework->get_d3d11_hook()->get_device();
         bool made_rtv = false;
         bool made_srv = false;
+        D3D11_TEXTURE2D_DESC tex_desc{};
+        bool have_desc = false;
+
+        if (in_tex != nullptr) {
+            ComPtr<ID3D11Texture2D> tex2d{};
+            if (SUCCEEDED(in_tex->QueryInterface(IID_PPV_ARGS(&tex2d))) && tex2d != nullptr) {
+                tex2d->GetDesc(&tex_desc);
+                have_desc = true;
+            }
+        }
+
+        auto resolve_view_format = [](DXGI_FORMAT fmt) -> DXGI_FORMAT {
+            switch (fmt) {
+                case DXGI_FORMAT_R8G8B8A8_TYPELESS: return DXGI_FORMAT_R8G8B8A8_UNORM;
+                case DXGI_FORMAT_B8G8R8A8_TYPELESS: return DXGI_FORMAT_B8G8R8A8_UNORM;
+                case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_FLOAT;
+                case DXGI_FORMAT_R32_TYPELESS: return DXGI_FORMAT_R32_FLOAT;
+                case DXGI_FORMAT_R32G32_TYPELESS: return DXGI_FORMAT_R32G32_FLOAT;
+                case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_FLOAT;
+                default: return fmt;
+            }
+        };
 
         if (!rtv_format) {
-            if (!FAILED(device->CreateRenderTargetView(tex.Get(), nullptr, &rtv))) {
-                made_rtv = true;
+            if (!have_desc || (tex_desc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0) {
+                if (!FAILED(device->CreateRenderTargetView(tex.Get(), nullptr, &rtv))) {
+                    made_rtv = true;
+                }
             }
         }
 
         if (!srv_format) {  
-            if (!FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) {
-                made_srv = true;
+            if (!have_desc || (tex_desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0) {
+                if (!FAILED(device->CreateShaderResourceView(tex.Get(), nullptr, &srv))) {
+                    made_srv = true;
+                }
             }
         }
 
         if (!made_rtv) {
             if (!rtv_format) {
-                rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+                if (have_desc) {
+                    rtv_format = resolve_view_format(tex_desc.Format);
+                } else {
+                    rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                }
             }
 
             D3D11_RENDER_TARGET_VIEW_DESC rtv_desc{};
@@ -163,7 +193,11 @@ bool D3D11Component::TextureContext::set(ID3D11Resource* in_tex, std::optional<D
 
         if (!made_srv) {
             if (!srv_format) {
-                srv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                if (have_desc) {
+                    srv_format = resolve_view_format(tex_desc.Format);
+                } else {
+                    srv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                }
             }
 
             D3D11_SHADER_RESOURCE_VIEW_DESC srv_desc{};

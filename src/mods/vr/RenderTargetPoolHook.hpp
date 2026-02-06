@@ -3,6 +3,7 @@
 #include <mutex>
 #include <wrl.h>
 #include <d3d11.h>
+#include <optional>
 
 #include "../../Mod.hpp"
 
@@ -38,13 +39,7 @@ public:
         std::scoped_lock _{m_mutex};
         if (auto it = m_render_targets.find(name); it != m_render_targets.end()) {
             const auto& rt = it->second;
-            const auto& tex = rt->item.texture.texture;
-
-            if (tex == nullptr) {
-                return nullptr;
-            }
-
-            auto native_resource = (T*)tex->get_native_resource();
+            auto native_resource = (T*)get_native_resource(rt);
 
             if (native_resource == nullptr) {
                 return nullptr;
@@ -59,6 +54,7 @@ public:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> get_best_color_texture(uint32_t min_width = 0, uint32_t min_height = 0, std::wstring* out_name = nullptr);
 
 private:
+    void* get_native_resource(IPooledRenderTarget* rt);
     bool hook();
 
     // Stuff past name param is added in newer UE versions.
@@ -95,4 +91,5 @@ private:
     std::unordered_map<std::wstring, IPooledRenderTarget*> m_render_targets{};
     std::unordered_set<std::wstring> m_seen_names{};
     std::wstring m_last_best_name{};
+    std::optional<size_t> m_rt_tex_offset{};
 };
