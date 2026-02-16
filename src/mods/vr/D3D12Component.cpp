@@ -5,6 +5,8 @@
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
 #include <array>
+#include <exception>
+#include <string_view>
 #include <DirectXMath.h>
 
 #include "Framework.hpp"
@@ -24,6 +26,25 @@
 
 constexpr auto ENGINE_SRC_DEPTH = D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+namespace {
+template <typename TextureT>
+ID3D12Resource* safe_get_native_resource(TextureT* texture, std::string_view source) {
+    if (texture == nullptr) {
+        return nullptr;
+    }
+
+    try {
+        return (ID3D12Resource*)texture->get_native_resource();
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw std::exception: {}", source, e.what());
+    } catch (...) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw unknown exception", source);
+    }
+
+    return nullptr;
+}
+}
 
 namespace vrmod {
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
@@ -56,7 +77,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     auto ue4_texture = VR::get()->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
     if (ue4_texture != nullptr) {
-        backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
+        backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
     }
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -100,6 +121,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         SPDLOG_INFO_ONCE("[VR] UI target matches scene render target; disabling UI copy/clear for this frame");
         ui_target = nullptr;
     }
+
+    const auto ui_target_native = safe_get_native_resource(ui_target, "ui target");
 
     const auto frame_count = vr->m_render_frame_count;
 
@@ -156,7 +179,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (vr->is_native_stereo_fix_enabled()) {
         const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
-        const auto scene_capture_rt = scene_capture != nullptr ? (ID3D12Resource*)scene_capture->get_native_resource() : nullptr;
+        const auto scene_capture_rt = safe_get_native_resource(scene_capture, "scene capture render target");
 
         if (scene_capture_rt != nullptr && m_scene_capture_tex.texture.Get() != scene_capture_rt) {
             spdlog::info("[VR] Setting up scene capture texture as reference to original");
@@ -226,9 +249,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (ui_target != nullptr) {
-        if (m_game_ui_tex.texture.Get() != ui_target->get_native_resource()) {
+        if (ui_target_native != nullptr && m_game_ui_tex.texture.Get() != ui_target_native) {
             if (!m_game_ui_tex.setup(device, 
-                (ID3D12Resource*)ui_target->get_native_resource(), 
+                ui_target_native,
                 DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM,
                 L"Game UI Texture"))
             {
@@ -239,7 +262,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // Recreate UI texture if needed
         if (!vr->is_extreme_compatibility_mode_enabled()) {
-            const auto native = (ID3D12Resource*)ui_target->get_native_resource();
+            const auto native = ui_target_native;
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
 
@@ -385,8 +408,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (is_right_eye_frame) {
             if (is_2d_screen) {
                 m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
-            } else if (ui_target != nullptr) {
-                m_openvr.ui_tex.commands.copy((ID3D12Resource*)ui_target->get_native_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
+            } else if (ui_target_native != nullptr) {
+                m_openvr.ui_tex.commands.copy(ui_target_native, m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             }
         } else if (is_2d_screen) {
             m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
@@ -403,8 +426,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, std::nullopt, ENGINE_SRC_COLOR);
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, clear_rt, ENGINE_SRC_COLOR);
                 }
-            } else if (ui_target != nullptr) {
-                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, (ID3D12Resource*)ui_target->get_native_resource(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+            } else if (ui_target_native != nullptr) {
+                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, ui_target_native, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
             } else if (vr->m_desktop_fix->value()) {
                 SPDLOG_INFO_ONCE("[VR] UI target missing; drawing spectator view via OpenXR UI swapchain");
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, nullptr, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
@@ -1154,7 +1177,7 @@ bool D3D12Component::setup() {
     auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
     if (ue4_texture != nullptr) {
-        backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
+        backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
     }
 
     ComPtr<ID3D12Resource> real_backbuffer{};
@@ -1364,7 +1387,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
 
         if (ue4_texture != nullptr) {
-            backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
+            backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
             has_actual_vr_backbuffer = backbuffer != nullptr;
         }
     }
