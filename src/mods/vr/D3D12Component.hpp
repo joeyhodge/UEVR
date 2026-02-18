@@ -2,6 +2,7 @@
 
 #include <span>
 
+#include <algorithm>
 #include <d3d12.h>
 #include <dxgi.h>
 #include <mutex>
@@ -107,14 +108,34 @@ private:
         }
 
         void copy_left(ID3D12Resource* src, D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT) {
+            if (src == nullptr) {
+                return;
+            }
+
             auto& ctx = this->acquire_left();
-            //ctx.commands.copy(src, ctx.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            // Copy the left half of the backbuffer to the left eye texture.
+
+            const auto src_desc = src->GetDesc();
+            const auto src_width = (uint32_t)src_desc.Width;
+            const auto src_height = (uint32_t)src_desc.Height;
+            const auto expected_width = parent->m_backbuffer_size[0];
+            const auto tolerance = expected_width > 0 ? expected_width / 10 : 0;
+            const auto is_double_wide = expected_width > 0 &&
+                src_width + tolerance >= expected_width &&
+                src_width >= (expected_width > tolerance ? expected_width - tolerance : expected_width);
+            const auto eye_width = is_double_wide ? src_width / 2 : src_width;
+            const auto dst_desc = ctx.texture->GetDesc();
+            const auto copy_width = std::min<uint32_t>(eye_width, (uint32_t)dst_desc.Width);
+            const auto copy_height = std::min<uint32_t>(src_height, (uint32_t)dst_desc.Height);
+
+            if (copy_width == 0 || copy_height == 0) {
+                return;
+            }
+
             D3D12_BOX src_box{};
             src_box.left = 0;
             src_box.top = 0;
-            src_box.right = parent->m_backbuffer_size[0] / 2;
-            src_box.bottom = parent->m_backbuffer_size[1];
+            src_box.right = copy_width;
+            src_box.bottom = copy_height;
             src_box.front = 0;
             src_box.back = 1;
             ctx.commands.copy_region(src, ctx.texture.Get(), &src_box, src_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -122,14 +143,36 @@ private:
         }
 
         void copy_right(ID3D12Resource* src, D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT) {
+            if (src == nullptr) {
+                return;
+            }
+
             auto& ctx = this->acquire_right();
-            //ctx.commands.copy(src, ctx.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            // Copy the right half of the backbuffer to the right eye texture.
+
+            const auto src_desc = src->GetDesc();
+            const auto src_width = (uint32_t)src_desc.Width;
+            const auto src_height = (uint32_t)src_desc.Height;
+            const auto expected_width = parent->m_backbuffer_size[0];
+            const auto tolerance = expected_width > 0 ? expected_width / 10 : 0;
+            const auto is_double_wide = expected_width > 0 &&
+                src_width + tolerance >= expected_width &&
+                src_width >= (expected_width > tolerance ? expected_width - tolerance : expected_width);
+            const auto eye_width = is_double_wide ? src_width / 2 : src_width;
+            const auto dst_desc = ctx.texture->GetDesc();
+            const auto src_left = is_double_wide ? eye_width : 0u;
+            const auto available_width = src_width > src_left ? src_width - src_left : 0u;
+            const auto copy_width = std::min<uint32_t>(available_width, (uint32_t)dst_desc.Width);
+            const auto copy_height = std::min<uint32_t>(src_height, (uint32_t)dst_desc.Height);
+
+            if (copy_width == 0 || copy_height == 0) {
+                return;
+            }
+
             D3D12_BOX src_box{};
-            src_box.left = parent->m_backbuffer_size[0] / 2;
+            src_box.left = src_left;
             src_box.top = 0;
-            src_box.right = parent->m_backbuffer_size[0];
-            src_box.bottom = parent->m_backbuffer_size[1];
+            src_box.right = src_left + copy_width;
+            src_box.bottom = copy_height;
             src_box.front = 0;
             src_box.back = 1;
             ctx.commands.copy_region(src, ctx.texture.Get(), &src_box, src_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -138,14 +181,34 @@ private:
         
         // For AFR
         void copy_left_to_right(ID3D12Resource* src, D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT) {
+            if (src == nullptr) {
+                return;
+            }
+
             auto& ctx = this->acquire_right();
-            //ctx.commands.copy(src, ctx.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            // Copy the right half of the backbuffer to the right eye texture.
+
+            const auto src_desc = src->GetDesc();
+            const auto src_width = (uint32_t)src_desc.Width;
+            const auto src_height = (uint32_t)src_desc.Height;
+            const auto expected_width = parent->m_backbuffer_size[0];
+            const auto tolerance = expected_width > 0 ? expected_width / 10 : 0;
+            const auto is_double_wide = expected_width > 0 &&
+                src_width + tolerance >= expected_width &&
+                src_width >= (expected_width > tolerance ? expected_width - tolerance : expected_width);
+            const auto eye_width = is_double_wide ? src_width / 2 : src_width;
+            const auto dst_desc = ctx.texture->GetDesc();
+            const auto copy_width = std::min<uint32_t>(eye_width, (uint32_t)dst_desc.Width);
+            const auto copy_height = std::min<uint32_t>(src_height, (uint32_t)dst_desc.Height);
+
+            if (copy_width == 0 || copy_height == 0) {
+                return;
+            }
+
             D3D12_BOX src_box{};
             src_box.left = 0;
             src_box.top = 0;
-            src_box.right = parent->m_backbuffer_size[0] / 2;
-            src_box.bottom = parent->m_backbuffer_size[1];
+            src_box.right = copy_width;
+            src_box.bottom = copy_height;
             src_box.front = 0;
             src_box.back = 1;
             ctx.commands.copy_region(src, ctx.texture.Get(), &src_box, src_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);

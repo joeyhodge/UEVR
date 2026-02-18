@@ -1912,7 +1912,8 @@ void VR::on_pre_imgui_frame() {
 
     m_xinput_context.update();
 
-    if (!get_runtime()->ready()) {
+    auto runtime = get_runtime();
+    if (runtime == nullptr || !runtime->ready()) {
         return;
     }
 
@@ -1968,7 +1969,8 @@ void VR::on_frame() {
     m_cvar_manager->on_frame();
     handle_keybinds();
 
-    if (!get_runtime()->ready()) {
+    auto runtime = get_runtime();
+    if (runtime == nullptr || !runtime->ready()) {
         return;
     }
 

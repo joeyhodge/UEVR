@@ -1,6 +1,8 @@
 #include <Windows.h>
 #include <TlHelp32.h>
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -517,6 +519,27 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         view_bounds[eye][1] = 0.5f + 0.5f * this->raw_projections[eye][1] / tan_half_fov[1];
         view_bounds[eye][2] = 0.5f - 0.5f * this->raw_projections[eye][2] / tan_half_fov[2];
         view_bounds[eye][3] = 0.5f + 0.5f * this->raw_projections[eye][3] / tan_half_fov[3];
+
+        auto sanitize_bounds = [&](float& min_v, float& max_v, const char* axis) {
+            if (!std::isfinite(min_v) || !std::isfinite(max_v)) {
+                spdlog::warn("[OpenXR] Non-finite {} bounds detected; resetting to [0,1]", axis);
+                min_v = 0.0f;
+                max_v = 1.0f;
+                return;
+            }
+
+            min_v = std::clamp(min_v, 0.0f, 1.0f);
+            max_v = std::clamp(max_v, 0.0f, 1.0f);
+
+            if (max_v <= min_v) {
+                spdlog::warn("[OpenXR] Invalid {} bounds ({}, {}); resetting to [0,1]", axis, min_v, max_v);
+                min_v = 0.0f;
+                max_v = 1.0f;
+            }
+        };
+
+        sanitize_bounds(view_bounds[eye][0], view_bounds[eye][1], "horizontal");
+        sanitize_bounds(view_bounds[eye][2], view_bounds[eye][3], "vertical");
 
         // if we've derived the right eye, we have up to date view bounds for both so adjust the render target if necessary
         if (eye == 1) {
@@ -1822,6 +1845,42 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             }
             offset_y = view_bounds[i][2] * swapchain->height;
             extent_y = view_bounds[i][3] * swapchain->height - offset_y;
+
+            auto clamp_rect = [](int32_t& offset, int32_t& extent, int32_t max_extent, const char* axis) {
+                if (max_extent <= 0) {
+                    offset = 0;
+                    extent = 0;
+                    return;
+                }
+
+                if (offset < 0) {
+                    extent += offset;
+                    offset = 0;
+                }
+
+                if (offset >= max_extent) {
+                    spdlog::warn("[OpenXR] {} rect offset {} out of range {}; clamping", axis, offset, max_extent);
+                    offset = max_extent - 1;
+                    extent = 1;
+                    return;
+                }
+
+                if (extent <= 0) {
+                    spdlog::warn("[OpenXR] {} rect extent {} invalid; clamping", axis, extent);
+                    extent = 1;
+                }
+
+                if (offset + extent > max_extent) {
+                    extent = max_extent - offset;
+                }
+
+                if (extent <= 0) {
+                    extent = 1;
+                }
+            };
+
+            clamp_rect(offset_x, extent_x, swapchain->width, "x");
+            clamp_rect(offset_y, extent_y, swapchain->height, "y");
             
             // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);
             projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};

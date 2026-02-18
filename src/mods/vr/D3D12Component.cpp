@@ -28,6 +28,50 @@ constexpr auto ENGINE_SRC_DEPTH = D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOUR
 constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 namespace {
+bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
+    if (source_width == 0 || expected_double_width == 0) {
+        return false;
+    }
+
+    // Allow small dynamic-resolution variance around the expected stereo width.
+    const auto tolerance = expected_double_width / 10;
+    const auto min_width = expected_double_width > tolerance ? expected_double_width - tolerance : expected_double_width;
+
+    return source_width + tolerance >= expected_double_width && source_width >= min_width;
+}
+
+ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_view source) {
+    if (texture == nullptr) {
+        return nullptr;
+    }
+
+    const auto known_vtable = FRHITexture2D::get_vtable();
+    if (known_vtable == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] {} get_native_resource skipped: FRHITexture2D vtable is not seeded yet", source);
+        return nullptr;
+    }
+
+    const auto candidate_vtable = *(void**)texture;
+    if (candidate_vtable != known_vtable) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} get_native_resource skipped: vtable mismatch (candidate {:x}, known {:x})",
+            source,
+            (uintptr_t)candidate_vtable,
+            (uintptr_t)known_vtable);
+        return nullptr;
+    }
+
+    try {
+        return (ID3D12Resource*)texture->get_native_resource();
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw std::exception: {}", source, e.what());
+    } catch (...) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw unknown exception", source);
+    }
+
+    return nullptr;
+}
+
 template <typename TextureT>
 ID3D12Resource* safe_get_native_resource(TextureT* texture, std::string_view source) {
     if (texture == nullptr) {
@@ -90,8 +134,21 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (backbuffer == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target unavailable; falling back to real back buffer (D3D12)");
+        backbuffer = real_backbuffer;
+    }
+
+    if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer.");
         return vr::VRCompositorError_None;
+    }
+
+    if (!is_likely_double_wide_source((uint32_t)backbuffer->GetDesc().Width, (uint32_t)m_backbuffer_size[0])) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] Using single-wide source texture {}x{} (expected stereo width {})",
+            backbuffer->GetDesc().Width,
+            backbuffer->GetDesc().Height,
+            m_backbuffer_size[0]);
     }
 
     const auto ui_invert_alpha = vr->get_overlay_component().get_ui_invert_alpha();
@@ -122,7 +179,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         ui_target = nullptr;
     }
 
-    const auto ui_target_native = safe_get_native_resource(ui_target, "ui target");
+    auto ui_target_native = safe_get_native_resource(ui_target, "ui target");
+    if (ui_target_native != nullptr && (ui_target_native == backbuffer.Get() || ui_target_native == real_backbuffer.Get())) {
+        // A mis-detected UI RT can alias the scene/backbuffer on UE5.7 and get cleared each frame.
+        // Drop UI processing for this frame to avoid blacking out desktop/HMD output.
+        SPDLOG_WARN_ONCE("[VR] UI target aliases scene/backbuffer; disabling UI copy/clear path");
+        ui_target = nullptr;
+        ui_target_native = nullptr;
+        m_game_ui_tex.reset();
+    }
 
     const auto frame_count = vr->m_render_frame_count;
 
@@ -201,27 +266,85 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // We need to render the scene capture texture to the right side of the double wide texture
     auto pre_render = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
-        if (render_target == nullptr) {
+        if (render_target == nullptr || m_game_tex.texture.Get() == nullptr) {
             return;
         }
 
-        // Also the same for right, even though it's not a double wide texture
+        const auto scene_desc = m_game_tex.texture->GetDesc();
+        const auto target_desc = render_target->GetDesc();
+        const auto scene_width = (uint32_t)scene_desc.Width;
+        const auto scene_height = (uint32_t)scene_desc.Height;
+        const auto target_width = (uint32_t)target_desc.Width;
+        const auto target_height = (uint32_t)target_desc.Height;
+
+        if (scene_width == 0 || scene_height == 0 || target_width < 2 || target_height == 0) {
+            return;
+        }
+
+        const auto scene_is_double_wide = is_likely_double_wide_source(scene_width, (uint32_t)m_backbuffer_size[0]);
+        const auto scene_eye_width = scene_is_double_wide ? scene_width / 2 : scene_width;
+        const auto target_eye_width = target_width / 2;
+        auto copy_width = std::min<uint32_t>(scene_eye_width, target_eye_width);
+        auto copy_height = std::min<uint32_t>(scene_height, target_height);
+
+        if (copy_width == 0 || copy_height == 0) {
+            return;
+        }
+
         D3D12_BOX left_src_box{
             .left = 0,
             .top = 0,
             .front = 0,
-            .right = m_backbuffer_size[0] / 2,
-            .bottom = m_backbuffer_size[1],
+            .right = copy_width,
+            .bottom = copy_height,
             .back = 1
         };
 
-        commands.copy_region_stereo(
-            m_game_tex.texture.Get(), m_scene_capture_tex.texture.Get(), render_target,
-            &left_src_box, &left_src_box,
-            0, 0, 0, m_backbuffer_size[0] / 2, 0, 0,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_RENDER_TARGET
-        );
+        if (m_scene_capture_tex.texture.Get() != nullptr) {
+            const auto scene_capture_desc = m_scene_capture_tex.texture->GetDesc();
+            copy_width = std::min<uint32_t>(copy_width, (uint32_t)scene_capture_desc.Width);
+            copy_height = std::min<uint32_t>(copy_height, (uint32_t)scene_capture_desc.Height);
+
+            D3D12_BOX right_src_box{
+                .left = 0,
+                .top = 0,
+                .front = 0,
+                .right = copy_width,
+                .bottom = copy_height,
+                .back = 1
+            };
+
+            commands.copy_region_stereo(
+                m_game_tex.texture.Get(), m_scene_capture_tex.texture.Get(), render_target,
+                &left_src_box, &right_src_box,
+                0, 0, 0, target_eye_width, 0, 0,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET
+            );
+        } else {
+            // Single-wide fallback path: duplicate the same eye source to both halves.
+            commands.copy_region(
+                m_game_tex.texture.Get(),
+                render_target,
+                &left_src_box,
+                0,
+                0,
+                0,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET
+            );
+
+            commands.copy_region(
+                m_game_tex.texture.Get(),
+                render_target,
+                &left_src_box,
+                target_eye_width,
+                0,
+                0,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET
+            );
+        }
     };
 
     // For copying the real backbuffer if we need to
@@ -319,6 +442,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
 
         if (is_2d_screen && m_game_tex.texture.Get() != nullptr && m_game_tex.srv_heap != nullptr) {
+            const auto game_desc = m_game_tex.texture->GetDesc();
+            const auto game_width = (uint32_t)game_desc.Width;
+            const auto game_height = (uint32_t)game_desc.Height;
+            const auto game_is_double_wide = is_likely_double_wide_source(game_width, (uint32_t)m_backbuffer_size[0]);
+            const auto game_eye_width = game_is_double_wide ? game_width / 2 : game_width;
+
             // Clear previous frame
             for (auto& screen : m_2d_screen_tex) {
                 commands.clear_rtv(screen, clear_color, ENGINE_SRC_COLOR);
@@ -330,7 +459,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 commands.cmd_list.Get(),
                 m_game_tex,
                 m_2d_screen_tex[0],
-                RECT{0, 0, (LONG)((float)m_backbuffer_size[0] / 2.0f), (LONG)m_backbuffer_size[1]},
+                RECT{0, 0, (LONG)game_eye_width, (LONG)game_height},
                 ENGINE_SRC_COLOR,
                 ENGINE_SRC_COLOR
             );
@@ -358,12 +487,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         ENGINE_SRC_COLOR
                     );
                 } else {
+                    RECT right_src{0, 0, (LONG)game_eye_width, (LONG)game_height};
+                    if (game_is_double_wide) {
+                        right_src.left = (LONG)game_eye_width;
+                        right_src.right = (LONG)game_width;
+                    }
+
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
                         commands.cmd_list.Get(),
                         m_game_tex,
                         m_2d_screen_tex[1],
-                        RECT{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]},
+                        right_src,
                         ENGINE_SRC_COLOR,
                         ENGINE_SRC_COLOR
                     );
@@ -484,17 +619,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
+            const auto source_desc = backbuffer->GetDesc();
+            const auto source_width = (uint32_t)source_desc.Width;
+            const auto source_height = (uint32_t)source_desc.Height;
+            const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
+            const auto source_eye_width = source_is_double_wide ? source_width / 2 : source_width;
+
             D3D12_BOX src_box{};
             src_box.left = 0;
             src_box.top = 0;
-            src_box.bottom = m_backbuffer_size[1];
+            src_box.bottom = source_height;
             src_box.front = 0;
             src_box.back = 1;
 
-            if (vr->is_extreme_compatibility_mode_enabled()) {
-                src_box.right = m_backbuffer_size[0];
+            if (vr->is_extreme_compatibility_mode_enabled() || !source_is_double_wide) {
+                src_box.right = source_width;
             } else {
-                src_box.right = m_backbuffer_size[0] / 2;
+                src_box.right = source_eye_width;
             }
 
             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, &src_box);
@@ -538,18 +679,24 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
+            const auto source_desc = backbuffer->GetDesc();
+            const auto source_width = (uint32_t)source_desc.Width;
+            const auto source_height = (uint32_t)source_desc.Height;
+            const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
+            const auto source_eye_width = source_is_double_wide ? source_width / 2 : source_width;
+
             if (is_actually_afr && !is_afr && !m_submitted_left_eye) {
                 D3D12_BOX src_box{};
                 src_box.left = 0;
                 src_box.top = 0;
-                src_box.bottom = m_backbuffer_size[1];
+                src_box.bottom = source_height;
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (vr->is_extreme_compatibility_mode_enabled()) {
-                    src_box.right = m_backbuffer_size[0];
+                if (vr->is_extreme_compatibility_mode_enabled() || !source_is_double_wide) {
+                    src_box.right = source_width;
                 } else {
-                    src_box.right = m_backbuffer_size[0] / 2;
+                    src_box.right = source_eye_width;
                 }
 
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, &src_box);
@@ -561,30 +708,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (is_actually_afr) {
                 D3D12_BOX src_box{};
+                src_box.top = 0;
+                src_box.bottom = source_height;
+                src_box.front = 0;
+                src_box.back = 1;
 
-                if (!vr->is_extreme_compatibility_mode_enabled()) {
+                if (vr->is_extreme_compatibility_mode_enabled() || !source_is_double_wide) {
+                    src_box.left = 0;
+                    src_box.right = source_width;
+                } else {
                     if (!is_afr) {
-                        src_box.left = m_backbuffer_size[0] / 2;
-                        src_box.right = m_backbuffer_size[0];
-                        src_box.top = 0;
-                        src_box.bottom = m_backbuffer_size[1];
-                        src_box.front = 0;
-                        src_box.back = 1;
+                        src_box.left = source_eye_width;
+                        src_box.right = source_width;
                     } else { // Copy the left eye on AFR
                         src_box.left = 0;
-                        src_box.right = m_backbuffer_size[0] / 2;
-                        src_box.top = 0;
-                        src_box.bottom = m_backbuffer_size[1];
-                        src_box.front = 0;
-                        src_box.back = 1;
-                    }   
-                } else {
-                    src_box.left = 0;
-                    src_box.right = m_backbuffer_size[0];
-                    src_box.top = 0;
-                    src_box.bottom = m_backbuffer_size[1];
-                    src_box.front = 0;
-                    src_box.back = 1;
+                        src_box.right = source_eye_width;
+                    }
                 }
 
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE, backbuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, &src_box);
@@ -593,8 +732,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                 }
             } else {
-                // Copy over the entire double wide instead
-                if (m_scene_capture_tex.texture.Get() == nullptr) {
+                // Copy over the entire double wide when the source already matches.
+                // If source is single-wide, pre_render duplicates it into both halves.
+                if (m_scene_capture_tex.texture.Get() == nullptr && source_is_double_wide) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
@@ -927,9 +1067,13 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     RECT dest_rect{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
 
     const auto aspect_ratio = (float)desc.Width / (float)desc.Height;
+    const auto game_desc = m_game_tex.texture->GetDesc();
+    const auto game_width = (uint32_t)game_desc.Width;
+    const auto game_height = (uint32_t)game_desc.Height;
+    const auto game_is_double_wide = is_likely_double_wide_source(game_width, (uint32_t)m_backbuffer_size[0]);
 
-    const auto eye_width = ((float)m_backbuffer_size[0] / 2.0f);
-    const auto eye_height = (float)m_backbuffer_size[1];
+    const auto eye_width = game_is_double_wide ? ((float)game_width / 2.0f) : (float)game_width;
+    const auto eye_height = (float)game_height;
     const auto eye_aspect_ratio = eye_width / eye_height;
 
     const auto original_centerw = (float)eye_width / 2.0f;
@@ -942,16 +1086,16 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     RECT source_rect{};
 
     // Show left side when using AFR or native stereo fix
-    if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+    if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled() || !game_is_double_wide) {
         source_rect.left = 0;
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0] / 2;
-        source_rect.bottom = m_backbuffer_size[1];
+        source_rect.right = (LONG)eye_width;
+        source_rect.bottom = (LONG)game_height;
     } else {
-        source_rect.left = (LONG)m_backbuffer_size[0] / 2;
+        source_rect.left = (LONG)eye_width;
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0];
-        source_rect.bottom = m_backbuffer_size[1];
+        source_rect.right = (LONG)game_width;
+        source_rect.bottom = (LONG)game_height;
     }
 
     // Correct left/top/right/bottom to match the aspect ratio of the game
@@ -972,7 +1116,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     command_list->SetDescriptorHeaps(1, game_heaps);
 
     batch->Draw(m_game_tex.get_srv_gpu(), 
-        DirectX::XMUINT2{ (uint32_t)m_backbuffer_size[0], (uint32_t)m_backbuffer_size[1] },
+        DirectX::XMUINT2{game_width, game_height},
         dest_rect,
         &source_rect, 
         DirectX::Colors::White);
@@ -1187,6 +1331,11 @@ bool D3D12Component::setup() {
     }
 
     if (vr->is_extreme_compatibility_mode_enabled()) {
+        backbuffer = real_backbuffer;
+    }
+
+    if (backbuffer == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target unavailable; falling back to real back buffer (D3D12)");
         backbuffer = real_backbuffer;
     }
 

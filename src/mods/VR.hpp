@@ -667,9 +667,8 @@ private:
         spdlog::info("Reinitializing OpenVR");
         std::scoped_lock _{m_openvr_mtx};
 
-        m_runtime.reset();
         m_runtime = std::make_shared<VRRuntime>();
-        m_openvr.reset();
+        m_openvr = std::make_shared<runtimes::OpenVR>();
 
         // Reinitialize openvr input, hopefully this fixes the issue
         m_controllers.clear();
@@ -694,8 +693,7 @@ private:
             m_d3d11.openxr().destroy_swapchains();
         }
 
-        m_openxr.reset();
-        m_runtime.reset();
+        m_openxr = std::make_shared<runtimes::OpenXR>();
         m_runtime = std::make_shared<VRRuntime>();
         
         m_controllers.clear();

@@ -67,6 +67,7 @@
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
+static bool is_ue_57();
 
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
@@ -96,6 +97,162 @@ bool is_using_double_precision(uintptr_t addr) {
     });
 
     return result;
+}
+
+static bool try_read_pointer_nothrow(uintptr_t address, uintptr_t& out) noexcept {
+    __try {
+        out = *(uintptr_t*)address;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+}
+
+static bool is_probably_valid_object_pointer(uintptr_t ptr) {
+    if (ptr == 0 || (ptr & (sizeof(void*) - 1)) != 0 || ptr < 0x10000) {
+        return false;
+    }
+
+    uintptr_t vtable_raw{};
+    if (!try_read_pointer_nothrow(ptr, vtable_raw) || vtable_raw == 0) {
+        return false;
+    }
+
+    uintptr_t first_vfunc_raw{};
+    if (!try_read_pointer_nothrow(vtable_raw, first_vfunc_raw) || first_vfunc_raw == 0) {
+        return false;
+    }
+
+    return utility::get_module_within((void*)vtable_raw).has_value() && utility::get_module_within((void*)first_vfunc_raw).has_value();
+}
+
+static bool try_get_viewport_render_target_texture_nothrow(sdk::IViewportRenderTargetProvider* provider, sdk::FSlateResource*& out) noexcept {
+    __try {
+        out = provider->get_viewport_render_target_texture();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+static bool try_get_slate_viewport_render_target_texture_nothrow(sdk::ISlateViewport* viewport, sdk::FSlateResource*& out) noexcept {
+    __try {
+        out = viewport != nullptr ? viewport->GetViewportRenderTargetTexture() : nullptr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+static bool try_get_typed_resource_nothrow(sdk::FSlateResource* resource, FRHITexture2D*& out) noexcept {
+    __try {
+        out = resource->get_typed_resource();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+static bool try_get_mutable_resource_nothrow(sdk::FSlateResource* resource, FRHITexture2D*& out) noexcept {
+    __try {
+        out = resource->get_mutable_resource();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+static sdk::IViewportRenderTargetProvider* find_viewport_rt_provider_heuristic(sdk::FViewportInfo* viewport_info) {
+    if (viewport_info == nullptr || IsBadReadPtr(viewport_info, sizeof(void*))) {
+        return nullptr;
+    }
+
+    auto validate_provider = [](sdk::IViewportRenderTargetProvider* provider) -> bool {
+        if (provider == nullptr || !is_probably_valid_object_pointer((uintptr_t)provider)) {
+            return false;
+        }
+
+        sdk::FSlateResource* resource{};
+        if (!try_get_viewport_render_target_texture_nothrow(provider, resource) || resource == nullptr) {
+            return false;
+        }
+
+        if (!is_probably_valid_object_pointer((uintptr_t)resource)) {
+            return false;
+        }
+
+        FRHITexture2D* typed_resource{};
+        if (is_ue_57()) {
+            if (!try_get_mutable_resource_nothrow(resource, typed_resource) || typed_resource == nullptr) {
+                return false;
+            }
+        } else if (!try_get_typed_resource_nothrow(resource, typed_resource) || typed_resource == nullptr) {
+            return false;
+        }
+
+        return is_probably_valid_object_pointer((uintptr_t)typed_resource);
+    };
+
+    static std::optional<size_t> cached_offset{};
+
+    if (cached_offset) {
+        uintptr_t cached_provider_raw{};
+        if (try_read_pointer_nothrow((uintptr_t)viewport_info + *cached_offset, cached_provider_raw)) {
+            auto cached_provider = (sdk::IViewportRenderTargetProvider*)cached_provider_raw;
+            if (validate_provider(cached_provider)) {
+                return cached_provider;
+            }
+        }
+
+        cached_offset.reset();
+    }
+
+    for (size_t offset = 0; offset < 0x500; offset += sizeof(void*)) {
+        uintptr_t candidate_raw{};
+        if (!try_read_pointer_nothrow((uintptr_t)viewport_info + offset, candidate_raw) || candidate_raw == 0) {
+            continue;
+        }
+
+        auto candidate = (sdk::IViewportRenderTargetProvider*)candidate_raw;
+        if (!validate_provider(candidate)) {
+            continue;
+        }
+
+        cached_offset = offset;
+        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Heuristic ViewportRT provider offset: 0x{:x}", offset);
+        return candidate;
+    }
+
+    return nullptr;
+}
+
+static bool try_find_viewport_rt_provider_heuristic_nothrow(sdk::FViewportInfo* viewport_info, sdk::IViewportRenderTargetProvider*& out) noexcept {
+    __try {
+        out = find_viewport_rt_provider_heuristic(viewport_info);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
+static bool call_target_looks_like_create_texture_path(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, 0x20)) {
+        return false;
+    }
+
+    // UE5.7 commonly routes through a helper that loads a +0x190 virtual (CreateTexture path).
+    // Skip constructor-like calls that do not ever touch that virtual.
+    return
+        utility::scan(fn, 0x200, "4C 8B ? ? 90 01 00 00").has_value() ||
+        utility::scan(fn, 0x200, "FF 90 90 01 00 00").has_value() ||
+        utility::scan(fn, 0x200, "FF 92 90 01 00 00").has_value() ||
+        utility::scan(fn, 0x200, "FF 94 ? ? 90 01 00 00").has_value();
 }
 
 static std::optional<uintptr_t> get_stereo_rendering_device_offset_override() {
@@ -158,6 +315,37 @@ static std::optional<uintptr_t> get_stereo_rendering_device_offset() {
 static bool is_ue_57() {
     const auto override = get_stereo_rendering_device_offset_override();
     return override && *override == 0x15A0;
+}
+
+static bool is_tq2_shipping_executable() {
+    static bool checked = false;
+    static bool cached = false;
+
+    if (checked) {
+        return cached;
+    }
+
+    checked = true;
+
+    const auto module_path = utility::get_module_pathw(utility::get_executable());
+    if (!module_path.has_value() || module_path->empty()) {
+        return false;
+    }
+
+    auto lower_path = utility::narrow(*module_path);
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+
+    cached =
+        lower_path.find("tq2-win64-shipping.exe") != std::string::npos ||
+        lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
+
+    if (cached) {
+        SPDLOG_INFO("Detected TQ2 shipping executable; forcing Slate DrawWindow stability guard");
+    }
+
+    return cached;
 }
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
@@ -553,6 +741,24 @@ bool pre_find_slate_thread() {
 }
 
 void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_address, bool alternate) {
+    const bool ue57_guard = is_ue_57();
+    const bool tq2_guard = is_tq2_shipping_executable();
+
+    if (ue57_guard || tq2_guard) {
+        // Startup stability guard for UE5.7/TQ2:
+        // DrawWindow hook candidate resolution is currently unsafe and can corrupt SWindow state at injection.
+        // Keep the hook disabled until we have a reliable function locator for this title.
+        m_attempted_hook_slate_thread = true;
+        m_attempted_hook_slate_thread_alternate = true;
+        m_hooked_slate_thread = true; // mark as complete to suppress repeated re-attempts
+        if (ue57_guard) {
+            SPDLOG_WARN_ONCE("UE5.7: disabling DrawWindow_RenderThread hook (stability guard)");
+        } else {
+            SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard fallback)");
+        }
+        return;
+    }
+
     if (m_asynchronous_scan->value()) {
         static std::future<bool> future = std::async(std::launch::async, detail::pre_find_slate_thread);
 
@@ -3973,6 +4179,16 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto scale_val = op2.Info.Memory.Scale;
             const auto eff_addr = base_val ? (uintptr_t)((int64_t)*base_val + disp_val +
                 (index_val ? ((int64_t)*index_val * (int64_t)scale_val) : 0)) : 0;
+            const auto fault_address = exception->ExceptionRecord->NumberParameters > 1 ?
+                (uintptr_t)exception->ExceptionRecord->ExceptionInformation[1] : 0;
+
+            const auto is_probably_nullish = [](uintptr_t address) {
+                return address < 0x100000;
+            };
+
+            const auto maybe_null_deref =
+                is_probably_nullish(fault_address) || is_probably_nullish(eff_addr) ||
+                (base_val.has_value() && is_probably_nullish(*base_val));
 
             const auto module_within = utility::get_module_within(exception_address);
             const auto module_base = module_within ? (uintptr_t)*module_within : 0;
@@ -4018,6 +4234,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 scale_val,
                 (uint64_t)disp_val,
                 eff_addr);
+
+            if (!maybe_null_deref) {
+                SPDLOG_WARN("XRSystem AV candidate rejected as non-null deref (fault {:x}, eff {:x})", fault_address, eff_addr);
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
 
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
             if (is_system_module) {
@@ -4215,38 +4436,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 }
 
                 if (!found) {
-                    const auto exe_module = (uintptr_t)utility::get_executable();
-                    const auto is_game_module = module_base != 0 && module_base == exe_module;
-                    const auto eff_module = utility::get_module_within((void*)eff_addr);
-
-                    if (is_game_module && !eff_module.has_value()) {
-                        SPDLOG_WARN("No XRSystem deref found; patching faulting instruction in game module (eff {:x})", eff_addr);
-                        std::vector<int16_t> first_patch{};
-                        for (auto j = 0; j < decoded->Length; ++j) {
-                            first_patch.push_back(0x90);
-                        }
-                        xrsystem_patches.push_back(Patch::create(exception_address, first_patch));
-
-                        const auto next_instruction_addr = exception_address + decoded->Length;
-                        const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
-
-                        if (!next_instruction) {
-                            SPDLOG_ERROR("Could not decode next instruction at {:x}", exception_address + decoded->Length);
-                            return EXCEPTION_CONTINUE_EXECUTION;
-                        }
-
-                        if (std::string_view{next_instruction->Mnemonic}.starts_with("CALL")) {
-                            std::vector<int16_t> second_patch{};
-                            for (auto j = 0; j < next_instruction->Length; ++j) {
-                                second_patch.push_back(0x90);
-                            }
-                            xrsystem_patches.push_back(Patch::create(next_instruction_addr, second_patch));
-                        }
-
-                        return EXCEPTION_CONTINUE_EXECUTION;
-                    }
-
-                    SPDLOG_ERROR("Failed to locate XRSystem dereference within backtrack window");
+                    SPDLOG_ERROR("Failed to locate XRSystem dereference within backtrack window; skipping patch");
                     return EXCEPTION_CONTINUE_SEARCH;
                 }
             }
@@ -4633,6 +4823,31 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_renderin
         return std::nullopt;
     }
 
+    const auto vtable_matches_fake = [&](uintptr_t potential_vtable) -> bool {
+        if (potential_vtable == 0 || IsBadReadPtr((void*)potential_vtable, sizeof(uintptr_t) * 4)) {
+            return false;
+        }
+
+        if (potential_vtable == *fake_stereo_device_vtable) {
+            return true;
+        }
+
+        if (IsBadReadPtr((void*)*fake_stereo_device_vtable, sizeof(uintptr_t) * 4)) {
+            return false;
+        }
+
+        const auto fake_vtable_ptr = (uintptr_t*)*fake_stereo_device_vtable;
+        const auto candidate_vtable_ptr = (uintptr_t*)potential_vtable;
+
+        for (int i = 0; i < 4; ++i) {
+            if (candidate_vtable_ptr[i] != fake_vtable_ptr[i]) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+
     if (s_stereo_rendering_device_offset == 0) {
         if (const auto device_offset = get_stereo_rendering_device_offset(); device_offset) {
             s_stereo_rendering_device_offset = *device_offset;
@@ -4650,7 +4865,7 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_renderin
         if (!IsBadReadPtr((void*)result, sizeof(void*))) {
             const auto potential_vtable = *(uintptr_t*)result;
 
-            if (potential_vtable == *fake_stereo_device_vtable) {
+            if (vtable_matches_fake(potential_vtable)) {
                 return result;
             }
 
@@ -4675,7 +4890,7 @@ scan_for_device:
 
         auto potential_vtable = *(uintptr_t*)ptr;
 
-        if (potential_vtable == *fake_stereo_device_vtable) {
+        if (vtable_matches_fake(potential_vtable)) {
             SPDLOG_INFO("Found fake stereo rendering device at offset {:x} -> {:x}", i, ptr);
             s_stereo_rendering_device_offset = i;
             return ptr;
@@ -5874,6 +6089,15 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 }
 
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
+    if (is_ue_57()) {
+        // UE5.7 local-player PostInitProperties probing is currently unstable on some titles and can corrupt
+        // state long after injection. Keep the hook path disabled until we have a reliable signature.
+        SPDLOG_WARN_ONCE("UE5.7: skipping manual PostInitProperties local-player call (stability guard)");
+        g_hook->m_sceneview_data.known_scene_states.clear();
+        g_hook->m_fixed_localplayer_view_count = true;
+        return;
+    }
+
     SPDLOG_INFO("Searching for PostInitProperties virtual function...");
 
     std::optional<uint32_t> idx{};
@@ -5927,11 +6151,6 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
             return utility::ExhaustionResult::CONTINUE;
         });
-    }
-
-    if (!idx && is_ue_57()) {
-        SPDLOG_WARN("Using UE5.7 PostInitProperties vtable index 10");
-        idx = 10;
     }
 
     if (!idx) {
@@ -6090,16 +6309,63 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FViewportInfo* viewport_info = nullptr;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     uintptr_t window = 0;
+    std::vector<sdk::FViewportInfo*> ue57_viewport_candidates{};
 
     if (is_ue_57()) {
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs");
 
-        if (a3 != nullptr && !IsBadReadPtr(a3, 0x20)) {
-            const auto inputs = reinterpret_cast<uint8_t*>(a3);
-            window = *(uintptr_t*)(inputs + 0x10);
-            viewport_info = *(sdk::FViewportInfo**)(inputs + 0x18);
-        } else {
-            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 DrawWindow inputs invalid");
+        auto push_viewport_candidate = [&](uintptr_t candidate_raw, const char* source_label, size_t field_offset) {
+            if (candidate_raw == 0 || (candidate_raw & (sizeof(void*) - 1)) != 0 || candidate_raw < 0x10000) {
+                return;
+            }
+
+            uintptr_t first_qword{};
+            if (!try_read_pointer_nothrow(candidate_raw, first_qword)) {
+                return;
+            }
+
+            auto candidate = (sdk::FViewportInfo*)candidate_raw;
+            const auto exists = std::find(ue57_viewport_candidates.begin(), ue57_viewport_candidates.end(), candidate) != ue57_viewport_candidates.end();
+            if (!exists) {
+                ue57_viewport_candidates.push_back(candidate);
+                SPDLOG_INFO_ONCE(
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 queued viewport_info candidate {}+0x{:x}: 0x{:x}",
+                    source_label, field_offset, candidate_raw
+                );
+            }
+        };
+
+        auto parse_inputs = [&](void* raw_inputs, const char* source_label) {
+            if (raw_inputs == nullptr || IsBadReadPtr(raw_inputs, 0x20)) {
+                return;
+            }
+
+            const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
+            const auto candidate_viewport_08 = *(uintptr_t*)(inputs + 0x08);
+            const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
+            const auto candidate_window = *(uintptr_t*)(inputs + 0x10);
+
+            // UE5.7.2 reshuffled DrawWindow pass-input fields. Keep multiple candidates and validate later
+            // by actually resolving a render target provider/texture.
+            push_viewport_candidate(candidate_viewport_08, source_label, 0x08);
+            push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
+
+            if (window == 0) {
+                if (is_probably_valid_object_pointer(candidate_window)) {
+                    window = candidate_window;
+                    SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 using {} as draw inputs (window)", source_label);
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 {} window candidate rejected: 0x{:x}", source_label, candidate_window);
+                }
+            }
+        };
+
+        // UE5.7.2 can place FSlateDrawWindowPassInputs in a4/r9 instead of a3/r8.
+        parse_inputs(a4, "a4");
+        parse_inputs(a3, "a3");
+
+        if (!ue57_viewport_candidates.empty()) {
+            viewport_info = ue57_viewport_candidates.front();
         }
     } else {
         viewport_info = (sdk::FViewportInfo*)a3;
@@ -6137,8 +6403,63 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (window != 0) {
         constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
+        constexpr size_t kMaxReasonableSWindowOffset = 0x1000;
+        static std::optional<size_t> viewport_offset{};
+        static bool attempted_viewport_emulation{false};
 
-        static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
+        if (viewport_offset && *viewport_offset > kMaxReasonableSWindowOffset) {
+            SPDLOG_WARN("[SlateRHIRenderer::DrawWindow_RenderThread] Discarding implausible cached viewport offset: 0x{:x}", *viewport_offset);
+            viewport_offset.reset();
+        }
+
+        auto try_get_viewport = [&](size_t offset) -> sdk::ISlateViewport* {
+            if (offset == 0 || offset > kMaxReasonableSWindowOffset) {
+                return nullptr;
+            }
+
+            const auto viewport_ptr_slot = (uintptr_t)window + offset;
+            uintptr_t candidate_raw{};
+            if (!try_read_pointer_nothrow(viewport_ptr_slot, candidate_raw) || candidate_raw == 0) {
+                return nullptr;
+            }
+
+            uintptr_t vtable_raw{};
+            if (!try_read_pointer_nothrow(candidate_raw, vtable_raw) || vtable_raw == 0) {
+                return nullptr;
+            }
+
+            uintptr_t first_vfunc_raw{};
+            if (!try_read_pointer_nothrow(vtable_raw, first_vfunc_raw) || first_vfunc_raw == 0) {
+                return nullptr;
+            }
+
+            if (!utility::get_module_within((void*)vtable_raw).has_value() || !utility::get_module_within((void*)first_vfunc_raw).has_value()) {
+                return nullptr;
+            }
+
+            return (sdk::ISlateViewport*)candidate_raw;
+        };
+
+        if (viewport_offset) {
+            slate_viewport = try_get_viewport(*viewport_offset);
+        }
+
+        if (!slate_viewport) {
+            const size_t fallback_offsets[] = {kSWindowViewportOffsetUE57, kSWindowViewportOffsetUE57 + sizeof(void*)};
+
+            for (const auto offset : fallback_offsets) {
+                if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Using SWindow viewport fallback at 0x{:x}", offset);
+                    slate_viewport = candidate;
+                    viewport_offset = offset;
+                    break;
+                }
+            }
+        }
+
+        if (!slate_viewport && !viewport_offset && !attempted_viewport_emulation && !is_ue_57()) {
+            attempted_viewport_emulation = true;
+            viewport_offset = [&]() -> std::optional<size_t> {
             std::optional<size_t> result{};
             const auto module_within = utility::get_module_within(g_hook->m_slate_thread_hook.target_address());
 
@@ -6177,7 +6498,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             std::span<uint8_t> window_bounds{(uint8_t*)window, (uint8_t*)window + 0x1000};
 
             utility::emulate(*module_within, ctx.ctx->Registers.RegRip, 1000, ctx, [&](const utility::ShemuContextExtended& ctx) -> utility::ExhaustionResult {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
+                SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
 
                 // Allow writes to go through if we are inside the window getter.
                 // The downside is this might unintentionally increase the reference count of the window
@@ -6188,7 +6509,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
                 if (std::string_view{ctx.next.ix.Mnemonic}.starts_with("CALL")) {
                     if (window_getter_callstack_level > 0) {
-                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Allowing call inside window getter function, continuing!");
+                        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] Allowing call inside window getter function, continuing!");
                         ++window_getter_callstack_level;
                         return utility::ExhaustionResult::CONTINUE;
                     }
@@ -6196,7 +6517,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     // Check if RCX != window first. We don't want to skip over the call if it is set to it.
                     // There are inlined and non-inlined versions of this function which is why we need to check this.
                     if ((uint8_t*)ctx.ctx->ctx->Registers.RegRcx < window_bounds.data() || (uint8_t*)ctx.ctx->ctx->Registers.RegRcx > window_bounds.data() + window_bounds.size()) {
-                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping call!");
+                        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] Skipping call!");
                         return utility::ExhaustionResult::STEP_OVER;
                     }
 
@@ -6209,7 +6530,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 // Check if we hit a ret and are inside the window getter function.
                 if (ctx.next.ix.Instruction == ND_INS_RETN) {
                     if (window_getter_callstack_level > 0) { 
-                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Hit ret inside window getter function, continuing!");
+                        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] Hit ret inside window getter function, continuing!");
                         --window_getter_callstack_level;
                         return utility::ExhaustionResult::CONTINUE;
                     }
@@ -6275,43 +6596,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             return result;
-        }();
+            }();
 
-        auto try_get_viewport = [&](size_t offset) -> sdk::ISlateViewport* {
-            auto candidate = *(sdk::ISlateViewport**)((uintptr_t)window + offset);
-
-            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
-                return nullptr;
+            if (viewport_offset) {
+                slate_viewport = try_get_viewport(*viewport_offset);
             }
-
-            auto vtable = *(uintptr_t**)candidate;
-
-            if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
-                return nullptr;
-            }
-
-            if (!utility::get_module_within(vtable).has_value() || !utility::get_module_within(vtable[0]).has_value()) {
-                return nullptr;
-            }
-
-            return candidate;
-        };
-
-        if (viewport_offset) {
-            slate_viewport = try_get_viewport(*viewport_offset);
-        }
-
-        if (!slate_viewport) {
-            const size_t fallback_offsets[] = {kSWindowViewportOffsetUE57, kSWindowViewportOffsetUE57 + sizeof(void*)};
-
-            for (const auto offset : fallback_offsets) {
-                if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
-                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Using SWindow viewport fallback at 0x{:x}", offset);
-                    slate_viewport = candidate;
-                    viewport_offset = offset;
-                    break;
-                }
-            }
+        } else if (!slate_viewport && !viewport_offset && !attempted_viewport_emulation) {
+            attempted_viewport_emulation = true;
+            SPDLOG_INFO_EVERY_N_SEC(2, "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7: skipping expensive viewport emulation");
         }
     }
 
@@ -6343,26 +6635,199 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
+    if (is_ue_57()) {
+        // UE5.7 safe-mode: discovery only.
+        // We do not mutate Slate resources, but we still try to discover the scene RT from viewport providers.
+        auto& rtm = *g_hook->get_render_target_manager();
+
+        auto resolve_scene_from_resource = [](sdk::FSlateResource* resource, FRHITexture2D*& out) -> bool {
+            out = nullptr;
+
+            if (resource == nullptr) {
+                return false;
+            }
+
+            FRHITexture2D* candidate{};
+            if (!try_get_mutable_resource_nothrow(resource, candidate) || candidate == nullptr) {
+                return false;
+            }
+
+            if (!is_probably_valid_object_pointer((uintptr_t)candidate)) {
+                return false;
+            }
+
+            out = candidate;
+            return true;
+        };
+
+        FRHITexture2D* discovered_scene = nullptr;
+
+        if (slate_viewport != nullptr) {
+            sdk::FSlateResource* direct_resource = nullptr;
+            if (try_get_slate_viewport_render_target_texture_nothrow(slate_viewport, direct_resource)) {
+                resolve_scene_from_resource(direct_resource, discovered_scene);
+            }
+        }
+
+        if (discovered_scene == nullptr && viewport_info != nullptr) {
+            const auto exists = std::find(ue57_viewport_candidates.begin(), ue57_viewport_candidates.end(), viewport_info) != ue57_viewport_candidates.end();
+            if (!exists) {
+                ue57_viewport_candidates.insert(ue57_viewport_candidates.begin(), viewport_info);
+            }
+        }
+
+        if (discovered_scene == nullptr) {
+            for (auto candidate : ue57_viewport_candidates) {
+                if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                    continue;
+                }
+
+                sdk::IViewportRenderTargetProvider* provider = nullptr;
+                try_find_viewport_rt_provider_heuristic_nothrow(candidate, provider);
+
+                if (provider == nullptr) {
+                    continue;
+                }
+
+                sdk::FSlateResource* candidate_resource = nullptr;
+                if (!try_get_viewport_render_target_texture_nothrow(provider, candidate_resource)) {
+                    continue;
+                }
+
+                if (resolve_scene_from_resource(candidate_resource, discovered_scene)) {
+                    SPDLOG_INFO_ONCE(
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via viewport candidate: 0x{:x}",
+                        (uintptr_t)candidate
+                    );
+                    break;
+                }
+            }
+        }
+
+        if (discovered_scene != nullptr && rtm.get_render_target() == nullptr) {
+            rtm.set_render_target(discovered_scene);
+            SPDLOG_INFO_ONCE("UE5.7 safe mode seeded scene render target from Slate path: {:x}", (uintptr_t)discovered_scene);
+        } else if (discovered_scene == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7 safe mode: no scene texture resolved from Slate path");
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7 safe mode: discovery-only Slate path (no interception)");
+        return call_orig();
+    }
+
     auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
     sdk::FSlateResource* slate_resource = nullptr;
 
-    if (slate_viewport != nullptr) {
-        slate_resource = slate_viewport->GetViewportRenderTargetTexture();
-    } else {
+    auto try_get_rt_provider_nothrow = [](sdk::FViewportInfo* candidate, FRHITexture2D* known_tex, sdk::IViewportRenderTargetProvider*& out) noexcept {
+        __try {
+            out = candidate->get_rt_provider(known_tex);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            out = nullptr;
+            return false;
+        }
+    };
+
+    auto try_find_rt_provider_heuristic_nothrow = [](sdk::FViewportInfo* candidate, sdk::IViewportRenderTargetProvider*& out) noexcept {
+        __try {
+            out = find_viewport_rt_provider_heuristic(candidate);
+            return true;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            out = nullptr;
+            return false;
+        }
+    };
+
+    auto try_resolve_slate_resource_from_viewport = [&](sdk::FViewportInfo* candidate, sdk::FSlateResource*& out) -> bool {
+        out = nullptr;
+
+        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            return false;
+        }
+
         auto known_tex = g_hook->get_render_target_manager()->get_render_target();
         if (known_tex == nullptr) {
             known_tex = ui_target;
         }
 
+        sdk::IViewportRenderTargetProvider* viewport_rt_provider = nullptr;
         if (known_tex != nullptr) {
-            const auto viewport_rt_provider = viewport_info->get_rt_provider(known_tex);
-
-            if (viewport_rt_provider == nullptr) {
-                SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
-                return call_orig();
+            if (!try_get_rt_provider_nothrow(candidate, known_tex, viewport_rt_provider)) {
+                viewport_rt_provider = nullptr;
             }
-        
-            slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
+        }
+
+        if (viewport_rt_provider == nullptr && is_ue_57()) {
+            if (!try_find_rt_provider_heuristic_nothrow(candidate, viewport_rt_provider)) {
+                viewport_rt_provider = nullptr;
+            }
+        }
+
+        if (viewport_rt_provider == nullptr) {
+            return false;
+        }
+
+        if (!try_get_viewport_render_target_texture_nothrow(viewport_rt_provider, out) || out == nullptr) {
+            out = nullptr;
+            return false;
+        }
+
+        return true;
+    };
+
+    if (slate_viewport != nullptr) {
+        slate_resource = slate_viewport->GetViewportRenderTargetTexture();
+    }
+
+    if (slate_resource == nullptr && is_ue_57()) {
+        if (viewport_info != nullptr) {
+            const auto exists = std::find(ue57_viewport_candidates.begin(), ue57_viewport_candidates.end(), viewport_info) != ue57_viewport_candidates.end();
+            if (!exists) {
+                ue57_viewport_candidates.insert(ue57_viewport_candidates.begin(), viewport_info);
+            }
+        }
+
+        for (auto candidate : ue57_viewport_candidates) {
+            sdk::FSlateResource* candidate_resource = nullptr;
+            if (try_resolve_slate_resource_from_viewport(candidate, candidate_resource)) {
+                viewport_info = candidate;
+                slate_resource = candidate_resource;
+                SPDLOG_INFO_ONCE(
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 resolved slate resource from viewport candidate: 0x{:x}",
+                    (uintptr_t)candidate
+                );
+                break;
+            }
+        }
+    }
+
+    if (slate_resource == nullptr) {
+        auto known_tex = g_hook->get_render_target_manager()->get_render_target();
+        if (known_tex == nullptr) {
+            known_tex = ui_target;
+        }
+
+        sdk::IViewportRenderTargetProvider* viewport_rt_provider = nullptr;
+
+        if (known_tex != nullptr && viewport_info != nullptr) {
+            if (!try_get_rt_provider_nothrow(viewport_info, known_tex, viewport_rt_provider)) {
+                viewport_rt_provider = nullptr;
+            }
+        }
+
+        if (viewport_rt_provider == nullptr && is_ue_57() && viewport_info != nullptr) {
+            if (!try_find_rt_provider_heuristic_nothrow(viewport_info, viewport_rt_provider)) {
+                viewport_rt_provider = nullptr;
+            }
+        }
+
+        if (viewport_rt_provider == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
+            return call_orig();
+        }
+
+        if (!try_get_viewport_render_target_texture_nothrow(viewport_rt_provider, slate_resource)) {
+            slate_resource = nullptr;
         }
     }
 
@@ -6371,10 +6836,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    const auto scene_tex = slate_resource->get_mutable_resource();
+    FRHITexture2D* scene_tex{};
+    if (is_ue_57()) {
+        if (!try_get_mutable_resource_nothrow(slate_resource, scene_tex)) {
+            scene_tex = nullptr;
+        }
+    } else if (!try_get_typed_resource_nothrow(slate_resource, scene_tex) || scene_tex == nullptr) {
+        if (!try_get_mutable_resource_nothrow(slate_resource, scene_tex)) {
+            scene_tex = nullptr;
+        }
+    }
+
+    if (scene_tex != nullptr && !is_probably_valid_object_pointer((uintptr_t)scene_tex)) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "Resolved scene texture from Slate resource is invalid, skipping");
+        scene_tex = nullptr;
+    }
+
     if (scene_tex != nullptr && g_hook->get_render_target_manager()->get_render_target() == nullptr) {
         g_hook->get_render_target_manager()->set_render_target(scene_tex);
         SPDLOG_INFO_ONCE("Set scene render target from Slate resource: {:x}", (uintptr_t)scene_tex);
+    }
+
+    if (is_ue_57()) {
+        // Keep UE5.7 path simple and stable: discover scene texture, but avoid mutating Slate resource internals.
+        return call_orig();
     }
 
     if (ui_target == nullptr && scene_tex != nullptr && !is_ue_57()) {
@@ -6582,12 +7067,6 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         SPDLOG_ERROR("Failed to find force separate rt offset! (Exception)");
     }
 
-    if (!m_viewport_force_separate_rt_offset && is_ue_57()) {
-        constexpr size_t kViewportForceSeparateRtOffsetUE57 = 0x1B8;
-        m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
-        SPDLOG_WARN_ONCE("Using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
-    }
-
     const auto w = VR::get()->get_hmd_width();
     const auto h = VR::get()->get_hmd_height();
 
@@ -6708,10 +7187,7 @@ void VRRenderTargetManager_Base::try_find_force_separate_rt_offset_from_update_v
     }
 
     if (!picked) {
-        if (!m_viewport_force_separate_rt_offset) {
-            m_viewport_force_separate_rt_offset = kViewportForceSeparateRtOffsetUE57;
-            SPDLOG_WARN_ONCE("UpdateViewportRHI scan failed; using UE5.7 fallback for force separate RT offset: 0x{:x}", kViewportForceSeparateRtOffsetUE57);
-        }
+        SPDLOG_WARN_ONCE("UpdateViewportRHI scan failed to resolve force separate RT offset; leaving it unset");
         return;
     }
 
@@ -6767,8 +7243,8 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     }
 
     if (rtm->is_pre_texture_call_create_texture) {
-        if (is_ue_57()) {
-            SPDLOG_WARN_ONCE("UE5.7: skipping direct CreateTexture vtable call; falling back to emulation");
+        if (is_ue_57() || is_tq2_shipping_executable()) {
+            SPDLOG_WARN_ONCE("UE5.7/TQ2: skipping direct CreateTexture vtable call; falling back to emulation");
         } else {
             if (ctx.rcx == 0 || IsBadReadPtr((void*)ctx.rcx, sizeof(void*))) {
                 SPDLOG_ERROR("PreTextureHook: ctx.rcx is null or invalid; cannot call CreateTexture");
@@ -6798,57 +7274,65 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
     const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
 
-    if (is_ue_57() && rtm->is_pre_texture_call_e8) {
-        SPDLOG_WARN_ONCE("UE5.7: skipping pre-texture JIT for E8 CreateTexture; using original only");
+    const bool ue57_guard = is_ue_57();
+    const bool tq2_guard = is_tq2_shipping_executable();
+    const bool skip_texture_replay = (ue57_guard || tq2_guard) && rtm->is_pre_texture_call_e8;
 
-        const auto is_stack_like = [&](uintptr_t ptr) {
-            return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
-        };
-
-        const auto try_set_ref = [&](uintptr_t ptr, const char* label) {
-            if (!is_stack_like(ptr)) {
-                return false;
-            }
-
-            if (rtm->texture_hook_ref == nullptr || rtm->texture_hook_ref->texture == nullptr) {
-                rtm->texture_hook_ref = (FTexture2DRHIRef*)ptr;
-                SPDLOG_INFO_ONCE("UE5.7: guessed texture hook ref from {}: {:x}", label, ptr);
-            }
-
-            return true;
-        };
-
-        bool set = false;
-        set = try_set_ref(ctx.rcx, "rcx") || try_set_ref(ctx.rdx, "rdx") || try_set_ref(ctx.r8, "r8");
-
-        if (!set) {
-            std::optional<int> texture_argument_index{};
-            std::optional<int> previous_stack_found_index{};
-            std::optional<int> previous_stack_repeating_index{};
-
-            for (auto i = 0; i < 10; ++i) {
-                const auto stack_ptr = stack_args[i];
-
-                if (is_stack_like(stack_ptr)) {
-                    if (previous_stack_found_index && *previous_stack_found_index == i - 1) {
-                        previous_stack_repeating_index = i;
-                    }
-
-                    previous_stack_found_index = i;
-                } else if (previous_stack_repeating_index && *previous_stack_repeating_index == i - 1) {
-                    texture_argument_index = i - 2;
-                    break;
-                }
-            }
-
-            if (texture_argument_index) {
-                set = try_set_ref(stack_args[*texture_argument_index], "stack");
-            }
+    if (skip_texture_replay) {
+        if (ue57_guard) {
+            SPDLOG_WARN_ONCE("UE5.7: skipping CreateTexture replay in pre texture hook (stability guard)");
         }
 
-        if (!set) {
-            SPDLOG_WARN_ONCE("UE5.7: could not locate output ref for E8 CreateTexture");
+        if (tq2_guard) {
+            SPDLOG_WARN_ONCE("TQ2: skipping CreateTexture replay in pre texture hook (stability guard)");
         }
+
+        SPDLOG_INFO_ONCE("Pre texture guard call regs rcx={:x} rdx={:x} r8={:x} r9={:x} rsp={:x}",
+            ctx.rcx, ctx.rdx, ctx.r8, ctx.r9, ctx.rsp);
+
+        const auto is_reasonable_ref_ptr = [&](uintptr_t ptr) {
+            return ptr >= 0x10000 && (ptr & (sizeof(void*) - 1)) == 0 && !IsBadReadPtr((void*)ptr, sizeof(void*) * 2);
+        };
+
+        std::vector<std::pair<uintptr_t, const char*>> candidates{};
+        candidates.reserve(14);
+
+        auto push_candidate = [&](uintptr_t ptr, const char* label) {
+            if (!is_reasonable_ref_ptr(ptr)) {
+                return;
+            }
+
+            if (std::find_if(candidates.begin(), candidates.end(), [&](const auto& c) { return c.first == ptr; }) != candidates.end()) {
+                return;
+            }
+
+            candidates.emplace_back(ptr, label);
+        };
+
+        // Favor common out-ref carriers first, then fall back to stack probing.
+        push_candidate(ctx.rdx, "rdx");
+        push_candidate(ctx.r8, "r8");
+        push_candidate(ctx.rcx, "rcx");
+        push_candidate(ctx.r9, "r9");
+
+        for (auto i = 0; i < 10; ++i) {
+            push_candidate(stack_args[i], "stack");
+        }
+
+        if (candidates.empty()) {
+            SPDLOG_WARN_ONCE("Pre texture guard: could not locate output ref candidates");
+            return;
+        }
+
+        // Do not keep the stale AllocateRenderTargetTexture stack ref.
+        // Replace it with the current call's best candidates.
+        rtm->texture_hook_ref = (FTexture2DRHIRef*)candidates[0].first;
+        rtm->shader_resource_hook_ref = candidates.size() > 1 ? (FTexture2DRHIRef*)candidates[1].first : nullptr;
+
+        SPDLOG_INFO_EVERY_N_SEC(1, "Pre texture guard: selected texture refs primary={} ({:x}) secondary={} ({:x})",
+            candidates[0].second, candidates[0].first,
+            candidates.size() > 1 ? candidates[1].second : "none",
+            candidates.size() > 1 ? candidates[1].first : 0ull);
 
         return;
     }
@@ -7646,11 +8130,17 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
 void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     auto rtm = g_hook->get_render_target_manager();
+    const bool guarded_texture_path = is_ue_57() || is_tq2_shipping_executable();
 
     SPDLOG_INFO("Post texture hook called!");
     SPDLOG_INFO(" Ref: {:x}", (uintptr_t)rtm->texture_hook_ref);
 
     if (!rtm->allocate_texture_called) {
+        if (guarded_texture_path) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[Post texture hook] Guarded path: ignoring unmatched callback");
+            return;
+        }
+
         g_hook->set_should_recreate_textures(true);
         rtm->render_target = nullptr;
         rtm->ui_target = nullptr;
@@ -7659,8 +8149,6 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         SPDLOG_INFO("[Post texture hook] Allocate texture was not called, skipping...");
         return;
     }
-
-    rtm->allocate_texture_called = false;
 
     // very rare...
     if (rtm->is_using_texture_desc && !rtm->is_version_greq_5_1) {
@@ -7672,6 +8160,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     }
 
     FRHITexture2D* texture = nullptr;
+    bool selected_texture_from_blob = false;
     const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
     const auto is_stack_like = [&](uintptr_t ptr) {
         return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
@@ -7691,7 +8180,105 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return false;
         }
 
+        const auto first_vfunc = *(void**)vtable;
+        if (first_vfunc == nullptr || IsBadReadPtr(first_vfunc, sizeof(void*))) {
+            return false;
+        }
+
+        if (!utility::get_module_within((void*)vtable).has_value() || !utility::get_module_within(first_vfunc).has_value()) {
+            return false;
+        }
+
+        const auto expected_vtable = FRHITexture2D::get_vtable();
+        if (expected_vtable != nullptr && vtable != expected_vtable) {
+            return false;
+        }
+
         return true;
+    };
+    const auto try_get_native_resource_nothrow = [&](FRHITexture2D* tex, void*& out) {
+        out = nullptr;
+
+        if (tex == nullptr) {
+            return false;
+        }
+
+        __try {
+            out = tex->get_native_resource();
+            return out != nullptr;
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            return false;
+        }
+    };
+    const auto is_usable_texture_ptr = [&](FRHITexture2D* tex) {
+        return is_valid_texture_ptr(tex);
+    };
+    const auto try_get_texture_from_wrapper_object = [&](uintptr_t object_base, const char* label, size_t blob_offset) -> FRHITexture2D* {
+        if (object_base < 0x10000 || IsBadReadPtr((void*)object_base, 0x10)) {
+            return nullptr;
+        }
+
+        // UE5.7 texture resource wrappers commonly hold TextureRHI-like members around these slots.
+        // Do NOT probe +0x50 here: UTexture2DDynamic::CreateResource stores the owning UTexture at +0x50.
+        static constexpr std::array<size_t, 8> kLikelyTextureOffsets{
+            0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88
+        };
+
+        for (const auto inner_offset : kLikelyTextureOffsets) {
+            uintptr_t inner_raw{};
+            if (!try_read_pointer_nothrow(object_base + inner_offset, inner_raw) || inner_raw < 0x10000) {
+                continue;
+            }
+
+            auto inner_candidate = (FRHITexture2D*)inner_raw;
+            if (is_usable_texture_ptr(inner_candidate)) {
+                SPDLOG_INFO(
+                    " {} blob wrapper at +0x{:x} yielded texture at +0x{:x}: {:x}",
+                    label, blob_offset, inner_offset, inner_raw);
+                return inner_candidate;
+            }
+        }
+
+        return nullptr;
+    };
+    const auto try_get_texture_from_blob = [&](uintptr_t blob_base, const char* label) -> FRHITexture2D* {
+        if (blob_base < 0x10000 || IsBadReadPtr((void*)blob_base, 0x10)) {
+            return nullptr;
+        }
+
+        constexpr size_t kMaxScan = 0x80;
+
+        for (size_t offset = 0; offset <= kMaxScan; offset += sizeof(uintptr_t)) {
+            uintptr_t candidate_raw{};
+            if (!try_read_pointer_nothrow(blob_base + offset, candidate_raw) || candidate_raw < 0x10000) {
+                continue;
+            }
+
+            auto candidate = (FRHITexture2D*)candidate_raw;
+            if (is_usable_texture_ptr(candidate)) {
+                SPDLOG_INFO(" {} blob yielded texture at +0x{:x}: {:x}", label, offset, candidate_raw);
+                return candidate;
+            }
+
+            // Some UE paths store a pointer to a wrapper/ref first. Follow one level.
+            uintptr_t indirect_raw{};
+            if (!try_read_pointer_nothrow(candidate_raw, indirect_raw) || indirect_raw < 0x10000) {
+                continue;
+            }
+
+            auto indirect_candidate = (FRHITexture2D*)indirect_raw;
+            if (is_usable_texture_ptr(indirect_candidate)) {
+                SPDLOG_INFO(" {} blob yielded indirect texture at +0x{:x}: {:x}", label, offset, indirect_raw);
+                return indirect_candidate;
+            }
+
+            // The blob may point to a texture wrapper object rather than FRHITexture2D directly.
+            if (auto wrapped_candidate = try_get_texture_from_wrapper_object(candidate_raw, label, offset); wrapped_candidate != nullptr) {
+                return wrapped_candidate;
+            }
+        }
+
+        return nullptr;
     };
     const auto try_get_texture_from_ref = [&](FTexture2DRHIRef* ref, const char* label) -> FRHITexture2D* {
         if (ref == nullptr || IsBadReadPtr(ref, sizeof(void*))) {
@@ -7699,13 +8286,21 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
 
         auto tex = ref->texture;
-        if (!is_valid_texture_ptr(tex)) {
+        if (!is_usable_texture_ptr(tex)) {
             if (tex != nullptr) {
                 SPDLOG_WARN(" {} texture pointer invalid: {:x}", label, (uintptr_t)tex);
             }
+
+            auto scanned = try_get_texture_from_blob((uintptr_t)ref, label);
+            if (scanned != nullptr) {
+                selected_texture_from_blob = true;
+                return scanned;
+            }
+
             return nullptr;
         }
 
+        selected_texture_from_blob = false;
         rtm->texture_hook_ref = ref;
         SPDLOG_INFO_ONCE("Using texture ref from {}", label);
         return tex;
@@ -7713,55 +8308,138 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     if (rtm->texture_hook_ref != nullptr) {
         texture = try_get_texture_from_ref(rtm->texture_hook_ref, "stored ref");
+    }
 
+    if (texture == nullptr && rtm->shader_resource_hook_ref != nullptr) {
+        SPDLOG_INFO(" Stored ref invalid, trying secondary ref...");
+        texture = try_get_texture_from_ref(rtm->shader_resource_hook_ref, "secondary ref");
+    }
+
+    if (texture == nullptr) {
+        SPDLOG_INFO(" Stored refs invalid, trying to get it from RAX...");
+        texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rax, "rax");
+    }
+
+    if (texture == nullptr) {
+        SPDLOG_INFO(" Stored refs still invalid, scanning registers/stack...");
+        texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rcx, "rcx");
         if (texture == nullptr) {
-            SPDLOG_INFO(" Stored ref invalid, trying to get it from RAX...");
-            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rax, "rax");
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rdx, "rdx");
+        }
+        if (texture == nullptr) {
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r8, "r8");
+        }
+        if (texture == nullptr) {
+            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r9, "r9");
         }
 
         if (texture == nullptr) {
-            SPDLOG_INFO(" Stored ref still invalid, scanning registers/stack...");
-            texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rcx, "rcx");
-            if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.rdx, "rdx");
-            }
-            if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r8, "r8");
-            }
-            if (texture == nullptr) {
-                texture = try_get_texture_from_ref((FTexture2DRHIRef*)ctx.r9, "r9");
-            }
+            for (auto i = 0; i < 10; ++i) {
+                const auto stack_ptr = stack_args[i];
+                if (!is_stack_like(stack_ptr)) {
+                    continue;
+                }
 
-            if (texture == nullptr) {
-                for (auto i = 0; i < 10; ++i) {
-                    const auto stack_ptr = stack_args[i];
-                    if (!is_stack_like(stack_ptr)) {
-                        continue;
-                    }
+                texture = try_get_texture_from_ref((FTexture2DRHIRef*)stack_ptr, "stack");
+                if (texture != nullptr) {
+                    break;
+                }
+            }
+        }
+    }
 
-                    texture = try_get_texture_from_ref((FTexture2DRHIRef*)stack_ptr, "stack");
-                    if (texture != nullptr) {
-                        break;
-                    }
+    if (texture != nullptr && selected_texture_from_blob && FRHITexture2D::get_vtable() == nullptr) {
+        const auto candidate_vtable = *(void**)texture;
+        void* native_resource{};
+        const auto native_resource_ok = try_get_native_resource_nothrow(texture, native_resource);
+
+        auto native_resource_looks_valid = false;
+
+        if (native_resource_ok && native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
+            const auto native_vtable = *(void**)native_resource;
+
+            if (native_vtable != nullptr && !IsBadReadPtr(native_vtable, sizeof(void*))) {
+                const auto first_native_vfunc = *(void**)native_vtable;
+
+                if (first_native_vfunc != nullptr && !IsBadReadPtr(first_native_vfunc, sizeof(void*)) &&
+                    utility::get_module_within((void*)native_vtable).has_value() &&
+                    utility::get_module_within(first_native_vfunc).has_value())
+                {
+                    native_resource_looks_valid = true;
                 }
             }
         }
 
-        if (texture != nullptr) {
-            SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
-            SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
-            
-            FRHITexture2D::set_vtable(*(void**)texture);
-        } else {
-            SPDLOG_INFO(" Texture is still null!");
+        auto candidate_vtable_looks_valid = false;
+        if (candidate_vtable != nullptr && !IsBadReadPtr(candidate_vtable, sizeof(void*))) {
+            const auto first_candidate_vfunc = *(void**)candidate_vtable;
+            if (first_candidate_vfunc != nullptr &&
+                !IsBadReadPtr(first_candidate_vfunc, sizeof(void*)) &&
+                utility::get_module_within((void*)candidate_vtable).has_value() &&
+                utility::get_module_within(first_candidate_vfunc).has_value())
+            {
+                candidate_vtable_looks_valid = true;
+            }
         }
+
+        if (candidate_vtable_looks_valid && native_resource_looks_valid) {
+            FRHITexture2D::set_vtable(candidate_vtable);
+            SPDLOG_INFO(
+                "UE5.7: seeded FRHITexture2D vtable from blob candidate {:x} (native {:x})",
+                (uintptr_t)candidate_vtable,
+                (uintptr_t)native_resource);
+        } else if (candidate_vtable_looks_valid) {
+            // Keep the blob candidate for this frame even when native probing is inconclusive.
+            // UE5.7 frequently wraps native resources and can delay valid GetNativeResource responses.
+            if (guarded_texture_path) {
+                FRHITexture2D::set_vtable(candidate_vtable);
+                SPDLOG_WARN_ONCE(
+                    "UE5.7/TQ2: seeded FRHITexture2D vtable from blob-only candidate {:x}",
+                    (uintptr_t)candidate_vtable);
+            } else {
+                SPDLOG_WARN_ONCE("UE5.7: accepting blob-only texture candidate without native resource confirmation");
+            }
+        } else {
+            SPDLOG_WARN_ONCE("UE5.7: rejecting blob-only texture candidate; native resource probe was not trustworthy");
+            texture = nullptr;
+        }
+    }
+
+    if (texture != nullptr) {
+        SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
+
+        auto known_vtable = FRHITexture2D::get_vtable();
+        const auto candidate_vtable = *(void**)texture;
+
+        if (known_vtable == nullptr && !selected_texture_from_blob) {
+            FRHITexture2D::set_vtable(candidate_vtable);
+            known_vtable = candidate_vtable;
+            SPDLOG_INFO(" Seeded FRHITexture2D vtable: {:x}", (uintptr_t)candidate_vtable);
+        }
+
+        if (known_vtable != nullptr && candidate_vtable == known_vtable) {
+            void* native_resource{};
+            if (try_get_native_resource_nothrow(texture, native_resource)) {
+                SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)native_resource);
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(1, " [warn] Failed to resolve native resource for texture {:x}", (uintptr_t)texture);
+            }
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                " Skipping native resource probe for texture {:x} due to unknown/mismatched vtable {:x} (known {:x})",
+                (uintptr_t)texture, (uintptr_t)candidate_vtable, (uintptr_t)known_vtable);
+        }
+    } else {
+        SPDLOG_INFO(" Texture is still null!");
     }
 
     SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
 
     rtm->render_target = texture;
     //rtm->ui_target = texture;
+    rtm->allocate_texture_called = false;
     rtm->texture_hook_ref = nullptr;
+    rtm->shader_resource_hook_ref = nullptr;
     ++rtm->last_texture_index;
 }
 
@@ -8206,7 +8884,7 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
 
             const auto rtm = g_hook->get_render_target_manager();
 
-            if (rtm != nullptr) {
+            if (rtm != nullptr && !is_ue_57()) {
                 if (const auto offset = rtm->get_viewport_force_separate_rt_offset()) {
                     SPDLOG_INFO_ONCE("Resetting bUseSeparateRenderTarget to false!");
                     auto& use_separate_rt = *(bool*)((uintptr_t)viewport + (*offset - 1));
@@ -8271,7 +8949,7 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
         if (!g_hook->m_rendertarget_manager_embedded_in_stereo_device) {
             const auto rtm = g_hook->get_render_target_manager();
 
-            if (rtm != nullptr) {
+            if (rtm != nullptr && !is_ue_57()) {
                 const auto update_viewport_rhi = g_hook->m_update_viewport_rhi_hook ?
                     g_hook->m_update_viewport_rhi_hook->get_original<void(*)(void*, size_t, size_t, size_t, size_t, size_t)>() :
                     nullptr;
@@ -8544,6 +9222,11 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         // If it has a mov eax, 0x800, then returns, we can skip this function
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
+
+                        if (is_ue_57() && !call_target_looks_like_create_texture_path(fn)) {
+                            SPDLOG_INFO("UE5.7: call target at {:x} does not look like CreateTexture path, skipping", fn);
+                            next_call_is_not_the_right_one = true;
+                        }
 
                         if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {
                             SPDLOG_INFO("First instruction is a mov r8d, 30h, skipping this call!");
