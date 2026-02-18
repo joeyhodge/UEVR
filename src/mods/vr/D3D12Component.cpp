@@ -4,6 +4,7 @@
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/Module.hpp>
 #include <array>
 #include <exception>
 #include <string_view>
@@ -45,13 +46,34 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
-    const auto known_vtable = FRHITexture2D::get_vtable();
-    if (known_vtable == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] {} get_native_resource skipped: FRHITexture2D vtable is not seeded yet", source);
-        return nullptr;
+    const auto candidate_vtable = *(void**)texture;
+    auto candidate_vtable_looks_valid = false;
+    if (candidate_vtable != nullptr && !IsBadReadPtr(candidate_vtable, sizeof(void*))) {
+        const auto first_candidate_vfunc = *(void**)candidate_vtable;
+        if (first_candidate_vfunc != nullptr &&
+            !IsBadReadPtr(first_candidate_vfunc, sizeof(void*)) &&
+            utility::get_module_within((void*)candidate_vtable).has_value() &&
+            utility::get_module_within(first_candidate_vfunc).has_value())
+        {
+            candidate_vtable_looks_valid = true;
+        }
     }
 
-    const auto candidate_vtable = *(void**)texture;
+    auto known_vtable = FRHITexture2D::get_vtable();
+    if (known_vtable == nullptr) {
+        if (candidate_vtable_looks_valid) {
+            FRHITexture2D::set_vtable(candidate_vtable);
+            known_vtable = candidate_vtable;
+            SPDLOG_WARN_ONCE(
+                "[VR] {} seeded FRHITexture2D vtable from runtime texture candidate {:x}",
+                source,
+                (uintptr_t)candidate_vtable);
+        } else {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] {} get_native_resource skipped: FRHITexture2D vtable is not seeded yet", source);
+        return nullptr;
+        }
+    }
+
     if (candidate_vtable != known_vtable) {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] {} get_native_resource skipped: vtable mismatch (candidate {:x}, known {:x})",
