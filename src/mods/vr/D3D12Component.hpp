@@ -283,5 +283,6 @@ private:
     bool m_force_reset{true};
     bool m_last_afr_state{false};
     bool m_submitted_left_eye{false};
+    bool m_last_frame_used_real_backbuffer_source{false};
 };
 } // namespace vrmod

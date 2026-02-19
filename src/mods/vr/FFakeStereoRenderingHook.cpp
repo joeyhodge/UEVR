@@ -8605,7 +8605,13 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
 
-    rtm->render_target = texture;
+    if (texture != nullptr) {
+        rtm->render_target = texture;
+    } else if (!guarded_texture_path) {
+        rtm->render_target = nullptr;
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[Post texture hook] Guarded path: preserving previous scene render target after null candidate");
+    }
     //rtm->ui_target = texture;
     rtm->allocate_texture_called = false;
     rtm->texture_hook_ref = nullptr;

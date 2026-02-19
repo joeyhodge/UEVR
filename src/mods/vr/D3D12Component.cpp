@@ -5,6 +5,7 @@
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
 #include <utility/Module.hpp>
+#include <sdk/Utility.hpp>
 #include <array>
 #include <algorithm>
 #include <cctype>
@@ -46,6 +47,45 @@ const bool tq2_guard = []() {
            lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
 }();
 
+const bool ue57_guard = []() {
+    const auto version_info = sdk::get_file_version_info();
+
+    auto major = HIWORD(version_info.dwFileVersionMS);
+    auto minor = LOWORD(version_info.dwFileVersionMS);
+
+    if (major == 0 && minor >= 10000) {
+        major = minor / 10000;
+        minor = minor % 10000;
+    }
+
+    if (major == 5 && minor == 7) {
+        return true;
+    }
+
+    if (const auto version = sdk::search_for_version(utility::get_executable()); version) {
+        return version->find(L"5.7") != std::wstring::npos;
+    }
+
+    return false;
+}();
+
+bool is_d3d_module_path(const std::string& lower_module_path) {
+    return lower_module_path.find("d3d12core.dll") != std::string::npos ||
+           lower_module_path.find("d3d12.dll") != std::string::npos ||
+           lower_module_path.find("d3d11on12.dll") != std::string::npos;
+}
+
+bool try_read_ptr_nothrow(uintptr_t address, uintptr_t& out) noexcept {
+    __try {
+        out = *(uintptr_t*)address;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = 0;
+        return false;
+    }
+
+    return true;
+}
+
 bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
     if (source_width == 0 || expected_double_width == 0) {
         return false;
@@ -75,6 +115,99 @@ bool try_get_resource_desc_nothrow(ID3D12Resource* resource, D3D12_RESOURCE_DESC
     }
 
     return out_desc.Dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN && out_desc.Width > 0 && out_desc.Height > 0;
+}
+
+ID3D12Resource* validate_d3d12_resource_candidate(uintptr_t candidate_ptr) {
+    if (candidate_ptr == 0 || IsBadReadPtr((void*)candidate_ptr, sizeof(void*))) {
+        return nullptr;
+    }
+
+    uintptr_t candidate_vtable_ptr{};
+    if (!try_read_ptr_nothrow(candidate_ptr, candidate_vtable_ptr)) {
+        return nullptr;
+    }
+
+    const auto candidate_vtable = (void*)candidate_vtable_ptr;
+    if (candidate_vtable == nullptr || IsBadReadPtr(candidate_vtable, sizeof(void*))) {
+        return nullptr;
+    }
+
+    const auto module_within = utility::get_module_within(candidate_vtable);
+    if (!module_within.has_value()) {
+        return nullptr;
+    }
+
+    const auto module_path = utility::get_module_path(*module_within);
+    if (!module_path.has_value()) {
+        return nullptr;
+    }
+
+    auto lower_path = *module_path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+
+    if (!is_d3d_module_path(lower_path)) {
+        return nullptr;
+    }
+
+    auto* as_resource = (ID3D12Resource*)candidate_ptr;
+    D3D12_RESOURCE_DESC desc{};
+    if (!try_get_resource_desc_nothrow(as_resource, desc)) {
+        return nullptr;
+    }
+
+    return as_resource;
+}
+
+ID3D12Resource* probe_native_d3d12_resource_from_texture_blob(FRHITexture2D* texture) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return nullptr;
+    }
+
+    const auto scan_object_for_resource = [&](uintptr_t base, uintptr_t max_offset) -> ID3D12Resource* {
+        for (uintptr_t offset = 0; offset <= max_offset; offset += sizeof(void*)) {
+            uintptr_t candidate_ptr{};
+            if (!try_read_ptr_nothrow(base + offset, candidate_ptr)) {
+                continue;
+            }
+
+            if (auto* resource = validate_d3d12_resource_candidate(candidate_ptr); resource != nullptr) {
+                return resource;
+            }
+        }
+
+        return nullptr;
+    };
+
+    // Fast path: FRHITexture-like wrappers often hold the resource near +0xD0 on UE5.7.
+    constexpr std::array<uintptr_t, 8> likely_offsets{
+        0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8
+    };
+
+    for (const auto offset : likely_offsets) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow((uintptr_t)texture + offset, candidate_ptr)) {
+            continue;
+        }
+
+        if (auto* direct = validate_d3d12_resource_candidate(candidate_ptr); direct != nullptr) {
+            return direct;
+        }
+
+        // Some titles wrap the resource in one extra layer (e.g., TextureRHI-like structs).
+        if (candidate_ptr != 0 && !IsBadReadPtr((void*)candidate_ptr, sizeof(void*))) {
+            if (auto* nested = scan_object_for_resource(candidate_ptr, 0x180); nested != nullptr) {
+                return nested;
+            }
+        }
+    }
+
+    if (auto* broad_direct = scan_object_for_resource((uintptr_t)texture, 0x220); broad_direct != nullptr) {
+        return broad_direct;
+    }
+
+    return nullptr;
 }
 
 ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_view source) {
@@ -117,7 +250,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         }
     }
 
-    if (candidate_vtable != known_vtable && !tq2_guard) {
+    if (candidate_vtable != known_vtable && !tq2_guard && !ue57_guard) {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] {} get_native_resource skipped: vtable mismatch (candidate {:x}, known {:x})",
             source,
@@ -127,11 +260,32 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     }
 
     ID3D12Resource* native_resource{};
-    __try {
-        native_resource = (ID3D12Resource*)texture->get_native_resource();
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource raised SEH exception", source);
-        return nullptr;
+    const bool can_call_virtual_native_resource = (candidate_vtable == known_vtable) || (!tq2_guard && !ue57_guard);
+
+    if (can_call_virtual_native_resource) {
+        __try {
+            native_resource = (ID3D12Resource*)texture->get_native_resource();
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+            SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource raised SEH exception", source);
+            return nullptr;
+        }
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} skipping direct get_native_resource virtual call in guarded mode (candidate {:x}, known {:x})",
+            source,
+            (uintptr_t)candidate_vtable,
+            (uintptr_t)known_vtable);
+    }
+
+    if (native_resource == nullptr) {
+        native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
+
+        if (native_resource != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} recovered native resource via UE5.7 pointer scan: {:x}",
+                source,
+                (uintptr_t)native_resource);
+        }
     }
 
     if (native_resource == nullptr) {
@@ -181,11 +335,11 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
     auto* texture = rtm->get_render_target();
 
-    if (texture == nullptr && tq2_guard) {
+    if (texture == nullptr) {
         texture = rtm->get_render_target_relaxed();
 
         if (texture != nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer (TQ2/UE5.7)");
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
         }
     }
 
@@ -221,6 +375,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
+    bool using_real_backbuffer_source = false;
     auto ue4_texture = resolve_scene_render_target_for_d3d12(vr);
 
     if (ue4_texture != nullptr) {
@@ -236,16 +391,27 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (vr->is_extreme_compatibility_mode_enabled()) {
         backbuffer = real_backbuffer;
+        using_real_backbuffer_source = true;
     }
 
     if (backbuffer == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target unavailable; falling back to real back buffer (D3D12)");
         backbuffer = real_backbuffer;
+        using_real_backbuffer_source = true;
+    }
+
+    if (backbuffer.Get() == real_backbuffer.Get()) {
+        using_real_backbuffer_source = true;
     }
 
     if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer.");
         return vr::VRCompositorError_None;
+    }
+
+    m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
+    if (m_last_frame_used_real_backbuffer_source) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Using real backbuffer source path this frame (scene RT unresolved or compatibility mode)");
     }
 
     D3D12_RESOURCE_DESC real_backbuffer_desc{};
@@ -1350,12 +1516,17 @@ void D3D12Component::on_post_present(VR* vr) {
 
     // Clear the (real) backbuffer if VR is enabled. Otherwise it will flicker and all sorts of nasty things.
     if (vr->is_hmd_active()) {
-        clear_backbuffer();
+        if (m_last_frame_used_real_backbuffer_source) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Skipping post-present backbuffer clear while using real backbuffer source");
+        } else {
+            clear_backbuffer();
+        }
     }
 }
 
 void D3D12Component::on_reset(VR* vr) {
     m_force_reset = true;
+    m_last_frame_used_real_backbuffer_source = false;
 
     auto runtime = vr->get_runtime();
 
@@ -1460,13 +1631,20 @@ bool D3D12Component::setup() {
         return false;
     }
 
+    bool using_real_backbuffer_source = false;
     if (vr->is_extreme_compatibility_mode_enabled()) {
         backbuffer = real_backbuffer;
+        using_real_backbuffer_source = true;
     }
 
     if (backbuffer == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target unavailable; falling back to real back buffer (D3D12)");
         backbuffer = real_backbuffer;
+        using_real_backbuffer_source = true;
+    }
+
+    if (backbuffer.Get() == real_backbuffer.Get()) {
+        using_real_backbuffer_source = true;
     }
 
     if (backbuffer == nullptr) {
@@ -1488,8 +1666,10 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!vr->is_extreme_compatibility_mode_enabled() && !using_real_backbuffer_source) {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
+    } else if (!vr->is_extreme_compatibility_mode_enabled() && using_real_backbuffer_source) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Setup using single-wide real backbuffer source; keeping full width");
     }
 
     spdlog::info("[VR] D3D12 RT width: {}, height: {}, format: {}", backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format);
@@ -1616,6 +1796,7 @@ bool D3D12Component::setup() {
     }
 
     spdlog::info("[VR] d3d12 textures have been setup");
+    m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
     m_force_reset = false;
 
     return true;
