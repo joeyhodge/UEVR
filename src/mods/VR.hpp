@@ -4,8 +4,11 @@
 
 #include <memory>
 #include <string>
+#include <algorithm>
+#include <cctype>
 
 #include <sdk/Math.hpp>
+#include <utility/Module.hpp>
 
 #include "vr/runtimes/OpenVR.hpp"
 #include "vr/runtimes/OpenXR.hpp"
@@ -543,6 +546,25 @@ public:
     }
 
     bool is_native_stereo_fix_enabled() const {
+        static const bool tq2_guard = []() {
+            const auto module_path = utility::get_module_path(utility::get_executable());
+            if (!module_path.has_value() || module_path->empty()) {
+                return false;
+            }
+
+            auto lower_path = *module_path;
+            std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+                return (char)std::tolower(c);
+            });
+
+            return lower_path.find("tq2-win64-shipping.exe") != std::string::npos ||
+                   lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
+        }();
+
+        if (tq2_guard) {
+            return false;
+        }
+
         return m_native_stereo_fix->value() && !is_using_afr();
     }
 

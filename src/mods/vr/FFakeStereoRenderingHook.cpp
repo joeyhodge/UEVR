@@ -744,19 +744,29 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     const bool ue57_guard = is_ue_57();
     const bool tq2_guard = is_tq2_shipping_executable();
 
-    if (ue57_guard || tq2_guard) {
-        // Startup stability guard for UE5.7/TQ2:
-        // DrawWindow hook candidate resolution is currently unsafe and can corrupt SWindow state at injection.
-        // Keep the hook disabled until we have a reliable function locator for this title.
+    if (tq2_guard) {
+        // TQ2 is currently unstable when DrawWindow_RenderThread gets hooked.
+        // Keep this hook disabled for this title until we have a reliable resolver.
         m_attempted_hook_slate_thread = true;
         m_attempted_hook_slate_thread_alternate = true;
-        m_hooked_slate_thread = true; // mark as complete to suppress repeated re-attempts
-        if (ue57_guard) {
-            SPDLOG_WARN_ONCE("UE5.7: disabling DrawWindow_RenderThread hook (stability guard)");
-        } else {
-            SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard fallback)");
-        }
+        m_hooked_slate_thread = true;
+        SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard)");
         return;
+    }
+
+    if (ue57_guard) {
+        // UE5.7 can be unstable right at injection. Delay this hook briefly,
+        // then allow normal hook attempts so we can recover scene render targets.
+        static uint64_t s_guard_begin_tick = GetTickCount64();
+        constexpr uint64_t kGuardDelayMs = 10000;
+        const auto now = GetTickCount64();
+
+        if (now - s_guard_begin_tick < kGuardDelayMs) {
+            SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook for startup stability");
+            return;
+        }
+
+        SPDLOG_INFO_ONCE("UE5.7 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
     if (m_asynchronous_scan->value()) {
@@ -2321,9 +2331,34 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
     SPDLOG_INFO_ONCE("FViewport::GetRenderTargetTexture called!");
     const auto og = g_hook->m_viewport_get_render_target_texture_hook->get_original<decltype(&viewport_get_render_target_texture_hook)>();
     const auto& vr = VR::get();
+    const bool ue57_capture_mode = (is_ue_57() || is_tq2_shipping_executable()) && vr->is_hmd_active();
+
+    const auto capture_scene_from_original = [&](FRHITexture2D** original_result, const char* source_label) {
+        if (!ue57_capture_mode || original_result == nullptr) {
+            return;
+        }
+
+        uintptr_t candidate_raw{};
+        if (!try_read_pointer_nothrow((uintptr_t)original_result, candidate_raw) || !is_probably_valid_object_pointer(candidate_raw)) {
+            return;
+        }
+
+        auto candidate = (FRHITexture2D*)candidate_raw;
+        auto& rtm = *g_hook->get_render_target_manager();
+        auto current = rtm.get_render_target();
+
+        if (current == nullptr || current == rtm.get_ui_target()) {
+            rtm.set_render_target(candidate);
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "FViewport::GetRenderTargetTexture captured scene render target from {}: {:x}",
+                source_label, (uintptr_t)candidate);
+        }
+    };
 
     if (!vr->is_ahud_compatibility_enabled() || !vr->is_hmd_active() || g_hook->m_slate_draw_window_thread_id == 0) {
-        return og(viewport);
+        auto original_result = og(viewport);
+        capture_scene_from_original(original_result, "early path");
+        return original_result;
     }
 
     auto& data = g_hook->m_viewport_rt_hook_data;
@@ -2333,7 +2368,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         utility::ScopeGuard guard{[&](){ data.seen_retaddrs.insert(retaddr); }};
 
         if (data.call_original_retaddrs.contains(retaddr)) {
-            return og(viewport);
+            auto original_result = og(viewport);
+            capture_scene_from_original(original_result, "retaddr allowlist");
+            return original_result;
         }
 
         std::optional<size_t> func_start{};
@@ -2356,7 +2393,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
                 SPDLOG_INFO("Found view family texture reference @ {:x}", retaddr);
                 data.call_original_retaddrs.insert(retaddr);
                 data.has_view_family_tex = true;
-                return og(viewport);
+                auto original_result = og(viewport);
+                capture_scene_from_original(original_result, "view family");
+                return original_result;
             }
 
             // We should always allow the viewport when used in a post processing context to go through.
@@ -2365,7 +2404,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             if (utility::find_string_reference_in_path(*func_start, L"FinalPostProcessColor", false) || utility::find_string_reference_in_path(retaddr, L"FinalPostProcessColor", false)) {
                 SPDLOG_INFO("Found FinalPostProcessColor reference @ {:x}", retaddr);
                 data.call_original_retaddrs.insert(retaddr);
-                return og(viewport);
+                auto original_result = og(viewport);
+                capture_scene_from_original(original_result, "post process");
+                return original_result;
             }
 
             const auto next_fn_call = utility::scan_disasm(retaddr, 0x30, "E8 ? ? ? ?");
@@ -2464,7 +2505,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         // Hacky way to allow the first texture to go through
         // For the games that are using something other than ViewFamilyTexture as the scene RT.
         if (!data.call_original_retaddrs.empty() && !data.redirected_retaddrs.contains(retaddr) && !data.has_view_family_tex) {
-            return og(viewport);
+            auto original_result = og(viewport);
+            capture_scene_from_original(original_result, "first pass");
+            return original_result;
         }
 
         if (!data.redirected_retaddrs.contains(retaddr) && !data.call_original_retaddrs.contains(retaddr)) {
@@ -2488,7 +2531,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             if (utility::find_string_reference_in_path(*func_start, L"UnknownTexture", false)) {
                 SPDLOG_INFO("Found unknown texture reference @ {:x}", retaddr);
                 data.call_original_retaddrs.insert(retaddr);
-                return og(viewport);
+                auto original_result = og(viewport);
+                capture_scene_from_original(original_result, "unknown texture");
+                return original_result;
             }
 
             SPDLOG_INFO("Redirecting FViewport::GetRenderTargetTexture call to UI render target @ {:x}", retaddr);
@@ -2503,7 +2548,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         return &ui_target;
     }
 
-    return og(viewport);
+    auto original_result = og(viewport);
+    capture_scene_from_original(original_result, "default path");
+    return original_result;
 }
 
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
@@ -2514,7 +2561,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     // texture instead of the scene render target, if it's not the scene itself/the view family texture.
     // This usually isn't needed but sometimes there are bespoke changes to the rendering pipeline
     // or uses of the AHUD class that make it necessary.
-    if (g_framework->is_game_data_intialized() && VR::get()->is_ahud_compatibility_enabled() && viewport != nullptr) {
+    const bool wants_viewport_rt_hook = VR::get()->is_ahud_compatibility_enabled() || is_ue_57() || is_tq2_shipping_executable();
+    if (g_framework->is_game_data_intialized() && wants_viewport_rt_hook && viewport != nullptr) {
         if (g_hook->m_viewport_get_render_target_texture_hook == nullptr) {
             SPDLOG_INFO("Hooking FViewport::GetRenderTargetTexture...");
             void** vp_vtable = *(void***)viewport;
@@ -7285,6 +7333,18 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
         if (tq2_guard) {
             SPDLOG_WARN_ONCE("TQ2: skipping CreateTexture replay in pre texture hook (stability guard)");
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "TQ2 pre texture guard: keeping AllocateRenderTargetTexture refs (primary={:x}, secondary={:x})",
+                (uintptr_t)rtm->texture_hook_ref,
+                (uintptr_t)rtm->shader_resource_hook_ref);
+
+            // UE5.7/TQ2: register values at this call site are not stable ref pointers.
+            // Keep refs captured in AllocateRenderTargetTexture and let post-hook resolve.
+            if (rtm->texture_hook_ref == nullptr) {
+                SPDLOG_WARN_ONCE("TQ2 pre texture guard: primary texture ref is null; post hook may need blob fallback");
+            }
+
+            return;
         }
 
         SPDLOG_INFO_ONCE("Pre texture guard call regs rcx={:x} rdx={:x} r8={:x} r9={:x} rsp={:x}",
@@ -7324,8 +7384,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
             return;
         }
 
-        // Do not keep the stale AllocateRenderTargetTexture stack ref.
-        // Replace it with the current call's best candidates.
+        // Do not keep stale AllocateRenderTargetTexture stack refs on generic UE5.7 paths.
         rtm->texture_hook_ref = (FTexture2DRHIRef*)candidates[0].first;
         rtm->shader_resource_hook_ref = candidates.size() > 1 ? (FTexture2DRHIRef*)candidates[1].first : nullptr;
 
@@ -8130,7 +8189,8 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
 void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     auto rtm = g_hook->get_render_target_manager();
-    const bool guarded_texture_path = is_ue_57() || is_tq2_shipping_executable();
+    const bool tq2_guard = is_tq2_shipping_executable();
+    const bool guarded_texture_path = is_ue_57() || tq2_guard;
 
     SPDLOG_INFO("Post texture hook called!");
     SPDLOG_INFO(" Ref: {:x}", (uintptr_t)rtm->texture_hook_ref);
@@ -8161,6 +8221,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     FRHITexture2D* texture = nullptr;
     bool selected_texture_from_blob = false;
+    bool selected_blob_has_native_resource = false;
     const auto stack_args = (uintptr_t*)(ctx.rsp + 0x20);
     const auto is_stack_like = [&](uintptr_t ptr) {
         return ptr != 0 && std::abs((int64_t)ptr - (int64_t)ctx.rsp) <= 0x300;
@@ -8210,10 +8271,50 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return false;
         }
     };
-    const auto is_usable_texture_ptr = [&](FRHITexture2D* tex) {
-        return is_valid_texture_ptr(tex);
+    const auto is_valid_native_resource_ptr = [&](void* native_resource) {
+        if (native_resource == nullptr || (uintptr_t)native_resource < 0x10000 || IsBadReadPtr(native_resource, sizeof(void*))) {
+            return false;
+        }
+
+        const auto native_vtable = *(void**)native_resource;
+        if (native_vtable == nullptr || IsBadReadPtr(native_vtable, sizeof(void*))) {
+            return false;
+        }
+
+        const auto first_native_vfunc = *(void**)native_vtable;
+        if (first_native_vfunc == nullptr || IsBadReadPtr(first_native_vfunc, sizeof(void*))) {
+            return false;
+        }
+
+        return utility::get_module_within((void*)native_vtable).has_value() &&
+            utility::get_module_within(first_native_vfunc).has_value();
     };
-    const auto try_get_texture_from_wrapper_object = [&](uintptr_t object_base, const char* label, size_t blob_offset) -> FRHITexture2D* {
+    const auto has_usable_native_resource = [&](FRHITexture2D* tex, void*& out_native_resource) {
+        out_native_resource = nullptr;
+
+        if (!is_valid_texture_ptr(tex)) {
+            return false;
+        }
+
+        if (!try_get_native_resource_nothrow(tex, out_native_resource)) {
+            return false;
+        }
+
+        return is_valid_native_resource_ptr(out_native_resource);
+    };
+    const auto is_usable_texture_ptr = [&](FRHITexture2D* tex, bool require_native_resource = false) {
+        if (!is_valid_texture_ptr(tex)) {
+            return false;
+        }
+
+        if (!require_native_resource) {
+            return true;
+        }
+
+        void* native_resource{};
+        return has_usable_native_resource(tex, native_resource);
+    };
+    const auto try_get_texture_from_wrapper_object = [&](uintptr_t object_base, const char* label, size_t blob_offset, bool require_native_resource) -> FRHITexture2D* {
         if (object_base < 0x10000 || IsBadReadPtr((void*)object_base, 0x10)) {
             return nullptr;
         }
@@ -8231,7 +8332,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             }
 
             auto inner_candidate = (FRHITexture2D*)inner_raw;
-            if (is_usable_texture_ptr(inner_candidate)) {
+            if (is_usable_texture_ptr(inner_candidate, require_native_resource)) {
+                if (require_native_resource) {
+                    void* native_resource{};
+                    const auto got_native = try_get_native_resource_nothrow(inner_candidate, native_resource);
+                    SPDLOG_INFO(
+                        " {} strict blob wrapper at +0x{:x} yielded texture at +0x{:x}: {:x} (native {:x}, ok={})",
+                        label, blob_offset, inner_offset, inner_raw, (uintptr_t)native_resource, got_native ? 1 : 0);
+                }
+
                 SPDLOG_INFO(
                     " {} blob wrapper at +0x{:x} yielded texture at +0x{:x}: {:x}",
                     label, blob_offset, inner_offset, inner_raw);
@@ -8241,7 +8350,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         return nullptr;
     };
-    const auto try_get_texture_from_blob = [&](uintptr_t blob_base, const char* label) -> FRHITexture2D* {
+    const auto try_get_texture_from_blob = [&](uintptr_t blob_base, const char* label, bool require_native_resource) -> FRHITexture2D* {
         if (blob_base < 0x10000 || IsBadReadPtr((void*)blob_base, 0x10)) {
             return nullptr;
         }
@@ -8255,7 +8364,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             }
 
             auto candidate = (FRHITexture2D*)candidate_raw;
-            if (is_usable_texture_ptr(candidate)) {
+            if (is_usable_texture_ptr(candidate, require_native_resource)) {
+                if (require_native_resource) {
+                    void* native_resource{};
+                    const auto got_native = try_get_native_resource_nothrow(candidate, native_resource);
+                    SPDLOG_INFO(
+                        " {} strict blob yielded texture at +0x{:x}: {:x} (native {:x}, ok={})",
+                        label, offset, candidate_raw, (uintptr_t)native_resource, got_native ? 1 : 0);
+                }
+
                 SPDLOG_INFO(" {} blob yielded texture at +0x{:x}: {:x}", label, offset, candidate_raw);
                 return candidate;
             }
@@ -8267,13 +8384,21 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             }
 
             auto indirect_candidate = (FRHITexture2D*)indirect_raw;
-            if (is_usable_texture_ptr(indirect_candidate)) {
+            if (is_usable_texture_ptr(indirect_candidate, require_native_resource)) {
+                if (require_native_resource) {
+                    void* native_resource{};
+                    const auto got_native = try_get_native_resource_nothrow(indirect_candidate, native_resource);
+                    SPDLOG_INFO(
+                        " {} strict blob yielded indirect texture at +0x{:x}: {:x} (native {:x}, ok={})",
+                        label, offset, indirect_raw, (uintptr_t)native_resource, got_native ? 1 : 0);
+                }
+
                 SPDLOG_INFO(" {} blob yielded indirect texture at +0x{:x}: {:x}", label, offset, indirect_raw);
                 return indirect_candidate;
             }
 
             // The blob may point to a texture wrapper object rather than FRHITexture2D directly.
-            if (auto wrapped_candidate = try_get_texture_from_wrapper_object(candidate_raw, label, offset); wrapped_candidate != nullptr) {
+            if (auto wrapped_candidate = try_get_texture_from_wrapper_object(candidate_raw, label, offset, require_native_resource); wrapped_candidate != nullptr) {
                 return wrapped_candidate;
             }
         }
@@ -8285,22 +8410,61 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return nullptr;
         }
 
+        // TQ2's AllocateRenderTargetTexture call-site can hand us a raw FRHITexture pointer
+        // rather than a FTexture2DRHIRef wrapper. Try that shape first.
+        if (tq2_guard) {
+            auto direct_texture = (FRHITexture2D*)ref;
+            if (is_usable_texture_ptr(direct_texture)) {
+                selected_texture_from_blob = false;
+                selected_blob_has_native_resource = false;
+                SPDLOG_INFO_EVERY_N_SEC(1, " {} treating ref pointer as direct texture: {:x}", label, (uintptr_t)direct_texture);
+                return direct_texture;
+            }
+        }
+
         auto tex = ref->texture;
         if (!is_usable_texture_ptr(tex)) {
             if (tex != nullptr) {
                 SPDLOG_WARN(" {} texture pointer invalid: {:x}", label, (uintptr_t)tex);
             }
 
-            auto scanned = try_get_texture_from_blob((uintptr_t)ref, label);
+            // TQ2 often passes wrapper/indirection refs here; try strict scan first, then relaxed.
+            const bool require_native_resource = tq2_guard;
+            auto scanned = try_get_texture_from_blob((uintptr_t)ref, label, require_native_resource);
             if (scanned != nullptr) {
                 selected_texture_from_blob = true;
+                selected_blob_has_native_resource = require_native_resource;
                 return scanned;
+            }
+
+            if (tq2_guard) {
+                std::array<uintptr_t, 8> blob_qwords{};
+                for (size_t i = 0; i < blob_qwords.size(); ++i) {
+                    try_read_pointer_nothrow((uintptr_t)ref + (i * sizeof(uintptr_t)), blob_qwords[i]);
+                }
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    " {} strict blob scan failed for TQ2; blob qwords: [{:x}, {:x}, {:x}, {:x}, {:x}, {:x}, {:x}, {:x}]",
+                    label,
+                    blob_qwords[0], blob_qwords[1], blob_qwords[2], blob_qwords[3],
+                    blob_qwords[4], blob_qwords[5], blob_qwords[6], blob_qwords[7]);
+
+                auto relaxed_scanned = try_get_texture_from_blob((uintptr_t)ref, label, false);
+                if (relaxed_scanned != nullptr) {
+                    selected_texture_from_blob = true;
+                    selected_blob_has_native_resource = false;
+                    SPDLOG_WARN_ONCE("TQ2: accepted relaxed blob scan candidate without immediate native-resource confirmation");
+                    return relaxed_scanned;
+                }
+
+                SPDLOG_INFO_EVERY_N_SEC(1, " {} strict blob scan failed for TQ2", label);
             }
 
             return nullptr;
         }
 
         selected_texture_from_blob = false;
+        selected_blob_has_native_resource = false;
         rtm->texture_hook_ref = ref;
         SPDLOG_INFO_ONCE("Using texture ref from {}", label);
         return tex;
@@ -8393,9 +8557,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             // UE5.7 frequently wraps native resources and can delay valid GetNativeResource responses.
             if (guarded_texture_path) {
                 FRHITexture2D::set_vtable(candidate_vtable);
-                SPDLOG_WARN_ONCE(
-                    "UE5.7/TQ2: seeded FRHITexture2D vtable from blob-only candidate {:x}",
-                    (uintptr_t)candidate_vtable);
+                if (tq2_guard) {
+                    SPDLOG_WARN_ONCE(
+                        "TQ2: seeded FRHITexture2D vtable from relaxed blob candidate {:x} (native currently unavailable)",
+                        (uintptr_t)candidate_vtable);
+                } else {
+                    SPDLOG_WARN_ONCE(
+                        "UE5.7/TQ2: seeded FRHITexture2D vtable from blob-only candidate {:x}",
+                        (uintptr_t)candidate_vtable);
+                }
             } else {
                 SPDLOG_WARN_ONCE("UE5.7: accepting blob-only texture candidate without native resource confirmation");
             }
@@ -9090,6 +9260,8 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
         SPDLOG_INFO("Scanning for call instr...");
 
         bool next_call_is_not_the_right_one = false;
+        const bool ue57_guard = is_ue_57();
+        const bool tq2_guard = is_tq2_shipping_executable();
 
         auto is_string_nearby = [](uintptr_t addr, std::wstring_view str) {
             const auto addr_module = utility::get_module_within(addr);
@@ -9223,9 +9395,23 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (is_ue_57() && !call_target_looks_like_create_texture_path(fn)) {
-                            SPDLOG_INFO("UE5.7: call target at {:x} does not look like CreateTexture path, skipping", fn);
+                        const auto next_insn = (uint8_t*)(ip + decoded->Length);
+
+                        // TQ2/UE5.7 often has an early bool-return helper call right before the real create path:
+                        // call ..., test al, al, jnz ...
+                        // Hooking that call gives unstable/invalid out refs and black output.
+                        if (tq2_guard && next_insn[0] == 0x84 && next_insn[1] == 0xC0) {
+                            SPDLOG_INFO("TQ2: skipping bool-guard call at {:x} (post-call test al, al)", ip);
                             next_call_is_not_the_right_one = true;
+                        }
+
+                        if (ue57_guard && !next_call_is_not_the_right_one && !call_target_looks_like_create_texture_path(fn)) {
+                            if (tq2_guard) {
+                                SPDLOG_INFO("TQ2: allowing call target at {:x} without CreateTexture signature match", fn);
+                            } else {
+                                SPDLOG_INFO("UE5.7: call target at {:x} does not look like CreateTexture path, skipping", fn);
+                                next_call_is_not_the_right_one = true;
+                            }
                         }
 
                         if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {
@@ -9236,7 +9422,6 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                             next_call_is_not_the_right_one = true;
                         } else if (this->is_version_greq_5_1) { // Limiting the scope of this to newer UE5 versions so we don't potentially break older versions
                             const auto module_fn_within = utility::get_module_within(fn);
-                            const auto next_insn = (uint8_t*)(ip + decoded->Length);
 
                             // Seen on UE5.3.2 development builds
                             if (auto result = utility::scan_disasm(fn, 15, "BD 01 00 00 00"); result.has_value()) {

@@ -1,4 +1,6 @@
 #include <fstream>
+#include <algorithm>
+#include <cwctype>
 
 #include <utility/Logging.hpp>
 #include <utility/String.hpp>
@@ -32,6 +34,81 @@
 #include "UObjectHook.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
+
+namespace {
+bool is_shf_executable() {
+    static bool initialized = false;
+    static bool is_shf = false;
+
+    if (!initialized) {
+        initialized = true;
+
+        wchar_t module_path[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, module_path, MAX_PATH) > 0) {
+            std::wstring lowered{module_path};
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t c) {
+                return (wchar_t)towlower(c);
+            });
+            is_shf = lowered.find(L"shf-win64-shipping.exe") != std::wstring::npos;
+        }
+    }
+
+    return is_shf;
+}
+
+sdk::UClass* safe_get_class(sdk::UObjectBase* object) {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return nullptr;
+    }
+
+#if defined(_MSC_VER)
+    __try {
+        return object->get_class();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+#else
+    try {
+        return object->get_class();
+    } catch (...) {
+        return nullptr;
+    }
+#endif
+}
+
+std::wstring make_shf_safe_object_name(const sdk::UObjectBase* object) {
+    return L"UObject[" + std::to_wstring((uintptr_t)object) + L"]";
+}
+
+bool try_read_object_vtable(sdk::UObjectBase* object, void** out_vtable) {
+    if (out_vtable == nullptr) {
+        return false;
+    }
+
+    *out_vtable = nullptr;
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+#if defined(_MSC_VER)
+    __try {
+        *out_vtable = *(void**)object;
+        return *out_vtable != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out_vtable = nullptr;
+        return false;
+    }
+#else
+    try {
+        *out_vtable = *(void**)object;
+        return *out_vtable != nullptr;
+    } catch (...) {
+        *out_vtable = nullptr;
+        return false;
+    }
+#endif
+}
+}
 
 std::shared_ptr<UObjectHook>& UObjectHook::get() {
     static std::shared_ptr<UObjectHook> instance = std::make_shared<UObjectHook>();
@@ -431,6 +508,15 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
     std::unique_lock _{m_mutex};
     std::unique_ptr<MetaObject> meta_object{};
 
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return;
+    }
+
+    void* object_vtable = nullptr;
+    if (!try_read_object_vtable(object, &object_vtable) || IsBadReadPtr(object_vtable, sizeof(void*))) {
+        return;
+    }
+
     /*static const auto prim_comp_t = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.PrimitiveComponent");
 
     if (prim_comp_t != nullptr && object->get_class()->is_a(prim_comp_t)) {
@@ -441,7 +527,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
         }
     }*/
 
-    const auto c = object->get_class();
+    const auto c = safe_get_class(object);
 
     if (c == nullptr) {
         return;
@@ -457,8 +543,14 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
 
     m_objects.insert(object);
     meta_object->super_classes.clear();
-    meta_object->full_name = object->get_full_name();
-    meta_object->uclass = object->get_class();
+    if (is_shf_executable()) {
+        // SHf can surface transient/invalid FName-backed objects during startup.
+        // Avoid crashing object indexing by using a pointer-based label in that title.
+        meta_object->full_name = make_shf_safe_object_name(object);
+    } else {
+        meta_object->full_name = object->get_full_name();
+    }
+    meta_object->uclass = c;
 
     m_most_recent_objects.push_front((sdk::UObject*)object);
 
@@ -466,7 +558,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
         m_most_recent_objects.pop_back();
     }
 
-    for (auto super = (sdk::UStruct*)object->get_class(); super != nullptr; super = super->get_super_struct()) {
+    for (auto super = (sdk::UStruct*)c; super != nullptr; super = super->get_super_struct()) {
         meta_object->super_classes.push_back((sdk::UClass*)super);
 
         m_objects_by_class[(sdk::UClass*)super].insert(object);

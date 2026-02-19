@@ -6,6 +6,8 @@
 #include <utility/Logging.hpp>
 #include <utility/Module.hpp>
 #include <array>
+#include <algorithm>
+#include <cctype>
 #include <exception>
 #include <string_view>
 #include <DirectXMath.h>
@@ -29,6 +31,21 @@ constexpr auto ENGINE_SRC_DEPTH = D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOUR
 constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 namespace {
+const bool tq2_guard = []() {
+    const auto module_path = utility::get_module_path(utility::get_executable());
+    if (!module_path.has_value() || module_path->empty()) {
+        return false;
+    }
+
+    auto lower_path = *module_path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+
+    return lower_path.find("tq2-win64-shipping.exe") != std::string::npos ||
+           lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
+}();
+
 bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
     if (source_width == 0 || expected_double_width == 0) {
         return false;
@@ -41,12 +58,38 @@ bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_doubl
     return source_width + tolerance >= expected_double_width && source_width >= min_width;
 }
 
+bool try_get_resource_desc_nothrow(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out_desc) noexcept {
+    if (resource == nullptr || IsBadReadPtr(resource, sizeof(void*))) {
+        return false;
+    }
+
+    __try {
+        const auto vtable = *(void***)resource;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            return false;
+        }
+
+        out_desc = resource->GetDesc();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return out_desc.Dimension != D3D12_RESOURCE_DIMENSION_UNKNOWN && out_desc.Width > 0 && out_desc.Height > 0;
+}
+
 ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_view source) {
-    if (texture == nullptr) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return nullptr;
     }
 
-    const auto candidate_vtable = *(void**)texture;
+    void* candidate_vtable{};
+    __try {
+        candidate_vtable = *(void**)texture;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource failed: texture pointer unreadable", source);
+        return nullptr;
+    }
+
     auto candidate_vtable_looks_valid = false;
     if (candidate_vtable != nullptr && !IsBadReadPtr(candidate_vtable, sizeof(void*))) {
         const auto first_candidate_vfunc = *(void**)candidate_vtable;
@@ -74,7 +117,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         }
     }
 
-    if (candidate_vtable != known_vtable) {
+    if (candidate_vtable != known_vtable && !tq2_guard) {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] {} get_native_resource skipped: vtable mismatch (candidate {:x}, known {:x})",
             source,
@@ -83,32 +126,70 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
-    try {
-        return (ID3D12Resource*)texture->get_native_resource();
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw std::exception: {}", source, e.what());
-    } catch (...) {
-        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw unknown exception", source);
+    ID3D12Resource* native_resource{};
+    __try {
+        native_resource = (ID3D12Resource*)texture->get_native_resource();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource raised SEH exception", source);
+        return nullptr;
     }
 
-    return nullptr;
+    if (native_resource == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} get_native_resource returned null (texture {:x}, vtable {:x}, known {:x}, tq2_guard={})",
+            source,
+            (uintptr_t)texture,
+            (uintptr_t)candidate_vtable,
+            (uintptr_t)known_vtable,
+            tq2_guard ? 1 : 0);
+    }
+
+    return native_resource;
 }
 
 template <typename TextureT>
 ID3D12Resource* safe_get_native_resource(TextureT* texture, std::string_view source) {
-    if (texture == nullptr) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return nullptr;
     }
 
-    try {
-        return (ID3D12Resource*)texture->get_native_resource();
-    } catch (const std::exception& e) {
-        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw std::exception: {}", source, e.what());
-    } catch (...) {
-        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource threw unknown exception", source);
+    ID3D12Resource* native_resource{};
+    __try {
+        native_resource = (ID3D12Resource*)texture->get_native_resource();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource raised SEH exception", source);
+        return nullptr;
     }
 
-    return nullptr;
+    return native_resource;
+}
+
+FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
+    if (vr == nullptr) {
+        return nullptr;
+    }
+
+    auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+    if (fake_stereo_hook == nullptr) {
+        return nullptr;
+    }
+
+    auto* rtm = fake_stereo_hook->get_render_target_manager();
+    if (rtm == nullptr) {
+        return nullptr;
+    }
+
+    auto* texture = rtm->get_render_target();
+
+    if (texture == nullptr && tq2_guard) {
+        texture = rtm->get_render_target_relaxed();
+
+        if (texture != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer (TQ2/UE5.7)");
+        }
+    }
+
+    return texture;
 }
 }
 
@@ -140,10 +221,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
-    auto ue4_texture = VR::get()->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
+    auto ue4_texture = resolve_scene_render_target_for_d3d12(vr);
 
     if (ue4_texture != nullptr) {
         backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target pointer is null");
     }
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -165,11 +248,24 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
-    if (!is_likely_double_wide_source((uint32_t)backbuffer->GetDesc().Width, (uint32_t)m_backbuffer_size[0])) {
+    D3D12_RESOURCE_DESC real_backbuffer_desc{};
+    if (!try_get_resource_desc_nothrow(real_backbuffer.Get(), real_backbuffer_desc)) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to read real back buffer desc.");
+        return vr::VRCompositorError_None;
+    }
+
+    D3D12_RESOURCE_DESC backbuffer_desc{};
+    if (!try_get_resource_desc_nothrow(backbuffer.Get(), backbuffer_desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] [warn] Scene backbuffer desc read failed; falling back to real back buffer");
+        backbuffer = real_backbuffer;
+        backbuffer_desc = real_backbuffer_desc;
+    }
+
+    if (!is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, (uint32_t)m_backbuffer_size[0])) {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] Using single-wide source texture {}x{} (expected stereo width {})",
-            backbuffer->GetDesc().Width,
-            backbuffer->GetDesc().Height,
+            backbuffer_desc.Width,
+            backbuffer_desc.Height,
             m_backbuffer_size[0]);
     }
 
@@ -194,7 +290,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
     auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
-    const auto scene_target = ffsr->get_render_target_manager()->get_render_target();
+    const auto scene_target = ue4_texture != nullptr ? ue4_texture : resolve_scene_render_target_for_d3d12(vr);
+    const bool tq2_scene_missing = tq2_guard && scene_target == nullptr;
     if (ui_target != nullptr && ui_target == scene_target) {
         // Avoid treating the scene/backbuffer as UI. Clearing/copying it can black out the desktop view.
         SPDLOG_INFO_ONCE("[VR] UI target matches scene render target; disabling UI copy/clear for this frame");
@@ -222,7 +319,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
         heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
-        auto desc = backbuffer->GetDesc();
+        auto desc = backbuffer_desc;
         desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
@@ -391,6 +488,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         backbuffer = m_game_tex.texture;
+        if (!try_get_resource_desc_nothrow(backbuffer.Get(), backbuffer_desc)) {
+            SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to read copied game texture desc.");
+            return vr::VRCompositorError_None;
+        }
     }
 
     if (ui_target != nullptr) {
@@ -444,7 +545,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const auto is_2d_screen = vr->is_using_2d_screen();
+    const auto is_2d_screen = !tq2_scene_missing && vr->is_using_2d_screen();
+    if (tq2_scene_missing) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] TQ2 fallback mode: disabling 2D-screen/spectator post path while scene RT is unresolved");
+    }
 
     auto draw_2d_view = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
         if (ui_invert_alpha > 0.0f && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
@@ -461,7 +565,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
+        if (!tq2_scene_missing) {
+            draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
+        }
 
         if (is_2d_screen && m_game_tex.texture.Get() != nullptr && m_game_tex.srv_heap != nullptr) {
             const auto game_desc = m_game_tex.texture->GetDesc();
@@ -641,7 +747,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
-            const auto source_desc = backbuffer->GetDesc();
+            const auto source_desc = backbuffer_desc;
             const auto source_width = (uint32_t)source_desc.Width;
             const auto source_height = (uint32_t)source_desc.Height;
             const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
@@ -701,7 +807,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->ready()) {
-            const auto source_desc = backbuffer->GetDesc();
+            const auto source_desc = backbuffer_desc;
             const auto source_width = (uint32_t)source_desc.Width;
             const auto source_height = (uint32_t)source_desc.Height;
             const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
@@ -1340,10 +1446,12 @@ bool D3D12Component::setup() {
 
     ComPtr<ID3D12Resource> backbuffer{};
 
-    auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
+    auto ue4_texture = resolve_scene_render_target_for_d3d12(vr.get());
 
     if (ue4_texture != nullptr) {
         backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target pointer is null");
     }
 
     ComPtr<ID3D12Resource> real_backbuffer{};
@@ -1554,8 +1662,8 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     auto vr = VR::get();
     bool has_actual_vr_backbuffer = false;
 
-    if (vr != nullptr && vr->m_fake_stereo_hook != nullptr) {
-        auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
+    if (vr != nullptr && vr->get_fake_stereo_hook() != nullptr) {
+        auto ue4_texture = resolve_scene_render_target_for_d3d12(vr.get());
 
         if (ue4_texture != nullptr) {
             backbuffer = safe_get_native_resource(ue4_texture, "scene render target");

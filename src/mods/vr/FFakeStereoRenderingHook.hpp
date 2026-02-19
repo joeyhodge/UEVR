@@ -60,8 +60,28 @@ public:
 public:
     FRHITexture2D*& get_ui_target() { return ui_target; }
     FRHITexture2D* get_render_target() {
-        return render_target; 
+        const auto tex = render_target.texture;
+
+        if (tex == nullptr) {
+            return nullptr;
+        }
+
+        // Keep verification non-destructive; racing readers/writers can otherwise clear the pointer permanently.
+        __try {
+            const auto current_vtable = *(void**)tex;
+            const auto expected_vtable = render_target.original_vtable;
+
+            if (current_vtable != nullptr && expected_vtable != nullptr && current_vtable != expected_vtable) {
+                return nullptr;
+            }
+        } __except (1) {
+            return nullptr;
+        }
+
+        return tex;
     }
+
+    FRHITexture2D* get_render_target_relaxed() const { return render_target.texture; }
 
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
