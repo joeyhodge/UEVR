@@ -277,7 +277,9 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
             (uintptr_t)known_vtable);
     }
 
-    if (native_resource == nullptr) {
+    const bool allow_blob_probe = candidate_vtable_looks_valid || candidate_vtable == known_vtable;
+
+    if (native_resource == nullptr && allow_blob_probe) {
         native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
 
         if (native_resource != nullptr) {
@@ -286,6 +288,12 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
                 source,
                 (uintptr_t)native_resource);
         }
+    } else if (native_resource == nullptr && (tq2_guard || ue57_guard)) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} skipping UE5.7 pointer scan due invalid/untrusted texture vtable (candidate {:x}, known {:x})",
+            source,
+            (uintptr_t)candidate_vtable,
+            (uintptr_t)known_vtable);
     }
 
     if (native_resource == nullptr) {
@@ -504,6 +512,30 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // UE backbuffer is not VR compatible, so we need to copy it to a new texture with this one.
+        desc.SampleDesc.Count = 1;
+        desc.SampleDesc.Quality = 0;
+
+        auto target_game_width = (uint32_t)desc.Width;
+        auto target_game_height = (uint32_t)desc.Height;
+        const auto hmd_width = vr->get_hmd_width();
+        const auto hmd_height = vr->get_hmd_height();
+
+        if (hmd_width > 0 && hmd_height > 0) {
+            target_game_width = (uint32_t)hmd_width;
+            target_game_height = (uint32_t)hmd_height;
+        }
+
+        if ((uint32_t)desc.Width != target_game_width || (uint32_t)desc.Height != target_game_height) {
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[VR] Resizing fallback game texture {}x{} -> {}x{}",
+                desc.Width,
+                desc.Height,
+                target_game_width,
+                target_game_height);
+        }
+
+        desc.Width = target_game_width;
+        desc.Height = target_game_height;
 
         if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&backbuffer_copy)))) {
             spdlog::error("[VR] Failed to create backbuffer copy.");
@@ -519,11 +551,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
     } else if (backbuffer.Get() != real_backbuffer.Get() && m_game_tex.texture.Get() != backbuffer.Get()) {
-        spdlog::info("[VR] Setting up game texture as reference to original");
+        if (tq2_guard || ue57_guard) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: skipping game texture retarget to scene resource");
+        } else {
+            spdlog::info("[VR] Setting up game texture as reference to original");
 
-        if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
-            spdlog::error("[VR] Failed to fully setup game texture.");
-            m_game_tex.reset();
+            if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+                spdlog::error("[VR] Failed to fully setup game texture.");
+                m_game_tex.reset();
+            }
         }
     }
 
@@ -551,11 +587,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // We need to render the scene capture texture to the right side of the double wide texture
     auto pre_render = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
-        if (render_target == nullptr || m_game_tex.texture.Get() == nullptr) {
+        auto* source_texture = backbuffer.Get();
+
+        if (render_target == nullptr || source_texture == nullptr) {
             return;
         }
 
-        const auto scene_desc = m_game_tex.texture->GetDesc();
+        const auto scene_desc = backbuffer_desc;
         const auto target_desc = render_target->GetDesc();
         const auto scene_width = (uint32_t)scene_desc.Width;
         const auto scene_height = (uint32_t)scene_desc.Height;
@@ -600,7 +638,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             };
 
             commands.copy_region_stereo(
-                m_game_tex.texture.Get(), m_scene_capture_tex.texture.Get(), render_target,
+                source_texture, m_scene_capture_tex.texture.Get(), render_target,
                 &left_src_box, &right_src_box,
                 0, 0, 0, target_eye_width, 0, 0,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
@@ -609,7 +647,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         } else {
             // Single-wide fallback path: duplicate the same eye source to both halves.
             commands.copy_region(
-                m_game_tex.texture.Get(),
+                source_texture,
                 render_target,
                 &left_src_box,
                 0,
@@ -620,7 +658,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             );
 
             commands.copy_region(
-                m_game_tex.texture.Get(),
+                source_texture,
                 render_target,
                 &left_src_box,
                 target_eye_width,
