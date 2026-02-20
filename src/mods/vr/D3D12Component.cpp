@@ -9,6 +9,7 @@
 #include <array>
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <exception>
 #include <string_view>
 #include <DirectXMath.h>
@@ -96,6 +97,32 @@ bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_doubl
     const auto min_width = expected_double_width > tolerance ? expected_double_width - tolerance : expected_double_width;
 
     return source_width + tolerance >= expected_double_width && source_width >= min_width;
+}
+
+std::optional<RECT> make_aspect_fit_rect(uint32_t src_width, uint32_t src_height, uint32_t dst_width, uint32_t dst_height) {
+    if (src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
+        return std::nullopt;
+    }
+
+    const auto scale_x = (double)dst_width / (double)src_width;
+    const auto scale_y = (double)dst_height / (double)src_height;
+    const auto scale = std::min(scale_x, scale_y);
+
+    auto fit_width = (uint32_t)std::lround((double)src_width * scale);
+    auto fit_height = (uint32_t)std::lround((double)src_height * scale);
+
+    fit_width = std::max<uint32_t>(1, std::min<uint32_t>(fit_width, dst_width));
+    fit_height = std::max<uint32_t>(1, std::min<uint32_t>(fit_height, dst_height));
+
+    const auto offset_x = (dst_width - fit_width) / 2;
+    const auto offset_y = (dst_height - fit_height) / 2;
+
+    RECT rect{};
+    rect.left = (LONG)offset_x;
+    rect.top = (LONG)offset_y;
+    rect.right = (LONG)(offset_x + fit_width);
+    rect.bottom = (LONG)(offset_y + fit_height);
+    return rect;
 }
 
 bool try_get_resource_desc_nothrow(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out_desc) noexcept {
@@ -679,15 +706,56 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
             command_ctx.copy(real_backbuffer.Get(), m_backbuffer_copy.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            //m_game_tex_commands[idx].copy(backbuffer.Get(), m_game_tex.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, ENGINE_SRC_COLOR);
-            d3d12::render_srv_to_rtv(
-                m_game_batch.get(),
-                command_ctx.cmd_list.Get(),
-                m_backbuffer_copy,
-                m_game_tex,
-                D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_RENDER_TARGET
+
+            const auto src_desc = m_backbuffer_copy.texture->GetDesc();
+            const auto dst_desc = m_game_tex.texture->GetDesc();
+
+            RECT src_rect{
+                0,
+                0,
+                (LONG)src_desc.Width,
+                (LONG)src_desc.Height
+            };
+
+            const auto dest_rect = make_aspect_fit_rect(
+                (uint32_t)src_desc.Width,
+                (uint32_t)src_desc.Height,
+                (uint32_t)dst_desc.Width,
+                (uint32_t)dst_desc.Height
             );
+
+            if (dest_rect.has_value()) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "[VR] Real backbuffer fallback aspect-fit blit: src {}x{} -> dst {}x{} (rect {},{}-{},{} )",
+                    src_desc.Width,
+                    src_desc.Height,
+                    dst_desc.Width,
+                    dst_desc.Height,
+                    dest_rect->left,
+                    dest_rect->top,
+                    dest_rect->right,
+                    dest_rect->bottom);
+
+                d3d12::render_srv_to_rtv(
+                    m_game_batch.get(),
+                    command_ctx.cmd_list.Get(),
+                    m_backbuffer_copy,
+                    m_game_tex,
+                    src_rect,
+                    dest_rect,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET
+                );
+            } else {
+                d3d12::render_srv_to_rtv(
+                    m_game_batch.get(),
+                    command_ctx.cmd_list.Get(),
+                    m_backbuffer_copy,
+                    m_game_tex,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET
+                );
+            }
             command_ctx.execute();
         }
 

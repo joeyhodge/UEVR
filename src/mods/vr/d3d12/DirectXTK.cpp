@@ -37,6 +37,19 @@ void render_srv_to_rtv(
     scissor_rect.right = (LONG)dst_desc.Width;
     scissor_rect.bottom = (LONG)dst_desc.Height;
 
+    // Transition src to a shader-readable state for SpriteBatch sampling.
+    D3D12_RESOURCE_BARRIER src_barrier{};
+    src_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    src_barrier.Transition.pResource = src.texture.Get();
+    src_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    src_barrier.Transition.StateBefore = src_state;
+    src_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    const auto transition_src = src_state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (transition_src) {
+        command_list->ResourceBarrier(1, &src_barrier);
+    }
+
     // Transition dst to D3D12_RESOURCE_STATE_RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -87,6 +100,12 @@ void render_srv_to_rtv(
         barrier.Transition.StateAfter = dst_state;
         command_list->ResourceBarrier(1, &barrier);
     }
+
+    if (transition_src) {
+        src_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        src_barrier.Transition.StateAfter = src_state;
+        command_list->ResourceBarrier(1, &src_barrier);
+    }
 }
 
 void render_srv_to_rtv(
@@ -124,6 +143,19 @@ void render_srv_to_rtv(
     scissor_rect.top = 0;
     scissor_rect.right = (LONG)dst_desc.Width;
     scissor_rect.bottom = (LONG)dst_desc.Height;
+
+    // Transition src to a shader-readable state for SpriteBatch sampling.
+    D3D12_RESOURCE_BARRIER src_barrier{};
+    src_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    src_barrier.Transition.pResource = src.texture.Get();
+    src_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    src_barrier.Transition.StateBefore = src_state;
+    src_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    const auto transition_src = src_state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (transition_src) {
+        command_list->ResourceBarrier(1, &src_barrier);
+    }
 
     // Transition dst to D3D12_RESOURCE_STATE_RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier{};
@@ -183,6 +215,12 @@ void render_srv_to_rtv(
         barrier.Transition.StateAfter = dst_state;
         command_list->ResourceBarrier(1, &barrier);
     }
+
+    if (transition_src) {
+        src_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        src_barrier.Transition.StateAfter = src_state;
+        command_list->ResourceBarrier(1, &src_barrier);
+    }
 }
 
 void render_srv_to_rtv(
@@ -221,6 +259,19 @@ void render_srv_to_rtv(
     scissor_rect.top = 0;
     scissor_rect.right = (LONG)dst_desc.Width;
     scissor_rect.bottom = (LONG)dst_desc.Height;
+
+    // Transition src to a shader-readable state for SpriteBatch sampling.
+    D3D12_RESOURCE_BARRIER src_barrier{};
+    src_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    src_barrier.Transition.pResource = src.texture.Get();
+    src_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    src_barrier.Transition.StateBefore = src_state;
+    src_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+
+    const auto transition_src = src_state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    if (transition_src) {
+        command_list->ResourceBarrier(1, &src_barrier);
+    }
 
     // Transition dst to D3D12_RESOURCE_STATE_RENDER_TARGET
     D3D12_RESOURCE_BARRIER barrier{};
@@ -285,6 +336,12 @@ void render_srv_to_rtv(
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = dst_state;
         command_list->ResourceBarrier(1, &barrier);
+    }
+
+    if (transition_src) {
+        src_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        src_barrier.Transition.StateAfter = src_state;
+        command_list->ResourceBarrier(1, &src_barrier);
     }
 }
 }
