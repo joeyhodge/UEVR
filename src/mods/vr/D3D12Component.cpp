@@ -492,7 +492,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
     auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
     const auto scene_target = ue4_texture != nullptr ? ue4_texture : resolve_scene_render_target_for_d3d12(vr);
-    const bool tq2_scene_missing = tq2_guard && scene_target == nullptr;
+    const bool scene_rt_unresolved = m_last_frame_used_real_backbuffer_source;
+    const bool guarded_fallback_mode = (tq2_guard || ue57_guard) && scene_rt_unresolved;
+    const bool tq2_scene_missing = tq2_guard && (scene_target == nullptr || scene_rt_unresolved);
     if (ui_target != nullptr && ui_target == scene_target) {
         // Avoid treating the scene/backbuffer as UI. Clearing/copying it can black out the desktop view.
         SPDLOG_INFO_ONCE("[VR] UI target matches scene render target; disabling UI copy/clear for this frame");
@@ -504,6 +506,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         // A mis-detected UI RT can alias the scene/backbuffer on UE5.7 and get cleared each frame.
         // Drop UI processing for this frame to avoid blacking out desktop/HMD output.
         SPDLOG_WARN_ONCE("[VR] UI target aliases scene/backbuffer; disabling UI copy/clear path");
+        ui_target = nullptr;
+        ui_target_native = nullptr;
+        m_game_ui_tex.reset();
+    }
+
+    if (guarded_fallback_mode) {
+        // In UE5.7 fallback mode, stale UI capture paths can present a frozen frame over the scene.
         ui_target = nullptr;
         ui_target_native = nullptr;
         m_game_ui_tex.reset();
@@ -817,8 +826,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const auto is_2d_screen = !tq2_scene_missing && vr->is_using_2d_screen();
-    if (tq2_scene_missing) {
+    const auto is_2d_screen = !guarded_fallback_mode && !tq2_scene_missing && vr->is_using_2d_screen();
+    if (guarded_fallback_mode || tq2_scene_missing) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[VR] TQ2 fallback mode: disabling 2D-screen/spectator post path while scene RT is unresolved");
     }
 
@@ -837,7 +846,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        if (!tq2_scene_missing) {
+        if (!guarded_fallback_mode && !tq2_scene_missing) {
             draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
         }
 
@@ -963,7 +972,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
             } else if (ui_target_native != nullptr) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, ui_target_native, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
-            } else if (vr->m_desktop_fix->value()) {
+            } else if (vr->m_desktop_fix->value() && !guarded_fallback_mode) {
                 SPDLOG_INFO_ONCE("[VR] UI target missing; drawing spectator view via OpenXR UI swapchain");
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, nullptr, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
             }
