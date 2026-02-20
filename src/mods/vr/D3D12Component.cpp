@@ -87,6 +87,35 @@ bool try_read_ptr_nothrow(uintptr_t address, uintptr_t& out) noexcept {
     return true;
 }
 
+bool is_likely_valid_texture_object(FRHITexture2D* texture) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return false;
+    }
+
+    uintptr_t candidate_vtable_ptr{};
+    if (!try_read_ptr_nothrow((uintptr_t)texture, candidate_vtable_ptr) || candidate_vtable_ptr == 0) {
+        return false;
+    }
+
+    const auto candidate_vtable = (void*)candidate_vtable_ptr;
+    if (IsBadReadPtr(candidate_vtable, sizeof(void*))) {
+        return false;
+    }
+
+    uintptr_t first_vfunc_ptr{};
+    if (!try_read_ptr_nothrow(candidate_vtable_ptr, first_vfunc_ptr) || first_vfunc_ptr == 0) {
+        return false;
+    }
+
+    const auto first_vfunc = (void*)first_vfunc_ptr;
+    if (IsBadReadPtr(first_vfunc, sizeof(void*))) {
+        return false;
+    }
+
+    return utility::get_module_within(candidate_vtable).has_value() &&
+           utility::get_module_within(first_vfunc).has_value();
+}
+
 bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
     if (source_width == 0 || expected_double_width == 0) {
         return false;
@@ -371,10 +400,12 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     auto* texture = rtm->get_render_target();
 
     if (texture == nullptr) {
-        texture = rtm->get_render_target_relaxed();
-
-        if (texture != nullptr) {
+        auto* relaxed_texture = rtm->get_render_target_relaxed();
+        if (relaxed_texture != nullptr && is_likely_valid_texture_object(relaxed_texture)) {
+            texture = relaxed_texture;
             SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
+        } else if (relaxed_texture != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Ignoring relaxed scene render target pointer with invalid object/vtable state");
         }
     }
 

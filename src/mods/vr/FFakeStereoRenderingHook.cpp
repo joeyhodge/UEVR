@@ -342,7 +342,7 @@ static bool is_tq2_shipping_executable() {
         lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
 
     if (cached) {
-        SPDLOG_INFO("Detected TQ2 shipping executable; forcing Slate DrawWindow stability guard");
+        SPDLOG_INFO("Detected TQ2 shipping executable");
     }
 
     return cached;
@@ -744,29 +744,19 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     const bool ue57_guard = is_ue_57();
     const bool tq2_guard = is_tq2_shipping_executable();
 
-    if (tq2_guard) {
-        // TQ2 is currently unstable when DrawWindow_RenderThread gets hooked.
-        // Keep this hook disabled for this title until we have a reliable resolver.
-        m_attempted_hook_slate_thread = true;
-        m_attempted_hook_slate_thread_alternate = true;
-        m_hooked_slate_thread = true;
-        SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard)");
-        return;
-    }
-
-    if (ue57_guard) {
+    if (ue57_guard || tq2_guard) {
         // UE5.7 can be unstable right at injection. Delay this hook briefly,
         // then allow normal hook attempts so we can recover scene render targets.
         static uint64_t s_guard_begin_tick = GetTickCount64();
-        constexpr uint64_t kGuardDelayMs = 10000;
+        constexpr uint64_t kGuardDelayMs = 3000;
         const auto now = GetTickCount64();
 
         if (now - s_guard_begin_tick < kGuardDelayMs) {
-            SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook for startup stability");
+            SPDLOG_WARN_ONCE("UE5.7/TQ2: delaying DrawWindow_RenderThread hook briefly for startup stability");
             return;
         }
 
-        SPDLOG_INFO_ONCE("UE5.7 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
+        SPDLOG_INFO_ONCE("UE5.7/TQ2 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
     if (m_asynchronous_scan->value()) {
@@ -6683,7 +6673,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    if (is_ue_57()) {
+    const bool ue57_like_safe_mode = is_ue_57() || is_tq2_shipping_executable();
+
+    if (ue57_like_safe_mode) {
         // UE5.7 safe-mode: discovery only.
         // We do not mutate Slate resources, but we still try to discover the scene RT from viewport providers.
         auto& rtm = *g_hook->get_render_target_manager();
@@ -6744,7 +6736,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
                 if (resolve_scene_from_resource(candidate_resource, discovered_scene)) {
                     SPDLOG_INFO_ONCE(
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via viewport candidate: 0x{:x}",
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate: 0x{:x}",
                         (uintptr_t)candidate
                     );
                     break;
@@ -6754,12 +6746,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (discovered_scene != nullptr && rtm.get_render_target() == nullptr) {
             rtm.set_render_target(discovered_scene);
-            SPDLOG_INFO_ONCE("UE5.7 safe mode seeded scene render target from Slate path: {:x}", (uintptr_t)discovered_scene);
+            SPDLOG_INFO_ONCE("UE5.7/TQ2 safe mode seeded scene render target from Slate path: {:x}", (uintptr_t)discovered_scene);
         } else if (discovered_scene == nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7 safe mode: no scene texture resolved from Slate path");
+            SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: no scene texture resolved from Slate path");
         }
 
-        SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7 safe mode: discovery-only Slate path (no interception)");
+        SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: discovery-only Slate path (no interception)");
         return call_orig();
     }
 
