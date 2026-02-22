@@ -50,6 +50,15 @@ struct CommandContext {
     bool waiting_for_fence{false};
     bool has_commands{false};
 
+    // Runtime state-machine instrumentation counters (useful for UE5.7/TQ2 triage).
+    uint64_t submit_count{0};
+    uint64_t wait_count{0};
+    uint64_t wait_timeout_count{0};
+    uint64_t close_failure_count{0};
+    uint64_t recover_failure_count{0};
+    UINT64 last_signaled_fence{0};
+    DWORD last_wait_result{WAIT_OBJECT_0};
+
     std::wstring internal_name{L"CommandContext object"};
 };
 }

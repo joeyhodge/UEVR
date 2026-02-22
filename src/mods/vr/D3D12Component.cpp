@@ -116,6 +116,66 @@ bool is_likely_valid_texture_object(FRHITexture2D* texture) {
            utility::get_module_within(first_vfunc).has_value();
 }
 
+FRHITexture2D* resolve_texture_object_from_blob(FRHITexture2D* texture, std::string_view source) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return texture;
+    }
+
+    if (is_likely_valid_texture_object(texture)) {
+        return texture;
+    }
+
+    const auto test_candidate = [&](uintptr_t candidate_ptr) -> FRHITexture2D* {
+        if (candidate_ptr < 0x10000 || IsBadReadPtr((void*)candidate_ptr, sizeof(void*))) {
+            return nullptr;
+        }
+
+        auto* candidate = (FRHITexture2D*)candidate_ptr;
+        if (is_likely_valid_texture_object(candidate)) {
+            return candidate;
+        }
+
+        return nullptr;
+    };
+
+    constexpr uintptr_t kMaxBlobScanOffset = 0x180;
+    const auto blob_base = (uintptr_t)texture;
+
+    for (uintptr_t offset = 0; offset <= kMaxBlobScanOffset; offset += sizeof(void*)) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow(blob_base + offset, candidate_ptr)) {
+            continue;
+        }
+
+        if (auto* direct_candidate = test_candidate(candidate_ptr); direct_candidate != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} unwrapped texture object via blob scan (+0x{:x}) {:x} -> {:x}",
+                source,
+                offset,
+                (uintptr_t)texture,
+                (uintptr_t)direct_candidate);
+            return direct_candidate;
+        }
+
+        uintptr_t indirect_ptr{};
+        if (!try_read_ptr_nothrow(candidate_ptr, indirect_ptr)) {
+            continue;
+        }
+
+        if (auto* indirect_candidate = test_candidate(indirect_ptr); indirect_candidate != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} unwrapped texture object via indirect blob scan (+0x{:x}) {:x} -> {:x}",
+                source,
+                offset,
+                (uintptr_t)texture,
+                (uintptr_t)indirect_candidate);
+            return indirect_candidate;
+        }
+    }
+
+    return texture;
+}
+
 bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
     if (source_width == 0 || expected_double_width == 0) {
         return false;
@@ -271,6 +331,8 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
+    texture = resolve_texture_object_from_blob(texture, source);
+
     void* candidate_vtable{};
     __try {
         candidate_vtable = *(void**)texture;
@@ -316,24 +378,40 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     }
 
     ID3D12Resource* native_resource{};
-    const bool can_call_virtual_native_resource = (candidate_vtable == known_vtable) || (!tq2_guard && !ue57_guard);
+    const bool can_attempt_native_resource_call =
+        candidate_vtable_looks_valid || (known_vtable != nullptr && candidate_vtable == known_vtable);
 
-    if (can_call_virtual_native_resource) {
+    if (can_attempt_native_resource_call) {
         __try {
             native_resource = (ID3D12Resource*)texture->get_native_resource();
         } __except (EXCEPTION_EXECUTE_HANDLER) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} get_native_resource raised SEH exception", source);
             return nullptr;
         }
+
+        if (native_resource != nullptr) {
+            const auto validated_native_resource = validate_d3d12_resource_candidate((uintptr_t)native_resource);
+
+            if (validated_native_resource == nullptr) {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] {} get_native_resource returned non-D3D12 candidate {:x}; discarding",
+                    source,
+                    (uintptr_t)native_resource);
+                native_resource = nullptr;
+            } else {
+                native_resource = validated_native_resource;
+            }
+        }
     } else {
         SPDLOG_INFO_EVERY_N_SEC(1,
-            "[VR] {} skipping direct get_native_resource virtual call in guarded mode (candidate {:x}, known {:x})",
+            "[VR] {} skipping get_native_resource call due invalid texture object/vtable (candidate {:x}, known {:x})",
             source,
             (uintptr_t)candidate_vtable,
             (uintptr_t)known_vtable);
     }
 
-    const bool allow_blob_probe = candidate_vtable_looks_valid || candidate_vtable == known_vtable;
+    const bool allow_blob_probe =
+        candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard;
 
     if (native_resource == nullptr && allow_blob_probe) {
         native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
@@ -344,12 +422,6 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
                 source,
                 (uintptr_t)native_resource);
         }
-    } else if (native_resource == nullptr && (tq2_guard || ue57_guard)) {
-        SPDLOG_INFO_EVERY_N_SEC(1,
-            "[VR] {} skipping UE5.7 pointer scan due invalid/untrusted texture vtable (candidate {:x}, known {:x})",
-            source,
-            (uintptr_t)candidate_vtable,
-            (uintptr_t)known_vtable);
     }
 
     if (native_resource == nullptr) {
@@ -379,7 +451,21 @@ ID3D12Resource* safe_get_native_resource(TextureT* texture, std::string_view sou
         return nullptr;
     }
 
-    return native_resource;
+    if (native_resource != nullptr) {
+        const auto validated_native_resource = validate_d3d12_resource_candidate((uintptr_t)native_resource);
+
+        if (validated_native_resource == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} get_native_resource returned non-D3D12 candidate {:x}; discarding",
+                source,
+                (uintptr_t)native_resource);
+            return nullptr;
+        }
+
+        return validated_native_resource;
+    }
+
+    return nullptr;
 }
 
 FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
@@ -401,12 +487,21 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
     if (texture == nullptr) {
         auto* relaxed_texture = rtm->get_render_target_relaxed();
-        if (relaxed_texture != nullptr && is_likely_valid_texture_object(relaxed_texture)) {
+        if (relaxed_texture != nullptr) {
             texture = relaxed_texture;
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
-        } else if (relaxed_texture != nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Ignoring relaxed scene render target pointer with invalid object/vtable state");
+
+            if (is_likely_valid_texture_object(relaxed_texture)) {
+                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
+            } else {
+                // Keep trying the relaxed pointer in UE5.7/TQ2. It can still unwrap/scan to a valid native resource
+                // even when strict vtable checks fail for this frame.
+                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer (validation failed; continuing with guarded probing)");
+            }
         }
+    }
+
+    if (texture != nullptr) {
+        texture = resolve_texture_object_from_blob(texture, "scene render target");
     }
 
     return texture;
@@ -709,7 +804,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 &left_src_box, &right_src_box,
                 0, 0, 0, target_eye_width, 0, 0,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_RENDER_TARGET
+                D3D12_RESOURCE_STATE_COMMON
             );
         } else {
             // Single-wide fallback path: duplicate the same eye source to both halves.
@@ -721,7 +816,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 0,
                 0,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_RENDER_TARGET
+                D3D12_RESOURCE_STATE_COMMON
             );
 
             commands.copy_region(
@@ -732,7 +827,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 0,
                 0,
                 D3D12_RESOURCE_STATE_RENDER_TARGET,
-                D3D12_RESOURCE_STATE_RENDER_TARGET
+                D3D12_RESOURCE_STATE_COMMON
             );
         }
     };
@@ -1645,6 +1740,11 @@ void D3D12Component::clear_backbuffer() {
 
     // Clear the backbuffer
     backbuffer_ctx.commands.wait(0);
+    if (backbuffer_ctx.commands.waiting_for_fence) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Skipping backbuffer clear; previous clear command list still in flight");
+        return;
+    }
+
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     backbuffer_ctx.commands.clear_rtv(backbuffer_ctx.texture.Get(), backbuffer_ctx.get_rtv(), clear_color, D3D12_RESOURCE_STATE_PRESENT);
     backbuffer_ctx.commands.execute();
@@ -2411,23 +2511,20 @@ void D3D12Component::OpenXR::copy(
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
-                if (src_box == nullptr) {
-                    const auto is_depth = swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
-                    const auto dst_state = is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+                constexpr auto openxr_swapchain_dst_state = D3D12_RESOURCE_STATE_COMMON;
 
+                if (src_box == nullptr) {
                     texture_ctx->commands.copy(
                         resource, 
                         ctx.textures[texture_index].texture, 
                         src_state, 
-                        dst_state);
+                        openxr_swapchain_dst_state);
                 } else {
                     texture_ctx->commands.copy_region(
                         resource, 
                         ctx.textures[texture_index].texture, src_box,
                         src_state, 
-                        D3D12_RESOURCE_STATE_RENDER_TARGET);
+                        openxr_swapchain_dst_state);
                 }
             }
 

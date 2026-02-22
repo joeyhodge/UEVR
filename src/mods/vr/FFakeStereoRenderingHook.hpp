@@ -521,6 +521,21 @@ private:
         std::recursive_mutex retaddr_mutex{};
         bool has_view_family_tex{false};
         int32_t selected_retaddr{0};
+
+        // Hook-resolution diagnostics.
+        bool attempted_install{false};
+        bool install_blocked_by_confidence{false};
+        std::optional<size_t> resolved_hook_index{};
+        int32_t resolved_hook_confidence{0};
+        std::string resolved_hook_reason{};
+
+        // Runtime callsite classification counters.
+        uint64_t total_calls{0};
+        uint64_t pass_original_calls{0};
+        uint64_t redirected_calls{0};
+        std::unordered_map<uintptr_t, uint32_t> callsite_hits{};
+        std::unordered_map<uintptr_t, uint32_t> callsite_redirects{};
+        std::unordered_map<uintptr_t, uint32_t> callsite_originals{};
     } m_viewport_rt_hook_data{};
 
     VRRenderTargetManager m_rtm{};

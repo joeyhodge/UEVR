@@ -8,6 +8,7 @@
 #include <cctype>
 #include <future>
 #include <mutex>
+#include <sstream>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -68,6 +69,7 @@
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 static bool is_ue_57();
+static bool is_tq2_shipping_executable();
 
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
@@ -239,6 +241,290 @@ static bool try_find_viewport_rt_provider_heuristic_nothrow(sdk::FViewportInfo* 
         out = nullptr;
         return false;
     }
+}
+
+static bool is_probably_valid_function_ptr(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, sizeof(void*))) {
+        return false;
+    }
+
+    return utility::get_module_within((void*)fn).has_value();
+}
+
+static uintptr_t canonicalize_function_ea(uintptr_t ea) {
+    if (ea == 0 || IsBadReadPtr((void*)ea, sizeof(void*))) {
+        return 0;
+    }
+
+    // Function-chunk aware matching: normalize any address inside a function/chunk to one canonical start.
+    if (const auto start = utility::find_function_start(ea); start.has_value()) {
+        return *start;
+    }
+
+    if (const auto start = utility::find_function_start_with_call(ea); start.has_value()) {
+        return *start;
+    }
+
+    return ea;
+}
+
+static std::vector<int32_t> collect_indirect_vcall_slots(uintptr_t fn_start, size_t max_instructions = 140) {
+    std::vector<int32_t> slots{};
+    std::unordered_set<int32_t> seen{};
+    size_t instruction_count = 0;
+
+    utility::exhaustive_decode((uint8_t*)fn_start, (uint32_t)max_instructions, [&](INSTRUX& ix, uintptr_t) -> utility::ExhaustionResult {
+        ++instruction_count;
+
+        if (std::string_view{ix.Mnemonic}.starts_with("CALL")) {
+            if (ix.OperandsCount > 0 && ix.Operands[0].Type == ND_OP_MEM && ix.Operands[0].Info.Memory.HasDisp) {
+                const auto disp = (int32_t)ix.Operands[0].Info.Memory.Disp;
+                if (!seen.contains(disp)) {
+                    seen.insert(disp);
+                    slots.push_back(disp);
+                }
+            }
+
+            return utility::ExhaustionResult::STEP_OVER;
+        }
+
+        return utility::ExhaustionResult::CONTINUE;
+    });
+
+    return slots;
+}
+
+static bool function_or_chunk_has_string_ref(uintptr_t fn, std::wstring_view needle) {
+    const auto canonical = canonicalize_function_ea(fn);
+
+    if (canonical != 0 && utility::find_string_reference_in_path(canonical, needle, false)) {
+        return true;
+    }
+
+    return utility::find_string_reference_in_path(fn, needle, false).has_value();
+}
+
+struct ViewportHookResolution {
+    std::optional<size_t> index{};
+    int32_t confidence{0};
+    std::string reason{};
+    bool safe{false};
+};
+
+static ViewportHookResolution resolve_viewport_get_render_target_texture_hook_index(sdk::FViewport* viewport) {
+    constexpr size_t kLegacyIndex = 1;
+    constexpr int32_t kSafeThreshold = 55;
+
+    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return {};
+    }
+
+    auto vtable = *(void***)viewport;
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        return {};
+    }
+
+    struct Candidate {
+        size_t slot{};
+        uintptr_t fn{};
+        uintptr_t canonical_fn{};
+        int32_t score{};
+        bool has_render_target_ref{false};
+        bool has_view_family_ref{false};
+        bool calls_slot_0x10{false};
+        bool calls_slot_0x38{false};
+    };
+
+    std::unordered_map<uintptr_t, Candidate> candidates_by_function{};
+
+    const auto consider_slot = [&](size_t index) {
+        uintptr_t fn{};
+        if (!try_read_pointer_nothrow((uintptr_t)&vtable[index], fn) || !is_probably_valid_function_ptr(fn)) {
+            return;
+        }
+
+        const auto canonical_fn = canonicalize_function_ea(fn);
+        if (canonical_fn == 0 || !is_probably_valid_function_ptr(canonical_fn)) {
+            return;
+        }
+
+        Candidate c{};
+        c.slot = index;
+        c.fn = fn;
+        c.canonical_fn = canonical_fn;
+
+        // Slot priors (vtable-slot fingerprint baseline).
+        if (is_ue_57() || is_tq2_shipping_executable()) {
+            if (index == 6) {
+                c.score += 45;
+            } else if (index == 5) {
+                c.score += 30;
+            } else if (index == 1) {
+                c.score += 5;
+            }
+        } else if (index == kLegacyIndex) {
+            c.score += 35;
+        } else if (index == 2) {
+            c.score += 20;
+        }
+
+        c.has_render_target_ref = function_or_chunk_has_string_ref(canonical_fn, L"RenderTarget");
+        c.has_view_family_ref = function_or_chunk_has_string_ref(canonical_fn, L"ViewFamilyTexture") ||
+                                function_or_chunk_has_string_ref(canonical_fn, L"ViewFamilyTarget");
+        if (c.has_render_target_ref) {
+            c.score += 18;
+        }
+        if (c.has_view_family_ref) {
+            c.score += 16;
+        }
+
+        // Indirect-call resolution: inspect call [reg+imm] usage and score likely virtual texture paths.
+        const auto call_slots = collect_indirect_vcall_slots(canonical_fn);
+        for (const auto call_slot : call_slots) {
+            if (call_slot == 0x10) {
+                c.calls_slot_0x10 = true;
+                c.score += 20;
+            } else if (call_slot == 0x38) {
+                c.calls_slot_0x38 = true;
+                c.score += 8;
+            } else if (call_slot == 0x188 || call_slot == 0x178) {
+                c.score += 6;
+            }
+        }
+
+        // Neighbor-aware fingerprinting around the target slot.
+        uintptr_t prev_fn{};
+        if (index > 0 && try_read_pointer_nothrow((uintptr_t)&vtable[index - 1], prev_fn) && is_probably_valid_function_ptr(prev_fn)) {
+            if (function_or_chunk_has_string_ref(prev_fn, L"RenderTarget")) {
+                c.score += 12;
+            }
+        }
+
+        auto existing = candidates_by_function.find(canonical_fn);
+        if (existing == candidates_by_function.end() || c.score > existing->second.score) {
+            candidates_by_function[canonical_fn] = c;
+        }
+    };
+
+    // Evaluate a compact window first; if empty, widen.
+    const std::array<size_t, 8> narrow_slots{1, 2, 4, 5, 6, 7, 8, 9};
+    for (const auto idx : narrow_slots) {
+        consider_slot(idx);
+    }
+
+    if (candidates_by_function.empty()) {
+        for (size_t i = 0; i < 20; ++i) {
+            consider_slot(i);
+        }
+    }
+
+    if (candidates_by_function.empty()) {
+        return {};
+    }
+
+    Candidate best{};
+    bool has_best = false;
+    for (const auto& [_, candidate] : candidates_by_function) {
+        if (!has_best || candidate.score > best.score) {
+            best = candidate;
+            has_best = true;
+        }
+    }
+
+    ViewportHookResolution result{};
+    result.index = best.slot;
+    result.confidence = best.score;
+    result.safe = best.score >= kSafeThreshold;
+    std::ostringstream reason{};
+    reason << "slot=" << best.slot
+           << " score=" << best.score
+           << " canonical=0x" << std::hex << best.canonical_fn << std::dec
+           << " refs(RenderTarget=" << (best.has_render_target_ref ? 1 : 0)
+           << ",ViewFamily=" << (best.has_view_family_ref ? 1 : 0)
+           << ") calls(0x10=" << (best.calls_slot_0x10 ? 1 : 0)
+           << ",0x38=" << (best.calls_slot_0x38 ? 1 : 0) << ")";
+    result.reason = reason.str();
+
+    if (!result.safe && (is_ue_57() || is_tq2_shipping_executable())) {
+        // Confidence scoring + safe fallback: skip risky hooking on unstable UE5.7/TQ2 paths.
+        result.index.reset();
+    }
+
+    return result;
+}
+
+static std::optional<uintptr_t> find_instruction_ending_at(uintptr_t end_ea) {
+    if (end_ea < 8) {
+        return std::nullopt;
+    }
+
+    const auto start = end_ea > 0x40 ? end_ea - 0x40 : 0;
+    for (auto ip = start; ip < end_ea; ++ip) {
+        const auto ix = utility::decode_one((uint8_t*)ip);
+        if (!ix.has_value()) {
+            continue;
+        }
+
+        if (ip + ix->Length == end_ea) {
+            return ip;
+        }
+    }
+
+    return std::nullopt;
+}
+
+static std::optional<int32_t> resolve_indirect_call_slot_from_retaddr(uintptr_t retaddr) {
+    const auto call_ip = find_instruction_ending_at(retaddr);
+    if (!call_ip.has_value()) {
+        return std::nullopt;
+    }
+
+    const auto call_ix = utility::decode_one((uint8_t*)*call_ip);
+    if (!call_ix.has_value() || !std::string_view{call_ix->Mnemonic}.starts_with("CALL") || call_ix->OperandsCount == 0) {
+        return std::nullopt;
+    }
+
+    const auto& op0 = call_ix->Operands[0];
+
+    // Direct virtual form: call qword ptr [reg+imm]
+    if (op0.Type == ND_OP_MEM && op0.Info.Memory.HasDisp) {
+        return (int32_t)op0.Info.Memory.Disp;
+    }
+
+    // Indirect register form: mov rX, [reg+imm] ... call rX
+    if (op0.Type != ND_OP_REG) {
+        return std::nullopt;
+    }
+
+    const auto call_reg = op0.Info.Register.Reg;
+    const auto trace_begin = *call_ip > 0x50 ? *call_ip - 0x50 : 0;
+    std::optional<int32_t> discovered_slot{};
+
+    for (auto ip = trace_begin; ip < *call_ip;) {
+        const auto ix = utility::decode_one((uint8_t*)ip);
+        if (!ix.has_value() || ix->Length == 0) {
+            ++ip;
+            continue;
+        }
+
+        if (ix->OperandsCount >= 2 &&
+            ix->Operands[0].Type == ND_OP_REG &&
+            ix->Operands[0].Info.Register.Reg == call_reg &&
+            ix->Operands[1].Type == ND_OP_MEM &&
+            ix->Operands[1].Info.Memory.HasDisp) {
+            discovered_slot = (int32_t)ix->Operands[1].Info.Memory.Disp;
+        }
+
+        ip += ix->Length;
+    }
+
+    return discovered_slot;
+}
+
+static uintptr_t get_chunk_aware_retaddr_key(uintptr_t retaddr) {
+    // Function-chunk aware keying for return addresses.
+    const auto canonical = canonicalize_function_ea(retaddr);
+    return canonical != 0 ? canonical : retaddr;
 }
 
 static bool call_target_looks_like_create_texture_path(uintptr_t fn) {
@@ -426,7 +712,30 @@ void FFakeStereoRenderingHook::on_draw_ui() {
             citems.push_back(item.c_str());
         }
 
+        const auto resolved_index_text = data.resolved_hook_index.has_value()
+            ? fmt::format("{}", data.resolved_hook_index.value())
+            : std::string{"n/a"};
+        ImGui::Text(
+            "ViewportRT hook: attempted=%d blocked=%d index=%s confidence=%d",
+            data.attempted_install ? 1 : 0,
+            data.install_blocked_by_confidence ? 1 : 0,
+            resolved_index_text.c_str(),
+            data.resolved_hook_confidence);
+        if (!data.resolved_hook_reason.empty()) {
+            ImGui::TextWrapped("Reason: %s", data.resolved_hook_reason.c_str());
+        }
+
+        ImGui::Text(
+            "ViewportRT calls: total=%llu original=%llu redirected=%llu",
+            data.total_calls,
+            data.pass_original_calls,
+            data.redirected_calls);
+
         if (!items.empty()) {
+            if (data.selected_retaddr < 0 || data.selected_retaddr >= (int32_t)items.size()) {
+                data.selected_retaddr = 0;
+            }
+
             if (ImGui::BeginCombo("GetRenderTargetTexture Retaddrs", items[data.selected_retaddr].c_str())) {
                 for (int n = 0; n < items.size(); n++) {
                     ImGui::PushID(n);
@@ -744,7 +1053,17 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     const bool ue57_guard = is_ue_57();
     const bool tq2_guard = is_tq2_shipping_executable();
 
-    if (ue57_guard || tq2_guard) {
+    if (tq2_guard) {
+        // TQ2 remains unstable when DrawWindow_RenderThread is hooked directly.
+        // Keep this disabled and rely on viewport/texture hooks for scene target discovery.
+        m_attempted_hook_slate_thread = true;
+        m_attempted_hook_slate_thread_alternate = true;
+        m_hooked_slate_thread = true;
+        SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard)");
+        return;
+    }
+
+    if (ue57_guard) {
         // UE5.7 can be unstable right at injection. Delay this hook briefly,
         // then allow normal hook attempts so we can recover scene render targets.
         static uint64_t s_guard_begin_tick = GetTickCount64();
@@ -752,11 +1071,11 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         const auto now = GetTickCount64();
 
         if (now - s_guard_begin_tick < kGuardDelayMs) {
-            SPDLOG_WARN_ONCE("UE5.7/TQ2: delaying DrawWindow_RenderThread hook briefly for startup stability");
+            SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook briefly for startup stability");
             return;
         }
 
-        SPDLOG_INFO_ONCE("UE5.7/TQ2 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
+        SPDLOG_INFO_ONCE("UE5.7 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
     if (m_asynchronous_scan->value()) {
@@ -2317,11 +2636,22 @@ void FFakeStereoRenderingHook::viewport_draw_hook(void* viewport, bool should_pr
 // This is only used for the UI compatibility mode.
 FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hook(sdk::FViewport* viewport) {
     const auto retaddr = (uintptr_t)_ReturnAddress();
+    const auto retaddr_key = get_chunk_aware_retaddr_key(retaddr);
+    const auto indirect_vcall_slot = resolve_indirect_call_slot_from_retaddr(retaddr);
 
     SPDLOG_INFO_ONCE("FViewport::GetRenderTargetTexture called!");
     const auto og = g_hook->m_viewport_get_render_target_texture_hook->get_original<decltype(&viewport_get_render_target_texture_hook)>();
     const auto& vr = VR::get();
     const bool ue57_capture_mode = (is_ue_57() || is_tq2_shipping_executable()) && vr->is_hmd_active();
+
+    if (indirect_vcall_slot.has_value()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "FViewport::GetRenderTargetTexture callsite {:x} (key {:x}) via indirect slot 0x{:x}",
+            retaddr,
+            retaddr_key,
+            *indirect_vcall_slot);
+    }
 
     const auto capture_scene_from_original = [&](FRHITexture2D** original_result, const char* source_label) {
         if (!ue57_capture_mode || original_result == nullptr) {
@@ -2334,6 +2664,46 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         }
 
         auto candidate = (FRHITexture2D*)candidate_raw;
+        const auto known_texture_vtable = FRHITexture2D::get_vtable();
+
+        if (known_texture_vtable != nullptr) {
+            auto candidate_vtable = *(void**)candidate;
+
+            if (candidate_vtable != known_texture_vtable) {
+                // UE5.7/TQ2 sometimes returns a wrapper object here.
+                // Try to unwrap one level to a known FRHITexture2D instance.
+                static constexpr std::array<size_t, 14> kWrapperOffsets{
+                    0x0, 0x8, 0x10, 0x18, 0x20, 0x28, 0x30,
+                    0x38, 0x40, 0x48, 0x50, 0x58, 0x60, 0x68
+                };
+
+                for (const auto offset : kWrapperOffsets) {
+                    uintptr_t wrapped_raw{};
+                    if (!try_read_pointer_nothrow(candidate_raw + offset, wrapped_raw) || !is_probably_valid_object_pointer(wrapped_raw)) {
+                        continue;
+                    }
+
+                    auto wrapped = (FRHITexture2D*)wrapped_raw;
+                    const auto wrapped_vtable = *(void**)wrapped;
+                    if (wrapped_vtable == known_texture_vtable) {
+                        candidate = wrapped;
+                        candidate_vtable = wrapped_vtable;
+                        SPDLOG_INFO_EVERY_N_SEC(1,
+                            "FViewport::GetRenderTargetTexture unwrapped scene target from {} (+0x{:x}): {:x}",
+                            source_label, offset, (uintptr_t)candidate);
+                        break;
+                    }
+                }
+
+                if (candidate_vtable != known_texture_vtable) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "FViewport::GetRenderTargetTexture ignored non-FRHITexture candidate from {}: {:x} (vtable {:x}, expected {:x})",
+                        source_label, (uintptr_t)candidate, (uintptr_t)candidate_vtable, (uintptr_t)known_texture_vtable);
+                    return;
+                }
+            }
+        }
+
         auto& rtm = *g_hook->get_render_target_manager();
         auto current = rtm.get_render_target();
 
@@ -2355,9 +2725,14 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
     {
         std::scoped_lock _{data.retaddr_mutex};
-        utility::ScopeGuard guard{[&](){ data.seen_retaddrs.insert(retaddr); }};
+        utility::ScopeGuard guard{[&](){ data.seen_retaddrs.insert(retaddr_key); }};
+        ++data.total_calls;
+        ++data.callsite_hits[retaddr_key];
+        bool classified_call = false;
 
-        if (data.call_original_retaddrs.contains(retaddr)) {
+        if (data.call_original_retaddrs.contains(retaddr_key)) {
+            ++data.pass_original_calls;
+            ++data.callsite_originals[retaddr_key];
             auto original_result = og(viewport);
             capture_scene_from_original(original_result, "retaddr allowlist");
             return original_result;
@@ -2367,8 +2742,11 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
         // ALWAYS check the retaddr for ViewFamilyTexture first and never skip it
         // This will fix the case where we run into some other texture initially.
-        if (!data.seen_retaddrs.contains(retaddr)) {
-            SPDLOG_INFO("FViewport::GetRenderTargetTexture called from {:x}", retaddr);
+        if (!data.seen_retaddrs.contains(retaddr_key)) {
+            SPDLOG_INFO(
+                "FViewport::GetRenderTargetTexture called from {:x} (key {:x})",
+                retaddr,
+                retaddr_key);
 
             func_start = utility::find_function_start(retaddr);
 
@@ -2381,8 +2759,10 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             // Everything else we will redirect to the UI render target.
             if (utility::find_string_reference_in_path(*func_start, L"ViewFamilyTexture", false) || utility::find_string_reference_in_path(*func_start, L"ViewFamilyTarget", false)) {
                 SPDLOG_INFO("Found view family texture reference @ {:x}", retaddr);
-                data.call_original_retaddrs.insert(retaddr);
+                data.call_original_retaddrs.insert(retaddr_key);
                 data.has_view_family_tex = true;
+                ++data.pass_original_calls;
+                ++data.callsite_originals[retaddr_key];
                 auto original_result = og(viewport);
                 capture_scene_from_original(original_result, "view family");
                 return original_result;
@@ -2393,7 +2773,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             // doing a second one from the retaddr allows us to go further.
             if (utility::find_string_reference_in_path(*func_start, L"FinalPostProcessColor", false) || utility::find_string_reference_in_path(retaddr, L"FinalPostProcessColor", false)) {
                 SPDLOG_INFO("Found FinalPostProcessColor reference @ {:x}", retaddr);
-                data.call_original_retaddrs.insert(retaddr);
+                data.call_original_retaddrs.insert(retaddr_key);
+                ++data.pass_original_calls;
+                ++data.callsite_originals[retaddr_key];
                 auto original_result = og(viewport);
                 capture_scene_from_original(original_result, "post process");
                 return original_result;
@@ -2408,7 +2790,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
                 // It seems like deep within a threaded or function for enqueueing a render command.
                 if (utility::scan(fn, 0x50, "01 01 01 01") && utility::scan(fn, 0x50, "22 00 00 00")) {
                     SPDLOG_INFO("Found unknown screen space rendering call @ {:x}", retaddr);
-                    data.redirected_retaddrs.insert(retaddr);
+                    data.redirected_retaddrs.insert(retaddr_key);
                 }
             }
 
@@ -2482,7 +2864,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
                     if (scaleform_hal_vtable_functions.contains(*scaleform_func_start)) {
                         SPDLOG_INFO("Found Scaleform HAL vtable function reference @ {:x}", retaddr);
-                        data.redirected_retaddrs.insert(retaddr);
+                        data.redirected_retaddrs.insert(retaddr_key);
                         found = true;
                         break;
                     }
@@ -2494,13 +2876,15 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
         // Hacky way to allow the first texture to go through
         // For the games that are using something other than ViewFamilyTexture as the scene RT.
-        if (!data.call_original_retaddrs.empty() && !data.redirected_retaddrs.contains(retaddr) && !data.has_view_family_tex) {
+        if (!data.call_original_retaddrs.empty() && !data.redirected_retaddrs.contains(retaddr_key) && !data.has_view_family_tex) {
+            ++data.pass_original_calls;
+            ++data.callsite_originals[retaddr_key];
             auto original_result = og(viewport);
             capture_scene_from_original(original_result, "first pass");
             return original_result;
         }
 
-        if (!data.redirected_retaddrs.contains(retaddr) && !data.call_original_retaddrs.contains(retaddr)) {
+        if (!data.redirected_retaddrs.contains(retaddr_key) && !data.call_original_retaddrs.contains(retaddr_key)) {
             if (!func_start) {
                 func_start = utility::find_function_start(retaddr);
 
@@ -2520,14 +2904,29 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             // some games are insane and have multiple "UnknownTexture" references...
             if (utility::find_string_reference_in_path(*func_start, L"UnknownTexture", false)) {
                 SPDLOG_INFO("Found unknown texture reference @ {:x}", retaddr);
-                data.call_original_retaddrs.insert(retaddr);
+                data.call_original_retaddrs.insert(retaddr_key);
+                ++data.pass_original_calls;
+                ++data.callsite_originals[retaddr_key];
                 auto original_result = og(viewport);
                 capture_scene_from_original(original_result, "unknown texture");
                 return original_result;
             }
 
             SPDLOG_INFO("Redirecting FViewport::GetRenderTargetTexture call to UI render target @ {:x}", retaddr);
-            data.redirected_retaddrs.insert(retaddr);
+            data.redirected_retaddrs.insert(retaddr_key);
+            ++data.redirected_calls;
+            ++data.callsite_redirects[retaddr_key];
+            classified_call = true;
+        }
+
+        if (!classified_call) {
+            if (data.redirected_retaddrs.contains(retaddr_key)) {
+                ++data.redirected_calls;
+                ++data.callsite_redirects[retaddr_key];
+            } else if (data.call_original_retaddrs.contains(retaddr_key)) {
+                ++data.pass_original_calls;
+                ++data.callsite_originals[retaddr_key];
+            }
         }
     }
 
@@ -2556,8 +2955,31 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         if (g_hook->m_viewport_get_render_target_texture_hook == nullptr) {
             SPDLOG_INFO("Hooking FViewport::GetRenderTargetTexture...");
             void** vp_vtable = *(void***)viewport;
-            g_hook->m_viewport_get_render_target_texture_hook = std::make_unique<PointerHook>(&vp_vtable[1], &viewport_get_render_target_texture_hook);
-            SPDLOG_INFO("Hooked FViewport::GetRenderTargetTexture!");
+            const auto resolution = resolve_viewport_get_render_target_texture_hook_index(viewport);
+
+            {
+                std::scoped_lock data_lock{g_hook->m_viewport_rt_hook_data.retaddr_mutex};
+                g_hook->m_viewport_rt_hook_data.attempted_install = true;
+                g_hook->m_viewport_rt_hook_data.resolved_hook_index = resolution.index;
+                g_hook->m_viewport_rt_hook_data.resolved_hook_confidence = resolution.confidence;
+                g_hook->m_viewport_rt_hook_data.resolved_hook_reason = resolution.reason;
+                g_hook->m_viewport_rt_hook_data.install_blocked_by_confidence = !resolution.safe && !resolution.index.has_value();
+            }
+
+            if (!resolution.index.has_value()) {
+                SPDLOG_WARN_ONCE(
+                    "Skipping viewport RT hook (confidence={} safe={}): {}",
+                    resolution.confidence,
+                    resolution.safe ? 1 : 0,
+                    resolution.reason.empty() ? "no candidate" : resolution.reason);
+            } else {
+                g_hook->m_viewport_get_render_target_texture_hook = std::make_unique<PointerHook>(&vp_vtable[resolution.index.value()], &viewport_get_render_target_texture_hook);
+                SPDLOG_INFO(
+                    "Hooked FViewport::GetRenderTargetTexture at vtable index {} (confidence={} reason={})",
+                    resolution.index.value(),
+                    resolution.confidence,
+                    resolution.reason);
+            }
         }
     }
 
