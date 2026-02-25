@@ -435,6 +435,16 @@ static ViewportHookResolution resolve_viewport_get_render_target_texture_hook_in
     result.index = best.slot;
     result.confidence = best.score;
     result.safe = best.score >= kSafeThreshold;
+    const bool signature_match = best.has_render_target_ref && best.calls_slot_0x10 && best.calls_slot_0x38;
+
+    if (!result.safe && (is_ue_57() || is_tq2_shipping_executable()) && signature_match) {
+        // UE5.7/TQ2 can still present the correct slot at lower confidence due inlined/chunked functions.
+        // Promote a narrow set of historically valid slots when the virtual-call + string signature matches.
+        if (best.slot == 1 || best.slot == 5 || best.slot == 6) {
+            result.safe = true;
+            result.confidence = std::max(result.confidence, kSafeThreshold);
+        }
+    }
     std::ostringstream reason{};
     reason << "slot=" << best.slot
            << " score=" << best.score
@@ -2952,7 +2962,13 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     // or uses of the AHUD class that make it necessary.
     const bool wants_viewport_rt_hook = VR::get()->is_ahud_compatibility_enabled() || is_ue_57() || is_tq2_shipping_executable();
     if (g_framework->is_game_data_intialized() && wants_viewport_rt_hook && viewport != nullptr) {
-        if (g_hook->m_viewport_get_render_target_texture_hook == nullptr) {
+        bool blocked_by_confidence = false;
+        {
+            std::scoped_lock data_lock{g_hook->m_viewport_rt_hook_data.retaddr_mutex};
+            blocked_by_confidence = g_hook->m_viewport_rt_hook_data.install_blocked_by_confidence;
+        }
+
+        if (g_hook->m_viewport_get_render_target_texture_hook == nullptr && !blocked_by_confidence) {
             SPDLOG_INFO("Hooking FViewport::GetRenderTargetTexture...");
             void** vp_vtable = *(void***)viewport;
             const auto resolution = resolve_viewport_get_render_target_texture_hook_index(viewport);
@@ -2980,6 +2996,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
                     resolution.confidence,
                     resolution.reason);
             }
+        } else if (blocked_by_confidence) {
+            SPDLOG_INFO_ONCE("Viewport RT hook install is blocked by confidence; suppressing re-attempts.");
         }
     }
 

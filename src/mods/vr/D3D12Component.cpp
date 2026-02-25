@@ -526,12 +526,16 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     if (texture == nullptr) {
         auto* relaxed_texture = rtm->get_render_target_relaxed();
         if (relaxed_texture != nullptr) {
-            if ((tq2_guard || ue57_guard) && !is_likely_valid_texture_object(relaxed_texture)) {
+            if (tq2_guard || ue57_guard) {
                 SPDLOG_INFO_EVERY_N_SEC(1,
-                    "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode (validation failed)");
+                    "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode");
             } else {
                 texture = relaxed_texture;
-                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
+                if (is_likely_valid_texture_object(relaxed_texture)) {
+                    SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer (validation failed)");
+                }
             }
         }
     }
@@ -1161,8 +1165,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             auto fw_rt = g_framework->get_rendertarget_d3d12();
 
-            if (fw_rt && g_framework->is_drawing_anything()) {
+            if (fw_rt && g_framework->is_drawing_anything() && !guarded_fallback_mode && !tq2_scene_missing) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, g_framework->get_rendertarget_d3d12().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            } else if (fw_rt && g_framework->is_drawing_anything() && (guarded_fallback_mode || tq2_scene_missing)) {
+                SPDLOG_INFO_ONCE("[VR] Guarded fallback active: skipping OpenXR FRAMEWORK_UI layer to avoid duplicate menu composition");
             }
         } else if (is_2d_screen) {
             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
