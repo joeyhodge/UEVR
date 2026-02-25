@@ -369,7 +369,9 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
-    texture = resolve_texture_object_from_blob(texture, source);
+    if (!guarded_scene_source) {
+        texture = resolve_texture_object_from_blob(texture, source);
+    }
 
     void* candidate_vtable{};
     __try {
@@ -1148,30 +1150,40 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         clear_rt(m_openvr.ui_tex.commands);
         m_openvr.ui_tex.commands.execute();
     } else if (runtime->is_openxr() && runtime->ready() && vr->m_openxr->frame_began) {
+        const bool allow_openxr_ui_prepass = !(tq2_guard || ue57_guard);
+        const std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> ui_pre_commands =
+            allow_openxr_ui_prepass ? std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>>(draw_2d_view) : std::nullopt;
+        const std::optional<std::function<void(d3d12::CommandContext&)>> ui_post_commands =
+            allow_openxr_ui_prepass ? std::optional<std::function<void(d3d12::CommandContext&)>>(clear_rt) : std::nullopt;
+
+        if (!allow_openxr_ui_prepass) {
+            SPDLOG_INFO_ONCE("[VR] Guarded UE5.7 mode: disabling OpenXR UI prepass to avoid invalid desktop-fix composition");
+        }
+
         if (is_right_eye_frame) {
             if (is_2d_screen) {
                 if (is_afr) {
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[0].texture.Get(), ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
                 } else {
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, std::nullopt, ENGINE_SRC_COLOR);
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, clear_rt, ENGINE_SRC_COLOR);
+                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), ui_pre_commands, std::nullopt, ENGINE_SRC_COLOR);
+                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, ui_post_commands, ENGINE_SRC_COLOR);
                 }
             } else if (ui_target_native != nullptr) {
-                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, ui_target_native, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
-            } else if (vr->m_desktop_fix->value() && !guarded_fallback_mode) {
+                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, ui_target_native, ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
+            } else if (vr->m_desktop_fix->value() && !guarded_fallback_mode && allow_openxr_ui_prepass) {
                 SPDLOG_INFO_ONCE("[VR] UI target missing; drawing spectator view via OpenXR UI swapchain");
-                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, nullptr, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+                m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, nullptr, ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
             }
 
             auto fw_rt = g_framework->get_rendertarget_d3d12();
 
-            if (fw_rt && g_framework->is_drawing_anything() && !guarded_fallback_mode && !tq2_scene_missing) {
+            if (fw_rt && g_framework->is_drawing_anything() && !guarded_fallback_mode && !tq2_scene_missing && allow_openxr_ui_prepass) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, g_framework->get_rendertarget_d3d12().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             } else if (fw_rt && g_framework->is_drawing_anything() && (guarded_fallback_mode || tq2_scene_missing)) {
                 SPDLOG_INFO_ONCE("[VR] Guarded fallback active: skipping OpenXR FRAMEWORK_UI layer to avoid duplicate menu composition");
             }
         } else if (is_2d_screen) {
-            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+            m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
         } else if (m_game_ui_tex.commands.ready()) {
             m_game_ui_tex.commands.wait(INFINITE);
             draw_2d_view(m_game_ui_tex.commands, nullptr);
