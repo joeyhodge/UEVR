@@ -188,6 +188,35 @@ bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_doubl
     return source_width + tolerance >= expected_double_width && source_width >= min_width;
 }
 
+bool is_plausible_scene_source_desc(
+    const D3D12_RESOURCE_DESC& source_desc,
+    const D3D12_RESOURCE_DESC& real_backbuffer_desc,
+    uint32_t expected_stereo_width,
+    uint32_t expected_stereo_height)
+{
+    if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        source_desc.Width == 0 || source_desc.Height == 0 ||
+        source_desc.Format == DXGI_FORMAT_UNKNOWN) {
+        return false;
+    }
+
+    // For TQ2/UE5.7 we frequently see tiny 512x512 resources when the resolver
+    // picks an auxiliary texture. Those lead to invalid copy regions and
+    // command list close failures. Keep a conservative floor.
+    const auto min_width = std::max<uint32_t>(
+        1024u,
+        std::max<uint32_t>((uint32_t)real_backbuffer_desc.Width / 2u, expected_stereo_width / 4u));
+    const auto min_height = std::max<uint32_t>(
+        540u,
+        std::max<uint32_t>((uint32_t)real_backbuffer_desc.Height / 2u, expected_stereo_height / 4u));
+
+    if (source_desc.Width < min_width || source_desc.Height < min_height) {
+        return false;
+    }
+
+    return true;
+}
+
 std::optional<RECT> make_aspect_fit_rect(uint32_t src_width, uint32_t src_height, uint32_t dst_width, uint32_t dst_height) {
     if (src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
         return std::nullopt;
@@ -570,11 +599,6 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
-    m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
-    if (m_last_frame_used_real_backbuffer_source) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Using real backbuffer source path this frame (scene RT unresolved or compatibility mode)");
-    }
-
     D3D12_RESOURCE_DESC real_backbuffer_desc{};
     if (!try_get_resource_desc_nothrow(real_backbuffer.Get(), real_backbuffer_desc)) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to read real back buffer desc.");
@@ -586,6 +610,31 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "[VR] [warn] Scene backbuffer desc read failed; falling back to real back buffer");
         backbuffer = real_backbuffer;
         backbuffer_desc = real_backbuffer_desc;
+        using_real_backbuffer_source = true;
+    }
+
+    if ((tq2_guard || ue57_guard) && !using_real_backbuffer_source) {
+        if (!is_plausible_scene_source_desc(
+                backbuffer_desc,
+                real_backbuffer_desc,
+                (uint32_t)m_backbuffer_size[0],
+                (uint32_t)m_backbuffer_size[1]))
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Scene source {}x{} rejected as implausible for UE5.7/TQ2; using real backbuffer {}x{}",
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                real_backbuffer_desc.Width,
+                real_backbuffer_desc.Height);
+            backbuffer = real_backbuffer;
+            backbuffer_desc = real_backbuffer_desc;
+            using_real_backbuffer_source = true;
+        }
+    }
+
+    m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
+    if (m_last_frame_used_real_backbuffer_source) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Using real backbuffer source path this frame (scene RT unresolved or compatibility mode)");
     }
 
     if (!is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, (uint32_t)m_backbuffer_size[0])) {
