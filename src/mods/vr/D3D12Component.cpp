@@ -360,6 +360,15 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
+    const bool guarded_scene_source = (tq2_guard || ue57_guard) && source == "scene render target";
+
+    if (guarded_scene_source && !is_likely_valid_texture_object(texture)) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} pointer failed validation in guarded UE5.7 mode; skipping blob unwrap/probe",
+            source);
+        return nullptr;
+    }
+
     texture = resolve_texture_object_from_blob(texture, source);
 
     void* candidate_vtable{};
@@ -440,7 +449,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     }
 
     const bool allow_blob_probe =
-        candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard;
+        !guarded_scene_source && (candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard);
 
     if (native_resource == nullptr && allow_blob_probe) {
         native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
@@ -517,14 +526,12 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     if (texture == nullptr) {
         auto* relaxed_texture = rtm->get_render_target_relaxed();
         if (relaxed_texture != nullptr) {
-            texture = relaxed_texture;
-
-            if (is_likely_valid_texture_object(relaxed_texture)) {
-                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
+            if ((tq2_guard || ue57_guard) && !is_likely_valid_texture_object(relaxed_texture)) {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode (validation failed)");
             } else {
-                // Keep trying the relaxed pointer in UE5.7/TQ2. It can still unwrap/scan to a valid native resource
-                // even when strict vtable checks fail for this frame.
-                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer (validation failed; continuing with guarded probing)");
+                texture = relaxed_texture;
+                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using relaxed scene render target pointer");
             }
         }
     }

@@ -415,12 +415,38 @@ void CommandContext::execute() {
             spdlog::error("[VR] Failed to close command list. ({} {:#x})", utility::narrow(this->internal_name), (uint32_t)close_result);
 
             // Recover this context so one failed close doesn't permanently stall all subsequent frames.
-            if (FAILED(this->cmd_allocator->Reset())) {
+            // When Close fails, the list may still be in recording state. Release/recreate list+allocator.
+            auto* device = g_framework->get_d3d12_hook()->get_device();
+            this->cmd_list.Reset();
+
+            bool recovered = true;
+            if (this->cmd_allocator != nullptr && FAILED(this->cmd_allocator->Reset())) {
+                this->cmd_allocator.Reset();
+            }
+
+            if (this->cmd_allocator == nullptr &&
+                FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&this->cmd_allocator))))
+            {
+                recovered = false;
+            }
+
+            if (recovered &&
+                FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, this->cmd_allocator.Get(), nullptr, IID_PPV_ARGS(&this->cmd_list))))
+            {
+                recovered = false;
+            }
+
+            if (recovered && this->cmd_allocator != nullptr) {
+                this->cmd_allocator->SetName(this->internal_name.c_str());
+            }
+
+            if (recovered && this->cmd_list != nullptr) {
+                this->cmd_list->SetName(this->internal_name.c_str());
+            }
+
+            if (!recovered) {
                 ++this->recover_failure_count;
-                spdlog::error("[VR] Failed to recover command allocator for {}", utility::narrow(this->internal_name));
-            } else if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
-                ++this->recover_failure_count;
-                spdlog::error("[VR] Failed to recover command list for {}", utility::narrow(this->internal_name));
+                spdlog::error("[VR] Failed to recreate command context resources for {}", utility::narrow(this->internal_name));
             }
 
             if (trace_enabled) {
