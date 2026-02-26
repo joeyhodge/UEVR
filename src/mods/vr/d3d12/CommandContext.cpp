@@ -1,6 +1,9 @@
 #include <spdlog/spdlog.h>
 #include <utility/String.hpp>
+#include <utility/Module.hpp>
 #include <cstdlib>
+#include <algorithm>
+#include <cctype>
 
 #include "Framework.hpp"
 #include "../../../utility/Logging.hpp"
@@ -9,16 +12,41 @@
 #include "CommandContext.hpp"
 
 namespace d3d12 {
+static bool is_tq2_exe() {
+    static const bool is_tq2 = []() {
+        const auto module_path = utility::get_module_path(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lower_path = *module_path;
+        std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+            return (char)std::tolower(c);
+        });
+
+        return lower_path.find("tq2-win64-shipping.exe") != std::string::npos ||
+               lower_path.find("tq2_win64_shipping.exe") != std::string::npos;
+    }();
+
+    return is_tq2;
+}
+
+static bool should_skip_transition_barriers(const std::wstring& ctx_name) {
+    // UE5.7/TQ2 can report E_INVALIDARG on OpenXR command list close when
+    // explicit transition barriers are emitted against runtime-owned swapchain
+    // images. Keep the copy path alive by issuing raw copy commands only.
+    if (!is_tq2_exe()) {
+        return false;
+    }
+
+    return ctx_name.find(L"OpenXR commands") != std::wstring::npos;
+}
+
 static bool is_trace_enabled(const std::wstring& ctx_name) {
     static const bool env_enabled = []() {
         const auto env = std::getenv("UEVR_TRACE_D3D12_CONTEXT");
         return env != nullptr && env[0] != '\0' && env[0] != '0';
     }();
-
-    // Keep tracing on by default for the problematic UE5.7/TQ2 OpenXR copy path.
-    if (ctx_name.find(L"OpenXR commands") != std::wstring::npos) {
-        return true;
-    }
 
     return env_enabled;
 }
@@ -144,9 +172,15 @@ void CommandContext::wait(uint32_t ms) {
 
 void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
     std::scoped_lock _{this->mtx};
+    const auto skip_barriers = should_skip_transition_barriers(this->internal_name);
 
     if (src == nullptr || dst == nullptr) {
         spdlog::error("[VR] nullptr passed to copy");
+        return;
+    }
+
+    if (src == dst) {
+        SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] copy skipped: source and destination are identical ({})", utility::narrow(this->internal_name));
         return;
     }
 
@@ -169,7 +203,7 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
     dst_barrier.Transition.StateBefore = dst_state;
     dst_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -183,7 +217,7 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
     dst_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     dst_barrier.Transition.StateAfter = dst_state;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -193,9 +227,15 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
 
 void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12_BOX* src_box, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
     std::scoped_lock _{this->mtx};
+    const auto skip_barriers = should_skip_transition_barriers(this->internal_name);
 
     if (src == nullptr || dst == nullptr) {
         spdlog::error("[VR] nullptr passed to copy_region");
+        return;
+    }
+
+    if (src == dst) {
+        SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] copy_region skipped: source and destination are identical ({})", utility::narrow(this->internal_name));
         return;
     }
 
@@ -218,7 +258,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
     dst_barrier.Transition.StateBefore = dst_state;
     dst_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -242,7 +282,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
     dst_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     dst_barrier.Transition.StateAfter = dst_state;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -252,9 +292,15 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
 void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12_BOX* src_box, UINT dst_x, UINT dst_y, UINT dst_z, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
     std::scoped_lock _{this->mtx};
+    const auto skip_barriers = should_skip_transition_barriers(this->internal_name);
 
     if (src == nullptr || dst == nullptr) {
         spdlog::error("[VR] nullptr passed to copy_region");
+        return;
+    }
+
+    if (src == dst) {
+        SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] copy_region skipped: source and destination are identical ({})", utility::narrow(this->internal_name));
         return;
     }
 
@@ -277,7 +323,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
     dst_barrier.Transition.StateBefore = dst_state;
     dst_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -301,7 +347,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
     dst_barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
     dst_barrier.Transition.StateAfter = dst_state;
 
-    {
+    if (!skip_barriers) {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
         this->cmd_list->ResourceBarrier(2, barriers);
     }
@@ -316,8 +362,15 @@ void CommandContext::copy_region_stereo(ID3D12Resource* srcleft, ID3D12Resource*
     D3D12_RESOURCE_STATES src_state,
     D3D12_RESOURCE_STATES dst_state)
 {
+    const auto skip_barriers = should_skip_transition_barriers(this->internal_name);
+
     if (srcleft == nullptr || srcright == nullptr || dst == nullptr) {
         spdlog::error("[VR] nullptr passed to copy_region_stereo");
+        return;
+    }
+
+    if (srcleft == dst || srcright == dst) {
+        SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] copy_region_stereo skipped: source aliases destination ({})", utility::narrow(this->internal_name));
         return;
     }
 
@@ -329,7 +382,9 @@ void CommandContext::copy_region_stereo(ID3D12Resource* srcleft, ID3D12Resource*
         { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, dst_state, D3D12_RESOURCE_STATE_COPY_DEST} }
     };
     
-    this->cmd_list->ResourceBarrier(3, barriers);
+    if (!skip_barriers) {
+        this->cmd_list->ResourceBarrier(3, barriers);
+    }
 
     // Copy left half
     D3D12_TEXTURE_COPY_LOCATION src_loc_left = { srcleft, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX, 0 };
@@ -347,7 +402,9 @@ void CommandContext::copy_region_stereo(ID3D12Resource* srcleft, ID3D12Resource*
     barriers[1] = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {srcright, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_SOURCE, src_state} };
     barriers[2] = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, dst_state} };
 
-    this->cmd_list->ResourceBarrier(3, barriers);
+    if (!skip_barriers) {
+        this->cmd_list->ResourceBarrier(3, barriers);
+    }
 
     this->has_commands = true;
 }

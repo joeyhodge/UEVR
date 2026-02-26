@@ -9,6 +9,7 @@
 #include <future>
 #include <mutex>
 #include <sstream>
+#include <unordered_map>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -70,6 +71,30 @@ FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 static bool is_ue_57();
 static bool is_tq2_shipping_executable();
+static bool is_probably_valid_function_ptr(uintptr_t ptr);
+static uintptr_t canonicalize_function_ea(uintptr_t ea);
+static std::vector<int32_t> collect_indirect_vcall_slots(uintptr_t fn_start, size_t max_instructions);
+static bool function_or_chunk_has_string_ref(uintptr_t fn, std::wstring_view needle);
+
+static bool should_force_ue57_postinit() {
+    static const bool enabled = []() {
+        char buffer[8]{};
+        const auto len = GetEnvironmentVariableA("UEVR_FORCE_UE57_POSTINIT", buffer, (DWORD)std::size(buffer));
+        return len > 0 && buffer[0] != '0';
+    }();
+
+    return enabled;
+}
+
+static bool should_probe_tq2_slate_viewport_candidates() {
+    static const bool enabled = []() {
+        char buffer[8]{};
+        const auto len = GetEnvironmentVariableA("UEVR_TQ2_PROBE_SLATE_VIEWPORT_CANDIDATES", buffer, (DWORD)std::size(buffer));
+        return len > 0 && buffer[0] != '0';
+    }();
+
+    return enabled;
+}
 
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
@@ -127,6 +152,275 @@ static bool is_probably_valid_object_pointer(uintptr_t ptr) {
     }
 
     return utility::get_module_within((void*)vtable_raw).has_value() && utility::get_module_within((void*)first_vfunc_raw).has_value();
+}
+
+static bool has_plausible_rhi_texture_header(uintptr_t ptr) {
+    if (ptr == 0 || IsBadReadPtr((void*)ptr, 0x10)) {
+        return false;
+    }
+
+    __try {
+        const auto ref_count = *(int32_t*)(ptr + 0x8);
+        const auto rhi_type = *(uint8_t*)(ptr + 0xC);
+
+        if (ref_count < 0 || ref_count > 0x3FFFFFFF) {
+            return false;
+        }
+
+        // UE5 FRHI texture-like resource types.
+        return rhi_type >= 0x14 && rhi_type <= 0x1B;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+enum class SlateViewportVtableClass : uint8_t {
+    Unknown = 0,
+    SceneViewport = 1,
+    DebugCanvas = 2,
+};
+
+struct VtablePairFingerprint {
+    uint32_t pair_count{0};
+    uintptr_t first_match_vtable{0};
+    bool exact_vtable_match{false};
+};
+
+static bool try_read_vtable_slot_nothrow(uintptr_t vtable_raw, size_t slot, uintptr_t& out) noexcept {
+    out = 0;
+
+    if (vtable_raw == 0 || IsBadReadPtr((void*)vtable_raw, sizeof(void*))) {
+        return false;
+    }
+
+    const auto slot_addr = vtable_raw + (slot * sizeof(void*));
+    if (!try_read_pointer_nothrow(slot_addr, out) || out == 0) {
+        out = 0;
+        return false;
+    }
+
+    return is_probably_valid_function_ptr(out);
+}
+
+static bool function_has_any_string_ref(uintptr_t fn, std::initializer_list<std::wstring_view> needles) {
+    for (const auto needle : needles) {
+        if (function_or_chunk_has_string_ref(fn, needle)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static VtablePairFingerprint probe_scene_pair_fingerprint_in_rdata(
+    uintptr_t slot5_fn,
+    uintptr_t slot6_fn,
+    uintptr_t candidate_vtable)
+{
+    VtablePairFingerprint out{};
+
+    if (slot5_fn == 0 || slot6_fn == 0) {
+        return out;
+    }
+
+    const auto image = utility::get_executable();
+    if (image == nullptr) {
+        return out;
+    }
+
+    const auto image_base = reinterpret_cast<uintptr_t>(image);
+    const auto dos = reinterpret_cast<PIMAGE_DOS_HEADER>(image_base);
+    if (dos == nullptr || dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return out;
+    }
+
+    const auto nt = reinterpret_cast<PIMAGE_NT_HEADERS64>(image_base + dos->e_lfanew);
+    if (nt == nullptr || nt->Signature != IMAGE_NT_SIGNATURE) {
+        return out;
+    }
+
+    const auto sections = IMAGE_FIRST_SECTION(nt);
+    if (sections == nullptr) {
+        return out;
+    }
+
+    for (uint16_t i = 0; i < nt->FileHeader.NumberOfSections; ++i) {
+        char sec_name[9]{};
+        memcpy(sec_name, sections[i].Name, 8);
+
+        std::string_view name_view{sec_name};
+        if (!name_view.starts_with(".rdata")) {
+            continue;
+        }
+
+        const auto sec_start = image_base + sections[i].VirtualAddress;
+        const auto sec_size = (std::max)(sections[i].Misc.VirtualSize, sections[i].SizeOfRawData);
+        if (sec_size < 16) {
+            continue;
+        }
+
+        const auto sec_end = sec_start + sec_size;
+        for (auto ea = sec_start; ea + 16 <= sec_end; ea += sizeof(uintptr_t)) {
+            uintptr_t s5{};
+            uintptr_t s6{};
+
+            if (!try_read_pointer_nothrow(ea, s5) || !try_read_pointer_nothrow(ea + sizeof(uintptr_t), s6)) {
+                continue;
+            }
+
+            if (s5 != slot5_fn || s6 != slot6_fn) {
+                continue;
+            }
+
+            ++out.pair_count;
+            const auto vt = ea - (5 * sizeof(uintptr_t));
+
+            if (out.first_match_vtable == 0) {
+                out.first_match_vtable = vt;
+            }
+
+            if (vt == candidate_vtable) {
+                out.exact_vtable_match = true;
+            }
+        }
+    }
+
+    return out;
+}
+
+static SlateViewportVtableClass classify_slate_viewport_vtable(uintptr_t vtable_raw) {
+    static std::mutex s_cache_mutex{};
+    static std::unordered_map<uintptr_t, SlateViewportVtableClass> s_cache{};
+
+    if (vtable_raw == 0) {
+        return SlateViewportVtableClass::Unknown;
+    }
+
+    {
+        std::lock_guard _{s_cache_mutex};
+        const auto it = s_cache.find(vtable_raw);
+        if (it != s_cache.end()) {
+            return it->second;
+        }
+    }
+
+    // TQ2 / UE5.7 anchors from IDA:
+    //  slot 5  -> FRenderTarget::GetRenderTargetTexture
+    //  slot 6  -> FSceneViewport::GetRenderTargetTexture
+    //  slot 22 -> FSceneViewport::Destroy
+    //  slot 57 -> FViewport::GetDesiredAspectRatio
+    //  slot 64 -> FSceneViewport::GetRenderTargetTextureSizeXY
+    //  slot 71 -> FSceneViewport::GetFriendlyName ("FSlateSceneViewport")
+    static constexpr std::array<size_t, 6> scene_slots{5, 6, 22, 57, 64, 71};
+
+    int32_t scene_score = 0;
+    int32_t debug_score = 0;
+
+    std::array<uintptr_t, 6> scene_fns{};
+    for (size_t i = 0; i < scene_slots.size(); ++i) {
+        uintptr_t fn{};
+        if (try_read_vtable_slot_nothrow(vtable_raw, scene_slots[i], fn)) {
+            scene_fns[i] = canonicalize_function_ea(fn);
+        }
+    }
+
+    const auto pair_fingerprint = probe_scene_pair_fingerprint_in_rdata(scene_fns[0], scene_fns[1], vtable_raw);
+
+    // Strongest signal for this title: [slot5,slot6] pair appears in .rdata and maps back to this vtable.
+    if (pair_fingerprint.exact_vtable_match) {
+        scene_score += 80;
+    } else if (pair_fingerprint.pair_count > 0) {
+        scene_score += 30;
+    }
+
+    // Strong positive anchor: GetFriendlyName references "FSlateSceneViewport".
+    if (scene_fns[5] != 0 && function_or_chunk_has_string_ref(scene_fns[5], L"FSlateSceneViewport")) {
+        scene_score += 55;
+    }
+
+    // Secondary anchors for scene viewport path.
+    if (scene_fns[1] != 0 && function_or_chunk_has_string_ref(scene_fns[1], L"RenderTarget")) {
+        scene_score += 18;
+    }
+    if (scene_fns[0] != 0 && function_or_chunk_has_string_ref(scene_fns[0], L"RenderTarget")) {
+        scene_score += 14;
+    }
+    if (scene_fns[4] != 0 && function_has_any_string_ref(scene_fns[4], {L"RenderTargetTextureSizeXY", L"SizeXY"})) {
+        scene_score += 14;
+    }
+    if (scene_fns[2] != 0 && function_has_any_string_ref(scene_fns[2], {L"Destroy", L"Viewport"})) {
+        scene_score += 10;
+    }
+    if (scene_fns[3] != 0 && function_has_any_string_ref(scene_fns[3], {L"AspectRatio", L"DesiredAspectRatio"})) {
+        scene_score += 10;
+    }
+
+    // Structural fallback for stripped builds where string refs are weak.
+    if (scene_fns[2] != 0 && scene_fns[3] != 0 && scene_fns[4] != 0 && scene_fns[5] != 0) {
+        scene_score += 12;
+    }
+
+    if (scene_fns[1] != 0) {
+        const auto call_slots = collect_indirect_vcall_slots(scene_fns[1], 140);
+        for (const auto call_slot : call_slots) {
+            if (call_slot == 0x188 || call_slot == 0x178) {
+                scene_score += 5;
+            }
+        }
+    }
+
+    // Debug-canvas blacklist markers.
+    static constexpr std::array<size_t, 10> debug_probe_slots{0, 1, 5, 6, 10, 22, 32, 57, 64, 71};
+    for (const auto slot : debug_probe_slots) {
+        uintptr_t fn{};
+        if (!try_read_vtable_slot_nothrow(vtable_raw, slot, fn)) {
+            continue;
+        }
+
+        const auto canonical = canonicalize_function_ea(fn);
+        if (canonical == 0) {
+            continue;
+        }
+
+        if (function_has_any_string_ref(canonical, {L"DebugCanvas", L"SDebugCanvas", L"FDebugCanvasDrawer", L"HMDDebugLayerTexture", L"DebugTextList"})) {
+            debug_score += 35;
+        }
+    }
+
+    auto classification = SlateViewportVtableClass::Unknown;
+    if (scene_score >= 45 && scene_score >= (debug_score + 10)) {
+        classification = SlateViewportVtableClass::SceneViewport;
+    } else if (debug_score >= 35) {
+        classification = SlateViewportVtableClass::DebugCanvas;
+    }
+
+    // TQ2 strict fallback: accept the single exact pair fingerprint even if
+    // ancillary heuristics are inconclusive.
+    if (classification != SlateViewportVtableClass::SceneViewport &&
+        is_tq2_shipping_executable() &&
+        pair_fingerprint.exact_vtable_match)
+    {
+        classification = SlateViewportVtableClass::SceneViewport;
+    }
+
+    if (is_tq2_shipping_executable()) {
+        SPDLOG_INFO(
+            "[SlateRHIRenderer::DrawWindow_RenderThread] TQ2 viewport-vtable classify vt={:x} pair_count={} exact_pair={} scene_score={} debug_score={} class={}",
+            vtable_raw,
+            pair_fingerprint.pair_count,
+            pair_fingerprint.exact_vtable_match ? 1 : 0,
+            scene_score,
+            debug_score,
+            (int)classification
+        );
+    }
+
+    {
+        std::lock_guard _{s_cache_mutex};
+        s_cache[vtable_raw] = classification;
+    }
+
+    return classification;
 }
 
 static bool try_get_viewport_render_target_texture_nothrow(sdk::IViewportRenderTargetProvider* provider, sdk::FSlateResource*& out) noexcept {
@@ -1064,13 +1358,18 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     const bool tq2_guard = is_tq2_shipping_executable();
 
     if (tq2_guard) {
-        // TQ2 remains unstable when DrawWindow_RenderThread is hooked directly.
-        // Keep this disabled and rely on viewport/texture hooks for scene target discovery.
-        m_attempted_hook_slate_thread = true;
-        m_attempted_hook_slate_thread_alternate = true;
-        m_hooked_slate_thread = true;
-        SPDLOG_WARN_ONCE("TQ2: disabling DrawWindow_RenderThread hook (stability guard)");
-        return;
+        // TQ2 is sensitive at startup. Delay the hook a bit, then allow it in the
+        // UE5.7 safe-mode path (discovery-only, no Slate resource mutation).
+        static uint64_t s_tq2_guard_begin_tick = GetTickCount64();
+        constexpr uint64_t kTq2GuardDelayMs = 5000;
+        const auto now = GetTickCount64();
+
+        if (now - s_tq2_guard_begin_tick < kTq2GuardDelayMs) {
+            SPDLOG_WARN_ONCE("TQ2: delaying DrawWindow_RenderThread hook briefly for startup stability");
+            return;
+        }
+
+        SPDLOG_INFO_ONCE("TQ2 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
     if (ue57_guard) {
@@ -6567,13 +6866,19 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 }
 
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
-    if (is_ue_57()) {
+    const auto force_post_init = should_force_ue57_postinit();
+
+    if (is_ue_57() && !force_post_init) {
         // UE5.7 local-player PostInitProperties probing is currently unstable on some titles and can corrupt
         // state long after injection. Keep the hook path disabled until we have a reliable signature.
         SPDLOG_WARN_ONCE("UE5.7: skipping manual PostInitProperties local-player call (stability guard)");
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
+    }
+
+    if (is_ue_57() && force_post_init) {
+        SPDLOG_WARN_ONCE("UE5.7: forcing manual PostInitProperties local-player call via UEVR_FORCE_UE57_POSTINIT");
     }
 
     SPDLOG_INFO("Searching for PostInitProperties virtual function...");
@@ -6797,8 +7102,35 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return;
             }
 
-            uintptr_t first_qword{};
-            if (!try_read_pointer_nothrow(candidate_raw, first_qword)) {
+            uintptr_t vtable_raw{};
+            if (!try_read_pointer_nothrow(candidate_raw, vtable_raw) || vtable_raw == 0) {
+                return;
+            }
+
+            uintptr_t first_vfunc_raw{};
+            if (!try_read_pointer_nothrow(vtable_raw, first_vfunc_raw) || first_vfunc_raw == 0) {
+                return;
+            }
+
+            if (!utility::get_module_within((void*)vtable_raw).has_value() || !utility::get_module_within((void*)first_vfunc_raw).has_value()) {
+                return;
+            }
+
+            if (is_tq2_shipping_executable()) {
+                const auto vt_class = classify_slate_viewport_vtable(vtable_raw);
+                if (vt_class != SlateViewportVtableClass::SceneViewport) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] TQ2 rejected viewport_info candidate {}+0x{:x}: class={}",
+                        source_label,
+                        field_offset,
+                        (int)vt_class
+                    );
+                    return;
+                }
+            }
+
+            if (IsBadReadPtr((void*)candidate_raw, 0x20)) {
                 return;
             }
 
@@ -6821,12 +7153,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
             const auto candidate_viewport_08 = *(uintptr_t*)(inputs + 0x08);
             const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
+            const auto candidate_viewport_20 = *(uintptr_t*)(inputs + 0x20);
             const auto candidate_window = *(uintptr_t*)(inputs + 0x10);
 
-            // UE5.7.2 reshuffled DrawWindow pass-input fields. Keep multiple candidates and validate later
-            // by actually resolving a render target provider/texture.
-            push_viewport_candidate(candidate_viewport_08, source_label, 0x08);
+            // UE5.7 DrawWindow pass inputs: ViewportInfo is at +0x18 in 5.7.3 source.
+            // Keep a narrow fallback (+0x20) for minor layout drifts and only then legacy +0x08.
             push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
+            push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
+            push_viewport_candidate(candidate_viewport_08, source_label, 0x08);
 
             if (window == 0) {
                 if (is_probably_valid_object_pointer(candidate_window)) {
@@ -6912,6 +7246,26 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             if (!utility::get_module_within((void*)vtable_raw).has_value() || !utility::get_module_within((void*)first_vfunc_raw).has_value()) {
+                return nullptr;
+            }
+
+            const auto vtable_class = classify_slate_viewport_vtable(vtable_raw);
+            if (vtable_class == SlateViewportVtableClass::DebugCanvas) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] Rejecting SWindow viewport at 0x{:x}: classified as DebugCanvas/HMDDebug layer",
+                    offset
+                );
+                return nullptr;
+            }
+
+            if (is_tq2_shipping_executable() && vtable_class != SlateViewportVtableClass::SceneViewport) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] TQ2 strict viewport filter rejected offset 0x{:x} (class={})",
+                    offset,
+                    (int)vtable_class
+                );
                 return nullptr;
             }
 
@@ -7136,7 +7490,56 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return false;
             }
 
+            if (!has_plausible_rhi_texture_header((uintptr_t)candidate)) {
+                return false;
+            }
+
             out = candidate;
+            return true;
+        };
+
+        auto try_get_direct_viewport_texture_nothrow = [](sdk::FViewportInfo* info, FRHITexture2D*& out) -> bool {
+            out = nullptr;
+
+            if (info == nullptr || IsBadReadPtr(info, sizeof(void*))) {
+                return false;
+            }
+
+            if (is_tq2_shipping_executable()) {
+                uintptr_t vtable_raw{};
+                if (!try_read_pointer_nothrow((uintptr_t)info, vtable_raw) || vtable_raw == 0) {
+                    return false;
+                }
+
+                const auto vt_class = classify_slate_viewport_vtable(vtable_raw);
+                if (vt_class != SlateViewportVtableClass::SceneViewport) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "UE5.7/TQ2 safe mode: skipping direct viewport texture read from non-scene viewport object {:x} (class={})",
+                        (uintptr_t)info,
+                        (int)vt_class
+                    );
+                    return false;
+                }
+            }
+
+            __try {
+                out = info->get_direct_render_target_texture();
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                out = nullptr;
+            }
+
+            if (out == nullptr) {
+                return false;
+            }
+
+            if (!is_probably_valid_object_pointer((uintptr_t)out) ||
+                !has_plausible_rhi_texture_header((uintptr_t)out))
+            {
+                out = nullptr;
+                return false;
+            }
+
             return true;
         };
 
@@ -7150,16 +7553,54 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (discovered_scene == nullptr && viewport_info != nullptr) {
+            FRHITexture2D* direct_viewport_scene = nullptr;
+            if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
+                discovered_scene = direct_viewport_scene;
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info");
+            }
+        }
+
+        if (viewport_info != nullptr) {
             const auto exists = std::find(ue57_viewport_candidates.begin(), ue57_viewport_candidates.end(), viewport_info) != ue57_viewport_candidates.end();
             if (!exists) {
                 ue57_viewport_candidates.insert(ue57_viewport_candidates.begin(), viewport_info);
             }
         }
 
-        if (discovered_scene == nullptr) {
+        const bool tq2_safe_mode = is_tq2_shipping_executable();
+        const bool allow_candidate_probe = !tq2_safe_mode || should_probe_tq2_slate_viewport_candidates();
+
+        if (discovered_scene == nullptr && !allow_candidate_probe) {
+            for (auto candidate : ue57_viewport_candidates) {
+                FRHITexture2D* direct_viewport_scene = nullptr;
+                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
+                    discovered_scene = direct_viewport_scene;
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via cached direct viewport candidate");
+                    break;
+                }
+            }
+        }
+
+        if (discovered_scene == nullptr && !allow_candidate_probe) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "UE5.7/TQ2 safe mode: skipping viewport-candidate probing (guarded). Set UEVR_TQ2_PROBE_SLATE_VIEWPORT_CANDIDATES=1 to override.");
+        }
+
+        if (discovered_scene == nullptr && allow_candidate_probe) {
             for (auto candidate : ue57_viewport_candidates) {
                 if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
                     continue;
+                }
+
+                FRHITexture2D* direct_viewport_scene = nullptr;
+                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
+                    discovered_scene = direct_viewport_scene;
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate direct path");
+                    break;
                 }
 
                 sdk::IViewportRenderTargetProvider* provider = nullptr;
@@ -7184,9 +7625,36 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (discovered_scene != nullptr && rtm.get_render_target() == nullptr) {
-            rtm.set_render_target(discovered_scene);
-            SPDLOG_INFO_ONCE("UE5.7/TQ2 safe mode seeded scene render target from Slate path: {:x}", (uintptr_t)discovered_scene);
+        if (discovered_scene != nullptr) {
+            const auto current_scene = rtm.get_render_target_relaxed();
+            const bool candidate_allowed =
+                is_probably_valid_object_pointer((uintptr_t)discovered_scene) &&
+                has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
+            const bool current_scene_valid =
+                current_scene != nullptr &&
+                is_probably_valid_object_pointer((uintptr_t)current_scene) &&
+                has_plausible_rhi_texture_header((uintptr_t)current_scene);
+
+            if (!candidate_allowed) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "UE5.7/TQ2 safe mode: rejecting scene candidate {:x}; structural validation failed",
+                    (uintptr_t)discovered_scene);
+            }
+
+            const bool should_seed_scene = (current_scene == nullptr) || !current_scene_valid;
+
+            if (candidate_allowed && should_seed_scene && current_scene != discovered_scene) {
+                rtm.set_render_target(discovered_scene);
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "UE5.7/TQ2 safe mode updated scene render target from Slate path: {:x} -> {:x}",
+                    (uintptr_t)current_scene,
+                    (uintptr_t)discovered_scene);
+            } else if (candidate_allowed && !should_seed_scene && current_scene != discovered_scene) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "UE5.7/TQ2 safe mode keeping existing scene render target {:x}; ignoring Slate candidate {:x}",
+                    (uintptr_t)current_scene,
+                    (uintptr_t)discovered_scene);
+            }
         } else if (discovered_scene == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: no scene texture resolved from Slate path");
         }

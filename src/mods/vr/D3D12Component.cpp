@@ -11,7 +11,9 @@
 #include <cctype>
 #include <cmath>
 #include <exception>
+#include <limits>
 #include <string_view>
+#include <utility>
 #include <DirectXMath.h>
 
 #include "Framework.hpp"
@@ -69,6 +71,8 @@ const bool ue57_guard = []() {
 
     return false;
 }();
+
+FRHITexture2D* g_last_good_scene_texture = nullptr;
 
 bool is_d3d_module_path(const std::string& lower_module_path) {
     return lower_module_path.find("d3d12core.dll") != std::string::npos ||
@@ -188,6 +192,46 @@ bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_doubl
     return source_width + tolerance >= expected_double_width && source_width >= min_width;
 }
 
+std::pair<uint32_t, uint32_t> get_expected_stereo_extent(
+    VR* vr,
+    uint32_t fallback_double_width,
+    uint32_t fallback_height)
+{
+    uint32_t expected_width = fallback_double_width;
+    uint32_t expected_height = fallback_height;
+
+    if (vr != nullptr) {
+        if (auto* openxr = vr->get_openxr_runtime(); openxr != nullptr) {
+            if (const auto it = openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE);
+                it != openxr->swapchains.end() && it->second.width > 0 && it->second.height > 0)
+            {
+                return {it->second.width, it->second.height};
+            }
+        }
+    }
+
+    if (vr != nullptr) {
+        const auto hmd_width = vr->get_hmd_width();
+        const auto hmd_height = vr->get_hmd_height();
+
+        if (hmd_width > 0 && hmd_height > 0) {
+            const auto doubled = (uint64_t)hmd_width * 2ULL;
+            expected_width = (uint32_t)std::min<uint64_t>(doubled, (uint64_t)std::numeric_limits<uint32_t>::max());
+            expected_height = (uint32_t)hmd_height;
+        }
+    }
+
+    if (expected_width == 0) {
+        expected_width = fallback_double_width;
+    }
+
+    if (expected_height == 0) {
+        expected_height = fallback_height;
+    }
+
+    return {expected_width, expected_height};
+}
+
 bool is_plausible_scene_source_desc(
     const D3D12_RESOURCE_DESC& source_desc,
     const D3D12_RESOURCE_DESC& real_backbuffer_desc,
@@ -211,6 +255,26 @@ bool is_plausible_scene_source_desc(
         std::max<uint32_t>((uint32_t)real_backbuffer_desc.Height / 2u, expected_stereo_height / 4u));
 
     if (source_desc.Width < min_width || source_desc.Height < min_height) {
+        return false;
+    }
+
+    // Also clamp absurdly large candidates (e.g. 11k x 11k aux resources) that can
+    // pass the minimum checks but break CopyTextureRegion on OpenXR command lists.
+    const auto max_width = std::max<uint64_t>(
+        (uint64_t)real_backbuffer_desc.Width * 3ULL,
+        (uint64_t)std::max<uint32_t>(expected_stereo_width, (uint32_t)real_backbuffer_desc.Width) * 2ULL);
+    const auto max_height = std::max<uint64_t>(
+        (uint64_t)real_backbuffer_desc.Height * 3ULL,
+        (uint64_t)std::max<uint32_t>(expected_stereo_height, (uint32_t)real_backbuffer_desc.Height) * 2ULL);
+
+    if ((uint64_t)source_desc.Width > max_width || (uint64_t)source_desc.Height > max_height) {
+        return false;
+    }
+
+    // Reject extreme aspect outliers in guarded mode selection.
+    const auto width = (uint64_t)source_desc.Width;
+    const auto height = (uint64_t)source_desc.Height;
+    if (width > height * 6ULL || height > width * 6ULL) {
         return false;
     }
 
@@ -523,14 +587,41 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
         return nullptr;
     }
 
+    if ((tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr) {
+        auto* cached_texture = g_last_good_scene_texture;
+        if (!is_likely_valid_texture_object(cached_texture)) {
+            cached_texture = resolve_texture_object_from_blob(cached_texture, "cached scene render target");
+        }
+
+        if (cached_texture != nullptr && is_likely_valid_texture_object(cached_texture)) {
+            g_last_good_scene_texture = cached_texture;
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Reusing last-good scene render target pointer in guarded UE5.7 mode");
+            return cached_texture;
+        }
+
+        g_last_good_scene_texture = nullptr;
+    }
+
     auto* texture = rtm->get_render_target();
 
     if (texture == nullptr) {
         auto* relaxed_texture = rtm->get_render_target_relaxed();
         if (relaxed_texture != nullptr) {
             if (tq2_guard || ue57_guard) {
-                SPDLOG_INFO_EVERY_N_SEC(1,
-                    "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode");
+                // In guarded mode, still allow relaxed pointers when they can be
+                // validated structurally (or after one-level blob unwrap).
+                auto* candidate = relaxed_texture;
+                if (!is_likely_valid_texture_object(candidate)) {
+                    candidate = resolve_texture_object_from_blob(candidate, "relaxed scene render target");
+                }
+
+                if (candidate != nullptr && is_likely_valid_texture_object(candidate)) {
+                    texture = candidate;
+                    SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using validated relaxed scene render target pointer in guarded UE5.7 mode");
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode (failed validation)");
+                }
             } else {
                 texture = relaxed_texture;
                 if (is_likely_valid_texture_object(relaxed_texture)) {
@@ -543,7 +634,19 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     }
 
     if (texture != nullptr) {
-        texture = resolve_texture_object_from_blob(texture, "scene render target");
+        if (tq2_guard || ue57_guard) {
+            // Guarded UE5.7/TQ2 path: do not aggressively unwrap scene pointers.
+            // In TQ2 this often lands on tiny transient textures (e.g. 64x64) and causes
+            // sustained fallback/flicker. Keep the original object when it is already sane.
+            if (!is_likely_valid_texture_object(texture)) {
+                auto* unwrapped = resolve_texture_object_from_blob(texture, "scene render target");
+                if (unwrapped != nullptr && is_likely_valid_texture_object(unwrapped)) {
+                    texture = unwrapped;
+                }
+            }
+        } else {
+            texture = resolve_texture_object_from_blob(texture, "scene render target");
+        }
     }
 
     return texture;
@@ -583,6 +686,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (ue4_texture != nullptr) {
         backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
+
+        if (backbuffer == nullptr && (tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr && g_last_good_scene_texture != ue4_texture) {
+            auto* cached_texture = g_last_good_scene_texture;
+            if (cached_texture != nullptr && !IsBadReadPtr(cached_texture, sizeof(void*))) {
+                auto cached_backbuffer = safe_get_native_resource(cached_texture, "cached scene render target");
+                if (cached_backbuffer != nullptr) {
+                    ue4_texture = cached_texture;
+                    backbuffer = cached_backbuffer;
+                    SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using last-good cached scene resource after current candidate failed");
+                }
+            }
+        }
     } else {
         SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Scene render target pointer is null");
     }
@@ -626,23 +741,37 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         using_real_backbuffer_source = true;
     }
 
+    const auto [expected_runtime_width, expected_runtime_height] = get_expected_stereo_extent(
+        vr,
+        (uint32_t)real_backbuffer_desc.Width * 2u,
+        (uint32_t)real_backbuffer_desc.Height);
+    const auto expected_double_width_for_frame = (tq2_guard || ue57_guard) ? expected_runtime_width : (uint32_t)m_backbuffer_size[0];
+
     if ((tq2_guard || ue57_guard) && !using_real_backbuffer_source) {
         if (!is_plausible_scene_source_desc(
                 backbuffer_desc,
                 real_backbuffer_desc,
-                (uint32_t)m_backbuffer_size[0],
-                (uint32_t)m_backbuffer_size[1]))
+                expected_runtime_width,
+                expected_runtime_height))
         {
             SPDLOG_INFO_EVERY_N_SEC(1,
-                "[VR] Scene source {}x{} rejected as implausible for UE5.7/TQ2; using real backbuffer {}x{}",
+                "[VR] Scene source {}x{} fmt {} rejected as implausible for UE5.7/TQ2; using real backbuffer {}x{} fmt {} (expected stereo {}x{})",
                 backbuffer_desc.Width,
                 backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format,
                 real_backbuffer_desc.Width,
-                real_backbuffer_desc.Height);
+                real_backbuffer_desc.Height,
+                (uint32_t)real_backbuffer_desc.Format,
+                expected_runtime_width,
+                expected_runtime_height);
             backbuffer = real_backbuffer;
             backbuffer_desc = real_backbuffer_desc;
             using_real_backbuffer_source = true;
         }
+    }
+
+    if (!using_real_backbuffer_source && (tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
+        g_last_good_scene_texture = ue4_texture;
     }
 
     m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
@@ -650,12 +779,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Using real backbuffer source path this frame (scene RT unresolved or compatibility mode)");
     }
 
-    if (!is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, (uint32_t)m_backbuffer_size[0])) {
+    if (!is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, expected_double_width_for_frame)) {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] Using single-wide source texture {}x{} (expected stereo width {})",
             backbuffer_desc.Width,
             backbuffer_desc.Height,
-            m_backbuffer_size[0]);
+            expected_double_width_for_frame);
     }
 
     const auto ui_invert_alpha = vr->get_overlay_component().get_ui_invert_alpha();
@@ -828,7 +957,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return;
         }
 
-        const auto scene_is_double_wide = is_likely_double_wide_source(scene_width, (uint32_t)m_backbuffer_size[0]);
+        const auto scene_is_double_wide = is_likely_double_wide_source(scene_width, expected_double_width_for_frame);
         const auto scene_eye_width = scene_is_double_wide ? scene_width / 2 : scene_width;
         const auto target_eye_width = target_width / 2;
         auto copy_width = std::min<uint32_t>(scene_eye_width, target_eye_width);
@@ -1014,10 +1143,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
-    const auto is_2d_screen = !guarded_fallback_mode && !tq2_scene_missing && vr->is_using_2d_screen();
-    if (guarded_fallback_mode || tq2_scene_missing) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] TQ2 fallback mode: disabling 2D-screen/spectator post path while scene RT is unresolved");
-    }
+    const auto is_2d_screen = vr->is_using_2d_screen();
 
     auto draw_2d_view = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
         if (ui_invert_alpha > 0.0f && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
@@ -1034,9 +1160,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        if (!guarded_fallback_mode && !tq2_scene_missing) {
-            draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
-        }
+        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
 
         if (is_2d_screen && m_game_tex.texture.Get() != nullptr && m_game_tex.srv_heap != nullptr) {
             const auto game_desc = m_game_tex.texture->GetDesc();
@@ -1231,8 +1355,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto source_desc = backbuffer_desc;
             const auto source_width = (uint32_t)source_desc.Width;
             const auto source_height = (uint32_t)source_desc.Height;
-            const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
+            const auto source_is_double_wide = is_likely_double_wide_source(source_width, expected_double_width_for_frame);
             const auto source_eye_width = source_is_double_wide ? source_width / 2 : source_width;
+
+            if (tq2_guard || ue57_guard) {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] OpenXR scene source candidate: {}x{} fmt {} (expected double-wide {}x{}, source_is_double_wide={}, real_fallback={})",
+                    source_width,
+                    source_height,
+                    (uint32_t)source_desc.Format,
+                    expected_double_width_for_frame,
+                    expected_runtime_height,
+                    source_is_double_wide ? 1 : 0,
+                    using_real_backbuffer_source ? 1 : 0);
+            }
 
             D3D12_BOX src_box{};
             src_box.left = 0;
@@ -1291,7 +1427,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto source_desc = backbuffer_desc;
             const auto source_width = (uint32_t)source_desc.Width;
             const auto source_height = (uint32_t)source_desc.Height;
-            const auto source_is_double_wide = is_likely_double_wide_source(source_width, (uint32_t)m_backbuffer_size[0]);
+            const auto source_is_double_wide = is_likely_double_wide_source(source_width, expected_double_width_for_frame);
             const auto source_eye_width = source_is_double_wide ? source_width / 2 : source_width;
 
             if (is_actually_afr && !is_afr && !m_submitted_left_eye) {
@@ -1979,6 +2115,28 @@ bool D3D12Component::setup() {
     const auto real_backbuffer_desc = real_backbuffer->GetDesc();
 
     auto backbuffer_desc = backbuffer->GetDesc();
+    const auto [expected_setup_width, expected_setup_height] = get_expected_stereo_extent(
+        vr.get(),
+        (uint32_t)real_backbuffer_desc.Width * 2u,
+        (uint32_t)real_backbuffer_desc.Height);
+
+    if ((tq2_guard || ue57_guard) && !using_real_backbuffer_source &&
+        !is_plausible_scene_source_desc(backbuffer_desc, real_backbuffer_desc, expected_setup_width, expected_setup_height))
+    {
+        SPDLOG_INFO(
+            "[VR] Setup rejected scene source {}x{} fmt {}; using real backbuffer {}x{} fmt {} (expected stereo {}x{})",
+            backbuffer_desc.Width,
+            backbuffer_desc.Height,
+            (uint32_t)backbuffer_desc.Format,
+            real_backbuffer_desc.Width,
+            real_backbuffer_desc.Height,
+            (uint32_t)real_backbuffer_desc.Format,
+            expected_setup_width,
+            expected_setup_height);
+        backbuffer = real_backbuffer;
+        backbuffer_desc = real_backbuffer_desc;
+        using_real_backbuffer_source = true;
+    }
 
     spdlog::info("[VR] D3D12 Real backbuffer width: {}, height: {}, format: {}", real_backbuffer_desc.Width, real_backbuffer_desc.Height, (uint32_t)real_backbuffer_desc.Format);
 
@@ -2186,6 +2344,17 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
     auto backbuffer_desc = backbuffer->GetDesc();
     auto& openxr = vr->m_openxr;
+    const bool guarded_ue57_tq2 = (tq2_guard || ue57_guard);
+    const DXGI_FORMAT guarded_color_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    const uint32_t guarded_sample_count = guarded_ue57_tq2 ? 1u : std::max<uint32_t>(1u, backbuffer_desc.SampleDesc.Count);
+
+    if (guarded_ue57_tq2) {
+        SPDLOG_INFO("[VR] Guarded UE5.7/TQ2 OpenXR swapchain settings: color_fmt={} sample_count={} (backbuffer fmt={} samples={})",
+            (uint32_t)guarded_color_format,
+            guarded_sample_count,
+            (uint32_t)backbuffer_desc.Format,
+            backbuffer_desc.SampleDesc.Count);
+    }
 
     this->contexts.clear();
 
@@ -2232,7 +2401,26 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             return "Failed to enumerate swapchain images after texture creation.";
         }
 
+        if (image_count == 0) {
+            spdlog::error("[VR] OpenXR swapchain {} returned zero images.", i);
+            return "OpenXR swapchain returned zero images.";
+        }
+
         for (uint32_t j = 0; j < image_count; ++j) {
+            if (ctx.textures[j].texture != nullptr) {
+                D3D12_RESOURCE_DESC image_desc{};
+                if (try_get_resource_desc_nothrow(ctx.textures[j].texture, image_desc)) {
+                    SPDLOG_INFO("[VR] OpenXR swapchain {} image {} desc: {}x{} fmt {} samples {} flags {:#x}",
+                        i,
+                        j,
+                        image_desc.Width,
+                        image_desc.Height,
+                        (uint32_t)image_desc.Format,
+                        image_desc.SampleDesc.Count,
+                        (uint32_t)image_desc.Flags);
+                }
+            }
+
             ctx.textures[j].texture->AddRef();
             const auto ref_count = ctx.textures[j].texture->Release();
 
@@ -2279,18 +2467,20 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
     XrSwapchainCreateInfo standard_swapchain_create_info{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     standard_swapchain_create_info.arraySize = 1;
-    standard_swapchain_create_info.format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    standard_swapchain_create_info.format = guarded_color_format;
     standard_swapchain_create_info.width = vr->get_hmd_width() * double_wide_multiple;
     standard_swapchain_create_info.height = vr->get_hmd_height();
     standard_swapchain_create_info.mipCount = 1;
     standard_swapchain_create_info.faceCount = 1;
-    standard_swapchain_create_info.sampleCount = backbuffer_desc.SampleDesc.Count;
+    standard_swapchain_create_info.sampleCount = guarded_sample_count;
     standard_swapchain_create_info.usageFlags = XR_SWAPCHAIN_USAGE_SAMPLED_BIT | XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
 
     auto hmd_desc = backbuffer_desc;
     hmd_desc.Width = vr->get_hmd_width() * double_wide_multiple;
     hmd_desc.Height = vr->get_hmd_height();
-    hmd_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    hmd_desc.Format = guarded_color_format;
+    hmd_desc.SampleDesc.Count = guarded_sample_count;
+    hmd_desc.SampleDesc.Quality = 0;
 
     hmd_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     hmd_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
@@ -2323,7 +2513,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     auto virtual_desktop_dummy_desc = backbuffer_desc;
     auto virtual_desktop_dummy_swapchain_create_info = standard_swapchain_create_info;
 
-    virtual_desktop_dummy_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    virtual_desktop_dummy_desc.Format = guarded_color_format;
     virtual_desktop_dummy_desc.Width = 4;
     virtual_desktop_dummy_desc.Height = 4;
     virtual_desktop_dummy_swapchain_create_info.width = 4;
@@ -2336,12 +2526,12 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     }
 
     auto desktop_rt_swapchain_create_info = standard_swapchain_create_info;
-    desktop_rt_swapchain_create_info.format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    desktop_rt_swapchain_create_info.format = guarded_color_format;
     desktop_rt_swapchain_create_info.width = g_framework->get_d3d12_rt_size().x;
     desktop_rt_swapchain_create_info.height = g_framework->get_d3d12_rt_size().y;
 
     auto desktop_rt_desc = backbuffer_desc;
-    desktop_rt_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    desktop_rt_desc.Format = guarded_color_format;
     desktop_rt_desc.Width = g_framework->get_d3d12_rt_size().x;
     desktop_rt_desc.Height = g_framework->get_d3d12_rt_size().y;
 
@@ -2567,6 +2757,19 @@ void D3D12Component::OpenXR::copy(
     } else {
         ctx.num_textures_acquired++;
 
+        if (texture_index >= ctx.texture_contexts.size() || texture_index >= ctx.textures.size()) {
+            spdlog::error("[VR] OpenXR acquired invalid texture index {} for swapchain {} (contexts={}, textures={})",
+                texture_index,
+                swapchain_idx,
+                ctx.texture_contexts.size(),
+                ctx.textures.size());
+
+            XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+            xrReleaseSwapchainImage(swapchain.handle, &release_info);
+            ctx.num_textures_acquired--;
+            return;
+        }
+
         XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         //wait_info.timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)).count();
         wait_info.timeout = XR_INFINITE_DURATION;
@@ -2575,38 +2778,144 @@ void D3D12Component::OpenXR::copy(
         if (result != XR_SUCCESS) {
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
         } else {
-            auto& texture_ctx = ctx.texture_contexts[texture_index];
-            texture_ctx->commands.wait(INFINITE);
+            size_t command_context_index = texture_index;
+
+            if (tq2_guard || ue57_guard) {
+                // UE5.7/TQ2 has shown intermittent per-context command-list close failures on specific
+                // OpenXR images. Route through the healthiest command context while still copying to
+                // the currently acquired destination image.
+                uint64_t lowest_failure_count = std::numeric_limits<uint64_t>::max();
+
+                for (size_t idx = 0; idx < ctx.texture_contexts.size(); ++idx) {
+                    auto* candidate = ctx.texture_contexts[idx].get();
+                    if (candidate == nullptr || !candidate->commands.ready()) {
+                        continue;
+                    }
+
+                    if (candidate->commands.close_failure_count < lowest_failure_count) {
+                        lowest_failure_count = candidate->commands.close_failure_count;
+                        command_context_index = idx;
+                    }
+                }
+
+                if (command_context_index != texture_index) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] OpenXR guarded context reroute: swapchain {} image {} -> command context {}",
+                        swapchain_idx,
+                        texture_index,
+                        command_context_index);
+                }
+            }
+
+            auto& command_ctx = ctx.texture_contexts[command_context_index]->commands;
+            command_ctx.wait(INFINITE);
 
             if (pre_commands) {
-                (*pre_commands)(texture_ctx->commands, ctx.textures[texture_index].texture);
+                (*pre_commands)(command_ctx, ctx.textures[texture_index].texture);
             }
 
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
                 constexpr auto openxr_swapchain_dst_state = D3D12_RESOURCE_STATE_COMMON;
+                auto* const dst_resource = ctx.textures[texture_index].texture;
 
-                if (src_box == nullptr) {
-                    texture_ctx->commands.copy(
-                        resource, 
-                        ctx.textures[texture_index].texture, 
-                        src_state, 
-                        openxr_swapchain_dst_state);
+                if (resource == dst_resource) {
+                    SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] OpenXR copy skipped: source and destination are identical (swapchain {} image {})", swapchain_idx, texture_index);
                 } else {
-                    texture_ctx->commands.copy_region(
-                        resource, 
-                        ctx.textures[texture_index].texture, src_box,
-                        src_state, 
-                        openxr_swapchain_dst_state);
+                    D3D12_RESOURCE_DESC src_desc{};
+                    D3D12_RESOURCE_DESC dst_desc{};
+                    const bool has_src_desc = try_get_resource_desc_nothrow(resource, src_desc);
+                    const bool has_dst_desc = try_get_resource_desc_nothrow(dst_resource, dst_desc);
+
+                    auto do_copy_region = [&](D3D12_BOX box) {
+                        if (box.right <= box.left || box.bottom <= box.top || box.back <= box.front) {
+                            SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] OpenXR copy skipped: invalid copy box (swapchain {} image {})", swapchain_idx, texture_index);
+                            return;
+                        }
+
+                        command_ctx.copy_region(
+                            resource,
+                            dst_resource,
+                            &box,
+                            src_state,
+                            openxr_swapchain_dst_state);
+                    };
+
+                    if (src_box == nullptr) {
+                        const bool desc_match =
+                            has_src_desc &&
+                            has_dst_desc &&
+                            src_desc.Dimension == dst_desc.Dimension &&
+                            src_desc.Width == dst_desc.Width &&
+                            src_desc.Height == dst_desc.Height &&
+                            src_desc.DepthOrArraySize == dst_desc.DepthOrArraySize &&
+                            src_desc.MipLevels == dst_desc.MipLevels &&
+                            src_desc.Format == dst_desc.Format &&
+                            src_desc.SampleDesc.Count == dst_desc.SampleDesc.Count;
+
+                        if (desc_match) {
+                            command_ctx.copy(
+                                resource,
+                                dst_resource,
+                                src_state,
+                                openxr_swapchain_dst_state);
+                        } else if (has_src_desc && has_dst_desc) {
+                            D3D12_BOX safe_box{};
+                            safe_box.left = 0;
+                            safe_box.top = 0;
+                            safe_box.front = 0;
+                            safe_box.right = (UINT)std::min<uint64_t>(src_desc.Width, dst_desc.Width);
+                            safe_box.bottom = std::min<uint32_t>((uint32_t)src_desc.Height, (uint32_t)dst_desc.Height);
+                            safe_box.back = 1;
+
+                            SPDLOG_INFO_EVERY_N_SEC(1,
+                                "[VR] OpenXR copy using region fallback due desc mismatch (swapchain {} image {}): src {}x{} fmt {} -> dst {}x{} fmt {}",
+                                swapchain_idx,
+                                texture_index,
+                                src_desc.Width,
+                                src_desc.Height,
+                                (uint32_t)src_desc.Format,
+                                dst_desc.Width,
+                                dst_desc.Height,
+                                (uint32_t)dst_desc.Format);
+
+                            do_copy_region(safe_box);
+                        } else {
+                            SPDLOG_WARNING_EVERY_N_SEC(1,
+                                "[VR] OpenXR copy skipped: unable to read resource descriptors (swapchain {} image {})",
+                                swapchain_idx,
+                                texture_index);
+                        }
+                    } else if (has_src_desc && has_dst_desc) {
+                        D3D12_BOX safe_box = *src_box;
+                        safe_box.left = std::min<UINT>(safe_box.left, (UINT)src_desc.Width);
+                        safe_box.top = std::min<UINT>(safe_box.top, (UINT)src_desc.Height);
+                        safe_box.front = 0;
+                        safe_box.right = std::min<UINT>(safe_box.right, (UINT)src_desc.Width);
+                        safe_box.bottom = std::min<UINT>(safe_box.bottom, (UINT)src_desc.Height);
+                        safe_box.back = 1;
+
+                        const auto src_width = safe_box.right > safe_box.left ? (safe_box.right - safe_box.left) : 0u;
+                        const auto src_height = safe_box.bottom > safe_box.top ? (safe_box.bottom - safe_box.top) : 0u;
+                        safe_box.right = safe_box.left + std::min<UINT>(src_width, (UINT)dst_desc.Width);
+                        safe_box.bottom = safe_box.top + std::min<UINT>(src_height, (UINT)dst_desc.Height);
+
+                        do_copy_region(safe_box);
+                    } else {
+                        SPDLOG_WARNING_EVERY_N_SEC(1,
+                            "[VR] OpenXR copy skipped: src_box provided but descriptors unavailable (swapchain {} image {})",
+                            swapchain_idx,
+                            texture_index);
+                    }
                 }
             }
 
             if (additional_commands) {
-                (*additional_commands)(texture_ctx->commands);
+                (*additional_commands)(command_ctx);
             }
 
-            texture_ctx->commands.execute();
+            command_ctx.execute();
 
             XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             auto result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
