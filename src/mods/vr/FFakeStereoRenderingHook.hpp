@@ -84,7 +84,16 @@ public:
     FRHITexture2D* get_render_target_relaxed() const { return render_target.texture; }
 
     FRHITexture2D* get_scene_capture_render_target();
-    void set_render_target(FRHITexture2D* rt) { render_target = rt; }
+    void set_render_target(FRHITexture2D* rt) {
+        render_target = rt;
+
+        if (rt == nullptr) {
+            render_target_ref = nullptr;
+        }
+    }
+
+    FRHITexture2D** get_render_target_ref() const { return render_target_ref; }
+    void set_render_target_ref(FRHITexture2D** ref) { render_target_ref = ref; }
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
 
@@ -154,6 +163,7 @@ protected:
 
     VerifiedFTexture2D ui_target{};
     VerifiedFTexture2D render_target{};
+    FRHITexture2D** render_target_ref{nullptr};
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 

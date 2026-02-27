@@ -192,6 +192,15 @@ bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_doubl
     return source_width + tolerance >= expected_double_width && source_width >= min_width;
 }
 
+void* try_read_vtable_nothrow(void* object) noexcept {
+    uintptr_t vtable_ptr{};
+    if (!try_read_ptr_nothrow((uintptr_t)object, vtable_ptr)) {
+        return nullptr;
+    }
+
+    return (void*)vtable_ptr;
+}
+
 std::pair<uint32_t, uint32_t> get_expected_stereo_extent(
     VR* vr,
     uint32_t fallback_double_width,
@@ -425,12 +434,21 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     }
 
     const bool guarded_scene_source = (tq2_guard || ue57_guard) && source == "scene render target";
+    bool guarded_invalid_texture = false;
 
     if (guarded_scene_source && !is_likely_valid_texture_object(texture)) {
-        SPDLOG_INFO_EVERY_N_SEC(1,
-            "[VR] {} pointer failed validation in guarded UE5.7 mode; skipping blob unwrap/probe",
-            source);
-        return nullptr;
+        auto* unwrapped = resolve_texture_object_from_blob(texture, source);
+        if (unwrapped != nullptr && is_likely_valid_texture_object(unwrapped)) {
+            texture = unwrapped;
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} pointer failed initial validation in guarded UE5.7 mode; recovered via blob unwrap",
+                source);
+        } else {
+            guarded_invalid_texture = true;
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} pointer failed validation in guarded UE5.7 mode; attempting native-resource blob scan only",
+                source);
+        }
     }
 
     if (!guarded_scene_source) {
@@ -481,9 +499,22 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         return nullptr;
     }
 
+    const bool vtable_matches_known = known_vtable != nullptr && candidate_vtable == known_vtable;
+    const bool guarded_mismatched_vtable = guarded_scene_source && known_vtable != nullptr && candidate_vtable != known_vtable;
+
+    if (guarded_mismatched_vtable) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} guarded path: skipping direct get_native_resource call for mismatched vtable (candidate {:x}, known {:x}); using blob probe only",
+            source,
+            (uintptr_t)candidate_vtable,
+            (uintptr_t)known_vtable);
+    }
+
     ID3D12Resource* native_resource{};
     const bool can_attempt_native_resource_call =
-        candidate_vtable_looks_valid || (known_vtable != nullptr && candidate_vtable == known_vtable);
+        !guarded_invalid_texture &&
+        !guarded_mismatched_vtable &&
+        vtable_matches_known;
 
     if (can_attempt_native_resource_call) {
         __try {
@@ -515,7 +546,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     }
 
     const bool allow_blob_probe =
-        !guarded_scene_source && (candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard);
+        candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard || guarded_invalid_texture;
 
     if (native_resource == nullptr && allow_blob_probe) {
         native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
@@ -587,10 +618,105 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
         return nullptr;
     }
 
+    const auto try_resolve_from_viewport_slots = [&]() -> FRHITexture2D* {
+        auto* viewport = rtm->get_viewport();
+        if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+            return nullptr;
+        }
+
+        static constexpr std::array<uintptr_t, 2> kViewportTextureRefOffsets{
+            0x2E0, // preferred scene texture ref path on UE5.7 SceneViewport
+            0x8    // fallback texture ref path used by the same accessor
+        };
+
+        for (const auto offset : kViewportTextureRefOffsets) {
+            const auto ref_addr = (uintptr_t)viewport + offset;
+            uintptr_t raw_candidate{};
+
+            if (!try_read_ptr_nothrow(ref_addr, raw_candidate) || raw_candidate < 0x10000) {
+                continue;
+            }
+
+            auto* candidate = (FRHITexture2D*)raw_candidate;
+            auto* resolved = candidate;
+
+            if (!is_likely_valid_texture_object(resolved)) {
+                resolved = resolve_texture_object_from_blob(resolved, "scene render target viewport slot");
+            }
+
+            if (resolved != nullptr && is_likely_valid_texture_object(resolved)) {
+                rtm->set_render_target_ref((FRHITexture2D**)ref_addr);
+                rtm->set_render_target(resolved);
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Resolved scene render target from viewport slot +0x{:x}: viewport {:x} -> {:x}",
+                    offset,
+                    (uintptr_t)viewport,
+                    (uintptr_t)resolved);
+                return resolved;
+            }
+        }
+
+        return nullptr;
+    };
+
+    if (tq2_guard || ue57_guard) {
+        auto* texture_ref = rtm->get_render_target_ref();
+        if (texture_ref != nullptr && !IsBadReadPtr(texture_ref, sizeof(void*))) {
+            uintptr_t from_ref_raw{};
+            if (try_read_ptr_nothrow((uintptr_t)texture_ref, from_ref_raw) && from_ref_raw >= 0x10000) {
+                auto* from_ref = (FRHITexture2D*)from_ref_raw;
+                auto* resolved_from_ref = from_ref;
+
+                if (!is_likely_valid_texture_object(resolved_from_ref)) {
+                    resolved_from_ref = resolve_texture_object_from_blob(resolved_from_ref, "scene render target ref");
+                }
+
+                if (resolved_from_ref != nullptr && is_likely_valid_texture_object(resolved_from_ref)) {
+                    rtm->set_render_target(resolved_from_ref);
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Resolved scene render target from viewport texture-ref: ref {:x} -> {:x}",
+                        (uintptr_t)texture_ref,
+                        (uintptr_t)resolved_from_ref);
+                    return resolved_from_ref;
+                }
+
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Scene texture-ref present but unresolved this frame: ref {:x} value {:x}",
+                    (uintptr_t)texture_ref,
+                    from_ref_raw);
+            }
+        }
+
+        if (auto* from_viewport_slots = try_resolve_from_viewport_slots(); from_viewport_slots != nullptr) {
+            return from_viewport_slots;
+        }
+    }
+
     if ((tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr) {
         auto* cached_texture = g_last_good_scene_texture;
         if (!is_likely_valid_texture_object(cached_texture)) {
             cached_texture = resolve_texture_object_from_blob(cached_texture, "cached scene render target");
+        }
+
+        if (cached_texture != nullptr && is_likely_valid_texture_object(cached_texture)) {
+            const auto known_vtable = FRHITexture2D::get_vtable();
+            if (known_vtable != nullptr) {
+                void* cached_vtable{};
+                __try {
+                    cached_vtable = *(void**)cached_texture;
+                } __except (EXCEPTION_EXECUTE_HANDLER) {
+                    cached_vtable = nullptr;
+                }
+
+                if (cached_vtable != known_vtable) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Discarding cached scene texture due vtable mismatch (cached {:x}, known {:x})",
+                        (uintptr_t)cached_vtable,
+                        (uintptr_t)known_vtable);
+                    g_last_good_scene_texture = nullptr;
+                    cached_texture = nullptr;
+                }
+            }
         }
 
         if (cached_texture != nullptr && is_likely_valid_texture_object(cached_texture)) {
@@ -604,11 +730,11 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
     auto* texture = rtm->get_render_target();
 
-    if (texture == nullptr) {
-        auto* relaxed_texture = rtm->get_render_target_relaxed();
-        if (relaxed_texture != nullptr) {
-            if (tq2_guard || ue57_guard) {
-                // In guarded mode, still allow relaxed pointers when they can be
+        if (texture == nullptr) {
+            auto* relaxed_texture = rtm->get_render_target_relaxed();
+            if (relaxed_texture != nullptr) {
+                if (tq2_guard || ue57_guard) {
+                    // In guarded mode, still allow relaxed pointers when they can be
                 // validated structurally (or after one-level blob unwrap).
                 auto* candidate = relaxed_texture;
                 if (!is_likely_valid_texture_object(candidate)) {
@@ -619,8 +745,9 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
                     texture = candidate;
                     SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using validated relaxed scene render target pointer in guarded UE5.7 mode");
                 } else {
+                    texture = relaxed_texture;
                     SPDLOG_INFO_EVERY_N_SEC(1,
-                        "[VR] Ignoring relaxed scene render target pointer in guarded UE5.7 mode (failed validation)");
+                        "[VR] Using unvalidated relaxed scene render target pointer in guarded UE5.7 mode (blob resolution path)");
                 }
             } else {
                 texture = relaxed_texture;
@@ -771,7 +898,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (!using_real_backbuffer_source && (tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
-        g_last_good_scene_texture = ue4_texture;
+        bool cache_candidate = true;
+        const auto known_vtable = FRHITexture2D::get_vtable();
+        if (known_vtable != nullptr) {
+            const auto tex_vtable = try_read_vtable_nothrow(ue4_texture);
+
+            if (tex_vtable != known_vtable) {
+                cache_candidate = false;
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Not caching scene texture with mismatched vtable (candidate {:x}, known {:x})",
+                    (uintptr_t)tex_vtable,
+                    (uintptr_t)known_vtable);
+            }
+        }
+
+        if (cache_candidate) {
+            g_last_good_scene_texture = ue4_texture;
+        }
     }
 
     m_last_frame_used_real_backbuffer_source = using_real_backbuffer_source;
@@ -905,14 +1048,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     } else if (backbuffer.Get() != real_backbuffer.Get() && m_game_tex.texture.Get() != backbuffer.Get()) {
         if (tq2_guard || ue57_guard) {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: skipping game texture retarget to scene resource");
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: retargeting game texture to resolved scene resource");
         } else {
             spdlog::info("[VR] Setting up game texture as reference to original");
+        }
 
-            if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
-                spdlog::error("[VR] Failed to fully setup game texture.");
-                m_game_tex.reset();
-            }
+        if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+            spdlog::error("[VR] Failed to fully setup game texture.");
+            m_game_tex.reset();
         }
     }
 

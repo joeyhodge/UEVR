@@ -96,6 +96,30 @@ static bool should_probe_tq2_slate_viewport_candidates() {
     return enabled;
 }
 
+static bool should_enable_tq2_auto_candidate_probe() {
+    static const bool enabled = []() {
+        char buffer[8]{};
+        const auto len = GetEnvironmentVariableA("UEVR_TQ2_AUTO_SLATE_VIEWPORT_PROBE", buffer, (DWORD)std::size(buffer));
+        if (len == 0) {
+            return true;
+        }
+
+        return buffer[0] != '0';
+    }();
+
+    return enabled;
+}
+
+static bool should_enable_tq2_heuristic_provider_probe() {
+    static const bool enabled = []() {
+        char buffer[8]{};
+        const auto len = GetEnvironmentVariableA("UEVR_TQ2_HEURISTIC_PROVIDER_PROBE", buffer, (DWORD)std::size(buffer));
+        return len > 0 && buffer[0] != '0';
+    }();
+
+    return enabled;
+}
+
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
 bool is_using_double_precision(uintptr_t addr) {
@@ -172,6 +196,32 @@ static bool has_plausible_rhi_texture_header(uintptr_t ptr) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+static bool is_probably_safe_virtual_call_target(uintptr_t fn) {
+    if (!is_probably_valid_function_ptr(fn)) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within((void*)fn);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path || module_path->empty()) {
+        return false;
+    }
+
+    auto lower_path = *module_path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+        return (char)std::tolower(c);
+    });
+
+    // Wrong-object virtual dispatch can hit CRT purecall stubs; avoid calling through those targets.
+    return lower_path.find("vcruntime") == std::string::npos &&
+           lower_path.find("ucrtbase") == std::string::npos &&
+           lower_path.find("msvcp") == std::string::npos;
 }
 
 enum class SlateViewportVtableClass : uint8_t {
@@ -424,6 +474,22 @@ static SlateViewportVtableClass classify_slate_viewport_vtable(uintptr_t vtable_
 }
 
 static bool try_get_viewport_render_target_texture_nothrow(sdk::IViewportRenderTargetProvider* provider, sdk::FSlateResource*& out) noexcept {
+    out = nullptr;
+
+    if (provider == nullptr || !is_probably_valid_object_pointer((uintptr_t)provider)) {
+        return false;
+    }
+
+    uintptr_t vtable_raw{};
+    if (!try_read_pointer_nothrow((uintptr_t)provider, vtable_raw) || vtable_raw == 0) {
+        return false;
+    }
+
+    uintptr_t fn_raw{};
+    if (!try_read_pointer_nothrow(vtable_raw, fn_raw) || !is_probably_safe_virtual_call_target(fn_raw)) {
+        return false;
+    }
+
     __try {
         out = provider->get_viewport_render_target_texture();
         return true;
@@ -434,8 +500,24 @@ static bool try_get_viewport_render_target_texture_nothrow(sdk::IViewportRenderT
 }
 
 static bool try_get_slate_viewport_render_target_texture_nothrow(sdk::ISlateViewport* viewport, sdk::FSlateResource*& out) noexcept {
+    out = nullptr;
+
+    if (viewport == nullptr || !is_probably_valid_object_pointer((uintptr_t)viewport)) {
+        return false;
+    }
+
+    uintptr_t vtable_raw{};
+    if (!try_read_pointer_nothrow((uintptr_t)viewport, vtable_raw) || vtable_raw == 0) {
+        return false;
+    }
+
+    uintptr_t fn_raw{};
+    if (!try_read_pointer_nothrow(vtable_raw + (3 * sizeof(void*)), fn_raw) || !is_probably_safe_virtual_call_target(fn_raw)) {
+        return false;
+    }
+
     __try {
-        out = viewport != nullptr ? viewport->GetViewportRenderTargetTexture() : nullptr;
+        out = viewport->GetViewportRenderTargetTexture();
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         out = nullptr;
@@ -537,6 +619,16 @@ static bool try_find_viewport_rt_provider_heuristic_nothrow(sdk::FViewportInfo* 
     }
 }
 
+static bool try_get_viewport_rt_provider_nothrow(sdk::FViewportInfo* viewport_info, FRHITexture2D* known_tex, sdk::IViewportRenderTargetProvider*& out) noexcept {
+    __try {
+        out = viewport_info != nullptr ? viewport_info->get_rt_provider(known_tex) : nullptr;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+        return false;
+    }
+}
+
 static bool is_probably_valid_function_ptr(uintptr_t fn) {
     if (fn == 0 || IsBadReadPtr((void*)fn, sizeof(void*))) {
         return false;
@@ -616,6 +708,35 @@ static ViewportHookResolution resolve_viewport_get_render_target_texture_hook_in
     auto vtable = *(void***)viewport;
     if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
         return {};
+    }
+
+    if (is_ue_57() || is_tq2_shipping_executable()) {
+        const auto vtable_raw = (uintptr_t)vtable;
+        const auto vt_class = classify_slate_viewport_vtable(vtable_raw);
+
+        // Hard gate for UE5.7/TQ2: once the vtable is identified as FSceneViewport,
+        // always hook slot 6 (GetRenderTargetTexture). This avoids low-confidence
+        // heuristics selecting slot 1 and hijacking unrelated virtuals.
+        if (vt_class == SlateViewportVtableClass::SceneViewport) {
+            uintptr_t slot6_fn{};
+            if (try_read_vtable_slot_nothrow(vtable_raw, 6, slot6_fn)) {
+                ViewportHookResolution forced{};
+                forced.index = 6;
+                forced.confidence = 100;
+                forced.safe = true;
+                forced.reason = "forced slot=6 from SceneViewport vtable fingerprint";
+                return forced;
+            }
+        }
+
+        if (vt_class == SlateViewportVtableClass::DebugCanvas) {
+            ViewportHookResolution blocked{};
+            blocked.index.reset();
+            blocked.confidence = 0;
+            blocked.safe = false;
+            blocked.reason = "viewport vtable classified as DebugCanvas; blocking RT hook";
+            return blocked;
+        }
     }
 
     struct Candidate {
@@ -1245,37 +1366,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     }
 
     if (!g_framework->is_game_data_intialized()) {
-        // This allocates memory on the stack.
-        static bool check_canary_once = true;
-        volatile uint64_t shadow_space[64]{};
-
-#ifdef NDEBUG
-        if (check_canary_once) {
-#endif
-            std::memset((void*)shadow_space, 0, 64 * sizeof(uint64_t));
-#ifdef NDEBUG
-        }
-#endif
-        // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
-        void* result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
-
-        // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
-        // But only do it once in release builds.
-#ifdef NDEBUG
-        if (check_canary_once) {
-#endif
-            for (size_t i = 0; i < 64; ++i) {
-                if (shadow_space[i] != 0) {
-                    SPDLOG_ERROR("[UGameEngine::Tick] Shadow space was overwritten! {:x} @ {}", shadow_space[i], i);
-                }
-            }
-
-#ifdef NDEBUG
-            check_canary_once = false;
-        }
-#endif
-
-        return result;
+        return hook->m_tick_hook.call<void*>(engine, delta, idle);
     }
 
     hook->attempt_hooking();
@@ -1304,39 +1395,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
         mod->on_pre_engine_tick(engine, delta);
     }
 
-    void* result = nullptr;
-
-    {
-        // This allocates memory on the stack.
-        static bool check_canary_once = true;
-        volatile uint64_t shadow_space[64]{};
-
-#ifdef NDEBUG
-        if (check_canary_once) {
-#endif
-            std::memset((void*)shadow_space, 0, 64 * sizeof(uint64_t));
-#ifdef NDEBUG
-        }
-#endif
-        // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
-        result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
-
-        // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
-        // But only do it once in release builds.
-#ifdef NDEBUG
-        if (check_canary_once) {
-#endif
-            for (size_t i = 0; i < 64; ++i) {
-                if (shadow_space[i] != 0) {
-                    SPDLOG_ERROR("[UGameEngine::Tick] Shadow space was overwritten! {:x} @ {}", shadow_space[i], i);
-                }
-            }
-
-#ifdef NDEBUG
-            check_canary_once = false;
-        }
-#endif
-    }
+    const auto result = hook->m_tick_hook.call<void*>(engine, delta, idle);
 
     for (auto& mod : mods) {
         mod->on_post_engine_tick(engine, delta);
@@ -2967,12 +3026,28 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             return;
         }
 
+        auto& rtm = *g_hook->get_render_target_manager();
+
+        // UE5.7 returns a reference-like pointer from this accessor on some titles.
+        // Keep the stable storage address so the D3D12 path can resolve the current
+        // texture object each frame instead of using a stale dereferenced pointer.
+        rtm.set_render_target_ref(original_result);
+
         uintptr_t candidate_raw{};
-        if (!try_read_pointer_nothrow((uintptr_t)original_result, candidate_raw) || !is_probably_valid_object_pointer(candidate_raw)) {
+        if (!try_read_pointer_nothrow((uintptr_t)original_result, candidate_raw) || candidate_raw < 0x10000) {
             return;
         }
 
         auto candidate = (FRHITexture2D*)candidate_raw;
+        if (!is_probably_valid_object_pointer((uintptr_t)candidate)) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "FViewport::GetRenderTargetTexture captured scene ref from {} but current candidate is not a valid UObject-style pointer: ref={:x} value={:x}",
+                source_label,
+                (uintptr_t)original_result,
+                (uintptr_t)candidate);
+            return;
+        }
+
         const auto known_texture_vtable = FRHITexture2D::get_vtable();
 
         if (known_texture_vtable != nullptr) {
@@ -3006,23 +3081,36 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
                 if (candidate_vtable != known_texture_vtable) {
                     SPDLOG_INFO_EVERY_N_SEC(1,
-                        "FViewport::GetRenderTargetTexture ignored non-FRHITexture candidate from {}: {:x} (vtable {:x}, expected {:x})",
+                        "FViewport::GetRenderTargetTexture kept scene ref from {} but current candidate vtable mismatched FRHITexture: {:x} (vtable {:x}, expected {:x})",
                         source_label, (uintptr_t)candidate, (uintptr_t)candidate_vtable, (uintptr_t)known_texture_vtable);
                     return;
                 }
             }
         }
 
-        auto& rtm = *g_hook->get_render_target_manager();
         auto current = rtm.get_render_target();
+        const auto ui_target = rtm.get_ui_target();
+        const bool should_store_scene =
+            current == nullptr ||
+            current == ui_target ||
+            current != candidate;
 
-        if (current == nullptr || current == rtm.get_ui_target()) {
+        if (should_store_scene) {
             rtm.set_render_target(candidate);
             SPDLOG_INFO_EVERY_N_SEC(1,
                 "FViewport::GetRenderTargetTexture captured scene render target from {}: {:x}",
                 source_label, (uintptr_t)candidate);
         }
     };
+
+    if (ue57_capture_mode) {
+        // UE5.7/TQ2: avoid UI-compat redirection in this hook path.
+        // Redirecting here is what drives duplicate UI/frozen compositor behavior on TQ2.
+        SPDLOG_INFO_ONCE("UE5.7/TQ2: forcing original FViewport::GetRenderTargetTexture path (redirection disabled)");
+        auto original_result = og(viewport);
+        capture_scene_from_original(original_result, "ue57 passthrough");
+        return original_result;
+    }
 
     if (!vr->is_ahud_compatibility_enabled() || !vr->is_hmd_active() || g_hook->m_slate_draw_window_thread_id == 0) {
         auto original_result = og(viewport);
@@ -7569,7 +7657,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         const bool tq2_safe_mode = is_tq2_shipping_executable();
-        const bool allow_candidate_probe = !tq2_safe_mode || should_probe_tq2_slate_viewport_candidates();
+        const bool allow_candidate_probe =
+            !tq2_safe_mode ||
+            should_probe_tq2_slate_viewport_candidates() ||
+            should_enable_tq2_auto_candidate_probe();
 
         if (discovered_scene == nullptr && !allow_candidate_probe) {
             for (auto candidate : ue57_viewport_candidates) {
@@ -7603,33 +7694,48 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     break;
                 }
 
-                sdk::IViewportRenderTargetProvider* provider = nullptr;
-                try_find_viewport_rt_provider_heuristic_nothrow(candidate, provider);
-
-                if (provider == nullptr) {
-                    continue;
-                }
-
                 sdk::FSlateResource* candidate_resource = nullptr;
-                if (!try_get_viewport_render_target_texture_nothrow(provider, candidate_resource)) {
-                    continue;
+                sdk::IViewportRenderTargetProvider* provider = nullptr;
+                auto known_tex = rtm.get_render_target();
+                if (known_tex == nullptr) {
+                    known_tex = rtm.get_ui_target();
                 }
 
-                if (resolve_scene_from_resource(candidate_resource, discovered_scene)) {
-                    SPDLOG_INFO_ONCE(
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate: 0x{:x}",
-                        (uintptr_t)candidate
-                    );
-                    break;
+                try_get_viewport_rt_provider_nothrow(candidate, known_tex, provider);
+
+                if (provider != nullptr && try_get_viewport_render_target_texture_nothrow(provider, candidate_resource)) {
+                    if (resolve_scene_from_resource(candidate_resource, discovered_scene)) {
+                        SPDLOG_INFO_ONCE(
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (safe path): 0x{:x}",
+                            (uintptr_t)candidate
+                        );
+                        break;
+                    }
+                }
+
+                if (should_enable_tq2_heuristic_provider_probe()) {
+                    provider = nullptr;
+                    try_find_viewport_rt_provider_heuristic_nothrow(candidate, provider);
+
+                    if (provider != nullptr &&
+                        try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
+                        resolve_scene_from_resource(candidate_resource, discovered_scene))
+                    {
+                        SPDLOG_INFO_ONCE(
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (heuristic path): 0x{:x}",
+                            (uintptr_t)candidate
+                        );
+                        break;
+                    }
                 }
             }
         }
 
         if (discovered_scene != nullptr) {
             const auto current_scene = rtm.get_render_target_relaxed();
-            const bool candidate_allowed =
-                is_probably_valid_object_pointer((uintptr_t)discovered_scene) &&
-                has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
+            const bool candidate_ptr_ok = is_probably_valid_object_pointer((uintptr_t)discovered_scene);
+            const bool candidate_header_ok = has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
+            const bool candidate_allowed = candidate_ptr_ok && (candidate_header_ok || tq2_safe_mode);
             const bool current_scene_valid =
                 current_scene != nullptr &&
                 is_probably_valid_object_pointer((uintptr_t)current_scene) &&
@@ -7638,6 +7744,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (!candidate_allowed) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "UE5.7/TQ2 safe mode: rejecting scene candidate {:x}; structural validation failed",
+                    (uintptr_t)discovered_scene);
+            } else if (!candidate_header_ok && tq2_safe_mode) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "UE5.7/TQ2 safe mode: accepting header-relaxed scene candidate {:x}",
                     (uintptr_t)discovered_scene);
             }
 
