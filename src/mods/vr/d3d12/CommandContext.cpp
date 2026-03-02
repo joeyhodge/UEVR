@@ -63,6 +63,22 @@ static std::string to_narrow_name(const std::wstring& value) {
     return utility::narrow(value);
 }
 
+static void log_device_removed_reason(const wchar_t* where_tag) {
+    if (g_framework == nullptr || g_framework->get_d3d12_hook() == nullptr) {
+        return;
+    }
+
+    auto* const device = g_framework->get_d3d12_hook()->get_device();
+    if (device == nullptr) {
+        return;
+    }
+
+    const auto reason = device->GetDeviceRemovedReason();
+    if (FAILED(reason)) {
+        spdlog::error("[VR] {} device removed reason {:#x}", utility::narrow(where_tag), (uint32_t)reason);
+    }
+}
+
 bool CommandContext::setup(const wchar_t* name) {
     std::scoped_lock _{this->mtx};
 
@@ -77,6 +93,7 @@ bool CommandContext::setup(const wchar_t* name) {
 
     if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&this->cmd_allocator)))) {
         spdlog::error("[VR] Failed to create command allocator for {}", utility::narrow(name));
+        log_device_removed_reason(L"CreateCommandAllocator");
         return false;
     }
 
@@ -85,6 +102,7 @@ bool CommandContext::setup(const wchar_t* name) {
     if (FAILED(device->CreateCommandList(
             0, D3D12_COMMAND_LIST_TYPE_DIRECT, this->cmd_allocator.Get(), nullptr, IID_PPV_ARGS(&this->cmd_list)))) {
         spdlog::error("[VR] Failed to create command list for {}", utility::narrow(name));
+        log_device_removed_reason(L"CreateCommandList");
         return false;
     }
     
@@ -92,6 +110,7 @@ bool CommandContext::setup(const wchar_t* name) {
 
     if (FAILED(device->CreateFence(this->fence_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&this->fence)))) {
         spdlog::error("[VR] Failed to create fence for {}", utility::narrow(name));
+        log_device_removed_reason(L"CreateFence");
         return false;
     }
 
@@ -478,6 +497,7 @@ void CommandContext::execute() {
         if (FAILED(close_result)) {
             ++this->close_failure_count;
             spdlog::error("[VR] Failed to close command list. ({} {:#x})", utility::narrow(this->internal_name), (uint32_t)close_result);
+            log_device_removed_reason(L"CommandContext::execute Close");
 
             // Recover this context so one failed close doesn't permanently stall all subsequent frames.
             // When Close fails, the list may still be in recording state. Release/recreate list+allocator.
@@ -527,8 +547,22 @@ void CommandContext::execute() {
         auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
         ID3D12CommandList* const cmd_lists[] = {this->cmd_list.Get()};
         command_queue->ExecuteCommandLists(1, cmd_lists);
-        command_queue->Signal(this->fence.Get(), ++this->fence_value);
-        this->fence->SetEventOnCompletion(this->fence_value, this->fence_event);
+        if (FAILED(command_queue->Signal(this->fence.Get(), ++this->fence_value))) {
+            spdlog::error("[VR] Failed to signal command queue fence for {}", utility::narrow(this->internal_name));
+            log_device_removed_reason(L"CommandContext::execute Signal");
+            this->waiting_for_fence = false;
+            this->has_commands = false;
+            return;
+        }
+
+        if (FAILED(this->fence->SetEventOnCompletion(this->fence_value, this->fence_event))) {
+            spdlog::error("[VR] Failed to set fence completion event for {}", utility::narrow(this->internal_name));
+            log_device_removed_reason(L"CommandContext::execute SetEventOnCompletion");
+            this->waiting_for_fence = false;
+            this->has_commands = false;
+            return;
+        }
+
         this->last_signaled_fence = this->fence_value;
         this->waiting_for_fence = true;
         this->has_commands = false;

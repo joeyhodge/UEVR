@@ -1,11 +1,25 @@
 #include <utility/String.hpp>
 
 #include <spdlog/spdlog.h>
+#include <exception>
 
 #include "CommandContext.hpp"
 #include "TextureContext.hpp"
 
 namespace d3d12 {
+namespace {
+void log_device_removed_reason(ID3D12Device* device, const char* tag) {
+    if (device == nullptr) {
+        return;
+    }
+
+    const auto reason = device->GetDeviceRemovedReason();
+    if (FAILED(reason)) {
+        spdlog::error("[VR] {}: device removed reason {:#x}", tag, (uint32_t)reason);
+    }
+}
+}
+
 bool TextureContext::setup(ID3D12Device* device, ID3D12Resource* rsrc, std::optional<DXGI_FORMAT> rtv_format, std::optional<DXGI_FORMAT> srv_format, const wchar_t* name) {
     spdlog::info("Setting up texture context for {}", utility::narrow(name));
     
@@ -36,12 +50,18 @@ bool TextureContext::create_rtv(ID3D12Device* device, std::optional<DXGI_FORMAT>
             D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
             D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
             1);
+    } catch(const std::exception& e) {
+        spdlog::error("Failed to create RTV descriptor heap: {}", e.what());
+        log_device_removed_reason(device, "create_rtv descriptor heap");
+        return false;
     } catch(...) {
-        spdlog::error("Failed to create RTV descriptor heap");
+        spdlog::error("Failed to create RTV descriptor heap (unknown exception)");
+        log_device_removed_reason(device, "create_rtv descriptor heap");
         return false;
     }
 
     if (rtv_heap->Heap() == nullptr) {
+        log_device_removed_reason(device, "create_rtv heap null");
         return false;
     }
 
@@ -70,12 +90,18 @@ bool TextureContext::create_srv(ID3D12Device* device, std::optional<DXGI_FORMAT>
             D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
             D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE,
             1);
+    } catch(const std::exception& e) {
+        spdlog::error("Failed to create SRV descriptor heap: {}", e.what());
+        log_device_removed_reason(device, "create_srv descriptor heap");
+        return false;
     } catch(...) {
-        spdlog::error("Failed to create SRV descriptor heap");
+        spdlog::error("Failed to create SRV descriptor heap (unknown exception)");
+        log_device_removed_reason(device, "create_srv descriptor heap");
         return false;
     }
 
     if (srv_heap->Heap() == nullptr) {
+        log_device_removed_reason(device, "create_srv heap null");
         return false;
     }
 

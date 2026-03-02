@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <limits>
 #include <string_view>
@@ -76,6 +77,32 @@ const bool ue57_guard = []() {
 }();
 
 FRHITexture2D* g_last_good_scene_texture = nullptr;
+
+bool is_tq2_diag_enabled() {
+    static const bool enabled = []() {
+        const auto env = std::getenv("UEVR_TQ2_DIAG");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+
+    return enabled;
+}
+
+void log_desc_diag_every_sec(const char* tag, ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc) {
+    if (!is_tq2_diag_enabled()) {
+        return;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        1,
+        "[VR][TQ2_DIAG] {} ptr={:x} {}x{} fmt={} samples={} flags={:#x} state_assumed=caller",
+        tag,
+        (uintptr_t)resource,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        desc.SampleDesc.Count,
+        (uint32_t)desc.Flags);
+}
 
 bool is_d3d_module_path(const std::string& lower_module_path) {
     return lower_module_path.find("d3d12core.dll") != std::string::npos ||
@@ -958,6 +985,30 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
+    if (tq2_guard || ue57_guard) {
+        // UE5.7/TQ2 scene-resource extraction is currently unstable in this title.
+        // Use the real swapchain backbuffer as the canonical source to avoid
+        // oscillating between incompatible scene candidates.
+        static uint32_t s_force_real_frames = 0;
+        constexpr uint32_t kForceRealLatchFrames = 180; // ~3s at 60fps
+
+        if (using_real_backbuffer_source) {
+            s_force_real_frames = kForceRealLatchFrames;
+        } else if (s_force_real_frames > 0) {
+            --s_force_real_frames;
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Guarded UE5.7 source latch: forcing real backbuffer for stabilization ({} frames remaining)", s_force_real_frames);
+            backbuffer = real_backbuffer;
+            backbuffer_desc = real_backbuffer_desc;
+            using_real_backbuffer_source = true;
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7: forcing real backbuffer source (scene source disabled for stability)");
+            backbuffer = real_backbuffer;
+            backbuffer_desc = real_backbuffer_desc;
+            using_real_backbuffer_source = true;
+            s_force_real_frames = kForceRealLatchFrames;
+        }
+    }
+
     if (!using_real_backbuffer_source && (tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
         bool cache_candidate = true;
         const auto known_vtable = FRHITexture2D::get_vtable();
@@ -982,6 +1033,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (m_last_frame_used_real_backbuffer_source) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Using real backbuffer source path this frame (scene RT unresolved or compatibility mode)");
     }
+
+    log_desc_diag_every_sec("real_backbuffer", real_backbuffer.Get(), real_backbuffer_desc);
+    log_desc_diag_every_sec("active_source_backbuffer", backbuffer.Get(), backbuffer_desc);
 
     if (!is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, expected_double_width_for_frame)) {
         SPDLOG_INFO_EVERY_N_SEC(1,
@@ -1322,7 +1376,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
             const auto src_state = (backbuffer.Get() == real_backbuffer.Get())
                 ? D3D12_RESOURCE_STATE_PRESENT
-                : D3D12_RESOURCE_STATE_RENDER_TARGET;
+                : ((tq2_guard || ue57_guard) ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+            if (is_tq2_diag_enabled()) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    "[VR][TQ2_DIAG] source->game copy src={:x} dst={:x} src_state={:#x} guarded={} real_src={}",
+                    (uintptr_t)backbuffer.Get(),
+                    (uintptr_t)m_backbuffer_copy.texture.Get(),
+                    (uint32_t)src_state,
+                    (tq2_guard || ue57_guard) ? 1 : 0,
+                    (backbuffer.Get() == real_backbuffer.Get()) ? 1 : 0);
+            }
             command_ctx.copy(backbuffer.Get(), m_backbuffer_copy.texture.Get(), src_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
             const auto src_desc = m_backbuffer_copy.texture->GetDesc();
@@ -1398,6 +1463,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // Recreate UI texture if needed
         if (!vr->is_extreme_compatibility_mode_enabled()) {
+            const bool skip_dynamic_recreate = (tq2_guard || ue57_guard);
             const auto native = ui_target_native;
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
@@ -1413,21 +1479,33 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         if (desc.Width != uisc.width ||
                             desc.Height != uisc.height)
                         {
-                            SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
-                            ffsr->set_should_recreate_textures(true);
+                            if (skip_dynamic_recreate) {
+                                SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR] Guarded UE5.7: UI size changed [{}x{}]->[{}x{}], deferring recreate for stability", desc.Width, desc.Height, uisc.width, uisc.height);
+                            } else {
+                                SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
+                                ffsr->set_should_recreate_textures(true);
+                            }
                         }
                     }
                 } else if (m_game_ui_tex.texture != nullptr) {
                     const auto ui_desc = m_game_ui_tex.texture->GetDesc();
 
                     if (desc.Width != ui_desc.Width || desc.Height != ui_desc.Height) {
-                        SPDLOG_INFO_EVERY_N_SEC(1, "[OpenVR] UI size changed, recreating texture [{}x{}]->[{}x{}]", desc.Width, desc.Height, ui_desc.Width, ui_desc.Height);
-                        ffsr->set_should_recreate_textures(true);
+                        if (skip_dynamic_recreate) {
+                            SPDLOG_INFO_EVERY_N_SEC(2, "[OpenVR] Guarded UE5.7: UI size changed [{}x{}]->[{}x{}], deferring recreate for stability", desc.Width, desc.Height, ui_desc.Width, ui_desc.Height);
+                        } else {
+                            SPDLOG_INFO_EVERY_N_SEC(1, "[OpenVR] UI size changed, recreating texture [{}x{}]->[{}x{}]", desc.Width, desc.Height, ui_desc.Width, ui_desc.Height);
+                            ffsr->set_should_recreate_textures(true);
+                        }
                     }
                 }
             } else if (native == nullptr) {
-                spdlog::error("[VR] Recreating UI texture because native resource is null");
-                ffsr->set_should_recreate_textures(true);
+                if (skip_dynamic_recreate) {
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7: UI native resource null; deferring recreate");
+                } else {
+                    spdlog::error("[VR] Recreating UI texture because native resource is null");
+                    ffsr->set_should_recreate_textures(true);
+                }
             }
         }
     } else {
@@ -1452,7 +1530,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
+        if (!(tq2_guard || ue57_guard)) {
+            draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
+        } else if (is_tq2_diag_enabled()) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR][TQ2_DIAG] guarded mode: skipping draw_spectator_view");
+        }
 
         if (is_2d_screen && m_game_tex.texture.Get() != nullptr && m_game_tex.srv_heap != nullptr) {
             const auto game_desc = m_game_tex.texture->GetDesc();
@@ -1601,7 +1683,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         } else if (is_2d_screen) {
             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
-        } else if (m_game_ui_tex.commands.ready()) {
+        } else if (!guarded_fallback_mode && m_game_ui_tex.commands.ready()) {
             m_game_ui_tex.commands.wait(INFINITE);
             draw_2d_view(m_game_ui_tex.commands, nullptr);
             clear_rt(m_game_ui_tex.commands);
@@ -3198,6 +3280,24 @@ void D3D12Component::OpenXR::copy(
                     };
 
                     if (src_box == nullptr) {
+                        if (is_tq2_diag_enabled() && has_src_desc && has_dst_desc) {
+                            SPDLOG_INFO_EVERY_N_SEC(
+                                1,
+                                "[VR][TQ2_DIAG] OpenXR copy swapchain={} image={} src={:x} {}x{} fmt={} -> dst={:x} {}x{} fmt={} src_state={:#x} dst_base={:#x}",
+                                swapchain_idx,
+                                texture_index,
+                                (uintptr_t)resource,
+                                src_desc.Width,
+                                src_desc.Height,
+                                (uint32_t)src_desc.Format,
+                                (uintptr_t)dst_resource,
+                                dst_desc.Width,
+                                dst_desc.Height,
+                                (uint32_t)dst_desc.Format,
+                                (uint32_t)src_state,
+                                (uint32_t)openxr_swapchain_dst_state);
+                        }
+
                         const bool desc_match =
                             has_src_desc &&
                             has_dst_desc &&
