@@ -32,9 +32,17 @@ static bool is_tq2_exe() {
 }
 
 static bool should_skip_transition_barriers(const std::wstring& ctx_name) {
-    // UE5.7/TQ2 can report E_INVALIDARG on OpenXR command list close when
-    // explicit transition barriers are emitted against runtime-owned swapchain
-    // images. Keep the copy path alive by issuing raw copy commands only.
+    // Keep this opt-in for diagnostics/recovery only.
+    // Default behavior keeps explicit transitions enabled for correctness.
+    static const bool force_skip = []() {
+        const auto env = std::getenv("UEVR_TQ2_SKIP_OXR_BARRIERS");
+        return env != nullptr && env[0] != '\0' && env[0] != '0';
+    }();
+
+    if (!force_skip) {
+        return false;
+    }
+
     if (!is_tq2_exe()) {
         return false;
     }

@@ -778,6 +778,64 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
     return texture;
 }
+
+bool is_bgra8_family(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_rgba8_family(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_r10g10b10a2_family(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_UINT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_copy_format_compatible(DXGI_FORMAT src, DXGI_FORMAT dst) noexcept {
+    if (src == dst) {
+        return true;
+    }
+
+    if (src == DXGI_FORMAT_UNKNOWN || dst == DXGI_FORMAT_UNKNOWN) {
+        return false;
+    }
+
+    // Some runtimes expose typeless OpenXR images even when a typed format was requested.
+    if (is_bgra8_family(src) && is_bgra8_family(dst)) {
+        return true;
+    }
+
+    if (is_rgba8_family(src) && is_rgba8_family(dst)) {
+        return true;
+    }
+
+    if (is_r10g10b10a2_family(src) && is_r10g10b10a2_family(dst)) {
+        return true;
+    }
+
+    return false;
+}
 }
 
 namespace vrmod {
@@ -980,8 +1038,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto frame_count = vr->m_render_frame_count;
 
-    if (m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
-        spdlog::info("[VR] Setting up game texture as copy of backbuffer");
+    const bool use_offscreen_game_copy =
+        backbuffer.Get() == real_backbuffer.Get() ||
+        ((tq2_guard || ue57_guard) && backbuffer.Get() != real_backbuffer.Get());
+
+    if (m_game_tex.texture.Get() == nullptr && use_offscreen_game_copy) {
+        if (backbuffer.Get() == real_backbuffer.Get()) {
+            spdlog::info("[VR] Setting up game texture as copy of backbuffer");
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: setting up offscreen game texture copy from resolved scene resource");
+        }
         
         ComPtr<ID3D12Resource> backbuffer_copy{};
         D3D12_HEAP_PROPERTIES heap_props{};
@@ -1047,15 +1113,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
     } else if (backbuffer.Get() != real_backbuffer.Get() && m_game_tex.texture.Get() != backbuffer.Get()) {
-        if (tq2_guard || ue57_guard) {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: retargeting game texture to resolved scene resource");
-        } else {
+        if (!(tq2_guard || ue57_guard)) {
             spdlog::info("[VR] Setting up game texture as reference to original");
-        }
 
-        if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
-            spdlog::error("[VR] Failed to fully setup game texture.");
-            m_game_tex.reset();
+            if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+                spdlog::error("[VR] Failed to fully setup game texture.");
+                m_game_tex.reset();
+            }
+        } else {
+            // Guarded UE5.7/TQ2: keep m_game_tex as a dedicated copy to avoid aliasing
+            // (we clear/draw into m_game_tex later for 2D-screen/UI paths).
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7 path: preserving offscreen game texture copy (no direct alias to scene resource)");
         }
     }
 
@@ -1103,6 +1171,76 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         const auto scene_is_double_wide = is_likely_double_wide_source(scene_width, expected_double_width_for_frame);
         const auto scene_eye_width = scene_is_double_wide ? scene_width / 2 : scene_width;
         const auto target_eye_width = target_width / 2;
+
+        // UE5.7/TQ2 often feeds a single-wide 3840x1080 scene source into a much taller
+        // OpenXR double-wide target (e.g. 4944x2416). CopyRegion leaves most of the
+        // target untouched (white/garbage). Use an aspect-fit blit into each eye instead.
+        if (m_scene_capture_tex.texture.Get() == nullptr && !scene_is_double_wide) {
+            auto* const dst_ctx = m_openxr.find_texture_context(render_target);
+            const bool can_aspect_fit_blit =
+                dst_ctx != nullptr &&
+                dst_ctx->rtv_heap != nullptr &&
+                m_game_batch != nullptr &&
+                m_game_tex.texture.Get() == source_texture &&
+                m_game_tex.srv_heap != nullptr;
+
+            if (can_aspect_fit_blit) {
+                auto eye_rect = make_aspect_fit_rect(scene_width, scene_height, target_eye_width, target_height);
+
+                if (eye_rect.has_value()) {
+                    RECT left_dst = *eye_rect;
+                    RECT right_dst = *eye_rect;
+                    right_dst.left += (LONG)target_eye_width;
+                    right_dst.right += (LONG)target_eye_width;
+
+                    RECT src_rect{
+                        0,
+                        0,
+                        (LONG)scene_width,
+                        (LONG)scene_height
+                    };
+
+                    const float clear_color[] = {0.0f, 0.0f, 0.0f, 0.0f};
+                    commands.clear_rtv(render_target, dst_ctx->get_rtv(), clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+                    d3d12::render_srv_to_rtv(
+                        m_game_batch.get(),
+                        commands.cmd_list.Get(),
+                        m_game_tex,
+                        *dst_ctx,
+                        src_rect,
+                        left_dst,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                    );
+
+                    d3d12::render_srv_to_rtv(
+                        m_game_batch.get(),
+                        commands.cmd_list.Get(),
+                        m_game_tex,
+                        *dst_ctx,
+                        src_rect,
+                        right_dst,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                    );
+
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[VR] UE5.7 aspect-fit single-wide source {}x{} into double-wide target {}x{} (eye {}x{})",
+                        scene_width,
+                        scene_height,
+                        target_width,
+                        target_height,
+                        target_eye_width,
+                        target_height
+                    );
+
+                    return;
+                }
+            }
+        }
+
         auto copy_width = std::min<uint32_t>(scene_eye_width, target_eye_width);
         auto copy_height = std::min<uint32_t>(scene_height, target_height);
 
@@ -1167,14 +1305,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     };
 
     // For copying the real backbuffer if we need to
-    if (m_game_tex.texture.Get() != nullptr && backbuffer == real_backbuffer) {
+    const bool should_copy_source_to_game_tex =
+        m_game_tex.texture.Get() != nullptr &&
+        m_backbuffer_copy.texture.Get() != nullptr &&
+        (backbuffer == real_backbuffer || ((tq2_guard || ue57_guard) && backbuffer.Get() != m_game_tex.texture.Get()));
+
+    if (should_copy_source_to_game_tex) {
         const auto idx = swapchain->GetCurrentBackBufferIndex() % m_game_tex_commands.size();
         auto& command_ctx = m_game_tex_commands[idx];
         if (command_ctx.cmd_list != nullptr) {
             command_ctx.wait(INFINITE);
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            command_ctx.copy(real_backbuffer.Get(), m_backbuffer_copy.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            const auto src_state = (backbuffer.Get() == real_backbuffer.Get())
+                ? D3D12_RESOURCE_STATE_PRESENT
+                : D3D12_RESOURCE_STATE_RENDER_TARGET;
+            command_ctx.copy(backbuffer.Get(), m_backbuffer_copy.texture.Get(), src_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
 
             const auto src_desc = m_backbuffer_copy.texture->GetDesc();
             const auto dst_desc = m_game_tex.texture->GetDesc();
@@ -1444,10 +1590,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             auto fw_rt = g_framework->get_rendertarget_d3d12();
 
-            if (fw_rt && g_framework->is_drawing_anything() && !guarded_fallback_mode && !tq2_scene_missing && allow_openxr_ui_prepass) {
+            if (fw_rt && g_framework->is_drawing_anything()) {
+                if (guarded_fallback_mode || tq2_scene_missing) {
+                    SPDLOG_INFO_ONCE("[VR] Guarded fallback active: still submitting OpenXR FRAMEWORK_UI layer for frontend visibility");
+                }
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, g_framework->get_rendertarget_d3d12().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-            } else if (fw_rt && g_framework->is_drawing_anything() && (guarded_fallback_mode || tq2_scene_missing)) {
-                SPDLOG_INFO_ONCE("[VR] Guarded fallback active: skipping OpenXR FRAMEWORK_UI layer to avoid duplicate menu composition");
             }
         } else if (is_2d_screen) {
             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), ui_pre_commands, ui_post_commands, ENGINE_SRC_COLOR);
@@ -2488,7 +2635,61 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     auto backbuffer_desc = backbuffer->GetDesc();
     auto& openxr = vr->m_openxr;
     const bool guarded_ue57_tq2 = (tq2_guard || ue57_guard);
-    const DXGI_FORMAT guarded_color_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    DXGI_FORMAT guarded_color_format = backbuffer_desc.Format;
+    if (guarded_color_format == DXGI_FORMAT_UNKNOWN ||
+        guarded_color_format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+        guarded_color_format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+        guarded_color_format == DXGI_FORMAT_R10G10B10A2_TYPELESS)
+    {
+        guarded_color_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
+
+    const auto pick_supported_openxr_color_format = [&](DXGI_FORMAT requested) -> DXGI_FORMAT {
+        const auto is_supported = [&](DXGI_FORMAT fmt) -> bool {
+            return fmt != DXGI_FORMAT_UNKNOWN && openxr->is_supported_swapchain_format(fmt);
+        };
+
+        if (is_supported(requested)) {
+            return requested;
+        }
+
+        const DXGI_FORMAT preferred_formats[] = {
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_R10G10B10A2_UNORM,
+        };
+
+        for (const auto fmt : preferred_formats) {
+            if (is_supported(fmt)) {
+                return fmt;
+            }
+        }
+
+        const auto supported_formats = openxr->get_supported_swapchain_formats();
+        if (!supported_formats.empty()) {
+            return supported_formats[0];
+        }
+
+        return DXGI_FORMAT_UNKNOWN;
+    };
+
+    const auto original_guarded_color_format = guarded_color_format;
+    guarded_color_format = pick_supported_openxr_color_format(guarded_color_format);
+    if (guarded_color_format == DXGI_FORMAT_UNKNOWN) {
+        spdlog::error("[VR] No compatible OpenXR color format available for D3D12 swapchain.");
+        return "No compatible OpenXR color format available.";
+    }
+
+    if (original_guarded_color_format != guarded_color_format) {
+        SPDLOG_WARN(
+            "[VR] Adjusted OpenXR color format {} -> {} to match runtime-supported formats",
+            (uint32_t)original_guarded_color_format,
+            (uint32_t)guarded_color_format);
+    }
+
     const uint32_t guarded_sample_count = guarded_ue57_tq2 ? 1u : std::max<uint32_t>(1u, backbuffer_desc.SampleDesc.Count);
 
     if (guarded_ue57_tq2) {
@@ -2570,6 +2771,25 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             spdlog::info("[VR] AFTER Swapchain texture {} {} ref count: {}", i, j, ref_count);
         }
 
+        const bool is_depth_swapchain = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
+        if (!is_depth_swapchain) {
+            for (uint32_t j = 0; j < image_count; ++j) {
+                auto& texture_ctx = ctx.texture_contexts[j];
+                if (texture_ctx == nullptr || ctx.textures[j].texture == nullptr) {
+                    continue;
+                }
+
+                texture_ctx->texture = ctx.textures[j].texture;
+
+                if (!texture_ctx->create_rtv(device, (DXGI_FORMAT)swapchain_create_info.format)) {
+                    SPDLOG_WARNING_EVERY_N_SEC(2,
+                        "[VR] Failed to create persistent RTV for OpenXR swapchain {} image {}",
+                        i,
+                        j);
+                }
+            }
+        }
+
         if (swapchain_create_info.createFlags & XR_SWAPCHAIN_CREATE_STATIC_IMAGE_BIT) {
             for (uint32_t j = 0; j < image_count; ++j) {
                 XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
@@ -2595,9 +2815,6 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                         spdlog::error("[VR] Failed to create RTV for swapchain image {}.", index);
                     }
                 }
-
-                texture_ctx->texture.Reset();
-                texture_ctx->rtv_heap.reset();
 
                 xrReleaseSwapchainImage(swapchain.handle, &release_info);
             }
@@ -2837,6 +3054,25 @@ void D3D12Component::OpenXR::destroy_swapchains() {
     vr->m_openxr->swapchains.clear();
 }
 
+d3d12::TextureContext* D3D12Component::OpenXR::find_texture_context(ID3D12Resource* resource) {
+    if (resource == nullptr) {
+        return nullptr;
+    }
+
+    std::scoped_lock _{this->mtx};
+
+    for (auto& [_, ctx] : this->contexts) {
+        const auto count = std::min(ctx.textures.size(), ctx.texture_contexts.size());
+        for (size_t i = 0; i < count; ++i) {
+            if (ctx.textures[i].texture == resource) {
+                return ctx.texture_contexts[i].get();
+            }
+        }
+    }
+
+    return nullptr;
+}
+
 void D3D12Component::OpenXR::copy(
     uint32_t swapchain_idx, 
     ID3D12Resource* resource, 
@@ -2921,36 +3157,7 @@ void D3D12Component::OpenXR::copy(
         if (result != XR_SUCCESS) {
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
         } else {
-            size_t command_context_index = texture_index;
-
-            if (tq2_guard || ue57_guard) {
-                // UE5.7/TQ2 has shown intermittent per-context command-list close failures on specific
-                // OpenXR images. Route through the healthiest command context while still copying to
-                // the currently acquired destination image.
-                uint64_t lowest_failure_count = std::numeric_limits<uint64_t>::max();
-
-                for (size_t idx = 0; idx < ctx.texture_contexts.size(); ++idx) {
-                    auto* candidate = ctx.texture_contexts[idx].get();
-                    if (candidate == nullptr || !candidate->commands.ready()) {
-                        continue;
-                    }
-
-                    if (candidate->commands.close_failure_count < lowest_failure_count) {
-                        lowest_failure_count = candidate->commands.close_failure_count;
-                        command_context_index = idx;
-                    }
-                }
-
-                if (command_context_index != texture_index) {
-                    SPDLOG_INFO_EVERY_N_SEC(1,
-                        "[VR] OpenXR guarded context reroute: swapchain {} image {} -> command context {}",
-                        swapchain_idx,
-                        texture_index,
-                        command_context_index);
-                }
-            }
-
-            auto& command_ctx = ctx.texture_contexts[command_context_index]->commands;
+            auto& command_ctx = ctx.texture_contexts[texture_index]->commands;
             command_ctx.wait(INFINITE);
 
             if (pre_commands) {
@@ -2960,7 +3167,9 @@ void D3D12Component::OpenXR::copy(
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
-                constexpr auto openxr_swapchain_dst_state = D3D12_RESOURCE_STATE_COMMON;
+                // OpenXR swapchain images are expected to be in RENDER_TARGET state
+                // after xrWaitSwapchainImage and before xrReleaseSwapchainImage.
+                constexpr auto openxr_swapchain_dst_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
                 auto* const dst_resource = ctx.textures[texture_index].texture;
 
                 if (resource == dst_resource) {
@@ -2994,7 +3203,7 @@ void D3D12Component::OpenXR::copy(
                             src_desc.Height == dst_desc.Height &&
                             src_desc.DepthOrArraySize == dst_desc.DepthOrArraySize &&
                             src_desc.MipLevels == dst_desc.MipLevels &&
-                            src_desc.Format == dst_desc.Format &&
+                            is_copy_format_compatible(src_desc.Format, dst_desc.Format) &&
                             src_desc.SampleDesc.Count == dst_desc.SampleDesc.Count;
 
                         if (desc_match) {

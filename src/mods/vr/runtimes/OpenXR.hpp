@@ -345,7 +345,7 @@ public:
     };
 
     struct ActionSet {
-        XrActionSet handle;
+        XrActionSet handle{XR_NULL_HANDLE};
         std::vector<XrAction> actions{};
         std::unordered_map<std::string, XrAction> action_map{}; // XrActions are handles so it's okay.
         std::unordered_map<XrAction, std::string> action_names{};

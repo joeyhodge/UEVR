@@ -686,13 +686,31 @@ VRRuntime::Error OpenXR::update_input() {
 }
 
 void OpenXR::destroy() {
-    if (!this->loaded) {
-        return;
-    }
-
     std::scoped_lock _{sync_mtx};
 
-    if (this->session != nullptr) {
+    for (auto& hand : this->hands) {
+        if (hand.grip_space != XR_NULL_HANDLE) {
+            xrDestroySpace(hand.grip_space);
+            hand.grip_space = XR_NULL_HANDLE;
+        }
+
+        if (hand.aim_space != XR_NULL_HANDLE) {
+            xrDestroySpace(hand.aim_space);
+            hand.aim_space = XR_NULL_HANDLE;
+        }
+    }
+
+    if (this->view_space != XR_NULL_HANDLE) {
+        xrDestroySpace(this->view_space);
+        this->view_space = XR_NULL_HANDLE;
+    }
+
+    if (this->stage_space != XR_NULL_HANDLE) {
+        xrDestroySpace(this->stage_space);
+        this->stage_space = XR_NULL_HANDLE;
+    }
+
+    if (this->session != XR_NULL_HANDLE) {
         if (this->session_ready) {
             xrEndSession(this->session);
         }
@@ -700,16 +718,29 @@ void OpenXR::destroy() {
         xrDestroySession(this->session);
     }
 
-    if (this->instance != nullptr && this->ever_submitted) {
+    if (this->instance != XR_NULL_HANDLE) {
         xrDestroyInstance(this->instance);
         this->instance = nullptr;
     }
+
+    this->action_set.handle = XR_NULL_HANDLE;
+    this->action_set.actions.clear();
+    this->action_set.action_map.clear();
+    this->action_set.action_names.clear();
+    this->action_set.float_actions.clear();
+    this->action_set.vector2_actions.clear();
+    this->action_set.bool_actions.clear();
+    this->action_set.pose_actions.clear();
+    this->action_set.vibration_actions.clear();
 
     this->session = nullptr;
     this->session_ready = false;
     this->system = XR_NULL_SYSTEM_ID;
     this->frame_synced = false;
     this->frame_began = false;
+    this->loaded = false;
+    this->ever_submitted = false;
+    this->wants_reinitialize = false;
 }
 
 OpenXR::PipelineState OpenXR::get_submit_state() {

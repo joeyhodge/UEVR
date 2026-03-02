@@ -1365,40 +1365,74 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
         once = false;
     }
 
+    const auto tick_original = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>();
+
     if (!g_framework->is_game_data_intialized()) {
-        return hook->m_tick_hook.call<void*>(engine, delta, idle);
+        return tick_original(engine, delta, idle);
     }
 
     hook->attempt_hooking();
 
-    // Best place to run game thread jobs.
-    GameThreadWorker::get().execute();
+    const bool guarded_worker_mode = is_tq2_shipping_executable() || is_ue_57();
+    const bool ultra_safe_tick_mode = guarded_worker_mode;
+    static const uint64_t s_worker_guard_start_ms = GetTickCount64();
+    constexpr uint64_t kWorkerGuardDelayMs = 15000;
+
+    bool ran_worker_pre_tick = false;
+    if (!ultra_safe_tick_mode && (!guarded_worker_mode || (GetTickCount64() - s_worker_guard_start_ms) >= kWorkerGuardDelayMs)) {
+        // Best place to run game thread jobs under normal conditions.
+        GameThreadWorker::get().execute();
+        ran_worker_pre_tick = true;
+    } else if (ultra_safe_tick_mode) {
+        SPDLOG_INFO_ONCE("UE5.7/TQ2: ultra-safe engine tick mode enabled (skipping game-thread worker + mod pre/post tick callbacks)");
+    } else {
+        SPDLOG_INFO_ONCE("UE5.7/TQ2: delaying pre-tick game-thread job execution during startup stability window");
+    }
 
     if (hook->m_ignore_next_engine_tick) {
         hook->m_ignored_engine_delta = delta;
         hook->m_ignore_next_engine_tick = false;
-        return nullptr;
+        if (!(is_tq2_shipping_executable() || is_ue_57())) {
+            return nullptr;
+        }
+
+        // TQ2/UE5.7 becomes unstable when we fully skip UGameEngine::Tick.
+        // Preserve stability by running the original tick and only carrying
+        // the delta forward.
+        SPDLOG_WARN_ONCE("UE5.7/TQ2: overriding SKIP_TICK request to keep engine tick running");
     }
     
-    g_framework->enable_engine_thread();
-    g_framework->run_imgui_frame(false);
+    if (!ultra_safe_tick_mode) {
+        g_framework->enable_engine_thread();
+        g_framework->run_imgui_frame(false);
+    }
 
     delta += hook->m_ignored_engine_delta;
     hook->m_ignored_engine_delta = 0.0f;
 
-    if (hook->m_tracking_system_hook != nullptr) {
+    if (!ultra_safe_tick_mode && hook->m_tracking_system_hook != nullptr) {
         hook->m_tracking_system_hook->on_pre_engine_tick(engine, delta);
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
-    for (auto& mod : mods) {
-        mod->on_pre_engine_tick(engine, delta);
+    if (!ultra_safe_tick_mode) {
+        for (auto& mod : mods) {
+            mod->on_pre_engine_tick(engine, delta);
+        }
     }
 
-    const auto result = hook->m_tick_hook.call<void*>(engine, delta, idle);
+    const auto result = tick_original(engine, delta, idle);
 
-    for (auto& mod : mods) {
-        mod->on_post_engine_tick(engine, delta);
+    if (!ultra_safe_tick_mode && guarded_worker_mode && !ran_worker_pre_tick) {
+        // Run queued game-thread jobs after Engine::Tick during the early stability window.
+        // This avoids mutating UObject/GC-sensitive state right before tick-time GC.
+        GameThreadWorker::get().execute();
+    }
+
+    if (!ultra_safe_tick_mode) {
+        for (auto& mod : mods) {
+            mod->on_post_engine_tick(engine, delta);
+        }
     }
 
     return result;
@@ -3545,8 +3579,14 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
                 const auto method = vr->get_synced_sequential_method();
                 
                 if (method == VR::SyncedSequentialMethod::SKIP_TICK) {
-                    g_hook->m_ignore_next_engine_tick = true;
-                    //g_hook->m_ignore_next_viewport_draw = true;
+                    if (is_tq2_shipping_executable() || is_ue_57()) {
+                        // SKIP_TICK is fragile on UE5.7/TQ2 and can destabilize
+                        // GC/state transitions; degrade to SKIP_DRAW for safety.
+                        g_hook->m_ignore_next_viewport_draw = true;
+                        SPDLOG_INFO_ONCE("UE5.7/TQ2: remapping synced AFR SKIP_TICK -> SKIP_DRAW for stability");
+                    } else {
+                        g_hook->m_ignore_next_engine_tick = true;
+                    }
                 } else if (method == VR::SyncedSequentialMethod::SKIP_DRAW) {
                     g_hook->m_ignore_next_viewport_draw = true;
                 }
@@ -7657,30 +7697,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         const bool tq2_safe_mode = is_tq2_shipping_executable();
-        const bool allow_candidate_probe =
-            !tq2_safe_mode ||
-            should_probe_tq2_slate_viewport_candidates() ||
-            should_enable_tq2_auto_candidate_probe();
-
-        if (discovered_scene == nullptr && !allow_candidate_probe) {
-            for (auto candidate : ue57_viewport_candidates) {
-                FRHITexture2D* direct_viewport_scene = nullptr;
-                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
-                    discovered_scene = direct_viewport_scene;
-                    SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via cached direct viewport candidate");
-                    break;
-                }
-            }
-        }
-
-        if (discovered_scene == nullptr && !allow_candidate_probe) {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "UE5.7/TQ2 safe mode: skipping viewport-candidate probing (guarded). Set UEVR_TQ2_PROBE_SLATE_VIEWPORT_CANDIDATES=1 to override.");
-        }
-
-        if (discovered_scene == nullptr && allow_candidate_probe) {
+        // UE5.7/TQ2 must not depend on env overrides for viewport candidate probing.
+        // Always probe known candidates and use scoring/promotion rules below.
+        if (discovered_scene == nullptr) {
             for (auto candidate : ue57_viewport_candidates) {
                 if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
                     continue;
@@ -7732,6 +7751,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (discovered_scene != nullptr) {
+            static FRHITexture2D* s_pending_slate_scene_candidate = nullptr;
+            static uint32_t s_pending_slate_scene_hits = 0;
+
             const auto current_scene = rtm.get_render_target_relaxed();
             const bool candidate_ptr_ok = is_probably_valid_object_pointer((uintptr_t)discovered_scene);
             const bool candidate_header_ok = has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
@@ -7752,13 +7774,45 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             const bool should_seed_scene = (current_scene == nullptr) || !current_scene_valid;
+            bool should_promote_alternate_candidate = false;
 
-            if (candidate_allowed && should_seed_scene && current_scene != discovered_scene) {
+            if (candidate_allowed && !should_seed_scene && current_scene != discovered_scene && tq2_safe_mode) {
+                if (s_pending_slate_scene_candidate == discovered_scene) {
+                    ++s_pending_slate_scene_hits;
+                } else {
+                    s_pending_slate_scene_candidate = discovered_scene;
+                    s_pending_slate_scene_hits = 1;
+                }
+
+                // Promote a stable alternate Slate candidate after repeated sightings.
+                // This helps when the initial slot-based scene RT is a persistent debug/blank target.
+                if (s_pending_slate_scene_hits >= 8) {
+                    should_promote_alternate_candidate = true;
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "UE5.7/TQ2 safe mode observing alternate Slate scene candidate {:x} (hit {}/8, current {:x})",
+                        (uintptr_t)discovered_scene,
+                        s_pending_slate_scene_hits,
+                        (uintptr_t)current_scene);
+                }
+            } else {
+                s_pending_slate_scene_candidate = nullptr;
+                s_pending_slate_scene_hits = 0;
+            }
+
+            if (candidate_allowed && (should_seed_scene || should_promote_alternate_candidate) && current_scene != discovered_scene) {
                 rtm.set_render_target(discovered_scene);
-                SPDLOG_INFO_EVERY_N_SEC(1,
-                    "UE5.7/TQ2 safe mode updated scene render target from Slate path: {:x} -> {:x}",
-                    (uintptr_t)current_scene,
-                    (uintptr_t)discovered_scene);
+                if (should_promote_alternate_candidate) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "UE5.7/TQ2 safe mode promoted stable alternate Slate scene render target: {:x} -> {:x}",
+                        (uintptr_t)current_scene,
+                        (uintptr_t)discovered_scene);
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "UE5.7/TQ2 safe mode updated scene render target from Slate path: {:x} -> {:x}",
+                        (uintptr_t)current_scene,
+                        (uintptr_t)discovered_scene);
+                }
             } else if (candidate_allowed && !should_seed_scene && current_scene != discovered_scene) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "UE5.7/TQ2 safe mode keeping existing scene render target {:x}; ignoring Slate candidate {:x}",

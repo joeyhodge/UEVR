@@ -37,6 +37,25 @@ using namespace std::literals;
 
 std::unique_ptr<Framework> g_framework{};
 
+namespace {
+bool is_tq2_shipping_executable() {
+    static const bool value = []() {
+        const auto module_path = utility::get_module_path(utility::get_executable());
+        if (!module_path.has_value() || module_path->empty()) {
+            return false;
+        }
+
+        const auto& p = *module_path;
+        return p.find("TQ2-Win64-Shipping.exe") != std::string::npos ||
+               p.find("tq2-win64-shipping.exe") != std::string::npos ||
+               p.find("TQ2_Win64_Shipping.exe") != std::string::npos ||
+               p.find("tq2_win64_shipping.exe") != std::string::npos;
+    }();
+
+    return value;
+}
+}
+
 UEVRSharedMemory::UEVRSharedMemory() {
     spdlog::info("Shared memory constructor!");
 
@@ -107,6 +126,31 @@ void Framework::hook_monitor() {
             }
 
             if (!m_has_last_chance && now - m_last_chance_time > std::chrono::seconds(1)) {
+                static auto s_last_rehook_request = std::chrono::steady_clock::time_point{};
+                static bool s_logged_rehook_cooldown = false;
+                const auto min_rehook_interval = is_tq2_shipping_executable()
+                    ? std::chrono::seconds(60)
+                    : std::chrono::seconds(10);
+
+                if (s_last_rehook_request != std::chrono::steady_clock::time_point{} &&
+                    now - s_last_rehook_request < min_rehook_interval)
+                {
+                    if (!s_logged_rehook_cooldown) {
+                        spdlog::info(
+                            "Skipping repeated D3D rehook attempt (cooldown {}s active)",
+                            std::chrono::duration_cast<std::chrono::seconds>(min_rehook_interval).count());
+                        s_logged_rehook_cooldown = true;
+                    }
+
+                    m_last_present_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    m_last_message_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    m_last_chance_time = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    m_has_last_chance = true;
+                    return;
+                }
+
+                s_last_rehook_request = now;
+                s_logged_rehook_cooldown = false;
                 spdlog::info("Sending rehook request for D3D");
 
                 // hook_d3d12 always gets called first.
@@ -461,6 +505,7 @@ void Framework::run_imgui_frame(bool from_present) {
 // D3D11 Draw funciton
 void Framework::on_frame_d3d11() {
     std::scoped_lock _{ m_imgui_mtx };
+    m_last_present_time = std::chrono::steady_clock::now();
 
     spdlog::debug("on_frame (D3D11)");
 
@@ -560,6 +605,7 @@ void Framework::on_post_present_d3d11() {
 // D3D12 Draw funciton
 void Framework::on_frame_d3d12() {
     std::scoped_lock _{ m_imgui_mtx };
+    m_last_present_time = std::chrono::steady_clock::now();
 
     m_renderer_type = RendererType::D3D12;
 
