@@ -33,6 +33,9 @@
 
 constexpr auto ENGINE_SRC_DEPTH = D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+// OpenXR runtimes commonly hand back acquired swapchain images in COMMON.
+// Treat COMMON as the baseline to avoid relying on undefined pre-state assumptions.
+constexpr auto OPENXR_SWAPCHAIN_BASE_STATE = D3D12_RESOURCE_STATE_COMMON;
 
 namespace {
 const bool tq2_guard = []() {
@@ -1201,7 +1204,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     };
 
                     const float clear_color[] = {0.0f, 0.0f, 0.0f, 0.0f};
-                    commands.clear_rtv(render_target, dst_ctx->get_rtv(), clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    commands.clear_rtv(render_target, dst_ctx->get_rtv(), clear_color, OPENXR_SWAPCHAIN_BASE_STATE);
 
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
@@ -1211,7 +1214,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         src_rect,
                         left_dst,
                         D3D12_RESOURCE_STATE_RENDER_TARGET,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                        OPENXR_SWAPCHAIN_BASE_STATE
                     );
 
                     d3d12::render_srv_to_rtv(
@@ -1222,7 +1225,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         src_rect,
                         right_dst,
                         D3D12_RESOURCE_STATE_RENDER_TARGET,
-                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                        OPENXR_SWAPCHAIN_BASE_STATE
                     );
 
                     SPDLOG_INFO_EVERY_N_SEC(
@@ -2808,7 +2811,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                 if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0) {
                     if (ctx.texture_contexts[index]->create_rtv(device, (DXGI_FORMAT)swapchain_create_info.format)) {
                         const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-                        texture_ctx->commands.clear_rtv(ctx.textures[index].texture, texture_ctx->get_rtv(), clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                        texture_ctx->commands.clear_rtv(ctx.textures[index].texture, texture_ctx->get_rtv(), clear_color, OPENXR_SWAPCHAIN_BASE_STATE);
                         texture_ctx->commands.execute();
                         texture_ctx->commands.wait(100);
                     } else {
@@ -3167,9 +3170,9 @@ void D3D12Component::OpenXR::copy(
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
-                // OpenXR swapchain images are expected to be in RENDER_TARGET state
-                // after xrWaitSwapchainImage and before xrReleaseSwapchainImage.
-                constexpr auto openxr_swapchain_dst_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                // Treat acquired OpenXR images as COMMON by default and perform explicit
+                // transitions from that baseline for copy/clear/blit work.
+                constexpr auto openxr_swapchain_dst_state = OPENXR_SWAPCHAIN_BASE_STATE;
                 auto* const dst_resource = ctx.textures[texture_index].texture;
 
                 if (resource == dst_resource) {
