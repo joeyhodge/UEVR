@@ -669,19 +669,29 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
             auto* candidate = (FRHITexture2D*)raw_candidate;
             auto* resolved = candidate;
+            const bool direct_ref_is_texture = is_likely_valid_texture_object(candidate);
 
-            if (!is_likely_valid_texture_object(resolved)) {
+            if (!direct_ref_is_texture) {
                 resolved = resolve_texture_object_from_blob(resolved, "scene render target viewport slot");
             }
 
             if (resolved != nullptr && is_likely_valid_texture_object(resolved)) {
-                rtm->set_render_target_ref((FRHITexture2D**)ref_addr);
+                if (direct_ref_is_texture) {
+                    rtm->set_render_target_ref((FRHITexture2D**)ref_addr);
+                }
                 rtm->set_render_target(resolved);
                 SPDLOG_INFO_EVERY_N_SEC(1,
-                    "[VR] Resolved scene render target from viewport slot +0x{:x}: viewport {:x} -> {:x}",
+                    "[VR] Resolved scene render target from viewport slot +0x{:x}: viewport {:x} -> {:x} (direct_ref={})",
                     offset,
                     (uintptr_t)viewport,
-                    (uintptr_t)resolved);
+                    (uintptr_t)resolved,
+                    direct_ref_is_texture ? 1 : 0);
+
+                if (!direct_ref_is_texture) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Viewport slot +0x{:x} is wrapper-style storage; keeping render_target_ref from hook/provider path",
+                        offset);
+                }
                 return resolved;
             }
         }
@@ -842,6 +852,24 @@ bool is_r10g10b10a2_family(DXGI_FORMAT fmt) noexcept {
     }
 }
 
+DXGI_FORMAT canonical_typed_color_format(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    default:
+        return fmt;
+    }
+}
+
+DXGI_FORMAT select_unorm8_copy_format(DXGI_FORMAT source_format) noexcept {
+    const auto typed = canonical_typed_color_format(source_format);
+    return is_bgra8_family(typed) ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
 bool is_copy_format_compatible(DXGI_FORMAT src, DXGI_FORMAT dst) noexcept {
     if (src == dst) {
         return true;
@@ -986,26 +1014,35 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (tq2_guard || ue57_guard) {
-        // UE5.7/TQ2 scene-resource extraction is currently unstable in this title.
-        // Use the real swapchain backbuffer as the canonical source to avoid
-        // oscillating between incompatible scene candidates.
+        // UE5.7/TQ2 can briefly oscillate between stale/invalid scene resources during startup.
+        // Hold a short real-backbuffer latch only while the scene source is unstable, then release.
         static uint32_t s_force_real_frames = 0;
-        constexpr uint32_t kForceRealLatchFrames = 180; // ~3s at 60fps
+        static uint32_t s_stable_scene_frames = 0;
+        constexpr uint32_t kForceRealLatchFrames = 90;  // ~1.5s at 60fps
+        constexpr uint32_t kMinStableSceneFrames = 8;
 
         if (using_real_backbuffer_source) {
             s_force_real_frames = kForceRealLatchFrames;
-        } else if (s_force_real_frames > 0) {
-            --s_force_real_frames;
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Guarded UE5.7 source latch: forcing real backbuffer for stabilization ({} frames remaining)", s_force_real_frames);
-            backbuffer = real_backbuffer;
-            backbuffer_desc = real_backbuffer_desc;
-            using_real_backbuffer_source = true;
+            s_stable_scene_frames = 0;
         } else {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7: forcing real backbuffer source (scene source disabled for stability)");
-            backbuffer = real_backbuffer;
-            backbuffer_desc = real_backbuffer_desc;
-            using_real_backbuffer_source = true;
-            s_force_real_frames = kForceRealLatchFrames;
+            ++s_stable_scene_frames;
+        }
+
+        if (!using_real_backbuffer_source && s_force_real_frames > 0) {
+            if (s_stable_scene_frames >= kMinStableSceneFrames) {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7 source latch released after {} stable scene frames",
+                    s_stable_scene_frames);
+                s_force_real_frames = 0;
+            } else {
+                --s_force_real_frames;
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7 source latch: forcing real backbuffer for stabilization ({} frames remaining)",
+                    s_force_real_frames);
+                backbuffer = real_backbuffer;
+                backbuffer_desc = real_backbuffer_desc;
+                using_real_backbuffer_source = true;
+            }
         }
     }
 
@@ -1099,6 +1136,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() == real_backbuffer.Get() ||
         ((tq2_guard || ue57_guard) && backbuffer.Get() != real_backbuffer.Get());
 
+    auto source_color_format = canonical_typed_color_format(backbuffer_desc.Format);
+    if (source_color_format == DXGI_FORMAT_UNKNOWN) {
+        source_color_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    }
+    const auto copy_output_format = select_unorm8_copy_format(source_color_format);
+
     if (m_game_tex.texture.Get() == nullptr && use_offscreen_game_copy) {
         if (backbuffer.Get() == real_backbuffer.Get()) {
             spdlog::info("[VR] Setting up game texture as copy of backbuffer");
@@ -1125,12 +1168,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return vr::VRCompositorError_None;
         }
 
-        if (!m_backbuffer_copy.setup(device, backbuffer_copy2.Get(), std::nullopt, std::nullopt, L"Backbuffer Copy")) {
+        if (!m_backbuffer_copy.setup(device, backbuffer_copy2.Get(), source_color_format, source_color_format, L"Backbuffer Copy")) {
             spdlog::error("[VR] Failed to fully setup backbuffer copy.");
             m_backbuffer_copy.reset();
         }
 
-        desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM; // UE backbuffer is not VR compatible, so we need to copy it to a new texture with this one.
+        // Keep channel-family fidelity from source (RGBA/BGRA) while normalizing to UNORM8.
+        desc.Format = copy_output_format;
         desc.SampleDesc.Count = 1;
         desc.SampleDesc.Quality = 0;
 
@@ -1161,7 +1205,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return vr::VRCompositorError_None;
         }
 
-        if (!m_game_tex.setup(device, backbuffer_copy.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[VR] Guarded color path: source_fmt={} typed_source_fmt={} copy_fmt={}",
+            (uint32_t)backbuffer_desc.Format,
+            (uint32_t)source_color_format,
+            (uint32_t)copy_output_format
+        );
+
+        if (!m_game_tex.setup(device, backbuffer_copy.Get(), copy_output_format, copy_output_format, L"Game Texture")) {
             spdlog::error("[VR] Failed to fully setup game texture.");
             m_game_tex.reset();
         } else {
@@ -1173,7 +1225,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (!(tq2_guard || ue57_guard)) {
             spdlog::info("[VR] Setting up game texture as reference to original");
 
-            if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+            if (!m_game_tex.setup(device, backbuffer.Get(), copy_output_format, copy_output_format, L"Game Texture")) {
                 spdlog::error("[VR] Failed to fully setup game texture.");
                 m_game_tex.reset();
             }
@@ -2738,14 +2790,28 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             return requested;
         }
 
-        const DXGI_FORMAT preferred_formats[] = {
+        const auto requested_typed = canonical_typed_color_format(requested);
+        const bool prefer_bgra = is_bgra8_family(requested_typed);
+
+        static constexpr DXGI_FORMAT preferred_formats_bgra[] = {
             DXGI_FORMAT_B8G8R8A8_UNORM,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
             DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            DXGI_FORMAT_R8G8B8A8_UNORM,
             DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
             DXGI_FORMAT_R16G16B16A16_FLOAT,
             DXGI_FORMAT_R10G10B10A2_UNORM,
         };
+
+        static constexpr DXGI_FORMAT preferred_formats_rgba[] = {
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_R8G8B8A8_UNORM_SRGB,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM_SRGB,
+            DXGI_FORMAT_R16G16B16A16_FLOAT,
+            DXGI_FORMAT_R10G10B10A2_UNORM,
+        };
+
+        const auto& preferred_formats = prefer_bgra ? preferred_formats_bgra : preferred_formats_rgba;
 
         for (const auto fmt : preferred_formats) {
             if (is_supported(fmt)) {

@@ -487,6 +487,15 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
     auto get_mat = [&](int eye) {
         const auto& vr = VR::get();
         std::array<float, 4> tan_half_fov{};
+        auto is_valid_tan_half_fov = [](const std::array<float, 4>& t) {
+            constexpr float eps = 1e-4f;
+            return std::isfinite(t[0]) && std::isfinite(t[1]) &&
+                   std::isfinite(t[2]) && std::isfinite(t[3]) &&
+                   t[0] < -eps && t[1] > eps &&
+                   t[2] > eps && t[3] < -eps &&
+                   std::abs(t[1] - t[0]) > eps &&
+                   std::abs(t[2] - t[3]) > eps;
+        };
 
         if (vr->get_horizontal_projection_override() == VR::HORIZONTAL_PROJECTION_OVERRIDE::HORIZONTAL_SYMMETRIC) {
             tan_half_fov[0] = -std::max(std::max(-this->raw_projections[0][0], this->raw_projections[0][1]),
@@ -515,6 +524,24 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
             tan_half_fov[2] = this->raw_projections[eye][2];
             tan_half_fov[3] = this->raw_projections[eye][3];
         }
+
+        if (!is_valid_tan_half_fov(tan_half_fov)) {
+            spdlog::warn(
+                "[OpenXR] Invalid derived tan-half-fov for {} eye; using safe fallback",
+                eye == 0 ? "left" : "right");
+
+            tan_half_fov = {
+                this->raw_projections[eye][0],
+                this->raw_projections[eye][1],
+                this->raw_projections[eye][2],
+                this->raw_projections[eye][3]
+            };
+
+            if (!is_valid_tan_half_fov(tan_half_fov)) {
+                tan_half_fov = {-1.0f, 1.0f, 1.0f, -1.0f};
+            }
+        }
+
         view_bounds[eye][0] = 0.5f - 0.5f * this->raw_projections[eye][0] / tan_half_fov[0];
         view_bounds[eye][1] = 0.5f + 0.5f * this->raw_projections[eye][1] / tan_half_fov[1];
         view_bounds[eye][2] = 0.5f - 0.5f * this->raw_projections[eye][2] / tan_half_fov[2];
@@ -579,6 +606,14 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
     // if we've not yet derived an eye projection matrix, or we've changed the projection, derive it here
     // Hacky way to check for an uninitialised eye matrix - is there something better, is this necessary?
     if (this->should_recalculate_eye_projections || this->last_eye_matrix_nearz != nearz || this->projections[0][2][3] == 0) {
+        auto is_valid_raw_projection = [](const Vector4f& p) {
+            constexpr float eps = 1e-4f;
+            return std::isfinite(p[0]) && std::isfinite(p[1]) &&
+                   std::isfinite(p[2]) && std::isfinite(p[3]) &&
+                   p[0] < -eps && p[1] > eps &&
+                   p[2] > eps && p[3] < -eps;
+        };
+
         // deriving the texture bounds when modifying projections requires left and right raw projections so get them all before we start:
         std::unique_lock __{this->eyes_mtx};
         const auto& left_fov = this->views[0].fov;
@@ -591,6 +626,24 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
         this->raw_projections[1][1] = tan(right_fov.angleRight);
         this->raw_projections[1][2] = tan(right_fov.angleUp);
         this->raw_projections[1][3] = tan(right_fov.angleDown);
+
+        const bool left_valid = is_valid_raw_projection(this->raw_projections[0]);
+        const bool right_valid = is_valid_raw_projection(this->raw_projections[1]);
+
+        if (left_valid && right_valid) {
+            this->last_valid_raw_projections[0] = this->raw_projections[0];
+            this->last_valid_raw_projections[1] = this->raw_projections[1];
+            this->has_last_valid_raw_projections = true;
+        } else if (this->has_last_valid_raw_projections) {
+            spdlog::warn("[OpenXR] Invalid/zero FOV from xrLocateViews; reusing last valid projection");
+            this->raw_projections[0] = this->last_valid_raw_projections[0];
+            this->raw_projections[1] = this->last_valid_raw_projections[1];
+        } else {
+            spdlog::warn("[OpenXR] Invalid/zero FOV from xrLocateViews with no history; using default projection");
+            this->raw_projections[0] = Vector4f{-1.0f, 1.0f, 1.0f, -1.0f};
+            this->raw_projections[1] = Vector4f{-1.0f, 1.0f, 1.0f, -1.0f};
+        }
+
         this->projections[0] = get_mat(0);
         this->projections[1] = get_mat(1);
         this->should_recalculate_eye_projections = false;

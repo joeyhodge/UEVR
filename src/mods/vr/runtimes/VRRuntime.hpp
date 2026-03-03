@@ -177,6 +177,8 @@ struct VRRuntime {
     mutable std::shared_mutex pose_mtx{};
 
     Vector4f raw_projections[2]{};
+    Vector4f last_valid_raw_projections[2]{};
+    bool has_last_valid_raw_projections{false};
 
     uint32_t internal_frame_count{};
     uint32_t internal_render_frame_count{};

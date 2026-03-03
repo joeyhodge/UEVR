@@ -114,7 +114,13 @@ static bool should_enable_tq2_heuristic_provider_probe() {
     static const bool enabled = []() {
         char buffer[8]{};
         const auto len = GetEnvironmentVariableA("UEVR_TQ2_HEURISTIC_PROVIDER_PROBE", buffer, (DWORD)std::size(buffer));
-        return len > 0 && buffer[0] != '0';
+        if (len == 0) {
+            // Default ON for UE5.7/TQ2; this path is required to recover valid viewport
+            // providers when strict emulation-based discovery cannot resolve offsets.
+            return is_tq2_shipping_executable() || is_ue_57();
+        }
+
+        return buffer[0] != '0';
     }();
 
     return enabled;
@@ -3061,11 +3067,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         }
 
         auto& rtm = *g_hook->get_render_target_manager();
-
-        // UE5.7 returns a reference-like pointer from this accessor on some titles.
-        // Keep the stable storage address so the D3D12 path can resolve the current
-        // texture object each frame instead of using a stale dereferenced pointer.
-        rtm.set_render_target_ref(original_result);
+        auto* resolved_ref = original_result;
 
         uintptr_t candidate_raw{};
         if (!try_read_pointer_nothrow((uintptr_t)original_result, candidate_raw) || candidate_raw < 0x10000) {
@@ -3074,13 +3076,66 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
         auto candidate = (FRHITexture2D*)candidate_raw;
         if (!is_probably_valid_object_pointer((uintptr_t)candidate)) {
+            bool wrapper_unwrapped = false;
+
+            // UE5.7/TQ2 can return a SceneViewport/FRenderTarget-like wrapper object
+            // instead of a direct FTextureRHIRef pointer here. When that happens, call
+            // slot 5 (FRenderTarget::GetRenderTargetTexture) on the wrapper to recover
+            // the real texture-ref storage.
+            if (is_probably_valid_object_pointer((uintptr_t)original_result)) {
+                uintptr_t wrapper_vtable{};
+                if (try_read_pointer_nothrow((uintptr_t)original_result, wrapper_vtable) && wrapper_vtable != 0) {
+                    const auto vt_class = classify_slate_viewport_vtable(wrapper_vtable);
+                    if (vt_class == SlateViewportVtableClass::SceneViewport) {
+                        uintptr_t slot5_fn{};
+                        if (try_read_pointer_nothrow(wrapper_vtable + (5 * sizeof(void*)), slot5_fn) &&
+                            is_probably_safe_virtual_call_target(slot5_fn))
+                        {
+                            using GetRenderTargetTextureFn = FRHITexture2D** (__fastcall*)(const void*);
+                            FRHITexture2D** wrapper_ref{};
+
+                            __try {
+                                wrapper_ref = ((GetRenderTargetTextureFn)slot5_fn)((const void*)original_result);
+                            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                                wrapper_ref = nullptr;
+                            }
+
+                            uintptr_t wrapped_candidate_raw{};
+                            if (wrapper_ref != nullptr &&
+                                try_read_pointer_nothrow((uintptr_t)wrapper_ref, wrapped_candidate_raw) &&
+                                wrapped_candidate_raw >= 0x10000 &&
+                                is_probably_valid_object_pointer(wrapped_candidate_raw))
+                            {
+                                resolved_ref = wrapper_ref;
+                                candidate = (FRHITexture2D*)wrapped_candidate_raw;
+                                wrapper_unwrapped = true;
+                                SPDLOG_INFO_EVERY_N_SEC(
+                                    1,
+                                    "FViewport::GetRenderTargetTexture unwrapped {} wrapper return: wrapper={:x} tex_ref={:x} tex={:x}",
+                                    source_label,
+                                    (uintptr_t)original_result,
+                                    (uintptr_t)wrapper_ref,
+                                    (uintptr_t)candidate
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!wrapper_unwrapped) {
             SPDLOG_INFO_EVERY_N_SEC(1,
                 "FViewport::GetRenderTargetTexture captured scene ref from {} but current candidate is not a valid UObject-style pointer: ref={:x} value={:x}",
                 source_label,
                 (uintptr_t)original_result,
                 (uintptr_t)candidate);
             return;
+            }
         }
+
+        // Store the current reference-like location after normalization so D3D12 can
+        // read the latest texture object each frame.
+        rtm.set_render_target_ref(resolved_ref);
 
         const auto known_texture_vtable = FRHITexture2D::get_vtable();
 
@@ -3711,6 +3766,9 @@ struct SceneViewExtensionAnalyzer {
 
         if (functions.contains(N)) {
             auto& func = functions[N];
+            const bool fast_lock_mode = is_tq2_shipping_executable() || (g_hook != nullptr && g_hook->has_double_precision());
+            const uint32_t min_consistent_hits = fast_lock_mode ? 16U : 50U;
+            const int32_t max_frame_delta = fast_lock_mode ? 8 : 3;
 
             if (func.call_count++ == 0) {
                 SPDLOG_INFO("[Stage 2] SceneViewExtension Index {} called for the first time!", N);
@@ -3726,10 +3784,12 @@ struct SceneViewExtensionAnalyzer {
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
                         if (func.frame_count_a2 + 1 == b) {
-                            SPDLOG_INFO("[A2] Function index {} Found frame count offset at {:x}, ({})", N, i, b);
-
                             func.frame_count_offset_a2 = i;
                             ++func.times_frame_count_correct_a2;
+                            if (func.times_frame_count_correct_a2 == 1 || (func.times_frame_count_correct_a2 % 32) == 0) {
+                                SPDLOG_INFO("[A2] Function index {} candidate frame count offset {:x}, hits={}, latest={}",
+                                    N, i, func.times_frame_count_correct_a2, b);
+                            }
 
                             // func_next is one of the functions ahead of N and has the frame count in a3
                             AnalyzedFunction* func_next = nullptr;
@@ -3748,10 +3808,10 @@ struct SceneViewExtensionAnalyzer {
                             }
 
                             if (func_next != nullptr) {
-                                if (func.times_frame_count_correct_a2 >= 50 && 
-                                    func_next->times_frame_count_correct_a3 >= 50 && 
+                                if (func.times_frame_count_correct_a2 >= min_consistent_hits &&
+                                    func_next->times_frame_count_correct_a3 >= min_consistent_hits &&
                                     func.frame_count_offset_a2 == func_next->frame_count_offset_a3 &&
-                                    std::abs((int32_t)func.frame_count_a2 - (int32_t)func_next->frame_count_a3) <= 3) // In some games, the frame delta is really high but the same offset (so, it's wrong)
+                                    std::abs((int32_t)func.frame_count_a2 - (int32_t)func_next->frame_count_a3) <= max_frame_delta) // In some games, the frame delta is really high but the same offset (so, it's wrong)
                                 {
                                     SPDLOG_INFO("Found final frame count offset at {:x}", i);
                                     SPDLOG_INFO("Found BeginRenderViewFamily at index {}", N);
@@ -3785,8 +3845,11 @@ struct SceneViewExtensionAnalyzer {
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
                         if (func.frame_count_a3 + 1 == b) {
-                            SPDLOG_INFO("[A3] Function index {} Found frame count offset at {:x} ({})", N, i, b);
                             ++func.times_frame_count_correct_a3;
+                            if (func.times_frame_count_correct_a3 == 1 || (func.times_frame_count_correct_a3 % 32) == 0) {
+                                SPDLOG_INFO("[A3] Function index {} candidate frame count offset {:x}, hits={}, latest={}",
+                                    N, i, func.times_frame_count_correct_a3, b);
+                            }
                         }
 
                         func.frame_count_a3 = b;
@@ -7672,6 +7735,54 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         FRHITexture2D* discovered_scene = nullptr;
+        auto try_resolve_scene_from_viewport_provider = [&](sdk::FViewportInfo* candidate, const char* source_label) -> bool {
+            if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                return false;
+            }
+
+            sdk::FSlateResource* candidate_resource = nullptr;
+            sdk::IViewportRenderTargetProvider* provider = nullptr;
+            auto known_tex = rtm.get_render_target();
+            if (known_tex == nullptr) {
+                known_tex = rtm.get_ui_target();
+            }
+
+            try_get_viewport_rt_provider_nothrow(candidate, known_tex, provider);
+
+            if (provider != nullptr &&
+                try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
+                resolve_scene_from_resource(candidate_resource, discovered_scene))
+            {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (safe path, {}): 0x{:x}",
+                    source_label,
+                    (uintptr_t)candidate
+                );
+                return true;
+            }
+
+            if (should_enable_tq2_heuristic_provider_probe()) {
+                provider = nullptr;
+                candidate_resource = nullptr;
+                try_find_viewport_rt_provider_heuristic_nothrow(candidate, provider);
+
+                if (provider != nullptr &&
+                    try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
+                    resolve_scene_from_resource(candidate_resource, discovered_scene))
+                {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (heuristic path, {}): 0x{:x}",
+                        source_label,
+                        (uintptr_t)candidate
+                    );
+                    return true;
+                }
+            }
+
+            return false;
+        };
 
         if (slate_viewport != nullptr) {
             sdk::FSlateResource* direct_resource = nullptr;
@@ -7681,11 +7792,18 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (discovered_scene == nullptr && viewport_info != nullptr) {
+            if (try_resolve_scene_from_viewport_provider(viewport_info, "primary viewport_info")) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via primary viewport provider");
+            }
+        }
+
+        if (discovered_scene == nullptr && viewport_info != nullptr) {
             FRHITexture2D* direct_viewport_scene = nullptr;
             if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
                 discovered_scene = direct_viewport_scene;
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info");
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info (provider path unavailable)");
             }
         }
 
@@ -7705,47 +7823,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     continue;
                 }
 
+                if (try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
+                    break;
+                }
+
                 FRHITexture2D* direct_viewport_scene = nullptr;
                 if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
                     discovered_scene = direct_viewport_scene;
                     SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate direct path");
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate direct path (provider path unavailable)");
                     break;
-                }
-
-                sdk::FSlateResource* candidate_resource = nullptr;
-                sdk::IViewportRenderTargetProvider* provider = nullptr;
-                auto known_tex = rtm.get_render_target();
-                if (known_tex == nullptr) {
-                    known_tex = rtm.get_ui_target();
-                }
-
-                try_get_viewport_rt_provider_nothrow(candidate, known_tex, provider);
-
-                if (provider != nullptr && try_get_viewport_render_target_texture_nothrow(provider, candidate_resource)) {
-                    if (resolve_scene_from_resource(candidate_resource, discovered_scene)) {
-                        SPDLOG_INFO_ONCE(
-                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (safe path): 0x{:x}",
-                            (uintptr_t)candidate
-                        );
-                        break;
-                    }
-                }
-
-                if (should_enable_tq2_heuristic_provider_probe()) {
-                    provider = nullptr;
-                    try_find_viewport_rt_provider_heuristic_nothrow(candidate, provider);
-
-                    if (provider != nullptr &&
-                        try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
-                        resolve_scene_from_resource(candidate_resource, discovered_scene))
-                    {
-                        SPDLOG_INFO_ONCE(
-                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (heuristic path): 0x{:x}",
-                            (uintptr_t)candidate
-                        );
-                        break;
-                    }
                 }
             }
         }
