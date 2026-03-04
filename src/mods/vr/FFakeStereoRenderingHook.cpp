@@ -551,6 +551,56 @@ static bool try_get_mutable_resource_nothrow(sdk::FSlateResource* resource, FRHI
     }
 }
 
+static bool try_get_scene_texture_via_slot6_nothrow(void* viewport_like, FRHITexture2D*& out) noexcept {
+    out = nullptr;
+
+    if (viewport_like == nullptr || !is_probably_valid_object_pointer((uintptr_t)viewport_like)) {
+        return false;
+    }
+
+    uintptr_t vtable_raw{};
+    if (!try_read_pointer_nothrow((uintptr_t)viewport_like, vtable_raw) || vtable_raw == 0) {
+        return false;
+    }
+
+    // Strictly gate manual virtual dispatch on the known FSceneViewport fingerprint.
+    // Wrong-object calls can hit purecall stubs and abort the process.
+    if (classify_slate_viewport_vtable(vtable_raw) != SlateViewportVtableClass::SceneViewport) {
+        return false;
+    }
+
+    uintptr_t slot6_fn{};
+    if (!try_read_vtable_slot_nothrow(vtable_raw, 6, slot6_fn) || !is_probably_safe_virtual_call_target(slot6_fn)) {
+        return false;
+    }
+
+    using GetRenderTargetTextureSlot6Fn = FRHITexture2D** (__fastcall*)(const void*);
+    FRHITexture2D** texture_ref = nullptr;
+
+    __try {
+        texture_ref = ((GetRenderTargetTextureSlot6Fn)slot6_fn)(viewport_like);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        texture_ref = nullptr;
+    }
+
+    if (texture_ref == nullptr || IsBadReadPtr(texture_ref, sizeof(void*))) {
+        return false;
+    }
+
+    uintptr_t texture_raw{};
+    if (!try_read_pointer_nothrow((uintptr_t)texture_ref, texture_raw) || texture_raw == 0) {
+        return false;
+    }
+
+    auto* texture = (FRHITexture2D*)texture_raw;
+    if (!is_probably_valid_object_pointer((uintptr_t)texture)) {
+        return false;
+    }
+
+    out = texture;
+    return true;
+}
+
 static sdk::IViewportRenderTargetProvider* find_viewport_rt_provider_heuristic(sdk::FViewportInfo* viewport_info) {
     if (viewport_info == nullptr || IsBadReadPtr(viewport_info, sizeof(void*))) {
         return nullptr;
@@ -3068,6 +3118,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
         auto& rtm = *g_hook->get_render_target_manager();
         auto* resolved_ref = original_result;
+        const bool ue57_like = is_ue_57() || is_tq2_shipping_executable();
 
         uintptr_t candidate_raw{};
         if (!try_read_pointer_nothrow((uintptr_t)original_result, candidate_raw) || candidate_raw < 0x10000) {
@@ -3075,14 +3126,109 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         }
 
         auto candidate = (FRHITexture2D*)candidate_raw;
+
+        const auto try_resolve_candidate_from_ref = [&](FRHITexture2D** ref, FRHITexture2D*& out_candidate, uintptr_t& out_raw) -> bool {
+            out_candidate = nullptr;
+            out_raw = 0;
+
+            if (ref == nullptr) {
+                return false;
+            }
+
+            if (!try_read_pointer_nothrow((uintptr_t)ref, out_raw) || out_raw < 0x10000) {
+                return false;
+            }
+
+            auto* direct = (FRHITexture2D*)out_raw;
+            if (is_probably_valid_object_pointer((uintptr_t)direct)) {
+                out_candidate = direct;
+                return true;
+            }
+
+            // Module-local addresses here are typically vtables/subobjects, not live FRHI textures.
+            if (utility::get_module_within((void*)out_raw).has_value()) {
+                return false;
+            }
+
+            static constexpr std::array<size_t, 14> kUnwrapOffsets{
+                0x0, 0x8, 0x10, 0x18, 0x20, 0x28, 0x30,
+                0x38, 0x40, 0x48, 0x50, 0x58, 0x60, 0x68
+            };
+
+            for (const auto offset : kUnwrapOffsets) {
+                uintptr_t wrapped_raw{};
+                if (!try_read_pointer_nothrow(out_raw + offset, wrapped_raw) || wrapped_raw < 0x10000) {
+                    continue;
+                }
+
+                if (!is_probably_valid_object_pointer(wrapped_raw)) {
+                    continue;
+                }
+
+                out_candidate = (FRHITexture2D*)wrapped_raw;
+                return true;
+            }
+
+            return false;
+        };
+
+        if (ue57_like && viewport != nullptr) {
+            auto* const viewport_ref_2e0 = (FRHITexture2D**)((uintptr_t)viewport + 0x2E0);
+            auto* const viewport_ref_8 = (FRHITexture2D**)((uintptr_t)viewport + 0x8);
+            const std::array<FRHITexture2D**, 3> preferred_refs{
+                viewport_ref_2e0,
+                original_result,
+                viewport_ref_8
+            };
+
+            for (size_t i = 0; i < preferred_refs.size(); ++i) {
+                auto* ref_candidate = preferred_refs[i];
+                if (ref_candidate == nullptr) {
+                    continue;
+                }
+
+                bool duplicate_ref = false;
+                for (size_t j = 0; j < i; ++j) {
+                    if (preferred_refs[j] == ref_candidate) {
+                        duplicate_ref = true;
+                        break;
+                    }
+                }
+
+                if (duplicate_ref) {
+                    continue;
+                }
+
+                FRHITexture2D* resolved_candidate{};
+                uintptr_t resolved_raw{};
+                if (!try_resolve_candidate_from_ref(ref_candidate, resolved_candidate, resolved_raw)) {
+                    continue;
+                }
+
+                resolved_ref = ref_candidate;
+                candidate = resolved_candidate;
+                candidate_raw = resolved_raw;
+
+                if (resolved_ref != original_result) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "FViewport::GetRenderTargetTexture normalized {} ref {:x} -> {:x} (tex={:x})",
+                        source_label,
+                        (uintptr_t)original_result,
+                        (uintptr_t)resolved_ref,
+                        (uintptr_t)candidate
+                    );
+                }
+                break;
+            }
+        }
+
         if (!is_probably_valid_object_pointer((uintptr_t)candidate)) {
             bool wrapper_unwrapped = false;
 
-            // UE5.7/TQ2 can return a SceneViewport/FRenderTarget-like wrapper object
-            // instead of a direct FTextureRHIRef pointer here. When that happens, call
-            // slot 5 (FRenderTarget::GetRenderTargetTexture) on the wrapper to recover
-            // the real texture-ref storage.
-            if (is_probably_valid_object_pointer((uintptr_t)original_result)) {
+            // Legacy fallback for non-UE5.7 paths where the return can be a wrapper object
+            // and slot 5 maps to a compatible texture accessor.
+            if (!ue57_like && is_probably_valid_object_pointer((uintptr_t)original_result)) {
                 uintptr_t wrapper_vtable{};
                 if (try_read_pointer_nothrow((uintptr_t)original_result, wrapper_vtable) && wrapper_vtable != 0) {
                     const auto vt_class = classify_slate_viewport_vtable(wrapper_vtable);
@@ -3124,12 +3270,12 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             }
 
             if (!wrapper_unwrapped) {
-            SPDLOG_INFO_EVERY_N_SEC(1,
-                "FViewport::GetRenderTargetTexture captured scene ref from {} but current candidate is not a valid UObject-style pointer: ref={:x} value={:x}",
-                source_label,
-                (uintptr_t)original_result,
-                (uintptr_t)candidate);
-            return;
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "FViewport::GetRenderTargetTexture captured scene ref from {} but current candidate is not a valid UObject-style pointer: ref={:x} value={:x}",
+                    source_label,
+                    (uintptr_t)resolved_ref,
+                    (uintptr_t)candidate);
+                return;
             }
         }
 
@@ -7342,16 +7488,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
-            const auto candidate_viewport_08 = *(uintptr_t*)(inputs + 0x08);
             const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
             const auto candidate_viewport_20 = *(uintptr_t*)(inputs + 0x20);
             const auto candidate_window = *(uintptr_t*)(inputs + 0x10);
 
-            // UE5.7 DrawWindow pass inputs: ViewportInfo is at +0x18 in 5.7.3 source.
-            // Keep a narrow fallback (+0x20) for minor layout drifts and only then legacy +0x08.
+            // UE5.7 DrawWindow pass inputs in engine source:
+            //   +0x08 = WindowElementList
+            //   +0x10 = Window
+            //   +0x18 = ViewportInfo
+            // Keep +0x20 fallback only for non-TQ2 titles in case of minor local layout drift.
             push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
-            push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
-            push_viewport_candidate(candidate_viewport_08, source_label, 0x08);
+            if (!is_tq2_shipping_executable()) {
+                push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
+            }
 
             if (window == 0) {
                 if (is_probably_valid_object_pointer(candidate_window)) {
@@ -7725,7 +7874,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             if (!is_probably_valid_object_pointer((uintptr_t)out) ||
-                !has_plausible_rhi_texture_header((uintptr_t)out))
+                (!has_plausible_rhi_texture_header((uintptr_t)out) && !is_tq2_shipping_executable()))
             {
                 out = nullptr;
                 return false;
@@ -7737,6 +7886,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         FRHITexture2D* discovered_scene = nullptr;
         auto try_resolve_scene_from_viewport_provider = [&](sdk::FViewportInfo* candidate, const char* source_label) -> bool {
             if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+                return false;
+            }
+
+            // TQ2: provider offset brute-force can stall for seconds and has not produced
+            // a stable scene RT in this title. Prefer direct viewport texture resolution.
+            if (is_tq2_shipping_executable()) {
                 return false;
             }
 
@@ -7792,6 +7947,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (discovered_scene == nullptr && viewport_info != nullptr) {
+            FRHITexture2D* slot6_scene = nullptr;
+            if (try_get_scene_texture_via_slot6_nothrow(viewport_info, slot6_scene) && slot6_scene != nullptr) {
+                discovered_scene = slot6_scene;
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via slot6 virtual path (primary viewport_info)");
+            }
+        }
+
+        if (discovered_scene == nullptr && viewport_info != nullptr) {
             if (try_resolve_scene_from_viewport_provider(viewport_info, "primary viewport_info")) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via primary viewport provider");
@@ -7824,6 +7989,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 }
 
                 if (try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
+                    break;
+                }
+
+                FRHITexture2D* slot6_scene = nullptr;
+                if (try_get_scene_texture_via_slot6_nothrow(candidate, slot6_scene) && slot6_scene != nullptr) {
+                    discovered_scene = slot6_scene;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via slot6 virtual path (viewport candidate)");
                     break;
                 }
 
