@@ -700,6 +700,35 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     };
 
     if (tq2_guard || ue57_guard) {
+        // Prefer the manager's authoritative scene target first. In UE5.7/TQ2 this can
+        // be promoted by Slate-safe-mode discovery; the viewport ref path often points
+        // back to the desktop-sized passthrough target.
+        if (auto* manager_scene = rtm->get_render_target(); manager_scene != nullptr) {
+            if (manager_scene != rtm->get_ui_target()) {
+                auto* resolved_manager_scene = manager_scene;
+
+                if (!is_likely_valid_texture_object(resolved_manager_scene)) {
+                    resolved_manager_scene = resolve_texture_object_from_blob(resolved_manager_scene, "scene render target manager");
+                }
+
+                if (resolved_manager_scene != nullptr && is_likely_valid_texture_object(resolved_manager_scene)) {
+                    if (resolved_manager_scene != manager_scene) {
+                        rtm->set_render_target(resolved_manager_scene);
+                    }
+
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Resolved scene render target from manager authority: {:x} -> {:x}",
+                        (uintptr_t)manager_scene,
+                        (uintptr_t)resolved_manager_scene);
+                    return resolved_manager_scene;
+                }
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "[VR] Ignoring manager scene target because it matches UI target: {:x}",
+                    (uintptr_t)manager_scene);
+            }
+        }
+
         auto* texture_ref = rtm->get_render_target_ref();
         if (texture_ref != nullptr && !IsBadReadPtr(texture_ref, sizeof(void*))) {
             uintptr_t from_ref_raw{};
@@ -868,6 +897,19 @@ DXGI_FORMAT canonical_typed_color_format(DXGI_FORMAT fmt) noexcept {
 DXGI_FORMAT select_unorm8_copy_format(DXGI_FORMAT source_format) noexcept {
     const auto typed = canonical_typed_color_format(source_format);
     return is_bgra8_family(typed) ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+}
+
+DXGI_FORMAT normalize_copy_color_format(DXGI_FORMAT fmt) noexcept {
+    // Keep copy intermediates in linear UNORM variants to avoid accidental
+    // gamma-domain writes on runtimes that expose sRGB swapchain images.
+    switch (canonical_typed_color_format(fmt)) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    default:
+        return canonical_typed_color_format(fmt);
+    }
 }
 
 bool is_copy_format_compatible(DXGI_FORMAT src, DXGI_FORMAT dst) noexcept {
@@ -1142,48 +1184,185 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     auto copy_output_format = select_unorm8_copy_format(source_color_format);
+    auto desired_game_width = (uint32_t)backbuffer_desc.Width;
+    auto desired_game_height = (uint32_t)backbuffer_desc.Height;
+
+    // UE5.7/TQ2 guard: keep the last known-good OpenXR-compatible intermediate format/size
+    // so transient session-state changes don't flip the copy path back to engine-native BGRA.
+    if ((tq2_guard || ue57_guard) && runtime->is_openxr() && m_guarded_sticky_openxr_copy_format != DXGI_FORMAT_UNKNOWN) {
+        copy_output_format = m_guarded_sticky_openxr_copy_format;
+        if (m_guarded_sticky_openxr_copy_width > 0 && m_guarded_sticky_openxr_copy_height > 0) {
+            desired_game_width = m_guarded_sticky_openxr_copy_width;
+            desired_game_height = m_guarded_sticky_openxr_copy_height;
+        }
+    }
 
     // Prefer matching the active OpenXR scene swapchain format for the intermediate game copy.
     // This avoids invalid CopyTextureRegion calls when the runtime does not support the engine's
     // preferred channel order (for example BGRA source vs RGBA swapchain).
     if (runtime->is_openxr() && vr->m_openxr->ready()) {
-        DXGI_FORMAT openxr_scene_format = DXGI_FORMAT_UNKNOWN;
+        struct SceneSwapchainProbe {
+            DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
+            uint32_t width{};
+            uint32_t height{};
+        };
+
+        SceneSwapchainProbe openxr_scene{};
 
         {
             std::scoped_lock _{m_openxr.mtx};
 
-            const auto probe_swapchain_format = [&](uint32_t idx) -> DXGI_FORMAT {
+            const auto probe_swapchain = [&](uint32_t idx) -> SceneSwapchainProbe {
                 const auto it = m_openxr.contexts.find(idx);
                 if (it == m_openxr.contexts.end() || it->second.textures.empty() || it->second.textures[0].texture == nullptr) {
-                    return DXGI_FORMAT_UNKNOWN;
+                    return {};
                 }
 
                 D3D12_RESOURCE_DESC desc{};
                 if (!try_get_resource_desc_nothrow(it->second.textures[0].texture, desc)) {
-                    return DXGI_FORMAT_UNKNOWN;
+                    return {};
                 }
 
-                return canonical_typed_color_format(desc.Format);
+                SceneSwapchainProbe out{};
+                out.format = canonical_typed_color_format(desc.Format);
+                out.width = (uint32_t)desc.Width;
+                out.height = (uint32_t)desc.Height;
+                return out;
             };
 
             const auto preferred_idx = is_actually_afr
                 ? (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE
                 : (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
 
-            openxr_scene_format = probe_swapchain_format(preferred_idx);
+            openxr_scene = probe_swapchain(preferred_idx);
 
-            if (openxr_scene_format == DXGI_FORMAT_UNKNOWN && is_actually_afr) {
-                openxr_scene_format = probe_swapchain_format((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE);
+            if (openxr_scene.format == DXGI_FORMAT_UNKNOWN && is_actually_afr) {
+                openxr_scene = probe_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE);
+            }
+
+            if (openxr_scene.format == DXGI_FORMAT_UNKNOWN && vr->m_openxr != nullptr) {
+                std::scoped_lock __{vr->m_openxr->swapchain_mtx};
+
+                const auto from_meta = [&](uint32_t idx) -> SceneSwapchainProbe {
+                    if (!vr->m_openxr->swapchains.contains(idx)) {
+                        return {};
+                    }
+
+                    const auto& sc = vr->m_openxr->swapchains[idx];
+                    SceneSwapchainProbe out{};
+                    out.format = canonical_typed_color_format(sc.format);
+                    out.width = (uint32_t)std::max<int32_t>(sc.width, 0);
+                    out.height = (uint32_t)std::max<int32_t>(sc.height, 0);
+                    return out;
+                };
+
+                openxr_scene = from_meta(preferred_idx);
+                if (openxr_scene.format == DXGI_FORMAT_UNKNOWN && is_actually_afr) {
+                    openxr_scene = from_meta((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE);
+                }
             }
         }
 
-        if (openxr_scene_format != DXGI_FORMAT_UNKNOWN && !is_copy_format_compatible(copy_output_format, openxr_scene_format)) {
+        auto normalized_openxr_fmt = normalize_copy_color_format(openxr_scene.format);
+        if (normalized_openxr_fmt == DXGI_FORMAT_UNKNOWN && (tq2_guard || ue57_guard) && m_guarded_sticky_openxr_copy_format != DXGI_FORMAT_UNKNOWN) {
+            normalized_openxr_fmt = m_guarded_sticky_openxr_copy_format;
+        }
+        if (normalized_openxr_fmt == DXGI_FORMAT_UNKNOWN && (tq2_guard || ue57_guard)) {
+            // Keep guarded fallback aligned with guarded swapchain selection (BGRA8 first).
+            normalized_openxr_fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+        }
+        if (normalized_openxr_fmt != DXGI_FORMAT_UNKNOWN && copy_output_format != normalized_openxr_fmt) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "[VR] OpenXR scene swapchain format {} differs from intermediate copy format {}; switching game-copy format to runtime format",
-                (uint32_t)openxr_scene_format,
+                "[VR] OpenXR scene swapchain format {} differs from intermediate copy format {}; forcing exact game-copy format match",
+                (uint32_t)normalized_openxr_fmt,
                 (uint32_t)copy_output_format);
-            copy_output_format = openxr_scene_format;
+            copy_output_format = normalized_openxr_fmt;
+        }
+
+        if ((tq2_guard || ue57_guard) && normalized_openxr_fmt != DXGI_FORMAT_UNKNOWN) {
+            m_guarded_sticky_openxr_copy_format = normalized_openxr_fmt;
+        }
+
+        // AFR scene submits per-eye images. Keep the intermediate copy sized to the eye swapchain
+        // so CopyRegion does not crop into uninitialized areas.
+        if (is_actually_afr && openxr_scene.width > 0 && openxr_scene.height > 0) {
+            desired_game_width = openxr_scene.width;
+            desired_game_height = openxr_scene.height;
+        }
+
+        if ((tq2_guard || ue57_guard) && openxr_scene.width > 0 && openxr_scene.height > 0) {
+            m_guarded_sticky_openxr_copy_width = openxr_scene.width;
+            m_guarded_sticky_openxr_copy_height = openxr_scene.height;
+        }
+    }
+
+    if (runtime->is_openxr() && !is_actually_afr) {
+        const auto hmd_width = vr->get_hmd_width();
+        const auto hmd_height = vr->get_hmd_height();
+        if (hmd_width > 0 && hmd_height > 0) {
+            desired_game_width = (uint32_t)hmd_width;
+            desired_game_height = (uint32_t)hmd_height;
+        }
+    }
+
+    if (use_offscreen_game_copy) {
+        auto reset_copy_targets = [&]() {
+            m_game_tex.reset();
+            m_backbuffer_copy.reset();
+        };
+
+        if (m_backbuffer_copy.texture.Get() != nullptr) {
+            D3D12_RESOURCE_DESC copy_desc{};
+            if (!try_get_resource_desc_nothrow(m_backbuffer_copy.texture.Get(), copy_desc)) {
+                reset_copy_targets();
+            } else {
+                const auto copy_fmt = canonical_typed_color_format(copy_desc.Format);
+                const auto src_fmt = canonical_typed_color_format(backbuffer_desc.Format);
+                const bool size_mismatch =
+                    copy_desc.Width != backbuffer_desc.Width ||
+                    copy_desc.Height != backbuffer_desc.Height;
+                const bool fmt_mismatch = !is_copy_format_compatible(copy_fmt, src_fmt);
+
+                if (size_mismatch || fmt_mismatch) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "[VR] Recreating guarded copy targets due source desc change: src {}x{} fmt {} -> copy {}x{} fmt {}",
+                        backbuffer_desc.Width,
+                        backbuffer_desc.Height,
+                        (uint32_t)src_fmt,
+                        copy_desc.Width,
+                        copy_desc.Height,
+                        (uint32_t)copy_fmt);
+                    reset_copy_targets();
+                }
+            }
+        }
+
+        if (m_game_tex.texture.Get() != nullptr) {
+            D3D12_RESOURCE_DESC game_desc{};
+            if (!try_get_resource_desc_nothrow(m_game_tex.texture.Get(), game_desc)) {
+                reset_copy_targets();
+            } else {
+                const auto game_fmt = canonical_typed_color_format(game_desc.Format);
+                const bool size_mismatch =
+                    game_desc.Width != desired_game_width ||
+                    game_desc.Height != desired_game_height;
+                const bool fmt_mismatch = !is_copy_format_compatible(game_fmt, copy_output_format);
+
+                if (size_mismatch || fmt_mismatch) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "[VR] Recreating guarded game texture due target mismatch: desired {}x{} fmt {} vs current {}x{} fmt {}",
+                        desired_game_width,
+                        desired_game_height,
+                        (uint32_t)copy_output_format,
+                        game_desc.Width,
+                        game_desc.Height,
+                        (uint32_t)game_fmt);
+                    reset_copy_targets();
+                }
+            }
         }
     }
 
@@ -1223,15 +1402,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         desc.SampleDesc.Count = 1;
         desc.SampleDesc.Quality = 0;
 
-        auto target_game_width = (uint32_t)desc.Width;
-        auto target_game_height = (uint32_t)desc.Height;
-        const auto hmd_width = vr->get_hmd_width();
-        const auto hmd_height = vr->get_hmd_height();
-
-        if (hmd_width > 0 && hmd_height > 0) {
-            target_game_width = (uint32_t)hmd_width;
-            target_game_height = (uint32_t)hmd_height;
-        }
+        auto target_game_width = desired_game_width;
+        auto target_game_height = desired_game_height;
 
         if ((uint32_t)desc.Width != target_game_width || (uint32_t)desc.Height != target_game_height) {
             SPDLOG_INFO_EVERY_N_SEC(2,
@@ -1303,6 +1475,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_scene_capture_tex.reset();
     }
 
+    auto ensure_game_batch_for_format = [&](DXGI_FORMAT dst_format) -> DirectX::DX12::SpriteBatch* {
+        const auto typed_dst_format = canonical_typed_color_format(dst_format);
+        const auto required_format = typed_dst_format == DXGI_FORMAT_UNKNOWN ? DXGI_FORMAT_B8G8R8A8_UNORM : typed_dst_format;
+
+        if (m_game_batch == nullptr || m_game_batch_format != required_format) {
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[VR] Rebuilding guarded game SpriteBatch PSO for RTV format {} (previous={})",
+                (uint32_t)required_format,
+                (uint32_t)m_game_batch_format);
+            m_game_batch = setup_sprite_batch_pso(required_format);
+            m_game_batch_format = required_format;
+        }
+
+        return m_game_batch.get();
+    };
+
     // We need to render the scene capture texture to the right side of the double wide texture
     auto pre_render = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
         auto* source_texture = backbuffer.Get();
@@ -1331,10 +1519,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         // target untouched (white/garbage). Use an aspect-fit blit into each eye instead.
         if (m_scene_capture_tex.texture.Get() == nullptr && !scene_is_double_wide) {
             auto* const dst_ctx = m_openxr.find_texture_context(render_target);
+            auto* const batch_for_target = ensure_game_batch_for_format(target_desc.Format);
             const bool can_aspect_fit_blit =
                 dst_ctx != nullptr &&
                 dst_ctx->rtv_heap != nullptr &&
-                m_game_batch != nullptr &&
+                batch_for_target != nullptr &&
                 m_game_tex.texture.Get() == source_texture &&
                 m_game_tex.srv_heap != nullptr;
 
@@ -1358,7 +1547,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     commands.clear_rtv(render_target, dst_ctx->get_rtv(), clear_color, OPENXR_SWAPCHAIN_BASE_STATE);
 
                     d3d12::render_srv_to_rtv(
-                        m_game_batch.get(),
+                        batch_for_target,
                         commands.cmd_list.Get(),
                         m_game_tex,
                         *dst_ctx,
@@ -1369,7 +1558,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     );
 
                     d3d12::render_srv_to_rtv(
-                        m_game_batch.get(),
+                        batch_for_target,
                         commands.cmd_list.Get(),
                         m_game_tex,
                         *dst_ctx,
@@ -1464,11 +1653,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_backbuffer_copy.texture.Get() != nullptr &&
         (backbuffer == real_backbuffer || ((tq2_guard || ue57_guard) && backbuffer.Get() != m_game_tex.texture.Get()));
 
+    bool copied_source_into_game_tex = false;
+
     if (should_copy_source_to_game_tex) {
         const auto idx = swapchain->GetCurrentBackBufferIndex() % m_game_tex_commands.size();
         auto& command_ctx = m_game_tex_commands[idx];
         if (command_ctx.cmd_list != nullptr) {
-            command_ctx.wait(INFINITE);
+            const auto guarded_wait_ms = (tq2_guard || ue57_guard) ? 2000u : INFINITE;
+            command_ctx.wait(guarded_wait_ms);
+            if ((tq2_guard || ue57_guard) && command_ctx.waiting_for_fence) {
+                SPDLOG_WARNING_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7: source->game command context wait timed out, recreating context '{}'.",
+                    utility::narrow(command_ctx.internal_name));
+                const auto name = command_ctx.internal_name;
+                command_ctx.reset();
+                command_ctx.setup(name.c_str());
+            }
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
             const auto src_state = (backbuffer.Get() == real_backbuffer.Get())
@@ -1497,14 +1697,26 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 (LONG)src_desc.Height
             };
 
-            const auto dest_rect = make_aspect_fit_rect(
-                (uint32_t)src_desc.Width,
-                (uint32_t)src_desc.Height,
-                (uint32_t)dst_desc.Width,
-                (uint32_t)dst_desc.Height
-            );
+            // AFR eye swapchains must be fully covered; aspect-fit leaves large untouched areas
+            // and causes white/yellow garbage in the headset.
+            const bool use_aspect_fit_for_game_copy = !(runtime->is_openxr() && is_actually_afr);
+            const auto dest_rect = use_aspect_fit_for_game_copy
+                ? make_aspect_fit_rect(
+                    (uint32_t)src_desc.Width,
+                    (uint32_t)src_desc.Height,
+                    (uint32_t)dst_desc.Width,
+                    (uint32_t)dst_desc.Height
+                )
+                : std::nullopt;
+            auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
+            if (batch_for_game_tex == nullptr) {
+                SPDLOG_ERROR_EVERY_N_SEC(1,
+                    "[VR] Guarded source->game blit skipped: SpriteBatch PSO unavailable for format {}",
+                    (uint32_t)dst_desc.Format);
+                return vr::VRCompositorError_None;
+            }
 
-            if (dest_rect.has_value()) {
+            if (use_aspect_fit_for_game_copy && dest_rect.has_value()) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "[VR] Real backbuffer fallback aspect-fit blit: src {}x{} -> dst {}x{} (rect {},{}-{},{} )",
                     src_desc.Width,
@@ -1517,7 +1729,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     dest_rect->bottom);
 
                 d3d12::render_srv_to_rtv(
-                    m_game_batch.get(),
+                    batch_for_game_tex,
                     command_ctx.cmd_list.Get(),
                     m_backbuffer_copy,
                     m_game_tex,
@@ -1528,7 +1740,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 );
             } else {
                 d3d12::render_srv_to_rtv(
-                    m_game_batch.get(),
+                    batch_for_game_tex,
                     command_ctx.cmd_list.Get(),
                     m_backbuffer_copy,
                     m_game_tex,
@@ -1537,12 +1749,33 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 );
             }
             command_ctx.execute();
+            copied_source_into_game_tex = true;
         }
 
         backbuffer = m_game_tex.texture;
         if (!try_get_resource_desc_nothrow(backbuffer.Get(), backbuffer_desc)) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to read copied game texture desc.");
             return vr::VRCompositorError_None;
+        }
+    }
+
+    // UE5.7/TQ2: always prefer the intermediate game-copy texture for OpenXR scene submits.
+    // This keeps color/channel layout stable for runtimes exposing typeless RGBA swapchain images.
+    if (runtime->is_openxr() && (tq2_guard || ue57_guard) && m_game_tex.texture.Get() != nullptr) {
+        if (backbuffer.Get() != m_game_tex.texture.Get()) {
+            D3D12_RESOURCE_DESC game_desc{};
+            if (try_get_resource_desc_nothrow(m_game_tex.texture.Get(), game_desc)) {
+                backbuffer = m_game_tex.texture;
+                backbuffer_desc = game_desc;
+
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[VR] Guarded UE5.7: forcing OpenXR submit source to game-copy texture {}x{} fmt {} (fresh_copy={})",
+                    game_desc.Width,
+                    game_desc.Height,
+                    (uint32_t)game_desc.Format,
+                    copied_source_into_game_tex ? 1 : 0);
+            }
         }
     }
 
@@ -1639,6 +1872,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto game_height = (uint32_t)game_desc.Height;
             const auto game_is_double_wide = is_likely_double_wide_source(game_width, (uint32_t)m_backbuffer_size[0]);
             const auto game_eye_width = game_is_double_wide ? game_width / 2 : game_width;
+            const auto left_screen_format = m_2d_screen_tex[0].texture != nullptr
+                ? m_2d_screen_tex[0].texture->GetDesc().Format
+                : DXGI_FORMAT_B8G8R8A8_UNORM;
+            const auto right_screen_format = m_2d_screen_tex[1].texture != nullptr
+                ? m_2d_screen_tex[1].texture->GetDesc().Format
+                : left_screen_format;
+            auto* const batch_for_screen_left = ensure_game_batch_for_format(left_screen_format);
+            auto* const batch_for_screen_right = ensure_game_batch_for_format(right_screen_format);
+            if (batch_for_screen_left == nullptr || batch_for_screen_right == nullptr) {
+                SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] 2D screen blit skipped: SpriteBatch PSO unavailable");
+                return;
+            }
 
             // Clear previous frame
             for (auto& screen : m_2d_screen_tex) {
@@ -1647,7 +1892,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             // Render left side to left screen tex
             d3d12::render_srv_to_rtv(
-                m_game_batch.get(),
+                batch_for_screen_left,
                 commands.cmd_list.Get(),
                 m_game_tex,
                 m_2d_screen_tex[0],
@@ -1658,7 +1903,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
                 d3d12::render_srv_to_rtv(
-                    m_game_batch.get(),
+                    batch_for_screen_left,
                     commands.cmd_list.Get(),
                     m_game_ui_tex,
                     m_2d_screen_tex[0],
@@ -1671,7 +1916,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 // Render right side to right screen tex
                 if (m_scene_capture_tex.texture.Get() != nullptr) {
                     d3d12::render_srv_to_rtv(
-                        m_game_batch.get(),
+                        batch_for_screen_right,
                         commands.cmd_list.Get(),
                         m_scene_capture_tex,
                         m_2d_screen_tex[1],
@@ -1686,7 +1931,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     }
 
                     d3d12::render_srv_to_rtv(
-                        m_game_batch.get(),
+                        batch_for_screen_right,
                         commands.cmd_list.Get(),
                         m_game_tex,
                         m_2d_screen_tex[1],
@@ -1698,7 +1943,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
                     d3d12::render_srv_to_rtv(
-                        m_game_batch.get(),
+                        batch_for_screen_right,
                         commands.cmd_list.Get(),
                         m_game_ui_tex,
                         m_2d_screen_tex[1],
@@ -2489,6 +2734,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_backbuffer_batch.reset();
     m_game_batch.reset();
     m_ui_batch_alpha_invert.reset();
+    m_game_batch_format = DXGI_FORMAT_UNKNOWN;
     m_graphics_memory.reset();
 
     if (runtime->is_openxr() && runtime->loaded) {
@@ -2719,6 +2965,7 @@ bool D3D12Component::setup() {
 
     m_backbuffer_batch = setup_sprite_batch_pso(real_backbuffer_desc.Format);
     m_game_batch = setup_sprite_batch_pso(backbuffer_desc.Format);
+    m_game_batch_format = canonical_typed_color_format(backbuffer_desc.Format);
 
     // Custom blend state to flip the alpha in-place of the UI texture without an intermediate render target
     {
@@ -2831,12 +3078,24 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             return fmt != DXGI_FORMAT_UNKNOWN && openxr->is_supported_swapchain_format(fmt);
         };
 
+        if (guarded_ue57_tq2) {
+            // TQ2 commonly presents through a 10-bit desktop swapchain. OpenXR runtimes on this stack
+            // do not advertise R10G10B10A2, so keep the VR path pinned to BGRA8 to avoid unstable
+            // RGBA/BGRA oscillation and PSO RTV-format mismatches in guarded copy paths.
+            if (is_supported(DXGI_FORMAT_B8G8R8A8_UNORM)) {
+                return DXGI_FORMAT_B8G8R8A8_UNORM;
+            }
+            if (is_supported(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) {
+                return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            }
+        }
+
         if (is_supported(requested)) {
             return requested;
         }
 
         const auto requested_typed = canonical_typed_color_format(requested);
-        const bool prefer_bgra = is_bgra8_family(requested_typed);
+        const bool prefer_bgra = guarded_ue57_tq2 || is_bgra8_family(requested_typed);
 
         static constexpr DXGI_FORMAT preferred_formats_bgra[] = {
             DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -2903,6 +3162,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         runtimes::OpenXR::Swapchain swapchain{};
         swapchain.width = swapchain_create_info.width;
         swapchain.height = swapchain_create_info.height;
+        swapchain.format = canonical_typed_color_format((DXGI_FORMAT)swapchain_create_info.format);
 
         if (xrCreateSwapchain(openxr->session, &swapchain_create_info, &swapchain.handle) != XR_SUCCESS) {
             spdlog::error("[VR] D3D12: Failed to create swapchain.");
@@ -2965,6 +3225,16 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             const auto ref_count = ctx.textures[j].texture->Release();
 
             spdlog::info("[VR] AFTER Swapchain texture {} {} ref count: {}", i, j, ref_count);
+        }
+
+        // Persist the runtime's actual color format as seen on image resources, not just
+        // the requested create-info format. Some runtimes return typeless variants.
+        if (!ctx.textures.empty() && ctx.textures[0].texture != nullptr) {
+            D3D12_RESOURCE_DESC image_desc{};
+            if (try_get_resource_desc_nothrow(ctx.textures[0].texture, image_desc)) {
+                swapchain.format = canonical_typed_color_format(image_desc.Format);
+                vr->m_openxr->swapchains[i] = swapchain;
+            }
         }
 
         const bool is_depth_swapchain = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;
@@ -3354,7 +3624,32 @@ void D3D12Component::OpenXR::copy(
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
         } else {
             auto& command_ctx = ctx.texture_contexts[texture_index]->commands;
-            command_ctx.wait(INFINITE);
+            const auto guarded_wait_ms = (tq2_guard || ue57_guard) ? 2000u : INFINITE;
+            command_ctx.wait(guarded_wait_ms);
+
+            if ((tq2_guard || ue57_guard) && command_ctx.waiting_for_fence) {
+                SPDLOG_WARNING_EVERY_N_SEC(1,
+                    "[VR] OpenXR guarded path: command context '{}' wait timed out on swapchain {} image {}; skipping frame copy and recovering context.",
+                    utility::narrow(command_ctx.internal_name),
+                    swapchain_idx,
+                    texture_index);
+
+                const auto name = command_ctx.internal_name;
+                command_ctx.reset();
+                command_ctx.setup(name.c_str());
+
+                XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+                const auto release_result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+                if (release_result != XR_SUCCESS) {
+                    spdlog::error("[VR] xrReleaseSwapchainImage failed after wait-timeout recovery: {}", vr->m_openxr->get_result_string(release_result));
+                }
+
+                if (ctx.num_textures_acquired > 0) {
+                    ctx.num_textures_acquired--;
+                }
+
+                return;
+            }
 
             if (pre_commands) {
                 (*pre_commands)(command_ctx, ctx.textures[texture_index].texture);
@@ -3520,8 +3815,17 @@ openxr_copy_finalize:
                     spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
                 }
 
+                const auto guarded_wait_ms = (tq2_guard || ue57_guard) ? 2000u : INFINITE;
                 for (auto& texture_ctx : ctx.texture_contexts) {
-                    texture_ctx->commands.wait(INFINITE);
+                    texture_ctx->commands.wait(guarded_wait_ms);
+                    if ((tq2_guard || ue57_guard) && texture_ctx->commands.waiting_for_fence) {
+                        SPDLOG_WARNING_EVERY_N_SEC(1,
+                            "[VR] OpenXR guarded release recovery: context '{}' wait timed out; recreating context.",
+                            utility::narrow(texture_ctx->commands.internal_name));
+                        const auto name = texture_ctx->commands.internal_name;
+                        texture_ctx->commands.reset();
+                        texture_ctx->commands.setup(name.c_str());
+                    }
                 }
 
                 result = xrReleaseSwapchainImage(swapchain.handle, &release_info);

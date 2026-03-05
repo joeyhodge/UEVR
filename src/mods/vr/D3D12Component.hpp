@@ -74,6 +74,7 @@ private:
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_backbuffer_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_game_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_ui_batch_alpha_invert{};
+    DXGI_FORMAT m_game_batch_format{DXGI_FORMAT_UNKNOWN};
 
     ID3D12Resource* m_last_checked_native{nullptr};
 
@@ -285,5 +286,8 @@ private:
     bool m_last_afr_state{false};
     bool m_submitted_left_eye{false};
     bool m_last_frame_used_real_backbuffer_source{false};
+    DXGI_FORMAT m_guarded_sticky_openxr_copy_format{DXGI_FORMAT_UNKNOWN};
+    uint32_t m_guarded_sticky_openxr_copy_width{0};
+    uint32_t m_guarded_sticky_openxr_copy_height{0};
 };
 } // namespace vrmod

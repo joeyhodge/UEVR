@@ -32,6 +32,7 @@ struct OpenXR final : public VRRuntime {
         XrSwapchain handle;
         int32_t width;
         int32_t height;
+        DXGI_FORMAT format{DXGI_FORMAT_UNKNOWN};
     };
 
     VRRuntime::Type type() const override { 

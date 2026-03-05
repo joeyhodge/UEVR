@@ -3325,6 +3325,23 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
         auto current = rtm.get_render_target();
         const auto ui_target = rtm.get_ui_target();
+        const bool tq2_safe_mode = is_tq2_shipping_executable();
+
+        // UE5.7/TQ2: once Slate discovers/promotes a better scene candidate,
+        // avoid immediately clobbering it every frame from the passthrough ref path.
+        if (tq2_safe_mode &&
+            current != nullptr &&
+            current != ui_target &&
+            current != candidate)
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "FViewport::GetRenderTargetTexture keeping promoted scene target {:x}; not overriding with passthrough candidate {:x} from {}",
+                (uintptr_t)current,
+                (uintptr_t)candidate,
+                source_label);
+            return;
+        }
+
         const bool should_store_scene =
             current == nullptr ||
             current == ui_target ||
