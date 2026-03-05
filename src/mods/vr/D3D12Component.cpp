@@ -1140,7 +1140,52 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (source_color_format == DXGI_FORMAT_UNKNOWN) {
         source_color_format = DXGI_FORMAT_B8G8R8A8_UNORM;
     }
-    const auto copy_output_format = select_unorm8_copy_format(source_color_format);
+
+    auto copy_output_format = select_unorm8_copy_format(source_color_format);
+
+    // Prefer matching the active OpenXR scene swapchain format for the intermediate game copy.
+    // This avoids invalid CopyTextureRegion calls when the runtime does not support the engine's
+    // preferred channel order (for example BGRA source vs RGBA swapchain).
+    if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        DXGI_FORMAT openxr_scene_format = DXGI_FORMAT_UNKNOWN;
+
+        {
+            std::scoped_lock _{m_openxr.mtx};
+
+            const auto probe_swapchain_format = [&](uint32_t idx) -> DXGI_FORMAT {
+                const auto it = m_openxr.contexts.find(idx);
+                if (it == m_openxr.contexts.end() || it->second.textures.empty() || it->second.textures[0].texture == nullptr) {
+                    return DXGI_FORMAT_UNKNOWN;
+                }
+
+                D3D12_RESOURCE_DESC desc{};
+                if (!try_get_resource_desc_nothrow(it->second.textures[0].texture, desc)) {
+                    return DXGI_FORMAT_UNKNOWN;
+                }
+
+                return canonical_typed_color_format(desc.Format);
+            };
+
+            const auto preferred_idx = is_actually_afr
+                ? (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE
+                : (uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE;
+
+            openxr_scene_format = probe_swapchain_format(preferred_idx);
+
+            if (openxr_scene_format == DXGI_FORMAT_UNKNOWN && is_actually_afr) {
+                openxr_scene_format = probe_swapchain_format((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE);
+            }
+        }
+
+        if (openxr_scene_format != DXGI_FORMAT_UNKNOWN && !is_copy_format_compatible(copy_output_format, openxr_scene_format)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[VR] OpenXR scene swapchain format {} differs from intermediate copy format {}; switching game-copy format to runtime format",
+                (uint32_t)openxr_scene_format,
+                (uint32_t)copy_output_format);
+            copy_output_format = openxr_scene_format;
+        }
+    }
 
     if (m_game_tex.texture.Get() == nullptr && use_offscreen_game_copy) {
         if (backbuffer.Get() == real_backbuffer.Get()) {
@@ -3382,6 +3427,17 @@ void D3D12Component::OpenXR::copy(
                                 src_state,
                                 openxr_swapchain_dst_state);
                         } else if (has_src_desc && has_dst_desc) {
+                            if (!is_copy_format_compatible(src_desc.Format, dst_desc.Format)) {
+                                SPDLOG_WARNING_EVERY_N_SEC(
+                                    1,
+                                    "[VR] OpenXR copy skipped: incompatible formats for copy-region fallback (swapchain {} image {}): src fmt {} dst fmt {}",
+                                    swapchain_idx,
+                                    texture_index,
+                                    (uint32_t)src_desc.Format,
+                                    (uint32_t)dst_desc.Format);
+                                goto openxr_copy_finalize;
+                            }
+
                             D3D12_BOX safe_box{};
                             safe_box.left = 0;
                             safe_box.top = 0;
@@ -3409,6 +3465,17 @@ void D3D12Component::OpenXR::copy(
                                 texture_index);
                         }
                     } else if (has_src_desc && has_dst_desc) {
+                        if (!is_copy_format_compatible(src_desc.Format, dst_desc.Format)) {
+                            SPDLOG_WARNING_EVERY_N_SEC(
+                                1,
+                                "[VR] OpenXR copy skipped: src_box path has incompatible formats (swapchain {} image {}): src fmt {} dst fmt {}",
+                                swapchain_idx,
+                                texture_index,
+                                (uint32_t)src_desc.Format,
+                                (uint32_t)dst_desc.Format);
+                            goto openxr_copy_finalize;
+                        }
+
                         D3D12_BOX safe_box = *src_box;
                         safe_box.left = std::min<UINT>(safe_box.left, (UINT)src_desc.Width);
                         safe_box.top = std::min<UINT>(safe_box.top, (UINT)src_desc.Height);
@@ -3432,6 +3499,7 @@ void D3D12Component::OpenXR::copy(
                 }
             }
 
+openxr_copy_finalize:
             if (additional_commands) {
                 (*additional_commands)(command_ctx);
             }
