@@ -210,6 +210,9 @@ FRHITexture2D* resolve_texture_object_from_blob(FRHITexture2D* texture, std::str
     return texture;
 }
 
+bool has_guarded_scene_native_resource(FRHITexture2D* texture);
+FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::string_view source);
+
 bool is_likely_double_wide_source(uint32_t source_width, uint32_t expected_double_width) {
     if (source_width == 0 || expected_double_width == 0) {
         return false;
@@ -467,6 +470,13 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     bool guarded_invalid_texture = false;
 
     if (guarded_scene_source && !is_likely_valid_texture_object(texture)) {
+        if (auto* native_resource = probe_native_d3d12_resource_from_texture_blob(texture); native_resource != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} pointer failed initial validation in guarded UE5.7 mode; using original wrapper via native-resource blob scan",
+                source);
+            return native_resource;
+        }
+
         auto* unwrapped = resolve_texture_object_from_blob(texture, source);
         if (unwrapped != nullptr && is_likely_valid_texture_object(unwrapped)) {
             texture = unwrapped;
@@ -705,17 +715,8 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
         // back to the desktop-sized passthrough target.
         if (auto* manager_scene = rtm->get_render_target(); manager_scene != nullptr) {
             if (manager_scene != rtm->get_ui_target()) {
-                auto* resolved_manager_scene = manager_scene;
-
-                if (!is_likely_valid_texture_object(resolved_manager_scene)) {
-                    resolved_manager_scene = resolve_texture_object_from_blob(resolved_manager_scene, "scene render target manager");
-                }
-
-                if (resolved_manager_scene != nullptr && is_likely_valid_texture_object(resolved_manager_scene)) {
-                    if (resolved_manager_scene != manager_scene) {
-                        rtm->set_render_target(resolved_manager_scene);
-                    }
-
+                auto* resolved_manager_scene = normalize_guarded_scene_pointer(manager_scene, "scene render target manager");
+                if (resolved_manager_scene != nullptr) {
                     SPDLOG_INFO_EVERY_N_SEC(1,
                         "[VR] Resolved scene render target from manager authority: {:x} -> {:x}",
                         (uintptr_t)manager_scene,
@@ -734,14 +735,11 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
             uintptr_t from_ref_raw{};
             if (try_read_ptr_nothrow((uintptr_t)texture_ref, from_ref_raw) && from_ref_raw >= 0x10000) {
                 auto* from_ref = (FRHITexture2D*)from_ref_raw;
-                auto* resolved_from_ref = from_ref;
-
-                if (!is_likely_valid_texture_object(resolved_from_ref)) {
-                    resolved_from_ref = resolve_texture_object_from_blob(resolved_from_ref, "scene render target ref");
-                }
-
-                if (resolved_from_ref != nullptr && is_likely_valid_texture_object(resolved_from_ref)) {
-                    rtm->set_render_target(resolved_from_ref);
+                auto* resolved_from_ref = normalize_guarded_scene_pointer(from_ref, "scene render target ref");
+                if (resolved_from_ref != nullptr) {
+                    if (resolved_from_ref == from_ref) {
+                        rtm->set_render_target(resolved_from_ref);
+                    }
                     SPDLOG_INFO_EVERY_N_SEC(1,
                         "[VR] Resolved scene render target from viewport texture-ref: ref {:x} -> {:x}",
                         (uintptr_t)texture_ref,
@@ -761,7 +759,7 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
         }
     }
 
-    if ((tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr) {
+    if (!(tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr) {
         auto* cached_texture = g_last_good_scene_texture;
         if (!is_likely_valid_texture_object(cached_texture)) {
             cached_texture = resolve_texture_object_from_blob(cached_texture, "cached scene render target");
@@ -790,7 +788,7 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
         if (cached_texture != nullptr && is_likely_valid_texture_object(cached_texture)) {
             g_last_good_scene_texture = cached_texture;
-            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Reusing last-good scene render target pointer in guarded UE5.7 mode");
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Reusing last-good cached scene render target pointer");
             return cached_texture;
         }
 
@@ -799,18 +797,14 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
 
     auto* texture = rtm->get_render_target();
 
-        if (texture == nullptr) {
-            auto* relaxed_texture = rtm->get_render_target_relaxed();
-            if (relaxed_texture != nullptr) {
-                if (tq2_guard || ue57_guard) {
-                    // In guarded mode, still allow relaxed pointers when they can be
-                // validated structurally (or after one-level blob unwrap).
-                auto* candidate = relaxed_texture;
-                if (!is_likely_valid_texture_object(candidate)) {
-                    candidate = resolve_texture_object_from_blob(candidate, "relaxed scene render target");
-                }
-
-                if (candidate != nullptr && is_likely_valid_texture_object(candidate)) {
+    if (texture == nullptr) {
+        auto* relaxed_texture = rtm->get_render_target_relaxed();
+        if (relaxed_texture != nullptr) {
+            if (tq2_guard || ue57_guard) {
+                // In guarded mode, still allow relaxed pointers when they can be
+                // validated structurally or directly yield a native resource.
+                auto* candidate = normalize_guarded_scene_pointer(relaxed_texture, "relaxed scene render target");
+                if (candidate != nullptr) {
                     texture = candidate;
                     SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Using validated relaxed scene render target pointer in guarded UE5.7 mode");
                 } else {
@@ -834,11 +828,8 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
             // Guarded UE5.7/TQ2 path: do not aggressively unwrap scene pointers.
             // In TQ2 this often lands on tiny transient textures (e.g. 64x64) and causes
             // sustained fallback/flicker. Keep the original object when it is already sane.
-            if (!is_likely_valid_texture_object(texture)) {
-                auto* unwrapped = resolve_texture_object_from_blob(texture, "scene render target");
-                if (unwrapped != nullptr && is_likely_valid_texture_object(unwrapped)) {
-                    texture = unwrapped;
-                }
+            if (auto* normalized = normalize_guarded_scene_pointer(texture, "scene render target"); normalized != nullptr) {
+                texture = normalized;
             }
         } else {
             texture = resolve_texture_object_from_blob(texture, "scene render target");
@@ -846,6 +837,35 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     }
 
     return texture;
+}
+
+bool has_guarded_scene_native_resource(FRHITexture2D* texture) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return false;
+    }
+
+    return probe_native_d3d12_resource_from_texture_blob(texture) != nullptr;
+}
+
+FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::string_view source) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return nullptr;
+    }
+
+    if (is_likely_valid_texture_object(texture) || has_guarded_scene_native_resource(texture)) {
+        return texture;
+    }
+
+    auto* unwrapped = resolve_texture_object_from_blob(texture, source);
+    if (unwrapped == nullptr || IsBadReadPtr(unwrapped, sizeof(void*))) {
+        return nullptr;
+    }
+
+    if (is_likely_valid_texture_object(unwrapped) || has_guarded_scene_native_resource(unwrapped)) {
+        return unwrapped;
+    }
+
+    return nullptr;
 }
 
 bool is_bgra8_family(DXGI_FORMAT fmt) noexcept {
@@ -972,7 +992,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (ue4_texture != nullptr) {
         backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
 
-        if (backbuffer == nullptr && (tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr && g_last_good_scene_texture != ue4_texture) {
+        if (backbuffer == nullptr && !(tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr && g_last_good_scene_texture != ue4_texture) {
             auto* cached_texture = g_last_good_scene_texture;
             if (cached_texture != nullptr && !IsBadReadPtr(cached_texture, sizeof(void*))) {
                 auto cached_backbuffer = safe_get_native_resource(cached_texture, "cached scene render target");
@@ -1057,17 +1077,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (tq2_guard || ue57_guard) {
         // UE5.7/TQ2 can briefly oscillate between stale/invalid scene resources during startup.
-        // Hold a short real-backbuffer latch only while the scene source is unstable, then release.
+        // Release the real-backbuffer latch as soon as a plausible scene source appears.
         static uint32_t s_force_real_frames = 0;
         static uint32_t s_stable_scene_frames = 0;
-        constexpr uint32_t kForceRealLatchFrames = 90;  // ~1.5s at 60fps
-        constexpr uint32_t kMinStableSceneFrames = 8;
+        constexpr uint32_t kForceRealLatchFrames = 12;
+        constexpr uint32_t kMinStableSceneFrames = 1;
 
         if (using_real_backbuffer_source) {
             s_force_real_frames = kForceRealLatchFrames;
             s_stable_scene_frames = 0;
         } else {
             ++s_stable_scene_frames;
+            if (s_stable_scene_frames >= kMinStableSceneFrames) {
+                s_force_real_frames = 0;
+            }
         }
 
         if (!using_real_backbuffer_source && s_force_real_frames > 0) {
@@ -1088,7 +1111,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    if (!using_real_backbuffer_source && (tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
+    if (!using_real_backbuffer_source && !(tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
         bool cache_candidate = true;
         const auto known_vtable = FRHITexture2D::get_vtable();
         if (known_vtable != nullptr) {
