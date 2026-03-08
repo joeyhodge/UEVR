@@ -121,6 +121,11 @@ bool try_read_ptr_nothrow(uintptr_t address, uintptr_t& out) noexcept {
     return true;
 }
 
+ID3D12Resource* validate_d3d12_resource_candidate(uintptr_t candidate_ptr);
+ID3D12Resource* scan_object_for_d3d12_resource(uintptr_t base, uintptr_t max_offset);
+ID3D12Resource* probe_native_d3d12_resource_from_texture_blob(FRHITexture2D* texture);
+ID3D12Resource* probe_native_d3d12_resource_via_frhi_base(FRHITexture2D* texture, std::string_view source, bool log_result);
+
 bool is_likely_valid_texture_object(FRHITexture2D* texture) {
     if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return false;
@@ -172,8 +177,50 @@ FRHITexture2D* resolve_texture_object_from_blob(FRHITexture2D* texture, std::str
         return nullptr;
     };
 
-    constexpr uintptr_t kMaxBlobScanOffset = 0x180;
+    // UE5.7/TQ2 frequently exposes wrapper objects that hold TextureRHI-like members
+    // around these slots. Prefer these targeted members before the broad blob walk so
+    // we do not reintroduce the older "unwrap to random transient object" behavior.
+    static constexpr std::array<uintptr_t, 8> kLikelyWrapperTextureOffsets{
+        0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88
+    };
+
     const auto blob_base = (uintptr_t)texture;
+
+    for (const auto offset : kLikelyWrapperTextureOffsets) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow(blob_base + offset, candidate_ptr) || candidate_ptr < 0x10000 || candidate_ptr == blob_base) {
+            continue;
+        }
+
+        if (auto* direct_candidate = test_candidate(candidate_ptr); direct_candidate != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} unwrapped texture object via wrapper member (+0x{:x}) {:x} -> {:x}",
+                source,
+                offset,
+                (uintptr_t)texture,
+                (uintptr_t)direct_candidate);
+            return direct_candidate;
+        }
+
+        if (validate_d3d12_resource_candidate(candidate_ptr) != nullptr || IsBadReadPtr((void*)candidate_ptr, sizeof(void*))) {
+            continue;
+        }
+
+        auto* wrapper_candidate = (FRHITexture2D*)candidate_ptr;
+        if (probe_native_d3d12_resource_via_frhi_base(wrapper_candidate, source, false) != nullptr ||
+            scan_object_for_d3d12_resource(candidate_ptr, 0x220) != nullptr)
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} accepted texture-like wrapper member (+0x{:x}) {:x} -> {:x}",
+                source,
+                offset,
+                (uintptr_t)texture,
+                candidate_ptr);
+            return wrapper_candidate;
+        }
+    }
+
+    constexpr uintptr_t kMaxBlobScanOffset = 0x180;
 
     for (uintptr_t offset = 0; offset <= kMaxBlobScanOffset; offset += sizeof(void*)) {
         uintptr_t candidate_ptr{};
@@ -411,25 +458,29 @@ ID3D12Resource* validate_d3d12_resource_candidate(uintptr_t candidate_ptr) {
     return as_resource;
 }
 
+ID3D12Resource* scan_object_for_d3d12_resource(uintptr_t base, uintptr_t max_offset) {
+    if (base < 0x10000 || IsBadReadPtr((void*)base, sizeof(void*))) {
+        return nullptr;
+    }
+
+    for (uintptr_t offset = 0; offset <= max_offset; offset += sizeof(void*)) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow(base + offset, candidate_ptr)) {
+            continue;
+        }
+
+        if (auto* resource = validate_d3d12_resource_candidate(candidate_ptr); resource != nullptr) {
+            return resource;
+        }
+    }
+
+    return nullptr;
+}
+
 ID3D12Resource* probe_native_d3d12_resource_from_texture_blob(FRHITexture2D* texture) {
     if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return nullptr;
     }
-
-    const auto scan_object_for_resource = [&](uintptr_t base, uintptr_t max_offset) -> ID3D12Resource* {
-        for (uintptr_t offset = 0; offset <= max_offset; offset += sizeof(void*)) {
-            uintptr_t candidate_ptr{};
-            if (!try_read_ptr_nothrow(base + offset, candidate_ptr)) {
-                continue;
-            }
-
-            if (auto* resource = validate_d3d12_resource_candidate(candidate_ptr); resource != nullptr) {
-                return resource;
-            }
-        }
-
-        return nullptr;
-    };
 
     // Fast path: FRHITexture-like wrappers often hold the resource near +0xD0 on UE5.7.
     constexpr std::array<uintptr_t, 8> likely_offsets{
@@ -448,17 +499,88 @@ ID3D12Resource* probe_native_d3d12_resource_from_texture_blob(FRHITexture2D* tex
 
         // Some titles wrap the resource in one extra layer (e.g., TextureRHI-like structs).
         if (candidate_ptr != 0 && !IsBadReadPtr((void*)candidate_ptr, sizeof(void*))) {
-            if (auto* nested = scan_object_for_resource(candidate_ptr, 0x180); nested != nullptr) {
+            if (auto* nested = scan_object_for_d3d12_resource(candidate_ptr, 0x180); nested != nullptr) {
                 return nested;
             }
         }
     }
 
-    if (auto* broad_direct = scan_object_for_resource((uintptr_t)texture, 0x220); broad_direct != nullptr) {
+    // Slate-promoted scene targets in TQ2 are often wrappers that point at a texture-like
+    // object rather than storing the native D3D12 resource directly near +0xD0.
+    static constexpr std::array<uintptr_t, 8> kLikelyWrapperTextureOffsets{
+        0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88
+    };
+
+    for (const auto offset : kLikelyWrapperTextureOffsets) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow((uintptr_t)texture + offset, candidate_ptr) ||
+            candidate_ptr < 0x10000 ||
+            candidate_ptr == (uintptr_t)texture ||
+            IsBadReadPtr((void*)candidate_ptr, sizeof(void*)))
+        {
+            continue;
+        }
+
+        if (auto* direct = validate_d3d12_resource_candidate(candidate_ptr); direct != nullptr) {
+            return direct;
+        }
+
+        auto* wrapper_candidate = (FRHITexture2D*)candidate_ptr;
+        if (auto* via_frhi_base = probe_native_d3d12_resource_via_frhi_base(wrapper_candidate, "scene render target wrapper member", false);
+            via_frhi_base != nullptr)
+        {
+            return via_frhi_base;
+        }
+
+        if (auto* nested = scan_object_for_d3d12_resource(candidate_ptr, 0x220); nested != nullptr) {
+            return nested;
+        }
+    }
+
+    if (auto* broad_direct = scan_object_for_d3d12_resource((uintptr_t)texture, 0x220); broad_direct != nullptr) {
         return broad_direct;
     }
 
     return nullptr;
+}
+
+ID3D12Resource* probe_native_d3d12_resource_via_frhi_base(FRHITexture2D* texture, std::string_view source, bool log_result = true) {
+    if (!(tq2_guard || ue57_guard) || texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return nullptr;
+    }
+
+    void* native_resource = nullptr;
+    __try {
+        native_resource = reinterpret_cast<FRHITexture*>(texture)->get_native_resource();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        if (log_result) {
+            SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] {} FRHITexture base fallback raised SEH exception", source);
+        }
+        return nullptr;
+    }
+
+    if (native_resource == nullptr) {
+        return nullptr;
+    }
+
+    auto* validated_native_resource = validate_d3d12_resource_candidate((uintptr_t)native_resource);
+    if (validated_native_resource == nullptr) {
+        if (log_result) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} FRHITexture base fallback returned non-D3D12 candidate {:x}; discarding",
+                source,
+                (uintptr_t)native_resource);
+        }
+        return nullptr;
+    }
+
+    if (log_result) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} recovered native resource via FRHITexture base fallback: {:x}",
+            source,
+            (uintptr_t)validated_native_resource);
+    }
+    return validated_native_resource;
 }
 
 ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_view source) {
@@ -597,6 +719,10 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
                 source,
                 (uintptr_t)native_resource);
         }
+    }
+
+    if (native_resource == nullptr) {
+        native_resource = probe_native_d3d12_resource_via_frhi_base(texture, source);
     }
 
     if (native_resource == nullptr) {
@@ -844,7 +970,9 @@ bool has_guarded_scene_native_resource(FRHITexture2D* texture) {
         return false;
     }
 
-    return probe_native_d3d12_resource_from_texture_blob(texture) != nullptr;
+    return
+        probe_native_d3d12_resource_from_texture_blob(texture) != nullptr ||
+        probe_native_d3d12_resource_via_frhi_base(texture, "guarded scene candidate", false) != nullptr;
 }
 
 FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::string_view source) {
@@ -852,16 +980,24 @@ FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::stri
         return nullptr;
     }
 
-    if (is_likely_valid_texture_object(texture) || has_guarded_scene_native_resource(texture)) {
+    if (is_likely_valid_texture_object(texture)) {
         return texture;
     }
 
     auto* unwrapped = resolve_texture_object_from_blob(texture, source);
     if (unwrapped == nullptr || IsBadReadPtr(unwrapped, sizeof(void*))) {
-        return nullptr;
+        return has_guarded_scene_native_resource(texture) ? texture : nullptr;
     }
 
-    if (is_likely_valid_texture_object(unwrapped) || has_guarded_scene_native_resource(unwrapped)) {
+    if (unwrapped != texture && is_likely_valid_texture_object(unwrapped)) {
+        return unwrapped;
+    }
+
+    if (has_guarded_scene_native_resource(texture)) {
+        return texture;
+    }
+
+    if (has_guarded_scene_native_resource(unwrapped)) {
         return unwrapped;
     }
 
