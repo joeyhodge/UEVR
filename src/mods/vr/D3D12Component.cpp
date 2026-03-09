@@ -455,6 +455,15 @@ ID3D12Resource* validate_d3d12_resource_candidate(uintptr_t candidate_ptr) {
         return nullptr;
     }
 
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0 ||
+        desc.DepthOrArraySize == 0 ||
+        desc.MipLevels == 0)
+    {
+        return nullptr;
+    }
+
     return as_resource;
 }
 
@@ -591,16 +600,34 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     const bool guarded_scene_source = (tq2_guard || ue57_guard) && source == "scene render target";
     bool guarded_invalid_texture = false;
 
+    if (guarded_scene_source) {
+        if (auto* normalized = normalize_guarded_scene_pointer(texture, source);
+            normalized != nullptr &&
+            normalized != texture &&
+            !IsBadReadPtr(normalized, sizeof(void*)))
+        {
+            texture = normalized;
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} guarded path: using normalized scene texture candidate {:x}",
+                source,
+                (uintptr_t)texture);
+        }
+    }
+
     if (guarded_scene_source && !is_likely_valid_texture_object(texture)) {
+        if (auto* native_resource = probe_native_d3d12_resource_via_frhi_base(texture, source); native_resource != nullptr) {
+            return native_resource;
+        }
+
         if (auto* native_resource = probe_native_d3d12_resource_from_texture_blob(texture); native_resource != nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(1,
-                "[VR] {} pointer failed initial validation in guarded UE5.7 mode; using original wrapper via native-resource blob scan",
+                "[VR] {} pointer failed initial validation in guarded UE5.7 mode; recovered native resource via pointer scan",
                 source);
             return native_resource;
         }
 
         auto* unwrapped = resolve_texture_object_from_blob(texture, source);
-        if (unwrapped != nullptr && is_likely_valid_texture_object(unwrapped)) {
+        if (unwrapped != nullptr && unwrapped != texture && is_likely_valid_texture_object(unwrapped)) {
             texture = unwrapped;
             SPDLOG_INFO_EVERY_N_SEC(1,
                 "[VR] {} pointer failed initial validation in guarded UE5.7 mode; recovered via blob unwrap",
@@ -608,7 +635,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         } else {
             guarded_invalid_texture = true;
             SPDLOG_INFO_EVERY_N_SEC(1,
-                "[VR] {} pointer failed validation in guarded UE5.7 mode; attempting native-resource blob scan only",
+                "[VR] {} pointer failed validation in guarded UE5.7 mode; attempting guarded fallback probes only",
                 source);
         }
     }
@@ -710,6 +737,17 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
     const bool allow_blob_probe =
         candidate_vtable_looks_valid || candidate_vtable == known_vtable || tq2_guard || ue57_guard || guarded_invalid_texture;
 
+    if (native_resource == nullptr && guarded_scene_source) {
+        native_resource = probe_native_d3d12_resource_via_frhi_base(texture, source, false);
+
+        if (native_resource != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} recovered native resource via guarded FRHITexture fallback before pointer scan: {:x}",
+                source,
+                (uintptr_t)native_resource);
+        }
+    }
+
     if (native_resource == nullptr && allow_blob_probe) {
         native_resource = probe_native_d3d12_resource_from_texture_blob(texture);
 
@@ -721,7 +759,7 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
         }
     }
 
-    if (native_resource == nullptr) {
+    if (native_resource == nullptr && !guarded_scene_source) {
         native_resource = probe_native_d3d12_resource_via_frhi_base(texture, source);
     }
 
@@ -971,8 +1009,8 @@ bool has_guarded_scene_native_resource(FRHITexture2D* texture) {
     }
 
     return
-        probe_native_d3d12_resource_from_texture_blob(texture) != nullptr ||
-        probe_native_d3d12_resource_via_frhi_base(texture, "guarded scene candidate", false) != nullptr;
+        probe_native_d3d12_resource_via_frhi_base(texture, "guarded scene candidate", false) != nullptr ||
+        probe_native_d3d12_resource_from_texture_blob(texture) != nullptr;
 }
 
 FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::string_view source) {
@@ -993,15 +1031,16 @@ FRHITexture2D* normalize_guarded_scene_pointer(FRHITexture2D* texture, std::stri
         return unwrapped;
     }
 
-    if (has_guarded_scene_native_resource(texture)) {
-        return texture;
-    }
-
-    if (has_guarded_scene_native_resource(unwrapped)) {
+    if (unwrapped != texture && has_guarded_scene_native_resource(unwrapped)) {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] {} guarded path: preferring concrete unwrapped scene candidate {:x} -> {:x}",
+            source,
+            (uintptr_t)texture,
+            (uintptr_t)unwrapped);
         return unwrapped;
     }
 
-    return nullptr;
+    return has_guarded_scene_native_resource(texture) ? texture : nullptr;
 }
 
 bool is_bgra8_family(DXGI_FORMAT fmt) noexcept {
@@ -1807,10 +1846,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     };
 
     // For copying the real backbuffer if we need to
+    const bool guarded_scene_source_copy =
+        (tq2_guard || ue57_guard) &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        backbuffer.Get() != m_game_tex.texture.Get();
+
     const bool should_copy_source_to_game_tex =
         m_game_tex.texture.Get() != nullptr &&
-        m_backbuffer_copy.texture.Get() != nullptr &&
-        (backbuffer == real_backbuffer || ((tq2_guard || ue57_guard) && backbuffer.Get() != m_game_tex.texture.Get()));
+        ((m_backbuffer_copy.texture.Get() != nullptr && backbuffer == real_backbuffer) || guarded_scene_source_copy);
 
     bool copied_source_into_game_tex = false;
 
@@ -1830,83 +1874,139 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            const auto src_state = (backbuffer.Get() == real_backbuffer.Get())
-                ? D3D12_RESOURCE_STATE_PRESENT
-                : ((tq2_guard || ue57_guard) ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET);
+            if (guarded_scene_source_copy) {
+                d3d12::TextureContext guarded_scene_source{};
+                guarded_scene_source.texture = backbuffer;
 
-            if (is_tq2_diag_enabled()) {
-                SPDLOG_INFO_EVERY_N_SEC(
-                    1,
-                    "[VR][TQ2_DIAG] source->game copy src={:x} dst={:x} src_state={:#x} guarded={} real_src={}",
-                    (uintptr_t)backbuffer.Get(),
-                    (uintptr_t)m_backbuffer_copy.texture.Get(),
-                    (uint32_t)src_state,
-                    (tq2_guard || ue57_guard) ? 1 : 0,
-                    (backbuffer.Get() == real_backbuffer.Get()) ? 1 : 0);
-            }
-            command_ctx.copy(backbuffer.Get(), m_backbuffer_copy.texture.Get(), src_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+                if (!guarded_scene_source.create_srv(device, source_color_format)) {
+                    SPDLOG_ERROR_EVERY_N_SEC(1,
+                        "[VR] Guarded UE5.7 scene->game blit skipped: failed to create SRV for source {:x}",
+                        (uintptr_t)backbuffer.Get());
+                    return vr::VRCompositorError_None;
+                }
 
-            const auto src_desc = m_backbuffer_copy.texture->GetDesc();
-            const auto dst_desc = m_game_tex.texture->GetDesc();
+                if (is_tq2_diag_enabled()) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "[VR][TQ2_DIAG] guarded scene->game blit src={:x} dst={:x} src_state={:#x}",
+                        (uintptr_t)backbuffer.Get(),
+                        (uintptr_t)m_game_tex.texture.Get(),
+                        (uint32_t)ENGINE_SRC_COLOR);
+                }
 
-            RECT src_rect{
-                0,
-                0,
-                (LONG)src_desc.Width,
-                (LONG)src_desc.Height
-            };
+                const auto src_desc = backbuffer->GetDesc();
+                const auto dst_desc = m_game_tex.texture->GetDesc();
 
-            // AFR eye swapchains must be fully covered; aspect-fit leaves large untouched areas
-            // and causes white/yellow garbage in the headset.
-            const bool use_aspect_fit_for_game_copy = !(runtime->is_openxr() && is_actually_afr);
-            const auto dest_rect = use_aspect_fit_for_game_copy
-                ? make_aspect_fit_rect(
-                    (uint32_t)src_desc.Width,
-                    (uint32_t)src_desc.Height,
-                    (uint32_t)dst_desc.Width,
-                    (uint32_t)dst_desc.Height
-                )
-                : std::nullopt;
-            auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
-            if (batch_for_game_tex == nullptr) {
-                SPDLOG_ERROR_EVERY_N_SEC(1,
-                    "[VR] Guarded source->game blit skipped: SpriteBatch PSO unavailable for format {}",
-                    (uint32_t)dst_desc.Format);
-                return vr::VRCompositorError_None;
-            }
+                RECT src_rect{
+                    0,
+                    0,
+                    (LONG)src_desc.Width,
+                    (LONG)src_desc.Height
+                };
 
-            if (use_aspect_fit_for_game_copy && dest_rect.has_value()) {
-                SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[VR] Real backbuffer fallback aspect-fit blit: src {}x{} -> dst {}x{} (rect {},{}-{},{} )",
-                    src_desc.Width,
-                    src_desc.Height,
-                    dst_desc.Width,
-                    dst_desc.Height,
-                    dest_rect->left,
-                    dest_rect->top,
-                    dest_rect->right,
-                    dest_rect->bottom);
+                const bool use_aspect_fit_for_game_copy = !(runtime->is_openxr() && is_actually_afr);
+                const auto dest_rect = use_aspect_fit_for_game_copy
+                    ? make_aspect_fit_rect(
+                        (uint32_t)src_desc.Width,
+                        (uint32_t)src_desc.Height,
+                        (uint32_t)dst_desc.Width,
+                        (uint32_t)dst_desc.Height
+                    )
+                    : std::nullopt;
+                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
+                if (batch_for_game_tex == nullptr) {
+                    SPDLOG_ERROR_EVERY_N_SEC(1,
+                        "[VR] Guarded scene->game blit skipped: SpriteBatch PSO unavailable for format {}",
+                        (uint32_t)dst_desc.Format);
+                    return vr::VRCompositorError_None;
+                }
 
                 d3d12::render_srv_to_rtv(
                     batch_for_game_tex,
                     command_ctx.cmd_list.Get(),
-                    m_backbuffer_copy,
+                    guarded_scene_source,
                     m_game_tex,
                     src_rect,
                     dest_rect,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    ENGINE_SRC_COLOR,
                     D3D12_RESOURCE_STATE_RENDER_TARGET
                 );
             } else {
-                d3d12::render_srv_to_rtv(
-                    batch_for_game_tex,
-                    command_ctx.cmd_list.Get(),
-                    m_backbuffer_copy,
-                    m_game_tex,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET,
-                    D3D12_RESOURCE_STATE_RENDER_TARGET
-                );
+                const auto src_state = D3D12_RESOURCE_STATE_PRESENT;
+
+                if (is_tq2_diag_enabled()) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "[VR][TQ2_DIAG] source->game copy src={:x} dst={:x} src_state={:#x} guarded={} real_src={}",
+                        (uintptr_t)backbuffer.Get(),
+                        (uintptr_t)m_backbuffer_copy.texture.Get(),
+                        (uint32_t)src_state,
+                        (tq2_guard || ue57_guard) ? 1 : 0,
+                        1);
+                }
+                command_ctx.copy(backbuffer.Get(), m_backbuffer_copy.texture.Get(), src_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+                const auto src_desc = m_backbuffer_copy.texture->GetDesc();
+                const auto dst_desc = m_game_tex.texture->GetDesc();
+
+                RECT src_rect{
+                    0,
+                    0,
+                    (LONG)src_desc.Width,
+                    (LONG)src_desc.Height
+                };
+
+                const bool use_aspect_fit_for_game_copy = !(runtime->is_openxr() && is_actually_afr);
+                const auto dest_rect = use_aspect_fit_for_game_copy
+                    ? make_aspect_fit_rect(
+                        (uint32_t)src_desc.Width,
+                        (uint32_t)src_desc.Height,
+                        (uint32_t)dst_desc.Width,
+                        (uint32_t)dst_desc.Height
+                    )
+                    : std::nullopt;
+                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
+                if (batch_for_game_tex == nullptr) {
+                    SPDLOG_ERROR_EVERY_N_SEC(1,
+                        "[VR] Guarded source->game blit skipped: SpriteBatch PSO unavailable for format {}",
+                        (uint32_t)dst_desc.Format);
+                    return vr::VRCompositorError_None;
+                }
+
+                if (use_aspect_fit_for_game_copy && dest_rect.has_value()) {
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[VR] Real backbuffer fallback aspect-fit blit: src {}x{} -> dst {}x{} (rect {},{}-{},{} )",
+                        src_desc.Width,
+                        src_desc.Height,
+                        dst_desc.Width,
+                        dst_desc.Height,
+                        dest_rect->left,
+                        dest_rect->top,
+                        dest_rect->right,
+                        dest_rect->bottom);
+
+                    d3d12::render_srv_to_rtv(
+                        batch_for_game_tex,
+                        command_ctx.cmd_list.Get(),
+                        m_backbuffer_copy,
+                        m_game_tex,
+                        src_rect,
+                        dest_rect,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                    );
+                } else {
+                    d3d12::render_srv_to_rtv(
+                        batch_for_game_tex,
+                        command_ctx.cmd_list.Get(),
+                        m_backbuffer_copy,
+                        m_game_tex,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET,
+                        D3D12_RESOURCE_STATE_RENDER_TARGET
+                    );
+                }
             }
+
             command_ctx.execute();
             copied_source_into_game_tex = true;
         }

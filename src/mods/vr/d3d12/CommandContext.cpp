@@ -211,6 +211,36 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
         return;
     }
 
+    D3D12_RESOURCE_DESC src_desc{};
+    D3D12_RESOURCE_DESC dst_desc{};
+    src_desc = src->GetDesc();
+    dst_desc = dst->GetDesc();
+
+    const bool desc_mismatch =
+        src_desc.Dimension != dst_desc.Dimension ||
+        src_desc.Width != dst_desc.Width ||
+        src_desc.Height != dst_desc.Height ||
+        src_desc.DepthOrArraySize != dst_desc.DepthOrArraySize ||
+        src_desc.MipLevels != dst_desc.MipLevels ||
+        src_desc.Format != dst_desc.Format ||
+        src_desc.SampleDesc.Count != dst_desc.SampleDesc.Count ||
+        src_desc.SampleDesc.Quality != dst_desc.SampleDesc.Quality;
+
+    if (desc_mismatch) {
+        SPDLOG_ERROR_EVERY_N_SEC(1,
+            "[VR] copy skipped: incompatible resources ({}) src {}x{} fmt {} sample {} -> dst {}x{} fmt {} sample {}",
+            utility::narrow(this->internal_name),
+            src_desc.Width,
+            src_desc.Height,
+            (uint32_t)src_desc.Format,
+            src_desc.SampleDesc.Count,
+            dst_desc.Width,
+            dst_desc.Height,
+            (uint32_t)dst_desc.Format,
+            dst_desc.SampleDesc.Count);
+        return;
+    }
+
     // Switch src into copy source.
     D3D12_RESOURCE_BARRIER src_barrier{};
 
