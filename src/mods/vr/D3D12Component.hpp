@@ -286,6 +286,9 @@ private:
     bool m_last_afr_state{false};
     bool m_submitted_left_eye{false};
     bool m_last_frame_used_real_backbuffer_source{false};
+    d3d12::TextureContext m_guarded_scene_source_tex{};
+    ComPtr<ID3D12Resource> m_guarded_last_scene_source{};
+    DXGI_FORMAT m_guarded_scene_source_srv_format{DXGI_FORMAT_UNKNOWN};
     DXGI_FORMAT m_guarded_sticky_openxr_copy_format{DXGI_FORMAT_UNKNOWN};
     uint32_t m_guarded_sticky_openxr_copy_width{0};
     uint32_t m_guarded_sticky_openxr_copy_height{0};

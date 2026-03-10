@@ -1314,6 +1314,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get swapchain
     auto swapchain = hook->get_swap_chain();
 
+    const bool guarded_57_mode = tq2_guard || ue57_guard;
+
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
@@ -1323,7 +1325,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (ue4_texture != nullptr) {
         backbuffer = safe_get_native_resource(ue4_texture, "scene render target");
 
-        if (backbuffer == nullptr && !(tq2_guard || ue57_guard) && g_last_good_scene_texture != nullptr && g_last_good_scene_texture != ue4_texture) {
+        if (backbuffer == nullptr && !guarded_57_mode && g_last_good_scene_texture != nullptr && g_last_good_scene_texture != ue4_texture) {
             auto* cached_texture = g_last_good_scene_texture;
             if (cached_texture != nullptr && !IsBadReadPtr(cached_texture, sizeof(void*))) {
                 auto cached_backbuffer = safe_get_native_resource(cached_texture, "cached scene render target");
@@ -1381,9 +1383,96 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         vr,
         (uint32_t)real_backbuffer_desc.Width * 2u,
         (uint32_t)real_backbuffer_desc.Height);
-    const auto expected_double_width_for_frame = (tq2_guard || ue57_guard) ? expected_runtime_width : (uint32_t)m_backbuffer_size[0];
+    const auto expected_double_width_for_frame = guarded_57_mode ? expected_runtime_width : (uint32_t)m_backbuffer_size[0];
 
-    if ((tq2_guard || ue57_guard) && !using_real_backbuffer_source) {
+    const auto clear_guarded_scene_cache = [&]() {
+        m_guarded_last_scene_source.Reset();
+        m_guarded_scene_source_tex.reset();
+        m_guarded_scene_source_srv_format = DXGI_FORMAT_UNKNOWN;
+    };
+
+    const auto try_reuse_guarded_scene_source = [&]() -> bool {
+        if (!guarded_57_mode || m_guarded_last_scene_source.Get() == nullptr) {
+            return false;
+        }
+
+        auto* const cached_scene = m_guarded_last_scene_source.Get();
+        if (cached_scene == real_backbuffer.Get()) {
+            clear_guarded_scene_cache();
+            return false;
+        }
+
+        D3D12_RESOURCE_DESC cached_desc{};
+        if (!try_get_resource_desc_nothrow(cached_scene, cached_desc)) {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: discarding cached scene source {:x}; desc read failed",
+                (uintptr_t)cached_scene);
+            clear_guarded_scene_cache();
+            return false;
+        }
+
+        if (!is_plausible_scene_source_desc(
+                cached_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: discarding cached scene source {:x}; desc {}x{} fmt {} no longer plausible",
+                (uintptr_t)cached_scene,
+                cached_desc.Width,
+                cached_desc.Height,
+                (uint32_t)cached_desc.Format);
+            clear_guarded_scene_cache();
+            return false;
+        }
+
+        backbuffer = cached_scene;
+        backbuffer_desc = cached_desc;
+        using_real_backbuffer_source = false;
+
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] Guarded UE5.7: reusing cached non-real scene source {:x} ({}x{} fmt {}) instead of real backbuffer",
+            (uintptr_t)cached_scene,
+            cached_desc.Width,
+            cached_desc.Height,
+            (uint32_t)cached_desc.Format);
+        return true;
+    };
+
+    const auto remember_guarded_scene_source = [&]() {
+        if (!guarded_57_mode || backbuffer.Get() == nullptr || backbuffer.Get() == real_backbuffer.Get() || using_real_backbuffer_source) {
+            return;
+        }
+
+        if (!is_plausible_scene_source_desc(
+                backbuffer_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            return;
+        }
+
+        if (m_guarded_last_scene_source.Get() != backbuffer.Get()) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: caching non-real scene source {:x} ({}x{} fmt {})",
+                (uintptr_t)backbuffer.Get(),
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format);
+            m_guarded_scene_source_tex.reset();
+            m_guarded_scene_source_srv_format = DXGI_FORMAT_UNKNOWN;
+        }
+
+        m_guarded_last_scene_source = backbuffer;
+    };
+
+    if (guarded_57_mode && using_real_backbuffer_source) {
+        try_reuse_guarded_scene_source();
+    }
+
+    if (guarded_57_mode && !using_real_backbuffer_source) {
         if (!is_plausible_scene_source_desc(
                 backbuffer_desc,
                 real_backbuffer_desc,
@@ -1406,13 +1495,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    if (tq2_guard || ue57_guard) {
+    if (guarded_57_mode) {
         // UE5.7/TQ2 can briefly oscillate between stale/invalid scene resources during startup.
         // Release the real-backbuffer latch as soon as a plausible scene source appears.
         static uint32_t s_force_real_frames = 0;
         static uint32_t s_stable_scene_frames = 0;
         constexpr uint32_t kForceRealLatchFrames = 12;
-        constexpr uint32_t kMinStableSceneFrames = 1;
+        constexpr uint32_t kMinStableSceneFrames = 3;
 
         if (using_real_backbuffer_source) {
             s_force_real_frames = kForceRealLatchFrames;
@@ -1442,7 +1531,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    if (!using_real_backbuffer_source && !(tq2_guard || ue57_guard) && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
+    if (guarded_57_mode) {
+        if (using_real_backbuffer_source) {
+            try_reuse_guarded_scene_source();
+        } else {
+            remember_guarded_scene_source();
+        }
+    }
+
+    if (!using_real_backbuffer_source && !guarded_57_mode && ue4_texture != nullptr && is_likely_valid_texture_object(ue4_texture)) {
         bool cache_candidate = true;
         const auto known_vtable = FRHITexture2D::get_vtable();
         if (known_vtable != nullptr) {
@@ -1845,6 +1942,51 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return m_game_batch.get();
     };
 
+    auto get_guarded_scene_source_ctx = [&](ID3D12Resource* source_texture) -> d3d12::TextureContext* {
+        if (source_texture == nullptr) {
+            return nullptr;
+        }
+
+        if (m_game_tex.texture.Get() == source_texture && m_game_tex.srv_heap != nullptr) {
+            return &m_game_tex;
+        }
+
+        if (!guarded_57_mode) {
+            return nullptr;
+        }
+
+        const auto typed_source_format = canonical_typed_color_format(source_color_format);
+        if (typed_source_format == DXGI_FORMAT_UNKNOWN) {
+            return nullptr;
+        }
+
+        if (m_guarded_scene_source_tex.texture.Get() != source_texture ||
+            m_guarded_scene_source_tex.srv_heap == nullptr ||
+            m_guarded_scene_source_srv_format != typed_source_format)
+        {
+            m_guarded_scene_source_tex.reset();
+            m_guarded_scene_source_tex.texture = source_texture;
+
+            if (!m_guarded_scene_source_tex.create_srv(device, typed_source_format)) {
+                SPDLOG_ERROR_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7 direct scene submit skipped: failed to create SRV for source {:x} fmt {}",
+                    (uintptr_t)source_texture,
+                    (uint32_t)typed_source_format);
+                m_guarded_scene_source_tex.reset();
+                m_guarded_scene_source_srv_format = DXGI_FORMAT_UNKNOWN;
+                return nullptr;
+            }
+
+            m_guarded_scene_source_srv_format = typed_source_format;
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[VR] Guarded UE5.7: using direct scene SRV path for OpenXR submit (source {:x}, fmt {})",
+                (uintptr_t)source_texture,
+                (uint32_t)typed_source_format);
+        }
+
+        return &m_guarded_scene_source_tex;
+    };
+
     // We need to render the scene capture texture to the right side of the double wide texture
     auto pre_render = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
         auto* source_texture = backbuffer.Get();
@@ -1874,12 +2016,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (m_scene_capture_tex.texture.Get() == nullptr && !scene_is_double_wide) {
             auto* const dst_ctx = m_openxr.find_texture_context(render_target);
             auto* const batch_for_target = ensure_game_batch_for_format(target_desc.Format);
+            auto* const src_ctx = get_guarded_scene_source_ctx(source_texture);
             const bool can_aspect_fit_blit =
                 dst_ctx != nullptr &&
                 dst_ctx->rtv_heap != nullptr &&
                 batch_for_target != nullptr &&
-                m_game_tex.texture.Get() == source_texture &&
-                m_game_tex.srv_heap != nullptr;
+                src_ctx != nullptr &&
+                src_ctx->srv_heap != nullptr;
 
             if (can_aspect_fit_blit) {
                 auto eye_rect = make_aspect_fit_rect(scene_width, scene_height, target_eye_width, target_height);
@@ -1903,7 +2046,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     d3d12::render_srv_to_rtv(
                         batch_for_target,
                         commands.cmd_list.Get(),
-                        m_game_tex,
+                        *src_ctx,
                         *dst_ctx,
                         src_rect,
                         left_dst,
@@ -1914,7 +2057,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     d3d12::render_srv_to_rtv(
                         batch_for_target,
                         commands.cmd_list.Get(),
-                        m_game_tex,
+                        *src_ctx,
                         *dst_ctx,
                         src_rect,
                         right_dst,
@@ -2001,12 +2144,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     };
 
+    const bool guarded_direct_scene_submit =
+        guarded_57_mode &&
+        runtime->is_openxr() &&
+        !is_actually_afr &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
+
     // For copying the real backbuffer if we need to
     const bool guarded_scene_source_copy =
-        (tq2_guard || ue57_guard) &&
+        guarded_57_mode &&
         backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get() &&
-        backbuffer.Get() != m_game_tex.texture.Get();
+        backbuffer.Get() != m_game_tex.texture.Get() &&
+        !guarded_direct_scene_submit;
 
     const bool should_copy_source_to_game_tex =
         m_game_tex.texture.Get() != nullptr &&
@@ -2176,7 +2327,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // UE5.7/TQ2: always prefer the intermediate game-copy texture for OpenXR scene submits.
     // This keeps color/channel layout stable for runtimes exposing typeless RGBA swapchain images.
-    if (runtime->is_openxr() && (tq2_guard || ue57_guard) && m_game_tex.texture.Get() != nullptr) {
+    if (runtime->is_openxr() && guarded_57_mode && m_game_tex.texture.Get() != nullptr && !guarded_direct_scene_submit) {
         if (backbuffer.Get() != m_game_tex.texture.Get()) {
             D3D12_RESOURCE_DESC game_desc{};
             if (try_get_resource_desc_nothrow(m_game_tex.texture.Get(), game_desc)) {
@@ -2611,9 +2762,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             } else {
                 // Copy over the entire double wide when the source already matches.
                 // If source is single-wide, pre_render duplicates it into both halves.
-                if (m_scene_capture_tex.texture.Get() == nullptr && source_is_double_wide) {
+                if (!guarded_57_mode && m_scene_capture_tex.texture.Get() == nullptr && source_is_double_wide) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
                 } else {
+                    if (guarded_57_mode) {
+                        SPDLOG_INFO_EVERY_N_SEC(2,
+                            "[VR] Guarded UE5.7: forcing pre-render scene path for OpenXR submit (source {}x{} fmt {}, double_wide={})",
+                            source_width,
+                            source_height,
+                            (uint32_t)source_desc.Format,
+                            source_is_double_wide ? 1 : 0);
+                    }
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
                 }
 
@@ -3104,7 +3263,9 @@ void D3D12Component::on_post_present(VR* vr) {
 
     // Clear the (real) backbuffer if VR is enabled. Otherwise it will flicker and all sorts of nasty things.
     if (vr->is_hmd_active()) {
-        if (m_last_frame_used_real_backbuffer_source) {
+        if (tq2_guard || ue57_guard) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Guarded UE5.7: skipping post-present backbuffer clear");
+        } else if (m_last_frame_used_real_backbuffer_source) {
             SPDLOG_INFO_EVERY_N_SEC(2, "[VR] Skipping post-present backbuffer clear while using real backbuffer source");
         } else {
             clear_backbuffer();
@@ -3115,6 +3276,9 @@ void D3D12Component::on_post_present(VR* vr) {
 void D3D12Component::on_reset(VR* vr) {
     m_force_reset = true;
     m_last_frame_used_real_backbuffer_source = false;
+    m_guarded_scene_source_tex.reset();
+    m_guarded_last_scene_source.Reset();
+    m_guarded_scene_source_srv_format = DXGI_FORMAT_UNKNOWN;
 
     auto runtime = vr->get_runtime();
 
