@@ -372,6 +372,33 @@ bool is_plausible_scene_source_desc(
     return true;
 }
 
+bool is_probable_desktop_sized_scene_source(
+    const D3D12_RESOURCE_DESC& source_desc,
+    const D3D12_RESOURCE_DESC& real_backbuffer_desc,
+    uint32_t expected_stereo_width,
+    uint32_t expected_stereo_height)
+{
+    if (source_desc.Width == 0 || source_desc.Height == 0 ||
+        real_backbuffer_desc.Width == 0 || real_backbuffer_desc.Height == 0)
+    {
+        return false;
+    }
+
+    const bool same_size_as_real_backbuffer =
+        source_desc.Width == real_backbuffer_desc.Width &&
+        source_desc.Height == real_backbuffer_desc.Height;
+
+    if (!same_size_as_real_backbuffer) {
+        return false;
+    }
+
+    const bool expected_runtime_is_much_larger =
+        expected_stereo_width > ((uint32_t)real_backbuffer_desc.Width + ((uint32_t)real_backbuffer_desc.Width / 2u)) ||
+        expected_stereo_height > ((uint32_t)real_backbuffer_desc.Height + ((uint32_t)real_backbuffer_desc.Height / 2u));
+
+    return expected_runtime_is_much_larger;
+}
+
 std::optional<RECT> make_aspect_fit_rect(uint32_t src_width, uint32_t src_height, uint32_t dst_width, uint32_t dst_height) {
     if (src_width == 0 || src_height == 0 || dst_width == 0 || dst_height == 0) {
         return std::nullopt;
@@ -1391,6 +1418,75 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_guarded_scene_source_srv_format = DXGI_FORMAT_UNKNOWN;
     };
 
+    const auto is_uevr_managed_scene_candidate = [&](ID3D12Resource* candidate, const char* stage) -> bool {
+        if (candidate == nullptr) {
+            return false;
+        }
+
+        if (const auto swapchain_idx = m_openxr.find_swapchain_index(candidate); swapchain_idx.has_value()) {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases OpenXR swapchain {}",
+                stage,
+                (uintptr_t)candidate,
+                *swapchain_idx);
+            return true;
+        }
+
+        const auto framework_rt = g_framework != nullptr ? g_framework->get_rendertarget_d3d12().Get() : nullptr;
+        if (candidate == framework_rt) {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases the framework render target",
+                stage,
+                (uintptr_t)candidate);
+            return true;
+        }
+
+        if (candidate == m_game_tex.texture.Get() ||
+            candidate == m_backbuffer_copy.texture.Get() ||
+            candidate == m_game_ui_tex.texture.Get() ||
+            candidate == m_scene_capture_tex.texture.Get() ||
+            candidate == m_openvr.ui_tex.texture.Get())
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases a UEVR-managed texture",
+                stage,
+                (uintptr_t)candidate);
+            return true;
+        }
+
+        for (const auto& tex : m_2d_screen_tex) {
+            if (candidate == tex.texture.Get()) {
+                SPDLOG_WARNING_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases a 2D-screen texture",
+                    stage,
+                    (uintptr_t)candidate);
+                return true;
+            }
+        }
+
+        for (const auto& tex : m_openvr.left_eye_tex) {
+            if (candidate == tex.texture.Get()) {
+                SPDLOG_WARNING_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases an OpenVR eye texture",
+                    stage,
+                    (uintptr_t)candidate);
+                return true;
+            }
+        }
+
+        for (const auto& tex : m_openvr.right_eye_tex) {
+            if (candidate == tex.texture.Get()) {
+                SPDLOG_WARNING_EVERY_N_SEC(1,
+                    "[VR] Guarded UE5.7: rejecting {} scene candidate {:x}; it aliases an OpenVR eye texture",
+                    stage,
+                    (uintptr_t)candidate);
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     const auto try_reuse_guarded_scene_source = [&]() -> bool {
         if (!guarded_57_mode || m_guarded_last_scene_source.Get() == nullptr) {
             return false;
@@ -1398,6 +1494,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         auto* const cached_scene = m_guarded_last_scene_source.Get();
         if (cached_scene == real_backbuffer.Get()) {
+            clear_guarded_scene_cache();
+            return false;
+        }
+
+        if (is_uevr_managed_scene_candidate(cached_scene, "cached")) {
             clear_guarded_scene_cache();
             return false;
         }
@@ -1427,6 +1528,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return false;
         }
 
+        if (is_probable_desktop_sized_scene_source(
+                cached_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: discarding cached scene source {:x}; desc {}x{} matches the desktop backbuffer while expected stereo is {}x{}",
+                (uintptr_t)cached_scene,
+                cached_desc.Width,
+                cached_desc.Height,
+                expected_runtime_width,
+                expected_runtime_height);
+            clear_guarded_scene_cache();
+            return false;
+        }
+
         backbuffer = cached_scene;
         backbuffer_desc = cached_desc;
         using_real_backbuffer_source = false;
@@ -1445,12 +1563,33 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return;
         }
 
+        if (is_uevr_managed_scene_candidate(backbuffer.Get(), "active")) {
+            return;
+        }
+
         if (!is_plausible_scene_source_desc(
                 backbuffer_desc,
                 real_backbuffer_desc,
                 expected_runtime_width,
                 expected_runtime_height))
         {
+            return;
+        }
+
+        if (is_probable_desktop_sized_scene_source(
+                backbuffer_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: not caching desktop-sized scene source {:x} ({}x{} fmt {}) while expected stereo is {}x{}",
+                (uintptr_t)backbuffer.Get(),
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format,
+                expected_runtime_width,
+                expected_runtime_height);
             return;
         }
 
@@ -1467,6 +1606,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         m_guarded_last_scene_source = backbuffer;
     };
+
+    if (guarded_57_mode &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        !using_real_backbuffer_source &&
+        is_uevr_managed_scene_candidate(backbuffer.Get(), "resolved"))
+    {
+        backbuffer = real_backbuffer;
+        backbuffer_desc = real_backbuffer_desc;
+        using_real_backbuffer_source = true;
+    }
 
     if (guarded_57_mode && using_real_backbuffer_source) {
         try_reuse_guarded_scene_source();
@@ -2161,23 +2311,52 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     };
 
+    const bool guarded_scene_source_is_typeless =
+        guarded_57_mode &&
+        (backbuffer_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+         backbuffer_desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS ||
+         backbuffer_desc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS);
+
+    const bool guarded_scene_source_is_single_wide =
+        guarded_57_mode &&
+        runtime->is_openxr() &&
+        !is_actually_afr &&
+        !is_likely_double_wide_source((uint32_t)backbuffer_desc.Width, expected_double_width_for_frame);
+
+    const bool guarded_scene_source_requires_intermediate =
+        guarded_57_mode &&
+        runtime->is_openxr() &&
+        !is_actually_afr &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        (guarded_scene_source_is_typeless ||
+         guarded_scene_source_is_single_wide ||
+         source_color_format == DXGI_FORMAT_UNKNOWN ||
+         source_color_format != copy_output_format ||
+         is_r10g10b10a2_family(source_color_format) ||
+         desired_game_width != (uint32_t)backbuffer_desc.Width ||
+         desired_game_height != (uint32_t)backbuffer_desc.Height);
+
     const bool guarded_direct_scene_submit =
         guarded_57_mode &&
         runtime->is_openxr() &&
         !is_actually_afr &&
         backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get() &&
-        source_color_format != DXGI_FORMAT_UNKNOWN &&
-        source_color_format == copy_output_format &&
-        !is_r10g10b10a2_family(source_color_format);
+        !guarded_scene_source_requires_intermediate;
 
     if (guarded_57_mode && runtime->is_openxr() && !is_actually_afr &&
         backbuffer.Get() != nullptr && backbuffer.Get() != real_backbuffer.Get() &&
         !guarded_direct_scene_submit)
     {
         SPDLOG_INFO_EVERY_N_SEC(1,
-            "[VR] Guarded UE5.7: forcing normalized offscreen copy for scene source fmt {} -> copy fmt {}",
+            "[VR] Guarded UE5.7: forcing normalized offscreen copy for scene source raw_fmt {} typed_fmt {} size {}x{} -> game-copy {}x{} fmt {}",
+            (uint32_t)backbuffer_desc.Format,
             (uint32_t)source_color_format,
+            backbuffer_desc.Width,
+            backbuffer_desc.Height,
+            desired_game_width,
+            desired_game_height,
             (uint32_t)copy_output_format);
     }
 
@@ -3819,9 +3998,10 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             if (ctx.textures[j].texture != nullptr) {
                 D3D12_RESOURCE_DESC image_desc{};
                 if (try_get_resource_desc_nothrow(ctx.textures[j].texture, image_desc)) {
-                    SPDLOG_INFO("[VR] OpenXR swapchain {} image {} desc: {}x{} fmt {} samples {} flags {:#x}",
+                    SPDLOG_INFO("[VR] OpenXR swapchain {} image {} tex {:x} desc: {}x{} fmt {} samples {} flags {:#x}",
                         i,
                         j,
+                        (uintptr_t)ctx.textures[j].texture,
                         image_desc.Width,
                         image_desc.Height,
                         (uint32_t)image_desc.Format,
@@ -4146,6 +4326,24 @@ d3d12::TextureContext* D3D12Component::OpenXR::find_texture_context(ID3D12Resour
     }
 
     return nullptr;
+}
+
+std::optional<uint32_t> D3D12Component::OpenXR::find_swapchain_index(ID3D12Resource* resource) {
+    if (resource == nullptr) {
+        return std::nullopt;
+    }
+
+    std::scoped_lock _{this->mtx};
+
+    for (auto& [swapchain_idx, ctx] : this->contexts) {
+        for (auto& texture : ctx.textures) {
+            if (texture.texture == resource) {
+                return swapchain_idx;
+            }
+        }
+    }
+
+    return std::nullopt;
 }
 
 void D3D12Component::OpenXR::copy(
