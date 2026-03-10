@@ -261,6 +261,25 @@ private:
             return it->second.ever_acquired;
         }
 
+        bool submitted_this_frame(uint32_t swapchain_idx) {
+            std::scoped_lock _{this->mtx};
+
+            auto it = this->contexts.find(swapchain_idx);
+            if (it == this->contexts.end()) {
+                return false;
+            }
+
+            return it->second.submitted_this_frame;
+        }
+
+        void begin_frame_submission() {
+            std::scoped_lock _{this->mtx};
+
+            for (auto& [_, ctx] : this->contexts) {
+                ctx.submitted_this_frame = false;
+            }
+        }
+
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
 
         struct SwapchainContext {
@@ -269,6 +288,7 @@ private:
             uint32_t num_textures_acquired{0};
             uint32_t last_acquired_texture{0};
             bool ever_acquired{false};
+            bool submitted_this_frame{false};
         };
 
         std::unordered_map<uint32_t, SwapchainContext> contexts{};

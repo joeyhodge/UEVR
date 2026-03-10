@@ -1495,6 +1495,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
+    const bool had_guarded_scene_candidate_pre_latch =
+        guarded_57_mode &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        !using_real_backbuffer_source &&
+        is_plausible_scene_source_desc(
+            backbuffer_desc,
+            real_backbuffer_desc,
+            expected_runtime_width,
+            expected_runtime_height);
+
     if (guarded_57_mode) {
         // UE5.7/TQ2 can briefly oscillate between stale/invalid scene resources during startup.
         // Release the real-backbuffer latch as soon as a plausible scene source appears.
@@ -1503,7 +1514,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         constexpr uint32_t kForceRealLatchFrames = 12;
         constexpr uint32_t kMinStableSceneFrames = 3;
 
-        if (using_real_backbuffer_source) {
+        if (!had_guarded_scene_candidate_pre_latch) {
             s_force_real_frames = kForceRealLatchFrames;
             s_stable_scene_frames = 0;
         } else {
@@ -1513,7 +1524,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
 
-        if (!using_real_backbuffer_source && s_force_real_frames > 0) {
+        if (had_guarded_scene_candidate_pre_latch && s_force_real_frames > 0) {
             if (s_stable_scene_frames >= kMinStableSceneFrames) {
                 SPDLOG_INFO_EVERY_N_SEC(1,
                     "[VR] Guarded UE5.7 source latch released after {} stable scene frames",
@@ -1532,10 +1543,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (guarded_57_mode) {
-        if (using_real_backbuffer_source) {
-            try_reuse_guarded_scene_source();
-        } else {
+        if (!using_real_backbuffer_source) {
             remember_guarded_scene_source();
+        } else if (had_guarded_scene_candidate_pre_latch) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: keeping cached scene candidate warm while latch still forces real backbuffer");
+        } else {
+            try_reuse_guarded_scene_source();
         }
     }
 
@@ -1579,6 +1593,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // Update the UI overlay.
     auto runtime = vr->get_runtime();
+    if (runtime->is_openxr()) {
+        m_openxr.begin_frame_submission();
+    }
 
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
     m_last_rendered_frame = vr->m_render_frame_count;
@@ -2149,7 +2166,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         runtime->is_openxr() &&
         !is_actually_afr &&
         backbuffer.Get() != nullptr &&
-        backbuffer.Get() != real_backbuffer.Get();
+        backbuffer.Get() != real_backbuffer.Get() &&
+        source_color_format != DXGI_FORMAT_UNKNOWN &&
+        source_color_format == copy_output_format &&
+        !is_r10g10b10a2_family(source_color_format);
+
+    if (guarded_57_mode && runtime->is_openxr() && !is_actually_afr &&
+        backbuffer.Get() != nullptr && backbuffer.Get() != real_backbuffer.Get() &&
+        !guarded_direct_scene_submit)
+    {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] Guarded UE5.7: forcing normalized offscreen copy for scene source fmt {} -> copy fmt {}",
+            (uint32_t)source_color_format,
+            (uint32_t)copy_output_format);
+    }
 
     // For copying the real backbuffer if we need to
     const bool guarded_scene_source_copy =
@@ -2872,14 +2902,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 const auto left_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_LEFT);
                 const auto right_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI_RIGHT, XrEyeVisibility::XR_EYE_VISIBILITY_RIGHT);
 
-                if (left_layer && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
+                if (left_layer && m_openxr.submitted_this_frame((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&left_layer->get());
                 }
 
-                if (right_layer && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT)) {
+                if (right_layer && m_openxr.submitted_this_frame((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT)) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&right_layer->get());
                 }
-            } else if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
+            } else if (m_openxr.submitted_this_frame((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
                 const auto slate_layer = openxr_overlay.generate_slate_layer();
 
                 if (slate_layer) {
@@ -2887,7 +2917,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }   
             }
             
-            if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
+            if (m_openxr.submitted_this_frame((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
                 const auto framework_quad = openxr_overlay.generate_framework_ui_quad();
                 if (framework_quad) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&framework_quad->get());
@@ -4456,6 +4486,7 @@ openxr_copy_finalize:
 
             ctx.num_textures_acquired--;
             ctx.ever_acquired = true;
+            ctx.submitted_this_frame = true;
         }
     }
 }
