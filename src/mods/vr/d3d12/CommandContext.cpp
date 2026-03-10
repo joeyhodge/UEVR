@@ -79,6 +79,19 @@ static void log_device_removed_reason(const wchar_t* where_tag) {
     }
 }
 
+static bool try_get_desc_nothrow(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out_desc) noexcept {
+    if (resource == nullptr) {
+        return false;
+    }
+
+    __try {
+        out_desc = resource->GetDesc();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 bool CommandContext::setup(const wchar_t* name) {
     std::scoped_lock _{this->mtx};
 
@@ -213,8 +226,15 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
 
     D3D12_RESOURCE_DESC src_desc{};
     D3D12_RESOURCE_DESC dst_desc{};
-    src_desc = src->GetDesc();
-    dst_desc = dst->GetDesc();
+
+    if (!try_get_desc_nothrow(src, src_desc) || !try_get_desc_nothrow(dst, dst_desc)) {
+        SPDLOG_ERROR_EVERY_N_SEC(1,
+            "[VR] copy skipped: failed to query resource desc safely ({}) src={:x} dst={:x}",
+            utility::narrow(this->internal_name),
+            (uintptr_t)src,
+            (uintptr_t)dst);
+        return;
+    }
 
     const bool desc_mismatch =
         src_desc.Dimension != dst_desc.Dimension ||
@@ -296,6 +316,17 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
         return;
     }
 
+    D3D12_RESOURCE_DESC src_desc{};
+    D3D12_RESOURCE_DESC dst_desc{};
+    if (!try_get_desc_nothrow(src, src_desc) || !try_get_desc_nothrow(dst, dst_desc)) {
+        SPDLOG_ERROR_EVERY_N_SEC(1,
+            "[VR] copy_region skipped: failed to query resource desc safely ({}) src={:x} dst={:x}",
+            utility::narrow(this->internal_name),
+            (uintptr_t)src,
+            (uintptr_t)dst);
+        return;
+    }
+
     // Switch src into copy source.
     D3D12_RESOURCE_BARRIER src_barrier{};
 
@@ -358,6 +389,17 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
     if (src == dst) {
         SPDLOG_WARNING_EVERY_N_SEC(1, "[VR] copy_region skipped: source and destination are identical ({})", utility::narrow(this->internal_name));
+        return;
+    }
+
+    D3D12_RESOURCE_DESC src_desc{};
+    D3D12_RESOURCE_DESC dst_desc{};
+    if (!try_get_desc_nothrow(src, src_desc) || !try_get_desc_nothrow(dst, dst_desc)) {
+        SPDLOG_ERROR_EVERY_N_SEC(1,
+            "[VR] copy_region skipped: failed to query resource desc safely ({}) src={:x} dst={:x}",
+            utility::narrow(this->internal_name),
+            (uintptr_t)src,
+            (uintptr_t)dst);
         return;
     }
 

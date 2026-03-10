@@ -13,7 +13,9 @@
 #include <cstdlib>
 #include <exception>
 #include <limits>
+#include <mutex>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <DirectXMath.h>
 
@@ -1130,6 +1132,160 @@ bool is_copy_format_compatible(DXGI_FORMAT src, DXGI_FORMAT dst) noexcept {
     }
 
     return false;
+}
+
+bool uses_shader_resource_state(D3D12_RESOURCE_STATES state) noexcept {
+    return (state & (D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE)) != 0;
+}
+
+bool is_depth_or_stencil_like_format(DXGI_FORMAT fmt) noexcept {
+    switch (fmt) {
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R32_TYPELESS:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+DirectX::DX12::SpriteBatch* ensure_openxr_blit_batch_for_format(DXGI_FORMAT output_format) {
+    static std::mutex s_batch_mtx{};
+    static std::unordered_map<uint32_t, std::unique_ptr<DirectX::DX12::SpriteBatch>> s_batches{};
+
+    if (g_framework == nullptr || g_framework->get_d3d12_hook() == nullptr) {
+        return nullptr;
+    }
+
+    auto* const device = g_framework->get_d3d12_hook()->get_device();
+    auto* const command_queue = g_framework->get_d3d12_hook()->get_command_queue();
+    if (device == nullptr || command_queue == nullptr) {
+        return nullptr;
+    }
+
+    const auto typed_output = canonical_typed_color_format(output_format);
+    const auto key = (uint32_t)typed_output;
+
+    std::scoped_lock _{s_batch_mtx};
+    auto it = s_batches.find(key);
+    if (it != s_batches.end() && it->second != nullptr) {
+        return it->second.get();
+    }
+
+    DirectX::ResourceUploadBatch upload{device};
+    upload.Begin();
+
+    DirectX::SpriteBatchPipelineStateDescription pd{
+        DirectX::RenderTargetState{typed_output, DXGI_FORMAT_UNKNOWN}
+    };
+
+    auto batch = std::make_unique<DirectX::DX12::SpriteBatch>(device, upload, pd);
+    auto result = upload.End(command_queue);
+    result.wait();
+
+    auto* const out = batch.get();
+    s_batches[key] = std::move(batch);
+    return out;
+}
+
+bool try_openxr_blit_to_swapchain(
+    uint32_t swapchain_idx,
+    uint32_t texture_index,
+    ID3D12Device* device,
+    d3d12::CommandContext& command_ctx,
+    ID3D12Resource* source_resource,
+    d3d12::TextureContext& dst_ctx,
+    const D3D12_RESOURCE_DESC& src_desc,
+    const D3D12_RESOURCE_DESC& dst_desc,
+    D3D12_RESOURCE_STATES src_state,
+    D3D12_BOX* src_box,
+    D3D12_RESOURCE_STATES dst_state)
+{
+    if (device == nullptr || source_resource == nullptr || dst_ctx.texture.Get() == nullptr) {
+        return false;
+    }
+
+    if (!uses_shader_resource_state(src_state)) {
+        return false;
+    }
+
+    if (is_depth_or_stencil_like_format(src_desc.Format) || is_depth_or_stencil_like_format(dst_desc.Format)) {
+        return false;
+    }
+
+    d3d12::TextureContext src_ctx{};
+    src_ctx.texture = source_resource;
+
+    const auto typed_src_format = canonical_typed_color_format(src_desc.Format);
+    if (!src_ctx.create_srv(device, typed_src_format)) {
+        SPDLOG_WARNING_EVERY_N_SEC(1,
+            "[VR] OpenXR blit fallback skipped: failed to create SRV (swapchain {} image {} src_fmt={})",
+            swapchain_idx,
+            texture_index,
+            (uint32_t)typed_src_format);
+        return false;
+    }
+
+    if (dst_ctx.rtv_heap == nullptr || dst_ctx.rtv_heap->Heap() == nullptr) {
+        const auto typed_dst_format = canonical_typed_color_format(dst_desc.Format);
+        if (!dst_ctx.create_rtv(device, typed_dst_format)) {
+            SPDLOG_WARNING_EVERY_N_SEC(1,
+                "[VR] OpenXR blit fallback skipped: failed to create RTV (swapchain {} image {} dst_fmt={})",
+                swapchain_idx,
+                texture_index,
+                (uint32_t)typed_dst_format);
+            return false;
+        }
+    }
+
+    auto* const batch = ensure_openxr_blit_batch_for_format(dst_desc.Format);
+    if (batch == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(1,
+            "[VR] OpenXR blit fallback skipped: no SpriteBatch available (swapchain {} image {} dst_fmt={})",
+            swapchain_idx,
+            texture_index,
+            (uint32_t)dst_desc.Format);
+        return false;
+    }
+
+    const float clear_color[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    command_ctx.clear_rtv(dst_ctx.texture.Get(), dst_ctx.get_rtv(), clear_color, dst_state);
+
+    std::optional<RECT> src_rect{};
+    if (src_box != nullptr) {
+        src_rect = RECT{
+            (LONG)src_box->left,
+            (LONG)src_box->top,
+            (LONG)src_box->right,
+            (LONG)src_box->bottom
+        };
+    }
+
+    d3d12::render_srv_to_rtv(
+        batch,
+        command_ctx.cmd_list.Get(),
+        src_ctx,
+        dst_ctx,
+        src_rect,
+        src_state,
+        dst_state);
+
+    SPDLOG_INFO_EVERY_N_SEC(1,
+        "[VR] OpenXR blit fallback used (swapchain {} image {}): src {}x{} fmt {} -> dst {}x{} fmt {}",
+        swapchain_idx,
+        texture_index,
+        src_desc.Width,
+        src_desc.Height,
+        (uint32_t)src_desc.Format,
+        dst_desc.Width,
+        dst_desc.Height,
+        (uint32_t)dst_desc.Format);
+
+    return true;
 }
 }
 
@@ -3929,6 +4085,10 @@ void D3D12Component::OpenXR::copy(
                     D3D12_RESOURCE_DESC dst_desc{};
                     const bool has_src_desc = try_get_resource_desc_nothrow(resource, src_desc);
                     const bool has_dst_desc = try_get_resource_desc_nothrow(dst_resource, dst_desc);
+                    auto* const dst_texture_ctx = ctx.texture_contexts[texture_index].get();
+                    auto* const device = g_framework != nullptr && g_framework->get_d3d12_hook() != nullptr
+                        ? g_framework->get_d3d12_hook()->get_device()
+                        : nullptr;
 
                     auto do_copy_region = [&](D3D12_BOX box) {
                         if (box.right <= box.left || box.bottom <= box.top || box.back <= box.front) {
@@ -3973,6 +4133,24 @@ void D3D12Component::OpenXR::copy(
                             src_desc.MipLevels == dst_desc.MipLevels &&
                             is_copy_format_compatible(src_desc.Format, dst_desc.Format) &&
                             src_desc.SampleDesc.Count == dst_desc.SampleDesc.Count;
+
+                        if (has_src_desc && has_dst_desc &&
+                            dst_texture_ctx != nullptr &&
+                            try_openxr_blit_to_swapchain(
+                                swapchain_idx,
+                                texture_index,
+                                device,
+                                command_ctx,
+                                resource,
+                                *dst_texture_ctx,
+                                src_desc,
+                                dst_desc,
+                                src_state,
+                                src_box,
+                                openxr_swapchain_dst_state))
+                        {
+                            goto openxr_copy_finalize;
+                        }
 
                         if (desc_match) {
                             command_ctx.copy(
@@ -4019,6 +4197,23 @@ void D3D12Component::OpenXR::copy(
                                 texture_index);
                         }
                     } else if (has_src_desc && has_dst_desc) {
+                        if (dst_texture_ctx != nullptr &&
+                            try_openxr_blit_to_swapchain(
+                                swapchain_idx,
+                                texture_index,
+                                device,
+                                command_ctx,
+                                resource,
+                                *dst_texture_ctx,
+                                src_desc,
+                                dst_desc,
+                                src_state,
+                                src_box,
+                                openxr_swapchain_dst_state))
+                        {
+                            goto openxr_copy_finalize;
+                        }
+
                         if (!is_copy_format_compatible(src_desc.Format, dst_desc.Format)) {
                             SPDLOG_WARNING_EVERY_N_SEC(
                                 1,
