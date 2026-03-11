@@ -43,6 +43,7 @@ bool TextureContext::create_rtv(ID3D12Device* device, std::optional<DXGI_FORMAT>
     spdlog::info("Creating RTV for texture context");
 
     rtv_heap.reset();
+    rtv_format = DXGI_FORMAT_UNKNOWN;
 
     // create descriptor heap
     try {
@@ -72,8 +73,10 @@ bool TextureContext::create_rtv(ID3D12Device* device, std::optional<DXGI_FORMAT>
         rtv_desc.Texture2D.MipSlice = 0;
         rtv_desc.Texture2D.PlaneSlice = 0;
         device->CreateRenderTargetView(texture.Get(), &rtv_desc, get_rtv());
+        rtv_format = rtv_desc.Format;
     } else {
         device->CreateRenderTargetView(texture.Get(), nullptr, get_rtv());
+        rtv_format = texture != nullptr ? texture->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
     }
 
     return true;
@@ -83,6 +86,7 @@ bool TextureContext::create_srv(ID3D12Device* device, std::optional<DXGI_FORMAT>
     spdlog::info("Creating SRV for texture context");
 
     srv_heap.reset();
+    srv_format = DXGI_FORMAT_UNKNOWN;
 
     // create descriptor heap
     try {
@@ -115,8 +119,10 @@ bool TextureContext::create_srv(ID3D12Device* device, std::optional<DXGI_FORMAT>
         srv_desc.Texture2D.PlaneSlice = 0;
         srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
         device->CreateShaderResourceView(texture.Get(), &srv_desc, get_srv_cpu());
+        srv_format = srv_desc.Format;
     } else {
         device->CreateShaderResourceView(texture.Get(), nullptr, get_srv_cpu());
+        srv_format = texture != nullptr ? texture->GetDesc().Format : DXGI_FORMAT_UNKNOWN;
     }
 
     return true;

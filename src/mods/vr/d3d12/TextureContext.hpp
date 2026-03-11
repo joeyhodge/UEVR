@@ -12,6 +12,8 @@ struct TextureContext {
     ComPtr<ID3D12Resource> texture{};
     std::unique_ptr<DirectX::DescriptorHeap> rtv_heap{};
     std::unique_ptr<DirectX::DescriptorHeap> srv_heap{};
+    DXGI_FORMAT rtv_format{DXGI_FORMAT_UNKNOWN};
+    DXGI_FORMAT srv_format{DXGI_FORMAT_UNKNOWN};
 
     bool setup(ID3D12Device* device, ID3D12Resource* rsrc, std::optional<DXGI_FORMAT> rtv_format, std::optional<DXGI_FORMAT> srv_format, const wchar_t* name = L"TextureContext object");
     bool create_rtv(ID3D12Device* device, std::optional<DXGI_FORMAT> format = std::nullopt);
@@ -34,6 +36,8 @@ struct TextureContext {
         rtv_heap.reset();
         srv_heap.reset();
         texture.Reset();
+        rtv_format = DXGI_FORMAT_UNKNOWN;
+        srv_format = DXGI_FORMAT_UNKNOWN;
     }
 
     virtual ~TextureContext() {

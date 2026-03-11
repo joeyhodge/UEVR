@@ -684,6 +684,29 @@ void Framework::on_frame_d3d12() {
     }
 
     cmd_ctx->wait(INFINITE);
+    if (!is_drawing_anything()) {
+        std::scoped_lock _{ cmd_ctx->mtx };
+        cmd_ctx->has_commands = true;
+
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        barrier.Transition.pResource = m_d3d12.get_rt(D3D12::RTV::IMGUI).Get();
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
+
+        float clear_color[]{0.0f, 0.0f, 0.0f, 0.0f};
+        cmd_ctx->cmd_list->ClearRenderTargetView(m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI), clear_color, 0, nullptr);
+
+        barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
+        cmd_ctx->execute();
+        return;
+    }
+
     if (auto draw_data = ImGui::GetDrawData(); draw_data != nullptr) {
         std::scoped_lock _{ cmd_ctx->mtx };
         cmd_ctx->has_commands = true;
@@ -2042,11 +2065,25 @@ bool Framework::init_d3d12() {
 
         m_d3d12.get_rt(D3D12::RTV::BLANK)->SetName(L"Framework::m_d3d12.rts[BLANK]");
 
-        // Create imgui and blank rtvs and srvs.
-        device->CreateRenderTargetView(m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), nullptr, m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI));
+        // Use an sRGB RTV for the framework UI target but keep the SRV linear.
+        // This matches the long-standing D3D12 game/UI path and avoids washed-out VR UI.
+        D3D12_RENDER_TARGET_VIEW_DESC imgui_rtv_desc{};
+        imgui_rtv_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        imgui_rtv_desc.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        imgui_rtv_desc.Texture2D.MipSlice = 0;
+        imgui_rtv_desc.Texture2D.PlaneSlice = 0;
+        device->CreateRenderTargetView(m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), &imgui_rtv_desc, m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI));
         device->CreateRenderTargetView(m_d3d12.get_rt(D3D12::RTV::BLANK).Get(), nullptr, m_d3d12.get_cpu_rtv(device, D3D12::RTV::BLANK));
+        D3D12_SHADER_RESOURCE_VIEW_DESC imgui_srv_desc{};
+        imgui_srv_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        imgui_srv_desc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        imgui_srv_desc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        imgui_srv_desc.Texture2D.MipLevels = 1;
+        imgui_srv_desc.Texture2D.MostDetailedMip = 0;
+        imgui_srv_desc.Texture2D.PlaneSlice = 0;
+        imgui_srv_desc.Texture2D.ResourceMinLODClamp = 0.0f;
         device->CreateShaderResourceView(
-            m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), nullptr, m_d3d12.get_cpu_srv(device, D3D12::SRV::IMGUI_VR));
+            m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), &imgui_srv_desc, m_d3d12.get_cpu_srv(device, D3D12::SRV::IMGUI_VR));
         device->CreateShaderResourceView(m_d3d12.get_rt(D3D12::RTV::BLANK).Get(), nullptr, m_d3d12.get_cpu_srv(device, D3D12::SRV::BLANK));
 
         m_d3d12.rt_width = (uint32_t)desc.Width;

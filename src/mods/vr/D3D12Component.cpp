@@ -903,13 +903,68 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
     };
 
     if (tq2_guard || ue57_guard) {
-        // Prefer the manager's authoritative scene target first. In UE5.7/TQ2 this can
-        // be promoted by Slate-safe-mode discovery; the viewport ref path often points
-        // back to the desktop-sized passthrough target.
+        auto* texture_ref = rtm->get_render_target_ref();
+        FRHITexture2D* resolved_from_ref = nullptr;
+        if (texture_ref != nullptr && !IsBadReadPtr(texture_ref, sizeof(void*))) {
+            uintptr_t from_ref_raw{};
+            if (try_read_ptr_nothrow((uintptr_t)texture_ref, from_ref_raw) && from_ref_raw >= 0x10000) {
+                auto* from_ref = (FRHITexture2D*)from_ref_raw;
+                resolved_from_ref = normalize_guarded_scene_pointer(from_ref, "scene render target ref");
+                if (resolved_from_ref != nullptr && resolved_from_ref == from_ref) {
+                    rtm->set_render_target(resolved_from_ref);
+                }
+
+                if (resolved_from_ref != nullptr) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Resolved scene render target from viewport texture-ref: ref {:x} -> {:x}",
+                        (uintptr_t)texture_ref,
+                        (uintptr_t)resolved_from_ref);
+                } else {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "[VR] Scene texture-ref present but unresolved this frame: ref {:x} value {:x}",
+                        (uintptr_t)texture_ref,
+                        from_ref_raw);
+                }
+            }
+        }
+
+        // Prefer the manager's authoritative scene target first, but only if it is not
+        // a weaker wrapper-style candidate than the live viewport texture-ref result.
         if (auto* manager_scene = rtm->get_render_target(); manager_scene != nullptr) {
             if (manager_scene != rtm->get_ui_target()) {
                 auto* resolved_manager_scene = normalize_guarded_scene_pointer(manager_scene, "scene render target manager");
                 if (resolved_manager_scene != nullptr) {
+                    const auto known_vtable = FRHITexture2D::get_vtable();
+                    void* manager_vtable = nullptr;
+                    void* ref_vtable = nullptr;
+
+                    if (known_vtable != nullptr) {
+                        if (!IsBadReadPtr(resolved_manager_scene, sizeof(void*))) {
+                            manager_vtable = *(void**)resolved_manager_scene;
+                        }
+
+                        if (resolved_from_ref != nullptr && !IsBadReadPtr(resolved_from_ref, sizeof(void*))) {
+                            ref_vtable = *(void**)resolved_from_ref;
+                        }
+                    }
+
+                    const bool manager_matches_known = known_vtable != nullptr && manager_vtable == known_vtable;
+                    const bool ref_matches_known = known_vtable != nullptr && ref_vtable == known_vtable;
+
+                    if (resolved_from_ref != nullptr &&
+                        resolved_from_ref != resolved_manager_scene &&
+                        ref_matches_known &&
+                        !manager_matches_known)
+                    {
+                        SPDLOG_INFO_EVERY_N_SEC(1,
+                            "[VR] Preferring viewport texture-ref over manager authority: manager {:x} (vt {:x}) -> ref {:x} (vt {:x})",
+                            (uintptr_t)resolved_manager_scene,
+                            (uintptr_t)manager_vtable,
+                            (uintptr_t)resolved_from_ref,
+                            (uintptr_t)ref_vtable);
+                        return resolved_from_ref;
+                    }
+
                     SPDLOG_INFO_EVERY_N_SEC(1,
                         "[VR] Resolved scene render target from manager authority: {:x} -> {:x}",
                         (uintptr_t)manager_scene,
@@ -923,28 +978,8 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
             }
         }
 
-        auto* texture_ref = rtm->get_render_target_ref();
-        if (texture_ref != nullptr && !IsBadReadPtr(texture_ref, sizeof(void*))) {
-            uintptr_t from_ref_raw{};
-            if (try_read_ptr_nothrow((uintptr_t)texture_ref, from_ref_raw) && from_ref_raw >= 0x10000) {
-                auto* from_ref = (FRHITexture2D*)from_ref_raw;
-                auto* resolved_from_ref = normalize_guarded_scene_pointer(from_ref, "scene render target ref");
-                if (resolved_from_ref != nullptr) {
-                    if (resolved_from_ref == from_ref) {
-                        rtm->set_render_target(resolved_from_ref);
-                    }
-                    SPDLOG_INFO_EVERY_N_SEC(1,
-                        "[VR] Resolved scene render target from viewport texture-ref: ref {:x} -> {:x}",
-                        (uintptr_t)texture_ref,
-                        (uintptr_t)resolved_from_ref);
-                    return resolved_from_ref;
-                }
-
-                SPDLOG_INFO_EVERY_N_SEC(1,
-                    "[VR] Scene texture-ref present but unresolved this frame: ref {:x} value {:x}",
-                    (uintptr_t)texture_ref,
-                    from_ref_raw);
-            }
+        if (resolved_from_ref != nullptr) {
+            return resolved_from_ref;
         }
 
         if (auto* from_viewport_slots = try_resolve_from_viewport_slots(); from_viewport_slots != nullptr) {
@@ -1136,6 +1171,46 @@ DXGI_FORMAT normalize_copy_color_format(DXGI_FORMAT fmt) noexcept {
     }
 }
 
+DXGI_FORMAT preferred_linear_view_format(DXGI_FORMAT fmt) noexcept {
+    const auto typed = canonical_typed_color_format(fmt);
+
+    switch (typed) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    default:
+        return typed;
+    }
+}
+
+DXGI_FORMAT preferred_srgb_rtv_format(DXGI_FORMAT fmt) noexcept {
+    const auto typed = canonical_typed_color_format(fmt);
+
+    switch (typed) {
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+    default:
+        return typed;
+    }
+}
+
+DXGI_FORMAT effective_rtv_format(const d3d12::TextureContext& texture_ctx) noexcept {
+    if (texture_ctx.rtv_format != DXGI_FORMAT_UNKNOWN) {
+        return canonical_typed_color_format(texture_ctx.rtv_format);
+    }
+
+    if (texture_ctx.texture != nullptr) {
+        return canonical_typed_color_format(texture_ctx.texture->GetDesc().Format);
+    }
+
+    return DXGI_FORMAT_UNKNOWN;
+}
+
 bool is_copy_format_compatible(DXGI_FORMAT src, DXGI_FORMAT dst) noexcept {
     if (src == dst) {
         return true;
@@ -1247,7 +1322,7 @@ bool try_openxr_blit_to_swapchain(
     d3d12::TextureContext src_ctx{};
     src_ctx.texture = source_resource;
 
-    const auto typed_src_format = canonical_typed_color_format(src_desc.Format);
+    const auto typed_src_format = preferred_linear_view_format(src_desc.Format);
     if (!src_ctx.create_srv(device, typed_src_format)) {
         SPDLOG_WARNING_EVERY_N_SEC(1,
             "[VR] OpenXR blit fallback skipped: failed to create SRV (swapchain {} image {} src_fmt={})",
@@ -1258,7 +1333,7 @@ bool try_openxr_blit_to_swapchain(
     }
 
     if (dst_ctx.rtv_heap == nullptr || dst_ctx.rtv_heap->Heap() == nullptr) {
-        const auto typed_dst_format = canonical_typed_color_format(dst_desc.Format);
+        const auto typed_dst_format = preferred_srgb_rtv_format(dst_desc.Format);
         if (!dst_ctx.create_rtv(device, typed_dst_format)) {
             SPDLOG_WARNING_EVERY_N_SEC(1,
                 "[VR] OpenXR blit fallback skipped: failed to create RTV (swapchain {} image {} dst_fmt={})",
@@ -1269,13 +1344,14 @@ bool try_openxr_blit_to_swapchain(
         }
     }
 
-    auto* const batch = ensure_openxr_blit_batch_for_format(dst_desc.Format);
+    const auto dst_view_format = effective_rtv_format(dst_ctx);
+    auto* const batch = ensure_openxr_blit_batch_for_format(dst_view_format != DXGI_FORMAT_UNKNOWN ? dst_view_format : dst_desc.Format);
     if (batch == nullptr) {
         SPDLOG_WARNING_EVERY_N_SEC(1,
             "[VR] OpenXR blit fallback skipped: no SpriteBatch available (swapchain {} image {} dst_fmt={})",
             swapchain_idx,
             texture_index,
-            (uint32_t)dst_desc.Format);
+            (uint32_t)(dst_view_format != DXGI_FORMAT_UNKNOWN ? dst_view_format : dst_desc.Format));
         return false;
     }
 
@@ -1310,7 +1386,7 @@ bool try_openxr_blit_to_swapchain(
         (uint32_t)src_desc.Format,
         dst_desc.Width,
         dst_desc.Height,
-        (uint32_t)dst_desc.Format);
+        (uint32_t)(dst_view_format != DXGI_FORMAT_UNKNOWN ? dst_view_format : dst_desc.Format));
 
     return true;
 }
@@ -1487,6 +1563,92 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return false;
     };
 
+    const auto try_promote_guarded_ref_scene_source = [&]() -> bool {
+        if (!guarded_57_mode || using_real_backbuffer_source || backbuffer.Get() == nullptr || backbuffer.Get() == real_backbuffer.Get()) {
+            return false;
+        }
+
+        if (!is_probable_desktop_sized_scene_source(
+                backbuffer_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            return false;
+        }
+
+        auto* fake_stereo_hook = vr->get_fake_stereo_hook().get();
+        if (fake_stereo_hook == nullptr) {
+            return false;
+        }
+
+        auto* rtm = fake_stereo_hook->get_render_target_manager();
+        if (rtm == nullptr) {
+            return false;
+        }
+
+        auto* texture_ref = rtm->get_render_target_ref();
+        if (texture_ref == nullptr || IsBadReadPtr(texture_ref, sizeof(void*))) {
+            return false;
+        }
+
+        uintptr_t ref_raw{};
+        if (!try_read_ptr_nothrow((uintptr_t)texture_ref, ref_raw) || ref_raw < 0x10000) {
+            return false;
+        }
+
+        auto* ref_candidate = normalize_guarded_scene_pointer((FRHITexture2D*)ref_raw, "scene render target ref override");
+        if (ref_candidate == nullptr || ref_candidate == ue4_texture) {
+            return false;
+        }
+
+        auto* ref_native = safe_get_native_resource(ref_candidate, "scene render target ref override");
+        if (ref_native == nullptr || ref_native == backbuffer.Get() || ref_native == real_backbuffer.Get()) {
+            return false;
+        }
+
+        if (is_uevr_managed_scene_candidate(ref_native, "texture-ref override")) {
+            return false;
+        }
+
+        D3D12_RESOURCE_DESC ref_desc{};
+        if (!try_get_resource_desc_nothrow(ref_native, ref_desc)) {
+            return false;
+        }
+
+        if (!is_plausible_scene_source_desc(
+                ref_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height) ||
+            is_probable_desktop_sized_scene_source(
+                ref_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height))
+        {
+            return false;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[VR] Guarded UE5.7: promoting viewport texture-ref scene candidate {:x} over desktop-sized manager source {:x} ({}x{} fmt {} -> {}x{} fmt {})",
+            (uintptr_t)ref_native,
+            (uintptr_t)backbuffer.Get(),
+            backbuffer_desc.Width,
+            backbuffer_desc.Height,
+            (uint32_t)backbuffer_desc.Format,
+            ref_desc.Width,
+            ref_desc.Height,
+            (uint32_t)ref_desc.Format);
+
+        ue4_texture = ref_candidate;
+        backbuffer = ref_native;
+        backbuffer_desc = ref_desc;
+        using_real_backbuffer_source = false;
+        rtm->set_render_target(ref_candidate);
+        return true;
+    };
+
     const auto try_reuse_guarded_scene_source = [&]() -> bool {
         if (!guarded_57_mode || m_guarded_last_scene_source.Get() == nullptr) {
             return false;
@@ -1616,6 +1778,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer = real_backbuffer;
         backbuffer_desc = real_backbuffer_desc;
         using_real_backbuffer_source = true;
+    }
+
+    if (guarded_57_mode && !using_real_backbuffer_source) {
+        try_promote_guarded_ref_scene_source();
     }
 
     if (guarded_57_mode && using_real_backbuffer_source) {
@@ -1924,6 +2090,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
+    const auto game_copy_rtv_format = preferred_srgb_rtv_format(copy_output_format);
+    const auto game_copy_srv_format = preferred_linear_view_format(copy_output_format);
+
     if (use_offscreen_game_copy) {
         auto reset_copy_targets = [&]() {
             m_game_tex.reset();
@@ -2048,7 +2217,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             (uint32_t)copy_output_format
         );
 
-        if (!m_game_tex.setup(device, backbuffer_copy.Get(), copy_output_format, copy_output_format, L"Game Texture")) {
+        if (!m_game_tex.setup(device, backbuffer_copy.Get(), game_copy_rtv_format, game_copy_srv_format, L"Game Texture")) {
             spdlog::error("[VR] Failed to fully setup game texture.");
             m_game_tex.reset();
         } else {
@@ -2060,7 +2229,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (!(tq2_guard || ue57_guard)) {
             spdlog::info("[VR] Setting up game texture as reference to original");
 
-            if (!m_game_tex.setup(device, backbuffer.Get(), copy_output_format, copy_output_format, L"Game Texture")) {
+            if (!m_game_tex.setup(device, backbuffer.Get(), game_copy_rtv_format, game_copy_srv_format, L"Game Texture")) {
                 spdlog::error("[VR] Failed to fully setup game texture.");
                 m_game_tex.reset();
             }
@@ -2122,7 +2291,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return nullptr;
         }
 
-        const auto typed_source_format = canonical_typed_color_format(source_color_format);
+        const auto typed_source_format = preferred_linear_view_format(source_color_format);
         if (typed_source_format == DXGI_FORMAT_UNKNOWN) {
             return nullptr;
         }
@@ -2182,7 +2351,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         // target untouched (white/garbage). Use an aspect-fit blit into each eye instead.
         if (m_scene_capture_tex.texture.Get() == nullptr && !scene_is_double_wide) {
             auto* const dst_ctx = m_openxr.find_texture_context(render_target);
-            auto* const batch_for_target = ensure_game_batch_for_format(target_desc.Format);
+            const auto target_view_format = effective_rtv_format(*dst_ctx);
+            auto* const batch_for_target = ensure_game_batch_for_format(target_view_format != DXGI_FORMAT_UNKNOWN ? target_view_format : target_desc.Format);
             auto* const src_ctx = get_guarded_scene_source_ctx(source_texture);
             const bool can_aspect_fit_blit =
                 dst_ctx != nullptr &&
@@ -2394,7 +2564,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 d3d12::TextureContext guarded_scene_source{};
                 guarded_scene_source.texture = backbuffer;
 
-                if (!guarded_scene_source.create_srv(device, source_color_format)) {
+                if (!guarded_scene_source.create_srv(device, preferred_linear_view_format(source_color_format))) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
                         "[VR] Guarded UE5.7 scene->game blit skipped: failed to create SRV for source {:x}",
                         (uintptr_t)backbuffer.Get());
@@ -2429,7 +2599,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         (uint32_t)dst_desc.Height
                     )
                     : std::nullopt;
-                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
+                const auto dst_view_format = effective_rtv_format(m_game_tex);
+                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_view_format != DXGI_FORMAT_UNKNOWN ? dst_view_format : dst_desc.Format);
                 if (batch_for_game_tex == nullptr) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
                         "[VR] Guarded scene->game blit skipped: SpriteBatch PSO unavailable for format {}",
@@ -2481,7 +2652,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         (uint32_t)dst_desc.Height
                     )
                     : std::nullopt;
-                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_desc.Format);
+                const auto dst_view_format = effective_rtv_format(m_game_tex);
+                auto* const batch_for_game_tex = ensure_game_batch_for_format(dst_view_format != DXGI_FORMAT_UNKNOWN ? dst_view_format : dst_desc.Format);
                 if (batch_for_game_tex == nullptr) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
                         "[VR] Guarded source->game blit skipped: SpriteBatch PSO unavailable for format {}",
@@ -2556,9 +2728,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (ui_target != nullptr) {
         if (ui_target_native != nullptr && m_game_ui_tex.texture.Get() != ui_target_native) {
-            if (!m_game_ui_tex.setup(device, 
+            const auto ui_rtv_format = preferred_srgb_rtv_format(ui_target_native->GetDesc().Format);
+            const auto ui_srv_format = preferred_linear_view_format(ui_target_native->GetDesc().Format);
+            if (!m_game_ui_tex.setup(device,
                 ui_target_native,
-                DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM,
+                ui_rtv_format, ui_srv_format,
                 L"Game UI Texture"))
             {
                 spdlog::error("[VR] Failed to fully setup game UI texture.");
@@ -3752,8 +3926,9 @@ bool D3D12Component::setup() {
     m_backbuffer_size[1] = backbuffer_desc.Height;
 
     m_backbuffer_batch = setup_sprite_batch_pso(real_backbuffer_desc.Format);
-    m_game_batch = setup_sprite_batch_pso(backbuffer_desc.Format);
-    m_game_batch_format = canonical_typed_color_format(backbuffer_desc.Format);
+    const auto initial_game_batch_format = preferred_srgb_rtv_format(backbuffer_desc.Format);
+    m_game_batch = setup_sprite_batch_pso(initial_game_batch_format);
+    m_game_batch_format = canonical_typed_color_format(initial_game_batch_format);
 
     // Custom blend state to flip the alpha in-place of the UI texture without an intermediate render target
     {
@@ -3868,13 +4043,14 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
         if (guarded_ue57_tq2) {
             // TQ2 commonly presents through a 10-bit desktop swapchain. OpenXR runtimes on this stack
-            // do not advertise R10G10B10A2, so keep the VR path pinned to BGRA8 to avoid unstable
-            // RGBA/BGRA oscillation and PSO RTV-format mismatches in guarded copy paths.
-            if (is_supported(DXGI_FORMAT_B8G8R8A8_UNORM)) {
-                return DXGI_FORMAT_B8G8R8A8_UNORM;
-            }
+            // do not advertise R10G10B10A2, so keep the VR path pinned to BGRA8. Prefer the
+            // sRGB view when the runtime supports it; OpenXR D3D12 swapchain images are often
+            // typeless and must be interpreted through typed SRV/RTV views to avoid washed-out UI.
             if (is_supported(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) {
                 return DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            }
+            if (is_supported(DXGI_FORMAT_B8G8R8A8_UNORM)) {
+                return DXGI_FORMAT_B8G8R8A8_UNORM;
             }
         }
 
@@ -4014,16 +4190,6 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             const auto ref_count = ctx.textures[j].texture->Release();
 
             spdlog::info("[VR] AFTER Swapchain texture {} {} ref count: {}", i, j, ref_count);
-        }
-
-        // Persist the runtime's actual color format as seen on image resources, not just
-        // the requested create-info format. Some runtimes return typeless variants.
-        if (!ctx.textures.empty() && ctx.textures[0].texture != nullptr) {
-            D3D12_RESOURCE_DESC image_desc{};
-            if (try_get_resource_desc_nothrow(ctx.textures[0].texture, image_desc)) {
-                swapchain.format = canonical_typed_color_format(image_desc.Format);
-                vr->m_openxr->swapchains[i] = swapchain;
-            }
         }
 
         const bool is_depth_swapchain = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0;

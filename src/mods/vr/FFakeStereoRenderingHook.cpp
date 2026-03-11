@@ -3284,9 +3284,10 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         rtm.set_render_target_ref(resolved_ref);
 
         const auto known_texture_vtable = FRHITexture2D::get_vtable();
+        void* candidate_vtable = nullptr;
 
         if (known_texture_vtable != nullptr) {
-            auto candidate_vtable = *(void**)candidate;
+            candidate_vtable = *(void**)candidate;
 
             if (candidate_vtable != known_texture_vtable) {
                 // UE5.7/TQ2 sometimes returns a wrapper object here.
@@ -3327,19 +3328,37 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         const auto ui_target = rtm.get_ui_target();
         const bool tq2_safe_mode = is_tq2_shipping_executable();
 
-        // UE5.7/TQ2: once Slate discovers/promotes a better scene candidate,
-        // avoid immediately clobbering it every frame from the passthrough ref path.
+        // UE5.7/TQ2: prefer the passthrough candidate when the current Slate-promoted
+        // target is only a header-relaxed wrapper and the passthrough path resolved a
+        // concrete FRHITexture2D instance.
         if (tq2_safe_mode &&
             current != nullptr &&
             current != ui_target &&
             current != candidate)
         {
+            void* current_vtable = nullptr;
+            if (!IsBadReadPtr(current, sizeof(void*))) {
+                current_vtable = *(void**)current;
+            }
+
+            const bool current_matches_known = known_texture_vtable != nullptr && current_vtable == known_texture_vtable;
+            const bool candidate_matches_known = known_texture_vtable != nullptr && candidate_vtable == known_texture_vtable;
+
+            if (!candidate_matches_known || current_matches_known) {
+                SPDLOG_INFO_EVERY_N_SEC(1,
+                    "FViewport::GetRenderTargetTexture keeping promoted scene target {:x}; not overriding with passthrough candidate {:x} from {}",
+                    (uintptr_t)current,
+                    (uintptr_t)candidate,
+                    source_label);
+                return;
+            }
+
             SPDLOG_INFO_EVERY_N_SEC(1,
-                "FViewport::GetRenderTargetTexture keeping promoted scene target {:x}; not overriding with passthrough candidate {:x} from {}",
+                "FViewport::GetRenderTargetTexture replacing wrapper-style promoted scene target {:x} (vt {:x}) with passthrough candidate {:x} from {}",
                 (uintptr_t)current,
+                (uintptr_t)current_vtable,
                 (uintptr_t)candidate,
                 source_label);
-            return;
         }
 
         const bool should_store_scene =
@@ -7831,7 +7850,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         // We do not mutate Slate resources, but we still try to discover the scene RT from viewport providers.
         auto& rtm = *g_hook->get_render_target_manager();
 
-        auto resolve_scene_from_resource = [](sdk::FSlateResource* resource, FRHITexture2D*& out) -> bool {
+        enum class SafeModeSceneSource : uint8_t {
+            None,
+            SlateViewportResource,
+            ViewportProvider,
+            Slot6Viewport,
+            DirectViewportInfo,
+        };
+
+        auto resolve_scene_from_resource = [ue57_like_safe_mode](sdk::FSlateResource* resource, FRHITexture2D*& out) -> bool {
             out = nullptr;
 
             if (resource == nullptr) {
@@ -7847,8 +7874,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return false;
             }
 
-            if (!has_plausible_rhi_texture_header((uintptr_t)candidate)) {
+            const bool header_ok = has_plausible_rhi_texture_header((uintptr_t)candidate);
+            if (!header_ok && !ue57_like_safe_mode) {
                 return false;
+            }
+
+            if (!header_ok) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode accepting header-relaxed Slate resource candidate: {:x}",
+                    (uintptr_t)candidate);
             }
 
             out = candidate;
@@ -7901,14 +7936,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         };
 
         FRHITexture2D* discovered_scene = nullptr;
+        SafeModeSceneSource discovered_scene_source = SafeModeSceneSource::None;
         auto try_resolve_scene_from_viewport_provider = [&](sdk::FViewportInfo* candidate, const char* source_label) -> bool {
             if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
-                return false;
-            }
-
-            // TQ2: provider offset brute-force can stall for seconds and has not produced
-            // a stable scene RT in this title. Prefer direct viewport texture resolution.
-            if (is_tq2_shipping_executable()) {
                 return false;
             }
 
@@ -7925,6 +7955,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
                 resolve_scene_from_resource(candidate_resource, discovered_scene))
             {
+                discovered_scene_source = SafeModeSceneSource::ViewportProvider;
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (safe path, {}): 0x{:x}",
@@ -7943,6 +7974,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     try_get_viewport_render_target_texture_nothrow(provider, candidate_resource) &&
                     resolve_scene_from_resource(candidate_resource, discovered_scene))
                 {
+                    discovered_scene_source = SafeModeSceneSource::ViewportProvider;
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,
                         "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport provider (heuristic path, {}): 0x{:x}",
@@ -7959,7 +7991,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (slate_viewport != nullptr) {
             sdk::FSlateResource* direct_resource = nullptr;
             if (try_get_slate_viewport_render_target_texture_nothrow(slate_viewport, direct_resource)) {
-                resolve_scene_from_resource(direct_resource, discovered_scene);
+                if (resolve_scene_from_resource(direct_resource, discovered_scene)) {
+                    discovered_scene_source = SafeModeSceneSource::SlateViewportResource;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via SlateViewport::GetViewportRenderTargetTexture()");
+                }
             }
         }
 
@@ -7967,6 +8004,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             FRHITexture2D* slot6_scene = nullptr;
             if (try_get_scene_texture_via_slot6_nothrow(viewport_info, slot6_scene) && slot6_scene != nullptr) {
                 discovered_scene = slot6_scene;
+                discovered_scene_source = SafeModeSceneSource::Slot6Viewport;
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via slot6 virtual path (primary viewport_info)");
@@ -7984,6 +8022,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             FRHITexture2D* direct_viewport_scene = nullptr;
             if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
                 discovered_scene = direct_viewport_scene;
+                discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info (provider path unavailable)");
             }
@@ -8012,18 +8051,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 FRHITexture2D* slot6_scene = nullptr;
                 if (try_get_scene_texture_via_slot6_nothrow(candidate, slot6_scene) && slot6_scene != nullptr) {
                     discovered_scene = slot6_scene;
+                    discovered_scene_source = SafeModeSceneSource::Slot6Viewport;
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,
                         "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via slot6 virtual path (viewport candidate)");
                     break;
                 }
 
-                FRHITexture2D* direct_viewport_scene = nullptr;
-                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
-                    discovered_scene = direct_viewport_scene;
-                    SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate direct path (provider path unavailable)");
-                    break;
+                if (!tq2_safe_mode) {
+                    FRHITexture2D* direct_viewport_scene = nullptr;
+                    if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
+                        discovered_scene = direct_viewport_scene;
+                        discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
+                        SPDLOG_INFO_EVERY_N_SEC(2,
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via viewport candidate direct path (provider path unavailable)");
+                        break;
+                    }
                 }
             }
         }
@@ -8035,11 +8078,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const auto current_scene = rtm.get_render_target_relaxed();
             const bool candidate_ptr_ok = is_probably_valid_object_pointer((uintptr_t)discovered_scene);
             const bool candidate_header_ok = has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
-            const bool candidate_allowed = candidate_ptr_ok && (candidate_header_ok || tq2_safe_mode);
+            const bool allow_header_relaxed_candidate =
+                tq2_safe_mode &&
+                discovered_scene_source != SafeModeSceneSource::DirectViewportInfo;
+            const bool candidate_allowed = candidate_ptr_ok && (candidate_header_ok || allow_header_relaxed_candidate);
             const bool current_scene_valid =
                 current_scene != nullptr &&
                 is_probably_valid_object_pointer((uintptr_t)current_scene) &&
                 has_plausible_rhi_texture_header((uintptr_t)current_scene);
+            const bool authoritative_scene_candidate =
+                discovered_scene_source == SafeModeSceneSource::SlateViewportResource ||
+                discovered_scene_source == SafeModeSceneSource::ViewportProvider;
 
             if (!candidate_allowed) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
@@ -8047,14 +8096,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     (uintptr_t)discovered_scene);
             } else if (!candidate_header_ok && tq2_safe_mode) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "UE5.7/TQ2 safe mode: accepting header-relaxed scene candidate {:x}",
+                    "UE5.7/TQ2 safe mode: accepting header-relaxed scene candidate {:x} from source {}",
+                    (uintptr_t)discovered_scene,
+                    (uint32_t)discovered_scene_source);
+            } else if (!candidate_header_ok && discovered_scene_source == SafeModeSceneSource::DirectViewportInfo) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "UE5.7/TQ2 safe mode: rejecting direct viewport-info scene candidate {:x}; header validation failed",
                     (uintptr_t)discovered_scene);
             }
 
             const bool should_seed_scene = (current_scene == nullptr) || !current_scene_valid;
-            bool should_promote_alternate_candidate = false;
+            bool should_promote_alternate_candidate = authoritative_scene_candidate;
 
-            if (candidate_allowed && !should_seed_scene && current_scene != discovered_scene && tq2_safe_mode) {
+            if (candidate_allowed && !should_seed_scene && current_scene != discovered_scene && tq2_safe_mode && !authoritative_scene_candidate) {
                 if (s_pending_slate_scene_candidate == discovered_scene) {
                     ++s_pending_slate_scene_hits;
                 } else {
@@ -8080,7 +8134,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             if (candidate_allowed && (should_seed_scene || should_promote_alternate_candidate) && current_scene != discovered_scene) {
                 rtm.set_render_target(discovered_scene);
-                if (should_promote_alternate_candidate) {
+                if (authoritative_scene_candidate && !should_seed_scene) {
+                    SPDLOG_INFO_EVERY_N_SEC(1,
+                        "UE5.7/TQ2 safe mode promoted authoritative Slate scene render target: {:x} -> {:x}",
+                        (uintptr_t)current_scene,
+                        (uintptr_t)discovered_scene);
+                } else if (should_promote_alternate_candidate) {
                     SPDLOG_INFO_EVERY_N_SEC(1,
                         "UE5.7/TQ2 safe mode promoted stable alternate Slate scene render target: {:x} -> {:x}",
                         (uintptr_t)current_scene,
