@@ -496,6 +496,164 @@ ID3D12Resource* validate_d3d12_resource_candidate(uintptr_t candidate_ptr) {
     return as_resource;
 }
 
+struct GuardedSceneResourceCandidate {
+    ID3D12Resource* resource{};
+    D3D12_RESOURCE_DESC desc{};
+    uintptr_t owner{};
+    uintptr_t offset{};
+    bool nested{};
+};
+
+void collect_guarded_scene_resource_candidates_from_object(
+    uintptr_t base,
+    uintptr_t max_offset,
+    uintptr_t owner,
+    bool nested,
+    std::vector<GuardedSceneResourceCandidate>& out_candidates,
+    std::unordered_set<uintptr_t>& seen_resources)
+{
+    if (base < 0x10000 || IsBadReadPtr((void*)base, sizeof(void*))) {
+        return;
+    }
+
+    for (uintptr_t offset = 0; offset <= max_offset; offset += sizeof(void*)) {
+        uintptr_t candidate_ptr{};
+        if (!try_read_ptr_nothrow(base + offset, candidate_ptr) || candidate_ptr < 0x10000) {
+            continue;
+        }
+
+        auto* resource = validate_d3d12_resource_candidate(candidate_ptr);
+        if (resource == nullptr) {
+            continue;
+        }
+
+        if (!seen_resources.insert((uintptr_t)resource).second) {
+            continue;
+        }
+
+        D3D12_RESOURCE_DESC desc{};
+        if (!try_get_resource_desc_nothrow(resource, desc)) {
+            continue;
+        }
+
+        out_candidates.push_back({
+            .resource = resource,
+            .desc = desc,
+            .owner = owner,
+            .offset = offset,
+            .nested = nested,
+        });
+    }
+}
+
+std::optional<GuardedSceneResourceCandidate> find_better_guarded_scene_resource_candidate(
+    FRHITexture2D* texture,
+    ID3D12Resource* current_resource,
+    const D3D12_RESOURCE_DESC& current_desc,
+    const D3D12_RESOURCE_DESC& real_backbuffer_desc,
+    uint32_t expected_stereo_width,
+    uint32_t expected_stereo_height)
+{
+    if (texture == nullptr || current_resource == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto texture_addr = (uintptr_t)texture;
+    std::vector<GuardedSceneResourceCandidate> candidates{};
+    std::unordered_set<uintptr_t> seen_resources{};
+
+    auto collect_owner = [&](uintptr_t owner_base, uintptr_t max_offset, bool nested) {
+        collect_guarded_scene_resource_candidates_from_object(
+            owner_base,
+            max_offset,
+            owner_base,
+            nested,
+            candidates,
+            seen_resources);
+    };
+
+    collect_owner(texture_addr, 0x280, false);
+
+    static constexpr std::array<uintptr_t, 16> kLikelyWrapperOffsets{
+        0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88,
+        0xC0, 0xC8, 0xD0, 0xD8, 0xE0, 0xE8, 0xF0, 0xF8
+    };
+
+    for (const auto wrapper_offset : kLikelyWrapperOffsets) {
+        uintptr_t wrapper_ptr{};
+        if (!try_read_ptr_nothrow(texture_addr + wrapper_offset, wrapper_ptr) ||
+            wrapper_ptr < 0x10000 ||
+            wrapper_ptr == texture_addr ||
+            IsBadReadPtr((void*)wrapper_ptr, sizeof(void*)))
+        {
+            continue;
+        }
+
+        collect_owner(wrapper_ptr, 0x220, true);
+    }
+
+    const auto expected_eye_width = expected_stereo_width > 1 ? expected_stereo_width / 2u : expected_stereo_width;
+    const auto score_candidate = [&](const GuardedSceneResourceCandidate& candidate) -> int64_t {
+        if (candidate.resource == current_resource) {
+            return (std::numeric_limits<int64_t>::min)();
+        }
+
+        if (!is_plausible_scene_source_desc(
+                candidate.desc,
+                real_backbuffer_desc,
+                expected_stereo_width,
+                expected_stereo_height))
+        {
+            return (std::numeric_limits<int64_t>::min)();
+        }
+
+        if (is_probable_desktop_sized_scene_source(
+                candidate.desc,
+                real_backbuffer_desc,
+                expected_stereo_width,
+                expected_stereo_height))
+        {
+            return (std::numeric_limits<int64_t>::min)();
+        }
+
+        const auto width = (uint32_t)candidate.desc.Width;
+        const auto height = (uint32_t)candidate.desc.Height;
+        const auto diff_eye = (int64_t)std::llabs((int64_t)width - (int64_t)expected_eye_width) +
+                              (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+        const auto diff_double = (int64_t)std::llabs((int64_t)width - (int64_t)expected_stereo_width) +
+                                 (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+        const auto diff_current = (int64_t)std::llabs((int64_t)width - (int64_t)current_desc.Width) +
+                                  (int64_t)std::llabs((int64_t)height - (int64_t)current_desc.Height);
+
+        int64_t score = 0;
+        score -= (std::min)(diff_eye, diff_double);
+        score += diff_current;
+
+        if (width > (uint32_t)real_backbuffer_desc.Width || height > (uint32_t)real_backbuffer_desc.Height) {
+            score += 5000;
+        }
+
+        if (candidate.nested) {
+            score -= 32;
+        }
+
+        return score;
+    };
+
+    std::optional<GuardedSceneResourceCandidate> best{};
+    int64_t best_score = (std::numeric_limits<int64_t>::min)();
+
+    for (const auto& candidate : candidates) {
+        const auto score = score_candidate(candidate);
+        if (score > best_score) {
+            best = candidate;
+            best_score = score;
+        }
+    }
+
+    return best;
+}
+
 ID3D12Resource* scan_object_for_d3d12_resource(uintptr_t base, uintptr_t max_offset) {
     if (base < 0x10000 || IsBadReadPtr((void*)base, sizeof(void*))) {
         return nullptr;
@@ -1491,6 +1649,51 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         (uint32_t)real_backbuffer_desc.Width * 2u,
         (uint32_t)real_backbuffer_desc.Height);
     const auto expected_double_width_for_frame = guarded_57_mode ? expected_runtime_width : (uint32_t)m_backbuffer_size[0];
+
+    if (guarded_57_mode &&
+        ue4_texture != nullptr &&
+        backbuffer.Get() != nullptr &&
+        is_probable_desktop_sized_scene_source(
+            backbuffer_desc,
+            real_backbuffer_desc,
+            expected_runtime_width,
+            expected_runtime_height))
+    {
+        if (const auto better_scene = find_better_guarded_scene_resource_candidate(
+                ue4_texture,
+                backbuffer.Get(),
+                backbuffer_desc,
+                real_backbuffer_desc,
+                expected_runtime_width,
+                expected_runtime_height);
+            better_scene.has_value())
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: replacing desktop-sized native scene resource {:x} ({}x{} fmt {}) with alternate candidate {:x} from {:x}+0x{:x} [{}] ({}x{} fmt {})",
+                (uintptr_t)backbuffer.Get(),
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format,
+                (uintptr_t)better_scene->resource,
+                better_scene->owner,
+                better_scene->offset,
+                better_scene->nested ? "nested" : "direct",
+                better_scene->desc.Width,
+                better_scene->desc.Height,
+                (uint32_t)better_scene->desc.Format);
+
+            backbuffer = better_scene->resource;
+            backbuffer_desc = better_scene->desc;
+            using_real_backbuffer_source = false;
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: no better native scene resource candidate found; keeping desktop-sized resource {:x} ({}x{} fmt {})",
+                (uintptr_t)backbuffer.Get(),
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format);
+        }
+    }
 
     const auto clear_guarded_scene_cache = [&]() {
         m_guarded_last_scene_source.Reset();
