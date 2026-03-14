@@ -3189,9 +3189,11 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         };
 
         if (ue57_like && viewport != nullptr) {
+            auto* const viewport_ref_2d8 = (FRHITexture2D**)((uintptr_t)viewport + 0x2D8);
             auto* const viewport_ref_2e0 = (FRHITexture2D**)((uintptr_t)viewport + 0x2E0);
             auto* const viewport_ref_8 = (FRHITexture2D**)((uintptr_t)viewport + 0x8);
-            const std::array<FRHITexture2D**, 3> preferred_refs{
+            const std::array<FRHITexture2D**, 4> preferred_refs{
+                viewport_ref_2d8,
                 viewport_ref_2e0,
                 original_result,
                 viewport_ref_8

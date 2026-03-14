@@ -1015,9 +1015,10 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
             return nullptr;
         }
 
-        static constexpr std::array<uintptr_t, 2> kViewportTextureRefOffsets{
-            0x2E0, // preferred scene texture ref path on UE5.7 SceneViewport
-            0x8    // fallback texture ref path used by the same accessor
+        static constexpr std::array<uintptr_t, 3> kViewportTextureRefOffsets{
+            0x2E0, // TQ2/5.7.2 SceneViewport render-thread scene texture ref path
+            0x2D8, // Venice/5.7.0 SceneViewport render-thread scene texture ref path
+            0x8    // non-render-thread fallback texture ref path used by the same accessor
         };
 
         for (const auto offset : kViewportTextureRefOffsets) {
