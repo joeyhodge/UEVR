@@ -910,9 +910,6 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
             if (try_read_ptr_nothrow((uintptr_t)texture_ref, from_ref_raw) && from_ref_raw >= 0x10000) {
                 auto* from_ref = (FRHITexture2D*)from_ref_raw;
                 resolved_from_ref = normalize_guarded_scene_pointer(from_ref, "scene render target ref");
-                if (resolved_from_ref != nullptr && resolved_from_ref == from_ref) {
-                    rtm->set_render_target(resolved_from_ref);
-                }
 
                 if (resolved_from_ref != nullptr) {
                     SPDLOG_INFO_EVERY_N_SEC(1,
@@ -969,6 +966,13 @@ FRHITexture2D* resolve_scene_render_target_for_d3d12(VR* vr) {
                         "[VR] Resolved scene render target from manager authority: {:x} -> {:x}",
                         (uintptr_t)manager_scene,
                         (uintptr_t)resolved_manager_scene);
+
+                    if (resolved_from_ref != nullptr && resolved_from_ref != resolved_manager_scene) {
+                        SPDLOG_INFO_EVERY_N_SEC(1,
+                            "[VR] Guarded UE5.7: retaining manager authority {:x} over divergent texture-ref {:x}",
+                            (uintptr_t)resolved_manager_scene,
+                            (uintptr_t)resolved_from_ref);
+                    }
                     return resolved_manager_scene;
                 }
             } else {
