@@ -1543,7 +1543,9 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         SPDLOG_INFO_ONCE("UE5.7 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
-    if (m_asynchronous_scan->value()) {
+    const bool ue57_like_direct_hook = ue57_guard || tq2_guard;
+
+    if (m_asynchronous_scan->value() && !ue57_like_direct_hook) {
         static std::future<bool> future = std::async(std::launch::async, detail::pre_find_slate_thread);
 
         // Wait for the future to be valid before attempting to hook
@@ -1552,6 +1554,8 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         } else if (future.valid()) {
             return;
         }
+    } else if (m_asynchronous_scan->value() && ue57_like_direct_hook) {
+        SPDLOG_INFO_ONCE("UE5.7/TQ2: bypassing async Slate prescan to avoid missing the first DrawWindow hook window");
     }
 
     if (m_hooked_slate_thread && !alternate) {
@@ -1588,7 +1592,7 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         return;
     }
 
-    if (return_address != 0) {
+    if (return_address != 0 && !(ue57_like_direct_hook && func.has_value())) {
         func = utility::find_function_start_with_call(return_address);
 
         if (!func) {
@@ -1617,6 +1621,11 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         }
 
         SPDLOG_INFO("Found FSlateRHIRenderer::DrawWindow_RenderThread with alternative return address method: {:x}", *func);
+    } else if (return_address != 0 && ue57_like_direct_hook && func.has_value()) {
+        SPDLOG_INFO_ONCE(
+            "UE5.7/TQ2: using scanned DrawWindow target {:x} instead of caller return address {:x}",
+            *func,
+            return_address);
     }
 
     m_slate_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_window_render_thread, safetyhook::InlineHook::StartDisabled);
@@ -3121,9 +3130,9 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
         if (s_last_retaddr_hook_attempt_ms == 0 || (now_ms - s_last_retaddr_hook_attempt_ms) >= 1000) {
             s_last_retaddr_hook_attempt_ms = now_ms;
             SPDLOG_INFO(
-                "Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread using FViewport::GetRenderTargetTexture return address {:x}",
+                "Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread from FViewport::GetRenderTargetTexture trigger {:x}",
                 retaddr);
-            g_hook->attempt_hook_slate_thread(retaddr);
+            g_hook->attempt_hook_slate_thread(0);
         }
     }
 
@@ -6884,10 +6893,15 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
 
 
     if (!g_hook->is_slate_hooked()) {
-        SPDLOG_INFO("Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread using RenderTexture_RenderThread return address...");
         const auto return_address = (uintptr_t)_ReturnAddress();
-        SPDLOG_INFO(" Return address: {:x}", return_address);
-        g_hook->attempt_hook_slate_thread(return_address);
+        if (is_ue_57() || is_tq2_shipping_executable()) {
+            SPDLOG_INFO("Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread from RenderTexture_RenderThread trigger {:x}", return_address);
+            g_hook->attempt_hook_slate_thread(0);
+        } else {
+            SPDLOG_INFO("Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread using RenderTexture_RenderThread return address...");
+            SPDLOG_INFO(" Return address: {:x}", return_address);
+            g_hook->attempt_hook_slate_thread(return_address);
+        }
     }
 
     g_hook->get_slate_thread_worker()->execute(rhi_command_list);
