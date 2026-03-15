@@ -7901,8 +7901,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (ue57_like_safe_mode) {
         // UE5.7 safe-mode: discovery only.
-        // We do not mutate Slate resources, but we still try to discover the scene RT from viewport providers.
+        // We do not mutate Slate resources. Provider bruteforce has been unstable on
+        // Venice/TQ2, so discovery should prefer direct viewport and Slate paths only.
         auto& rtm = *g_hook->get_render_target_manager();
+        constexpr bool allow_provider_probe = false;
 
         enum class SafeModeSceneSource : uint8_t {
             None,
@@ -7944,7 +7946,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             return true;
         };
 
-        auto try_get_direct_viewport_texture_nothrow = [](sdk::FViewportInfo* info, FRHITexture2D*& out) -> bool {
+        auto try_get_direct_viewport_texture_nothrow = [ue57_like_safe_mode](sdk::FViewportInfo* info, FRHITexture2D*& out) -> bool {
             out = nullptr;
 
             if (info == nullptr || IsBadReadPtr(info, sizeof(void*))) {
@@ -7979,9 +7981,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return false;
             }
 
-            if (!is_probably_valid_object_pointer((uintptr_t)out) ||
-                (!has_plausible_rhi_texture_header((uintptr_t)out) && !is_tq2_shipping_executable()))
-            {
+            if (!is_probably_valid_object_pointer((uintptr_t)out)) {
+                out = nullptr;
+                return false;
+            }
+
+            const bool header_ok = has_plausible_rhi_texture_header((uintptr_t)out);
+            const bool native_ok = ue57_like_safe_mode && has_resolvable_native_rhi_texture(out);
+
+            if (!header_ok && !native_ok) {
                 out = nullptr;
                 return false;
             }
@@ -8075,7 +8083,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (discovered_scene == nullptr && viewport_info != nullptr) {
+        if (allow_provider_probe && discovered_scene == nullptr && viewport_info != nullptr) {
             if (try_resolve_scene_from_viewport_provider(viewport_info, "primary viewport_info")) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via primary viewport provider");
@@ -8117,7 +8125,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     break;
                 }
 
-                if (try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
+                if (allow_provider_probe && try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
                     break;
                 }
             }
@@ -8131,14 +8139,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const bool candidate_ptr_ok = is_probably_valid_object_pointer((uintptr_t)discovered_scene);
             const bool candidate_header_ok = has_plausible_rhi_texture_header((uintptr_t)discovered_scene);
             const bool candidate_native_ok =
-                tq2_safe_mode &&
+                ue57_like_safe_mode &&
                 candidate_ptr_ok &&
                 has_resolvable_native_rhi_texture(discovered_scene);
             const bool allow_header_relaxed_candidate =
                 tq2_safe_mode &&
                 discovered_scene_source != SafeModeSceneSource::DirectViewportInfo;
             const bool allow_native_relaxed_candidate =
-                tq2_safe_mode &&
+                ue57_like_safe_mode &&
                 discovered_scene_source == SafeModeSceneSource::DirectViewportInfo &&
                 candidate_native_ok;
             const bool candidate_allowed =
@@ -8150,7 +8158,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 has_plausible_rhi_texture_header((uintptr_t)current_scene);
             const bool authoritative_scene_candidate =
                 discovered_scene_source == SafeModeSceneSource::SlateViewportResource ||
-                discovered_scene_source == SafeModeSceneSource::ViewportProvider;
+                discovered_scene_source == SafeModeSceneSource::ViewportProvider ||
+                (discovered_scene_source == SafeModeSceneSource::DirectViewportInfo &&
+                 (candidate_header_ok || allow_native_relaxed_candidate));
 
             if (!candidate_allowed) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
@@ -8230,6 +8240,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         } else if (discovered_scene == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: no scene texture resolved from Slate path");
+        }
+
+        if (!allow_provider_probe) {
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "UE5.7/TQ2 safe mode: provider scan disabled; relying on direct viewport and Slate texture paths");
         }
 
         SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: discovery-only Slate path (no interception)");

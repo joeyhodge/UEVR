@@ -774,7 +774,7 @@ std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_vi
         known_tex = rtm->get_ui_target();
     }
 
-    const bool allow_provider_fallback = !(ue57_guard || tq2_guard) || fake_stereo_hook->is_slate_hooked();
+    const bool allow_provider_fallback = !(ue57_guard || tq2_guard);
 
     FRHITexture2D* provider_texture = nullptr;
     if (allow_provider_fallback && try_get_viewport_provider_texture_nothrow(viewport_info, known_tex, provider_texture)) {
@@ -782,7 +782,7 @@ std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_vi
     } else if (!allow_provider_fallback) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[VR] Guarded UE5.7: skipping viewport-provider fallback until DrawWindow hook is active");
+            "[VR] Guarded UE5.7: provider fallback disabled; relying on direct viewport texture path");
     }
 
     const auto expected_eye_width = expected_stereo_width > 1 ? expected_stereo_width / 2u : expected_stereo_width;
