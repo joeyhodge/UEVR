@@ -8066,19 +8066,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (discovered_scene == nullptr && viewport_info != nullptr) {
-            if (try_resolve_scene_from_viewport_provider(viewport_info, "primary viewport_info")) {
-                SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via primary viewport provider");
-            }
-        }
-
-        if (discovered_scene == nullptr && viewport_info != nullptr) {
             FRHITexture2D* direct_viewport_scene = nullptr;
             if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
                 discovered_scene = direct_viewport_scene;
                 discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info (provider path unavailable)");
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info");
+            }
+        }
+
+        if (discovered_scene == nullptr && viewport_info != nullptr) {
+            if (try_resolve_scene_from_viewport_provider(viewport_info, "primary viewport_info")) {
+                SPDLOG_INFO_EVERY_N_SEC(2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via primary viewport provider");
             }
         }
 
@@ -8098,10 +8098,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     continue;
                 }
 
-                if (try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
-                    break;
-                }
-
                 FRHITexture2D* slot6_scene = nullptr;
                 if (try_get_scene_texture_via_slot6_nothrow(candidate, slot6_scene) && slot6_scene != nullptr) {
                     discovered_scene = slot6_scene;
@@ -8112,15 +8108,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     break;
                 }
 
-                if (!tq2_safe_mode) {
-                    FRHITexture2D* direct_viewport_scene = nullptr;
-                    if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
-                        discovered_scene = direct_viewport_scene;
-                        discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
-                        SPDLOG_INFO_EVERY_N_SEC(2,
-                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via viewport candidate direct path (provider path unavailable)");
-                        break;
-                    }
+                FRHITexture2D* direct_viewport_scene = nullptr;
+                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
+                    discovered_scene = direct_viewport_scene;
+                    discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via viewport candidate direct path");
+                    break;
+                }
+
+                if (try_resolve_scene_from_viewport_provider(candidate, "viewport candidate")) {
+                    break;
                 }
             }
         }
