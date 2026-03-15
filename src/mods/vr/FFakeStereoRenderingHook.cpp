@@ -7528,7 +7528,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     std::vector<sdk::FViewportInfo*> ue57_viewport_candidates{};
 
     if (is_ue_57()) {
-        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs");
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs from a4/r9");
 
         auto push_viewport_candidate = [&](uintptr_t candidate_raw, const char* source_label, size_t field_offset) {
             if (candidate_raw == 0 || (candidate_raw & (sizeof(void*) - 1)) != 0 || candidate_raw < 0x10000) {
@@ -7586,31 +7586,25 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
             const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
             const auto candidate_viewport_20 = *(uintptr_t*)(inputs + 0x20);
-            const auto candidate_window = *(uintptr_t*)(inputs + 0x10);
 
-            // UE5.7 DrawWindow pass inputs in engine source:
-            //   +0x08 = WindowElementList
-            //   +0x10 = Window
-            //   +0x18 = ViewportInfo
-            // Keep +0x20 fallback only for non-TQ2 titles in case of minor local layout drift.
+            // Venice 5.7 PDB/disassembly confirms:
+            //   rcx = sret outputs
+            //   rdx = this
+            //   r8  = FRDGBuilder&
+            //   r9  = FSlateDrawWindowPassInputs const&
+            // and +0x18 is still the live viewport field.
+            // Treat +0x20 as a relaxed fallback only and do not reinterpret +0x10 as SWindow here.
             push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
             if (!is_tq2_shipping_executable()) {
                 push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
             }
-
-            if (window == 0) {
-                if (is_probably_valid_object_pointer(candidate_window)) {
-                    window = candidate_window;
-                    SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 using {} as draw inputs (window)", source_label);
-                } else {
-                    SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 {} window candidate rejected: 0x{:x}", source_label, candidate_window);
-                }
-            }
         };
 
-        // UE5.7.2 can place FSlateDrawWindowPassInputs in a4/r9 instead of a3/r8.
         parse_inputs(a4, "a4");
-        parse_inputs(a3, "a3");
+        if (ue57_viewport_candidates.empty() && a4 == nullptr && a3 != nullptr) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 a4/r9 pass inputs missing; falling back to a3/r8 parse");
+            parse_inputs(a3, "a3-fallback");
+        }
 
         if (!ue57_viewport_candidates.empty()) {
             viewport_info = ue57_viewport_candidates.front();
