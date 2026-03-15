@@ -7549,18 +7549,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return;
             }
 
-            if (is_tq2_shipping_executable()) {
-                const auto vt_class = classify_slate_viewport_vtable(vtable_raw);
-                if (vt_class != SlateViewportVtableClass::SceneViewport) {
-                    SPDLOG_INFO_EVERY_N_SEC(
-                        2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] TQ2 rejected viewport_info candidate {}+0x{:x}: class={}",
-                        source_label,
-                        field_offset,
-                        (int)vt_class
-                    );
-                    return;
-                }
+            const auto vt_class = classify_slate_viewport_vtable(vtable_raw);
+            if (vt_class != SlateViewportVtableClass::SceneViewport) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 rejected viewport_info candidate {}+0x{:x}: class={}",
+                    source_label,
+                    field_offset,
+                    (int)vt_class
+                );
+                return;
             }
 
             if (IsBadReadPtr((void*)candidate_raw, 0x20)) {
@@ -7584,6 +7582,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
+            const auto candidate_viewport_10 = *(uintptr_t*)(inputs + 0x10);
             const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
             const auto candidate_viewport_20 = *(uintptr_t*)(inputs + 0x20);
 
@@ -7592,8 +7591,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             //   rdx = this
             //   r8  = FRDGBuilder&
             //   r9  = FSlateDrawWindowPassInputs const&
-            // and +0x18 is still the live viewport field.
-            // Treat +0x20 as a relaxed fallback only and do not reinterpret +0x10 as SWindow here.
+            // The live FSceneViewport pointer is at +0x10. +0x18 is a render-target
+            // helper object used by GDynamicRHI and not the viewport itself.
+            push_viewport_candidate(candidate_viewport_10, source_label, 0x10);
             push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
             if (!is_tq2_shipping_executable()) {
                 push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
