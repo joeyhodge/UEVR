@@ -6,6 +6,7 @@
 #include <utility/Logging.hpp>
 #include <utility/Module.hpp>
 #include <sdk/Utility.hpp>
+#include <sdk/FViewportInfo.hpp>
 #include <array>
 #include <algorithm>
 #include <cctype>
@@ -502,6 +503,7 @@ struct GuardedSceneResourceCandidate {
     uintptr_t owner{};
     uintptr_t offset{};
     bool nested{};
+    const char* source{};
 };
 
 void collect_guarded_scene_resource_candidates_from_object(
@@ -542,6 +544,7 @@ void collect_guarded_scene_resource_candidates_from_object(
             .owner = owner,
             .offset = offset,
             .nested = nested,
+            .source = nested ? "nested-object-scan" : "object-scan",
         });
     }
 }
@@ -648,6 +651,194 @@ std::optional<GuardedSceneResourceCandidate> find_better_guarded_scene_resource_
         if (score > best_score) {
             best = candidate;
             best_score = score;
+        }
+    }
+
+    return best;
+}
+
+bool try_get_viewport_direct_texture_nothrow(sdk::FViewportInfo* viewport_info, FRHITexture2D*& out) noexcept {
+    out = nullptr;
+    __try {
+        out = viewport_info != nullptr ? viewport_info->get_direct_render_target_texture() : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+    }
+
+    return out != nullptr;
+}
+
+bool try_get_viewport_provider_texture_nothrow(
+    sdk::FViewportInfo* viewport_info,
+    FRHITexture2D* known_tex,
+    FRHITexture2D*& out) noexcept
+{
+    out = nullptr;
+    if (viewport_info == nullptr) {
+        return false;
+    }
+
+    sdk::IViewportRenderTargetProvider* provider = nullptr;
+    __try {
+        provider = viewport_info->get_rt_provider(known_tex);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        provider = nullptr;
+    }
+
+    if (provider == nullptr) {
+        return false;
+    }
+
+    sdk::FSlateResource* viewport_rt = nullptr;
+    __try {
+        viewport_rt = viewport_info->get_viewport_rt_texture(provider);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        viewport_rt = nullptr;
+    }
+
+    if (viewport_rt == nullptr) {
+        return false;
+    }
+
+    __try {
+        out = viewport_rt->get_mutable_resource();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = nullptr;
+    }
+
+    return out != nullptr;
+}
+
+std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_viewport_accessors(
+    VR* vr,
+    FRHITexture2D* current_texture,
+    ID3D12Resource* current_resource,
+    const D3D12_RESOURCE_DESC& current_desc,
+    const D3D12_RESOURCE_DESC& real_backbuffer_desc,
+    uint32_t expected_stereo_width,
+    uint32_t expected_stereo_height)
+{
+    if (vr == nullptr || current_resource == nullptr) {
+        return std::nullopt;
+    }
+
+    auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+    if (fake_stereo_hook == nullptr) {
+        return std::nullopt;
+    }
+
+    auto* rtm = fake_stereo_hook->get_render_target_manager();
+    if (rtm == nullptr) {
+        return std::nullopt;
+    }
+
+    auto* viewport = rtm->get_viewport();
+    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    auto* viewport_info = reinterpret_cast<sdk::FViewportInfo*>(viewport);
+    if (viewport_info == nullptr || IsBadReadPtr(viewport_info, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    struct TextureCandidate {
+        FRHITexture2D* texture{};
+        const char* source{};
+    };
+
+    std::array<TextureCandidate, 4> texture_candidates{};
+    size_t texture_candidate_count = 0;
+    std::unordered_set<uintptr_t> seen_texture_candidates{};
+
+    const auto push_texture_candidate = [&](FRHITexture2D* texture, const char* source) {
+        if (texture == nullptr || texture == current_texture || texture_candidate_count >= texture_candidates.size()) {
+            return;
+        }
+
+        const auto texture_ptr = reinterpret_cast<uintptr_t>(texture);
+        if (texture_ptr < 0x10000 || !seen_texture_candidates.insert(texture_ptr).second) {
+            return;
+        }
+
+        texture_candidates[texture_candidate_count++] = TextureCandidate{texture, source};
+    };
+
+    FRHITexture2D* direct_texture = nullptr;
+    if (try_get_viewport_direct_texture_nothrow(viewport_info, direct_texture)) {
+        push_texture_candidate(direct_texture, "viewport-info-direct");
+    }
+
+    FRHITexture2D* known_tex = rtm->get_render_target();
+    if (known_tex == nullptr) {
+        known_tex = rtm->get_ui_target();
+    }
+
+    FRHITexture2D* provider_texture = nullptr;
+    if (try_get_viewport_provider_texture_nothrow(viewport_info, known_tex, provider_texture)) {
+        push_texture_candidate(provider_texture, "viewport-provider");
+    }
+
+    const auto expected_eye_width = expected_stereo_width > 1 ? expected_stereo_width / 2u : expected_stereo_width;
+    std::optional<GuardedSceneResourceCandidate> best{};
+    int64_t best_score = (std::numeric_limits<int64_t>::min)();
+
+    for (size_t i = 0; i < texture_candidate_count; ++i) {
+        const auto& texture_candidate = texture_candidates[i];
+        auto* resource = probe_native_d3d12_resource_via_frhi_base(texture_candidate.texture, "scene render target", false);
+        if (resource == nullptr) {
+            resource = probe_native_d3d12_resource_from_texture_blob(texture_candidate.texture);
+        }
+        if (resource == nullptr) {
+            continue;
+        }
+
+        D3D12_RESOURCE_DESC desc{};
+        if (!try_get_resource_desc_nothrow(resource, desc)) {
+            continue;
+        }
+
+        if (!is_plausible_scene_source_desc(
+                desc,
+                real_backbuffer_desc,
+                expected_stereo_width,
+                expected_stereo_height) ||
+            is_probable_desktop_sized_scene_source(
+                desc,
+                real_backbuffer_desc,
+                expected_stereo_width,
+                expected_stereo_height))
+        {
+            continue;
+        }
+
+        const auto width = (uint32_t)desc.Width;
+        const auto height = (uint32_t)desc.Height;
+        const auto diff_eye = (int64_t)std::llabs((int64_t)width - (int64_t)expected_eye_width) +
+                              (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+        const auto diff_double = (int64_t)std::llabs((int64_t)width - (int64_t)expected_stereo_width) +
+                                 (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+        const auto diff_current = (int64_t)std::llabs((int64_t)width - (int64_t)current_desc.Width) +
+                                  (int64_t)std::llabs((int64_t)height - (int64_t)current_desc.Height);
+
+        int64_t score = 0;
+        score -= (std::min)(diff_eye, diff_double);
+        score += diff_current;
+
+        if (std::string_view{texture_candidate.source} == "viewport-provider") {
+            score += 128;
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            GuardedSceneResourceCandidate chosen{};
+            chosen.resource = resource;
+            chosen.desc = desc;
+            chosen.owner = reinterpret_cast<uintptr_t>(texture_candidate.texture);
+            chosen.offset = 0;
+            chosen.nested = false;
+            chosen.source = texture_candidate.source;
+            best = chosen;
         }
     }
 
@@ -1685,6 +1876,32 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             backbuffer = better_scene->resource;
             backbuffer_desc = better_scene->desc;
+            using_real_backbuffer_source = false;
+        } else if (const auto viewport_scene = find_guarded_scene_resource_from_viewport_accessors(
+                       vr,
+                       ue4_texture,
+                       backbuffer.Get(),
+                       backbuffer_desc,
+                       real_backbuffer_desc,
+                       expected_runtime_width,
+                       expected_runtime_height);
+                   viewport_scene.has_value())
+        {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7: replacing desktop-sized native scene resource {:x} ({}x{} fmt {}) with viewport-derived candidate {:x} from {:x} [{}] ({}x{} fmt {})",
+                (uintptr_t)backbuffer.Get(),
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                (uint32_t)backbuffer_desc.Format,
+                (uintptr_t)viewport_scene->resource,
+                viewport_scene->owner,
+                viewport_scene->source != nullptr ? viewport_scene->source : "viewport-accessor",
+                viewport_scene->desc.Width,
+                viewport_scene->desc.Height,
+                (uint32_t)viewport_scene->desc.Format);
+
+            backbuffer = viewport_scene->resource;
+            backbuffer_desc = viewport_scene->desc;
             using_real_backbuffer_source = false;
         } else {
             SPDLOG_INFO_EVERY_N_SEC(1,
