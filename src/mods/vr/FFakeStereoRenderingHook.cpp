@@ -7608,6 +7608,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (!ue57_viewport_candidates.empty()) {
             viewport_info = ue57_viewport_candidates.front();
+            slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(viewport_info);
         }
     } else {
         viewport_info = (sdk::FViewportInfo*)a3;
@@ -8057,7 +8058,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     discovered_scene_source = SafeModeSceneSource::SlateViewportResource;
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via SlateViewport::GetViewportRenderTargetTexture()");
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport interface");
                 }
             }
         }
@@ -8104,6 +8105,18 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             for (auto candidate : ue57_viewport_candidates) {
                 if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
                     continue;
+                }
+
+                sdk::FSlateResource* direct_resource = nullptr;
+                auto* candidate_slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(candidate);
+                if (try_get_slate_viewport_render_target_texture_nothrow(candidate_slate_viewport, direct_resource) &&
+                    resolve_scene_from_resource(direct_resource, discovered_scene))
+                {
+                    discovered_scene_source = SafeModeSceneSource::SlateViewportResource;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via queued DrawWindow viewport interface");
+                    break;
                 }
 
                 FRHITexture2D* slot6_scene = nullptr;
