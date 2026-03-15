@@ -7526,6 +7526,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     uintptr_t window = 0;
     std::vector<sdk::FViewportInfo*> ue57_viewport_candidates{};
+    bool ue57_candidates_interface_only = false;
+    bool ue57_window_backed_viewport = false;
 
     if (is_ue_57()) {
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 detected; using FSlateDrawWindowPassInputs from a4/r9");
@@ -7569,6 +7571,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const auto exists = std::find(ue57_viewport_candidates.begin(), ue57_viewport_candidates.end(), candidate) != ue57_viewport_candidates.end();
             if (!exists) {
                 ue57_viewport_candidates.push_back(candidate);
+                ue57_candidates_interface_only = true;
                 SPDLOG_INFO_ONCE(
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 queued viewport_info candidate {}+0x{:x}: 0x{:x}",
                     source_label, field_offset, candidate_raw
@@ -7600,15 +7603,94 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         };
 
-        parse_inputs(a4, "a4");
+        auto try_capture_tq2_helper_window = [&](void* raw_inputs) -> bool {
+            if (!is_tq2_shipping_executable() || raw_inputs == nullptr || IsBadReadPtr(raw_inputs, 0x20)) {
+                return false;
+            }
+
+            const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
+            uintptr_t helper_window_candidate{};
+            if (!try_read_pointer_nothrow((uintptr_t)(inputs + 0x10), helper_window_candidate) ||
+                helper_window_candidate == 0 ||
+                (helper_window_candidate & (sizeof(void*) - 1)) != 0 ||
+                helper_window_candidate < 0x10000)
+            {
+                return false;
+            }
+
+            uintptr_t vtable_raw{};
+            uintptr_t first_vfunc_raw{};
+            if (!try_read_pointer_nothrow(helper_window_candidate, vtable_raw) ||
+                vtable_raw == 0 ||
+                !try_read_pointer_nothrow(vtable_raw, first_vfunc_raw) ||
+                first_vfunc_raw == 0)
+            {
+                return false;
+            }
+
+            if (!utility::get_module_within((void*)vtable_raw).has_value() ||
+                !utility::get_module_within((void*)first_vfunc_raw).has_value())
+            {
+                return false;
+            }
+
+            // TQ2's obfuscated DrawWindow helper receives a per-batch record in r9/a4.
+            // The +0x10 field is an SWindow-like object, not an FSceneViewport.
+            uintptr_t viewport_slot_candidate{};
+            bool viewport_slot_ok = false;
+
+            constexpr size_t tq2_window_viewport_offsets[] = {0x438, 0x440};
+            for (const auto offset : tq2_window_viewport_offsets) {
+                uintptr_t candidate_raw{};
+                uintptr_t candidate_vtable{};
+                uintptr_t candidate_first_vfunc{};
+
+                if (!try_read_pointer_nothrow(helper_window_candidate + offset, candidate_raw) ||
+                    candidate_raw == 0 ||
+                    !try_read_pointer_nothrow(candidate_raw, candidate_vtable) ||
+                    candidate_vtable == 0 ||
+                    !try_read_pointer_nothrow(candidate_vtable, candidate_first_vfunc) ||
+                    candidate_first_vfunc == 0)
+                {
+                    continue;
+                }
+
+                if (!utility::get_module_within((void*)candidate_vtable).has_value() ||
+                    !utility::get_module_within((void*)candidate_first_vfunc).has_value())
+                {
+                    continue;
+                }
+
+                if (classify_slate_viewport_vtable(candidate_vtable) == SlateViewportVtableClass::SceneViewport) {
+                    viewport_slot_candidate = candidate_raw;
+                    viewport_slot_ok = true;
+                    break;
+                }
+            }
+
+            if (!viewport_slot_ok) {
+                return false;
+            }
+
+            window = helper_window_candidate;
+            SPDLOG_INFO_ONCE(
+                "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 helper path: treating a4+0x10 as SWindow 0x{:x}",
+                helper_window_candidate);
+            return true;
+        };
+
+        const bool tq2_helper_window_mode = try_capture_tq2_helper_window(a4);
+        if (!tq2_helper_window_mode) {
+            parse_inputs(a4, "a4");
+        }
+
         if (ue57_viewport_candidates.empty() && a4 == nullptr && a3 != nullptr) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 a4/r9 pass inputs missing; falling back to a3/r8 parse");
             parse_inputs(a3, "a3-fallback");
         }
 
         if (!ue57_viewport_candidates.empty()) {
-            viewport_info = ue57_viewport_candidates.front();
-            slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(viewport_info);
+            slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(ue57_viewport_candidates.front());
         }
     } else {
         viewport_info = (sdk::FViewportInfo*)a3;
@@ -7637,11 +7719,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         } else {
             window = (uintptr_t)a4_ptr[2];
         }
-    }
-
-    if (viewport_info == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
-        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
     if (window != 0) {
@@ -7714,6 +7791,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
                     SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Using SWindow viewport fallback at 0x{:x}", offset);
                     slate_viewport = candidate;
+                    ue57_window_backed_viewport = true;
                     viewport_offset = offset;
                     break;
                 }
@@ -7863,6 +7941,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             if (viewport_offset) {
                 slate_viewport = try_get_viewport(*viewport_offset);
+                ue57_window_backed_viewport = slate_viewport != nullptr;
             }
         } else if (!slate_viewport && !viewport_offset && !attempted_viewport_emulation) {
             attempted_viewport_emulation = true;
@@ -7870,10 +7949,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
+    if (viewport_info == nullptr && slate_viewport != nullptr && (!is_ue_57() || ue57_window_backed_viewport)) {
+        viewport_info = reinterpret_cast<sdk::FViewportInfo*>(slate_viewport);
+    }
+
+    if (viewport_info == nullptr && (!is_ue_57() || slate_viewport == nullptr)) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
+    auto* viewport_info_for_callbacks =
+        viewport_info != nullptr ? viewport_info : reinterpret_cast<sdk::FViewportInfo*>(slate_viewport);
+
     const auto& mods = g_framework->get_mods()->get_mods();
 
     for (auto& mod : mods) {
-        mod->on_pre_slate_draw_window(renderer, a2, viewport_info);
+        mod->on_pre_slate_draw_window(renderer, a2, viewport_info_for_callbacks);
     }
 
     g_hook->m_inside_slate_draw_window = true;
@@ -7883,7 +7974,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
 
         for (auto& mod : mods) {
-            mod->on_post_slate_draw_window(renderer, a2, viewport_info);
+            mod->on_post_slate_draw_window(renderer, a2, viewport_info_for_callbacks);
         }
 
         g_hook->m_inside_slate_draw_window = false;
@@ -7899,6 +7990,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     const bool ue57_like_safe_mode = is_ue_57() || is_tq2_shipping_executable();
+    const bool allow_ue57_direct_viewport_probe =
+        !is_ue_57() ||
+        !ue57_candidates_interface_only ||
+        ue57_window_backed_viewport;
 
     if (ue57_like_safe_mode) {
         // UE5.7 safe-mode: discovery only.
@@ -8074,7 +8169,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (discovered_scene == nullptr && viewport_info != nullptr) {
+        if (discovered_scene == nullptr && viewport_info != nullptr && allow_ue57_direct_viewport_probe) {
             FRHITexture2D* direct_viewport_scene = nullptr;
             if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
                 discovered_scene = direct_viewport_scene;
@@ -8082,6 +8177,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via direct viewport info");
             }
+        } else if (discovered_scene == nullptr && viewport_info != nullptr && is_ue_57()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode: skipping direct viewport offset probe for interface-only DrawWindow candidate");
         }
 
         if (allow_provider_probe && discovered_scene == nullptr && viewport_info != nullptr) {
@@ -8130,7 +8229,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 }
 
                 FRHITexture2D* direct_viewport_scene = nullptr;
-                if (try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene)) {
+                if (allow_ue57_direct_viewport_probe &&
+                    try_get_direct_viewport_texture_nothrow(candidate, direct_viewport_scene))
+                {
                     discovered_scene = direct_viewport_scene;
                     discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
                     SPDLOG_INFO_EVERY_N_SEC(2,
@@ -8439,7 +8540,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     slate_resource->get_mutable_resource() = old_texture;
 
     for (auto& mod : mods) {
-        mod->on_post_slate_draw_window(renderer, a2, viewport_info);
+        mod->on_post_slate_draw_window(renderer, a2, viewport_info_for_callbacks);
     }
     
     // After this we copy over the texture and clear it in the present hook. doing it here just seems to crash sometimes.
