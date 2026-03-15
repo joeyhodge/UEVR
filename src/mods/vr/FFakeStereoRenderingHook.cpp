@@ -1521,15 +1521,18 @@ bool pre_find_slate_thread() {
 void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_address, bool alternate) {
     const bool ue57_guard = is_ue_57();
     const bool tq2_guard = is_tq2_shipping_executable();
+    const auto startup_guard_begin_tick = []() {
+        static const uint64_t s_guard_begin_tick = GetTickCount64();
+        return s_guard_begin_tick;
+    }();
+    const auto now = GetTickCount64();
 
     if (tq2_guard) {
         // TQ2 is sensitive at startup. Delay the hook a bit, then allow it in the
         // UE5.7 safe-mode path (discovery-only, no Slate resource mutation).
-        static uint64_t s_tq2_guard_begin_tick = GetTickCount64();
         constexpr uint64_t kTq2GuardDelayMs = 5000;
-        const auto now = GetTickCount64();
 
-        if (now - s_tq2_guard_begin_tick < kTq2GuardDelayMs) {
+        if (now - startup_guard_begin_tick < kTq2GuardDelayMs) {
             SPDLOG_WARN_ONCE("TQ2: delaying DrawWindow_RenderThread hook briefly for startup stability");
             return;
         }
@@ -1540,11 +1543,9 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     if (ue57_guard) {
         // UE5.7 can be unstable right at injection. Delay this hook briefly,
         // then allow normal hook attempts so we can recover scene render targets.
-        static uint64_t s_guard_begin_tick = GetTickCount64();
         constexpr uint64_t kGuardDelayMs = 3000;
-        const auto now = GetTickCount64();
 
-        if (now - s_guard_begin_tick < kGuardDelayMs) {
+        if (now - startup_guard_begin_tick < kGuardDelayMs) {
             SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook briefly for startup stability");
             return;
         }
@@ -1584,6 +1585,14 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     auto func = alternate ? sdk::slate::locate_draw_window_renderthread_fn_alternate() : sdk::slate::locate_draw_window_renderthread_fn();
 
+    if (!alternate && !func) {
+        func = sdk::slate::locate_draw_window_renderthread_fn_alternate();
+
+        if (func) {
+            SPDLOG_INFO("Using alternate string-scan result for FSlateRHIRenderer::DrawWindow_RenderThread: {:x}", *func);
+        }
+    }
+
     if (!func && return_address == 0) {
         SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindow_RenderThread");
         return;
@@ -1594,7 +1603,6 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
         if (!func) {
             SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindow_RenderThread with alternative return address method");
-            m_hooked_slate_thread = true; // not actually true but just to stop spamming the scans
             return;
         }
 
@@ -1615,7 +1623,6 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
         if (distance_to_ret < 50) {
             SPDLOG_ERROR("FSlateRHIRenderer::DrawWindow_RenderThread function is too small! Distance to RET: {}", distance_to_ret);
-            m_hooked_slate_thread = true; // not actually true but just to stop spamming the scans
             return;
         }
 
@@ -1623,7 +1630,6 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     }
 
     m_slate_thread_hook = safetyhook::create_inline((void*)*func, &FFakeStereoRenderingHook::slate_draw_window_render_thread, safetyhook::InlineHook::StartDisabled);
-    m_hooked_slate_thread = true;
 
     if (!m_slate_thread_hook) {
         SPDLOG_ERROR("Failed to hook FSlateRHIRenderer::DrawWindow_RenderThread!");
@@ -1635,6 +1641,7 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         return;
     }
 
+    m_hooked_slate_thread = true;
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
 }
 
@@ -6858,7 +6865,7 @@ __forceinline void FFakeStereoRenderingHook::render_texture_render_thread(FFakeS
 #endif
 
 
-    if (!g_hook->is_slate_hooked() && g_hook->has_attempted_to_hook_slate()) {
+    if (!g_hook->is_slate_hooked()) {
         SPDLOG_INFO("Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread using RenderTexture_RenderThread return address...");
         const auto return_address = (uintptr_t)_ReturnAddress();
         SPDLOG_INFO(" Return address: {:x}", return_address);
