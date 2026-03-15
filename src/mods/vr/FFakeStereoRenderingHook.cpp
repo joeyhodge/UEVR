@@ -1526,30 +1526,20 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         return s_guard_begin_tick;
     }();
     const auto now = GetTickCount64();
+    const auto required_guard_delay_ms = tq2_guard ? 5000ull : (ue57_guard ? 3000ull : 0ull);
 
-    if (tq2_guard) {
-        // TQ2 is sensitive at startup. Delay the hook a bit, then allow it in the
-        // UE5.7 safe-mode path (discovery-only, no Slate resource mutation).
-        constexpr uint64_t kTq2GuardDelayMs = 5000;
-
-        if (now - startup_guard_begin_tick < kTq2GuardDelayMs) {
+    if (required_guard_delay_ms != 0 && now - startup_guard_begin_tick < required_guard_delay_ms) {
+        if (tq2_guard) {
             SPDLOG_WARN_ONCE("TQ2: delaying DrawWindow_RenderThread hook briefly for startup stability");
-            return;
+        } else {
+            SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook briefly for startup stability");
         }
-
-        SPDLOG_INFO_ONCE("TQ2 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
+        return;
     }
 
-    if (ue57_guard) {
-        // UE5.7 can be unstable right at injection. Delay this hook briefly,
-        // then allow normal hook attempts so we can recover scene render targets.
-        constexpr uint64_t kGuardDelayMs = 3000;
-
-        if (now - startup_guard_begin_tick < kGuardDelayMs) {
-            SPDLOG_WARN_ONCE("UE5.7: delaying DrawWindow_RenderThread hook briefly for startup stability");
-            return;
-        }
-
+    if (tq2_guard) {
+        SPDLOG_INFO_ONCE("TQ2 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
+    } else if (ue57_guard) {
         SPDLOG_INFO_ONCE("UE5.7 startup guard elapsed; resuming DrawWindow_RenderThread hook attempts");
     }
 
@@ -3125,6 +3115,18 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
     const auto& vr = VR::get();
     const bool ue57_capture_mode = (is_ue_57() || is_tq2_shipping_executable()) && vr->is_hmd_active();
 
+    if (ue57_capture_mode && !g_hook->is_slate_hooked() && retaddr != 0) {
+        static uint64_t s_last_retaddr_hook_attempt_ms{};
+        const auto now_ms = GetTickCount64();
+        if (s_last_retaddr_hook_attempt_ms == 0 || (now_ms - s_last_retaddr_hook_attempt_ms) >= 1000) {
+            s_last_retaddr_hook_attempt_ms = now_ms;
+            SPDLOG_INFO(
+                "Attempting to hook SlateRHIRenderer::DrawWindow_RenderThread using FViewport::GetRenderTargetTexture return address {:x}",
+                retaddr);
+            g_hook->attempt_hook_slate_thread(retaddr);
+        }
+    }
+
     if (indirect_vcall_slot.has_value()) {
         SPDLOG_INFO_EVERY_N_SEC(
             1,
@@ -3388,17 +3390,18 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
             current == ui_target ||
             current != candidate;
 
-        // Only publish the passthrough ref if we are actually willing to let this
-        // path drive the scene target. Otherwise the D3D12 resolver can drift back
-        // to the unstable desktop-sized source even while Slate keeps a better
-        // promoted scene target alive.
-        rtm.set_render_target_ref(resolved_ref);
-
         if (should_store_scene) {
+            // Only publish the passthrough ref if we are actually willing to let this
+            // path drive the scene target. Otherwise the D3D12 resolver can drift back
+            // to the unstable desktop-sized source even while Slate keeps a better
+            // promoted scene target alive.
+            rtm.set_render_target_ref(resolved_ref);
             rtm.set_render_target(candidate);
             SPDLOG_INFO_EVERY_N_SEC(1,
                 "FViewport::GetRenderTargetTexture captured scene render target from {}: {:x}",
                 source_label, (uintptr_t)candidate);
+        } else if (resolved_ref != nullptr) {
+            rtm.set_render_target_ref(nullptr);
         }
     };
 
@@ -4982,10 +4985,25 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     // This should 100% only get executed if the headset is on, because
     // FFakeStereoRenderingHook::render_texture_render_thread is the first fallback for hooking
     // And we don't want to miss that unintentionally
-    if (g_hook->m_attempted_hook_slate_thread && !g_hook->m_slate_thread_hook && !g_hook->m_attempted_hook_slate_thread_alternate && execution_count++ >= 50) {
-        SPDLOG_INFO("DrawWindow_RenderThread was not hooked after {} render calls, trying alternative hook", execution_count);
+    if (!g_hook->is_slate_hooked()) {
+        ++execution_count;
+        const bool aggressive_retry = is_ue_57() || is_tq2_shipping_executable();
+        const size_t normal_retry_calls = aggressive_retry ? 5u : 25u;
+        const size_t alternate_retry_calls = aggressive_retry ? 10u : 50u;
 
-        g_hook->attempt_hook_slate_thread(0, true);
+        if (!g_hook->m_attempted_hook_slate_thread && execution_count >= normal_retry_calls) {
+            SPDLOG_INFO("DrawWindow_RenderThread was not hooked after {} render calls, retrying primary hook", execution_count);
+            g_hook->attempt_hook_slate_thread(0, false);
+        }
+
+        if (g_hook->m_attempted_hook_slate_thread &&
+            !g_hook->m_slate_thread_hook &&
+            !g_hook->m_attempted_hook_slate_thread_alternate &&
+            execution_count >= alternate_retry_calls)
+        {
+            SPDLOG_INFO("DrawWindow_RenderThread was not hooked after {} render calls, trying alternative hook", execution_count);
+            g_hook->attempt_hook_slate_thread(0, true);
+        }
     }
 
     if (vr->is_stereo_emulation_enabled()) {
