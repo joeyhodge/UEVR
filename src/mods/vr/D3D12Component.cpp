@@ -1847,6 +1847,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         (uint32_t)real_backbuffer_desc.Width * 2u,
         (uint32_t)real_backbuffer_desc.Height);
     const auto expected_double_width_for_frame = guarded_57_mode ? expected_runtime_width : (uint32_t)m_backbuffer_size[0];
+    bool guarded_scene_candidate_promoted = false;
 
     if (guarded_57_mode &&
         ue4_texture != nullptr &&
@@ -1883,6 +1884,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             backbuffer = better_scene->resource;
             backbuffer_desc = better_scene->desc;
             using_real_backbuffer_source = false;
+            guarded_scene_candidate_promoted = true;
         } else if (const auto viewport_scene = find_guarded_scene_resource_from_viewport_accessors(
                        vr,
                        ue4_texture,
@@ -1909,6 +1911,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             backbuffer = viewport_scene->resource;
             backbuffer_desc = viewport_scene->desc;
             using_real_backbuffer_source = false;
+            guarded_scene_candidate_promoted = true;
         } else {
             SPDLOG_INFO_EVERY_N_SEC(1,
                 "[VR] Guarded UE5.7: no better native scene resource candidate found; keeping desktop-sized resource {:x} ({}x{} fmt {})",
@@ -2076,6 +2079,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer = ref_native;
         backbuffer_desc = ref_desc;
         using_real_backbuffer_source = false;
+        guarded_scene_candidate_promoted = true;
         rtm->set_render_target(ref_candidate);
         return true;
     };
@@ -2261,7 +2265,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         constexpr uint32_t kForceRealLatchFrames = 12;
         constexpr uint32_t kMinStableSceneFrames = 3;
 
-        if (!had_guarded_scene_candidate_pre_latch) {
+        if (guarded_scene_candidate_promoted && had_guarded_scene_candidate_pre_latch) {
+            s_force_real_frames = 0;
+            s_stable_scene_frames = kMinStableSceneFrames;
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] Guarded UE5.7 source latch bypassed after promoting a non-desktop scene candidate");
+        } else if (!had_guarded_scene_candidate_pre_latch) {
             s_force_real_frames = kForceRealLatchFrames;
             s_stable_scene_frames = 0;
         } else {
