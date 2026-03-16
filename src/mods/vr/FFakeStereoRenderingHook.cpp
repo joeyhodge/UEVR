@@ -8189,29 +8189,76 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return false;
             }
 
+            const auto accept_candidate = [&](FRHITexture2D* candidate, const char* source, size_t offset = 0, bool indirect = false) -> bool {
+                if (candidate == nullptr || !is_probably_valid_object_pointer((uintptr_t)candidate)) {
+                    return false;
+                }
+
+                const bool header_ok = has_plausible_rhi_texture_header((uintptr_t)candidate);
+                const bool native_ok = ue57_like_safe_mode && has_resolvable_native_rhi_texture(candidate);
+                if (!header_ok && !native_ok) {
+                    return false;
+                }
+
+                if (!header_ok) {
+                    if (offset != 0) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode unwrapped Slate resource {}+0x{:x}{} -> {:x}",
+                            source,
+                            offset,
+                            indirect ? " (indirect)" : "",
+                            (uintptr_t)candidate);
+                    } else {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode accepting header-relaxed Slate resource candidate from {}: {:x}",
+                            source,
+                            (uintptr_t)candidate);
+                    }
+                }
+
+                out = candidate;
+                return true;
+            };
+
             FRHITexture2D* candidate{};
-            if (!try_get_mutable_resource_nothrow(resource, candidate) || candidate == nullptr) {
-                return false;
+            if (try_get_typed_resource_nothrow(resource, candidate) && accept_candidate(candidate, "typed resource")) {
+                return true;
             }
 
-            if (!is_probably_valid_object_pointer((uintptr_t)candidate)) {
-                return false;
+            if (try_get_mutable_resource_nothrow(resource, candidate) && accept_candidate(candidate, "mutable resource")) {
+                return true;
             }
 
-            const bool header_ok = has_plausible_rhi_texture_header((uintptr_t)candidate);
-            if (!header_ok && !ue57_like_safe_mode) {
-                return false;
+            static constexpr std::array<size_t, 16> kSlateResourceScanOffsets{
+                0x8, 0x10, 0x18, 0x20, 0x28, 0x30, 0x38, 0x40,
+                0x48, 0x50, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80
+            };
+
+            for (const auto offset : kSlateResourceScanOffsets) {
+                uintptr_t field_raw{};
+                if (!try_read_pointer_nothrow((uintptr_t)resource + offset, field_raw) || field_raw < 0x10000) {
+                    continue;
+                }
+
+                candidate = reinterpret_cast<FRHITexture2D*>(field_raw);
+                if (accept_candidate(candidate, "resource scan", offset, false)) {
+                    return true;
+                }
+
+                uintptr_t indirect_raw{};
+                if (!try_read_pointer_nothrow(field_raw, indirect_raw) || indirect_raw < 0x10000) {
+                    continue;
+                }
+
+                candidate = reinterpret_cast<FRHITexture2D*>(indirect_raw);
+                if (accept_candidate(candidate, "resource scan", offset, true)) {
+                    return true;
+                }
             }
 
-            if (!header_ok) {
-                SPDLOG_INFO_EVERY_N_SEC(
-                    2,
-                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode accepting header-relaxed Slate resource candidate: {:x}",
-                    (uintptr_t)candidate);
-            }
-
-            out = candidate;
-            return true;
+            return false;
         };
 
         auto try_get_direct_viewport_texture_nothrow = [ue57_like_safe_mode](sdk::FViewportInfo* info, FRHITexture2D*& out) -> bool {
@@ -8296,6 +8343,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                         nested_offset);
                     return true;
                 }
+            }
+
+            auto* draw_window_viewport_info = reinterpret_cast<sdk::FViewportInfo*>(draw_window_viewport_info_raw);
+            FRHITexture2D* direct_viewport_scene = nullptr;
+            if (try_get_direct_viewport_texture_nothrow(draw_window_viewport_info, direct_viewport_scene)) {
+                discovered_scene = direct_viewport_scene;
+                discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport-info direct path");
+                return true;
             }
 
             return false;
