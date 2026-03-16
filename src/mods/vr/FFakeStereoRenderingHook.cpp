@@ -8439,11 +8439,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 candidate_ptr_ok &&
                 has_resolvable_native_rhi_texture(discovered_scene);
             const bool allow_header_relaxed_candidate =
-                tq2_safe_mode &&
-                discovered_scene_source != SafeModeSceneSource::DirectViewportInfo;
+                (tq2_safe_mode && discovered_scene_source != SafeModeSceneSource::DirectViewportInfo) ||
+                (ue57_like_safe_mode && discovered_scene_source == SafeModeSceneSource::SlateViewportResource);
             const bool allow_native_relaxed_candidate =
                 ue57_like_safe_mode &&
-                discovered_scene_source == SafeModeSceneSource::DirectViewportInfo &&
+                (discovered_scene_source == SafeModeSceneSource::DirectViewportInfo ||
+                 discovered_scene_source == SafeModeSceneSource::SlateViewportResource) &&
                 candidate_native_ok;
             const bool candidate_allowed =
                 candidate_ptr_ok &&
