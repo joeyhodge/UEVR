@@ -7730,41 +7730,36 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             //   r9  = FSlateDrawWindowPassInputs const&
             // Top-level 5.7 DrawWindow does not pass FSceneViewport directly:
             //   +0x08 = FSlateWindowElementList*
-            //   +0x10 = FSlateViewportInfo-like payload with a shared ISlateViewport at +0x3A0/+0x3A8
-            //   +0x18 = Slate output payload used to build SlateOutputTexture, not the scene viewport
-            // Treat +0x10 as the authoritative viewport-info container, then extract the nested interface.
+            //   +0x10 = SWindow* (GetViewport() shared ISlateViewport lives at +0x3A0/+0x3A8)
+            //   +0x18 = FSlateViewportInfo*
+            // Treat +0x10 as the host window, extract the nested viewport interface,
+            // and keep +0x18 as the raw viewport-info payload for direct texture probing.
             (void)candidate_field_08;
 
-            if (!try_queue_nested_host_viewport(candidate_field_10, source_label, 0x10)) {
-                queue_slate_viewport_interface_candidate(candidate_field_10, source_label, 0x10);
-                push_viewport_candidate(candidate_field_10, source_label, 0x10);
-            }
+            try_queue_nested_host_viewport(candidate_field_10, source_label, 0x10);
 
-            if (candidate_field_10 != 0 &&
-                (candidate_field_10 & (sizeof(void*) - 1)) == 0 &&
-                candidate_field_10 >= 0x10000 &&
-                !IsBadReadPtr((void*)candidate_field_10, 0x20))
+            if (candidate_field_18 != 0 &&
+                (candidate_field_18 & (sizeof(void*) - 1)) == 0 &&
+                candidate_field_18 >= 0x10000 &&
+                !IsBadReadPtr((void*)candidate_field_18, 0x20))
             {
                 const auto exists = std::find(
                     ue57_draw_window_viewport_infos.begin(),
                     ue57_draw_window_viewport_infos.end(),
-                    candidate_field_10
+                    candidate_field_18
                 ) != ue57_draw_window_viewport_infos.end();
 
                 if (!exists) {
-                    ue57_draw_window_viewport_infos.push_back(candidate_field_10);
+                    ue57_draw_window_viewport_infos.push_back(candidate_field_18);
                     SPDLOG_INFO_ONCE(
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 queued DrawWindow viewport-info candidate {}+0x10: 0x{:x}",
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 queued DrawWindow viewport-info candidate {}+0x18: 0x{:x}",
                         source_label,
-                        candidate_field_10
+                        candidate_field_18
                     );
                 }
             }
 
-            // +0x18 is the Slate output payload (`SlateOutputTexture` path), not a scene viewport object.
-            if (!is_tq2_shipping_executable()) {
-                push_viewport_candidate(candidate_field_20, source_label, 0x20);
-            }
+            (void)candidate_field_20;
         };
 
         auto try_capture_tq2_helper_window = [&](void* raw_inputs) -> bool {
