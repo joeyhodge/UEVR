@@ -7579,27 +7579,91 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         };
 
+        auto try_queue_nested_host_viewport = [&](uintptr_t host_raw, const char* source_label, size_t field_offset) -> bool {
+            if (host_raw == 0 || (host_raw & (sizeof(void*) - 1)) != 0 || host_raw < 0x10000) {
+                return false;
+            }
+
+            // Venice 5.7 top-level DrawWindow passes a window/host object at +0x10.
+            // That host owns the live ISlateViewport/FSceneViewport interface rather than
+            // being the viewport object itself. TQ2's helper path can still expose the
+            // viewport directly through SWindow-style fields, so try both shapes here.
+            constexpr size_t nested_viewport_offsets[] = {
+                0x3A0, // Venice top-level DrawWindow host -> ISlateViewport*
+                0x438, // TQ2 / SWindow-style viewport slot
+                0x440, // alternate adjacent TQ2 / SWindow-style slot
+            };
+
+            bool queued = false;
+
+            for (const auto nested_offset : nested_viewport_offsets) {
+                uintptr_t candidate_raw{};
+                if (!try_read_pointer_nothrow(host_raw + nested_offset, candidate_raw) ||
+                    candidate_raw == 0 ||
+                    (candidate_raw & (sizeof(void*) - 1)) != 0 ||
+                    candidate_raw < 0x10000)
+                {
+                    continue;
+                }
+
+                uintptr_t candidate_vtable{};
+                uintptr_t candidate_first_vfunc{};
+                if (!try_read_pointer_nothrow(candidate_raw, candidate_vtable) ||
+                    candidate_vtable == 0 ||
+                    !try_read_pointer_nothrow(candidate_vtable, candidate_first_vfunc) ||
+                    candidate_first_vfunc == 0)
+                {
+                    continue;
+                }
+
+                if (!utility::get_module_within((void*)candidate_vtable).has_value() ||
+                    !utility::get_module_within((void*)candidate_first_vfunc).has_value())
+                {
+                    continue;
+                }
+
+                if (classify_slate_viewport_vtable(candidate_vtable) != SlateViewportVtableClass::SceneViewport) {
+                    continue;
+                }
+
+                push_viewport_candidate(candidate_raw, source_label, field_offset + nested_offset);
+                queued = true;
+            }
+
+            return queued;
+        };
+
         auto parse_inputs = [&](void* raw_inputs, const char* source_label) {
             if (raw_inputs == nullptr || IsBadReadPtr(raw_inputs, 0x20)) {
                 return;
             }
 
             const auto inputs = reinterpret_cast<uint8_t*>(raw_inputs);
-            const auto candidate_viewport_10 = *(uintptr_t*)(inputs + 0x10);
-            const auto candidate_viewport_18 = *(uintptr_t*)(inputs + 0x18);
-            const auto candidate_viewport_20 = *(uintptr_t*)(inputs + 0x20);
+            const auto candidate_field_08 = *(uintptr_t*)(inputs + 0x08);
+            const auto candidate_field_10 = *(uintptr_t*)(inputs + 0x10);
+            const auto candidate_field_18 = *(uintptr_t*)(inputs + 0x18);
+            const auto candidate_field_20 = *(uintptr_t*)(inputs + 0x20);
 
             // Venice 5.7 PDB/disassembly confirms:
             //   rcx = sret outputs
             //   rdx = this
             //   r8  = FRDGBuilder&
             //   r9  = FSlateDrawWindowPassInputs const&
-            // The live FSceneViewport pointer is at +0x10. +0x18 is a render-target
-            // helper object used by GDynamicRHI and not the viewport itself.
-            push_viewport_candidate(candidate_viewport_10, source_label, 0x10);
-            push_viewport_candidate(candidate_viewport_18, source_label, 0x18);
+            // Top-level 5.7 DrawWindow does not pass FSceneViewport directly:
+            //   +0x08 = FSlateWindowElementList*
+            //   +0x10 = host object that owns ISlateViewport/FSceneViewport
+            //   +0x18 = FSlateViewportInfo*
+            // Treat +0x10 as a host first, and only fall back to direct viewport
+            // classification if the nested extraction fails.
+            (void)candidate_field_08;
+
+            if (!try_queue_nested_host_viewport(candidate_field_10, source_label, 0x10)) {
+                push_viewport_candidate(candidate_field_10, source_label, 0x10);
+            }
+
+            push_viewport_candidate(candidate_field_18, source_label, 0x18);
             if (!is_tq2_shipping_executable()) {
-                push_viewport_candidate(candidate_viewport_20, source_label, 0x20);
+                push_viewport_candidate(candidate_field_20, source_label, 0x20);
             }
         };
 
