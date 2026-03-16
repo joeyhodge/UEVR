@@ -7665,15 +7665,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return false;
             }
 
-            // Venice 5.7 top-level DrawWindow passes a window/host object at +0x10.
-            // That host owns the live ISlateViewport/FSceneViewport interface rather than
-            // being the viewport object itself. TQ2's helper path can still expose the
-            // viewport directly through SWindow-style fields, so try both shapes here.
-            constexpr size_t nested_viewport_offsets[] = {
-                0x3A0, // Venice top-level DrawWindow host -> ISlateViewport*
-                0x438, // TQ2 / SWindow-style viewport slot
-                0x440, // alternate adjacent TQ2 / SWindow-style slot
-            };
+            // Venice 5.7 top-level DrawWindow stores the shared ISlateViewport at +0x3A0/+0x3A8.
+            // TQ2's helper/SWindow path exposes viewport slots at +0x438/+0x440 instead.
+            const std::initializer_list<size_t> nested_viewport_offsets =
+                is_tq2_shipping_executable() ? std::initializer_list<size_t>{0x438, 0x440}
+                                             : std::initializer_list<size_t>{0x3A0};
 
             bool queued = false;
 
@@ -7744,10 +7740,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 push_viewport_candidate(candidate_field_10, source_label, 0x10);
             }
 
-            if (candidate_field_18 != 0 &&
-                (candidate_field_18 & (sizeof(void*) - 1)) == 0 &&
-                candidate_field_18 >= 0x10000 &&
-                !IsBadReadPtr((void*)candidate_field_18, 0x20))
+            if (candidate_field_10 != 0 &&
+                (candidate_field_10 & (sizeof(void*) - 1)) == 0 &&
+                candidate_field_10 >= 0x10000 &&
+                !IsBadReadPtr((void*)candidate_field_10, 0x20))
             {
                 const auto exists = std::find(
                     ue57_draw_window_viewport_infos.begin(),
@@ -8273,7 +8269,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SafeModeSceneSource discovered_scene_source = SafeModeSceneSource::None;
 
         auto try_resolve_scene_from_draw_window_viewport_info = [&](uintptr_t draw_window_viewport_info_raw) -> bool {
-            constexpr size_t nested_offsets[] = {0x3A0, 0x438, 0x440};
+            const std::initializer_list<size_t> nested_offsets =
+                is_tq2_shipping_executable() ? std::initializer_list<size_t>{0x438, 0x440}
+                                             : std::initializer_list<size_t>{0x3A0};
 
             for (const auto nested_offset : nested_offsets) {
                 uintptr_t candidate_raw{};
