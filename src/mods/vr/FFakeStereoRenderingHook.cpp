@@ -617,6 +617,37 @@ static bool try_get_scene_texture_via_slot6_nothrow(void* viewport_like, FRHITex
     return true;
 }
 
+static bool try_get_draw_window_viewport_info_texture_nothrow(uintptr_t viewport_info_raw, FRHITexture2D*& out) noexcept {
+    out = nullptr;
+
+    if (viewport_info_raw == 0 ||
+        (viewport_info_raw & (sizeof(void*) - 1)) != 0 ||
+        viewport_info_raw < 0x10000 ||
+        IsBadReadPtr((void*)viewport_info_raw, 0x20))
+    {
+        return false;
+    }
+
+    uintptr_t texture_raw{};
+    if (!try_read_pointer_nothrow(viewport_info_raw + 0x10, texture_raw) ||
+        texture_raw == 0 ||
+        !is_probably_valid_object_pointer(texture_raw))
+    {
+        return false;
+    }
+
+    auto* texture = (FRHITexture2D*)texture_raw;
+    const bool header_ok = has_plausible_rhi_texture_header(texture_raw);
+    const bool native_ok = has_resolvable_native_rhi_texture(texture);
+
+    if (!header_ok && !native_ok) {
+        return false;
+    }
+
+    out = texture;
+    return true;
+}
+
 static sdk::IViewportRenderTargetProvider* find_viewport_rt_provider_heuristic(sdk::FViewportInfo* viewport_info) {
     if (viewport_info == nullptr || IsBadReadPtr(viewport_info, sizeof(void*))) {
         return nullptr;
@@ -7526,6 +7557,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     uintptr_t window = 0;
     std::vector<sdk::FViewportInfo*> ue57_viewport_candidates{};
+    std::vector<uintptr_t> ue57_draw_window_viewport_infos{};
     bool ue57_candidates_interface_only = false;
     bool ue57_window_backed_viewport = false;
 
@@ -7659,6 +7691,37 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             if (!try_queue_nested_host_viewport(candidate_field_10, source_label, 0x10)) {
                 push_viewport_candidate(candidate_field_10, source_label, 0x10);
+            }
+
+            if (candidate_field_18 != 0 &&
+                (candidate_field_18 & (sizeof(void*) - 1)) == 0 &&
+                candidate_field_18 >= 0x10000 &&
+                !IsBadReadPtr((void*)candidate_field_18, 0x20))
+            {
+                uintptr_t vtable_raw{};
+                uintptr_t first_vfunc_raw{};
+                if (try_read_pointer_nothrow(candidate_field_18, vtable_raw) &&
+                    vtable_raw != 0 &&
+                    try_read_pointer_nothrow(vtable_raw, first_vfunc_raw) &&
+                    first_vfunc_raw != 0 &&
+                    utility::get_module_within((void*)vtable_raw).has_value() &&
+                    utility::get_module_within((void*)first_vfunc_raw).has_value())
+                {
+                    const auto exists = std::find(
+                        ue57_draw_window_viewport_infos.begin(),
+                        ue57_draw_window_viewport_infos.end(),
+                        candidate_field_18
+                    ) != ue57_draw_window_viewport_infos.end();
+
+                    if (!exists) {
+                        ue57_draw_window_viewport_infos.push_back(candidate_field_18);
+                        SPDLOG_INFO_ONCE(
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 queued DrawWindow viewport-info candidate {}+0x18: 0x{:x}",
+                            source_label,
+                            candidate_field_18
+                        );
+                    }
+                }
             }
 
             push_viewport_candidate(candidate_field_18, source_label, 0x18);
@@ -8017,13 +8080,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         viewport_info = reinterpret_cast<sdk::FViewportInfo*>(slate_viewport);
     }
 
-    if (viewport_info == nullptr && (!is_ue_57() || slate_viewport == nullptr)) {
+    if (viewport_info == nullptr &&
+        (!is_ue_57() || (slate_viewport == nullptr && ue57_draw_window_viewport_infos.empty())))
+    {
         SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] ViewportInfo missing; skipping hook");
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
     auto* viewport_info_for_callbacks =
-        viewport_info != nullptr ? viewport_info : reinterpret_cast<sdk::FViewportInfo*>(slate_viewport);
+        viewport_info != nullptr ? viewport_info :
+        (slate_viewport != nullptr ? reinterpret_cast<sdk::FViewportInfo*>(slate_viewport) : nullptr);
 
     const auto& mods = g_framework->get_mods()->get_mods();
 
@@ -8068,6 +8134,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         enum class SafeModeSceneSource : uint8_t {
             None,
+            DrawWindowViewportInfo,
             SlateViewportResource,
             ViewportProvider,
             Slot6Viewport,
@@ -8159,6 +8226,25 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         FRHITexture2D* discovered_scene = nullptr;
         SafeModeSceneSource discovered_scene_source = SafeModeSceneSource::None;
+
+        if (discovered_scene == nullptr) {
+            for (const auto candidate_raw : ue57_draw_window_viewport_infos) {
+                FRHITexture2D* draw_window_scene = nullptr;
+                if (try_get_draw_window_viewport_info_texture_nothrow(candidate_raw, draw_window_scene) &&
+                    draw_window_scene != nullptr)
+                {
+                    discovered_scene = draw_window_scene;
+                    discovered_scene_source = SafeModeSceneSource::DrawWindowViewportInfo;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport-info path: 0x{:x}",
+                        candidate_raw
+                    );
+                    break;
+                }
+            }
+        }
+
         auto try_resolve_scene_from_viewport_provider = [&](sdk::FViewportInfo* candidate, const char* source_label) -> bool {
             if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
                 return false;
