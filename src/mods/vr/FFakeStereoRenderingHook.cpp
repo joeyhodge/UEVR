@@ -8375,11 +8375,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SafeModeSceneSource discovered_scene_source = SafeModeSceneSource::None;
 
         auto try_resolve_scene_from_draw_window_viewport_info = [&](uintptr_t draw_window_viewport_info_raw) -> bool {
-            // In UE5.7 this is FSlateViewportInfo, not FSceneViewport. It owns
-            // ViewportRHI/extent/output state, but not the ISlateViewport scene
-            // wrapper. Scene discovery must use the SWindow->GetViewport path.
-            (void)draw_window_viewport_info_raw;
-            return false;
+            FRHITexture2D* direct_viewport_info_scene = nullptr;
+            if (!try_get_draw_window_viewport_info_texture_nothrow(draw_window_viewport_info_raw, direct_viewport_info_scene) ||
+                direct_viewport_info_scene == nullptr)
+            {
+                return false;
+            }
+
+            discovered_scene = direct_viewport_info_scene;
+            discovered_scene_source = SafeModeSceneSource::DrawWindowViewportInfo;
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport-info payload: 0x{:x}",
+                (uintptr_t)direct_viewport_info_scene);
+            return true;
         };
 
         for (const auto draw_window_viewport_info_raw : ue57_draw_window_viewport_infos) {
