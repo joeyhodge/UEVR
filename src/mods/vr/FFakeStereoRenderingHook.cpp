@@ -7732,9 +7732,23 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             //   +0x08 = FSlateWindowElementList*
             //   +0x10 = SWindow* (GetViewport() shared ISlateViewport lives at +0x3A0/+0x3A8)
             //   +0x18 = FSlateViewportInfo*
-            // Treat +0x10 as the host window, extract the nested viewport interface,
-            // and keep +0x18 as the raw viewport-info payload for direct texture probing.
+            // Treat +0x10 as the host SWindow and keep +0x18 as the raw
+            // FSlateViewportInfo payload. Scene discovery must come from
+            // Window->GetViewport(), not by pretending +0x18 is FSceneViewport.
             (void)candidate_field_08;
+
+            if (candidate_field_10 != 0 &&
+                (candidate_field_10 & (sizeof(void*) - 1)) == 0 &&
+                candidate_field_10 >= 0x10000 &&
+                !IsBadReadPtr((void*)candidate_field_10, 0x20))
+            {
+                window = candidate_field_10;
+                SPDLOG_INFO_ONCE(
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 captured DrawWindow SWindow candidate {}+0x10: 0x{:x}",
+                    source_label,
+                    candidate_field_10
+                );
+            }
 
             try_queue_nested_host_viewport(candidate_field_10, source_label, 0x10);
 
@@ -7883,7 +7897,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (window != 0) {
-        constexpr size_t kSWindowViewportOffsetUE57 = 0x438;
         constexpr size_t kMaxReasonableSWindowOffset = 0x1000;
         static std::optional<size_t> viewport_offset{};
         static bool attempted_viewport_emulation{false};
@@ -7946,7 +7959,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (!slate_viewport) {
-            const size_t fallback_offsets[] = {kSWindowViewportOffsetUE57, kSWindowViewportOffsetUE57 + sizeof(void*)};
+            const std::initializer_list<size_t> fallback_offsets =
+                is_tq2_shipping_executable()
+                    ? std::initializer_list<size_t>{0x438, 0x440}
+                    : std::initializer_list<size_t>{0x3A0, 0x3A8};
 
             for (const auto offset : fallback_offsets) {
                 if (auto candidate = try_get_viewport(offset); candidate != nullptr) {
@@ -8311,46 +8327,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SafeModeSceneSource discovered_scene_source = SafeModeSceneSource::None;
 
         auto try_resolve_scene_from_draw_window_viewport_info = [&](uintptr_t draw_window_viewport_info_raw) -> bool {
-            const std::initializer_list<size_t> nested_offsets =
-                is_tq2_shipping_executable() ? std::initializer_list<size_t>{0x438, 0x440}
-                                             : std::initializer_list<size_t>{0x3A0};
-
-            for (const auto nested_offset : nested_offsets) {
-                uintptr_t candidate_raw{};
-                if (!try_read_pointer_nothrow(draw_window_viewport_info_raw + nested_offset, candidate_raw) ||
-                    candidate_raw == 0 ||
-                    (candidate_raw & (sizeof(void*) - 1)) != 0 ||
-                    candidate_raw < 0x10000)
-                {
-                    continue;
-                }
-
-                auto* candidate_slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(candidate_raw);
-                sdk::FSlateResource* direct_resource = nullptr;
-
-                if (try_get_slate_viewport_render_target_texture_nothrow(candidate_slate_viewport, direct_resource) &&
-                    resolve_scene_from_resource(direct_resource, discovered_scene))
-                {
-                    discovered_scene_source = SafeModeSceneSource::SlateViewportResource;
-                    SPDLOG_INFO_EVERY_N_SEC(
-                        2,
-                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport-info container +0x{:x}",
-                        nested_offset);
-                    return true;
-                }
-            }
-
-            auto* draw_window_viewport_info = reinterpret_cast<sdk::FViewportInfo*>(draw_window_viewport_info_raw);
-            FRHITexture2D* direct_viewport_scene = nullptr;
-            if (try_get_direct_viewport_texture_nothrow(draw_window_viewport_info, direct_viewport_scene)) {
-                discovered_scene = direct_viewport_scene;
-                discovered_scene_source = SafeModeSceneSource::DirectViewportInfo;
-                SPDLOG_INFO_EVERY_N_SEC(
-                    2,
-                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7/TQ2 safe mode resolved scene texture via DrawWindow viewport-info direct path");
-                return true;
-            }
-
+            // In UE5.7 this is FSlateViewportInfo, not FSceneViewport. It owns
+            // ViewportRHI/extent/output state, but not the ISlateViewport scene
+            // wrapper. Scene discovery must use the SWindow->GetViewport path.
+            (void)draw_window_viewport_info_raw;
             return false;
         };
 
