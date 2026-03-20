@@ -151,7 +151,12 @@ void Framework::hook_monitor() {
                     ? std::chrono::seconds(60)
                     : std::chrono::seconds(10);
 
-                if (!m_is_d3d11 && should_skip_aggressive_d3d_rehook()) {
+                const bool already_has_d3d12_hook =
+                    !m_is_d3d11 &&
+                    d3d12 != nullptr &&
+                    d3d12->is_hooked();
+
+                if (already_has_d3d12_hook && should_skip_aggressive_d3d_rehook()) {
                     static bool s_logged_skip = false;
 
                     if (!s_logged_skip) {
