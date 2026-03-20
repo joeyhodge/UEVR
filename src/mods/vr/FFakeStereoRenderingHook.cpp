@@ -7683,22 +7683,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     continue;
                 }
 
-                uintptr_t candidate_vtable{};
-                uintptr_t candidate_first_vfunc{};
-                if (!try_read_pointer_nothrow(candidate_raw, candidate_vtable) ||
-                    candidate_vtable == 0 ||
-                    !try_read_pointer_nothrow(candidate_vtable, candidate_first_vfunc) ||
-                    candidate_first_vfunc == 0)
-                {
-                    continue;
-                }
-
-                if (!utility::get_module_within((void*)candidate_vtable).has_value() ||
-                    !utility::get_module_within((void*)candidate_first_vfunc).has_value())
-                {
-                    continue;
-                }
-
                 const bool trusted_ue57_swindow_viewport_offset =
                     is_ue_57() &&
                     !is_tq2_shipping_executable() &&
@@ -7724,7 +7708,25 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     }
 
                     queued = true;
-                } else if (queue_slate_viewport_interface_candidate(candidate_raw, source_label, field_offset + nested_offset)) {
+                    continue;
+                }
+
+                uintptr_t candidate_vtable{};
+                uintptr_t candidate_first_vfunc{};
+                if (!try_read_pointer_nothrow(candidate_raw, candidate_vtable) ||
+                    candidate_vtable == 0 ||
+                    !try_read_pointer_nothrow(candidate_vtable, candidate_first_vfunc) ||
+                    candidate_first_vfunc == 0)
+                {
+                    continue;
+                }
+
+                if (!utility::get_module_within((void*)candidate_vtable).has_value() ||
+                    !utility::get_module_within((void*)candidate_first_vfunc).has_value())
+                {
+                    continue;
+                }
+                if (queue_slate_viewport_interface_candidate(candidate_raw, source_label, field_offset + nested_offset)) {
                     queued = true;
                 }
 
@@ -7945,6 +7947,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return nullptr;
             }
 
+            const bool trusted_ue57_swindow_viewport_offset =
+                is_ue_57() &&
+                !is_tq2_shipping_executable() &&
+                (offset == 0x3A0 || offset == 0x3A8);
+
+            if (trusted_ue57_swindow_viewport_offset) {
+                return (sdk::ISlateViewport*)candidate_raw;
+            }
+
             uintptr_t vtable_raw{};
             if (!try_read_pointer_nothrow(candidate_raw, vtable_raw) || vtable_raw == 0) {
                 return nullptr;
@@ -7960,11 +7971,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             const auto vtable_class = classify_slate_viewport_vtable(vtable_raw);
-            const bool trusted_ue57_swindow_viewport_offset =
-                is_ue_57() &&
-                !is_tq2_shipping_executable() &&
-                (offset == 0x3A0 || offset == 0x3A8);
-
             if (!trusted_ue57_swindow_viewport_offset && vtable_class == SlateViewportVtableClass::DebugCanvas) {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
