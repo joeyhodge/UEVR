@@ -8549,7 +8549,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (discovered_scene != nullptr) {
+        auto apply_discovered_scene = [&]() {
+            if (discovered_scene == nullptr) {
+                return false;
+            }
+
             static FRHITexture2D* s_pending_slate_scene_candidate = nullptr;
             static uint32_t s_pending_slate_scene_hits = 0;
 
@@ -8657,7 +8661,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     (uintptr_t)current_scene,
                     (uintptr_t)discovered_scene);
             }
-        } else if (discovered_scene == nullptr) {
+            return candidate_allowed;
+        };
+
+        const bool applied_scene_pre_call = apply_discovered_scene();
+
+        if (discovered_scene == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: no scene texture resolved from Slate path");
         }
 
@@ -8667,7 +8676,62 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7/TQ2 safe mode: discovery-only Slate path (no interception)");
-        return call_orig();
+        auto ret = call_orig();
+
+        if (is_ue_57() && !applied_scene_pre_call) {
+            FRHITexture2D* post_call_scene = nullptr;
+            SafeModeSceneSource post_call_scene_source = SafeModeSceneSource::None;
+
+            if (slate_viewport != nullptr) {
+                sdk::FSlateResource* direct_resource = nullptr;
+                if (try_get_slate_viewport_render_target_texture_nothrow(slate_viewport, direct_resource) &&
+                    resolve_scene_from_resource(direct_resource, post_call_scene))
+                {
+                    post_call_scene_source = SafeModeSceneSource::SlateViewportResource;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via post-call DrawWindow viewport interface");
+                }
+            }
+
+            if (post_call_scene == nullptr) {
+                for (const auto draw_window_viewport_info_raw : ue57_draw_window_viewport_infos) {
+                    FRHITexture2D* direct_viewport_info_scene = nullptr;
+                    if (try_get_draw_window_viewport_info_texture_nothrow(draw_window_viewport_info_raw, direct_viewport_info_scene) &&
+                        direct_viewport_info_scene != nullptr)
+                    {
+                        post_call_scene = direct_viewport_info_scene;
+                        post_call_scene_source = SafeModeSceneSource::DrawWindowViewportInfo;
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via post-call viewport-info payload: 0x{:x}",
+                            (uintptr_t)direct_viewport_info_scene);
+                        break;
+                    }
+                }
+            }
+
+            if (post_call_scene == nullptr && viewport_info != nullptr && allow_ue57_direct_viewport_probe) {
+                FRHITexture2D* direct_viewport_scene = nullptr;
+                if (try_get_direct_viewport_texture_nothrow(viewport_info, direct_viewport_scene)) {
+                    post_call_scene = direct_viewport_scene;
+                    post_call_scene_source = SafeModeSceneSource::DirectViewportInfo;
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 safe mode resolved scene texture via post-call direct viewport info");
+                }
+            }
+
+            if (post_call_scene != nullptr) {
+                discovered_scene = post_call_scene;
+                discovered_scene_source = post_call_scene_source;
+                apply_discovered_scene();
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(2, "UE5.7 safe mode: post-call Slate retry still found no scene texture");
+            }
+        }
+
+        return ret;
     }
 
     auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();

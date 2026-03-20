@@ -54,6 +54,25 @@ bool is_tq2_shipping_executable() {
 
     return value;
 }
+
+bool is_venice_57_shipping_executable() {
+    static const bool value = []() {
+        const auto module_path = utility::get_module_path(utility::get_executable());
+        if (!module_path.has_value() || module_path->empty()) {
+            return false;
+        }
+
+        const auto& p = *module_path;
+        return p.find("Venice_5_7-Win64-Shipping.exe") != std::string::npos ||
+               p.find("venice_5_7-win64-shipping.exe") != std::string::npos;
+    }();
+
+    return value;
+}
+
+bool should_skip_aggressive_d3d_rehook() {
+    return is_tq2_shipping_executable() || is_venice_57_shipping_executable();
+}
 }
 
 UEVRSharedMemory::UEVRSharedMemory() {
@@ -131,6 +150,21 @@ void Framework::hook_monitor() {
                 const auto min_rehook_interval = is_tq2_shipping_executable()
                     ? std::chrono::seconds(60)
                     : std::chrono::seconds(10);
+
+                if (!m_is_d3d11 && should_skip_aggressive_d3d_rehook()) {
+                    static bool s_logged_skip = false;
+
+                    if (!s_logged_skip) {
+                        spdlog::info("Suppressing aggressive D3D12 rehook for problematic UE5.7 title");
+                        s_logged_skip = true;
+                    }
+
+                    m_last_present_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    m_last_message_time = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+                    m_last_chance_time = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+                    m_has_last_chance = true;
+                    return;
+                }
 
                 if (s_last_rehook_request != std::chrono::steady_clock::time_point{} &&
                     now - s_last_rehook_request < min_rehook_interval)
