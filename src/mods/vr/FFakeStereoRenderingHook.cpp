@@ -7699,7 +7699,32 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     continue;
                 }
 
-                if (queue_slate_viewport_interface_candidate(candidate_raw, source_label, field_offset + nested_offset)) {
+                const bool trusted_ue57_swindow_viewport_offset =
+                    is_ue_57() &&
+                    !is_tq2_shipping_executable() &&
+                    field_offset == 0x10 &&
+                    (nested_offset == 0x3A0 || nested_offset == 0x3A8);
+
+                if (trusted_ue57_swindow_viewport_offset) {
+                    auto* candidate = reinterpret_cast<sdk::ISlateViewport*>(candidate_raw);
+                    const auto exists =
+                        std::find(ue57_slate_viewport_candidates.begin(), ue57_slate_viewport_candidates.end(), candidate) !=
+                        ue57_slate_viewport_candidates.end();
+
+                    if (!exists) {
+                        ue57_slate_viewport_candidates.push_back(candidate);
+                        ue57_candidates_interface_only = true;
+                        ue57_window_backed_viewport = true;
+                        SPDLOG_INFO_ONCE(
+                            "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 trusted SWindow viewport candidate {}+0x{:x}: 0x{:x}",
+                            source_label,
+                            field_offset + nested_offset,
+                            candidate_raw
+                        );
+                    }
+
+                    queued = true;
+                } else if (queue_slate_viewport_interface_candidate(candidate_raw, source_label, field_offset + nested_offset)) {
                     queued = true;
                 }
 
@@ -7864,6 +7889,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (!ue57_slate_viewport_candidates.empty()) {
             slate_viewport = ue57_slate_viewport_candidates.front();
+            if (window != 0) {
+                ue57_window_backed_viewport = true;
+            }
         } else if (!ue57_viewport_candidates.empty()) {
             slate_viewport = reinterpret_cast<sdk::ISlateViewport*>(ue57_viewport_candidates.front());
         }
@@ -7932,7 +7960,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             const auto vtable_class = classify_slate_viewport_vtable(vtable_raw);
-            if (vtable_class == SlateViewportVtableClass::DebugCanvas) {
+            const bool trusted_ue57_swindow_viewport_offset =
+                is_ue_57() &&
+                !is_tq2_shipping_executable() &&
+                (offset == 0x3A0 || offset == 0x3A8);
+
+            if (!trusted_ue57_swindow_viewport_offset && vtable_class == SlateViewportVtableClass::DebugCanvas) {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[SlateRHIRenderer::DrawWindow_RenderThread] Rejecting SWindow viewport at 0x{:x}: classified as DebugCanvas/HMDDebug layer",
@@ -7949,6 +7982,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     (int)vtable_class
                 );
                 return nullptr;
+            }
+
+            if (trusted_ue57_swindow_viewport_offset && vtable_class != SlateViewportVtableClass::SceneViewport) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SlateRHIRenderer::DrawWindow_RenderThread] UE5.7 trusting SWindow viewport offset 0x{:x} despite class={}",
+                    offset,
+                    (int)vtable_class
+                );
             }
 
             return (sdk::ISlateViewport*)candidate_raw;
