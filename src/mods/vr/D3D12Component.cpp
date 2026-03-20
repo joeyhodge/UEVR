@@ -163,8 +163,15 @@ FRHITexture2D* resolve_texture_object_from_blob(FRHITexture2D* texture, std::str
         return texture;
     }
 
-    if (is_likely_valid_texture_object(texture)) {
-        return texture;
+    void* known_texture_vtable = FRHITexture2D::get_vtable();
+    if (known_texture_vtable != nullptr) {
+        uintptr_t candidate_vtable_ptr{};
+        if (try_read_ptr_nothrow((uintptr_t)texture, candidate_vtable_ptr) &&
+            candidate_vtable_ptr != 0 &&
+            (void*)candidate_vtable_ptr == known_texture_vtable)
+        {
+            return texture;
+        }
     }
 
     const auto test_candidate = [&](uintptr_t candidate_ptr) -> FRHITexture2D* {
@@ -183,7 +190,8 @@ FRHITexture2D* resolve_texture_object_from_blob(FRHITexture2D* texture, std::str
     // UE5.7/TQ2 frequently exposes wrapper objects that hold TextureRHI-like members
     // around these slots. Prefer these targeted members before the broad blob walk so
     // we do not reintroduce the older "unwrap to random transient object" behavior.
-    static constexpr std::array<uintptr_t, 8> kLikelyWrapperTextureOffsets{
+    static constexpr std::array<uintptr_t, 13> kLikelyWrapperTextureOffsets{
+        0x8, 0x10, 0x18, 0x20, 0x28,
         0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88
     };
 
@@ -900,7 +908,8 @@ ID3D12Resource* probe_native_d3d12_resource_from_texture_blob(FRHITexture2D* tex
 
     // Slate-promoted scene targets in TQ2 are often wrappers that point at a texture-like
     // object rather than storing the native D3D12 resource directly near +0xD0.
-    static constexpr std::array<uintptr_t, 8> kLikelyWrapperTextureOffsets{
+    static constexpr std::array<uintptr_t, 13> kLikelyWrapperTextureOffsets{
+        0x8, 0x10, 0x18, 0x20, 0x28,
         0x48, 0x58, 0x60, 0x68, 0x70, 0x78, 0x80, 0x88
     };
 
@@ -1050,7 +1059,12 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
 
     auto known_vtable = FRHITexture2D::get_vtable();
     if (known_vtable == nullptr) {
-        if (candidate_vtable_looks_valid) {
+        if (guarded_scene_source) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VR] {} deferring FRHITexture2D vtable seed for guarded scene candidate {:x}; requiring explicit unwrap first",
+                source,
+                (uintptr_t)texture);
+        } else if (candidate_vtable_looks_valid) {
             FRHITexture2D::set_vtable(candidate_vtable);
             known_vtable = candidate_vtable;
             SPDLOG_WARN_ONCE(
@@ -1058,8 +1072,8 @@ ID3D12Resource* safe_get_native_resource(FRHITexture2D* texture, std::string_vie
                 source,
                 (uintptr_t)candidate_vtable);
         } else {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] {} get_native_resource skipped: FRHITexture2D vtable is not seeded yet", source);
-        return nullptr;
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] {} get_native_resource skipped: FRHITexture2D vtable is not seeded yet", source);
+            return nullptr;
         }
     }
 
