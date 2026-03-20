@@ -2969,9 +2969,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != real_backbuffer.Get() &&
         !guarded_scene_source_requires_intermediate;
 
+    const bool guarded_submit_resolved_scene_via_pre_render =
+        guarded_57_mode &&
+        runtime->is_openxr() &&
+        !is_actually_afr &&
+        backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        guarded_scene_source_requires_intermediate &&
+        preferred_linear_view_format(source_color_format) != DXGI_FORMAT_UNKNOWN &&
+        !vr->is_using_2d_screen();
+
     if (guarded_57_mode && runtime->is_openxr() && !is_actually_afr &&
         backbuffer.Get() != nullptr && backbuffer.Get() != real_backbuffer.Get() &&
-        !guarded_direct_scene_submit)
+        !guarded_direct_scene_submit &&
+        !guarded_submit_resolved_scene_via_pre_render)
     {
         SPDLOG_INFO_EVERY_N_SEC(1,
             "[VR] Guarded UE5.7: forcing normalized offscreen copy for scene source raw_fmt {} typed_fmt {} size {}x{} -> game-copy {}x{} fmt {}",
@@ -2990,11 +3001,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get() &&
         backbuffer.Get() != m_game_tex.texture.Get() &&
-        !guarded_direct_scene_submit;
+        !guarded_direct_scene_submit &&
+        !guarded_submit_resolved_scene_via_pre_render;
 
     const bool should_copy_source_to_game_tex =
         m_game_tex.texture.Get() != nullptr &&
         ((m_backbuffer_copy.texture.Get() != nullptr && backbuffer == real_backbuffer) || guarded_scene_source_copy);
+
+    if (guarded_submit_resolved_scene_via_pre_render) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "[VR] Guarded UE5.7: bypassing source->game intermediate and submitting resolved scene source directly via pre_render ({}x{} fmt {} -> expected {}x{})",
+            backbuffer_desc.Width,
+            backbuffer_desc.Height,
+            (uint32_t)source_color_format,
+            expected_double_width_for_frame,
+            expected_runtime_height);
+    }
 
     bool copied_source_into_game_tex = false;
 
@@ -3162,7 +3185,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // UE5.7/TQ2: always prefer the intermediate game-copy texture for OpenXR scene submits.
     // This keeps color/channel layout stable for runtimes exposing typeless RGBA swapchain images.
-    if (runtime->is_openxr() && guarded_57_mode && m_game_tex.texture.Get() != nullptr && !guarded_direct_scene_submit) {
+    if (runtime->is_openxr() && guarded_57_mode && m_game_tex.texture.Get() != nullptr &&
+        !guarded_direct_scene_submit && !guarded_submit_resolved_scene_via_pre_render) {
         if (backbuffer.Get() != m_game_tex.texture.Get()) {
             D3D12_RESOURCE_DESC game_desc{};
             if (try_get_resource_desc_nothrow(m_game_tex.texture.Get(), game_desc)) {
