@@ -267,6 +267,19 @@ public:
         return ret;
     }
 
+    bool draw_drag(std::string_view name, float speed, const char* format = "%.3f", ImGuiSliderFlags flags = 0) {
+        if (!should_draw_option()) {
+            return false;
+        }
+
+        ImGui::PushID(this);
+        auto ret = ImGui::DragFloat(name.data(), &m_value, speed, m_range.x, m_range.y, format, flags);
+        context_menu_logic();
+        ImGui::PopID();
+
+        return ret;
+    }
+
     void draw_value(std::string_view name) override {
         if (!should_draw_option()) {
             return;
