@@ -8476,6 +8476,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
+        rtm.update_guarded_ue57_viewport_candidates(ue57_viewport_candidates, ue57_draw_window_viewport_infos);
+
         const bool tq2_safe_mode = is_tq2_shipping_executable();
         // UE5.7/TQ2 must not depend on env overrides for viewport candidate probing.
         // Always probe known candidates and use scoring/promotion rules below.
@@ -8539,12 +8541,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 ue57_like_safe_mode &&
                 candidate_ptr_ok &&
                 has_resolvable_native_rhi_texture(discovered_scene);
+            const bool draw_window_payload_candidate =
+                discovered_scene_source == SafeModeSceneSource::DrawWindowViewportInfo;
             const bool allow_header_relaxed_candidate =
                 (tq2_safe_mode && discovered_scene_source != SafeModeSceneSource::DirectViewportInfo) ||
                 (ue57_like_safe_mode && discovered_scene_source == SafeModeSceneSource::SlateViewportResource);
             const bool allow_native_relaxed_candidate =
                 ue57_like_safe_mode &&
-                (discovered_scene_source == SafeModeSceneSource::DirectViewportInfo ||
+                (draw_window_payload_candidate ||
+                 discovered_scene_source == SafeModeSceneSource::DirectViewportInfo ||
                  discovered_scene_source == SafeModeSceneSource::SlateViewportResource) &&
                 candidate_native_ok;
             const bool candidate_allowed =
@@ -8557,7 +8562,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             const bool authoritative_scene_candidate =
                 discovered_scene_source == SafeModeSceneSource::SlateViewportResource ||
                 discovered_scene_source == SafeModeSceneSource::ViewportProvider ||
-                (discovered_scene_source == SafeModeSceneSource::DirectViewportInfo &&
+                ((draw_window_payload_candidate ||
+                  discovered_scene_source == SafeModeSceneSource::DirectViewportInfo) &&
                  (candidate_header_ok || allow_native_relaxed_candidate));
 
             if (!candidate_allowed) {
@@ -8566,8 +8572,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                     (uintptr_t)discovered_scene);
             } else if (!candidate_header_ok && allow_native_relaxed_candidate) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
-                    "UE5.7/TQ2 safe mode: accepting native-resource-backed direct viewport candidate {:x}",
-                    (uintptr_t)discovered_scene);
+                    "UE5.7/TQ2 safe mode: accepting native-resource-backed scene candidate {:x} from source {}",
+                    (uintptr_t)discovered_scene,
+                    (uint32_t)discovered_scene_source);
             } else if (!candidate_header_ok && tq2_safe_mode) {
                 SPDLOG_INFO_EVERY_N_SEC(2,
                     "UE5.7/TQ2 safe mode: accepting header-relaxed scene candidate {:x} from source {}",

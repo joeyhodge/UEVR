@@ -717,6 +717,50 @@ bool try_get_viewport_provider_texture_nothrow(
     return out != nullptr;
 }
 
+bool try_get_draw_window_viewport_info_texture_nothrow(uintptr_t viewport_info_raw, FRHITexture2D*& out) noexcept {
+    out = nullptr;
+
+    if (viewport_info_raw == 0 ||
+        (viewport_info_raw & (sizeof(void*) - 1)) != 0 ||
+        viewport_info_raw < 0x10000 ||
+        IsBadReadPtr((void*)viewport_info_raw, 0x20))
+    {
+        return false;
+    }
+
+    uintptr_t texture_raw{};
+    if (!try_read_ptr_nothrow(viewport_info_raw + 0x10, texture_raw) ||
+        texture_raw < 0x10000 ||
+        IsBadReadPtr((void*)texture_raw, sizeof(void*)))
+    {
+        return false;
+    }
+
+    auto* texture = reinterpret_cast<FRHITexture2D*>(texture_raw);
+    if (auto* normalized = normalize_guarded_scene_pointer(texture, "draw window viewport-info payload");
+        normalized != nullptr)
+    {
+        out = normalized;
+        return true;
+    }
+
+    texture = resolve_texture_object_from_blob(texture, "draw window viewport-info payload");
+    if (texture != nullptr && is_likely_valid_texture_object(texture)) {
+        out = texture;
+        return true;
+    }
+
+    if (texture != nullptr &&
+        (probe_native_d3d12_resource_via_frhi_base(texture, "draw window viewport-info payload", false) != nullptr ||
+         probe_native_d3d12_resource_from_texture_blob(texture) != nullptr))
+    {
+        out = texture;
+        return true;
+    }
+
+    return false;
+}
+
 std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_viewport_accessors(
     VR* vr,
     FRHITexture2D* current_texture,
@@ -740,41 +784,39 @@ std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_vi
         return std::nullopt;
     }
 
-    auto* viewport = rtm->get_viewport();
-    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
-        return std::nullopt;
-    }
-
-    auto* viewport_info = reinterpret_cast<sdk::FViewportInfo*>(viewport);
-    if (viewport_info == nullptr || IsBadReadPtr(viewport_info, sizeof(void*))) {
-        return std::nullopt;
-    }
-
     struct TextureCandidate {
         FRHITexture2D* texture{};
         const char* source{};
     };
 
-    std::array<TextureCandidate, 4> texture_candidates{};
-    size_t texture_candidate_count = 0;
-    std::unordered_set<uintptr_t> seen_texture_candidates{};
+    auto* viewport = rtm->get_viewport();
+    auto* viewport_info =
+        viewport != nullptr && !IsBadReadPtr(viewport, sizeof(void*)) ?
+            reinterpret_cast<sdk::FViewportInfo*>(viewport) :
+            nullptr;
 
-    const auto push_texture_candidate = [&](FRHITexture2D* texture, const char* source) {
-        if (texture == nullptr || texture == current_texture || texture_candidate_count >= texture_candidates.size()) {
+    auto viewport_info_candidates = rtm->get_guarded_ue57_viewport_candidates();
+    auto draw_window_viewport_infos = rtm->get_guarded_ue57_draw_window_viewport_infos();
+
+    std::unordered_set<uintptr_t> seen_viewport_infos{};
+    std::vector<sdk::FViewportInfo*> ordered_viewport_infos{};
+
+    const auto push_viewport_info_candidate = [&](sdk::FViewportInfo* candidate) {
+        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
             return;
         }
 
-        const auto texture_ptr = reinterpret_cast<uintptr_t>(texture);
-        if (texture_ptr < 0x10000 || !seen_texture_candidates.insert(texture_ptr).second) {
+        const auto candidate_ptr = reinterpret_cast<uintptr_t>(candidate);
+        if (candidate_ptr < 0x10000 || !seen_viewport_infos.insert(candidate_ptr).second) {
             return;
         }
 
-        texture_candidates[texture_candidate_count++] = TextureCandidate{texture, source};
+        ordered_viewport_infos.push_back(candidate);
     };
 
-    FRHITexture2D* direct_texture = nullptr;
-    if (try_get_viewport_direct_texture_nothrow(viewport_info, direct_texture)) {
-        push_texture_candidate(direct_texture, "viewport-info-direct");
+    push_viewport_info_candidate(viewport_info);
+    for (auto* candidate : viewport_info_candidates) {
+        push_viewport_info_candidate(candidate);
     }
 
     FRHITexture2D* known_tex = rtm->get_render_target();
@@ -782,81 +824,143 @@ std::optional<GuardedSceneResourceCandidate> find_guarded_scene_resource_from_vi
         known_tex = rtm->get_ui_target();
     }
 
-    const bool allow_provider_fallback = !(ue57_guard || tq2_guard);
+    std::unordered_set<uintptr_t> seen_texture_candidates{};
+    auto collect_texture_candidates =
+        [&](bool include_provider_fallback) -> std::vector<TextureCandidate> {
+            std::vector<TextureCandidate> texture_candidates{};
 
-    FRHITexture2D* provider_texture = nullptr;
-    if (allow_provider_fallback && try_get_viewport_provider_texture_nothrow(viewport_info, known_tex, provider_texture)) {
-        push_texture_candidate(provider_texture, "viewport-provider");
-    } else if (!allow_provider_fallback) {
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[VR] Guarded UE5.7: provider fallback disabled; relying on direct viewport texture path");
+            const auto push_texture_candidate = [&](FRHITexture2D* texture, const char* source) {
+                if (texture == nullptr || texture == current_texture) {
+                    return;
+                }
+
+                const auto texture_ptr = reinterpret_cast<uintptr_t>(texture);
+                if (texture_ptr < 0x10000 || !seen_texture_candidates.insert(texture_ptr).second) {
+                    return;
+                }
+
+                texture_candidates.push_back(TextureCandidate{texture, source});
+            };
+
+            for (const auto draw_window_viewport_info_raw : draw_window_viewport_infos) {
+                FRHITexture2D* payload_texture = nullptr;
+                if (try_get_draw_window_viewport_info_texture_nothrow(draw_window_viewport_info_raw, payload_texture)) {
+                    push_texture_candidate(payload_texture, "draw-window-viewport-info");
+                }
+            }
+
+            for (auto* candidate : ordered_viewport_infos) {
+                FRHITexture2D* direct_texture = nullptr;
+                if (try_get_viewport_direct_texture_nothrow(candidate, direct_texture)) {
+                    push_texture_candidate(direct_texture, "viewport-info-direct");
+                }
+
+                if (include_provider_fallback) {
+                    FRHITexture2D* provider_texture = nullptr;
+                    if (try_get_viewport_provider_texture_nothrow(candidate, known_tex, provider_texture)) {
+                        push_texture_candidate(provider_texture, "viewport-provider");
+                    }
+                }
+            }
+
+            return texture_candidates;
+        };
+
+    if (viewport_info == nullptr && ordered_viewport_infos.empty() && draw_window_viewport_infos.empty()) {
+        return std::nullopt;
     }
 
     const auto expected_eye_width = expected_stereo_width > 1 ? expected_stereo_width / 2u : expected_stereo_width;
-    std::optional<GuardedSceneResourceCandidate> best{};
-    int64_t best_score = (std::numeric_limits<int64_t>::min)();
+    const auto find_best_candidate = [&](const std::vector<TextureCandidate>& texture_candidates)
+        -> std::optional<GuardedSceneResourceCandidate>
+    {
+        std::optional<GuardedSceneResourceCandidate> best{};
+        int64_t best_score = (std::numeric_limits<int64_t>::min)();
 
-    for (size_t i = 0; i < texture_candidate_count; ++i) {
-        const auto& texture_candidate = texture_candidates[i];
-        auto* resource = probe_native_d3d12_resource_via_frhi_base(texture_candidate.texture, "scene render target", false);
-        if (resource == nullptr) {
-            resource = probe_native_d3d12_resource_from_texture_blob(texture_candidate.texture);
+        for (const auto& texture_candidate : texture_candidates) {
+            auto* resource = probe_native_d3d12_resource_via_frhi_base(texture_candidate.texture, "scene render target", false);
+            if (resource == nullptr) {
+                resource = probe_native_d3d12_resource_from_texture_blob(texture_candidate.texture);
+            }
+            if (resource == nullptr) {
+                continue;
+            }
+
+            D3D12_RESOURCE_DESC desc{};
+            if (!try_get_resource_desc_nothrow(resource, desc)) {
+                continue;
+            }
+
+            if (!is_plausible_scene_source_desc(
+                    desc,
+                    real_backbuffer_desc,
+                    expected_stereo_width,
+                    expected_stereo_height) ||
+                is_probable_desktop_sized_scene_source(
+                    desc,
+                    real_backbuffer_desc,
+                    expected_stereo_width,
+                    expected_stereo_height))
+            {
+                continue;
+            }
+
+            const auto width = (uint32_t)desc.Width;
+            const auto height = (uint32_t)desc.Height;
+            const auto diff_eye = (int64_t)std::llabs((int64_t)width - (int64_t)expected_eye_width) +
+                                  (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+            const auto diff_double = (int64_t)std::llabs((int64_t)width - (int64_t)expected_stereo_width) +
+                                     (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
+            const auto diff_current = (int64_t)std::llabs((int64_t)width - (int64_t)current_desc.Width) +
+                                      (int64_t)std::llabs((int64_t)height - (int64_t)current_desc.Height);
+
+            int64_t score = 0;
+            score -= (std::min)(diff_eye, diff_double);
+            score += diff_current;
+
+            if (std::string_view{texture_candidate.source} == "draw-window-viewport-info") {
+                score += 192;
+            } else if (std::string_view{texture_candidate.source} == "viewport-provider") {
+                score += 64;
+            }
+
+            if (score > best_score) {
+                best_score = score;
+                GuardedSceneResourceCandidate chosen{};
+                chosen.resource = resource;
+                chosen.desc = desc;
+                chosen.owner = reinterpret_cast<uintptr_t>(texture_candidate.texture);
+                chosen.offset = 0;
+                chosen.nested = false;
+                chosen.source = texture_candidate.source;
+                best = chosen;
+            }
         }
-        if (resource == nullptr) {
-            continue;
-        }
 
-        D3D12_RESOURCE_DESC desc{};
-        if (!try_get_resource_desc_nothrow(resource, desc)) {
-            continue;
-        }
+        return best;
+    };
 
-        if (!is_plausible_scene_source_desc(
-                desc,
-                real_backbuffer_desc,
-                expected_stereo_width,
-                expected_stereo_height) ||
-            is_probable_desktop_sized_scene_source(
-                desc,
-                real_backbuffer_desc,
-                expected_stereo_width,
-                expected_stereo_height))
-        {
-            continue;
-        }
-
-        const auto width = (uint32_t)desc.Width;
-        const auto height = (uint32_t)desc.Height;
-        const auto diff_eye = (int64_t)std::llabs((int64_t)width - (int64_t)expected_eye_width) +
-                              (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
-        const auto diff_double = (int64_t)std::llabs((int64_t)width - (int64_t)expected_stereo_width) +
-                                 (int64_t)std::llabs((int64_t)height - (int64_t)expected_stereo_height);
-        const auto diff_current = (int64_t)std::llabs((int64_t)width - (int64_t)current_desc.Width) +
-                                  (int64_t)std::llabs((int64_t)height - (int64_t)current_desc.Height);
-
-        int64_t score = 0;
-        score -= (std::min)(diff_eye, diff_double);
-        score += diff_current;
-
-        if (std::string_view{texture_candidate.source} == "viewport-provider") {
-            score += 128;
-        }
-
-        if (score > best_score) {
-            best_score = score;
-            GuardedSceneResourceCandidate chosen{};
-            chosen.resource = resource;
-            chosen.desc = desc;
-            chosen.owner = reinterpret_cast<uintptr_t>(texture_candidate.texture);
-            chosen.offset = 0;
-            chosen.nested = false;
-            chosen.source = texture_candidate.source;
-            best = chosen;
+    if (const auto direct_candidates = collect_texture_candidates(false);
+        !direct_candidates.empty())
+    {
+        if (const auto best_direct = find_best_candidate(direct_candidates); best_direct.has_value()) {
+            return best_direct;
         }
     }
 
-    return best;
+    const bool provider_recovery_allowed = !(ue57_guard || tq2_guard) || fake_stereo_hook->is_slate_hooked();
+    if (!provider_recovery_allowed) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[VR] Guarded UE5.7: skipping viewport-provider recovery until DrawWindow hook is active");
+        return std::nullopt;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[VR] Guarded UE5.7: direct viewport candidate scan found no scene resource; retrying viewport-provider recovery");
+
+    return find_best_candidate(collect_texture_candidates(true));
 }
 
 ID3D12Resource* scan_object_for_d3d12_resource(uintptr_t base, uintptr_t max_offset) {

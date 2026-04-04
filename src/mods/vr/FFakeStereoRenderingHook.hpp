@@ -2,6 +2,8 @@
 
 #include <memory>
 #include <array>
+#include <mutex>
+#include <vector>
 
 #include <SafetyHook.hpp>
 
@@ -114,6 +116,25 @@ public:
         last_viewport = vp;
     }
 
+    void update_guarded_ue57_viewport_candidates(
+        const std::vector<sdk::FViewportInfo*>& viewport_candidates,
+        const std::vector<uintptr_t>& draw_window_viewport_infos)
+    {
+        std::scoped_lock _{m_guarded_ue57_candidates_mutex};
+        m_guarded_ue57_viewport_candidates = viewport_candidates;
+        m_guarded_ue57_draw_window_viewport_infos = draw_window_viewport_infos;
+    }
+
+    std::vector<sdk::FViewportInfo*> get_guarded_ue57_viewport_candidates() const {
+        std::scoped_lock _{m_guarded_ue57_candidates_mutex};
+        return m_guarded_ue57_viewport_candidates;
+    }
+
+    std::vector<uintptr_t> get_guarded_ue57_draw_window_viewport_infos() const {
+        std::scoped_lock _{m_guarded_ue57_candidates_mutex};
+        return m_guarded_ue57_draw_window_viewport_infos;
+    }
+
 protected:
     struct VerifiedFTexture2D {
         VerifiedFTexture2D() = default;
@@ -200,6 +221,9 @@ protected:
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
     sdk::FViewport* last_viewport{nullptr};
+    mutable std::mutex m_guarded_ue57_candidates_mutex{};
+    std::vector<sdk::FViewportInfo*> m_guarded_ue57_viewport_candidates{};
+    std::vector<uintptr_t> m_guarded_ue57_draw_window_viewport_infos{};
 };
 
 struct VRRenderTargetManager : IStereoRenderTargetManager, VRRenderTargetManager_Base {
