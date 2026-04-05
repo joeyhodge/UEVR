@@ -61,6 +61,10 @@ protected:
     std::unique_ptr<PointerHook> m_present_hook{};
     std::unique_ptr<PointerHook> m_resize_buffers_hook{};
     std::unique_ptr<PointerHook> m_set_render_targets_hook{};
+    std::unique_ptr<PointerHook> m_create_vertex_shader_hook{};
+    std::unique_ptr<PointerHook> m_create_pixel_shader_hook{};
+    std::unique_ptr<PointerHook> m_vs_set_shader_hook{};
+    std::unique_ptr<PointerHook> m_ps_set_shader_hook{};
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
@@ -68,6 +72,10 @@ protected:
 
     static HRESULT WINAPI present(IDXGISwapChain* swap_chain, UINT sync_interval, UINT flags);
     static HRESULT WINAPI resize_buffers(IDXGISwapChain* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
+    static HRESULT WINAPI create_vertex_shader(ID3D11Device* device, const void* bytecode, SIZE_T bytecode_size, ID3D11ClassLinkage* linkage, ID3D11VertexShader** shader);
+    static HRESULT WINAPI create_pixel_shader(ID3D11Device* device, const void* bytecode, SIZE_T bytecode_size, ID3D11ClassLinkage* linkage, ID3D11PixelShader** shader);
+    static void WINAPI vs_set_shader(ID3D11DeviceContext* context, ID3D11VertexShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
+    static void WINAPI ps_set_shader(ID3D11DeviceContext* context, ID3D11PixelShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
 };

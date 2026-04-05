@@ -21,6 +21,9 @@
 #include "d3d12/TextureContext.hpp"
 
 class VR;
+namespace render {
+class FrameResourceInspector;
+}
 
 namespace vrmod {
 class D3D12Component {
@@ -45,6 +48,8 @@ public:
     auto& get_openvr_ui_tex() { return m_openvr.ui_tex; }
 
 private:
+    friend class render::FrameResourceInspector;
+
     bool setup();
     std::unique_ptr<DirectX::DX12::SpriteBatch> setup_sprite_batch_pso(
         DXGI_FORMAT output_format, 

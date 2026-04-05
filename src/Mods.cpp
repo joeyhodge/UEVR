@@ -10,6 +10,7 @@
 #include "Framework.hpp"
 
 #include "mods/FrameworkConfig.hpp"
+#include "mods/RenderInspector.hpp"
 #include "mods/VR.hpp"
 #include "mods/PluginLoader.hpp"
 #include "mods/LuaLoader.hpp"
@@ -141,6 +142,7 @@ bool migrate_ui_invert_alpha(utility::Config& cfg) {
 Mods::Mods() {
     m_mods.emplace_back(FrameworkConfig::get());
     m_mods.emplace_back(VR::get());
+    m_mods.emplace_back(RenderInspector::get());
     m_mods.emplace_back(UObjectHook::get());
 
     m_mods.emplace_back(PluginLoader::get());

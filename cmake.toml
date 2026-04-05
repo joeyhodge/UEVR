@@ -36,6 +36,10 @@ endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_subdirectory(dependencies/submodules/UESDK)
+
+set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
+message(STATUS "Using vendored safetyhook (b62c7356f3e364209a2ae14489550156d7b58b8b + UEVR patches)...")
+add_subdirectory(dependencies/vendor/safetyhook)
 """
 
 [target.spdlog]
@@ -58,13 +62,6 @@ tag = "70db095765ab2066dd88dfb7bbcc42259ed167c5"
 [fetch-content.kananlib]
 git = "https://github.com/cursey/kananlib"
 tag = "7a99a94cea3dbcbd46b54885bd3d04f1d242e21a"
-
-[fetch-content.safetyhook]
-git = "https://github.com/praydog/safetyhook"
-tag = "b62c7356f3e364209a2ae14489550156d7b58b8b"
-cmake-before="""
-set(SAFETYHOOK_FETCH_ZYDIS ON)
-"""
 
 [fetch-content.sdkgenny]
 git = "https://github.com/cursey/sdkgenny"
@@ -244,6 +241,7 @@ link-libraries = [
     "shlwapi",
     "d3d11",
     "d3d12",
+    "d3dcompiler",
     "safetyhook",
     "glm",
     "imgui",

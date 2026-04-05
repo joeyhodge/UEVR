@@ -15,6 +15,9 @@
 #include <SpriteBatch.h>
 
 class VR;
+namespace render {
+class FrameResourceInspector;
+}
 
 namespace vrmod {
 class D3D11Component {
@@ -40,6 +43,8 @@ public:
     void force_reset() { m_force_reset = true; }
 
 private:
+    friend class render::FrameResourceInspector;
+
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
     struct TextureContext;
 

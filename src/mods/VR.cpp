@@ -3306,9 +3306,16 @@ void VR::save_prospi_camera_calibrations() try {
     }
 
     if (calibration_count == 0) {
-        std::error_code ec{};
-        std::filesystem::remove(calibration_path, ec);
-        spdlog::info("[VR] Cleared camera calibration file {}", calibration_path.string());
+        std::error_code exists_ec{};
+        const auto calibration_file_exists = std::filesystem::exists(calibration_path, exists_ec);
+        if (!exists_ec && calibration_file_exists) {
+            std::error_code remove_ec{};
+            std::filesystem::remove(calibration_path, remove_ec);
+            if (!remove_ec) {
+                spdlog::info("[VR] Cleared camera calibration file {}", calibration_path.string());
+            }
+        }
+
         return;
     }
 

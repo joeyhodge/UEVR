@@ -4,6 +4,7 @@
 
 #include "CommandContext.hpp"
 #include "TextureContext.hpp"
+#include "render/D3D12Diagnostics.hpp"
 
 namespace d3d12 {
 bool TextureContext::setup(ID3D12Device* device, ID3D12Resource* rsrc, std::optional<DXGI_FORMAT> rtv_format, std::optional<DXGI_FORMAT> srv_format, const wchar_t* name) {
@@ -21,6 +22,7 @@ bool TextureContext::setup(ID3D12Device* device, ID3D12Resource* rsrc, std::opti
     }
 
     rsrc->SetName(name);
+    render::D3D12Diagnostics::get().register_resource("VR::TextureContext::setup", rsrc, true, utility::narrow(name));
 
     return create_rtv(device, rtv_format) && create_srv(device, srv_format);
 }
@@ -44,6 +46,8 @@ bool TextureContext::create_rtv(ID3D12Device* device, std::optional<DXGI_FORMAT>
     if (rtv_heap->Heap() == nullptr) {
         return false;
     }
+
+    render::D3D12Diagnostics::get().register_descriptor_heap("VR::TextureContext::create_rtv", rtv_heap->Heap(), 1, true, "TextureContext RTV Heap");
 
     if (format) {
         D3D12_RENDER_TARGET_VIEW_DESC rtv_desc{};
@@ -78,6 +82,8 @@ bool TextureContext::create_srv(ID3D12Device* device, std::optional<DXGI_FORMAT>
     if (srv_heap->Heap() == nullptr) {
         return false;
     }
+
+    render::D3D12Diagnostics::get().register_descriptor_heap("VR::TextureContext::create_srv", srv_heap->Heap(), 1, true, "TextureContext SRV Heap");
 
     if (format) {
         D3D12_SHADER_RESOURCE_VIEW_DESC srv_desc{};

@@ -1,0 +1,43 @@
+#pragma once
+
+#include <optional>
+
+#include "Mod.hpp"
+#include "render/D3D12Diagnostics.hpp"
+#include "render/FrameResourceInspector.hpp"
+#include "render/ShaderOverrideRegistry.hpp"
+
+class RenderInspector : public Mod {
+public:
+    static std::shared_ptr<RenderInspector>& get();
+
+    std::string_view get_name() const override {
+        return "Render Inspector";
+    }
+
+    std::vector<SidebarEntryInfo> get_sidebar_entries() override {
+        return {
+            {"Resources", false},
+            {"DX12 Diagnostics", false},
+            {"Shaders", false},
+        };
+    }
+
+    void on_present() override;
+    void on_draw_sidebar_entry(std::string_view in_entry) override;
+
+private:
+    void draw_resources();
+    void draw_dx12_diagnostics();
+    void draw_shaders();
+
+    render::FrameResourceInspector m_inspector{};
+    std::optional<uint64_t> m_selected_resource_key{};
+    bool m_filter_depth_only{false};
+    bool m_filter_render_targets_only{false};
+    bool m_filter_ui_only{false};
+    bool m_filter_swapchain_only{false};
+    bool m_filter_recent_only{true};
+    int m_recent_frame_window{180};
+    int m_dx12_event_limit{24};
+};

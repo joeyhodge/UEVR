@@ -9,6 +9,8 @@
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
+#include "render/D3D12Diagnostics.hpp"
+#include "render/ShaderOverrideRegistry.hpp"
 
 #include "D3D12Hook.hpp"
 
@@ -26,6 +28,8 @@ bool D3D12Hook::hook() {
     IDXGISwapChain1* swap_chain1{ nullptr };
     IDXGISwapChain3* swap_chain{ nullptr };
     ID3D12Device* device{ nullptr };
+    ID3D12CommandAllocator* command_allocator{ nullptr };
+    ID3D12GraphicsCommandList* command_list{ nullptr };
 
     D3D_FEATURE_LEVEL feature_level = D3D_FEATURE_LEVEL_11_0;
     DXGI_SWAP_CHAIN_DESC1 swap_chain_desc1;
@@ -121,6 +125,16 @@ bool D3D12Hook::hook() {
     ID3D12CommandQueue* command_queue{ nullptr };
     if (FAILED(device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&command_queue)))) {
         spdlog::error("Failed to create D3D12 Dummy Command Queue");
+        return false;
+    }
+
+    if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&command_allocator)))) {
+        spdlog::error("Failed to create D3D12 Dummy Command Allocator");
+        return false;
+    }
+
+    if (FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, command_allocator, nullptr, IID_PPV_ARGS(&command_list)))) {
+        spdlog::error("Failed to create D3D12 Dummy Graphics Command List");
         return false;
     }
 
@@ -337,18 +351,32 @@ bool D3D12Hook::hook() {
         spdlog::info("Initializing hooks");
         m_present_hook.reset();
         m_present1_hook.reset();
+        m_create_graphics_pipeline_state_hook.reset();
+        m_set_pipeline_state_hook.reset();
         m_swapchain_hook.reset();
 
         m_is_phase_1 = true;
 
         auto& present_fn = (*(void***)target_swapchain)[8]; // Present
         auto& present1_fn = (*(void***)target_swapchain)[22]; // Present1
+        auto& create_graphics_pipeline_state_fn = (*(void***)device)[10];
+        auto& set_pipeline_state_fn = (*(void***)command_list)[25];
         m_present_hook = std::make_unique<PointerHook>(&present_fn, (void*)&D3D12Hook::present);
         m_present1_hook = std::make_unique<PointerHook>(&present1_fn, (void*)&D3D12Hook::present1);
+        m_create_graphics_pipeline_state_hook = std::make_unique<PointerHook>(&create_graphics_pipeline_state_fn, (void*)&D3D12Hook::create_graphics_pipeline_state);
+        m_set_pipeline_state_hook = std::make_unique<PointerHook>(&set_pipeline_state_fn, (void*)&D3D12Hook::set_pipeline_state);
         m_hooked = true;
     } catch (const std::exception& e) {
         spdlog::error("Failed to initialize hooks: {}", e.what());
         m_hooked = false;
+    }
+
+    if (command_list != nullptr) {
+        command_list->Release();
+    }
+
+    if (command_allocator != nullptr) {
+        command_allocator->Release();
     }
 
     device->Release();
@@ -377,6 +405,8 @@ bool D3D12Hook::unhook() {
 
     m_present_hook.reset();
     m_present1_hook.reset();
+    m_create_graphics_pipeline_state_hook.reset();
+    m_set_pipeline_state_hook.reset();
     m_swapchain_hook.reset();
 
     m_hooked = false;
@@ -447,6 +477,18 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
         } else {
             d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->m_command_queue_offset);
         }
+
+        render::D3D12Diagnostics::get().begin_frame(
+            d3d12->m_device,
+            swap_chain,
+            d3d12->m_command_queue,
+            d3d12->m_render_width,
+            d3d12->m_render_height,
+            d3d12->m_display_width,
+            d3d12->m_display_height,
+            d3d12->m_using_proton_swapchain,
+            d3d12->m_using_frame_generation_swapchain
+        );
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {
@@ -544,6 +586,39 @@ HRESULT WINAPI D3D12Hook::present1(IDXGISwapChain3* swap_chain, UINT sync_interv
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     return D3D12Hook::present_internal(swap_chain, sync_interval, flags, params, true);
+}
+
+HRESULT WINAPI D3D12Hook::create_graphics_pipeline_state(
+    ID3D12Device* device,
+    const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc,
+    REFIID riid,
+    void** pipeline_state
+) {
+    auto d3d12 = g_d3d12_hook;
+    auto original = d3d12->m_create_graphics_pipeline_state_hook->get_original<decltype(D3D12Hook::create_graphics_pipeline_state)*>();
+    const auto result = original(device, desc, riid, pipeline_state);
+
+    if (SUCCEEDED(result) &&
+        pipeline_state != nullptr &&
+        *pipeline_state != nullptr &&
+        riid == __uuidof(ID3D12PipelineState) &&
+        desc != nullptr) {
+        render::ShaderOverrideRegistry::get().register_d3d12_graphics_pipeline_state_creation(
+            device,
+            static_cast<ID3D12PipelineState*>(*pipeline_state),
+            desc
+        );
+    }
+
+    return result;
+}
+
+void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state) {
+    auto d3d12 = g_d3d12_hook;
+    auto original = d3d12->m_set_pipeline_state_hook->get_original<decltype(D3D12Hook::set_pipeline_state)*>();
+    auto bound_pipeline_state = render::ShaderOverrideRegistry::get().resolve_d3d12_pipeline_state(pipeline_state);
+    render::ShaderOverrideRegistry::get().note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
+    original(command_list, bound_pipeline_state);
 }
 
 thread_local int32_t g_resize_buffers_depth = 0;

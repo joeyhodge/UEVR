@@ -1,0 +1,196 @@
+#pragma once
+
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <d3d11.h>
+#include <d3d12.h>
+#include <wrl/client.h>
+
+#include "render/ShaderCompiler.hpp"
+
+class Framework;
+
+namespace render {
+class ShaderOverrideRegistry {
+public:
+    enum class Backend : uint8_t {
+        D3D11,
+        D3D12,
+    };
+
+    enum class Stage : uint8_t {
+        Vertex,
+        Pixel,
+    };
+
+    using CreateVertexShaderFn = HRESULT (WINAPI*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11VertexShader**);
+    using CreatePixelShaderFn = HRESULT (WINAPI*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11PixelShader**);
+
+    struct BoundShaderInfo {
+        bool known{};
+        Backend backend{Backend::D3D11};
+        Stage stage{Stage::Vertex};
+        uintptr_t original_pointer{};
+        uintptr_t bound_pointer{};
+        std::string hash{};
+        bool override_active{};
+        std::string override_name{};
+        std::string note{};
+        uint64_t last_bound_frame{};
+    };
+
+    struct OverrideEntryInfo {
+        std::string key{};
+        std::string name{};
+        Backend backend{Backend::D3D11};
+        Stage stage{Stage::Vertex};
+        std::string target_hash{};
+        std::string manifest_path{};
+        std::string source_path{};
+        std::string entry_point{};
+        std::string profile{};
+        bool enabled{};
+        bool compiled{};
+        bool apply_supported{};
+        bool from_profile_dir{};
+        uint64_t generation{};
+        std::string status{};
+        std::string compiler{};
+        std::string last_error{};
+    };
+
+    struct Snapshot {
+        bool auto_reload{true};
+        uint64_t frame{};
+        std::string global_override_dir{};
+        std::string profile_override_dir{};
+        BoundShaderInfo bound_vertex_shader{};
+        BoundShaderInfo bound_pixel_shader{};
+        std::vector<OverrideEntryInfo> overrides{};
+        std::vector<std::string> recent_events{};
+    };
+
+    static ShaderOverrideRegistry& get();
+
+    void on_present(Framework& framework);
+    void request_reload();
+    Snapshot snapshot() const;
+
+    void set_d3d11_create_callbacks(CreateVertexShaderFn create_vs, CreatePixelShaderFn create_ps);
+    void register_d3d11_shader_creation(Stage stage, ID3D11Device* device, IUnknown* shader, const void* bytecode, size_t bytecode_size);
+    ID3D11VertexShader* resolve_d3d11_vertex_shader(ID3D11Device* device, ID3D11VertexShader* shader);
+    ID3D11PixelShader* resolve_d3d11_pixel_shader(ID3D11Device* device, ID3D11PixelShader* shader);
+    void note_d3d11_shader_bound(Stage stage, IUnknown* original_shader, IUnknown* bound_shader);
+    void register_d3d12_graphics_pipeline_state_creation(ID3D12Device* device, ID3D12PipelineState* pipeline_state, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc);
+    ID3D12PipelineState* resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state);
+    void note_d3d12_pipeline_state_bound(ID3D12PipelineState* original_pipeline_state, ID3D12PipelineState* bound_pipeline_state);
+
+private:
+    struct OverrideEntry {
+        std::string key{};
+        std::string name{};
+        Backend backend{Backend::D3D11};
+        Stage stage{Stage::Vertex};
+        std::string target_hash{};
+        std::filesystem::path manifest_path{};
+        std::filesystem::path source_path{};
+        std::string entry_point{};
+        std::string profile{};
+        ShaderCompilerBackend preferred_compiler{ShaderCompilerBackend::Auto};
+        bool enabled{true};
+        bool from_profile_dir{};
+        bool compiled{};
+        bool apply_supported{};
+        uint64_t generation{};
+        std::string status{};
+        std::string compiler{};
+        std::string last_error{};
+        std::vector<uint8_t> compiled_bytecode{};
+        std::filesystem::file_time_type manifest_write_time{};
+        std::filesystem::file_time_type source_write_time{};
+    };
+
+    struct D3D11ShaderRecord {
+        Stage stage{Stage::Vertex};
+        uintptr_t shader_pointer{};
+        uintptr_t device_pointer{};
+        std::string hash{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+        uint64_t seen_count{};
+        uint64_t override_generation{};
+        bool override_active{};
+        std::string override_name{};
+        Microsoft::WRL::ComPtr<ID3D11DeviceChild> override_shader{};
+    };
+
+    struct OwnedD3D12GraphicsPipelineStateDesc {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature{};
+        std::vector<uint8_t> vertex_shader{};
+        std::vector<uint8_t> pixel_shader{};
+        std::vector<uint8_t> domain_shader{};
+        std::vector<uint8_t> hull_shader{};
+        std::vector<uint8_t> geometry_shader{};
+        std::vector<std::string> input_semantic_names{};
+        std::vector<D3D12_INPUT_ELEMENT_DESC> input_elements{};
+        std::vector<std::string> stream_output_semantic_names{};
+        std::vector<D3D12_SO_DECLARATION_ENTRY> stream_output_declarations{};
+        std::vector<UINT> stream_output_strides{};
+
+        void refresh_views();
+    };
+
+    struct D3D12GraphicsPsoRecord {
+        uintptr_t pipeline_state_pointer{};
+        std::string vertex_hash{};
+        std::string pixel_hash{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+        uint64_t seen_count{};
+        uint64_t applied_override_revision{};
+        bool override_active{};
+        std::string vertex_override_name{};
+        std::string pixel_override_name{};
+        std::string last_error{};
+        Microsoft::WRL::ComPtr<ID3D12Device> device{};
+        Microsoft::WRL::ComPtr<ID3D12PipelineState> override_pipeline_state{};
+        OwnedD3D12GraphicsPipelineStateDesc owned_desc{};
+    };
+
+    void scan_override_directories();
+    void scan_single_directory(const std::filesystem::path& dir, bool from_profile_dir);
+    void remove_deleted_entries(const std::unordered_map<std::string, std::filesystem::path>& discovered_entries);
+    void compile_or_refresh_entry(OverrideEntry& entry);
+    std::optional<OverrideEntry> parse_manifest(const std::filesystem::path& manifest_path, bool from_profile_dir);
+    bool compile_entry(OverrideEntry& entry, std::string& error_out);
+    void push_event(std::string message);
+    void update_d3d11_override_shader(D3D11ShaderRecord& record, ID3D11Device* device);
+    void update_d3d12_override_pipeline_state(D3D12GraphicsPsoRecord& record);
+    std::string make_override_key(Backend backend, Stage stage, std::string_view target_hash) const;
+    std::string hash_shader_bytecode(const void* bytecode, size_t bytecode_size) const;
+    std::filesystem::path global_override_dir() const;
+    std::filesystem::path profile_override_dir() const;
+
+    mutable std::recursive_mutex m_mutex{};
+    std::unordered_map<std::string, OverrideEntry> m_overrides{};
+    std::unordered_map<uintptr_t, D3D11ShaderRecord> m_d3d11_shader_records{};
+    std::unordered_map<uintptr_t, D3D12GraphicsPsoRecord> m_d3d12_graphics_pso_records{};
+    BoundShaderInfo m_bound_vertex_shader{};
+    BoundShaderInfo m_bound_pixel_shader{};
+    std::vector<std::string> m_recent_events{};
+    std::chrono::steady_clock::time_point m_last_scan_time{};
+    bool m_force_reload{};
+    uint64_t m_frame{};
+    uint64_t m_override_revision{};
+    CreateVertexShaderFn m_create_vertex_shader{};
+    CreatePixelShaderFn m_create_pixel_shader{};
+};
+} // namespace render

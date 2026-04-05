@@ -30,6 +30,7 @@
 #include "ExceptionHandler.hpp"
 #include "LicenseStrings.hpp"
 #include "mods/FrameworkConfig.hpp"
+#include "render/D3D12Diagnostics.hpp"
 #include "Framework.hpp"
 
 namespace fs = std::filesystem;
@@ -650,13 +651,16 @@ void Framework::on_frame_d3d12() {
         barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        render::D3D12Diagnostics::get().record_resource_barriers("Framework::on_frame_d3d12/ImGuiToRT", 1, &barrier);
         cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
 
         float clear_color[]{0.0f, 0.0f, 0.0f, 0.0f};
         D3D12_CPU_DESCRIPTOR_HANDLE rts[1]{};
         cmd_ctx->cmd_list->ClearRenderTargetView(m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI), clear_color, 0, nullptr);
         rts[0] = m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI);
+        render::D3D12Diagnostics::get().record_rtv_bind("Framework::on_frame_d3d12/ImGuiRT", 1, rts, nullptr);
         cmd_ctx->cmd_list->OMSetRenderTargets(1, rts, FALSE, NULL);
+        render::D3D12Diagnostics::get().record_descriptor_heaps_set("Framework::on_frame_d3d12/ImGuiSRVHeap", 1, m_d3d12.srv_desc_heap.GetAddressOf());
         cmd_ctx->cmd_list->SetDescriptorHeaps(1, m_d3d12.srv_desc_heap.GetAddressOf());
 
         ImGui::GetIO().BackendRendererUserData = m_d3d12.imgui_backend_datas[1];
@@ -669,6 +673,7 @@ void Framework::on_frame_d3d12() {
         
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        render::D3D12Diagnostics::get().record_resource_barriers("Framework::on_frame_d3d12/ImGuiToSRV", 1, &barrier);
         cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
 
         // Draw to the back buffer.
@@ -677,9 +682,12 @@ void Framework::on_frame_d3d12() {
         barrier.Transition.pResource = m_d3d12.rts[bb_index].Get();
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        render::D3D12Diagnostics::get().record_resource_barriers("Framework::on_frame_d3d12/BackbufferToRT", 1, &barrier);
         cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
         rts[0] = m_d3d12.get_cpu_rtv(device, (D3D12::RTV)bb_index);
+        render::D3D12Diagnostics::get().record_rtv_bind("Framework::on_frame_d3d12/BackbufferRT", 1, rts, nullptr);
         cmd_ctx->cmd_list->OMSetRenderTargets(1, rts, FALSE, NULL);
+        render::D3D12Diagnostics::get().record_descriptor_heaps_set("Framework::on_frame_d3d12/BackbufferSRVHeap", 1, m_d3d12.srv_desc_heap.GetAddressOf());
         cmd_ctx->cmd_list->SetDescriptorHeaps(1, m_d3d12.srv_desc_heap.GetAddressOf());
 
         ImGui::GetIO().BackendRendererUserData = m_d3d12.imgui_backend_datas[0];
@@ -687,6 +695,7 @@ void Framework::on_frame_d3d12() {
 
         barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
         barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+        render::D3D12Diagnostics::get().record_resource_barriers("Framework::on_frame_d3d12/BackbufferToPresent", 1, &barrier);
         cmd_ctx->cmd_list->ResourceBarrier(1, &barrier);
 
         cmd_ctx->execute();
@@ -1807,6 +1816,8 @@ bool Framework::init_d3d11() {
         return false;
     }
 
+    m_d3d11.bb_tex = backbuffer;
+
     // Create a render target view of the back buffer.
     if (FAILED(device->CreateRenderTargetView(backbuffer.Get(), nullptr, &m_d3d11.bb_rtv))) {
         spdlog::error("[D3D11] Failed to create back buffer render target view!");
@@ -1921,6 +1932,7 @@ bool Framework::init_d3d12() {
         }
 
         m_d3d12.rtv_desc_heap->SetName(L"Framework::m_d3d12.rtv_desc_heap");
+        render::D3D12Diagnostics::get().register_descriptor_heap("Framework::init_d3d12", m_d3d12.rtv_desc_heap.Get(), desc.NumDescriptors, false, "Framework RTV Heap");
     }
 
     spdlog::info("[D3D12] Creating SRV descriptor heap...");
@@ -1938,6 +1950,7 @@ bool Framework::init_d3d12() {
         }
 
         m_d3d12.srv_desc_heap->SetName(L"Framework::m_d3d12.srv_desc_heap");
+        render::D3D12Diagnostics::get().register_descriptor_heap("Framework::init_d3d12", m_d3d12.srv_desc_heap.Get(), desc.NumDescriptors, false, "Framework SRV Heap");
     }
 
     spdlog::info("[D3D12] Creating render targets...");
@@ -1957,6 +1970,12 @@ bool Framework::init_d3d12() {
 
             if (SUCCEEDED(swapchain->GetBuffer(i, IID_PPV_ARGS(&m_d3d12.rts[i])))) {
                 device->CreateRenderTargetView(m_d3d12.rts[i].Get(), nullptr, m_d3d12.get_cpu_rtv(device, (D3D12::RTV)i));
+                render::D3D12Diagnostics::get().register_resource(
+                    "Framework::init_d3d12/Swapchain",
+                    m_d3d12.rts[i].Get(),
+                    false,
+                    ("Framework Backbuffer [" + std::to_string(i) + "]").c_str()
+                );
             } else {
                 spdlog::error("[D3D12] Failed to get back buffer for rtv.");
                 break; // assume max
@@ -1987,6 +2006,7 @@ bool Framework::init_d3d12() {
         }
 
         m_d3d12.get_rt(D3D12::RTV::IMGUI)->SetName(L"Framework::m_d3d12.rts[IMGUI]");
+        render::D3D12Diagnostics::get().register_resource("Framework::init_d3d12/UI", m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), false, "Framework ImGui Render Target");
 
         if (FAILED(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &d3d12_rt_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &clear_value,
                 IID_PPV_ARGS(&m_d3d12.get_rt(D3D12::RTV::BLANK))))) {
@@ -1995,6 +2015,7 @@ bool Framework::init_d3d12() {
         }
 
         m_d3d12.get_rt(D3D12::RTV::BLANK)->SetName(L"Framework::m_d3d12.rts[BLANK]");
+        render::D3D12Diagnostics::get().register_resource("Framework::init_d3d12/UI", m_d3d12.get_rt(D3D12::RTV::BLANK).Get(), false, "Framework Blank Render Target");
 
         // Create imgui and blank rtvs and srvs.
         device->CreateRenderTargetView(m_d3d12.get_rt(D3D12::RTV::IMGUI).Get(), nullptr, m_d3d12.get_cpu_rtv(device, D3D12::RTV::IMGUI));

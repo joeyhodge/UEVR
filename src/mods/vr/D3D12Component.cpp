@@ -8,6 +8,7 @@
 #include <DirectXMath.h>
 
 #include "Framework.hpp"
+#include "render/D3D12Diagnostics.hpp"
 #include "../VR.hpp"
 
 #include <../../directxtk12-src/Inc/ResourceUploadBatch.h>
@@ -876,10 +877,12 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    render::D3D12Diagnostics::get().record_resource_barriers("VR::D3D12Component::draw_spectator_view/BackbufferToRT", 1, &barrier);
     command_list->ResourceBarrier(1, &barrier);
 
     // Set RTV to backbuffer
     D3D12_CPU_DESCRIPTOR_HANDLE rtv_heaps[] = { backbuffer_ctx.get_rtv() };
+    render::D3D12Diagnostics::get().record_rtv_bind("VR::D3D12Component::draw_spectator_view/BackbufferRT", 1, rtv_heaps, nullptr);
     command_list->OMSetRenderTargets(1, rtv_heaps, FALSE, nullptr);
 
     // Clear backbuffer
@@ -937,6 +940,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
 
     // Set descriptor heaps
     ID3D12DescriptorHeap* game_heaps[] = { m_game_tex.srv_heap->Heap() };
+    render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/GameSRV", 1, game_heaps);
     command_list->SetDescriptorHeaps(1, game_heaps);
 
     batch->Draw(m_game_tex.get_srv_gpu(), 
@@ -950,6 +954,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     //////
     // Set descriptor heaps
     ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
+    render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);
     command_list->SetDescriptorHeaps(1, ui_heaps);
 
     batch->Draw(m_game_ui_tex.get_srv_gpu(), 
@@ -962,6 +967,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     // Transition backbuffer to D3D12_RESOURCE_STATE_PRESENT
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
     barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+    render::D3D12Diagnostics::get().record_resource_barriers("VR::D3D12Component::draw_spectator_view/BackbufferToPresent", 1, &barrier);
     command_list->ResourceBarrier(1, &barrier);
 }
 

@@ -18,6 +18,9 @@
 
 class Mods;
 class VR;
+namespace render {
+class FrameResourceInspector;
+}
 
 #include "hooks/D3D11Hook.hpp"
 #include "hooks/D3D12Hook.hpp"
@@ -73,6 +76,8 @@ struct SidebarEntryInfo {
 class Framework {
 private:
     std::shared_ptr<VR> m_vr{};
+
+    friend class render::FrameResourceInspector;
 
 private:
     void hook_monitor();
@@ -378,6 +383,7 @@ private: // D3D12 Init
 
 private: // D3D11 members
     struct D3D11 {
+        ComPtr<ID3D11Texture2D> bb_tex{};
         ComPtr<ID3D11Texture2D> blank_rt{};
 		ComPtr<ID3D11Texture2D> rt{};
         ComPtr<ID3D11RenderTargetView> blank_rt_rtv{};
@@ -419,6 +425,7 @@ private: // D3D12 members
             IMGUI_FONT_VR,
             IMGUI_VR,
             BLANK,
+            INSPECTOR_PREVIEW,
             COUNT
         };
 

@@ -5,6 +5,7 @@
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
+#include "render/ShaderOverrideRegistry.hpp"
 
 #include "D3D11Hook.hpp"
 
@@ -77,12 +78,29 @@ bool D3D11Hook::hook() {
     try {
         m_present_hook.reset();
         m_resize_buffers_hook.reset();
+        m_create_vertex_shader_hook.reset();
+        m_create_pixel_shader_hook.reset();
+        m_vs_set_shader_hook.reset();
+        m_ps_set_shader_hook.reset();
 
         auto& present_fn = (*(void***)swap_chain)[8];
         auto& resize_buffers_fn = (*(void***)swap_chain)[13];
+        auto& create_vertex_shader_fn = (*(void***)device)[12];
+        auto& create_pixel_shader_fn = (*(void***)device)[15];
+        auto& ps_set_shader_fn = (*(void***)context)[5];
+        auto& vs_set_shader_fn = (*(void***)context)[7];
 
         m_present_hook = std::make_unique<PointerHook>(&present_fn, (void*)&D3D11Hook::present);
         m_resize_buffers_hook = std::make_unique<PointerHook>(&resize_buffers_fn, (void*)&D3D11Hook::resize_buffers);
+        m_create_vertex_shader_hook = std::make_unique<PointerHook>(&create_vertex_shader_fn, (void*)&D3D11Hook::create_vertex_shader);
+        m_create_pixel_shader_hook = std::make_unique<PointerHook>(&create_pixel_shader_fn, (void*)&D3D11Hook::create_pixel_shader);
+        m_ps_set_shader_hook = std::make_unique<PointerHook>(&ps_set_shader_fn, (void*)&D3D11Hook::ps_set_shader);
+        m_vs_set_shader_hook = std::make_unique<PointerHook>(&vs_set_shader_fn, (void*)&D3D11Hook::vs_set_shader);
+
+        render::ShaderOverrideRegistry::get().set_d3d11_create_callbacks(
+            m_create_vertex_shader_hook->get_original<render::ShaderOverrideRegistry::CreateVertexShaderFn>(),
+            m_create_pixel_shader_hook->get_original<render::ShaderOverrideRegistry::CreatePixelShaderFn>()
+        );
 
         m_hooked = true;
     } catch (const std::exception& e) {
@@ -103,7 +121,13 @@ bool D3D11Hook::unhook() {
 
     spdlog::info("Unhooking D3D11");
 
-    if (m_present_hook->remove() && m_resize_buffers_hook->remove()) {
+    if (m_present_hook->remove() &&
+        m_resize_buffers_hook->remove() &&
+        m_create_vertex_shader_hook->remove() &&
+        m_create_pixel_shader_hook->remove() &&
+        m_vs_set_shader_hook->remove() &&
+        m_ps_set_shader_hook->remove())
+    {
         m_hooked = false;
         return true;
     }
@@ -264,6 +288,88 @@ HRESULT WINAPI D3D11Hook::resize_buffers(
     g_inside_d3d11_resize_buffers = false;
 
     return last_d3d11_resize_buffers_result;
+}
+
+HRESULT WINAPI D3D11Hook::create_vertex_shader(
+    ID3D11Device* device,
+    const void* bytecode,
+    SIZE_T bytecode_size,
+    ID3D11ClassLinkage* linkage,
+    ID3D11VertexShader** shader
+) {
+    auto d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_create_vertex_shader_hook->get_original<decltype(D3D11Hook::create_vertex_shader)*>();
+    const auto result = original(device, bytecode, bytecode_size, linkage, shader);
+
+    if (SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
+        render::ShaderOverrideRegistry::get().register_d3d11_shader_creation(
+            render::ShaderOverrideRegistry::Stage::Vertex,
+            device,
+            *shader,
+            bytecode,
+            bytecode_size
+        );
+    }
+
+    return result;
+}
+
+HRESULT WINAPI D3D11Hook::create_pixel_shader(
+    ID3D11Device* device,
+    const void* bytecode,
+    SIZE_T bytecode_size,
+    ID3D11ClassLinkage* linkage,
+    ID3D11PixelShader** shader
+) {
+    auto d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_create_pixel_shader_hook->get_original<decltype(D3D11Hook::create_pixel_shader)*>();
+    const auto result = original(device, bytecode, bytecode_size, linkage, shader);
+
+    if (SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
+        render::ShaderOverrideRegistry::get().register_d3d11_shader_creation(
+            render::ShaderOverrideRegistry::Stage::Pixel,
+            device,
+            *shader,
+            bytecode,
+            bytecode_size
+        );
+    }
+
+    return result;
+}
+
+void WINAPI D3D11Hook::vs_set_shader(
+    ID3D11DeviceContext* context,
+    ID3D11VertexShader* shader,
+    ID3D11ClassInstance* const* class_instances,
+    UINT num_class_instances
+) {
+    auto d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_vs_set_shader_hook->get_original<decltype(D3D11Hook::vs_set_shader)*>();
+
+    Microsoft::WRL::ComPtr<ID3D11Device> device{};
+    context->GetDevice(&device);
+
+    auto bound_shader = render::ShaderOverrideRegistry::get().resolve_d3d11_vertex_shader(device.Get(), shader);
+    render::ShaderOverrideRegistry::get().note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Vertex, shader, bound_shader);
+    original(context, bound_shader, class_instances, num_class_instances);
+}
+
+void WINAPI D3D11Hook::ps_set_shader(
+    ID3D11DeviceContext* context,
+    ID3D11PixelShader* shader,
+    ID3D11ClassInstance* const* class_instances,
+    UINT num_class_instances
+) {
+    auto d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_ps_set_shader_hook->get_original<decltype(D3D11Hook::ps_set_shader)*>();
+
+    Microsoft::WRL::ComPtr<ID3D11Device> device{};
+    context->GetDevice(&device);
+
+    auto bound_shader = render::ShaderOverrideRegistry::get().resolve_d3d11_pixel_shader(device.Get(), shader);
+    render::ShaderOverrideRegistry::get().note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Pixel, shader, bound_shader);
+    original(context, bound_shader, class_instances, num_class_instances);
 }
 
 void WINAPI D3D11Hook::set_render_targets(

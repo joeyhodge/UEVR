@@ -1,10 +1,18 @@
 #include <spdlog/spdlog.h>
 #include <utility/String.hpp>
+#include <string_view>
 
 #include "Framework.hpp"
+#include "render/D3D12Diagnostics.hpp"
 
 #include "TextureContext.hpp"
 #include "CommandContext.hpp"
+
+namespace {
+void record_barriers(std::string_view source, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
+    render::D3D12Diagnostics::get().record_resource_barriers(source, count, barriers);
+}
+}
 
 namespace d3d12 {
 bool CommandContext::setup(const wchar_t* name) {
@@ -106,6 +114,7 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy/ToCopy", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -120,6 +129,7 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy/Restore", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -155,6 +165,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy_region/ToCopy", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -179,6 +190,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy_region/Restore", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -214,6 +226,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy_region_offset/ToCopy", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -238,6 +251,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
 
     {
         D3D12_RESOURCE_BARRIER barriers[2]{src_barrier, dst_barrier};
+        record_barriers("VR::CommandContext::copy_region_offset/Restore", 2, barriers);
         this->cmd_list->ResourceBarrier(2, barriers);
     }
 
@@ -264,6 +278,7 @@ void CommandContext::copy_region_stereo(ID3D12Resource* srcleft, ID3D12Resource*
         { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, dst_state, D3D12_RESOURCE_STATE_COPY_DEST} }
     };
     
+    record_barriers("VR::CommandContext::copy_region_stereo/ToCopy", 3, barriers);
     this->cmd_list->ResourceBarrier(3, barriers);
 
     // Copy left half
@@ -282,6 +297,7 @@ void CommandContext::copy_region_stereo(ID3D12Resource* srcleft, ID3D12Resource*
     barriers[1] = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {srcright, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_SOURCE, src_state} };
     barriers[2] = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_BARRIER_FLAG_NONE, {dst, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, dst_state} };
 
+    record_barriers("VR::CommandContext::copy_region_stereo/Restore", 3, barriers);
     this->cmd_list->ResourceBarrier(3, barriers);
 
     this->has_commands = true;
@@ -307,6 +323,7 @@ void CommandContext::clear_rtv(ID3D12Resource* dst, D3D12_CPU_DESCRIPTOR_HANDLE 
     // No need to switch if we're already in the right state.
     if (dst_state != dst_barrier.Transition.StateAfter) {
         D3D12_RESOURCE_BARRIER barriers[1]{dst_barrier};
+        record_barriers("VR::CommandContext::clear_rtv/ToRT", 1, barriers);
         this->cmd_list->ResourceBarrier(1, barriers);
     }
 
@@ -319,6 +336,7 @@ void CommandContext::clear_rtv(ID3D12Resource* dst, D3D12_CPU_DESCRIPTOR_HANDLE 
 
     if (dst_state != dst_barrier.Transition.StateBefore) {
         D3D12_RESOURCE_BARRIER barriers[1]{dst_barrier};
+        record_barriers("VR::CommandContext::clear_rtv/Restore", 1, barriers);
         this->cmd_list->ResourceBarrier(1, barriers);
     }
 
