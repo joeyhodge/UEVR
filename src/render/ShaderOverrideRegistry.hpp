@@ -66,6 +66,19 @@ public:
         std::string last_error{};
     };
 
+    struct D3D12PipelinePairInfo {
+        uint64_t frame{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+        uint64_t hit_count{};
+        uintptr_t original_pipeline_state{};
+        uintptr_t bound_pipeline_state{};
+        bool pipeline_stream{};
+        std::string tracking_note{};
+        BoundShaderInfo vertex_shader{};
+        BoundShaderInfo pixel_shader{};
+    };
+
     struct Snapshot {
         bool auto_reload{true};
         uint64_t frame{};
@@ -73,6 +86,11 @@ public:
         std::string profile_override_dir{};
         BoundShaderInfo bound_vertex_shader{};
         BoundShaderInfo bound_pixel_shader{};
+        std::optional<D3D12PipelinePairInfo> current_d3d12_pair{};
+        bool capture_next_d3d12_change_armed{};
+        std::optional<D3D12PipelinePairInfo> captured_d3d12_pair{};
+        uint64_t total_d3d12_pair_samples{};
+        std::vector<D3D12PipelinePairInfo> distinct_d3d12_pairs{};
         std::vector<OverrideEntryInfo> overrides{};
         std::vector<std::string> recent_events{};
     };
@@ -81,6 +99,10 @@ public:
 
     void on_present(Framework& framework);
     void request_reload();
+    void request_capture_next_d3d12_change();
+    void clear_captured_d3d12_change();
+    bool export_d3d12_pairs_json(std::filesystem::path& out_path, std::string& error_out);
+    bool export_d3d12_pairs_csv(std::filesystem::path& out_path, std::string& error_out);
     Snapshot snapshot() const;
 
     void set_d3d11_create_callbacks(CreateVertexShaderFn create_vs, CreatePixelShaderFn create_ps);
@@ -89,6 +111,7 @@ public:
     ID3D11PixelShader* resolve_d3d11_pixel_shader(ID3D11Device* device, ID3D11PixelShader* shader);
     void note_d3d11_shader_bound(Stage stage, IUnknown* original_shader, IUnknown* bound_shader);
     void register_d3d12_graphics_pipeline_state_creation(ID3D12Device* device, ID3D12PipelineState* pipeline_state, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc);
+    void register_d3d12_pipeline_state_stream_creation(ID3D12Device* device, ID3D12PipelineState* pipeline_state, const D3D12_PIPELINE_STATE_STREAM_DESC* desc);
     ID3D12PipelineState* resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state);
     void note_d3d12_pipeline_state_bound(ID3D12PipelineState* original_pipeline_state, ID3D12PipelineState* bound_pipeline_state);
 
@@ -148,6 +171,44 @@ private:
         void refresh_views();
     };
 
+    struct OwnedD3D12PipelineStateStream {
+        D3D12_PIPELINE_STATE_STREAM_DESC desc{};
+        std::vector<uint8_t> stream_bytes{};
+        Microsoft::WRL::ComPtr<ID3D12RootSignature> root_signature{};
+        std::vector<uint8_t> vertex_shader{};
+        std::vector<uint8_t> pixel_shader{};
+        std::vector<uint8_t> domain_shader{};
+        std::vector<uint8_t> hull_shader{};
+        std::vector<uint8_t> geometry_shader{};
+        std::vector<uint8_t> compute_shader{};
+        std::vector<uint8_t> amplification_shader{};
+        std::vector<uint8_t> mesh_shader{};
+        std::vector<std::string> input_semantic_names{};
+        std::vector<D3D12_INPUT_ELEMENT_DESC> input_elements{};
+        std::vector<std::string> stream_output_semantic_names{};
+        std::vector<D3D12_SO_DECLARATION_ENTRY> stream_output_declarations{};
+        std::vector<UINT> stream_output_strides{};
+        std::vector<D3D12_VIEW_INSTANCE_LOCATION> view_instance_locations{};
+        size_t root_signature_offset{static_cast<size_t>(-1)};
+        size_t vertex_shader_offset{static_cast<size_t>(-1)};
+        size_t pixel_shader_offset{static_cast<size_t>(-1)};
+        size_t domain_shader_offset{static_cast<size_t>(-1)};
+        size_t hull_shader_offset{static_cast<size_t>(-1)};
+        size_t geometry_shader_offset{static_cast<size_t>(-1)};
+        size_t compute_shader_offset{static_cast<size_t>(-1)};
+        size_t amplification_shader_offset{static_cast<size_t>(-1)};
+        size_t mesh_shader_offset{static_cast<size_t>(-1)};
+        size_t input_layout_offset{static_cast<size_t>(-1)};
+        size_t stream_output_offset{static_cast<size_t>(-1)};
+        size_t cached_pso_offset{static_cast<size_t>(-1)};
+        size_t view_instancing_offset{static_cast<size_t>(-1)};
+
+        void refresh_views();
+        bool empty() const {
+            return stream_bytes.empty();
+        }
+    };
+
     struct D3D12GraphicsPsoRecord {
         uintptr_t pipeline_state_pointer{};
         std::string vertex_hash{};
@@ -156,13 +217,16 @@ private:
         uint64_t last_seen_frame{};
         uint64_t seen_count{};
         uint64_t applied_override_revision{};
+        bool is_pipeline_stream{};
         bool override_active{};
         std::string vertex_override_name{};
         std::string pixel_override_name{};
+        std::string tracking_note{};
         std::string last_error{};
         Microsoft::WRL::ComPtr<ID3D12Device> device{};
         Microsoft::WRL::ComPtr<ID3D12PipelineState> override_pipeline_state{};
         OwnedD3D12GraphicsPipelineStateDesc owned_desc{};
+        OwnedD3D12PipelineStateStream owned_stream{};
     };
 
     void scan_override_directories();
@@ -174,6 +238,10 @@ private:
     void push_event(std::string message);
     void update_d3d11_override_shader(D3D11ShaderRecord& record, ID3D11Device* device);
     void update_d3d12_override_pipeline_state(D3D12GraphicsPsoRecord& record);
+    static bool copy_pipeline_state_stream(const D3D12_PIPELINE_STATE_STREAM_DESC* desc, OwnedD3D12PipelineStateStream& out, std::string& error_out);
+    void record_d3d12_pipeline_pair(const D3D12PipelinePairInfo& info);
+    std::string make_d3d12_pair_key(const D3D12PipelinePairInfo& info) const;
+    std::filesystem::path make_d3d12_pair_export_path(const char* extension) const;
     std::string make_override_key(Backend backend, Stage stage, std::string_view target_hash) const;
     std::string hash_shader_bytecode(const void* bytecode, size_t bytecode_size) const;
     std::filesystem::path global_override_dir() const;
@@ -185,6 +253,12 @@ private:
     std::unordered_map<uintptr_t, D3D12GraphicsPsoRecord> m_d3d12_graphics_pso_records{};
     BoundShaderInfo m_bound_vertex_shader{};
     BoundShaderInfo m_bound_pixel_shader{};
+    bool m_capture_next_d3d12_change{};
+    std::optional<D3D12PipelinePairInfo> m_captured_d3d12_pair{};
+    std::optional<D3D12PipelinePairInfo> m_last_d3d12_pair{};
+    uint64_t m_total_d3d12_pair_samples{};
+    std::vector<D3D12PipelinePairInfo> m_distinct_d3d12_pairs{};
+    std::unordered_map<std::string, size_t> m_distinct_d3d12_pair_indices{};
     std::vector<std::string> m_recent_events{};
     std::chrono::steady_clock::time_point m_last_scan_time{};
     bool m_force_reload{};

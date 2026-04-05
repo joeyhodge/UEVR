@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -43,6 +44,12 @@ std::string stage_to_string(render::ShaderOverrideRegistry::Stage stage) {
     default:
         return "unknown";
     }
+}
+
+std::string format_pointer_to_hex(uintptr_t pointer) {
+    std::ostringstream ss{};
+    ss << "0x" << std::hex << std::uppercase << pointer;
+    return ss.str();
 }
 
 std::optional<render::ShaderOverrideRegistry::Backend> parse_backend(std::string_view value) {
@@ -155,6 +162,127 @@ std::string format_hresult(HRESULT hr) {
     ss << "0x" << std::hex << std::uppercase << static_cast<uint32_t>(hr);
     return ss.str();
 }
+
+constexpr size_t INVALID_STREAM_OFFSET = static_cast<size_t>(-1);
+
+template <typename T>
+struct alignas(void*) PipelineStateStreamSubobject {
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type;
+    T payload;
+};
+
+template <typename T>
+constexpr size_t stream_payload_offset() {
+    return offsetof(PipelineStateStreamSubobject<T>, payload);
+}
+
+template <typename T>
+constexpr size_t stream_subobject_size() {
+    return sizeof(PipelineStateStreamSubobject<T>);
+}
+
+template <typename T>
+bool read_stream_payload(const uint8_t* stream_bytes, size_t stream_size, size_t subobject_offset, T& out) {
+    const auto payload_offset = subobject_offset + stream_payload_offset<T>();
+    const auto payload_end = subobject_offset + stream_subobject_size<T>();
+
+    if (payload_offset > stream_size || payload_end > stream_size) {
+        return false;
+    }
+
+    std::memcpy(&out, stream_bytes + payload_offset, sizeof(T));
+    return true;
+}
+
+template <typename T>
+bool write_stream_payload(std::vector<uint8_t>& stream_bytes, size_t subobject_offset, const T& value) {
+    const auto payload_offset = subobject_offset + stream_payload_offset<T>();
+    const auto payload_end = subobject_offset + stream_subobject_size<T>();
+
+    if (payload_offset > stream_bytes.size() || payload_end > stream_bytes.size()) {
+        return false;
+    }
+
+    std::memcpy(stream_bytes.data() + payload_offset, &value, sizeof(T));
+    return true;
+}
+
+size_t get_pipeline_stream_subobject_size(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type) {
+    switch (type) {
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE:
+        return stream_subobject_size<ID3D12RootSignature*>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS:
+        return stream_subobject_size<D3D12_SHADER_BYTECODE>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT:
+        return stream_subobject_size<D3D12_STREAM_OUTPUT_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND:
+        return stream_subobject_size<D3D12_BLEND_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK:
+        return stream_subobject_size<UINT>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER:
+        return stream_subobject_size<D3D12_RASTERIZER_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL:
+        return stream_subobject_size<D3D12_DEPTH_STENCIL_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT:
+        return stream_subobject_size<D3D12_INPUT_LAYOUT_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_IB_STRIP_CUT_VALUE:
+        return stream_subobject_size<D3D12_INDEX_BUFFER_STRIP_CUT_VALUE>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY:
+        return stream_subobject_size<D3D12_PRIMITIVE_TOPOLOGY_TYPE>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS:
+        return stream_subobject_size<D3D12_RT_FORMAT_ARRAY>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT:
+        return stream_subobject_size<DXGI_FORMAT>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC:
+        return stream_subobject_size<DXGI_SAMPLE_DESC>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_NODE_MASK:
+        return stream_subobject_size<UINT>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO:
+        return stream_subobject_size<D3D12_CACHED_PIPELINE_STATE>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_FLAGS:
+        return stream_subobject_size<D3D12_PIPELINE_STATE_FLAGS>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1:
+        return stream_subobject_size<D3D12_DEPTH_STENCIL_DESC1>();
+    case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING:
+        return stream_subobject_size<D3D12_VIEW_INSTANCING_DESC>();
+    default:
+        return 0;
+    }
+}
+
+bool same_bound_shader_info(
+    const render::ShaderOverrideRegistry::BoundShaderInfo& lhs,
+    const render::ShaderOverrideRegistry::BoundShaderInfo& rhs
+) {
+    return lhs.known == rhs.known &&
+           lhs.backend == rhs.backend &&
+           lhs.stage == rhs.stage &&
+           lhs.original_pointer == rhs.original_pointer &&
+           lhs.bound_pointer == rhs.bound_pointer &&
+           lhs.hash == rhs.hash &&
+           lhs.override_active == rhs.override_active &&
+           lhs.override_name == rhs.override_name &&
+           lhs.note == rhs.note;
+}
+
+bool same_d3d12_pipeline_pair(
+    const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& lhs,
+    const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& rhs
+) {
+    return lhs.original_pipeline_state == rhs.original_pipeline_state &&
+           lhs.bound_pipeline_state == rhs.bound_pipeline_state &&
+           lhs.pipeline_stream == rhs.pipeline_stream &&
+           lhs.tracking_note == rhs.tracking_note &&
+           same_bound_shader_info(lhs.vertex_shader, rhs.vertex_shader) &&
+           same_bound_shader_info(lhs.pixel_shader, rhs.pixel_shader);
+}
 } // namespace
 
 namespace render {
@@ -184,6 +312,280 @@ void ShaderOverrideRegistry::OwnedD3D12GraphicsPipelineStateDesc::refresh_views(
     desc.CachedPSO = {};
 }
 
+void ShaderOverrideRegistry::OwnedD3D12PipelineStateStream::refresh_views() {
+    desc.SizeInBytes = stream_bytes.size();
+    desc.pPipelineStateSubobjectStream = stream_bytes.empty() ? nullptr : stream_bytes.data();
+
+    if (root_signature_offset != INVALID_STREAM_OFFSET) {
+        auto root_signature_ptr = root_signature.Get();
+        write_stream_payload<ID3D12RootSignature*>(stream_bytes, root_signature_offset, root_signature_ptr);
+    }
+
+    if (vertex_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, vertex_shader_offset, make_shader_bytecode_blob(vertex_shader));
+    }
+
+    if (pixel_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, pixel_shader_offset, make_shader_bytecode_blob(pixel_shader));
+    }
+
+    if (domain_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, domain_shader_offset, make_shader_bytecode_blob(domain_shader));
+    }
+
+    if (hull_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, hull_shader_offset, make_shader_bytecode_blob(hull_shader));
+    }
+
+    if (geometry_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, geometry_shader_offset, make_shader_bytecode_blob(geometry_shader));
+    }
+
+    if (compute_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, compute_shader_offset, make_shader_bytecode_blob(compute_shader));
+    }
+
+    if (amplification_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, amplification_shader_offset, make_shader_bytecode_blob(amplification_shader));
+    }
+
+    if (mesh_shader_offset != INVALID_STREAM_OFFSET) {
+        write_stream_payload<D3D12_SHADER_BYTECODE>(stream_bytes, mesh_shader_offset, make_shader_bytecode_blob(mesh_shader));
+    }
+
+    if (input_layout_offset != INVALID_STREAM_OFFSET) {
+        for (size_t i = 0; i < input_elements.size() && i < input_semantic_names.size(); ++i) {
+            input_elements[i].SemanticName = input_semantic_names[i].c_str();
+        }
+
+        D3D12_INPUT_LAYOUT_DESC input_layout{};
+        input_layout.pInputElementDescs = input_elements.empty() ? nullptr : input_elements.data();
+        input_layout.NumElements = static_cast<UINT>(input_elements.size());
+        write_stream_payload<D3D12_INPUT_LAYOUT_DESC>(stream_bytes, input_layout_offset, input_layout);
+    }
+
+    if (stream_output_offset != INVALID_STREAM_OFFSET) {
+        for (size_t i = 0; i < stream_output_declarations.size() && i < stream_output_semantic_names.size(); ++i) {
+            stream_output_declarations[i].SemanticName = stream_output_semantic_names[i].c_str();
+        }
+
+        D3D12_STREAM_OUTPUT_DESC stream_output{};
+        stream_output.pSODeclaration = stream_output_declarations.empty() ? nullptr : stream_output_declarations.data();
+        stream_output.NumEntries = static_cast<UINT>(stream_output_declarations.size());
+        stream_output.pBufferStrides = stream_output_strides.empty() ? nullptr : stream_output_strides.data();
+        stream_output.NumStrides = static_cast<UINT>(stream_output_strides.size());
+
+        D3D12_STREAM_OUTPUT_DESC existing{};
+        if (read_stream_payload<D3D12_STREAM_OUTPUT_DESC>(stream_bytes.data(), stream_bytes.size(), stream_output_offset, existing)) {
+            stream_output.RasterizedStream = existing.RasterizedStream;
+        }
+
+        write_stream_payload<D3D12_STREAM_OUTPUT_DESC>(stream_bytes, stream_output_offset, stream_output);
+    }
+
+    if (cached_pso_offset != INVALID_STREAM_OFFSET) {
+        const D3D12_CACHED_PIPELINE_STATE cached_pso{};
+        write_stream_payload<D3D12_CACHED_PIPELINE_STATE>(stream_bytes, cached_pso_offset, cached_pso);
+    }
+
+    if (view_instancing_offset != INVALID_STREAM_OFFSET) {
+        D3D12_VIEW_INSTANCING_DESC view_instancing{};
+        if (read_stream_payload<D3D12_VIEW_INSTANCING_DESC>(stream_bytes.data(), stream_bytes.size(), view_instancing_offset, view_instancing)) {
+            view_instancing.ViewInstanceCount = static_cast<UINT>(view_instance_locations.size());
+            view_instancing.pViewInstanceLocations = view_instance_locations.empty() ? nullptr : view_instance_locations.data();
+            write_stream_payload<D3D12_VIEW_INSTANCING_DESC>(stream_bytes, view_instancing_offset, view_instancing);
+        }
+    }
+}
+
+bool ShaderOverrideRegistry::copy_pipeline_state_stream(
+    const D3D12_PIPELINE_STATE_STREAM_DESC* desc,
+    ShaderOverrideRegistry::OwnedD3D12PipelineStateStream& out,
+    std::string& error_out
+) {
+    if (desc == nullptr || desc->pPipelineStateSubobjectStream == nullptr || desc->SizeInBytes == 0) {
+        error_out = "Pipeline stream descriptor was empty";
+        return false;
+    }
+
+    out = {};
+    const auto* source_bytes = static_cast<const uint8_t*>(desc->pPipelineStateSubobjectStream);
+    out.stream_bytes.assign(source_bytes, source_bytes + desc->SizeInBytes);
+
+    size_t offset = 0;
+    while (offset < out.stream_bytes.size()) {
+        D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{};
+        if (offset + sizeof(type) > out.stream_bytes.size()) {
+            error_out = "Pipeline stream ended before subobject type";
+            return false;
+        }
+
+        std::memcpy(&type, out.stream_bytes.data() + offset, sizeof(type));
+        const auto subobject_size = get_pipeline_stream_subobject_size(type);
+
+        if (subobject_size == 0 || offset + subobject_size > out.stream_bytes.size()) {
+            std::ostringstream ss{};
+            ss << "Unsupported or truncated pipeline stream subobject type " << static_cast<uint32_t>(type);
+            error_out = ss.str();
+            return false;
+        }
+
+        switch (type) {
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE: {
+            ID3D12RootSignature* root_signature{};
+            if (!read_stream_payload<ID3D12RootSignature*>(out.stream_bytes.data(), out.stream_bytes.size(), offset, root_signature)) {
+                error_out = "Failed to read pipeline stream root signature";
+                return false;
+            }
+
+            out.root_signature = root_signature;
+            out.root_signature_offset = offset;
+            break;
+        }
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS: {
+            D3D12_SHADER_BYTECODE shader{};
+            if (!read_stream_payload<D3D12_SHADER_BYTECODE>(out.stream_bytes.data(), out.stream_bytes.size(), offset, shader)) {
+                error_out = "Failed to read pipeline stream shader bytecode";
+                return false;
+            }
+
+            auto* target = &out.vertex_shader;
+            auto* target_offset = &out.vertex_shader_offset;
+
+            switch (type) {
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS:
+                target = &out.vertex_shader;
+                target_offset = &out.vertex_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS:
+                target = &out.pixel_shader;
+                target_offset = &out.pixel_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DS:
+                target = &out.domain_shader;
+                target_offset = &out.domain_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_HS:
+                target = &out.hull_shader;
+                target_offset = &out.hull_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_GS:
+                target = &out.geometry_shader;
+                target_offset = &out.geometry_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CS:
+                target = &out.compute_shader;
+                target_offset = &out.compute_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS:
+                target = &out.amplification_shader;
+                target_offset = &out.amplification_shader_offset;
+                break;
+            case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS:
+                target = &out.mesh_shader;
+                target_offset = &out.mesh_shader_offset;
+                break;
+            default:
+                break;
+            }
+
+            *target = copy_shader_bytecode_blob(shader);
+            *target_offset = offset;
+            break;
+        }
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_INPUT_LAYOUT: {
+            D3D12_INPUT_LAYOUT_DESC input_layout{};
+            if (!read_stream_payload<D3D12_INPUT_LAYOUT_DESC>(out.stream_bytes.data(), out.stream_bytes.size(), offset, input_layout)) {
+                error_out = "Failed to read pipeline stream input layout";
+                return false;
+            }
+
+            out.input_layout_offset = offset;
+            out.input_semantic_names.clear();
+            out.input_elements.clear();
+
+            if (input_layout.pInputElementDescs != nullptr && input_layout.NumElements > 0) {
+                out.input_semantic_names.reserve(input_layout.NumElements);
+                out.input_elements.reserve(input_layout.NumElements);
+
+                for (UINT i = 0; i < input_layout.NumElements; ++i) {
+                    auto element = input_layout.pInputElementDescs[i];
+                    out.input_semantic_names.emplace_back(element.SemanticName != nullptr ? element.SemanticName : "");
+                    out.input_elements.emplace_back(element);
+                }
+            }
+
+            break;
+        }
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_STREAM_OUTPUT: {
+            D3D12_STREAM_OUTPUT_DESC stream_output{};
+            if (!read_stream_payload<D3D12_STREAM_OUTPUT_DESC>(out.stream_bytes.data(), out.stream_bytes.size(), offset, stream_output)) {
+                error_out = "Failed to read pipeline stream output";
+                return false;
+            }
+
+            out.stream_output_offset = offset;
+            out.stream_output_semantic_names.clear();
+            out.stream_output_declarations.clear();
+            out.stream_output_strides.clear();
+
+            if (stream_output.pSODeclaration != nullptr && stream_output.NumEntries > 0) {
+                out.stream_output_semantic_names.reserve(stream_output.NumEntries);
+                out.stream_output_declarations.reserve(stream_output.NumEntries);
+
+                for (UINT i = 0; i < stream_output.NumEntries; ++i) {
+                    auto declaration = stream_output.pSODeclaration[i];
+                    out.stream_output_semantic_names.emplace_back(declaration.SemanticName != nullptr ? declaration.SemanticName : "");
+                    out.stream_output_declarations.emplace_back(declaration);
+                }
+            }
+
+            if (stream_output.pBufferStrides != nullptr && stream_output.NumStrides > 0) {
+                out.stream_output_strides.assign(stream_output.pBufferStrides, stream_output.pBufferStrides + stream_output.NumStrides);
+            }
+
+            break;
+        }
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_CACHED_PSO:
+            out.cached_pso_offset = offset;
+            break;
+        case D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VIEW_INSTANCING: {
+            D3D12_VIEW_INSTANCING_DESC view_instancing{};
+            if (!read_stream_payload<D3D12_VIEW_INSTANCING_DESC>(out.stream_bytes.data(), out.stream_bytes.size(), offset, view_instancing)) {
+                error_out = "Failed to read pipeline stream view instancing";
+                return false;
+            }
+
+            out.view_instancing_offset = offset;
+            out.view_instance_locations.clear();
+
+            if (view_instancing.pViewInstanceLocations != nullptr && view_instancing.ViewInstanceCount > 0) {
+                out.view_instance_locations.assign(
+                    view_instancing.pViewInstanceLocations,
+                    view_instancing.pViewInstanceLocations + view_instancing.ViewInstanceCount
+                );
+            }
+
+            break;
+        }
+        default:
+            break;
+        }
+
+        offset += subobject_size;
+    }
+
+    out.refresh_views();
+    return true;
+}
+
 ShaderOverrideRegistry& ShaderOverrideRegistry::get() {
     static ShaderOverrideRegistry instance{};
     return instance;
@@ -206,6 +608,148 @@ void ShaderOverrideRegistry::request_reload() {
     m_force_reload = true;
 }
 
+void ShaderOverrideRegistry::request_capture_next_d3d12_change() {
+    std::scoped_lock _{m_mutex};
+    m_capture_next_d3d12_change = true;
+}
+
+void ShaderOverrideRegistry::clear_captured_d3d12_change() {
+    std::scoped_lock _{m_mutex};
+    m_capture_next_d3d12_change = false;
+    m_captured_d3d12_pair.reset();
+}
+
+bool ShaderOverrideRegistry::export_d3d12_pairs_json(std::filesystem::path& out_path, std::string& error_out) {
+    std::scoped_lock _{m_mutex};
+
+    try {
+        out_path = make_d3d12_pair_export_path("json");
+        std::filesystem::create_directories(out_path.parent_path());
+
+        json root{};
+        root["frame"] = m_frame;
+        root["total_samples"] = m_total_d3d12_pair_samples;
+        root["distinct_pairs"] = json::array();
+
+        std::vector<D3D12PipelinePairInfo> pairs = m_distinct_d3d12_pairs;
+        std::stable_sort(pairs.begin(), pairs.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.hit_count != rhs.hit_count) {
+                return lhs.hit_count > rhs.hit_count;
+            }
+
+            return lhs.last_seen_frame > rhs.last_seen_frame;
+        });
+
+        for (const auto& pair : pairs) {
+            json entry{};
+            entry["first_seen_frame"] = pair.first_seen_frame;
+            entry["last_seen_frame"] = pair.last_seen_frame;
+            entry["hit_count"] = pair.hit_count;
+            entry["sample_share"] = m_total_d3d12_pair_samples > 0
+                ? static_cast<double>(pair.hit_count) / static_cast<double>(m_total_d3d12_pair_samples)
+                : 0.0;
+            entry["original_pipeline_state"] = format_pointer_to_hex(pair.original_pipeline_state);
+            entry["bound_pipeline_state"] = format_pointer_to_hex(pair.bound_pipeline_state);
+            entry["pipeline_stream"] = pair.pipeline_stream;
+            entry["tracking_note"] = pair.tracking_note;
+            entry["vertex_shader"] = {
+                {"hash", pair.vertex_shader.hash},
+                {"known", pair.vertex_shader.known},
+                {"override_active", pair.vertex_shader.override_active},
+                {"override_name", pair.vertex_shader.override_name},
+                {"note", pair.vertex_shader.note}
+            };
+            entry["pixel_shader"] = {
+                {"hash", pair.pixel_shader.hash},
+                {"known", pair.pixel_shader.known},
+                {"override_active", pair.pixel_shader.override_active},
+                {"override_name", pair.pixel_shader.override_name},
+                {"note", pair.pixel_shader.note}
+            };
+
+            root["distinct_pairs"].push_back(std::move(entry));
+        }
+
+        std::ofstream file{out_path, std::ios::binary | std::ios::trunc};
+        file << root.dump(2);
+        file.close();
+
+        std::ostringstream ss{};
+        ss << "Exported DX12 pair analysis to " << out_path.string();
+        push_event(ss.str());
+        return true;
+    } catch (const std::exception& e) {
+        error_out = e.what();
+        return false;
+    }
+}
+
+bool ShaderOverrideRegistry::export_d3d12_pairs_csv(std::filesystem::path& out_path, std::string& error_out) {
+    std::scoped_lock _{m_mutex};
+
+    try {
+        out_path = make_d3d12_pair_export_path("csv");
+        std::filesystem::create_directories(out_path.parent_path());
+
+        std::vector<D3D12PipelinePairInfo> pairs = m_distinct_d3d12_pairs;
+        std::stable_sort(pairs.begin(), pairs.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.hit_count != rhs.hit_count) {
+                return lhs.hit_count > rhs.hit_count;
+            }
+
+            return lhs.last_seen_frame > rhs.last_seen_frame;
+        });
+
+        std::ofstream file{out_path, std::ios::binary | std::ios::trunc};
+        file << "first_seen_frame,last_seen_frame,hit_count,sample_share,original_pso,bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,vs_override,ps_override,vs_note,ps_note\n";
+
+        auto csv_escape = [](std::string_view value) {
+            std::string out{value};
+            size_t pos = 0;
+            while ((pos = out.find('"', pos)) != std::string::npos) {
+                out.insert(pos, 1, '"');
+                pos += 2;
+            }
+
+            if (out.find_first_of(",\"\n\r") != std::string::npos) {
+                out.insert(out.begin(), '"');
+                out.push_back('"');
+            }
+
+            return out;
+        };
+
+        for (const auto& pair : pairs) {
+            const auto share = m_total_d3d12_pair_samples > 0
+                ? static_cast<double>(pair.hit_count) / static_cast<double>(m_total_d3d12_pair_samples)
+                : 0.0;
+            file << pair.first_seen_frame << ','
+                 << pair.last_seen_frame << ','
+                 << pair.hit_count << ','
+                 << std::fixed << std::setprecision(6) << share << ','
+                 << csv_escape(format_pointer_to_hex(pair.original_pipeline_state)) << ','
+                 << csv_escape(format_pointer_to_hex(pair.bound_pipeline_state)) << ','
+                 << (pair.pipeline_stream ? "yes" : "no") << ','
+                 << csv_escape(pair.tracking_note) << ','
+                 << csv_escape(pair.vertex_shader.hash) << ','
+                 << csv_escape(pair.pixel_shader.hash) << ','
+                 << csv_escape(pair.vertex_shader.override_name) << ','
+                 << csv_escape(pair.pixel_shader.override_name) << ','
+                 << csv_escape(pair.vertex_shader.note) << ','
+                 << csv_escape(pair.pixel_shader.note) << '\n';
+        }
+        file.close();
+
+        std::ostringstream ss{};
+        ss << "Exported DX12 pair analysis to " << out_path.string();
+        push_event(ss.str());
+        return true;
+    } catch (const std::exception& e) {
+        error_out = e.what();
+        return false;
+    }
+}
+
 ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
     std::scoped_lock _{m_mutex};
 
@@ -215,6 +759,11 @@ ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
     out.profile_override_dir = profile_override_dir().string();
     out.bound_vertex_shader = m_bound_vertex_shader;
     out.bound_pixel_shader = m_bound_pixel_shader;
+    out.current_d3d12_pair = m_last_d3d12_pair;
+    out.capture_next_d3d12_change_armed = m_capture_next_d3d12_change;
+    out.captured_d3d12_pair = m_captured_d3d12_pair;
+    out.total_d3d12_pair_samples = m_total_d3d12_pair_samples;
+    out.distinct_d3d12_pairs = m_distinct_d3d12_pairs;
     out.recent_events = m_recent_events;
 
     out.overrides.reserve(m_overrides.size());
@@ -377,6 +926,9 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
     auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
     record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
     record.device = device;
+    record.is_pipeline_stream = false;
+    record.tracking_note.clear();
+    record.owned_stream = {};
     record.owned_desc.desc = *desc;
     record.owned_desc.root_signature = desc->pRootSignature;
     record.owned_desc.vertex_shader = copy_shader_bytecode_blob(desc->VS);
@@ -432,6 +984,65 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
     update_d3d12_override_pipeline_state(record);
 }
 
+void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
+    ID3D12Device* device,
+    ID3D12PipelineState* pipeline_state,
+    const D3D12_PIPELINE_STATE_STREAM_DESC* desc
+) {
+    if (device == nullptr || pipeline_state == nullptr || desc == nullptr) {
+        return;
+    }
+
+    if (g_inside_d3d12_override_pipeline_creation) {
+        return;
+    }
+
+    std::scoped_lock _{m_mutex};
+
+    auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
+    record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
+    record.device = device;
+    record.is_pipeline_stream = true;
+    record.tracking_note.clear();
+    record.last_error.clear();
+    record.override_pipeline_state.Reset();
+    record.owned_desc = {};
+    record.owned_stream = {};
+
+    std::string stream_error{};
+    if (!copy_pipeline_state_stream(desc, record.owned_stream, stream_error)) {
+        record.tracking_note = "pipeline-stream pso not tracked";
+        record.last_error = stream_error;
+        std::ostringstream ss{};
+        ss << "Failed to track DX12 pipeline-stream PSO 0x" << std::hex << std::uppercase << record.pipeline_state_pointer << ": " << stream_error;
+        push_event(ss.str());
+        spdlog::warn("[ShaderOverrideRegistry] {}", ss.str());
+    }
+
+    record.vertex_hash = hash_shader_bytecode(record.owned_stream.vertex_shader.data(), record.owned_stream.vertex_shader.size());
+    record.pixel_hash = hash_shader_bytecode(record.owned_stream.pixel_shader.data(), record.owned_stream.pixel_shader.size());
+    record.last_seen_frame = m_frame;
+
+    if (record.first_seen_frame == 0) {
+        record.first_seen_frame = m_frame;
+        record.applied_override_revision = (std::numeric_limits<uint64_t>::max)();
+    }
+
+    ++record.seen_count;
+
+    if (record.tracking_note.empty()) {
+        if (!record.owned_stream.compute_shader.empty()) {
+            record.tracking_note = "pipeline-stream compute pso not supported";
+        } else if (!record.owned_stream.amplification_shader.empty() || !record.owned_stream.mesh_shader.empty()) {
+            record.tracking_note = "pipeline-stream mesh pso not supported";
+        } else if (record.vertex_hash.empty() && record.pixel_hash.empty()) {
+            record.tracking_note = "pipeline-stream pso has no vertex/pixel shader";
+        }
+    }
+
+    update_d3d12_override_pipeline_state(record);
+}
+
 ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state) {
     std::scoped_lock _{m_mutex};
 
@@ -472,11 +1083,16 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
 
         const auto it = m_d3d12_graphics_pso_records.find(reinterpret_cast<uintptr_t>(original_pipeline_state));
         if (it == m_d3d12_graphics_pso_records.end()) {
-            info.note = "untracked pso (created before hook or unsupported pipeline)";
+            info.note = "untracked pso (created before injection)";
             return info;
         }
 
         const auto& record = it->second;
+        if (!record.tracking_note.empty()) {
+            info.note = record.tracking_note;
+            return info;
+        }
+
         const auto& hash = stage == Stage::Vertex ? record.vertex_hash : record.pixel_hash;
         const auto& override_name = stage == Stage::Vertex ? record.vertex_override_name : record.pixel_override_name;
 
@@ -501,6 +1117,26 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
 
     m_bound_vertex_shader = fill_info(Stage::Vertex);
     m_bound_pixel_shader = fill_info(Stage::Pixel);
+
+    D3D12PipelinePairInfo pair{};
+    pair.frame = m_frame;
+    pair.original_pipeline_state = reinterpret_cast<uintptr_t>(original_pipeline_state);
+    pair.bound_pipeline_state = reinterpret_cast<uintptr_t>(bound_pipeline_state);
+    pair.vertex_shader = m_bound_vertex_shader;
+    pair.pixel_shader = m_bound_pixel_shader;
+
+    if (original_pipeline_state != nullptr) {
+        if (const auto it = m_d3d12_graphics_pso_records.find(reinterpret_cast<uintptr_t>(original_pipeline_state)); it != m_d3d12_graphics_pso_records.end()) {
+            pair.pipeline_stream = it->second.is_pipeline_stream;
+            pair.tracking_note = it->second.tracking_note;
+        } else {
+            pair.tracking_note = "created before injection";
+        }
+    } else {
+        pair.tracking_note = "null pso";
+    }
+
+    record_d3d12_pipeline_pair(pair);
 }
 
 void ShaderOverrideRegistry::scan_override_directories() {
@@ -744,6 +1380,71 @@ void ShaderOverrideRegistry::push_event(std::string message) {
     m_recent_events.emplace_back(std::move(message));
 }
 
+void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairInfo& info) {
+    ++m_total_d3d12_pair_samples;
+
+    auto pair = info;
+    const auto pair_key = make_d3d12_pair_key(pair);
+    const auto pair_changed = !m_last_d3d12_pair.has_value() || !same_d3d12_pipeline_pair(*m_last_d3d12_pair, info);
+
+    if (const auto index_it = m_distinct_d3d12_pair_indices.find(pair_key); index_it != m_distinct_d3d12_pair_indices.end()) {
+        auto& aggregate = m_distinct_d3d12_pairs[index_it->second];
+        aggregate.frame = info.frame;
+        aggregate.last_seen_frame = info.frame;
+        ++aggregate.hit_count;
+        pair.first_seen_frame = aggregate.first_seen_frame;
+        pair.last_seen_frame = aggregate.last_seen_frame;
+        pair.hit_count = aggregate.hit_count;
+        aggregate.vertex_shader = pair.vertex_shader;
+        aggregate.pixel_shader = pair.pixel_shader;
+        aggregate.tracking_note = pair.tracking_note;
+        aggregate.bound_pipeline_state = pair.bound_pipeline_state;
+    } else {
+        pair.first_seen_frame = info.frame;
+        pair.last_seen_frame = info.frame;
+        pair.hit_count = 1;
+        m_distinct_d3d12_pair_indices.emplace(pair_key, m_distinct_d3d12_pairs.size());
+        m_distinct_d3d12_pairs.emplace_back(pair);
+    }
+
+    m_last_d3d12_pair = pair;
+
+    if (pair_changed && m_capture_next_d3d12_change) {
+        m_captured_d3d12_pair = pair;
+        m_capture_next_d3d12_change = false;
+
+        std::ostringstream ss{};
+        ss << "Captured DX12 shader change at frame " << pair.frame;
+        if (pair.original_pipeline_state != 0) {
+            ss << " PSO=0x" << std::hex << std::uppercase << pair.original_pipeline_state;
+        }
+        push_event(ss.str());
+    }
+}
+
+std::string ShaderOverrideRegistry::make_d3d12_pair_key(const D3D12PipelinePairInfo& info) const {
+    std::ostringstream ss{};
+    ss << std::hex << std::uppercase
+       << info.original_pipeline_state << ':'
+       << info.bound_pipeline_state << ':'
+       << info.vertex_shader.hash << ':'
+       << info.pixel_shader.hash << ':'
+       << info.tracking_note;
+    return ss.str();
+}
+
+std::filesystem::path ShaderOverrideRegistry::make_d3d12_pair_export_path(const char* extension) const {
+    const auto export_dir = Framework::get_persistent_dir("render_inspector");
+    const auto now = std::chrono::system_clock::now();
+    const auto now_time = std::chrono::system_clock::to_time_t(now);
+    std::tm local_time{};
+    localtime_s(&local_time, &now_time);
+
+    std::ostringstream file_name{};
+    file_name << "dx12_shader_pairs_" << std::put_time(&local_time, "%Y%m%d_%H%M%S") << '.' << extension;
+    return export_dir / file_name.str();
+}
+
 void ShaderOverrideRegistry::update_d3d11_override_shader(D3D11ShaderRecord& record, ID3D11Device* device) {
     const auto key = make_override_key(Backend::D3D11, record.stage, record.hash);
     const auto override_it = m_overrides.find(key);
@@ -856,24 +1557,60 @@ void ShaderOverrideRegistry::update_d3d12_override_pipeline_state(D3D12GraphicsP
         return;
     }
 
-    auto replacement_desc = record.owned_desc;
-
     if (vertex_entry != nullptr) {
-        replacement_desc.vertex_shader = vertex_entry->compiled_bytecode;
         record.vertex_override_name = vertex_entry->name;
     }
 
     if (pixel_entry != nullptr) {
-        replacement_desc.pixel_shader = pixel_entry->compiled_bytecode;
         record.pixel_override_name = pixel_entry->name;
     }
-
-    replacement_desc.refresh_views();
 
     Microsoft::WRL::ComPtr<ID3D12PipelineState> replacement_pso{};
     HRESULT hr = E_FAIL;
 
-    {
+    if (record.is_pipeline_stream) {
+        if (record.owned_stream.empty()) {
+            record.last_error = record.tracking_note.empty() ? "pipeline-stream pso not tracked" : record.tracking_note;
+            return;
+        }
+
+        auto replacement_stream = record.owned_stream;
+
+        if (vertex_entry != nullptr) {
+            replacement_stream.vertex_shader = vertex_entry->compiled_bytecode;
+        }
+
+        if (pixel_entry != nullptr) {
+            replacement_stream.pixel_shader = pixel_entry->compiled_bytecode;
+        }
+
+        replacement_stream.refresh_views();
+
+        Microsoft::WRL::ComPtr<ID3D12Device2> device2{};
+        hr = record.device->QueryInterface(IID_PPV_ARGS(&device2));
+
+        if (FAILED(hr) || device2 == nullptr) {
+            record.last_error = "ID3D12Device2 unavailable for pipeline-stream override";
+            record.vertex_override_name.clear();
+            record.pixel_override_name.clear();
+            return;
+        }
+
+        ScopedD3D12OverridePipelineCreation scoped_creation{};
+        hr = device2->CreatePipelineState(&replacement_stream.desc, IID_PPV_ARGS(&replacement_pso));
+    } else {
+        auto replacement_desc = record.owned_desc;
+
+        if (vertex_entry != nullptr) {
+            replacement_desc.vertex_shader = vertex_entry->compiled_bytecode;
+        }
+
+        if (pixel_entry != nullptr) {
+            replacement_desc.pixel_shader = pixel_entry->compiled_bytecode;
+        }
+
+        replacement_desc.refresh_views();
+
         ScopedD3D12OverridePipelineCreation scoped_creation{};
         hr = record.device->CreateGraphicsPipelineState(&replacement_desc.desc, IID_PPV_ARGS(&replacement_pso));
     }

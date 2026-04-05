@@ -1,8 +1,10 @@
+#include <array>
 #include <thread>
 #include <future>
 #include <unordered_set>
 
 #include <spdlog/spdlog.h>
+#include <wrl/client.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
 #include <utility/RTTI.hpp>
@@ -15,6 +17,37 @@
 #include "D3D12Hook.hpp"
 
 static D3D12Hook* g_d3d12_hook = nullptr;
+
+namespace {
+constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
+constexpr size_t CREATE_PIPELINE_STATE_VTABLE_INDEX = 47;
+constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
+
+template <typename TInterface>
+void add_unique_pointer_hook(
+    TInterface* iface,
+    size_t vtable_index,
+    void* detour,
+    std::vector<std::unique_ptr<PointerHook>>& storage,
+    std::unordered_map<uintptr_t, PointerHook*>& lookup,
+    std::unordered_set<uintptr_t>& seen_slots
+) {
+    if (iface == nullptr) {
+        return;
+    }
+
+    auto** slot = &(*(void***)iface)[vtable_index];
+    const auto slot_key = reinterpret_cast<uintptr_t>(slot);
+
+    if (!seen_slots.emplace(slot_key).second) {
+        return;
+    }
+
+    auto hook = std::make_unique<PointerHook>(slot, detour);
+    lookup.emplace(slot_key, hook.get());
+    storage.emplace_back(std::move(hook));
+}
+}
 
 D3D12Hook::~D3D12Hook() {
     unhook();
@@ -351,20 +384,149 @@ bool D3D12Hook::hook() {
         spdlog::info("Initializing hooks");
         m_present_hook.reset();
         m_present1_hook.reset();
-        m_create_graphics_pipeline_state_hook.reset();
-        m_set_pipeline_state_hook.reset();
+        m_create_graphics_pipeline_state_hooks.clear();
+        m_create_pipeline_state_hooks.clear();
+        m_set_pipeline_state_hooks.clear();
+        m_create_graphics_pipeline_state_hook_lookup.clear();
+        m_create_pipeline_state_hook_lookup.clear();
+        m_set_pipeline_state_hook_lookup.clear();
         m_swapchain_hook.reset();
 
         m_is_phase_1 = true;
 
         auto& present_fn = (*(void***)target_swapchain)[8]; // Present
         auto& present1_fn = (*(void***)target_swapchain)[22]; // Present1
-        auto& create_graphics_pipeline_state_fn = (*(void***)device)[10];
-        auto& set_pipeline_state_fn = (*(void***)command_list)[25];
         m_present_hook = std::make_unique<PointerHook>(&present_fn, (void*)&D3D12Hook::present);
         m_present1_hook = std::make_unique<PointerHook>(&present1_fn, (void*)&D3D12Hook::present1);
-        m_create_graphics_pipeline_state_hook = std::make_unique<PointerHook>(&create_graphics_pipeline_state_fn, (void*)&D3D12Hook::create_graphics_pipeline_state);
-        m_set_pipeline_state_hook = std::make_unique<PointerHook>(&set_pipeline_state_fn, (void*)&D3D12Hook::set_pipeline_state);
+
+        std::unordered_set<uintptr_t> graphics_pipeline_state_slots{};
+        std::unordered_set<uintptr_t> pipeline_state_stream_slots{};
+        std::unordered_set<uintptr_t> set_pipeline_state_slots{};
+
+        add_unique_pointer_hook(
+            device,
+            CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
+            reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
+            m_create_graphics_pipeline_state_hooks,
+            m_create_graphics_pipeline_state_hook_lookup,
+            graphics_pipeline_state_slots
+        );
+
+        Microsoft::WRL::ComPtr<ID3D12Device1> device1{};
+        Microsoft::WRL::ComPtr<ID3D12Device2> device2{};
+        Microsoft::WRL::ComPtr<ID3D12Device3> device3{};
+        Microsoft::WRL::ComPtr<ID3D12Device4> device4{};
+        Microsoft::WRL::ComPtr<ID3D12Device5> device5{};
+        Microsoft::WRL::ComPtr<ID3D12Device6> device6{};
+        Microsoft::WRL::ComPtr<ID3D12Device7> device7{};
+        Microsoft::WRL::ComPtr<ID3D12Device8> device8{};
+        Microsoft::WRL::ComPtr<ID3D12Device9> device9{};
+        Microsoft::WRL::ComPtr<ID3D12Device10> device10{};
+
+        device->QueryInterface(IID_PPV_ARGS(&device1));
+        device->QueryInterface(IID_PPV_ARGS(&device2));
+        device->QueryInterface(IID_PPV_ARGS(&device3));
+        device->QueryInterface(IID_PPV_ARGS(&device4));
+        device->QueryInterface(IID_PPV_ARGS(&device5));
+        device->QueryInterface(IID_PPV_ARGS(&device6));
+        device->QueryInterface(IID_PPV_ARGS(&device7));
+        device->QueryInterface(IID_PPV_ARGS(&device8));
+        device->QueryInterface(IID_PPV_ARGS(&device9));
+        device->QueryInterface(IID_PPV_ARGS(&device10));
+
+        const std::array<IUnknown*, 10> device_interfaces{
+            device1.Get(),
+            device2.Get(),
+            device3.Get(),
+            device4.Get(),
+            device5.Get(),
+            device6.Get(),
+            device7.Get(),
+            device8.Get(),
+            device9.Get(),
+            device10.Get()
+        };
+
+        for (auto* iface : device_interfaces) {
+            add_unique_pointer_hook(
+                iface,
+                CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
+                m_create_graphics_pipeline_state_hooks,
+                m_create_graphics_pipeline_state_hook_lookup,
+                graphics_pipeline_state_slots
+            );
+        }
+
+        const std::array<IUnknown*, 9> pipeline_stream_interfaces{
+            device2.Get(),
+            device3.Get(),
+            device4.Get(),
+            device5.Get(),
+            device6.Get(),
+            device7.Get(),
+            device8.Get(),
+            device9.Get(),
+            device10.Get()
+        };
+
+        for (auto* iface : pipeline_stream_interfaces) {
+            add_unique_pointer_hook(
+                iface,
+                CREATE_PIPELINE_STATE_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::create_pipeline_state),
+                m_create_pipeline_state_hooks,
+                m_create_pipeline_state_hook_lookup,
+                pipeline_state_stream_slots
+            );
+        }
+
+        add_unique_pointer_hook(
+            command_list,
+            SET_PIPELINE_STATE_VTABLE_INDEX,
+            reinterpret_cast<void*>(&D3D12Hook::set_pipeline_state),
+            m_set_pipeline_state_hooks,
+            m_set_pipeline_state_hook_lookup,
+            set_pipeline_state_slots
+        );
+
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> command_list1{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> command_list2{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList3> command_list3{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList4> command_list4{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList5> command_list5{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> command_list6{};
+        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList7> command_list7{};
+
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list1));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list2));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list3));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list4));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list5));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list6));
+        command_list->QueryInterface(IID_PPV_ARGS(&command_list7));
+
+        const std::array<IUnknown*, 7> command_list_interfaces{
+            command_list1.Get(),
+            command_list2.Get(),
+            command_list3.Get(),
+            command_list4.Get(),
+            command_list5.Get(),
+            command_list6.Get(),
+            command_list7.Get()
+        };
+
+        for (auto* iface : command_list_interfaces) {
+            add_unique_pointer_hook(
+                iface,
+                SET_PIPELINE_STATE_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::set_pipeline_state),
+                m_set_pipeline_state_hooks,
+                m_set_pipeline_state_hook_lookup,
+                set_pipeline_state_slots
+            );
+        }
+
         m_hooked = true;
     } catch (const std::exception& e) {
         spdlog::error("Failed to initialize hooks: {}", e.what());
@@ -405,14 +567,42 @@ bool D3D12Hook::unhook() {
 
     m_present_hook.reset();
     m_present1_hook.reset();
-    m_create_graphics_pipeline_state_hook.reset();
-    m_set_pipeline_state_hook.reset();
+    m_create_graphics_pipeline_state_hooks.clear();
+    m_create_pipeline_state_hooks.clear();
+    m_set_pipeline_state_hooks.clear();
+    m_create_graphics_pipeline_state_hook_lookup.clear();
+    m_create_pipeline_state_hook_lookup.clear();
+    m_set_pipeline_state_hook_lookup.clear();
     m_swapchain_hook.reset();
 
     m_hooked = false;
     m_is_phase_1 = true;
 
     return true;
+}
+
+PointerHook* D3D12Hook::find_create_graphics_pipeline_state_hook(void* slot) const {
+    if (const auto it = m_create_graphics_pipeline_state_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_create_graphics_pipeline_state_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_create_graphics_pipeline_state_hooks.empty() ? nullptr : m_create_graphics_pipeline_state_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_create_pipeline_state_hook(void* slot) const {
+    if (const auto it = m_create_pipeline_state_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_create_pipeline_state_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_create_pipeline_state_hooks.empty() ? nullptr : m_create_pipeline_state_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_set_pipeline_state_hook(void* slot) const {
+    if (const auto it = m_set_pipeline_state_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_set_pipeline_state_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_set_pipeline_state_hooks.empty() ? nullptr : m_set_pipeline_state_hooks.front().get();
 }
 
 thread_local int32_t g_present_depth = 0;
@@ -595,7 +785,14 @@ HRESULT WINAPI D3D12Hook::create_graphics_pipeline_state(
     void** pipeline_state
 ) {
     auto d3d12 = g_d3d12_hook;
-    auto original = d3d12->m_create_graphics_pipeline_state_hook->get_original<decltype(D3D12Hook::create_graphics_pipeline_state)*>();
+    const auto slot = &(*(void***)device)[CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX];
+    auto* hook = d3d12->find_create_graphics_pipeline_state_hook(slot);
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::create_graphics_pipeline_state)*>() : nullptr;
+
+    if (original == nullptr) {
+        return E_FAIL;
+    }
+
     const auto result = original(device, desc, riid, pipeline_state);
 
     if (SUCCEEDED(result) &&
@@ -613,9 +810,48 @@ HRESULT WINAPI D3D12Hook::create_graphics_pipeline_state(
     return result;
 }
 
+HRESULT WINAPI D3D12Hook::create_pipeline_state(
+    ID3D12Device2* device,
+    const D3D12_PIPELINE_STATE_STREAM_DESC* desc,
+    REFIID riid,
+    void** pipeline_state
+) {
+    auto d3d12 = g_d3d12_hook;
+    const auto slot = &(*(void***)device)[CREATE_PIPELINE_STATE_VTABLE_INDEX];
+    auto* hook = d3d12->find_create_pipeline_state_hook(slot);
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::create_pipeline_state)*>() : nullptr;
+
+    if (original == nullptr) {
+        return E_FAIL;
+    }
+
+    const auto result = original(device, desc, riid, pipeline_state);
+
+    if (SUCCEEDED(result) &&
+        pipeline_state != nullptr &&
+        *pipeline_state != nullptr &&
+        riid == __uuidof(ID3D12PipelineState) &&
+        desc != nullptr) {
+        render::ShaderOverrideRegistry::get().register_d3d12_pipeline_state_stream_creation(
+            device,
+            static_cast<ID3D12PipelineState*>(*pipeline_state),
+            desc
+        );
+    }
+
+    return result;
+}
+
 void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state) {
     auto d3d12 = g_d3d12_hook;
-    auto original = d3d12->m_set_pipeline_state_hook->get_original<decltype(D3D12Hook::set_pipeline_state)*>();
+    const auto slot = &(*(void***)command_list)[SET_PIPELINE_STATE_VTABLE_INDEX];
+    auto* hook = d3d12->find_set_pipeline_state_hook(slot);
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::set_pipeline_state)*>() : nullptr;
+
+    if (original == nullptr) {
+        return;
+    }
+
     auto bound_pipeline_state = render::ShaderOverrideRegistry::get().resolve_d3d12_pipeline_state(pipeline_state);
     render::ShaderOverrideRegistry::get().note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
     original(command_list, bound_pipeline_state);

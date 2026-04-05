@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 
 #include "Mod.hpp"
 #include "render/D3D12Diagnostics.hpp"
@@ -40,4 +41,12 @@ private:
     bool m_filter_recent_only{true};
     int m_recent_frame_window{180};
     int m_dx12_event_limit{24};
+    int m_recent_dx12_shader_pair_limit{16};
+    bool m_freeze_dx12_live_view{false};
+    int m_dx12_live_sample_interval_frames{15};
+    uint64_t m_last_dx12_live_sample_frame{};
+    std::optional<render::ShaderOverrideRegistry::D3D12PipelinePairInfo> m_displayed_dx12_pair{};
+    bool m_sort_recent_dx12_pairs_by_hits{true};
+    std::string m_selected_recent_dx12_pair_key{};
+    std::string m_shader_export_status{};
 };

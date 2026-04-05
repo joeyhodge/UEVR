@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <filesystem>
 #include <limits>
 #include <sstream>
 #include <type_traits>
@@ -41,6 +42,18 @@ std::string format_pointer_hex(uintptr_t pointer) {
     return ss.str();
 }
 
+std::string abbreviate_for_table(std::string_view value, size_t max_chars = 14) {
+    if (value.size() <= max_chars) {
+        return std::string{value};
+    }
+
+    if (max_chars <= 3) {
+        return std::string{value.substr(0, max_chars)};
+    }
+
+    return std::string{value.substr(0, max_chars - 3)} + "...";
+}
+
 std::string format_bytes(uint64_t bytes) {
     constexpr const char* suffixes[] = {"B", "KB", "MB", "GB"};
     double value = static_cast<double>(bytes);
@@ -58,6 +71,17 @@ std::string format_bytes(uint64_t bytes) {
 
 ImTextureID to_imgui_texture_id(uint64_t texture_id) {
     return reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(texture_id));
+}
+
+std::string make_d3d12_pair_key(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) {
+    std::ostringstream ss{};
+    ss << std::hex << std::uppercase
+       << pair.original_pipeline_state << ':'
+       << pair.bound_pipeline_state << ':'
+       << pair.vertex_shader.hash << ':'
+       << pair.pixel_shader.hash << ':'
+       << pair.tracking_note;
+    return ss.str();
 }
 
 bool matches_filters(
@@ -249,6 +273,67 @@ void draw_dx12_summary_row(const char* label, const std::string& value) {
     ImGui::TextUnformatted(label);
     ImGui::TableNextColumn();
     ImGui::TextWrapped("%s", value.c_str());
+}
+
+void draw_bound_shader_table_row(const render::ShaderOverrideRegistry::BoundShaderInfo& shader) {
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(shader.stage == render::ShaderOverrideRegistry::Stage::Vertex ? "VS" : "PS");
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(shader.backend == render::ShaderOverrideRegistry::Backend::D3D11 ? "DX11" : "DX12");
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", shader.known ? shader.hash.c_str() : "-");
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", shader.override_active ? shader.override_name.c_str() : "None");
+    ImGui::TableNextColumn();
+    ImGui::TextUnformatted(format_pointer_hex(shader.original_pointer).c_str());
+    ImGui::TableNextColumn();
+    ImGui::TextWrapped("%s", shader.note.empty() ? "-" : shader.note.c_str());
+}
+
+void draw_d3d12_pair_summary(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) {
+    ImGui::Text("Frame: %" PRIu64, pair.frame);
+    ImGui::Text("First seen: %" PRIu64, pair.first_seen_frame);
+    ImGui::Text("Last seen: %" PRIu64, pair.last_seen_frame);
+    ImGui::Text("Hits: %" PRIu64, pair.hit_count);
+    ImGui::Text("Original PSO: %s", format_pointer_hex(pair.original_pipeline_state).c_str());
+    ImGui::Text("Bound PSO: %s", format_pointer_hex(pair.bound_pipeline_state).c_str());
+    ImGui::Text("Pipeline Stream: %s", pair.pipeline_stream ? "yes" : "no");
+    ImGui::TextWrapped("Tracking: %s", pair.tracking_note.empty() ? "-" : pair.tracking_note.c_str());
+
+    if (ImGui::BeginTable("CapturedDX12PairStages", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Stage");
+        ImGui::TableSetupColumn("Backend");
+        ImGui::TableSetupColumn("Hash");
+        ImGui::TableSetupColumn("Override");
+        ImGui::TableSetupColumn("Original");
+        ImGui::TableSetupColumn("Note");
+        ImGui::TableHeadersRow();
+        draw_bound_shader_table_row(pair.vertex_shader);
+        draw_bound_shader_table_row(pair.pixel_shader);
+        ImGui::EndTable();
+    }
+}
+
+std::string format_percent(double value) {
+    char buffer[32]{};
+    sprintf_s(buffer, "%.2f%%", value * 100.0);
+    return buffer;
+}
+
+const render::ShaderOverrideRegistry::D3D12PipelinePairInfo* find_d3d12_pair(
+    const std::vector<render::ShaderOverrideRegistry::D3D12PipelinePairInfo>& pairs,
+    const std::string& key
+) {
+    if (key.empty()) {
+        return nullptr;
+    }
+
+    const auto it = std::find_if(pairs.begin(), pairs.end(), [&key](const auto& pair) {
+        return make_d3d12_pair_key(pair) == key;
+    });
+
+    return it != pairs.end() ? &*it : nullptr;
 }
 } // namespace
 
@@ -748,7 +833,88 @@ void RenderInspector::draw_shaders() {
         snapshot = render::ShaderOverrideRegistry::get().snapshot();
     }
 
+    if (g_framework->is_dx12()) {
+        ImGui::SameLine();
+        if (ImGui::Button("Capture Next DX12 Change")) {
+            render::ShaderOverrideRegistry::get().request_capture_next_d3d12_change();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Clear Captured DX12 Change")) {
+            render::ShaderOverrideRegistry::get().clear_captured_d3d12_change();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Sample DX12 Now")) {
+            if (snapshot.current_d3d12_pair.has_value()) {
+                m_displayed_dx12_pair = snapshot.current_d3d12_pair;
+                m_last_dx12_live_sample_frame = snapshot.frame;
+            }
+        }
+    }
+
     ImGui::Separator();
+
+    if (g_framework->is_dx12()) {
+        ImGui::Text("Capture armed: %s", snapshot.capture_next_d3d12_change_armed ? "yes" : "no");
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::Text("Distinct DX12 pairs: %zu", snapshot.distinct_d3d12_pairs.size());
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::Text("Samples: %" PRIu64, snapshot.total_d3d12_pair_samples);
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::DragInt("Distinct DX12 pair limit", &m_recent_dx12_shader_pair_limit, 1.0f, 4, 512);
+        m_recent_dx12_shader_pair_limit = std::clamp(m_recent_dx12_shader_pair_limit, 4, 512);
+        ImGui::Checkbox("Freeze live DX12 view", &m_freeze_dx12_live_view);
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(180.0f);
+        ImGui::DragInt("DX12 live sample interval (frames)", &m_dx12_live_sample_interval_frames, 1.0f, 1, 300);
+        m_dx12_live_sample_interval_frames = std::clamp(m_dx12_live_sample_interval_frames, 1, 300);
+        ImGui::Checkbox("Sort recent DX12 pairs by hits", &m_sort_recent_dx12_pairs_by_hits);
+        ImGui::SameLine();
+
+        std::filesystem::path export_path{};
+        std::string export_error{};
+        if (ImGui::Button("Export DX12 Pairs JSON")) {
+            if (render::ShaderOverrideRegistry::get().export_d3d12_pairs_json(export_path, export_error)) {
+                m_shader_export_status = "Exported JSON: " + export_path.string();
+            } else {
+                m_shader_export_status = "JSON export failed: " + export_error;
+            }
+            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Export DX12 Pairs CSV")) {
+            if (render::ShaderOverrideRegistry::get().export_d3d12_pairs_csv(export_path, export_error)) {
+                m_shader_export_status = "Exported CSV: " + export_path.string();
+            } else {
+                m_shader_export_status = "CSV export failed: " + export_error;
+            }
+            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+        }
+
+        if (!m_shader_export_status.empty()) {
+            ImGui::TextWrapped("%s", m_shader_export_status.c_str());
+        }
+
+        if (snapshot.current_d3d12_pair.has_value()) {
+            if (!m_displayed_dx12_pair.has_value()) {
+                m_displayed_dx12_pair = snapshot.current_d3d12_pair;
+                m_last_dx12_live_sample_frame = snapshot.frame;
+            } else if (!m_freeze_dx12_live_view && snapshot.frame >= (m_last_dx12_live_sample_frame + static_cast<uint64_t>(m_dx12_live_sample_interval_frames))) {
+                m_displayed_dx12_pair = snapshot.current_d3d12_pair;
+                m_last_dx12_live_sample_frame = snapshot.frame;
+            }
+        }
+
+        ImGui::Separator();
+    }
 
     if (ImGui::CollapsingHeader("Currently Bound Shaders", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::BeginTable("ShaderBoundTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -760,28 +926,150 @@ void RenderInspector::draw_shaders() {
             ImGui::TableSetupColumn("Note");
             ImGui::TableHeadersRow();
 
-            const std::array<render::ShaderOverrideRegistry::BoundShaderInfo, 2> bound{
+            std::array<render::ShaderOverrideRegistry::BoundShaderInfo, 2> bound{
                 snapshot.bound_vertex_shader,
                 snapshot.bound_pixel_shader
             };
 
+            if (g_framework->is_dx12() && m_displayed_dx12_pair.has_value()) {
+                bound = {
+                    m_displayed_dx12_pair->vertex_shader,
+                    m_displayed_dx12_pair->pixel_shader
+                };
+            }
+
             for (const auto& shader : bound) {
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(shader.stage == render::ShaderOverrideRegistry::Stage::Vertex ? "VS" : "PS");
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(shader.backend == render::ShaderOverrideRegistry::Backend::D3D11 ? "DX11" : "DX12");
-                ImGui::TableNextColumn();
-                ImGui::TextWrapped("%s", shader.known ? shader.hash.c_str() : "-");
-                ImGui::TableNextColumn();
-                ImGui::TextWrapped("%s", shader.override_active ? shader.override_name.c_str() : "None");
-                ImGui::TableNextColumn();
-                ImGui::TextUnformatted(format_pointer_hex(shader.original_pointer).c_str());
-                ImGui::TableNextColumn();
-                ImGui::TextWrapped("%s", shader.note.empty() ? "-" : shader.note.c_str());
+                draw_bound_shader_table_row(shader);
             }
 
             ImGui::EndTable();
+        }
+
+        if (g_framework->is_dx12() && m_displayed_dx12_pair.has_value()) {
+            ImGui::Text(
+                "Displayed DX12 sample frame: %" PRIu64 " | original PSO: %s | bound PSO: %s",
+                m_displayed_dx12_pair->frame,
+                format_pointer_hex(m_displayed_dx12_pair->original_pipeline_state).c_str(),
+                format_pointer_hex(m_displayed_dx12_pair->bound_pipeline_state).c_str()
+            );
+        }
+    }
+
+    if (g_framework->is_dx12() && ImGui::CollapsingHeader("Captured DX12 Shader Change", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (!snapshot.captured_d3d12_pair.has_value()) {
+            ImGui::TextUnformatted("No captured DX12 shader change.");
+        } else {
+            draw_d3d12_pair_summary(*snapshot.captured_d3d12_pair);
+        }
+    }
+
+    if (g_framework->is_dx12() && ImGui::CollapsingHeader("Distinct DX12 PSOs / Shader Pairs", ImGuiTreeNodeFlags_DefaultOpen)) {
+        constexpr auto pair_table_flags =
+            ImGuiTableFlags_Borders |
+            ImGuiTableFlags_RowBg |
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Resizable |
+            ImGuiTableFlags_SizingStretchProp;
+
+        auto recent_pairs = snapshot.distinct_d3d12_pairs;
+
+        if (m_sort_recent_dx12_pairs_by_hits) {
+            std::stable_sort(recent_pairs.begin(), recent_pairs.end(), [](const auto& lhs, const auto& rhs) {
+                if (lhs.hit_count != rhs.hit_count) {
+                    return lhs.hit_count > rhs.hit_count;
+                }
+
+                return lhs.last_seen_frame > rhs.last_seen_frame;
+            });
+        } else {
+            std::stable_sort(recent_pairs.begin(), recent_pairs.end(), [](const auto& lhs, const auto& rhs) {
+                return lhs.last_seen_frame > rhs.last_seen_frame;
+            });
+        }
+
+        if (recent_pairs.empty()) {
+            ImGui::TextUnformatted("No distinct DX12 PSO/shader pairs captured yet.");
+        } else if (ImGui::BeginTable("RecentDX12Pairs", 12, pair_table_flags, ImVec2(0.0f, 260.0f))) {
+            ImGui::TableSetupColumn("View");
+            ImGui::TableSetupColumn("Last Frame");
+            ImGui::TableSetupColumn("First Frame");
+            ImGui::TableSetupColumn("Hits");
+            ImGui::TableSetupColumn("Share");
+            ImGui::TableSetupColumn("Original PSO");
+            ImGui::TableSetupColumn("Bound PSO");
+            ImGui::TableSetupColumn("VS Hash");
+            ImGui::TableSetupColumn("PS Hash");
+            ImGui::TableSetupColumn("Stream");
+            ImGui::TableSetupColumn("Tracking");
+            ImGui::TableSetupColumn("Override");
+            ImGui::TableHeadersRow();
+
+            const auto pair_count = static_cast<int>(recent_pairs.size());
+            const auto display_count = std::min(pair_count, m_recent_dx12_shader_pair_limit);
+
+            for (int i = 0; i < display_count; ++i) {
+                const auto& pair = recent_pairs[static_cast<size_t>(i)];
+                const auto pair_key = make_d3d12_pair_key(pair);
+                const auto is_selected = m_selected_recent_dx12_pair_key == pair_key;
+
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (is_selected) {
+                    ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4{0.18f, 0.28f, 0.45f, 0.65f}));
+                }
+
+                const auto button_label = std::string{is_selected ? "Selected##dx12pair_" : "View##dx12pair_"} + pair_key;
+                if (ImGui::SmallButton(button_label.c_str())) {
+                    m_selected_recent_dx12_pair_key = pair_key;
+                }
+                ImGui::TableNextColumn();
+                ImGui::Text("%" PRIu64, pair.last_seen_frame);
+                ImGui::TableNextColumn();
+                ImGui::Text("%" PRIu64, pair.first_seen_frame);
+                ImGui::TableNextColumn();
+                ImGui::Text("%" PRIu64, pair.hit_count);
+                ImGui::TableNextColumn();
+                const auto share = snapshot.total_d3d12_pair_samples > 0
+                    ? static_cast<double>(pair.hit_count) / static_cast<double>(snapshot.total_d3d12_pair_samples)
+                    : 0.0;
+                ImGui::TextUnformatted(format_percent(share).c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(abbreviate_for_table(format_pointer_hex(pair.original_pipeline_state)).c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(abbreviate_for_table(format_pointer_hex(pair.bound_pipeline_state)).c_str());
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(pair.vertex_shader.known ? abbreviate_for_table(pair.vertex_shader.hash).c_str() : "-");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(pair.pixel_shader.known ? abbreviate_for_table(pair.pixel_shader.hash).c_str() : "-");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(pair.pipeline_stream ? "yes" : "no");
+                ImGui::TableNextColumn();
+                ImGui::TextWrapped("%s", pair.tracking_note.empty() ? "-" : pair.tracking_note.c_str());
+                ImGui::TableNextColumn();
+
+                std::string override_summary{};
+                if (pair.vertex_shader.override_active) {
+                    override_summary += "VS:";
+                    override_summary += pair.vertex_shader.override_name;
+                }
+                if (pair.pixel_shader.override_active) {
+                    if (!override_summary.empty()) {
+                        override_summary += " | ";
+                    }
+                    override_summary += "PS:";
+                    override_summary += pair.pixel_shader.override_name;
+                }
+
+                ImGui::TextWrapped("%s", override_summary.empty() ? "None" : override_summary.c_str());
+            }
+
+            ImGui::EndTable();
+        }
+
+        if (const auto* selected_pair = find_d3d12_pair(recent_pairs, m_selected_recent_dx12_pair_key); selected_pair != nullptr) {
+            ImGui::Separator();
+            ImGui::TextUnformatted("Selected DX12 pair details");
+            draw_d3d12_pair_summary(*selected_pair);
         }
     }
 
