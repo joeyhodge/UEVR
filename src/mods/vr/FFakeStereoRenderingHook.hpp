@@ -16,12 +16,16 @@
 #include <sdk/AActor.hpp>
 #include <sdk/USceneCaptureComponent2D.hpp>
 #include <sdk/UTexture.hpp>
+#include <sdk/DynamicRHI.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
+#include "UE57SlateSymbols.hpp"
 
 #include "Mod.hpp"
 
 struct FRHICommandListImmediate;
+struct FRDGBuilder;
+struct FRDGTexture;
 struct VRRenderTargetManager_418;
 struct UCanvas;
 struct IStereoLayers;
@@ -106,6 +110,7 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
+    void ensure_dedicated_ui_target(uintptr_t command_list);
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
 
@@ -200,7 +205,11 @@ protected:
 
     uintptr_t texture_desc_prepare_func{0};
     uintptr_t texture_create_wrapper_func{0};
+    uintptr_t texture_release_func{0};
     uintptr_t texture_finalize_func{0};
+    uintptr_t texture_extract_func{0};
+    uintptr_t texture_finalize_callsite{0};
+    uintptr_t texture_extract_callsite{0};
 
     std::vector<uint8_t> texture_create_insn_bytes{};
     std::vector<uint8_t> texture_create_insn_bytes2{};
@@ -215,6 +224,7 @@ protected:
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
+    std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
     uint32_t dedicated_ui_width{0};
     uint32_t dedicated_ui_height{0};
     sdk::FViewport* last_viewport{nullptr};
@@ -243,6 +253,12 @@ public:
     bool AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips,
         ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, FTexture2DRHIRef& OutTargetableTexture,
         FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples = 1) override;
+    bool AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumLayers,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32_t NumSamples = 1) override;
+    uint8_t GetActualColorSwapchainFormat() const override { return 0; }
+    int32_t AcquireColorTexture() override { return -1; }
+    int32_t AcquireDepthTexture() override { return -1; }
 
 public:
     uintptr_t m_last_calculate_render_size_return_address{0};
@@ -328,6 +344,7 @@ public:
     void attempt_hooking();
     void attempt_hook_game_engine_tick(uintptr_t return_address = 0);
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
+    void attempt_hook_ue57_slate_elements_pass();
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_fsceneview_constructor();
     
@@ -483,6 +500,7 @@ private:
     // Slate
     static void* slate_draw_window_render_thread(void* renderer, void* command_list, void* viewport_info, 
                                                  void* elements, void* params, void* unk1, void* unk2);
+    static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -520,6 +538,7 @@ private:
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
+    safetyhook::MidHook m_ue57_slate_elements_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -572,9 +591,11 @@ private:
     bool m_finished_hooking{false};
     bool m_hooked_game_engine_tick{false};
     bool m_hooked_slate_thread{false};
+    bool m_hooked_ue57_slate_elements_pass{false};
     bool m_attempted_hook_game_engine_tick{false};
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
+    bool m_attempted_hook_ue57_slate_elements_pass{false};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};

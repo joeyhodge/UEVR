@@ -78,6 +78,21 @@ bool is_ue_5_7_or_newer() {
 
     return disk_version.dwFileVersionMS >= 0x50007;
 }
+
+enum class UE57RenderTargetLoadAction : uint32_t {
+    NoAction = 0,
+    Load = 1,
+    Clear = 2,
+};
+
+struct UE57SlateDrawElementsPassInputsHead {
+    FRDGTexture* stencil_texture;
+    FRDGTexture* elements_texture;
+    FRDGTexture* scene_viewport_texture;
+    UE57RenderTargetLoadAction elements_load_action;
+};
+
+using RegisterExternalTextureFromRHIFn = FRDGTexture* (*)(FRDGBuilder&, FRHITexture*, const wchar_t*);
 }
 
 // Scan through function instructions to detect usage of double
@@ -587,6 +602,42 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     }
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
+
+    if (is_ue_5_7_or_newer() && g_framework->is_dx12()) {
+        attempt_hook_ue57_slate_elements_pass();
+    }
+}
+
+void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
+    if (!is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return;
+    }
+
+    if (m_attempted_hook_ue57_slate_elements_pass) {
+        return;
+    }
+
+    m_attempted_hook_ue57_slate_elements_pass = true;
+
+    const auto& symbols = vrmod::get_ue57_slate_symbols();
+
+    if (!symbols.valid()) {
+        SPDLOG_ERROR("Cannot hook UE 5.7 AddSlateDrawElementsPass because the required Slate symbols were not resolved");
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid(
+        reinterpret_cast<void*>(symbols.add_slate_draw_elements_pass),
+        &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
+
+    if (!hook_result) {
+        SPDLOG_ERROR("Failed to hook UE 5.7 AddSlateDrawElementsPass");
+        return;
+    }
+
+    m_ue57_slate_elements_hook = std::move(hook_result);
+    m_hooked_ue57_slate_elements_pass = true;
+    SPDLOG_INFO("Hooked UE 5.7 AddSlateDrawElementsPass for ElementsTexture redirection");
 }
 
 namespace detail{
@@ -5701,6 +5752,84 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     g_hook->m_fixed_localplayer_view_count = true;
 }
 
+void FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return;
+    }
+
+    if (!g_hook->m_inside_slate_draw_window || GetCurrentThreadId() != g_hook->m_slate_draw_window_thread_id) {
+        return;
+    }
+
+    auto* inputs = reinterpret_cast<UE57SlateDrawElementsPassInputsHead*>(ctx.r8);
+
+    if (inputs == nullptr || IsBadReadPtr(inputs, sizeof(UE57SlateDrawElementsPassInputsHead))) {
+        return;
+    }
+
+    const auto scene_viewport_texture = inputs->scene_viewport_texture;
+    const auto elements_texture = inputs->elements_texture;
+
+    if (scene_viewport_texture == nullptr || elements_texture == nullptr) {
+        return;
+    }
+
+    if (elements_texture != scene_viewport_texture) {
+        static bool logged_separate_path{false};
+
+        if (!logged_separate_path) {
+            logged_separate_path = true;
+            SPDLOG_INFO("[UE 5.7 Slate] DrawElements pass already has a separate ElementsTexture");
+        }
+
+        return;
+    }
+
+    auto* rtm = g_hook->get_render_target_manager();
+
+    if (rtm == nullptr) {
+        return;
+    }
+
+    auto* dedicated_ui_target = rtm->get_dedicated_ui_target();
+
+    if (dedicated_ui_target == nullptr || IsBadReadPtr(dedicated_ui_target, sizeof(void*))) {
+        return;
+    }
+
+    const auto& symbols = vrmod::get_ue57_slate_symbols();
+
+    if (symbols.register_external_texture_from_rhi == 0) {
+        return;
+    }
+
+    auto native_resource = dedicated_ui_target->get_native_resource();
+
+    if (native_resource == nullptr) {
+        SPDLOG_WARN_ONCE("[UE 5.7 Slate] Dedicated UI target exists but has no native resource");
+        return;
+    }
+
+    const auto register_external_texture = reinterpret_cast<RegisterExternalTextureFromRHIFn>(symbols.register_external_texture_from_rhi);
+    auto* registered_texture = register_external_texture(
+        *reinterpret_cast<FRDGBuilder*>(ctx.rcx),
+        reinterpret_cast<FRHITexture*>(dedicated_ui_target),
+        L"UEVRSlateElementsTexture");
+
+    if (registered_texture == nullptr) {
+        SPDLOG_WARN_ONCE("[UE 5.7 Slate] Failed to register the dedicated UI target with the render graph");
+        return;
+    }
+
+    inputs->elements_texture = registered_texture;
+    inputs->elements_load_action = UE57RenderTargetLoadAction::Clear;
+
+    SPDLOG_INFO_EVERY_N_SEC(5,
+        "[UE 5.7 Slate] Redirecting ElementsTexture to dedicated UI target [{}x{}]",
+        rtm->get_dedicated_ui_width(),
+        rtm->get_dedicated_ui_height());
+}
+
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
                                                                 void* a4, void* params, void* unk1, void* unk2) 
 {
@@ -5960,6 +6089,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
+    if (is_ue_5_7_or_newer()) {
+        if (!g_hook->m_hooked_ue57_slate_elements_pass) {
+            g_hook->attempt_hook_ue57_slate_elements_pass();
+        }
+
+        rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+    }
+
     auto ui_target = rtm->get_ui_target();
     const auto render_target_fallback = rtm->get_render_target();
 
@@ -6002,6 +6139,14 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
+        return call_orig();
+    }
+
+    if (is_ue_5_7_or_newer()) {
+        SPDLOG_INFO_EVERY_N_SEC(5,
+            "[SlateRHIRenderer::DrawWindow_RenderThread] Dedicated UE 5.7 UI target ready [{}x{}]",
+            rtm->get_dedicated_ui_width(),
+            rtm->get_dedicated_ui_height());
         return call_orig();
     }
     
@@ -6243,7 +6388,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
     if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
         if (rtm->texture_desc_prepare_func == 0 || rtm->texture_create_wrapper_func == 0 || rtm->texture_finalize_func == 0) {
-            SPDLOG_WARN_ONCE("Skipping pre-texture duplication on UE 5.7+ DX12 because the real texture wrapper sequence was not resolved");
+            SPDLOG_WARN_ONCE("Skipping pre-texture duplication on UE 5.7+ DX12 because the real texture wrapper/finalize sequence was not resolved");
             return;
         }
 
@@ -7024,6 +7169,33 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
     }
 
+    auto is_valid_texture_candidate = [&](FRHITexture2D* candidate, const char* source) -> bool {
+        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*))) {
+            return false;
+        }
+
+        void* vtable{};
+
+        try {
+            vtable = *(void**)candidate;
+        } catch (...) {
+            return false;
+        }
+
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+            SPDLOG_INFO_EVERY_N_SEC(1, " Rejected texture candidate from {} because the vtable is invalid", source);
+            return false;
+        }
+
+        if (!utility::get_module_within(vtable).has_value()) {
+            SPDLOG_INFO_EVERY_N_SEC(1, " Rejected texture candidate from {} because its vtable {:x} is not inside a module", source, (uintptr_t)vtable);
+            return false;
+        }
+
+        FRHITexture2D::set_vtable(vtable);
+        return true;
+    };
+
     auto recover_texture_from_ref = [&](uintptr_t ref_ptr, const char* source) -> FRHITexture2D* {
         if (ref_ptr == 0 || IsBadReadPtr((void*)ref_ptr, sizeof(FTexture2DRHIRef))) {
             return nullptr;
@@ -7031,11 +7203,10 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         const auto ref = (FTexture2DRHIRef*)ref_ptr;
 
-        if (ref->texture == nullptr || IsBadReadPtr(ref->texture, sizeof(void*))) {
+        if (!is_valid_texture_candidate(ref->texture, source)) {
             return nullptr;
         }
 
-        FRHITexture2D::set_vtable(*(void**)ref->texture);
         SPDLOG_INFO(" Recovered texture from {}: {:x}", source, (uintptr_t)ref->texture);
         return ref->texture;
     };
@@ -7045,11 +7216,9 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             return false;
         }
 
-        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*)) || candidate == rtm->get_render_target()) {
+        if (!is_valid_texture_candidate(candidate, source) || candidate == rtm->get_render_target()) {
             return false;
         }
-
-        FRHITexture2D::set_vtable(*(void**)candidate);
 
         const auto native = (ID3D12Resource*)candidate->get_native_resource();
 
@@ -7094,23 +7263,26 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
         // happens?
         if (texture == nullptr) {
-            SPDLOG_INFO(" Texture is null, trying to get it from RAX...");
-
-            const auto ref = (FTexture2DRHIRef*)ctx.rax;
-
-            if (!IsBadReadPtr(ref, sizeof(void*)) && !IsBadReadPtr(ref->texture, sizeof(void*))) {
-                texture = ref->texture;
+            if (g_framework->is_dx12() && is_ue_5_7_or_newer() && rtm->texture_finalize_func != 0) {
+                SPDLOG_INFO_EVERY_N_SEC(1, " Texture is null after UE 5.7 finalize hook; skipping unreliable RAX fallback");
             } else {
-                SPDLOG_ERROR(" RAX is bad! Can't get texture!");
+                SPDLOG_INFO(" Texture is null, trying to get it from RAX...");
+
+                const auto ref = (FTexture2DRHIRef*)ctx.rax;
+
+                if (!IsBadReadPtr(ref, sizeof(void*)) && is_valid_texture_candidate(ref->texture, "RAX")) {
+                    texture = ref->texture;
+                } else {
+                    SPDLOG_ERROR(" RAX is bad! Can't get texture!");
+                }
             }
         }
 
-        if (texture != nullptr) {
+        if (is_valid_texture_candidate(texture, "texture_hook_ref")) {
             SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
             SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
-            
-            FRHITexture2D::set_vtable(*(void**)texture);
         } else {
+            texture = nullptr;
             SPDLOG_INFO(" Texture is still null!");
         }
     }
@@ -7207,6 +7379,7 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
 }
 
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
+    owned_dedicated_ui_target.reset();
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
@@ -7227,6 +7400,103 @@ void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
     dedicated_ui_width = width;
     dedicated_ui_height = height;
+}
+
+void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_list) {
+    if (!is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return;
+    }
+
+    if (command_list == 0 || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return;
+    }
+
+    auto existing_target = get_dedicated_ui_target();
+
+    if (existing_target != nullptr && !IsBadReadPtr(existing_target, sizeof(void*))) {
+        auto* native_resource = (ID3D12Resource*)existing_target->get_native_resource();
+
+        if (native_resource != nullptr) {
+            const auto desc = native_resource->GetDesc();
+
+            if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+                return;
+            }
+        }
+
+        SPDLOG_INFO(
+            "[VRRenderTargetManager] Recreating dedicated UE 5.7 UI target [{}x{}]",
+            dedicated_ui_width,
+            dedicated_ui_height);
+
+        destroy_dedicated_ui_target();
+    }
+
+    auto* dynamic_rhi = sdk::FDynamicRHI::get();
+
+    if (dynamic_rhi == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] FDynamicRHI is not ready for dedicated UE 5.7 UI target creation");
+        return;
+    }
+
+    sdk::FCreateInfo create_info{};
+    create_info.debug_name = "UEVRSlateElementsTexture";
+
+    auto created_target = dynamic_rhi->create_texture_2d(
+        command_list,
+        dedicated_ui_width,
+        dedicated_ui_height,
+        2,
+        1,
+        1,
+        static_cast<ETextureCreateFlags>((uint64_t)ETextureCreateFlags::RenderTargetable | (uint64_t)ETextureCreateFlags::ShaderResource),
+        create_info);
+
+    if (created_target == nullptr || created_target->texture == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(2,
+            "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI target [{}x{}]",
+            dedicated_ui_width,
+            dedicated_ui_height);
+        return;
+    }
+
+    auto* created_texture = created_target->texture;
+
+    if (IsBadReadPtr(created_texture, sizeof(void*))) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has an invalid texture pointer");
+        return;
+    }
+
+    auto* texture_vtable = *(void**)created_texture;
+
+    if (texture_vtable == nullptr || !utility::get_module_within(texture_vtable).has_value()) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Rejected dedicated UE 5.7 UI target because its vtable is invalid");
+        return;
+    }
+
+    auto* native_resource = (ID3D12Resource*)created_texture->get_native_resource();
+
+    if (native_resource == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has no native D3D12 resource");
+        return;
+    }
+
+    const auto desc = native_resource->GetDesc();
+
+    if (desc.Width == 0 || desc.Height == 0) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has an empty resource description");
+        return;
+    }
+
+    owned_dedicated_ui_target = std::move(created_target);
+    set_dedicated_ui_target(created_texture, (uint32_t)desc.Width, desc.Height);
+    get_fallback_ui_target_ref() = nullptr;
+
+    SPDLOG_INFO(
+        "[VRRenderTargetManager] Created dedicated UE 5.7 UI target [{:x}] [{}x{}]",
+        (uintptr_t)created_texture,
+        desc.Width,
+        desc.Height);
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
@@ -7918,23 +8188,32 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                 && utility::scan(fn, 0x80, "48 83 C2 38").has_value();
         };
 
-        auto find_next_direct_call_target = [](uintptr_t start, size_t span) -> std::optional<uintptr_t> {
-            uintptr_t result{};
+        struct DirectCallInfo {
+            uintptr_t callsite{};
+            uintptr_t target{};
+            uint8_t length{};
+        };
+
+        auto find_next_direct_calls = [](uintptr_t start, size_t span, size_t max_calls) {
+            std::vector<DirectCallInfo> results{};
 
             utility::exhaustive_decode((uint8_t*)start, span, [&](const utility::ExhaustionContext& decode_ctx) -> utility::ExhaustionResult {
                 if (std::string_view{decode_ctx.instrux.Mnemonic}.starts_with("CALL") && *(uint8_t*)decode_ctx.addr == 0xE8) {
-                    result = utility::calculate_absolute(decode_ctx.addr + 1);
-                    return utility::ExhaustionResult::BREAK;
+                    results.emplace_back(DirectCallInfo{
+                        .callsite = decode_ctx.addr,
+                        .target = utility::calculate_absolute(decode_ctx.addr + 1),
+                        .length = (uint8_t)decode_ctx.instrux.Length
+                    });
+
+                    if (results.size() >= max_calls) {
+                        return utility::ExhaustionResult::BREAK;
+                    }
                 }
 
                 return utility::ExhaustionResult::CONTINUE;
             });
 
-            if (result == 0) {
-                return std::nullopt;
-            }
-
-            return result;
+            return results;
         };
 
         while(true) {
@@ -7991,10 +8270,69 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (g_framework->is_dx12() && is_ue_5_7_or_newer() && is_probable_ue57_texture_desc_prepare(fn)) {
-                            SPDLOG_INFO("Detected UE 5.7 texture-desc prepare helper at {:x}, skipping to the real texture wrapper call", fn);
-                            this->texture_desc_prepare_func = fn;
-                            next_call_is_not_the_right_one = true;
+                        if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
+                            const auto next_calls = find_next_direct_calls((uintptr_t)ip + decoded->Length, 0x80, 2);
+
+                            if (next_calls.size() >= 2) {
+                                this->texture_desc_prepare_func = fn;
+                                this->texture_create_wrapper_func = next_calls[0].target;
+                                this->texture_finalize_func = next_calls[1].target;
+                                this->texture_release_func = 0;
+                                this->texture_extract_func = 0;
+                                this->texture_finalize_callsite = 0;
+                                this->texture_extract_callsite = 0;
+
+                                SPDLOG_INFO("Resolved UE 5.7 texture-desc helper {:x}, wrapper {:x}, and finalize helper {:x}",
+                                    this->texture_desc_prepare_func,
+                                    this->texture_create_wrapper_func,
+                                    this->texture_finalize_func);
+
+                                const auto wrapper_call_ip = next_calls[0].callsite;
+                                const auto finalize_post_call = next_calls[1].callsite + next_calls[1].length;
+
+                                this->texture_create_insn_bytes.resize(next_calls[0].length);
+                                memcpy(this->texture_create_insn_bytes.data(), (void*)wrapper_call_ip, next_calls[0].length);
+
+                                auto texture_hook_result = safetyhook::MidHook::create((void*)finalize_post_call, +[](safetyhook::Context& ctx) -> void {
+                                    VRRenderTargetManager::texture_hook_callback(ctx, false);
+                                });
+
+                                if (!texture_hook_result.has_value()) {
+                                    const auto e = texture_hook_result.error();
+
+                                    if (e.type == safetyhook::MidHook::Error::BAD_ALLOCATION) {
+                                        SPDLOG_ERROR("Failed to create UE 5.7 post texture hook: BAD_ALLOCATION: {}", (uint8_t)e.allocator_error);
+                                    } else {
+                                        SPDLOG_ERROR("Failed to create UE 5.7 post texture hook: BAD_INLINE_HOOK: {}", (uint8_t)e.inline_hook_error.type);
+                                    }
+                                } else {
+                                    this->texture_hook = std::move(texture_hook_result.value());
+                                }
+
+                                auto pre_texture_hook_result = safetyhook::MidHook::create((void*)wrapper_call_ip, +[](safetyhook::Context& ctx) -> void {
+                                    VRRenderTargetManager::pre_texture_hook_callback(ctx, false);
+                                });
+
+                                if (!pre_texture_hook_result.has_value()) {
+                                    const auto e = pre_texture_hook_result.error();
+
+                                    if (e.type == safetyhook::MidHook::Error::BAD_ALLOCATION) {
+                                        SPDLOG_ERROR("Failed to create UE 5.7 pre texture hook: BAD_ALLOCATION: {}", (uint8_t)e.allocator_error);
+                                    } else {
+                                        SPDLOG_ERROR("Failed to create UE 5.7 pre texture hook: BAD_INLINE_HOOK: {}", (uint8_t)e.inline_hook_error.type);
+                                    }
+                                } else {
+                                    this->pre_texture_hook = std::move(pre_texture_hook_result.value());
+                                }
+
+                                this->is_pre_texture_call_e8 = true;
+                                this->set_up_texture_hook = true;
+                                return false;
+                            }
+
+                            if (is_probable_ue57_texture_desc_prepare(fn)) {
+                                SPDLOG_INFO("Detected UE 5.7 texture-desc prepare helper at {:x}, but failed to resolve the wrapper/finalize sequence", fn);
+                            }
                         } else if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {
                             SPDLOG_INFO("First instruction is a mov r8d, 30h, skipping this call!");
                             next_call_is_not_the_right_one = true;
@@ -8060,19 +8398,6 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                             this->is_pre_texture_call_e8 = true;
                         } else {
                             SPDLOG_INFO("E8 call not found, assuming register call!");
-                        }
-
-                        if (g_framework->is_dx12() && is_ue_5_7_or_newer() && *(uint8_t*)ip == 0xE8) {
-                            this->texture_create_wrapper_func = utility::calculate_absolute(ip + 1);
-
-                            if (auto finalize = find_next_direct_call_target(post_call, 0x40)) {
-                                this->texture_finalize_func = *finalize;
-                                SPDLOG_INFO("Resolved UE 5.7 texture wrapper {:x} and finalize helper {:x}",
-                                    this->texture_create_wrapper_func, this->texture_finalize_func);
-                            } else {
-                                SPDLOG_WARN("Failed to resolve a UE 5.7 texture finalize helper after wrapper {:x}",
-                                    this->texture_create_wrapper_func);
-                            }
                         }
 
                         // So we can call the original texture create function again.
@@ -8279,6 +8604,18 @@ bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t
     return this->allocate_render_target_texture((uintptr_t)_ReturnAddress(), &OutTargetableTexture, &OutShaderResourceTexture);
 
     //return true;
+}
+
+bool VRRenderTargetManager::AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumLayers,
+    ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32_t NumSamples)
+{
+    SPDLOG_INFO_ONCE("VRRenderTargetManager::AllocateRenderTargetTextures called!");
+
+    // Keep the engine on the deprecated single-texture allocation path for now.
+    // UEVR's 5.7 UI separation still depends on analyzing and midhooking the real
+    // texture creation sequence that happens after this returns false.
+    return false;
 }
 
 bool VRRenderTargetManager_418::AllocateRenderTargetTexture(uint32_t Index, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumMips, uint32_t Flags,

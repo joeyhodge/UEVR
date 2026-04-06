@@ -748,6 +748,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
 	"src/mods/vr/RenderTargetPoolHook.cpp"
+	"src/mods/vr/UE57SlateSymbols.cpp"
 	"src/mods/vr/d3d12/CommandContext.cpp"
 	"src/mods/vr/d3d12/DirectXTK.cpp"
 	"src/mods/vr/d3d12/TextureContext.cpp"
@@ -796,6 +797,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/RenderTargetPoolHook.hpp"
+	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/d3d12/ComPtr.hpp"
 	"src/mods/vr/d3d12/CommandContext.hpp"
 	"src/mods/vr/d3d12/DirectXTK.hpp"
@@ -854,6 +856,7 @@ target_link_libraries(uevr PUBLIC
 	d3d11
 	d3d12
 	d3dcompiler
+	dbghelp
 	safetyhook
 	glm
 	imgui

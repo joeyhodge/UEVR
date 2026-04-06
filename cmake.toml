@@ -242,6 +242,7 @@ link-libraries = [
     "d3d11",
     "d3d12",
     "d3dcompiler",
+    "dbghelp",
     "safetyhook",
     "glm",
     "imgui",
