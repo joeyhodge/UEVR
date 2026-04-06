@@ -132,9 +132,13 @@ protected:
     std::unique_ptr<PointerHook> m_present1_hook{};
     std::vector<std::unique_ptr<PointerHook>> m_create_graphics_pipeline_state_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_create_pipeline_state_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_create_render_target_view_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_create_depth_stencil_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_set_pipeline_state_hooks{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_graphics_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_pipeline_state_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_create_render_target_view_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_create_depth_stencil_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_set_pipeline_state_hook_lookup{};
     std::unique_ptr<VtableHook> m_swapchain_hook{};
     //std::unique_ptr<FunctionHook> m_create_swap_chain_hook{};
@@ -151,6 +155,8 @@ protected:
     static HRESULT WINAPI present1(IDXGISwapChain3* swap_chain, UINT sync_interval, UINT flags, DXGI_PRESENT_PARAMETERS* params);
     static HRESULT WINAPI create_graphics_pipeline_state(ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc, REFIID riid, void** pipeline_state);
     static HRESULT WINAPI create_pipeline_state(ID3D12Device2* device, const D3D12_PIPELINE_STATE_STREAM_DESC* desc, REFIID riid, void** pipeline_state);
+    static void WINAPI create_render_target_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
+    static void WINAPI create_depth_stencil_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state);
     static HRESULT WINAPI resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static HRESULT WINAPI resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters);
@@ -158,6 +164,8 @@ protected:
 
     PointerHook* find_create_graphics_pipeline_state_hook(void* slot) const;
     PointerHook* find_create_pipeline_state_hook(void* slot) const;
+    PointerHook* find_create_render_target_view_hook(void* slot) const;
+    PointerHook* find_create_depth_stencil_view_hook(void* slot) const;
     PointerHook* find_set_pipeline_state_hook(void* slot) const;
 };
 

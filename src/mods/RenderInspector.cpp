@@ -84,6 +84,17 @@ std::string make_d3d12_pair_key(const render::ShaderOverrideRegistry::D3D12Pipel
     return ss.str();
 }
 
+std::string make_d3d12_pso_key(const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo& aggregate) {
+    std::ostringstream ss{};
+    ss << std::hex << std::uppercase
+       << aggregate.original_pso << ':'
+       << aggregate.vs_hash << ':'
+       << aggregate.ps_hash << ':'
+       << static_cast<uint32_t>(aggregate.pipeline_stream) << ':'
+       << aggregate.tracking_note;
+    return ss.str();
+}
+
 bool matches_filters(
     const render::FrameResourceInspector::ResourceInfo& resource,
     uint64_t current_frame,
@@ -321,6 +332,70 @@ std::string format_percent(double value) {
     return buffer;
 }
 
+void draw_d3d12_pso_summary(const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo& aggregate) {
+    ImGui::Text("Samples: %" PRIu64, aggregate.total_samples);
+    ImGui::Text("Share: %s", format_percent(aggregate.sample_share).c_str());
+    ImGui::Text("Target associations: %" PRIu64, aggregate.bind_count_with_known_targets);
+    ImGui::Text("First seen: %" PRIu64, aggregate.first_seen_frame);
+    ImGui::Text("Last seen: %" PRIu64, aggregate.last_seen_frame);
+    ImGui::Text("Original PSO: %s", format_pointer_hex(aggregate.original_pso).c_str());
+    ImGui::Text("Last bound PSO: %s", format_pointer_hex(aggregate.last_bound_pso).c_str());
+    ImGui::Text("Pipeline Stream: %s", aggregate.pipeline_stream ? "yes" : "no");
+    ImGui::TextWrapped("Tracking: %s", aggregate.tracking_note.empty() ? "-" : aggregate.tracking_note.c_str());
+    ImGui::TextWrapped("VS: %s", aggregate.vs_hash.empty() ? "-" : aggregate.vs_hash.c_str());
+    ImGui::TextWrapped("PS: %s", aggregate.ps_hash.empty() ? "-" : aggregate.ps_hash.c_str());
+    std::string override_summary{};
+    if (!aggregate.vs_override.empty()) {
+        override_summary += "VS:";
+        override_summary += aggregate.vs_override;
+    }
+    if (!aggregate.ps_override.empty()) {
+        if (!override_summary.empty()) {
+            override_summary += " | ";
+        }
+        override_summary += "PS:";
+        override_summary += aggregate.ps_override;
+    }
+    ImGui::TextWrapped("Overrides: %s", override_summary.empty() ? "None" : override_summary.c_str());
+
+    if (aggregate.likely_targets.empty()) {
+        ImGui::TextUnformatted("No RT/depth associations recorded.");
+        return;
+    }
+
+    if (ImGui::BeginTable("SelectedPsoLikelyTargets", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+        ImGui::TableSetupColumn("Hits");
+        ImGui::TableSetupColumn("Share");
+        ImGui::TableSetupColumn("Render Target");
+        ImGui::TableSetupColumn("Depth");
+        ImGui::TableSetupColumn("Keys");
+        ImGui::TableHeadersRow();
+
+        for (const auto& usage : aggregate.likely_targets) {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%" PRIu64, usage.hit_count);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(format_percent(usage.share).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", usage.render_target_name.empty() ? "-" : usage.render_target_name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", usage.depth_target_name.empty() ? "-" : usage.depth_target_name.c_str());
+            ImGui::TableNextColumn();
+            std::string keys = usage.render_target_key;
+            if (!usage.depth_target_key.empty()) {
+                if (!keys.empty()) {
+                    keys += " | ";
+                }
+                keys += usage.depth_target_key;
+            }
+            ImGui::TextWrapped("%s", keys.empty() ? "-" : keys.c_str());
+        }
+
+        ImGui::EndTable();
+    }
+}
+
 const render::ShaderOverrideRegistry::D3D12PipelinePairInfo* find_d3d12_pair(
     const std::vector<render::ShaderOverrideRegistry::D3D12PipelinePairInfo>& pairs,
     const std::string& key
@@ -334,6 +409,21 @@ const render::ShaderOverrideRegistry::D3D12PipelinePairInfo* find_d3d12_pair(
     });
 
     return it != pairs.end() ? &*it : nullptr;
+}
+
+const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo* find_d3d12_pso(
+    const std::vector<render::ShaderOverrideRegistry::D3D12PsoAggregateInfo>& aggregates,
+    const std::string& key
+) {
+    if (key.empty()) {
+        return nullptr;
+    }
+
+    const auto it = std::find_if(aggregates.begin(), aggregates.end(), [&key](const auto& aggregate) {
+        return make_d3d12_pso_key(aggregate) == key;
+    });
+
+    return it != aggregates.end() ? &*it : nullptr;
 }
 } // namespace
 
@@ -359,6 +449,8 @@ void RenderInspector::on_draw_sidebar_entry(std::string_view in_entry) {
         draw_resources();
     } else if (in_entry == "DX12 Diagnostics") {
         draw_dx12_diagnostics();
+    } else if (in_entry == "PSO Profiler") {
+        draw_pso_profiler();
     } else if (in_entry == "Shaders") {
         draw_shaders();
     }
@@ -812,6 +904,210 @@ void RenderInspector::draw_dx12_diagnostics() {
                 ImGui::EndTable();
             }
         }
+    }
+}
+
+void RenderInspector::draw_pso_profiler() {
+    auto shader_snapshot = render::ShaderOverrideRegistry::get().snapshot();
+    auto diagnostics_snapshot = render::D3D12Diagnostics::get().snapshot();
+    auto resource_snapshot = m_inspector.snapshot();
+
+    if (!g_framework->is_dx12()) {
+        ImGui::TextUnformatted("PSO profiler is only available on DX12.");
+        return;
+    }
+
+    size_t associated_target_count = 0;
+    for (const auto& aggregate : shader_snapshot.d3d12_pso_aggregates) {
+        associated_target_count += aggregate.likely_targets.size();
+    }
+
+    ImGui::Text("Frame: %" PRIu64, shader_snapshot.frame);
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("Distinct PSOs: %zu", shader_snapshot.d3d12_pso_aggregates.size());
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("Samples: %" PRIu64, shader_snapshot.total_d3d12_pso_samples);
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Text("Tracked target sets: %zu", associated_target_count);
+
+    ImGui::Checkbox("Overridden only", &m_pso_filter_overridden_only);
+    ImGui::SameLine();
+    ImGui::Checkbox("Stream only", &m_pso_filter_stream_only);
+    ImGui::SameLine();
+    ImGui::Checkbox("With target association only", &m_pso_filter_with_targets_only);
+    ImGui::SameLine();
+    ImGui::Checkbox("Tracking warnings only", &m_pso_filter_tracking_warnings_only);
+
+    static constexpr const char* sort_modes[]{"Hits", "Share", "Last Seen"};
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::Combo("Sort PSOs", &m_pso_sort_mode, sort_modes, IM_ARRAYSIZE(sort_modes));
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    ImGui::DragInt("PSO row limit", &m_pso_profiler_limit, 1.0f, 8, 512);
+    m_pso_profiler_limit = std::clamp(m_pso_profiler_limit, 8, 512);
+
+    if (ImGui::Button("Export Render Analysis Bundle")) {
+        render::RenderAnalysisExportInput export_input{};
+        export_input.profile_name = Framework::get_persistent_dir().filename().string();
+        export_input.backend = g_framework->is_dx12() ? "D3D12" : "D3D11";
+        export_input.frame = shader_snapshot.frame;
+        export_input.resources = resource_snapshot;
+        export_input.d3d12 = diagnostics_snapshot;
+        export_input.shaders = shader_snapshot;
+
+        const auto export_result = render::RenderAnalysisExport::export_bundle(export_input);
+        if (export_result.succeeded) {
+            m_render_bundle_export_status = "Exported render analysis bundle: " + export_result.bundle_dir.string();
+        } else {
+            m_render_bundle_export_status = "Render analysis export failed: " + export_result.error;
+        }
+    }
+
+    if (!m_render_bundle_export_status.empty()) {
+        ImGui::TextWrapped("%s", m_render_bundle_export_status.c_str());
+    }
+
+    ImGui::Separator();
+
+    std::vector<render::ShaderOverrideRegistry::D3D12PsoAggregateInfo> aggregates{};
+    aggregates.reserve(shader_snapshot.d3d12_pso_aggregates.size());
+
+    for (const auto& aggregate : shader_snapshot.d3d12_pso_aggregates) {
+        const auto overridden = !aggregate.vs_override.empty() || !aggregate.ps_override.empty();
+        const auto has_targets = !aggregate.likely_targets.empty();
+        const auto has_warning = !aggregate.tracking_note.empty();
+
+        if (m_pso_filter_overridden_only && !overridden) {
+            continue;
+        }
+        if (m_pso_filter_stream_only && !aggregate.pipeline_stream) {
+            continue;
+        }
+        if (m_pso_filter_with_targets_only && !has_targets) {
+            continue;
+        }
+        if (m_pso_filter_tracking_warnings_only && !has_warning) {
+            continue;
+        }
+
+        aggregates.emplace_back(aggregate);
+    }
+
+    std::stable_sort(aggregates.begin(), aggregates.end(), [this](const auto& lhs, const auto& rhs) {
+        switch (m_pso_sort_mode) {
+        case 1:
+            if (lhs.sample_share != rhs.sample_share) {
+                return lhs.sample_share > rhs.sample_share;
+            }
+            break;
+        case 2:
+            if (lhs.last_seen_frame != rhs.last_seen_frame) {
+                return lhs.last_seen_frame > rhs.last_seen_frame;
+            }
+            break;
+        default:
+            if (lhs.total_samples != rhs.total_samples) {
+                return lhs.total_samples > rhs.total_samples;
+            }
+            break;
+        }
+
+        return lhs.last_seen_frame > rhs.last_seen_frame;
+    });
+
+    if (aggregates.empty()) {
+        ImGui::TextUnformatted("No PSO aggregates match the current filters.");
+        return;
+    }
+
+    constexpr auto table_flags =
+        ImGuiTableFlags_Borders |
+        ImGuiTableFlags_RowBg |
+        ImGuiTableFlags_ScrollY |
+        ImGuiTableFlags_Resizable |
+        ImGuiTableFlags_SizingStretchProp;
+
+    if (ImGui::BeginTable("D3D12PsoProfilerTable", 12, table_flags, ImVec2(0.0f, 320.0f))) {
+        ImGui::TableSetupColumn("View");
+        ImGui::TableSetupColumn("Hits");
+        ImGui::TableSetupColumn("Share");
+        ImGui::TableSetupColumn("Original PSO");
+        ImGui::TableSetupColumn("Bound PSO");
+        ImGui::TableSetupColumn("VS");
+        ImGui::TableSetupColumn("PS");
+        ImGui::TableSetupColumn("RT");
+        ImGui::TableSetupColumn("Depth");
+        ImGui::TableSetupColumn("Stream");
+        ImGui::TableSetupColumn("Tracking");
+        ImGui::TableSetupColumn("Override");
+        ImGui::TableHeadersRow();
+
+        const auto display_count = std::min(static_cast<int>(aggregates.size()), m_pso_profiler_limit);
+        for (int i = 0; i < display_count; ++i) {
+            const auto& aggregate = aggregates[static_cast<size_t>(i)];
+            const auto key = make_d3d12_pso_key(aggregate);
+            const auto is_selected = m_selected_pso_key == key;
+
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            if (is_selected) {
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, ImGui::GetColorU32(ImVec4{0.18f, 0.28f, 0.45f, 0.65f}));
+            }
+
+            const auto button_label = std::string{is_selected ? "Selected##psopair_" : "View##psopair_"} + key;
+            if (ImGui::SmallButton(button_label.c_str())) {
+                m_selected_pso_key = key;
+            }
+            ImGui::TableNextColumn();
+            ImGui::Text("%" PRIu64, aggregate.total_samples);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(format_percent(aggregate.sample_share).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(abbreviate_for_table(format_pointer_hex(aggregate.original_pso)).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(abbreviate_for_table(format_pointer_hex(aggregate.last_bound_pso)).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(aggregate.vs_hash.empty() ? "-" : abbreviate_for_table(aggregate.vs_hash).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(aggregate.ps_hash.empty() ? "-" : abbreviate_for_table(aggregate.ps_hash).c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", aggregate.likely_targets.empty() ? "-" : aggregate.likely_targets.front().render_target_name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", aggregate.likely_targets.empty() ? "-" : aggregate.likely_targets.front().depth_target_name.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(aggregate.pipeline_stream ? "yes" : "no");
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", aggregate.tracking_note.empty() ? "-" : aggregate.tracking_note.c_str());
+            ImGui::TableNextColumn();
+
+            std::string override_summary{};
+            if (!aggregate.vs_override.empty()) {
+                override_summary += "VS:";
+                override_summary += aggregate.vs_override;
+            }
+            if (!aggregate.ps_override.empty()) {
+                if (!override_summary.empty()) {
+                    override_summary += " | ";
+                }
+                override_summary += "PS:";
+                override_summary += aggregate.ps_override;
+            }
+            ImGui::TextWrapped("%s", override_summary.empty() ? "None" : override_summary.c_str());
+        }
+
+        ImGui::EndTable();
+    }
+
+    if (const auto* selected = find_d3d12_pso(aggregates, m_selected_pso_key); selected != nullptr) {
+        ImGui::Separator();
+        ImGui::TextUnformatted("Selected PSO details");
+        draw_d3d12_pso_summary(*selected);
     }
 }
 

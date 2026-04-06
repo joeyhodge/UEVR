@@ -126,6 +126,7 @@ public:
     std::string get_result_string(XrResult result) const;
     std::string get_structure_string(XrStructureType type) const;
     std::string get_path_string(XrPath path) const;
+    std::string get_session_state_string(XrSessionState state) const;
     XrPath get_path(const std::string& path) const;
     std::string get_current_interaction_profile() const;
     XrPath get_current_interaction_profile_path() const;
@@ -134,6 +135,8 @@ public:
 
     XrResult begin_frame();
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
+    XrResult recover_wedged_frame(const char* reason);
+    void log_frame_lifecycle_state(const char* prefix) const;
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -300,6 +303,16 @@ public:
     const ModToggle::Ptr ignore_vd_checks{ ModToggle::create("OpenXR_IgnoreVirtualDesktopChecks", false) };
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
+    bool has_valid_projection_data{false};
+
+    uint32_t frame_began_skip_streak{0};
+    uint32_t forced_frame_recovery_count{0};
+    std::chrono::steady_clock::time_point last_frame_began_log{};
+    std::chrono::steady_clock::time_point last_successful_begin_frame{};
+    std::chrono::steady_clock::time_point last_successful_end_frame{};
+    std::chrono::steady_clock::time_point session_ready_since{};
+    std::chrono::steady_clock::time_point last_ready_state_probe_log{};
+    std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
     
     Mod::ValueList options{
         *resolution_scale,

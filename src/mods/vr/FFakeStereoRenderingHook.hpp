@@ -57,13 +57,55 @@ public:
     bool need_reallocate_depth_texture(const void* DepthTarget);
 
 public:
-    FRHITexture2D*& get_ui_target() { return ui_target; }
+    FRHITexture2D* get_ui_target() {
+        auto& dedicated = static_cast<FRHITexture2D*&>(dedicated_ui_target);
+
+        if (dedicated != nullptr) {
+            return dedicated;
+        }
+
+        return static_cast<FRHITexture2D*&>(ui_target);
+    }
+
+    FRHITexture2D*& get_effective_ui_target_ref() {
+        auto& dedicated = static_cast<FRHITexture2D*&>(dedicated_ui_target);
+
+        if (dedicated != nullptr) {
+            return dedicated;
+        }
+
+        return static_cast<FRHITexture2D*&>(ui_target);
+    }
+
+    FRHITexture2D*& get_fallback_ui_target_ref() {
+        return static_cast<FRHITexture2D*&>(ui_target);
+    }
+
+    FRHITexture2D* get_dedicated_ui_target() {
+        return static_cast<FRHITexture2D*&>(dedicated_ui_target);
+    }
+
+    bool has_dedicated_ui_target() {
+        return get_dedicated_ui_target() != nullptr;
+    }
+
+    uint32_t get_dedicated_ui_width() const {
+        return dedicated_ui_width;
+    }
+
+    uint32_t get_dedicated_ui_height() const {
+        return dedicated_ui_height;
+    }
+
     FRHITexture2D* get_render_target() {
         return render_target; 
     }
 
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
+    void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
+    void request_dedicated_ui_target(uint32_t width, uint32_t height);
+    void destroy_dedicated_ui_target();
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
 
@@ -132,6 +174,7 @@ protected:
     };
 
     VerifiedFTexture2D ui_target{};
+    VerifiedFTexture2D dedicated_ui_target{};
     VerifiedFTexture2D render_target{};
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
@@ -155,6 +198,10 @@ protected:
     uint32_t last_width{0};
     uint32_t last_height{0};
 
+    uintptr_t texture_desc_prepare_func{0};
+    uintptr_t texture_create_wrapper_func{0};
+    uintptr_t texture_finalize_func{0};
+
     std::vector<uint8_t> texture_create_insn_bytes{};
     std::vector<uint8_t> texture_create_insn_bytes2{};
 
@@ -166,6 +213,10 @@ protected:
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
+    sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
+    sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
+    uint32_t dedicated_ui_width{0};
+    uint32_t dedicated_ui_height{0};
     sdk::FViewport* last_viewport{nullptr};
 };
 

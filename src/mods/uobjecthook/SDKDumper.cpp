@@ -45,7 +45,7 @@ std::vector<sdk::UStruct*> get_all_structs() {
             continue;
         }
 
-        const auto object = entry->object;
+        const auto object = entry->get_object();
 
         if (object == nullptr) {
             continue;
@@ -350,7 +350,7 @@ void SDKDumper::initialize_uobject_array() {
 R"(for (int32_t i = 0; i < get_object_count(); ++i) {
     const auto item = get_object(i); // FUObjectItem*
     if (item == nullptr) { continue; }
-    const auto object = item->object; // UObject*
+    const auto object = item->get_object(); // UObject*
     if (object == nullptr) { continue; }
     if (object->get_full_name() == name) { return object; }
 }

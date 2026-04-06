@@ -41,9 +41,20 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
         SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
     }
 
-    // TODO: actually dump 5.4
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        return ue5_7::IXRTrackingSystemVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
+        return ue5_6::IXRTrackingSystemVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
+        return ue5_5::IXRTrackingSystemVT::get();
+    }
+
     if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
-        return ue5_3::IXRTrackingSystemVT::get();
+        return ue5_4::IXRTrackingSystemVT::get();
     }
 
     // >= 5.3
@@ -130,9 +141,20 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
         version.dwFileVersionMS = 0;
     }
 
-    // TODO: actually dump 5.4
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        return ue5_7::IXRCameraVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
+        return ue5_6::IXRCameraVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
+        return ue5_5::IXRCameraVT::get();
+    }
+
     if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
-        return ue5_3::IXRCameraVT::get();
+        return ue5_4::IXRCameraVT::get();
     }
 
     // TODO: actually dump 5.2
@@ -217,10 +239,20 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
         version.dwFileVersionMS = 0;
     }
 
-    // TODO: actually dump 5.4
-    // 5.4
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
+        return ue5_7::IHeadMountedDisplayVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
+        return ue5_6::IHeadMountedDisplayVT::get();
+    }
+
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
+        return ue5_5::IHeadMountedDisplayVT::get();
+    }
+
     if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
-        return ue5_3::IHeadMountedDisplayVT::get();
+        return ue5_4::IHeadMountedDisplayVT::get();
     }
 
     // 5.3

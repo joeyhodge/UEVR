@@ -65,6 +65,21 @@
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 
+namespace {
+bool is_ue_5_7_or_newer() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        if (str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
+            return true;
+        }
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50007;
+}
+}
+
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
 bool is_using_double_precision(uintptr_t addr) {
@@ -2226,7 +2241,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
     }
 
     // Finally redirect the call to the UI render target.
-    auto& ui_target = g_hook->get_render_target_manager()->get_ui_target();
+    auto& ui_target = g_hook->get_render_target_manager()->get_effective_ui_target_ref();
 
     if (ui_target != nullptr) {
         return &ui_target;
@@ -5540,6 +5555,13 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     if (!idx) {
+        if (is_ue_5_7_or_newer()) {
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.7+; skipping LocalPlayer bootstrap for safety");
+            g_hook->m_sceneview_data.known_scene_states.clear();
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
         SPDLOG_ERROR("Failed to find PostInitProperties virtual function! A crash may occur!");
     }
 
@@ -5891,30 +5913,95 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    const auto ui_target = g_hook->get_render_target_manager()->get_ui_target();
-
-    if (ui_target == nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
-        return call_orig();
-    }
-
     sdk::FSlateResource* slate_resource = nullptr;
+    sdk::FSlateResource* provider_resource = nullptr;
+    FRHITexture2D* provider_texture = nullptr;
+    auto rtm = g_hook->get_render_target_manager();
 
     if (slate_viewport != nullptr) {
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
-    } else {
-        const auto viewport_rt_provider = viewport_info->get_rt_provider(g_hook->get_render_target_manager()->get_render_target());
+    }
 
-        if (viewport_rt_provider == nullptr) {
+    if (viewport_info != nullptr && !is_ue_5_7_or_newer()) {
+        const auto known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
+        const auto viewport_rt_provider = viewport_info->get_rt_provider(known_texture);
+
+        if (viewport_rt_provider != nullptr) {
+            provider_resource = viewport_rt_provider->get_viewport_render_target_texture();
+
+            if (provider_resource != nullptr) {
+                provider_texture = provider_resource->get_mutable_resource();
+            }
+        } else if (slate_viewport == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
             return call_orig();
         }
-    
-        slate_resource = viewport_rt_provider->get_viewport_render_target_texture();
+    } else if (viewport_info != nullptr && is_ue_5_7_or_newer()) {
+        SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping FViewportInfo RT provider probing on UE 5.7+ for stability");
+    }
+
+    if (slate_resource == nullptr) {
+        slate_resource = provider_resource;
     }
 
     if (slate_resource == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
+        return call_orig();
+    }
+
+    const auto engine_texture = slate_resource->get_mutable_resource();
+
+    if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
+        FRHITexture2D::set_vtable(*(void**)engine_texture);
+
+        if (rtm->get_render_target() == nullptr) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
+            rtm->set_render_target(engine_texture);
+        }
+    }
+
+    auto ui_target = rtm->get_ui_target();
+    const auto render_target_fallback = rtm->get_render_target();
+
+    if (is_ue_5_7_or_newer()) {
+        if (rtm->has_dedicated_ui_target()) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using explicit dedicated UI target on UE 5.7+");
+        }
+
+        auto& fallback_ui_target = rtm->get_fallback_ui_target_ref();
+
+        if (fallback_ui_target == render_target_fallback) {
+            fallback_ui_target = nullptr;
+        }
+
+        ui_target = rtm->get_ui_target();
+    } else {
+        if (ui_target == nullptr && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
+            ui_target = provider_texture;
+            rtm->get_fallback_ui_target_ref() = provider_texture;
+        }
+
+        if (ui_target == nullptr && engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*)) && engine_texture != render_target_fallback) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as dedicated UI target fallback");
+            ui_target = engine_texture;
+            rtm->get_fallback_ui_target_ref() = engine_texture;
+        }
+
+        if (ui_target == nullptr && render_target_fallback != nullptr) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
+            ui_target = render_target_fallback;
+            rtm->get_fallback_ui_target_ref() = render_target_fallback;
+        }
+    }
+
+    if (ui_target == nullptr) {
+        if (is_ue_5_7_or_newer()) {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] No dedicated UE 5.7 UI target yet");
+            return call_orig();
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
         return call_orig();
     }
     
@@ -6008,6 +6095,12 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
     }
 
     SPDLOG_INFO("RenderTargetSize Before: {}x{}", x, y);
+
+    if (is_ue_5_7_or_newer() && x > 0 && y > 0) {
+        // UE 5.7 still reports the pre-VR Slate/window size here before we overwrite it
+        // with the stereo render target size. Keep it so the UI path can stay full-width.
+        this->request_dedicated_ui_target(x, y);
+    }
 
     x = VR::get()->get_hmd_width() * 2;
     y = VR::get()->get_hmd_height();
@@ -6117,6 +6210,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         this->last_width = w;
         this->last_height = h;
         this->wants_depth_reallocate = true;
+        this->destroy_dedicated_ui_target();
         this->destroy_scene_capture();
         g_hook->set_should_recreate_textures(false);
         return true;
@@ -6145,14 +6239,92 @@ bool VRRenderTargetManager_Base::need_reallocate_depth_texture(const void* Depth
 void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     SPDLOG_INFO("PreTextureHook called! {}", ctx.r8);
 
+    auto rtm = g_hook->get_render_target_manager();
+
+    if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
+        if (rtm->texture_desc_prepare_func == 0 || rtm->texture_create_wrapper_func == 0 || rtm->texture_finalize_func == 0) {
+            SPDLOG_WARN_ONCE("Skipping pre-texture duplication on UE 5.7+ DX12 because the real texture wrapper sequence was not resolved");
+            return;
+        }
+
+        if (!rtm->allocate_texture_called) {
+            SPDLOG_ERROR("AllocateTexture not called yet! (UE 5.7 PreTextureHook)");
+            return;
+        }
+
+        if (ctx.r8 == 0 || IsBadReadPtr((void*)ctx.r8, sizeof(void*))) {
+            SPDLOG_WARN_ONCE("Skipping UE 5.7 pre-texture duplication because the texture desc pointer is invalid");
+            return;
+        }
+
+        using PrepareDescFn = void(*)(void*, const void*);
+        using CreateTextureWrapperFn = void*(*)(void*, void*, const void*);
+        using FinalizeTextureFn = void(*)(void*, FTexture2DRHIRef*);
+
+        alignas(16) std::array<uint8_t, 0x80> copied_desc{};
+        alignas(16) std::array<uint8_t, 0x90> texture_initializer{};
+        static FTexture2DRHIRef duplicated_ui_texture{};
+
+        ((PrepareDescFn)rtm->texture_desc_prepare_func)(copied_desc.data(), (const void*)ctx.r8);
+
+        const auto scan_x = VR::get()->get_hmd_width() * 2;
+        const auto scan_y = VR::get()->get_hmd_height();
+        const auto requested_width = rtm->get_dedicated_ui_width() != 0 ? rtm->get_dedicated_ui_width() : (uint32_t)g_framework->get_d3d12_rt_size().x;
+        const auto requested_height = rtm->get_dedicated_ui_height() != 0 ? rtm->get_dedicated_ui_height() : (uint32_t)g_framework->get_d3d12_rt_size().y;
+
+        bool patched_desc = false;
+
+        for (auto i = 0; i < 0x60; ++i) {
+            auto& x = *(int32_t*)(copied_desc.data() + i);
+            auto& y = *(int32_t*)(copied_desc.data() + i + 4);
+
+            if (x == (int32_t)scan_x && y == (int32_t)scan_y) {
+                SPDLOG_INFO("UE 5.7: Found scene render target extent at desc offset 0x{:x}; duplicating UI extent as [{}x{}]", i, requested_width, requested_height);
+                x = (int32_t)requested_width;
+                y = (int32_t)requested_height;
+
+                auto* format = copied_desc.data() + i + 15;
+                if (*format == 18) {
+                    *format = 2;
+                }
+
+                patched_desc = true;
+                break;
+            }
+        }
+
+        if (!patched_desc) {
+            SPDLOG_WARN_ONCE("Skipping UE 5.7 pre-texture duplication because the texture desc width/height pair could not be found");
+            return;
+        }
+
+        duplicated_ui_texture.texture = nullptr;
+
+        ((CreateTextureWrapperFn)rtm->texture_create_wrapper_func)((void*)ctx.rcx, texture_initializer.data(), copied_desc.data());
+        ((FinalizeTextureFn)rtm->texture_finalize_func)(texture_initializer.data(), &duplicated_ui_texture);
+
+        if (duplicated_ui_texture.texture == nullptr || IsBadReadPtr(duplicated_ui_texture.texture, sizeof(void*))) {
+            SPDLOG_WARN_ONCE("UE 5.7 UI duplication ran but did not produce a texture");
+            return;
+        }
+
+        FRHITexture2D::set_vtable(*(void**)duplicated_ui_texture.texture);
+        rtm->set_dedicated_ui_target(duplicated_ui_texture.texture, requested_width, requested_height);
+        rtm->get_fallback_ui_target_ref() = nullptr;
+
+        SPDLOG_WARN_ONCE("UE 5.7 created a dedicated UI texture through the real texture wrapper path");
+        SPDLOG_INFO("UE 5.7 dedicated UI texture: {:x} [{}x{}]", (uintptr_t)duplicated_ui_texture.texture, requested_width, requested_height);
+
+        VR::get()->reinitialize_renderer();
+        return;
+    }
+
     // maybe do some work later to bruteforce the registers/offsets for these
     // a la emulation or something more rudimentary
     // since it always seems to access a global right before, which
     // refers to the current pixel format, which we can overwrite (which may not be safe)
     // so we could just follow how the global is being written to registers or the stack
     // and then just overwrite the registers/stack with our own values
-    auto rtm = g_hook->get_render_target_manager();
-
     if (!rtm->allocate_texture_called) {
         SPDLOG_ERROR("AllocateTexture not called yet! (PreTextureHook)");
         return;
@@ -6834,9 +7006,8 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     if (!rtm->allocate_texture_called) {
         g_hook->set_should_recreate_textures(true);
-        rtm->render_target = nullptr;
-        rtm->ui_target = nullptr;
         rtm->texture_hook_ref = nullptr;
+        rtm->shader_resource_hook_ref = nullptr;
 
         SPDLOG_INFO("[Post texture hook] Allocate texture was not called, skipping...");
         return;
@@ -6852,6 +7023,69 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             rtm->texture_hook_ref = &pooled_rt_container->reference->item.texture;
         }
     }
+
+    auto recover_texture_from_ref = [&](uintptr_t ref_ptr, const char* source) -> FRHITexture2D* {
+        if (ref_ptr == 0 || IsBadReadPtr((void*)ref_ptr, sizeof(FTexture2DRHIRef))) {
+            return nullptr;
+        }
+
+        const auto ref = (FTexture2DRHIRef*)ref_ptr;
+
+        if (ref->texture == nullptr || IsBadReadPtr(ref->texture, sizeof(void*))) {
+            return nullptr;
+        }
+
+        FRHITexture2D::set_vtable(*(void**)ref->texture);
+        SPDLOG_INFO(" Recovered texture from {}: {:x}", source, (uintptr_t)ref->texture);
+        return ref->texture;
+    };
+
+    auto try_promote_dedicated_ui_candidate = [&](FRHITexture2D* candidate, const char* source) -> bool {
+        if (!is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+            return false;
+        }
+
+        if (candidate == nullptr || IsBadReadPtr(candidate, sizeof(void*)) || candidate == rtm->get_render_target()) {
+            return false;
+        }
+
+        FRHITexture2D::set_vtable(*(void**)candidate);
+
+        const auto native = (ID3D12Resource*)candidate->get_native_resource();
+
+        if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
+            return false;
+        }
+
+        const auto desc = native->GetDesc();
+
+        if (desc.Width == 0 || desc.Height == 0) {
+            return false;
+        }
+
+        const auto requested_width = rtm->get_dedicated_ui_width();
+        const auto requested_height = rtm->get_dedicated_ui_height();
+
+        if (requested_width == 0 || requested_height == 0) {
+            return false;
+        }
+
+        if (desc.Width != requested_width || desc.Height != requested_height) {
+            SPDLOG_INFO_EVERY_N_SEC(1,
+                "[VRRenderTargetManager] Rejected UE 5.7 UI candidate from {} because size [{}x{}] != requested [{}x{}]",
+                source, desc.Width, desc.Height, requested_width, requested_height);
+            return false;
+        }
+
+        rtm->set_dedicated_ui_target(candidate, desc.Width, desc.Height);
+        rtm->get_fallback_ui_target_ref() = nullptr;
+
+        SPDLOG_WARN_ONCE("[VRRenderTargetManager] Promoted an engine-created texture to the dedicated UE 5.7 UI target");
+        SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI target from {} [{:x}] [{}x{}]",
+            source, (uintptr_t)candidate, desc.Width, desc.Height);
+
+        return true;
+    };
 
     FRHITexture2D* texture = nullptr;
 
@@ -6883,9 +7117,61 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
 
-    rtm->render_target = texture;
-    //rtm->ui_target = texture;
+    if (texture != nullptr) {
+        rtm->render_target = texture;
+    }
+
+    bool dedicated_ui_promoted = false;
+
+    if (rtm->shader_resource_hook_ref != nullptr && rtm->shader_resource_hook_ref->texture != nullptr) {
+        dedicated_ui_promoted = try_promote_dedicated_ui_candidate(rtm->shader_resource_hook_ref->texture, "shader_resource_hook_ref");
+    }
+
+    if (!dedicated_ui_promoted && !is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && rtm->shader_resource_hook_ref != nullptr) {
+        const auto shader_texture = rtm->shader_resource_hook_ref->texture;
+
+        if (shader_texture != nullptr) {
+            SPDLOG_INFO(" Falling back to original shader resource texture as UI target: {:x}", (uintptr_t)shader_texture);
+            FRHITexture2D::set_vtable(*(void**)shader_texture);
+            rtm->get_fallback_ui_target_ref() = shader_texture;
+        }
+    }
+
+    if (!dedicated_ui_promoted && rtm->get_fallback_ui_target_ref() == nullptr) {
+        for (const auto& candidate : {
+                std::pair{(uintptr_t)rtm->shader_resource_hook_ref, "shader_resource_hook_ref"},
+                std::pair{ctx.rdx, "RDX"},
+                std::pair{ctx.rcx, "RCX"},
+                std::pair{ctx.r8, "R8"},
+                std::pair{ctx.r9, "R9"},
+                std::pair{ctx.rax, "RAX"},
+            })
+        {
+            const auto recovered = recover_texture_from_ref(candidate.first, candidate.second);
+
+            if (recovered != nullptr) {
+                if (try_promote_dedicated_ui_candidate(recovered, candidate.second)) {
+                    dedicated_ui_promoted = true;
+                    break;
+                }
+
+                if (!is_ue_5_7_or_newer()) {
+                    rtm->get_fallback_ui_target_ref() = recovered;
+                }
+                break;
+            }
+        }
+    }
+
+    if (!is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
+        SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
+        rtm->get_fallback_ui_target_ref() = texture;
+    } else if (is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
+        SPDLOG_WARN_ONCE("Skipping render-target-as-UI fallback on UE 5.7+; waiting for a dedicated UI target");
+    }
+
     rtm->texture_hook_ref = nullptr;
+    rtm->shader_resource_hook_ref = nullptr;
     ++rtm->last_texture_index;
 }
 
@@ -6918,6 +7204,29 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
     });
 } catch (...) {
     SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in destroy_scene_capture!");
+}
+
+void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
+    dedicated_ui_target = nullptr;
+    dedicated_ui_texture = nullptr;
+    in_flight_dedicated_ui_texture = nullptr;
+    dedicated_ui_width = 0;
+    dedicated_ui_height = 0;
+}
+
+void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
+    if (rt != nullptr) {
+        FRHITexture2D::set_vtable(*(void**)rt);
+    }
+
+    dedicated_ui_target = rt;
+    dedicated_ui_width = width;
+    dedicated_ui_height = height;
+}
+
+void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
+    dedicated_ui_width = width;
+    dedicated_ui_height = height;
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
@@ -7603,6 +7912,31 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             "F6 85 ? ? ? ? 05", // test byte ptr [rbp+?], 5 (seen in UE5 debug/dev builds)
         };
 
+        auto is_probable_ue57_texture_desc_prepare = [](uintptr_t fn) {
+            return utility::scan(fn, 0x80, "0F B6 42 32").has_value()
+                && utility::scan(fn, 0x80, "48 8B 42 24").has_value()
+                && utility::scan(fn, 0x80, "48 83 C2 38").has_value();
+        };
+
+        auto find_next_direct_call_target = [](uintptr_t start, size_t span) -> std::optional<uintptr_t> {
+            uintptr_t result{};
+
+            utility::exhaustive_decode((uint8_t*)start, span, [&](const utility::ExhaustionContext& decode_ctx) -> utility::ExhaustionResult {
+                if (std::string_view{decode_ctx.instrux.Mnemonic}.starts_with("CALL") && *(uint8_t*)decode_ctx.addr == 0xE8) {
+                    result = utility::calculate_absolute(decode_ctx.addr + 1);
+                    return utility::ExhaustionResult::BREAK;
+                }
+
+                return utility::ExhaustionResult::CONTINUE;
+            });
+
+            if (result == 0) {
+                return std::nullopt;
+            }
+
+            return result;
+        };
+
         while(true) {
             if (emu.ctx->InstructionsCount > 200) {
                 SPDLOG_WARN("Emulated too many instructions without finding the call, aborting!");
@@ -7657,7 +7991,11 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {
+                        if (g_framework->is_dx12() && is_ue_5_7_or_newer() && is_probable_ue57_texture_desc_prepare(fn)) {
+                            SPDLOG_INFO("Detected UE 5.7 texture-desc prepare helper at {:x}, skipping to the real texture wrapper call", fn);
+                            this->texture_desc_prepare_func = fn;
+                            next_call_is_not_the_right_one = true;
+                        } else if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {
                             SPDLOG_INFO("First instruction is a mov r8d, 30h, skipping this call!");
                             next_call_is_not_the_right_one = true;
                         } else if (auto result = utility::scan(fn, 50, "B8 00 08 00 00 C3"); result.has_value()) {
@@ -7722,6 +8060,19 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                             this->is_pre_texture_call_e8 = true;
                         } else {
                             SPDLOG_INFO("E8 call not found, assuming register call!");
+                        }
+
+                        if (g_framework->is_dx12() && is_ue_5_7_or_newer() && *(uint8_t*)ip == 0xE8) {
+                            this->texture_create_wrapper_func = utility::calculate_absolute(ip + 1);
+
+                            if (auto finalize = find_next_direct_call_target(post_call, 0x40)) {
+                                this->texture_finalize_func = *finalize;
+                                SPDLOG_INFO("Resolved UE 5.7 texture wrapper {:x} and finalize helper {:x}",
+                                    this->texture_create_wrapper_func, this->texture_finalize_func);
+                            } else {
+                                SPDLOG_WARN("Failed to resolve a UE 5.7 texture finalize helper after wrapper {:x}",
+                                    this->texture_create_wrapper_func);
+                            }
                         }
 
                         // So we can call the original texture create function again.

@@ -27,6 +27,59 @@ constexpr auto ENGINE_SRC_DEPTH = D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOUR
 constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 namespace vrmod {
+namespace {
+std::pair<uint32_t, uint32_t> get_ui_extent() {
+    const auto fallback = std::pair<uint32_t, uint32_t>{
+        (uint32_t)g_framework->get_d3d12_rt_size().x,
+        (uint32_t)g_framework->get_d3d12_rt_size().y
+    };
+
+    const auto vr = VR::get();
+
+    if (vr == nullptr) {
+        return fallback;
+    }
+
+    const auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+
+    if (fake_stereo_hook == nullptr) {
+        return fallback;
+    }
+
+    const auto rtm = fake_stereo_hook->get_render_target_manager();
+
+    if (rtm == nullptr) {
+        return fallback;
+    }
+
+    if (const auto requested_width = rtm->get_dedicated_ui_width();
+        requested_width > 0 && rtm->get_dedicated_ui_height() > 0)
+    {
+        return {requested_width, rtm->get_dedicated_ui_height()};
+    }
+
+    const auto ui_target = rtm->get_ui_target();
+
+    if (ui_target == nullptr || !g_framework->is_dx12()) {
+        return fallback;
+    }
+
+    const auto native = (ID3D12Resource*)ui_target->get_native_resource();
+
+    if (native == nullptr) {
+        return fallback;
+    }
+
+    const auto desc = native->GetDesc();
+
+    if (desc.Width == 0 || desc.Height == 0) {
+        return fallback;
+    }
+
+    return {(uint32_t)desc.Width, (uint32_t)desc.Height};
+}
+}
+
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
@@ -770,15 +823,14 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
 }
 
 void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame) {
-    if (command_list == nullptr || m_game_ui_tex.texture == nullptr) {
+    if (command_list == nullptr) {
         return;
     }
 
-    if (m_game_ui_tex.srv_heap == nullptr || m_game_ui_tex.srv_heap->Heap() == nullptr) {
-        return;
-    }
+    const auto has_game_tex = m_game_tex.texture != nullptr && m_game_tex.srv_heap != nullptr && m_game_tex.srv_heap->Heap() != nullptr;
+    const auto has_ui_tex = m_game_ui_tex.texture != nullptr && m_game_ui_tex.srv_heap != nullptr && m_game_ui_tex.srv_heap->Heap() != nullptr;
 
-    if (m_game_tex.texture == nullptr || m_game_tex.srv_heap == nullptr || m_game_tex.srv_heap->Heap() == nullptr) {
+    if (!has_game_tex) {
         return;
     }
 
@@ -949,18 +1001,17 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
         &source_rect, 
         DirectX::Colors::White);
 
-    //////
-    // UI
-    //////
-    // Set descriptor heaps
-    ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
-    render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);
-    command_list->SetDescriptorHeaps(1, ui_heaps);
+    if (has_ui_tex) {
+        const auto ui_desc = m_game_ui_tex.texture->GetDesc();
+        ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
+        render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);
+        command_list->SetDescriptorHeaps(1, ui_heaps);
 
-    batch->Draw(m_game_ui_tex.get_srv_gpu(), 
-        DirectX::XMUINT2{ (uint32_t)desc.Width, (uint32_t)desc.Height },
-        dest_rect, 
-        DirectX::Colors::White);
+        batch->Draw(m_game_ui_tex.get_srv_gpu(), 
+            DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height },
+            dest_rect, 
+            DirectX::Colors::White);
+    }
 
     batch->End();
 
@@ -1108,10 +1159,12 @@ void D3D12Component::on_reset(VR* vr) {
         }
 
 
+        const auto [ui_width, ui_height] = get_ui_extent();
+
         if (m_openxr.last_resolution[0] != vr->get_hmd_width() || m_openxr.last_resolution[1] != vr->get_hmd_height() ||
             vr->m_openxr->swapchains.empty() ||
-            g_framework->get_d3d12_rt_size()[0] != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].width ||
-            g_framework->get_d3d12_rt_size()[1] != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].height ||
+            ui_width != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].width ||
+            ui_height != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].height ||
             m_last_afr_state != vr->is_using_afr() ||
             needs_depth_resize)
         {
@@ -1244,10 +1297,11 @@ bool D3D12Component::setup() {
             }
         }
 
-        // Set up the UI texture. it's the desktop resolution.
+        // Set up the UI texture to match the engine-provided UI extent when available.
         auto ui_desc = backbuffer_desc;
-        ui_desc.Width = (uint32_t)g_framework->get_d3d12_rt_size().x;
-        ui_desc.Height = (uint32_t)g_framework->get_d3d12_rt_size().y;
+        const auto [ui_width, ui_height] = get_ui_extent();
+        ui_desc.Width = ui_width;
+        ui_desc.Height = ui_height;
 
         ComPtr<ID3D12Resource> ui_tex{};
         if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &ui_desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, nullptr,
@@ -1525,15 +1579,18 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         return err;
     }
 
+    const auto [ui_width, ui_height] = get_ui_extent();
+    spdlog::info("[VR] OpenXR UI extent: {}x{}", ui_width, ui_height);
+
     auto desktop_rt_swapchain_create_info = standard_swapchain_create_info;
     desktop_rt_swapchain_create_info.format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-    desktop_rt_swapchain_create_info.width = g_framework->get_d3d12_rt_size().x;
-    desktop_rt_swapchain_create_info.height = g_framework->get_d3d12_rt_size().y;
+    desktop_rt_swapchain_create_info.width = ui_width;
+    desktop_rt_swapchain_create_info.height = ui_height;
 
     auto desktop_rt_desc = backbuffer_desc;
     desktop_rt_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
-    desktop_rt_desc.Width = g_framework->get_d3d12_rt_size().x;
-    desktop_rt_desc.Height = g_framework->get_d3d12_rt_size().y;
+    desktop_rt_desc.Width = ui_width;
+    desktop_rt_desc.Height = ui_height;
 
     desktop_rt_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     desktop_rt_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;

@@ -38,6 +38,57 @@ using namespace std::literals;
 
 std::unique_ptr<Framework> g_framework{};
 
+namespace {
+bool should_suppress_openxr_rehook_guard() {
+    auto vr = VR::get();
+
+    if (vr == nullptr) {
+        return false;
+    }
+
+    const auto runtime = vr->get_runtime();
+
+    if (runtime == nullptr || !runtime->is_openxr()) {
+        return false;
+    }
+
+    const auto openxr = vr->get_openxr_runtime();
+
+    if (openxr == nullptr) {
+        return false;
+    }
+
+    const auto has_openxr_session = openxr->instance != XR_NULL_HANDLE && openxr->session != XR_NULL_HANDLE;
+    const auto ready_wedge = openxr->session_state == XR_SESSION_STATE_READY &&
+        has_openxr_session &&
+        (openxr->session_ready || openxr->frame_synced || openxr->frame_began || openxr->got_first_poses) &&
+        !openxr->got_first_valid_poses;
+
+    if (!ready_wedge) {
+        return false;
+    }
+
+    static auto last_log = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+
+    if (last_log.time_since_epoch().count() == 0 || now - last_log >= std::chrono::seconds(2)) {
+        last_log = now;
+
+        spdlog::warn(
+            "[Framework] Suppressing D3D rehook while OpenXR is wedged in READY. session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={} recoveries={}",
+            openxr->session_ready,
+            openxr->frame_synced,
+            openxr->frame_began,
+            openxr->got_first_poses,
+            openxr->got_first_valid_poses,
+            openxr->forced_frame_recovery_count
+        );
+    }
+
+    return true;
+}
+}
+
 UEVRSharedMemory::UEVRSharedMemory() {
     spdlog::info("Shared memory constructor!");
 
@@ -108,6 +159,14 @@ void Framework::hook_monitor() {
             }
 
             if (!m_has_last_chance && now - m_last_chance_time > std::chrono::seconds(1)) {
+                if (should_suppress_openxr_rehook_guard()) {
+                    m_last_present_time = now + std::chrono::seconds(5);
+                    m_last_message_time = now + std::chrono::seconds(5);
+                    m_last_chance_time = now + std::chrono::seconds(1);
+                    m_has_last_chance = true;
+                    return;
+                }
+
                 spdlog::info("Sending rehook request for D3D");
 
                 // hook_d3d12 always gets called first.

@@ -15,6 +15,7 @@
 #include <spdlog/spdlog.h>
 
 #include "Framework.hpp"
+#include "render/D3D12Diagnostics.hpp"
 #include "render/ShaderCompiler.hpp"
 #include "utility/String.hpp"
 
@@ -23,6 +24,8 @@ using json = nlohmann::json;
 namespace {
 constexpr size_t MAX_RECENT_EVENTS = 64;
 constexpr auto AUTO_RELOAD_INTERVAL = std::chrono::milliseconds(1000);
+constexpr uint64_t MAX_PSO_BIND_CONTEXT_AGE_FRAMES = 2;
+constexpr size_t MAX_PSO_USAGE_ENTRIES = 8;
 
 std::string backend_to_string(render::ShaderOverrideRegistry::Backend backend) {
     switch (backend) {
@@ -49,6 +52,28 @@ std::string stage_to_string(render::ShaderOverrideRegistry::Stage stage) {
 std::string format_pointer_to_hex(uintptr_t pointer) {
     std::ostringstream ss{};
     ss << "0x" << std::hex << std::uppercase << pointer;
+    return ss.str();
+}
+
+std::string join_target_names(const std::vector<render::D3D12Diagnostics::BoundTargetInfo>& targets) {
+    std::ostringstream ss{};
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (i > 0) {
+            ss << " | ";
+        }
+        ss << (targets[i].name.empty() ? format_pointer_to_hex(targets[i].handle) : targets[i].name);
+    }
+    return ss.str();
+}
+
+std::string join_target_keys(const std::vector<render::D3D12Diagnostics::BoundTargetInfo>& targets) {
+    std::ostringstream ss{};
+    for (size_t i = 0; i < targets.size(); ++i) {
+        if (i > 0) {
+            ss << ";";
+        }
+        ss << format_pointer_to_hex(targets[i].handle);
+    }
     return ss.str();
 }
 
@@ -764,7 +789,67 @@ ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
     out.captured_d3d12_pair = m_captured_d3d12_pair;
     out.total_d3d12_pair_samples = m_total_d3d12_pair_samples;
     out.distinct_d3d12_pairs = m_distinct_d3d12_pairs;
+    out.total_d3d12_pso_samples = m_total_d3d12_pso_samples;
     out.recent_events = m_recent_events;
+
+    out.d3d12_pso_aggregates.reserve(m_d3d12_pso_aggregates.size());
+    for (const auto& [_, aggregate] : m_d3d12_pso_aggregates) {
+        D3D12PsoAggregateInfo info{};
+        info.total_samples = aggregate.total_samples;
+        info.sample_share = m_total_d3d12_pso_samples > 0
+            ? static_cast<double>(aggregate.total_samples) / static_cast<double>(m_total_d3d12_pso_samples)
+            : 0.0;
+        info.bind_count_with_known_targets = aggregate.bind_count_with_known_targets;
+        info.first_seen_frame = aggregate.first_seen_frame;
+        info.last_seen_frame = aggregate.last_seen_frame;
+        info.original_pso = aggregate.original_pso;
+        info.last_bound_pso = aggregate.last_bound_pso;
+        info.pipeline_stream = aggregate.pipeline_stream;
+        info.tracking_note = aggregate.tracking_note;
+        info.vs_hash = aggregate.vs_hash;
+        info.ps_hash = aggregate.ps_hash;
+        info.vs_override = aggregate.vs_override;
+        info.ps_override = aggregate.ps_override;
+
+        std::vector<PsoRenderUsageInfo> usages{};
+        usages.reserve(aggregate.usage_by_key.size());
+        for (const auto& [usage_key, usage] : aggregate.usage_by_key) {
+            (void)usage_key;
+            PsoRenderUsageInfo usage_info{};
+            usage_info.render_target_name = usage.render_target_name;
+            usage_info.depth_target_name = usage.depth_target_name;
+            usage_info.render_target_key = usage.render_target_key;
+            usage_info.depth_target_key = usage.depth_target_key;
+            usage_info.hit_count = usage.hit_count;
+            usage_info.share = aggregate.bind_count_with_known_targets > 0
+                ? static_cast<double>(usage.hit_count) / static_cast<double>(aggregate.bind_count_with_known_targets)
+                : 0.0;
+            usages.emplace_back(std::move(usage_info));
+        }
+
+        std::stable_sort(usages.begin(), usages.end(), [](const auto& lhs, const auto& rhs) {
+            if (lhs.hit_count != rhs.hit_count) {
+                return lhs.hit_count > rhs.hit_count;
+            }
+
+            return lhs.render_target_name < rhs.render_target_name;
+        });
+
+        if (usages.size() > MAX_PSO_USAGE_ENTRIES) {
+            usages.resize(MAX_PSO_USAGE_ENTRIES);
+        }
+
+        info.likely_targets = std::move(usages);
+        out.d3d12_pso_aggregates.emplace_back(std::move(info));
+    }
+
+    std::stable_sort(out.d3d12_pso_aggregates.begin(), out.d3d12_pso_aggregates.end(), [](const auto& lhs, const auto& rhs) {
+        if (lhs.total_samples != rhs.total_samples) {
+            return lhs.total_samples > rhs.total_samples;
+        }
+
+        return lhs.last_seen_frame > rhs.last_seen_frame;
+    });
 
     out.overrides.reserve(m_overrides.size());
     for (const auto& [_, entry] : m_overrides) {
@@ -1136,6 +1221,7 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
         pair.tracking_note = "null pso";
     }
 
+    record_d3d12_pso_sample(pair);
     record_d3d12_pipeline_pair(pair);
 }
 
@@ -1422,6 +1508,62 @@ void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairI
     }
 }
 
+void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo& info) {
+    ++m_total_d3d12_pso_samples;
+
+    auto& aggregate = m_d3d12_pso_aggregates[make_d3d12_pso_key(info)];
+    if (aggregate.first_seen_frame == 0) {
+        aggregate.first_seen_frame = info.frame;
+        aggregate.original_pso = info.original_pipeline_state;
+        aggregate.pipeline_stream = info.pipeline_stream;
+        aggregate.tracking_note = info.tracking_note;
+        aggregate.vs_hash = info.vertex_shader.hash;
+        aggregate.ps_hash = info.pixel_shader.hash;
+    }
+
+    aggregate.last_seen_frame = info.frame;
+    aggregate.last_bound_pso = info.bound_pipeline_state;
+    aggregate.pipeline_stream = info.pipeline_stream;
+    aggregate.tracking_note = info.tracking_note;
+    aggregate.vs_hash = info.vertex_shader.hash;
+    aggregate.ps_hash = info.pixel_shader.hash;
+    aggregate.vs_override = info.vertex_shader.override_active ? info.vertex_shader.override_name : "";
+    aggregate.ps_override = info.pixel_shader.override_active ? info.pixel_shader.override_name : "";
+    ++aggregate.total_samples;
+
+    const auto bind_context = D3D12Diagnostics::get().current_bind_context();
+    if (!bind_context.has_value() || bind_context->frame > info.frame || (info.frame - bind_context->frame) > MAX_PSO_BIND_CONTEXT_AGE_FRAMES) {
+        return;
+    }
+
+    const auto render_target_name = join_target_names(bind_context->render_targets);
+    const auto render_target_key = join_target_keys(bind_context->render_targets);
+    const auto depth_target_name = bind_context->depth_target.has_value()
+        ? bind_context->depth_target->name
+        : std::string{};
+    const auto depth_target_key = bind_context->depth_target.has_value()
+        ? format_pointer_to_hex(bind_context->depth_target->handle)
+        : std::string{};
+
+    if (render_target_name.empty() && depth_target_name.empty()) {
+        return;
+    }
+
+    std::ostringstream usage_key{};
+    usage_key << render_target_key << '|' << depth_target_key;
+
+    auto& usage = aggregate.usage_by_key[usage_key.str()];
+    if (usage.hit_count == 0) {
+        usage.render_target_name = render_target_name;
+        usage.depth_target_name = depth_target_name;
+        usage.render_target_key = render_target_key;
+        usage.depth_target_key = depth_target_key;
+    }
+
+    ++usage.hit_count;
+    ++aggregate.bind_count_with_known_targets;
+}
+
 std::string ShaderOverrideRegistry::make_d3d12_pair_key(const D3D12PipelinePairInfo& info) const {
     std::ostringstream ss{};
     ss << std::hex << std::uppercase
@@ -1429,6 +1571,17 @@ std::string ShaderOverrideRegistry::make_d3d12_pair_key(const D3D12PipelinePairI
        << info.bound_pipeline_state << ':'
        << info.vertex_shader.hash << ':'
        << info.pixel_shader.hash << ':'
+       << info.tracking_note;
+    return ss.str();
+}
+
+std::string ShaderOverrideRegistry::make_d3d12_pso_key(const D3D12PipelinePairInfo& info) const {
+    std::ostringstream ss{};
+    ss << std::hex << std::uppercase
+       << info.original_pipeline_state << ':'
+       << info.vertex_shader.hash << ':'
+       << info.pixel_shader.hash << ':'
+       << static_cast<uint32_t>(info.pipeline_stream) << ':'
        << info.tracking_note;
     return ss.str();
 }

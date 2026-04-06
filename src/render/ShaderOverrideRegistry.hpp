@@ -79,6 +79,32 @@ public:
         BoundShaderInfo pixel_shader{};
     };
 
+    struct PsoRenderUsageInfo {
+        std::string render_target_name{};
+        std::string depth_target_name{};
+        std::string render_target_key{};
+        std::string depth_target_key{};
+        uint64_t hit_count{};
+        double share{};
+    };
+
+    struct D3D12PsoAggregateInfo {
+        uint64_t total_samples{};
+        double sample_share{};
+        uint64_t bind_count_with_known_targets{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+        uintptr_t original_pso{};
+        uintptr_t last_bound_pso{};
+        bool pipeline_stream{};
+        std::string tracking_note{};
+        std::string vs_hash{};
+        std::string ps_hash{};
+        std::string vs_override{};
+        std::string ps_override{};
+        std::vector<PsoRenderUsageInfo> likely_targets{};
+    };
+
     struct Snapshot {
         bool auto_reload{true};
         uint64_t frame{};
@@ -91,6 +117,8 @@ public:
         std::optional<D3D12PipelinePairInfo> captured_d3d12_pair{};
         uint64_t total_d3d12_pair_samples{};
         std::vector<D3D12PipelinePairInfo> distinct_d3d12_pairs{};
+        uint64_t total_d3d12_pso_samples{};
+        std::vector<D3D12PsoAggregateInfo> d3d12_pso_aggregates{};
         std::vector<OverrideEntryInfo> overrides{};
         std::vector<std::string> recent_events{};
     };
@@ -229,6 +257,30 @@ private:
         OwnedD3D12PipelineStateStream owned_stream{};
     };
 
+    struct PsoRenderUsageRecord {
+        std::string render_target_name{};
+        std::string depth_target_name{};
+        std::string render_target_key{};
+        std::string depth_target_key{};
+        uint64_t hit_count{};
+    };
+
+    struct D3D12PsoAggregateRecord {
+        uintptr_t original_pso{};
+        uintptr_t last_bound_pso{};
+        bool pipeline_stream{};
+        std::string tracking_note{};
+        std::string vs_hash{};
+        std::string ps_hash{};
+        std::string vs_override{};
+        std::string ps_override{};
+        uint64_t total_samples{};
+        uint64_t bind_count_with_known_targets{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+        std::unordered_map<std::string, PsoRenderUsageRecord> usage_by_key{};
+    };
+
     void scan_override_directories();
     void scan_single_directory(const std::filesystem::path& dir, bool from_profile_dir);
     void remove_deleted_entries(const std::unordered_map<std::string, std::filesystem::path>& discovered_entries);
@@ -240,7 +292,9 @@ private:
     void update_d3d12_override_pipeline_state(D3D12GraphicsPsoRecord& record);
     static bool copy_pipeline_state_stream(const D3D12_PIPELINE_STATE_STREAM_DESC* desc, OwnedD3D12PipelineStateStream& out, std::string& error_out);
     void record_d3d12_pipeline_pair(const D3D12PipelinePairInfo& info);
+    void record_d3d12_pso_sample(const D3D12PipelinePairInfo& info);
     std::string make_d3d12_pair_key(const D3D12PipelinePairInfo& info) const;
+    std::string make_d3d12_pso_key(const D3D12PipelinePairInfo& info) const;
     std::filesystem::path make_d3d12_pair_export_path(const char* extension) const;
     std::string make_override_key(Backend backend, Stage stage, std::string_view target_hash) const;
     std::string hash_shader_bytecode(const void* bytecode, size_t bytecode_size) const;
@@ -259,6 +313,8 @@ private:
     uint64_t m_total_d3d12_pair_samples{};
     std::vector<D3D12PipelinePairInfo> m_distinct_d3d12_pairs{};
     std::unordered_map<std::string, size_t> m_distinct_d3d12_pair_indices{};
+    uint64_t m_total_d3d12_pso_samples{};
+    std::unordered_map<std::string, D3D12PsoAggregateRecord> m_d3d12_pso_aggregates{};
     std::vector<std::string> m_recent_events{};
     std::chrono::steady_clock::time_point m_last_scan_time{};
     bool m_force_reload{};

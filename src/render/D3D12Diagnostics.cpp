@@ -373,6 +373,88 @@ void D3D12Diagnostics::register_resource(
     }
 }
 
+void D3D12Diagnostics::register_rtv_descriptor(
+    std::string_view source,
+    ID3D12Resource* resource,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle,
+    std::string_view name
+) {
+    if (handle.ptr == 0) {
+        push_warning(source, "Attempted to register a null RTV descriptor");
+        return;
+    }
+
+    std::scoped_lock _{m_mutex};
+
+    if (resource != nullptr) {
+        register_resource(source, resource, false, name);
+    }
+
+    const auto key = static_cast<uintptr_t>(handle.ptr);
+    auto& descriptor = m_rtv_descriptors[key];
+    descriptor.handle = key;
+    descriptor.resource = reinterpret_cast<uintptr_t>(resource);
+    descriptor.source = std::string{source};
+    descriptor.descriptor_type = "RTV";
+    descriptor.last_seen_frame = m_frame;
+
+    if (descriptor.first_seen_frame == 0) {
+        descriptor.first_seen_frame = m_frame;
+    }
+
+    if (resource != nullptr) {
+        const auto resource_key = reinterpret_cast<uintptr_t>(resource);
+        if (const auto it = m_resources.find(resource_key); it != m_resources.end()) {
+            descriptor.name = it->second.name;
+        }
+    }
+
+    if (descriptor.name.empty()) {
+        descriptor.name = name.empty() ? format_pointer(key) : std::string{name};
+    }
+}
+
+void D3D12Diagnostics::register_dsv_descriptor(
+    std::string_view source,
+    ID3D12Resource* resource,
+    D3D12_CPU_DESCRIPTOR_HANDLE handle,
+    std::string_view name
+) {
+    if (handle.ptr == 0) {
+        push_warning(source, "Attempted to register a null DSV descriptor");
+        return;
+    }
+
+    std::scoped_lock _{m_mutex};
+
+    if (resource != nullptr) {
+        register_resource(source, resource, false, name);
+    }
+
+    const auto key = static_cast<uintptr_t>(handle.ptr);
+    auto& descriptor = m_dsv_descriptors[key];
+    descriptor.handle = key;
+    descriptor.resource = reinterpret_cast<uintptr_t>(resource);
+    descriptor.source = std::string{source};
+    descriptor.descriptor_type = "DSV";
+    descriptor.last_seen_frame = m_frame;
+
+    if (descriptor.first_seen_frame == 0) {
+        descriptor.first_seen_frame = m_frame;
+    }
+
+    if (resource != nullptr) {
+        const auto resource_key = reinterpret_cast<uintptr_t>(resource);
+        if (const auto it = m_resources.find(resource_key); it != m_resources.end()) {
+            descriptor.name = it->second.name;
+        }
+    }
+
+    if (descriptor.name.empty()) {
+        descriptor.name = name.empty() ? format_pointer(key) : std::string{name};
+    }
+}
+
 void D3D12Diagnostics::record_descriptor_heaps_set(
     std::string_view source,
     uint32_t count,
@@ -475,19 +557,56 @@ void D3D12Diagnostics::record_rtv_bind(
     std::scoped_lock _{m_mutex};
     ++m_rtv_binds_this_frame;
 
+    CurrentBindContext context{};
+    context.frame = m_frame;
+    context.source = std::string{source};
+    context.exact_this_frame = true;
+    context.render_targets.reserve(rtv_count);
+
     std::ostringstream detail{};
     detail << "rtv_count=" << rtv_count;
 
     if (rtvs != nullptr) {
         for (uint32_t i = 0; i < rtv_count; ++i) {
             detail << " rtv[" << i << "]=0x" << std::hex << std::uppercase << rtvs[i].ptr << std::dec;
+
+            BoundTargetInfo target{};
+            target.handle = static_cast<uintptr_t>(rtvs[i].ptr);
+            target.descriptor_type = "RTV";
+
+            if (const auto it = m_rtv_descriptors.find(target.handle); it != m_rtv_descriptors.end()) {
+                target.resource = it->second.resource;
+                target.name = it->second.name;
+            }
+
+            if (target.name.empty()) {
+                target.name = format_pointer(target.handle);
+            }
+
+            context.render_targets.emplace_back(std::move(target));
         }
     }
 
     if (dsv != nullptr) {
         detail << " dsv=0x" << std::hex << std::uppercase << dsv->ptr << std::dec;
+
+        BoundTargetInfo target{};
+        target.handle = static_cast<uintptr_t>(dsv->ptr);
+        target.descriptor_type = "DSV";
+
+        if (const auto it = m_dsv_descriptors.find(target.handle); it != m_dsv_descriptors.end()) {
+            target.resource = it->second.resource;
+            target.name = it->second.name;
+        }
+
+        if (target.name.empty()) {
+            target.name = format_pointer(target.handle);
+        }
+
+        context.depth_target = std::move(target);
     }
 
+    m_current_bind_context = std::move(context);
     push_ring(m_recent_bindings, BindingEvent{m_frame, std::string{source}, "OMSetRenderTargets", detail.str()}, MAX_RECENT_BINDINGS);
 }
 
@@ -515,6 +634,7 @@ D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
     out.transient_heap_creations_this_frame = m_transient_heap_creations_this_frame;
     out.transient_resource_creations_this_frame = m_transient_resource_creations_this_frame;
     out.transient_resource_bytes_this_frame = m_transient_resource_bytes_this_frame;
+    out.current_bind_context = m_current_bind_context;
 
     out.heaps.reserve(m_heaps.size());
     for (const auto& [_, heap] : m_heaps) {
@@ -545,13 +665,21 @@ D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
     return out;
 }
 
+std::optional<D3D12Diagnostics::CurrentBindContext> D3D12Diagnostics::current_bind_context() const {
+    std::scoped_lock _{m_mutex};
+    return m_current_bind_context;
+}
+
 void D3D12Diagnostics::reset() {
     std::scoped_lock _{m_mutex};
     m_heaps.clear();
     m_resources.clear();
+    m_rtv_descriptors.clear();
+    m_dsv_descriptors.clear();
     m_recent_bindings.clear();
     m_recent_barriers.clear();
     m_recent_warnings.clear();
+    m_current_bind_context.reset();
     m_frame = 0;
     m_device = 0;
     m_swapchain = 0;

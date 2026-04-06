@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -51,6 +52,21 @@ public:
         std::string message{};
     };
 
+    struct BoundTargetInfo {
+        uintptr_t handle{};
+        uintptr_t resource{};
+        std::string name{};
+        std::string descriptor_type{};
+    };
+
+    struct CurrentBindContext {
+        uint64_t frame{};
+        std::string source{};
+        std::vector<BoundTargetInfo> render_targets{};
+        std::optional<BoundTargetInfo> depth_target{};
+        bool exact_this_frame{};
+    };
+
     struct Snapshot {
         bool available{};
         uint64_t frame{};
@@ -74,6 +90,7 @@ public:
         uint64_t transient_resource_bytes_this_frame{};
         uint64_t tracked_resource_bytes_total{};
         uint64_t tracked_transient_resource_bytes_total{};
+        std::optional<CurrentBindContext> current_bind_context{};
         std::vector<HeapInfo> heaps{};
         std::vector<BindingEvent> recent_bindings{};
         std::vector<BarrierEvent> recent_barriers{};
@@ -109,6 +126,20 @@ public:
         std::string_view name = {}
     );
 
+    void register_rtv_descriptor(
+        std::string_view source,
+        ID3D12Resource* resource,
+        D3D12_CPU_DESCRIPTOR_HANDLE handle,
+        std::string_view name = {}
+    );
+
+    void register_dsv_descriptor(
+        std::string_view source,
+        ID3D12Resource* resource,
+        D3D12_CPU_DESCRIPTOR_HANDLE handle,
+        std::string_view name = {}
+    );
+
     void record_descriptor_heaps_set(
         std::string_view source,
         uint32_t count,
@@ -129,6 +160,7 @@ public:
     );
 
     Snapshot snapshot() const;
+    std::optional<CurrentBindContext> current_bind_context() const;
     void reset();
 
 private:
@@ -145,15 +177,28 @@ private:
         bool transient{};
     };
 
+    struct DescriptorInfo {
+        uintptr_t handle{};
+        uintptr_t resource{};
+        std::string name{};
+        std::string source{};
+        std::string descriptor_type{};
+        uint64_t first_seen_frame{};
+        uint64_t last_seen_frame{};
+    };
+
     void push_warning(std::string_view source, std::string message);
     void note_frame_warning_if_needed();
 
     mutable std::recursive_mutex m_mutex{};
     std::unordered_map<uintptr_t, HeapInfo> m_heaps{};
     std::unordered_map<uintptr_t, ResourceInfo> m_resources{};
+    std::unordered_map<uintptr_t, DescriptorInfo> m_rtv_descriptors{};
+    std::unordered_map<uintptr_t, DescriptorInfo> m_dsv_descriptors{};
     std::vector<BindingEvent> m_recent_bindings{};
     std::vector<BarrierEvent> m_recent_barriers{};
     std::vector<WarningEvent> m_recent_warnings{};
+    std::optional<CurrentBindContext> m_current_bind_context{};
 
     uint64_t m_frame{};
     uintptr_t m_device{};

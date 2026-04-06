@@ -21,6 +21,8 @@ static D3D12Hook* g_d3d12_hook = nullptr;
 namespace {
 constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
 constexpr size_t CREATE_PIPELINE_STATE_VTABLE_INDEX = 47;
+constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
+constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
 
 template <typename TInterface>
@@ -386,9 +388,13 @@ bool D3D12Hook::hook() {
         m_present1_hook.reset();
         m_create_graphics_pipeline_state_hooks.clear();
         m_create_pipeline_state_hooks.clear();
+        m_create_render_target_view_hooks.clear();
+        m_create_depth_stencil_view_hooks.clear();
         m_set_pipeline_state_hooks.clear();
         m_create_graphics_pipeline_state_hook_lookup.clear();
         m_create_pipeline_state_hook_lookup.clear();
+        m_create_render_target_view_hook_lookup.clear();
+        m_create_depth_stencil_view_hook_lookup.clear();
         m_set_pipeline_state_hook_lookup.clear();
         m_swapchain_hook.reset();
 
@@ -401,6 +407,8 @@ bool D3D12Hook::hook() {
 
         std::unordered_set<uintptr_t> graphics_pipeline_state_slots{};
         std::unordered_set<uintptr_t> pipeline_state_stream_slots{};
+        std::unordered_set<uintptr_t> render_target_view_slots{};
+        std::unordered_set<uintptr_t> depth_stencil_view_slots{};
         std::unordered_set<uintptr_t> set_pipeline_state_slots{};
 
         add_unique_pointer_hook(
@@ -455,6 +463,24 @@ bool D3D12Hook::hook() {
                 m_create_graphics_pipeline_state_hooks,
                 m_create_graphics_pipeline_state_hook_lookup,
                 graphics_pipeline_state_slots
+            );
+
+            add_unique_pointer_hook(
+                iface,
+                CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::create_render_target_view),
+                m_create_render_target_view_hooks,
+                m_create_render_target_view_hook_lookup,
+                render_target_view_slots
+            );
+
+            add_unique_pointer_hook(
+                iface,
+                CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::create_depth_stencil_view),
+                m_create_depth_stencil_view_hooks,
+                m_create_depth_stencil_view_hook_lookup,
+                depth_stencil_view_slots
             );
         }
 
@@ -569,9 +595,13 @@ bool D3D12Hook::unhook() {
     m_present1_hook.reset();
     m_create_graphics_pipeline_state_hooks.clear();
     m_create_pipeline_state_hooks.clear();
+    m_create_render_target_view_hooks.clear();
+    m_create_depth_stencil_view_hooks.clear();
     m_set_pipeline_state_hooks.clear();
     m_create_graphics_pipeline_state_hook_lookup.clear();
     m_create_pipeline_state_hook_lookup.clear();
+    m_create_render_target_view_hook_lookup.clear();
+    m_create_depth_stencil_view_hook_lookup.clear();
     m_set_pipeline_state_hook_lookup.clear();
     m_swapchain_hook.reset();
 
@@ -595,6 +625,22 @@ PointerHook* D3D12Hook::find_create_pipeline_state_hook(void* slot) const {
     }
 
     return m_create_pipeline_state_hooks.empty() ? nullptr : m_create_pipeline_state_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_create_render_target_view_hook(void* slot) const {
+    if (const auto it = m_create_render_target_view_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_create_render_target_view_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_create_render_target_view_hooks.empty() ? nullptr : m_create_render_target_view_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_create_depth_stencil_view_hook(void* slot) const {
+    if (const auto it = m_create_depth_stencil_view_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_create_depth_stencil_view_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_create_depth_stencil_view_hooks.empty() ? nullptr : m_create_depth_stencil_view_hooks.front().get();
 }
 
 PointerHook* D3D12Hook::find_set_pipeline_state_hook(void* slot) const {
@@ -840,6 +886,44 @@ HRESULT WINAPI D3D12Hook::create_pipeline_state(
     }
 
     return result;
+}
+
+void WINAPI D3D12Hook::create_render_target_view(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    const D3D12_RENDER_TARGET_VIEW_DESC* desc,
+    D3D12_CPU_DESCRIPTOR_HANDLE descriptor
+) {
+    (void)desc;
+    auto d3d12 = g_d3d12_hook;
+    const auto slot = device != nullptr ? &(*(void***)device)[CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_create_render_target_view_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::create_render_target_view)*>() : nullptr;
+
+    if (original != nullptr) {
+        original(device, resource, desc, descriptor);
+    }
+
+    render::D3D12Diagnostics::get().register_rtv_descriptor("D3D12Hook::CreateRenderTargetView", resource, descriptor);
+}
+
+void WINAPI D3D12Hook::create_depth_stencil_view(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
+    D3D12_CPU_DESCRIPTOR_HANDLE descriptor
+) {
+    (void)desc;
+    auto d3d12 = g_d3d12_hook;
+    const auto slot = device != nullptr ? &(*(void***)device)[CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_create_depth_stencil_view_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::create_depth_stencil_view)*>() : nullptr;
+
+    if (original != nullptr) {
+        original(device, resource, desc, descriptor);
+    }
+
+    render::D3D12Diagnostics::get().register_dsv_descriptor("D3D12Hook::CreateDepthStencilView", resource, descriptor);
 }
 
 void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state) {
