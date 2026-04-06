@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <chrono>
 
 #include <SafetyHook.hpp>
 
@@ -111,6 +112,7 @@ public:
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
     void ensure_dedicated_ui_target(uintptr_t command_list);
+    bool create_dedicated_ui_texture();
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
 
@@ -227,6 +229,7 @@ protected:
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
     uint32_t dedicated_ui_width{0};
     uint32_t dedicated_ui_height{0};
+    std::chrono::steady_clock::time_point dedicated_ui_last_attempt{};
     sdk::FViewport* last_viewport{nullptr};
 };
 
@@ -538,7 +541,7 @@ private:
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
-    safetyhook::MidHook m_ue57_slate_elements_hook{};
+    std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};

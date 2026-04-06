@@ -5,6 +5,7 @@
 
 #include <asmjit/asmjit.h>
 #include <future>
+#include <unordered_map>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -619,25 +620,87 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
 
     m_attempted_hook_ue57_slate_elements_pass = true;
 
-    const auto& symbols = vrmod::get_ue57_slate_symbols();
+    const auto draw_window = g_hook->m_slate_thread_hook.target_address();
+    const auto module_within = utility::get_module_within(draw_window);
 
-    if (!symbols.valid()) {
-        SPDLOG_ERROR("Cannot hook UE 5.7 AddSlateDrawElementsPass because the required Slate symbols were not resolved");
+    if (!module_within.has_value()) {
+        SPDLOG_ERROR("Cannot scan UE 5.7 DrawWindow_RenderThread for Slate callsites because the module was not resolved");
         return;
     }
 
-    auto hook_result = safetyhook::create_mid(
-        reinterpret_cast<void*>(symbols.add_slate_draw_elements_pass),
-        &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
+    struct DirectCall {
+        uintptr_t callsite{};
+        uintptr_t target{};
+        uint8_t length{};
+    };
 
-    if (!hook_result) {
-        SPDLOG_ERROR("Failed to hook UE 5.7 AddSlateDrawElementsPass");
+    std::vector<DirectCall> direct_calls{};
+
+    utility::exhaustive_decode((uint8_t*)draw_window, 0x1200, [&](utility::ExhaustionContext& ctx) -> utility::ExhaustionResult {
+        const auto mnemonic = std::string_view{ctx.instrux.Mnemonic};
+
+        if (!mnemonic.starts_with("CALL")) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        const auto target = utility::resolve_displacement(ctx.addr);
+
+        if (!target.has_value()) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        const auto called_module = utility::get_module_within((void*)*target);
+
+        if (!called_module.has_value() || *called_module != *module_within) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        direct_calls.push_back({ctx.addr, *target, (uint8_t)ctx.instrux.Length});
+        return utility::ExhaustionResult::CONTINUE;
+    });
+
+    std::unordered_map<uintptr_t, std::vector<DirectCall>> grouped_calls{};
+
+    for (const auto& call : direct_calls) {
+        grouped_calls[call.target].push_back(call);
+    }
+
+    std::vector<DirectCall> candidate_calls{};
+
+    for (const auto& [target, calls] : grouped_calls) {
+        if (calls.size() >= 2) {
+            candidate_calls.insert(candidate_calls.end(), calls.begin(), calls.end());
+        }
+    }
+
+    if (candidate_calls.empty()) {
+        SPDLOG_WARN("Could not find repeated direct-call candidates inside UE 5.7 DrawWindow_RenderThread");
         return;
     }
 
-    m_ue57_slate_elements_hook = std::move(hook_result);
+    size_t hooked_count{};
+
+    for (const auto& call : candidate_calls) {
+        auto hook_result = safetyhook::create_mid(
+            reinterpret_cast<void*>(call.callsite),
+            &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
+
+        if (!hook_result) {
+            SPDLOG_WARN("Failed to hook UE 5.7 DrawWindow_RenderThread callsite {:x} -> {:x}", call.callsite, call.target);
+            continue;
+        }
+
+        m_ue57_slate_elements_hooks.emplace_back(std::move(hook_result));
+        ++hooked_count;
+    }
+
+    if (hooked_count == 0) {
+        SPDLOG_ERROR("Failed to hook any UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection");
+        return;
+    }
+
     m_hooked_ue57_slate_elements_pass = true;
-    SPDLOG_INFO("Hooked UE 5.7 AddSlateDrawElementsPass for ElementsTexture redirection");
+    SPDLOG_INFO("Hooked {} UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection", hooked_count);
 }
 
 namespace detail{
@@ -5781,53 +5844,9 @@ void FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook(safetyhook
             logged_separate_path = true;
             SPDLOG_INFO("[UE 5.7 Slate] DrawElements pass already has a separate ElementsTexture");
         }
-
-        return;
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(5, "[UE 5.7 Slate] DrawElements pass is still aliasing ElementsTexture to SceneViewportTexture");
     }
-
-    auto* rtm = g_hook->get_render_target_manager();
-
-    if (rtm == nullptr) {
-        return;
-    }
-
-    auto* dedicated_ui_target = rtm->get_dedicated_ui_target();
-
-    if (dedicated_ui_target == nullptr || IsBadReadPtr(dedicated_ui_target, sizeof(void*))) {
-        return;
-    }
-
-    const auto& symbols = vrmod::get_ue57_slate_symbols();
-
-    if (symbols.register_external_texture_from_rhi == 0) {
-        return;
-    }
-
-    auto native_resource = dedicated_ui_target->get_native_resource();
-
-    if (native_resource == nullptr) {
-        SPDLOG_WARN_ONCE("[UE 5.7 Slate] Dedicated UI target exists but has no native resource");
-        return;
-    }
-
-    const auto register_external_texture = reinterpret_cast<RegisterExternalTextureFromRHIFn>(symbols.register_external_texture_from_rhi);
-    auto* registered_texture = register_external_texture(
-        *reinterpret_cast<FRDGBuilder*>(ctx.rcx),
-        reinterpret_cast<FRHITexture*>(dedicated_ui_target),
-        L"UEVRSlateElementsTexture");
-
-    if (registered_texture == nullptr) {
-        SPDLOG_WARN_ONCE("[UE 5.7 Slate] Failed to register the dedicated UI target with the render graph");
-        return;
-    }
-
-    inputs->elements_texture = registered_texture;
-    inputs->elements_load_action = UE57RenderTargetLoadAction::Clear;
-
-    SPDLOG_INFO_EVERY_N_SEC(5,
-        "[UE 5.7 Slate] Redirecting ElementsTexture to dedicated UI target [{}x{}]",
-        rtm->get_dedicated_ui_width(),
-        rtm->get_dedicated_ui_height());
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
@@ -6093,7 +6112,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (!g_hook->m_hooked_ue57_slate_elements_pass) {
             g_hook->attempt_hook_ue57_slate_elements_pass();
         }
-
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
     }
 
@@ -6142,14 +6160,6 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return call_orig();
     }
 
-    if (is_ue_5_7_or_newer()) {
-        SPDLOG_INFO_EVERY_N_SEC(5,
-            "[SlateRHIRenderer::DrawWindow_RenderThread] Dedicated UE 5.7 UI target ready [{}x{}]",
-            rtm->get_dedicated_ui_width(),
-            rtm->get_dedicated_ui_height());
-        return call_orig();
-    }
-    
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
     const auto old_texture = slate_resource->get_mutable_resource();
@@ -7383,8 +7393,6 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
-    dedicated_ui_width = 0;
-    dedicated_ui_height = 0;
 }
 
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
@@ -7402,12 +7410,145 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
     dedicated_ui_height = height;
 }
 
+bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
+    if (!is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    if (dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return false;
+    }
+
+    const auto width = dedicated_ui_width;
+    const auto height = dedicated_ui_height;
+    dedicated_ui_last_attempt = std::chrono::steady_clock::now();
+
+    GameThreadWorker::get().enqueue([this, width, height]() -> void {
+        try {
+            if (this->in_flight_dedicated_ui_texture != nullptr || this->get_dedicated_ui_target() != nullptr) {
+                return;
+            }
+
+            auto* engine = sdk::UGameEngine::get();
+
+            if (engine == nullptr) {
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UGameEngine is not ready for dedicated UE 5.7 UI target creation");
+                return;
+            }
+
+            auto* world = engine->get_world();
+
+            if (world == nullptr) {
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UWorld is not ready for dedicated UE 5.7 UI target creation");
+                return;
+            }
+
+            auto* kismet_rendering = sdk::UKismetRenderingLibrary::get();
+
+            if (kismet_rendering == nullptr) {
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UKismetRenderingLibrary is not ready for dedicated UE 5.7 UI target creation");
+                return;
+            }
+
+            const float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+            auto* tgt_raw = kismet_rendering->create_render_target_2d(world, width, height, 2, clear_color, false);
+
+            if (tgt_raw == nullptr) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
+                return;
+            }
+
+            sdk::UObjectReference<sdk::UTexture> tgt{tgt_raw};
+            this->in_flight_dedicated_ui_texture = tgt_raw;
+
+            RenderThreadWorker::get().enqueue_conditional(
+                [this, tgt, width, height]() -> bool {
+                    try {
+                        if (!tgt.valid()) {
+                            SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI texture was destroyed before its render resource became valid");
+                            GameThreadWorker::get().enqueue([this]() -> void {
+                                this->in_flight_dedicated_ui_texture = nullptr;
+                            });
+                            return true;
+                        }
+
+                        if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                            return false;
+                        }
+
+                        auto* rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource();
+                        if (rsrc == nullptr) {
+                            return false;
+                        }
+
+                        const bool updated_vtable_offset = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+                        auto* frt = updated_vtable_offset ? rsrc->as_render_target() : nullptr;
+
+                        if (frt == nullptr) {
+                            return false;
+                        }
+
+                        sdk::FRenderTarget::update_offsets(frt);
+                        auto** frt_texture = frt->get_render_target_texture();
+
+                        if (frt_texture == nullptr || *frt_texture == nullptr || IsBadReadPtr(*frt_texture, sizeof(void*))) {
+                            return false;
+                        }
+
+                        FRHITexture2D::set_vtable(*(void**)*frt_texture);
+                        this->set_dedicated_ui_target(*frt_texture, width, height);
+                        this->get_fallback_ui_target_ref() = nullptr;
+
+                        GameThreadWorker::get().enqueue([this, tgt]() -> void {
+                            if (!tgt.valid()) {
+                                this->dedicated_ui_texture = nullptr;
+                                this->in_flight_dedicated_ui_texture = nullptr;
+                                this->destroy_dedicated_ui_target();
+                                return;
+                            }
+
+                            this->dedicated_ui_texture = tgt;
+                            this->in_flight_dedicated_ui_texture = nullptr;
+                        });
+
+                        SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI texture [{}x{}]", width, height);
+                        return true;
+                    } catch (...) {
+                        SPDLOG_ERROR("[VRRenderTargetManager] Exception while waiting for the dedicated UE 5.7 UI texture render resource");
+                        GameThreadWorker::get().enqueue([this]() -> void {
+                            this->dedicated_ui_texture = nullptr;
+                            this->in_flight_dedicated_ui_texture = nullptr;
+                            this->destroy_dedicated_ui_target();
+                        });
+                        return true;
+                    }
+                },
+                [this]() {
+                    SPDLOG_ERROR("[VRRenderTargetManager] Timed out waiting for the dedicated UE 5.7 UI texture render resource");
+                    GameThreadWorker::get().enqueue([this]() -> void {
+                        this->dedicated_ui_texture = nullptr;
+                        this->in_flight_dedicated_ui_texture = nullptr;
+                        this->destroy_dedicated_ui_target();
+                    });
+                },
+                std::chrono::seconds(2));
+        } catch (...) {
+            SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UE 5.7 UI texture creation");
+            this->in_flight_dedicated_ui_texture = nullptr;
+        }
+    });
+
+    return true;
+}
+
 void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_list) {
+    (void)command_list;
+
     if (!is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
         return;
     }
 
-    if (command_list == 0 || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+    if (dedicated_ui_width == 0 || dedicated_ui_height == 0) {
         return;
     }
 
@@ -7424,79 +7565,43 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
             }
         }
 
-        SPDLOG_INFO(
-            "[VRRenderTargetManager] Recreating dedicated UE 5.7 UI target [{}x{}]",
-            dedicated_ui_width,
-            dedicated_ui_height);
-
+        SPDLOG_INFO("[VRRenderTargetManager] Recreating dedicated UE 5.7 UI target [{}x{}]", dedicated_ui_width, dedicated_ui_height);
         destroy_dedicated_ui_target();
     }
 
-    auto* dynamic_rhi = sdk::FDynamicRHI::get();
+    if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
+        if (sdk::UTexture::update_render_resource_offset_texture2d(dedicated_ui_texture)) {
+            if (auto* rsrc = (sdk::FTextureRenderTargetResource*)dedicated_ui_texture->get_resource(); rsrc != nullptr) {
+                const bool updated_vtable_offset = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+                auto* frt = updated_vtable_offset ? rsrc->as_render_target() : nullptr;
 
-    if (dynamic_rhi == nullptr) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] FDynamicRHI is not ready for dedicated UE 5.7 UI target creation");
+                if (frt != nullptr) {
+                    sdk::FRenderTarget::update_offsets(frt);
+                    auto** frt_texture = frt->get_render_target_texture();
+
+                    if (frt_texture != nullptr && *frt_texture != nullptr && !IsBadReadPtr(*frt_texture, sizeof(void*))) {
+                        FRHITexture2D::set_vtable(*(void**)*frt_texture);
+                        set_dedicated_ui_target(*frt_texture, dedicated_ui_width, dedicated_ui_height);
+                        get_fallback_ui_target_ref() = nullptr;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    if (in_flight_dedicated_ui_texture != nullptr) {
         return;
     }
 
-    sdk::FCreateInfo create_info{};
-    create_info.debug_name = "UEVRSlateElementsTexture";
-
-    auto created_target = dynamic_rhi->create_texture_2d(
-        command_list,
-        dedicated_ui_width,
-        dedicated_ui_height,
-        2,
-        1,
-        1,
-        static_cast<ETextureCreateFlags>((uint64_t)ETextureCreateFlags::RenderTargetable | (uint64_t)ETextureCreateFlags::ShaderResource),
-        create_info);
-
-    if (created_target == nullptr || created_target->texture == nullptr) {
-        SPDLOG_WARNING_EVERY_N_SEC(2,
-            "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI target [{}x{}]",
-            dedicated_ui_width,
-            dedicated_ui_height);
+    if (const auto now = std::chrono::steady_clock::now();
+        dedicated_ui_last_attempt.time_since_epoch().count() != 0 &&
+        now - dedicated_ui_last_attempt < std::chrono::seconds(1))
+    {
         return;
     }
 
-    auto* created_texture = created_target->texture;
-
-    if (IsBadReadPtr(created_texture, sizeof(void*))) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has an invalid texture pointer");
-        return;
-    }
-
-    auto* texture_vtable = *(void**)created_texture;
-
-    if (texture_vtable == nullptr || !utility::get_module_within(texture_vtable).has_value()) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Rejected dedicated UE 5.7 UI target because its vtable is invalid");
-        return;
-    }
-
-    auto* native_resource = (ID3D12Resource*)created_texture->get_native_resource();
-
-    if (native_resource == nullptr) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has no native D3D12 resource");
-        return;
-    }
-
-    const auto desc = native_resource->GetDesc();
-
-    if (desc.Width == 0 || desc.Height == 0) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Created dedicated UE 5.7 UI target has an empty resource description");
-        return;
-    }
-
-    owned_dedicated_ui_target = std::move(created_target);
-    set_dedicated_ui_target(created_texture, (uint32_t)desc.Width, desc.Height);
-    get_fallback_ui_target_ref() = nullptr;
-
-    SPDLOG_INFO(
-        "[VRRenderTargetManager] Created dedicated UE 5.7 UI target [{:x}] [{}x{}]",
-        (uintptr_t)created_texture,
-        desc.Width,
-        desc.Height);
+    create_dedicated_ui_texture();
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
