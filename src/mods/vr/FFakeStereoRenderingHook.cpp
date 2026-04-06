@@ -4,6 +4,7 @@
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
+#include <array>
 #include <future>
 #include <unordered_map>
 
@@ -94,6 +95,93 @@ struct UE57SlateDrawElementsPassInputsHead {
 };
 
 using RegisterExternalTextureFromRHIFn = FRDGTexture* (*)(FRDGBuilder&, FRHITexture*, const wchar_t*);
+
+bool looks_like_nontrivial_virtual(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+        return false;
+    }
+
+    size_t decoded_bytes = 0;
+    size_t call_count = 0;
+    bool saw_terminator = false;
+
+    for (auto ip = (uint8_t*)fn; decoded_bytes < 512; ) {
+        const auto decoded = utility::decode_one(ip);
+
+        if (!decoded) {
+            break;
+        }
+
+        decoded_bytes += decoded->Length;
+
+        if (std::string_view{decoded->Mnemonic}.starts_with("CALL")) {
+            ++call_count;
+        }
+
+        if (std::string_view{decoded->Mnemonic}.starts_with("RET") || std::string_view{decoded->Mnemonic}.starts_with("INT3")) {
+            saw_terminator = true;
+            break;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return saw_terminator && decoded_bytes >= 64 && call_count >= 1;
+}
+
+std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_t localplayer) {
+    auto* object_class = sdk::UObject::static_class();
+
+    if (object_class == nullptr) {
+        SPDLOG_WARN("[PostInitProperties] UObject::static_class() is not ready");
+        return std::nullopt;
+    }
+
+    auto* object_cdo = object_class->get_class_default_object<sdk::UObject>();
+
+    if (object_cdo == nullptr || IsBadReadPtr(object_cdo, sizeof(void*))) {
+        SPDLOG_WARN("[PostInitProperties] UObject CDO is not ready");
+        return std::nullopt;
+    }
+
+    const auto object_vtable = *(uintptr_t**)object_cdo;
+    const auto localplayer_vtable = *(uintptr_t**)localplayer;
+
+    if (object_vtable == nullptr || localplayer_vtable == nullptr ||
+        IsBadReadPtr(object_vtable, sizeof(void*)) || IsBadReadPtr(localplayer_vtable, sizeof(void*)))
+    {
+        SPDLOG_WARN("[PostInitProperties] UObject or LocalPlayer vtable is invalid");
+        return std::nullopt;
+    }
+
+    // UE 5.7 source/PDB puts PostInitProperties immediately after GetDetailedInfoInternal.
+    // The runtime slot shifts by one depending on whether RegisterDependencies is compiled in,
+    // so prefer the expected 5.7 slots first and keep the older nearby slot as a fallback.
+    constexpr std::array<uint32_t, 3> candidate_slots{9, 10, 8};
+
+    for (const auto slot : candidate_slots) {
+        const auto object_fn = object_vtable[slot];
+        const auto localplayer_fn = localplayer_vtable[slot];
+
+        if (object_fn == 0 || localplayer_fn == 0) {
+            continue;
+        }
+
+        if (object_fn != localplayer_fn) {
+            continue;
+        }
+
+        if (!looks_like_nontrivial_virtual(object_fn)) {
+            continue;
+        }
+
+        SPDLOG_INFO("[PostInitProperties] Resolved UObject::PostInitProperties through source/PDB-informed slot {} at {:x}", slot, object_fn);
+        return slot;
+    }
+
+    SPDLOG_WARN("[PostInitProperties] Could not validate the expected UObject::PostInitProperties slots on this build");
+    return std::nullopt;
+}
 }
 
 // Scan through function instructions to detect usage of double
@@ -5630,9 +5718,11 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    INSTRUX ix{};
+    if (is_ue_5_7_or_newer()) {
+        idx = resolve_post_init_properties_index_from_uobject(localplayer);
+    }
 
-    for (auto i = 1; i < 25; ++i) {
+    for (auto i = 1; !idx && i < 25; ++i) {
         if (idx) {
             break;
         }
@@ -5658,7 +5748,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
                 if (*disp == (uintptr_t)engine || 
                     (!IsBadReadPtr((void*)*disp, sizeof(void*)) && *(uintptr_t*)*disp == (uintptr_t)*engine)) 
                 {
-                    SPDLOG_INFO("Found PostInitProperties at {} {:x}!", i, (uintptr_t)vfunc);
+                    SPDLOG_INFO("Found PostInitProperties through legacy body scan at {} {:x}!", i, (uintptr_t)vfunc);
                     idx = i;
                     return utility::ExhaustionResult::BREAK;
                 }
@@ -7391,6 +7481,29 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
 }
 
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
+    if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
+        auto rooted_texture = dedicated_ui_texture;
+
+        GameThreadWorker::get().enqueue([rooted_texture]() mutable {
+            if (rooted_texture != nullptr && rooted_texture.valid()) {
+                rooted_texture->remove_from_root();
+            }
+        });
+    }
+
+    if (in_flight_dedicated_ui_texture != nullptr) {
+        auto* rooted_texture = in_flight_dedicated_ui_texture;
+
+        GameThreadWorker::get().enqueue([rooted_texture]() {
+            if (rooted_texture != nullptr && !IsBadReadPtr(rooted_texture, sizeof(void*))) {
+                try {
+                    rooted_texture->remove_from_root();
+                } catch (...) {
+                }
+            }
+        });
+    }
+
     owned_dedicated_ui_target.reset();
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
@@ -7459,6 +7572,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
                 return;
             }
+
+            tgt_raw->add_to_root();
 
             sdk::UObjectReference<sdk::UTexture> tgt{tgt_raw};
             this->in_flight_dedicated_ui_texture = tgt_raw;
