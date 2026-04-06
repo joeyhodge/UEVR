@@ -123,6 +123,7 @@ protected:
 
     bool m_using_proton_swapchain{ false };
     bool m_using_frame_generation_swapchain{ false };
+    bool m_skip_dummy_swapchain_type_info_probe{ false };
     bool m_hooked{ false };
     bool m_is_phase_1{ true };
     bool m_inside_present{false};

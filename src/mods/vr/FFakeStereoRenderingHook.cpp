@@ -5858,6 +5858,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     SPDLOG_INFO_ONCE("SlateRHIRenderer::DrawWindow_RenderThread called!");
 #endif
 
+    g_framework->notify_render_activity();
+
     if (!g_framework->is_game_data_intialized() || a2 == nullptr) {
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }

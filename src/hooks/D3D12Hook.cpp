@@ -273,27 +273,31 @@ bool D3D12Hook::hook() {
         return false;
     }
 
-    try {
-        const auto ti = utility::rtti::get_type_info(swap_chain1);
-        const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
-        const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
+    if (!m_skip_dummy_swapchain_type_info_probe) {
+        try {
+            const auto ti = utility::rtti::get_type_info(swap_chain1);
+            const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
+            const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
 
-        spdlog::info("Swapchain type info: {}", swapchain_classname);
-        spdlog::info("Swapchain raw type info: {}", raw_name);
-        
-        if (swapchain_classname.contains("interposer::DXGISwapChain")) { // DLSS3
-            spdlog::info("Found Streamline (DLSSFG) swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
-            m_using_frame_generation_swapchain = true;
+            spdlog::info("Swapchain type info: {}", swapchain_classname);
+            spdlog::info("Swapchain raw type info: {}", raw_name);
+            
+            if (swapchain_classname.contains("interposer::DXGISwapChain")) { // DLSS3
+                spdlog::info("Found Streamline (DLSSFG) swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
+                m_using_frame_generation_swapchain = true;
+            }
+            // Need to test this one to see if it actually has the same issues - disabling it for now
+            /*else if (swapchain_classname.contains("FrameInterpolationSwapChain")) { // FSR3
+                spdlog::info("Found FSR3 swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
+                m_using_frame_generation_swapchain = true;
+            }*/
+        } catch (const std::exception& e) {
+            spdlog::error("Failed to get type info: {}. Disabling dummy swapchain RTTI probe for this session.", e.what());
+            m_skip_dummy_swapchain_type_info_probe = true;
+        } catch (...) {
+            spdlog::error("Failed to get type info: unknown exception. Disabling dummy swapchain RTTI probe for this session.");
+            m_skip_dummy_swapchain_type_info_probe = true;
         }
-        // Need to test this one to see if it actually has the same issues - disabling it for now
-        /*else if (swapchain_classname.contains("FrameInterpolationSwapChain")) { // FSR3
-            spdlog::info("Found FSR3 swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
-            m_using_frame_generation_swapchain = true;
-        }*/
-    } catch (const std::exception& e) {
-        spdlog::error("Failed to get type info: {}", e.what());
-    } catch (...) {
-        spdlog::error("Failed to get type info: unknown exception");
     }
 
     spdlog::info("Finding command queue offset");

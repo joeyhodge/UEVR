@@ -64,6 +64,32 @@ bool should_suppress_openxr_rehook_guard() {
         (openxr->session_ready || openxr->frame_synced || openxr->frame_began || openxr->got_first_poses) &&
         !openxr->got_first_valid_poses;
 
+    const auto active_session =
+        has_openxr_session &&
+        (openxr->session_state == XR_SESSION_STATE_VISIBLE || openxr->session_state == XR_SESSION_STATE_FOCUSED) &&
+        (openxr->ever_submitted || openxr->last_successful_end_frame.time_since_epoch().count() != 0 ||
+         openxr->last_successful_begin_frame.time_since_epoch().count() != 0);
+
+    if (active_session) {
+        static auto last_active_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+
+        if (last_active_log.time_since_epoch().count() == 0 || now - last_active_log >= std::chrono::seconds(2)) {
+            last_active_log = now;
+
+            spdlog::warn(
+                "[Framework] Suppressing D3D rehook while OpenXR session is active. session_state={} ever_submitted={} frame_synced={} frame_began={} got_first_valid_poses={}",
+                openxr->get_session_state_string(openxr->session_state),
+                openxr->ever_submitted,
+                openxr->frame_synced,
+                openxr->frame_began,
+                openxr->got_first_valid_poses
+            );
+        }
+
+        return true;
+    }
+
     if (!ready_wedge) {
         return false;
     }
@@ -87,6 +113,15 @@ bool should_suppress_openxr_rehook_guard() {
 
     return true;
 }
+}
+
+void Framework::notify_render_activity() {
+    const auto now = std::chrono::steady_clock::now();
+    std::scoped_lock _{ m_hook_monitor_mutex };
+    m_last_present_time = now;
+    m_last_message_time = now;
+    m_last_chance_time = now + std::chrono::seconds(1);
+    m_has_last_chance = true;
 }
 
 UEVRSharedMemory::UEVRSharedMemory() {

@@ -171,6 +171,8 @@ public:
         return m_hook_monitor_mutex;
     }
 
+    void notify_render_activity();
+
     void set_font_size(int size) { 
         if (m_font_size != size) {
             m_font_size = size;
