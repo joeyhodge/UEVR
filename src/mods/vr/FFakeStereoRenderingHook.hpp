@@ -233,6 +233,7 @@ protected:
     uint32_t dedicated_ui_width{0};
     uint32_t dedicated_ui_height{0};
     std::chrono::steady_clock::time_point dedicated_ui_last_attempt{};
+    std::chrono::steady_clock::time_point dedicated_ui_pending_since{};
     bool dedicated_ui_creation_pending{false};
     sdk::FViewport* last_viewport{nullptr};
 };
