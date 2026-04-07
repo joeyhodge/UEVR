@@ -163,6 +163,19 @@ public:
         return m_draw_ui;
     }
 
+    bool is_sidebar_entry_selected(std::string_view label) const {
+        if (!m_draw_ui || m_sidebar_state.selected_entry < 0) {
+            return false;
+        }
+
+        const auto selected_index = static_cast<size_t>(m_sidebar_state.selected_entry);
+        if (selected_index >= m_sidebar_state.entries.size()) {
+            return false;
+        }
+
+        return m_sidebar_state.entries[selected_index].m_label == label;
+    }
+
     bool is_drawing_anything() const;
 
     void set_draw_ui(bool state, bool should_save = true);

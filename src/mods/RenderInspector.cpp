@@ -434,14 +434,29 @@ std::shared_ptr<RenderInspector>& RenderInspector::get() {
 
 void RenderInspector::on_present() {
     if (g_framework == nullptr || !g_framework->is_ready()) {
+        render::D3D12Diagnostics::get().set_enabled(false);
         return;
     }
 
     render::ShaderOverrideRegistry::get().on_present(*g_framework);
 
-    if (auto& vr = VR::get(); vr != nullptr) {
-        m_inspector.on_present(*g_framework, *vr);
+    const auto resources_active = g_framework->is_sidebar_entry_selected("Resources");
+    const auto dx12_diagnostics_active = g_framework->is_sidebar_entry_selected("DX12 Diagnostics");
+    const auto pso_profiler_active = g_framework->is_sidebar_entry_selected("PSO Profiler");
+    const auto should_track_dx12 = g_framework->is_drawing_ui() && (dx12_diagnostics_active || pso_profiler_active);
+
+    render::D3D12Diagnostics::get().set_enabled(should_track_dx12);
+
+    if (resources_active) {
+        if (auto& vr = VR::get(); vr != nullptr) {
+            m_inspector.on_present(*g_framework, *vr);
+        }
     }
+
+    if (!resources_active) {
+        m_selected_resource_key.reset();
+    }
+
 }
 
 void RenderInspector::on_draw_sidebar_entry(std::string_view in_entry) {
