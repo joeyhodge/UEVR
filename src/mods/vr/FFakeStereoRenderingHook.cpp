@@ -81,6 +81,34 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
+constexpr auto UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY = "ue57_prefer_slate_thread";
+
+bool load_ue57_slate_thread_preference() {
+    if (!is_ue_5_7_or_newer()) {
+        return false;
+    }
+
+    if (const auto cached = sdk::discovery_cache::load_entry(UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY, utility::get_executable())) {
+        return cached->value("prefer_slate_thread", false);
+    }
+
+    return false;
+}
+
+void save_ue57_slate_thread_preference(bool prefer) {
+    if (!is_ue_5_7_or_newer()) {
+        return;
+    }
+
+    if (prefer) {
+        sdk::discovery_cache::save_entry(UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY, utility::get_executable(), {
+            {"prefer_slate_thread", true}
+        });
+    } else {
+        sdk::discovery_cache::invalidate_entry(UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY);
+    }
+}
+
 enum class UE57RenderTargetLoadAction : uint32_t {
     NoAction = 0,
     Load = 1,
@@ -216,6 +244,7 @@ bool is_using_double_precision(uintptr_t addr) {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
+    m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
     setup_options();
 }
 
@@ -3858,6 +3887,24 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         });
     };
 
+    auto fall_back_to_slate_thread = [&]() {
+        if (is_ue_5_7_or_newer()) {
+            g_hook->m_prefer_slate_thread_for_session = true;
+            save_ue57_slate_thread_preference(true);
+        }
+
+        if (g_hook->has_slate_hook()) {
+            enqueue_poses_on_slate_thread();
+        } else {
+            vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+        }
+    };
+
+    if (is_ue_5_7_or_newer() && g_hook->m_prefer_slate_thread_for_session && g_hook->has_slate_hook()) {
+        enqueue_poses_on_slate_thread();
+        return;
+    }
+
     // okay well I think this evaluates to false all the time
     // but apparently it has been working for a LONG TIME so I'm not going to touch this until after release
     // (the else statement still handles everything... fine?)
@@ -3965,22 +4012,11 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             }
         } catch(...) {
             SPDLOG_INFO_ONCE("Failed to hook command list, falling back to Slate thread hook");
-
-            if (g_hook->has_slate_hook()) {
-                enqueue_poses_on_slate_thread();
-            } else {
-                vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
-            }
+            fall_back_to_slate_thread();
         }
     } else {
         SPDLOG_INFO_ONCE("Bad root or command list, falling back to Slate thread hook");
-
-        // welp v2
-        if (g_hook->has_slate_hook()) {
-            enqueue_poses_on_slate_thread();
-        } else {
-            vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
-        }
+        fall_back_to_slate_thread();
     }
 }
 
@@ -6193,6 +6229,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
         FRHITexture2D::set_vtable(*(void**)engine_texture);
+        g_hook->m_has_seen_stable_slate_draw = true;
 
         if (rtm->get_render_target() == nullptr) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
@@ -6341,8 +6378,6 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
         return;
     }
 
-    SPDLOG_INFO("RenderTargetSize Before: {}x{}", x, y);
-
     if (is_ue_5_7_or_newer() && x > 0 && y > 0) {
         // UE 5.7 still reports the pre-VR Slate/window size here before we overwrite it
         // with the stereo render target size. Keep it so the UI path can stay full-width.
@@ -6352,7 +6387,7 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
     x = VR::get()->get_hmd_width() * 2;
     y = VR::get()->get_hmd_height();
 
-    SPDLOG_INFO("RenderTargetSize After: {}x{}", x, y);
+    SPDLOG_DEBUG("RenderTargetSize After: {}x{}", x, y);
 }
 
 bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewport& Viewport) {
@@ -7509,6 +7544,7 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     in_flight_dedicated_ui_texture = nullptr;
     dedicated_ui_creation_pending = false;
     dedicated_ui_pending_since = {};
+    dedicated_ui_resource_pending_since = {};
 }
 
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
@@ -7524,6 +7560,7 @@ void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint
     dedicated_ui_height = height;
     dedicated_ui_creation_pending = false;
     dedicated_ui_pending_since = {};
+    dedicated_ui_resource_pending_since = {};
 }
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
@@ -7544,20 +7581,55 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
         dedicated_ui_last_attempt = {};
         dedicated_ui_creation_pending = false;
         dedicated_ui_pending_since = {};
+        dedicated_ui_resource_pending_since = {};
+    }
+
+    try_schedule_dedicated_ui_creation();
+}
+
+bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
+    if (!is_ue_5_7_or_newer() || !g_framework->is_dx12() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return false;
+    }
+
+    if (!g_framework->is_game_data_intialized()) {
+        return false;
+    }
+
+    auto* engine = sdk::UGameEngine::get();
+
+    if (engine == nullptr) {
+        return false;
+    }
+
+    if (engine->get_world() == nullptr) {
+        return false;
+    }
+
+    if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
+        return false;
+    }
+
+    return true;
+}
+
+bool VRRenderTargetManager_Base::try_schedule_dedicated_ui_creation() {
+    if (!can_attempt_dedicated_ui_creation()) {
+        return false;
     }
 
     if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending) {
-        return;
+        return false;
     }
 
     const auto now = std::chrono::steady_clock::now();
     if (dedicated_ui_last_attempt.time_since_epoch().count() != 0 &&
         now - dedicated_ui_last_attempt < std::chrono::seconds(2))
     {
-        return;
+        return false;
     }
 
-    create_dedicated_ui_texture();
+    return create_dedicated_ui_texture();
 }
 
 bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
@@ -7572,7 +7644,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
     const auto width = dedicated_ui_width;
     const auto height = dedicated_ui_height;
     dedicated_ui_last_attempt = std::chrono::steady_clock::now();
-    dedicated_ui_pending_since = dedicated_ui_last_attempt;
     dedicated_ui_creation_pending = true;
 
     GameThreadWorker::get().enqueue([this, width, height]() -> void {
@@ -7580,6 +7651,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             if (this->in_flight_dedicated_ui_texture != nullptr || this->get_dedicated_ui_target() != nullptr) {
                 this->dedicated_ui_creation_pending = false;
                 this->dedicated_ui_pending_since = {};
+                this->dedicated_ui_resource_pending_since = {};
                 return;
             }
 
@@ -7589,6 +7661,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because UGameEngine is not ready");
                 this->dedicated_ui_creation_pending = false;
                 this->dedicated_ui_pending_since = {};
+                this->dedicated_ui_resource_pending_since = {};
                 return;
             }
 
@@ -7598,6 +7671,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because the world is not ready");
                 this->dedicated_ui_creation_pending = false;
                 this->dedicated_ui_pending_since = {};
+                this->dedicated_ui_resource_pending_since = {};
                 return;
             }
 
@@ -7607,6 +7681,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because KismetRenderingLibrary is not ready");
                 this->dedicated_ui_creation_pending = false;
                 this->dedicated_ui_pending_since = {};
+                this->dedicated_ui_resource_pending_since = {};
                 return;
             }
 
@@ -7617,6 +7692,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
                 this->dedicated_ui_creation_pending = false;
                 this->dedicated_ui_pending_since = {};
+                this->dedicated_ui_resource_pending_since = {};
                 return;
             }
 
@@ -7624,6 +7700,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             sdk::UObjectReference<sdk::UTexture> tgt{tgt_raw};
             this->in_flight_dedicated_ui_texture = tgt_raw;
+            this->dedicated_ui_pending_since = std::chrono::steady_clock::now();
+            this->dedicated_ui_resource_pending_since = this->dedicated_ui_pending_since;
 
             RenderThreadWorker::get().enqueue_conditional(
                 [this, tgt, width, height]() -> bool {
@@ -7634,6 +7712,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                                 this->in_flight_dedicated_ui_texture = nullptr;
                                 this->dedicated_ui_creation_pending = false;
                                 this->dedicated_ui_pending_since = {};
+                                this->dedicated_ui_resource_pending_since = {};
                             });
                             return true;
                         }
@@ -7677,6 +7756,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             this->in_flight_dedicated_ui_texture = nullptr;
                             this->dedicated_ui_creation_pending = false;
                             this->dedicated_ui_pending_since = {};
+                            this->dedicated_ui_resource_pending_since = {};
                         });
 
                         SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI texture [{}x{}]", width, height);
@@ -7705,6 +7785,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             this->in_flight_dedicated_ui_texture = nullptr;
             this->dedicated_ui_creation_pending = false;
             this->dedicated_ui_pending_since = {};
+            this->dedicated_ui_resource_pending_since = {};
         }
     });
 
@@ -7770,8 +7851,9 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] Dedicated UE 5.7 UI UObject is alive but its render resource is not ready");
     }
 
-    if (dedicated_ui_pending_since.time_since_epoch().count() != 0 &&
-        std::chrono::steady_clock::now() - dedicated_ui_pending_since > std::chrono::seconds(5))
+    if (in_flight_dedicated_ui_texture != nullptr &&
+        dedicated_ui_resource_pending_since.time_since_epoch().count() != 0 &&
+        std::chrono::steady_clock::now() - dedicated_ui_resource_pending_since > std::chrono::seconds(5))
     {
         SPDLOG_WARN("[VRRenderTargetManager] Dedicated UE 5.7 UI target creation appears stuck; resetting and retrying");
         destroy_dedicated_ui_target();
@@ -7781,14 +7863,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         return;
     }
 
-    if (const auto now = std::chrono::steady_clock::now();
-        dedicated_ui_last_attempt.time_since_epoch().count() != 0 &&
-        now - dedicated_ui_last_attempt < std::chrono::seconds(2))
-    {
-        return;
-    }
-
-    create_dedicated_ui_texture();
+    try_schedule_dedicated_ui_creation();
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {

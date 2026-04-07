@@ -113,6 +113,8 @@ public:
     void destroy_dedicated_ui_target();
     void ensure_dedicated_ui_target(uintptr_t command_list);
     bool create_dedicated_ui_texture();
+    bool try_schedule_dedicated_ui_creation();
+    bool can_attempt_dedicated_ui_creation() const;
     bool is_dedicated_ui_target_pending() const {
         return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr;
     }
@@ -234,6 +236,7 @@ protected:
     uint32_t dedicated_ui_height{0};
     std::chrono::steady_clock::time_point dedicated_ui_last_attempt{};
     std::chrono::steady_clock::time_point dedicated_ui_pending_since{};
+    std::chrono::steady_clock::time_point dedicated_ui_resource_pending_since{};
     bool dedicated_ui_creation_pending{false};
     sdk::FViewport* last_viewport{nullptr};
 };
@@ -375,6 +378,10 @@ public:
 
     bool is_slate_hooked() const {
         return m_hooked_slate_thread;
+    }
+
+    bool has_seen_stable_slate_draw() const {
+        return m_has_seen_stable_slate_draw;
     }
 
     bool should_recreate_textures() const {
@@ -600,6 +607,8 @@ private:
     bool m_hooked_game_engine_tick{false};
     bool m_hooked_slate_thread{false};
     bool m_hooked_ue57_slate_elements_pass{false};
+    bool m_prefer_slate_thread_for_session{false};
+    bool m_has_seen_stable_slate_draw{false};
     bool m_attempted_hook_game_engine_tick{false};
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
