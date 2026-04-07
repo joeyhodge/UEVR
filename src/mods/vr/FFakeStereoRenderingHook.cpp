@@ -2918,6 +2918,10 @@ struct SceneViewExtensionAnalyzer {
             SPDLOG_INFO("[ISceneViewExtension] Successfully hijacked command list! {}", N);
         }
 
+        if (g_hook != nullptr) {
+            g_hook->note_successful_command_list_hijack();
+        }
+
         const auto original_vtable = original_vtables[cmd];
         const auto original_func = original_vtable[N];
 
@@ -3062,6 +3066,10 @@ struct SceneViewExtensionAnalyzer {
             if (once) {
                 SPDLOG_INFO("[ISceneViewExtension] Successfully hijacked command list!");
                 once = false;
+            }
+
+            if (g_hook != nullptr) {
+                g_hook->note_successful_command_list_hijack();
             }
 
             auto& vr = VR::get();
@@ -3893,12 +3901,29 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             save_ue57_slate_thread_preference(true);
         }
 
+        if (is_ue_5_7_or_newer()) {
+            g_hook->get_render_target_manager()->try_schedule_dedicated_ui_creation();
+        }
+
         if (g_hook->has_slate_hook()) {
             enqueue_poses_on_slate_thread();
         } else {
             vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
         }
     };
+
+    if (is_ue_5_7_or_newer() &&
+        g_hook->has_slate_hook() &&
+        g_hook->has_seen_stable_slate_draw() &&
+        !g_hook->has_successful_command_list_hijack() &&
+        !g_hook->m_prefer_slate_thread_for_session &&
+        g_hook->m_first_stable_slate_draw_at.time_since_epoch().count() != 0 &&
+        std::chrono::steady_clock::now() - g_hook->m_first_stable_slate_draw_at > std::chrono::seconds(2))
+    {
+        SPDLOG_WARN_ONCE("[UE 5.7] Command-list path did not stabilize after the first Slate draw; preferring Slate-thread startup");
+        fall_back_to_slate_thread();
+        return;
+    }
 
     if (is_ue_5_7_or_newer() && g_hook->m_prefer_slate_thread_for_session && g_hook->has_slate_hook()) {
         enqueue_poses_on_slate_thread();
@@ -6030,7 +6055,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 return result;
             }
 
-            SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Module within: {:x}", (uintptr_t)*module_within);
+            SPDLOG_DEBUG("[SlateRHIRenderer::DrawWindow_RenderThread] Module within: {:x}", (uintptr_t)*module_within);
 
             if (!g_hook->m_slate_thread_hook.disable().has_value()) {
                 SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Failed to disable slate thread hook!");
@@ -6038,7 +6063,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
 
             utility::ScopeGuard guard{[&]() {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Re-enabling slate thread hook!");
+                SPDLOG_DEBUG("[SlateRHIRenderer::DrawWindow_RenderThread] Re-enabling slate thread hook");
                 if (!g_hook->m_slate_thread_hook.enable().has_value()) {
                     SPDLOG_ERROR("[SlateRHIRenderer::DrawWindow_RenderThread] Failed to re-enable slate thread hook!");
                 }
@@ -6056,7 +6081,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             std::span<uint8_t> window_bounds{(uint8_t*)window, (uint8_t*)window + 0x1000};
 
             utility::emulate(*module_within, ctx.ctx->Registers.RegRip, 1000, ctx, [&](const utility::ShemuContextExtended& ctx) -> utility::ExhaustionResult {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
+                SPDLOG_DEBUG("[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
 
                 // Allow writes to go through if we are inside the window getter.
                 // The downside is this might unintentionally increase the reference count of the window
@@ -6229,7 +6254,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
         FRHITexture2D::set_vtable(*(void**)engine_texture);
-        g_hook->m_has_seen_stable_slate_draw = true;
+        g_hook->note_stable_slate_draw();
 
         if (rtm->get_render_target() == nullptr) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
@@ -7607,6 +7632,10 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
     }
 
     if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
+        return false;
+    }
+
+    if (!g_hook->prefers_slate_thread_for_session()) {
         return false;
     }
 

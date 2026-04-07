@@ -384,6 +384,25 @@ public:
         return m_has_seen_stable_slate_draw;
     }
 
+    bool has_successful_command_list_hijack() const {
+        return m_has_successful_command_list_hijack;
+    }
+
+    bool prefers_slate_thread_for_session() const {
+        return m_prefer_slate_thread_for_session;
+    }
+
+    void note_stable_slate_draw() {
+        if (!m_has_seen_stable_slate_draw) {
+            m_has_seen_stable_slate_draw = true;
+            m_first_stable_slate_draw_at = std::chrono::steady_clock::now();
+        }
+    }
+
+    void note_successful_command_list_hijack() {
+        m_has_successful_command_list_hijack = true;
+    }
+
     bool should_recreate_textures() const {
         return m_wants_texture_recreation;
     }
@@ -609,6 +628,8 @@ private:
     bool m_hooked_ue57_slate_elements_pass{false};
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
+    bool m_has_successful_command_list_hijack{false};
+    std::chrono::steady_clock::time_point m_first_stable_slate_draw_at{};
     bool m_attempted_hook_game_engine_tick{false};
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
