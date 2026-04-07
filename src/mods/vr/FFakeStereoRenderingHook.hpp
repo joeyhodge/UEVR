@@ -113,9 +113,6 @@ public:
     void destroy_dedicated_ui_target();
     void ensure_dedicated_ui_target(uintptr_t command_list);
     bool create_dedicated_ui_texture();
-    bool is_dedicated_ui_target_pending() const {
-        return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr;
-    }
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
 
@@ -233,7 +230,6 @@ protected:
     uint32_t dedicated_ui_width{0};
     uint32_t dedicated_ui_height{0};
     std::chrono::steady_clock::time_point dedicated_ui_last_attempt{};
-    bool dedicated_ui_creation_pending{false};
     sdk::FViewport* last_viewport{nullptr};
 };
 

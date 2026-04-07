@@ -6457,6 +6457,7 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         this->last_width = w;
         this->last_height = h;
         this->wants_depth_reallocate = true;
+        this->destroy_dedicated_ui_target();
         this->destroy_scene_capture();
         g_hook->set_should_recreate_textures(false);
         return true;
@@ -7507,54 +7508,21 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
-    dedicated_ui_creation_pending = false;
 }
 
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
     if (rt != nullptr) {
         FRHITexture2D::set_vtable(*(void**)rt);
-        owned_dedicated_ui_target = std::make_unique<FTexture2DRHIRef>(*rt);
-    } else {
-        owned_dedicated_ui_target.reset();
     }
 
     dedicated_ui_target = rt;
     dedicated_ui_width = width;
     dedicated_ui_height = height;
-    dedicated_ui_creation_pending = false;
 }
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
-    if (!is_ue_5_7_or_newer() || !g_framework->is_dx12() || width == 0 || height == 0) {
-        return;
-    }
-
-    const bool extent_changed = dedicated_ui_width != width || dedicated_ui_height != height;
     dedicated_ui_width = width;
     dedicated_ui_height = height;
-
-    if (extent_changed) {
-        if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr) {
-            SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI extent changed to [{}x{}], recreating", width, height);
-            destroy_dedicated_ui_target();
-        }
-
-        dedicated_ui_last_attempt = {};
-        dedicated_ui_creation_pending = false;
-    }
-
-    if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending) {
-        return;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    if (dedicated_ui_last_attempt.time_since_epoch().count() != 0 &&
-        now - dedicated_ui_last_attempt < std::chrono::seconds(2))
-    {
-        return;
-    }
-
-    create_dedicated_ui_texture();
 }
 
 bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
@@ -7569,33 +7537,31 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
     const auto width = dedicated_ui_width;
     const auto height = dedicated_ui_height;
     dedicated_ui_last_attempt = std::chrono::steady_clock::now();
-    dedicated_ui_creation_pending = true;
 
     GameThreadWorker::get().enqueue([this, width, height]() -> void {
         try {
             if (this->in_flight_dedicated_ui_texture != nullptr || this->get_dedicated_ui_target() != nullptr) {
-                this->dedicated_ui_creation_pending = false;
                 return;
             }
 
             auto* engine = sdk::UGameEngine::get();
 
             if (engine == nullptr) {
-                this->dedicated_ui_creation_pending = false;
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UGameEngine is not ready for dedicated UE 5.7 UI target creation");
                 return;
             }
 
             auto* world = engine->get_world();
 
             if (world == nullptr) {
-                this->dedicated_ui_creation_pending = false;
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UWorld is not ready for dedicated UE 5.7 UI target creation");
                 return;
             }
 
             auto* kismet_rendering = sdk::UKismetRenderingLibrary::get();
 
             if (kismet_rendering == nullptr) {
-                this->dedicated_ui_creation_pending = false;
+                SPDLOG_WARN_ONCE("[VRRenderTargetManager] UKismetRenderingLibrary is not ready for dedicated UE 5.7 UI target creation");
                 return;
             }
 
@@ -7604,7 +7570,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             if (tgt_raw == nullptr) {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
-                this->dedicated_ui_creation_pending = false;
                 return;
             }
 
@@ -7620,7 +7585,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI texture was destroyed before its render resource became valid");
                             GameThreadWorker::get().enqueue([this]() -> void {
                                 this->in_flight_dedicated_ui_texture = nullptr;
-                                this->dedicated_ui_creation_pending = false;
                             });
                             return true;
                         }
@@ -7662,7 +7626,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
                             this->dedicated_ui_texture = tgt;
                             this->in_flight_dedicated_ui_texture = nullptr;
-                            this->dedicated_ui_creation_pending = false;
                         });
 
                         SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI texture [{}x{}]", width, height);
@@ -7689,7 +7652,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
         } catch (...) {
             SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UE 5.7 UI texture creation");
             this->in_flight_dedicated_ui_texture = nullptr;
-            this->dedicated_ui_creation_pending = false;
         }
     });
 
@@ -7724,14 +7686,6 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         destroy_dedicated_ui_target();
     }
 
-    if (existing_target == nullptr && owned_dedicated_ui_target != nullptr && owned_dedicated_ui_target->texture != nullptr &&
-        !IsBadReadPtr(owned_dedicated_ui_target->texture, sizeof(void*)))
-    {
-        FRHITexture2D::set_vtable(*(void**)owned_dedicated_ui_target->texture);
-        dedicated_ui_target = owned_dedicated_ui_target->texture;
-        existing_target = get_dedicated_ui_target();
-    }
-
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
         if (sdk::UTexture::update_render_resource_offset_texture2d(dedicated_ui_texture)) {
             if (auto* rsrc = (sdk::FTextureRenderTargetResource*)dedicated_ui_texture->get_resource(); rsrc != nullptr) {
@@ -7751,17 +7705,15 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
                 }
             }
         }
-
-        SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] Dedicated UE 5.7 UI UObject is alive but its render resource is not ready");
     }
 
-    if (in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending) {
+    if (in_flight_dedicated_ui_texture != nullptr) {
         return;
     }
 
     if (const auto now = std::chrono::steady_clock::now();
         dedicated_ui_last_attempt.time_since_epoch().count() != 0 &&
-        now - dedicated_ui_last_attempt < std::chrono::seconds(2))
+        now - dedicated_ui_last_attempt < std::chrono::seconds(1))
     {
         return;
     }

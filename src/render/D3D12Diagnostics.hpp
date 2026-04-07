@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <mutex>
 #include <optional>
-#include <atomic>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -99,8 +98,6 @@ public:
     };
 
     static D3D12Diagnostics& get();
-    void set_enabled(bool enabled);
-    bool is_enabled() const;
 
     void begin_frame(
         ID3D12Device* device,
@@ -222,6 +219,5 @@ private:
     uint32_t m_transient_heap_creations_this_frame{};
     uint32_t m_transient_resource_creations_this_frame{};
     uint64_t m_transient_resource_bytes_this_frame{};
-    std::atomic<bool> m_enabled{false};
 };
 } // namespace render

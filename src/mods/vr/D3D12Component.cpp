@@ -320,14 +320,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
     } else {
-        const bool keep_pending_ue57_ui =
-            ffsr->get_render_target_manager()->get_dedicated_ui_width() != 0 &&
-            ffsr->get_render_target_manager()->get_dedicated_ui_height() != 0 &&
-            ffsr->get_render_target_manager()->is_dedicated_ui_target_pending();
-
-        if (!keep_pending_ue57_ui) {
-            m_game_ui_tex.reset(); // Probably fixes non-resident errors.
-        }
+        m_game_ui_tex.reset(); // Probably fixes non-resident errors.
     }
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
