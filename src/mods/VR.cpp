@@ -3972,7 +3972,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::Text((std::string{"Runtime Information ("} + get_runtime()->name().data() + ")").c_str());
 
         m_desktop_fix->draw("Desktop Spectator View");
-        ImGui::SameLine();
+
+        if (m_desktop_fix->value()) {
+            m_desktop_mirror_mode->draw("Desktop Spectator View Mode");
+        }
+
         m_2d_screen_mode->draw("2D Screen Mode");
 
         ImGui::TextWrapped("Render Resolution (per-eye): %d x %d", get_runtime()->get_width(), get_runtime()->get_height());

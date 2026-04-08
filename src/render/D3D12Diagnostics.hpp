@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -99,6 +100,9 @@ public:
 
     static D3D12Diagnostics& get();
 
+    void set_enabled(bool enabled);
+    bool is_enabled() const;
+
     void begin_frame(
         ID3D12Device* device,
         IDXGISwapChain3* swapchain,
@@ -189,7 +193,9 @@ private:
 
     void push_warning(std::string_view source, std::string message);
     void note_frame_warning_if_needed();
+    void clear_state_locked();
 
+    std::atomic_bool m_enabled{false};
     mutable std::recursive_mutex m_mutex{};
     std::unordered_map<uintptr_t, HeapInfo> m_heaps{};
     std::unordered_map<uintptr_t, ResourceInfo> m_resources{};

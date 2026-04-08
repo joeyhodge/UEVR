@@ -231,6 +231,21 @@ D3D12Diagnostics& D3D12Diagnostics::get() {
     return instance;
 }
 
+void D3D12Diagnostics::set_enabled(bool enabled) {
+    const auto was_enabled = m_enabled.exchange(enabled, std::memory_order_relaxed);
+
+    if (was_enabled == enabled) {
+        return;
+    }
+
+    std::scoped_lock _{m_mutex};
+    clear_state_locked();
+}
+
+bool D3D12Diagnostics::is_enabled() const {
+    return m_enabled.load(std::memory_order_relaxed);
+}
+
 void D3D12Diagnostics::begin_frame(
     ID3D12Device* device,
     IDXGISwapChain3* swapchain,
@@ -242,6 +257,10 @@ void D3D12Diagnostics::begin_frame(
     bool proton_swapchain,
     bool framegen_swapchain
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     std::scoped_lock _{m_mutex};
     ++m_frame;
     m_device = reinterpret_cast<uintptr_t>(device);
@@ -273,6 +292,10 @@ void D3D12Diagnostics::register_descriptor_heap(
     bool transient,
     std::string_view name
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     if (heap == nullptr) {
         push_warning(source, "Attempted to register a null descriptor heap");
         return;
@@ -328,6 +351,10 @@ void D3D12Diagnostics::register_resource(
     bool transient,
     std::string_view name
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     if (resource == nullptr) {
         push_warning(source, "Attempted to register a null resource");
         return;
@@ -379,6 +406,10 @@ void D3D12Diagnostics::register_rtv_descriptor(
     D3D12_CPU_DESCRIPTOR_HANDLE handle,
     std::string_view name
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     if (handle.ptr == 0) {
         push_warning(source, "Attempted to register a null RTV descriptor");
         return;
@@ -420,6 +451,10 @@ void D3D12Diagnostics::register_dsv_descriptor(
     D3D12_CPU_DESCRIPTOR_HANDLE handle,
     std::string_view name
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     if (handle.ptr == 0) {
         push_warning(source, "Attempted to register a null DSV descriptor");
         return;
@@ -460,6 +495,10 @@ void D3D12Diagnostics::record_descriptor_heaps_set(
     uint32_t count,
     ID3D12DescriptorHeap* const* heaps
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     std::scoped_lock _{m_mutex};
     ++m_descriptor_heap_sets_this_frame;
 
@@ -507,6 +546,10 @@ void D3D12Diagnostics::record_resource_barriers(
     uint32_t count,
     const D3D12_RESOURCE_BARRIER* barriers
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     if (barriers == nullptr || count == 0) {
         return;
     }
@@ -554,6 +597,10 @@ void D3D12Diagnostics::record_rtv_bind(
     const D3D12_CPU_DESCRIPTOR_HANDLE* rtvs,
     const D3D12_CPU_DESCRIPTOR_HANDLE* dsv
 ) {
+    if (!is_enabled()) {
+        return;
+    }
+
     std::scoped_lock _{m_mutex};
     ++m_rtv_binds_this_frame;
 
@@ -611,6 +658,10 @@ void D3D12Diagnostics::record_rtv_bind(
 }
 
 D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
+    if (!is_enabled()) {
+        return {};
+    }
+
     std::scoped_lock _{m_mutex};
 
     Snapshot out{};
@@ -666,12 +717,20 @@ D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
 }
 
 std::optional<D3D12Diagnostics::CurrentBindContext> D3D12Diagnostics::current_bind_context() const {
+    if (!is_enabled()) {
+        return std::nullopt;
+    }
+
     std::scoped_lock _{m_mutex};
     return m_current_bind_context;
 }
 
 void D3D12Diagnostics::reset() {
     std::scoped_lock _{m_mutex};
+    clear_state_locked();
+}
+
+void D3D12Diagnostics::clear_state_locked() {
     m_heaps.clear();
     m_resources.clear();
     m_rtv_descriptors.clear();
