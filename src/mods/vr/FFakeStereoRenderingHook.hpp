@@ -115,8 +115,12 @@ public:
     bool create_dedicated_ui_texture();
     bool try_schedule_dedicated_ui_creation();
     bool can_attempt_dedicated_ui_creation() const;
+    void reset_dedicated_ui_creation_state();
+    bool is_dedicated_ui_generation_current(uint64_t generation) const {
+        return in_flight_dedicated_ui_generation == generation;
+    }
     bool is_dedicated_ui_target_pending() const {
-        return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr;
+        return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr || in_flight_dedicated_ui_generation != 0;
     }
 
     bool is_ue_5_0_3() const { return is_version_5_0_3; }
@@ -238,6 +242,9 @@ protected:
     std::chrono::steady_clock::time_point dedicated_ui_pending_since{};
     std::chrono::steady_clock::time_point dedicated_ui_resource_pending_since{};
     bool dedicated_ui_creation_pending{false};
+    bool dedicated_ui_object_created{false};
+    uint64_t dedicated_ui_generation{0};
+    uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
 };
 
@@ -392,11 +399,27 @@ public:
         return m_prefer_slate_thread_for_session;
     }
 
+    bool has_seen_prerender_viewfamily() const {
+        return m_has_seen_prerender_viewfamily;
+    }
+
+    bool has_scene_view_family_offsets_ready() const {
+        return m_has_scene_view_family_offsets_ready;
+    }
+
     void note_stable_slate_draw() {
         if (!m_has_seen_stable_slate_draw) {
             m_has_seen_stable_slate_draw = true;
             m_first_stable_slate_draw_at = std::chrono::steady_clock::now();
         }
+    }
+
+    void note_prerender_viewfamily_seen() {
+        m_has_seen_prerender_viewfamily = true;
+    }
+
+    void note_scene_view_family_offsets_ready() {
+        m_has_scene_view_family_offsets_ready = true;
     }
 
     void note_successful_command_list_hijack() {
@@ -628,6 +651,8 @@ private:
     bool m_hooked_ue57_slate_elements_pass{false};
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
+    bool m_has_seen_prerender_viewfamily{false};
+    bool m_has_scene_view_family_offsets_ready{false};
     bool m_has_successful_command_list_hijack{false};
     std::chrono::steady_clock::time_point m_first_stable_slate_draw_at{};
     bool m_attempted_hook_game_engine_tick{false};
