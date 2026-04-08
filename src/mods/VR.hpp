@@ -890,6 +890,16 @@ private:
         "Matched",
     };
 
+    enum DesktopMirrorMode : int32_t {
+        DESKTOP_MIRROR_FULL = 0,
+        DESKTOP_MIRROR_SCENE_ONLY = 1,
+    };
+
+    static const inline std::vector<std::string> s_desktop_mirror_mode_names{
+        "Full",
+        "Scene Only",
+    };
+
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
@@ -899,6 +909,7 @@ private:
     const ModToggle::Ptr m_disable_hzbocclusion{ ModToggle::create(generate_name("DisableHZBOcclusion"), true, true) };
     const ModToggle::Ptr m_disable_instance_culling{ ModToggle::create(generate_name("DisableInstanceCulling"), true, true) };
     const ModToggle::Ptr m_desktop_fix{ ModToggle::create(generate_name("DesktopRecordingFix_V2"), true) };
+    const ModCombo::Ptr m_desktop_mirror_mode{ ModCombo::create(generate_name("DesktopSpectatorViewMode"), s_desktop_mirror_mode_names, DESKTOP_MIRROR_FULL) };
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
@@ -1119,6 +1130,7 @@ private:
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
     float get_game_fov_dolly_offset() const;
+    auto get_desktop_mirror_mode() const { return static_cast<DesktopMirrorMode>(m_desktop_mirror_mode->value()); }
 
 public:
     VR() {
@@ -1131,6 +1143,7 @@ public:
             *m_disable_hzbocclusion,
             *m_disable_instance_culling,
             *m_desktop_fix,
+            *m_desktop_mirror_mode,
             *m_enable_gui,
             *m_enable_depth,
             *m_decoupled_pitch,

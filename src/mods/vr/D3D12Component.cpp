@@ -842,6 +842,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     }
 
     const auto& vr = VR::get();
+    const auto mirror_mode = vr->get_desktop_mirror_mode();
 
     if (!vr->is_hmd_active() || !vr->m_desktop_fix->value()) {
         return;
@@ -1008,7 +1009,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
         &source_rect, 
         DirectX::Colors::White);
 
-    if (has_ui_tex) {
+    if (mirror_mode == VR::DESKTOP_MIRROR_FULL && has_ui_tex) {
         const auto ui_desc = m_game_ui_tex.texture->GetDesc();
         ID3D12DescriptorHeap* ui_heaps[] = { m_game_ui_tex.srv_heap->Heap() };
         render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);

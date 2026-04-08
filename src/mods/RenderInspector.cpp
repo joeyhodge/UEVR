@@ -437,10 +437,23 @@ void RenderInspector::on_present() {
         return;
     }
 
+    const auto resources_active = g_framework->is_sidebar_entry_selected("Resources");
+    const auto dx12_diagnostics_active =
+        g_framework->is_dx12() &&
+        (g_framework->is_sidebar_entry_selected("DX12 Diagnostics") ||
+         g_framework->is_sidebar_entry_selected("PSO Profiler") ||
+         g_framework->is_sidebar_entry_selected("Shaders"));
+
+    render::D3D12Diagnostics::get().set_enabled(dx12_diagnostics_active);
     render::ShaderOverrideRegistry::get().on_present(*g_framework);
 
-    if (auto& vr = VR::get(); vr != nullptr) {
-        m_inspector.on_present(*g_framework, *vr);
+    if (resources_active) {
+        if (auto& vr = VR::get(); vr != nullptr) {
+            m_inspector.on_present(*g_framework, *vr);
+        }
+    } else {
+        // Keep stale resource inspector state from accumulating when the page is not active.
+        m_inspector.reset();
     }
 }
 

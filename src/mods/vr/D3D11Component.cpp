@@ -946,7 +946,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }
 
         // UI tex
-        if (m_engine_ui_ref.has_srv()) {
+        if (vr->get_desktop_mirror_mode() == VR::DESKTOP_MIRROR_FULL && m_engine_ui_ref.has_srv()) {
             m_backbuffer_batch->Draw(m_engine_ui_ref, dest_rect, DirectX::Colors::White);
         }
 
