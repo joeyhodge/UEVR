@@ -289,7 +289,10 @@ Framework::Framework(HMODULE framework_module)
     std::scoped_lock __{m_constructor_mutex};
 
     spdlog::set_default_logger(m_logger);
-    spdlog::flush_on(spdlog::level::info);
+    // UE 5.7 startup can legitimately emit thousands of info-level discovery logs.
+    // Flushing every info line to disk turns that into visible hitching and input lag.
+    // Keep immediate flushing for actual errors only.
+    spdlog::flush_on(spdlog::level::err);
     spdlog::info("UnrealVR entry");
     spdlog::info("Commit hash: {}", UEVR_COMMIT_HASH);
     spdlog::info("Tag: {}", UEVR_TAG);

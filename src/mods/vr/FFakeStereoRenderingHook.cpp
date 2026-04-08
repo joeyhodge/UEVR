@@ -82,6 +82,7 @@ bool is_ue_5_7_or_newer() {
 }
 
 constexpr auto UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY = "ue57_prefer_slate_thread";
+constexpr auto UE57_VIEW_EXTENSION_DISCOVERY_CACHE_KEY = "ue57_view_extension_discovery";
 
 bool load_ue57_slate_thread_preference() {
     if (!is_ue_5_7_or_newer()) {
@@ -2714,6 +2715,10 @@ struct SceneViewExtensionAnalyzer {
     static inline uint32_t pre_render_viewfamily_renderthread_index{0};
     static inline uint32_t frame_count_offset{0};
 
+    static bool validate_cached_discovery(void** original_vtable, const nlohmann::json& cached);
+    static bool try_apply_cached_discovery(void** original_vtable);
+    static void save_cached_discovery();
+
     template<int N>
     static bool analysis_dummy_stage1(ISceneViewExtension* extension, uintptr_t a2, uintptr_t a3, uintptr_t a4) {
         if (N == 0) {
@@ -2796,7 +2801,7 @@ struct SceneViewExtensionAnalyzer {
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
                         if (func.frame_count_a2 + 1 == b) {
-                            SPDLOG_INFO("[A2] Function index {} Found frame count offset at {:x}, ({})", N, i, b);
+                            SPDLOG_DEBUG("[A2] Function index {} Found frame count offset at {:x}, ({})", N, i, b);
 
                             func.frame_count_offset_a2 = i;
                             ++func.times_frame_count_correct_a2;
@@ -2832,6 +2837,7 @@ struct SceneViewExtensionAnalyzer {
 
                                     frame_count_offset = i;
                                     sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+                                    save_cached_discovery();
 
                                     setup_view_extension_hook();
                                     return false;
@@ -2855,7 +2861,7 @@ struct SceneViewExtensionAnalyzer {
 
                     if (b == a + 1 && a >= 10) { // rule out really low frame counts (this could be something else)
                         if (func.frame_count_a3 + 1 == b) {
-                            SPDLOG_INFO("[A3] Function index {} Found frame count offset at {:x} ({})", N, i, b);
+                            SPDLOG_DEBUG("[A3] Function index {} Found frame count offset at {:x} ({})", N, i, b);
                             ++func.times_frame_count_correct_a3;
                         }
 
@@ -3129,6 +3135,94 @@ void SceneViewExtensionAnalyzer::FillVtable<N>::fill2(std::array<uintptr_t, 50>&
     FillVtable<N - 1>::fill2(table);
 }
 
+bool SceneViewExtensionAnalyzer::validate_cached_discovery(void** original_vtable, const nlohmann::json& cached) {
+    if (!cached.is_object() || original_vtable == nullptr) {
+        return false;
+    }
+
+    const auto cached_is_active = cached.value("is_active_this_frame_index", UINT32_MAX);
+    const auto cached_begin = cached.value("begin_render_viewfamily_index", UINT32_MAX);
+    const auto cached_pre_render = cached.value("pre_render_viewfamily_renderthread_index", UINT32_MAX);
+    const auto cached_frame_count_offset = cached.value("frame_count_offset", UINT32_MAX);
+
+    constexpr auto max_index = g_view_extension_vtable.size();
+
+    if (cached_is_active >= max_index || cached_begin >= max_index || cached_pre_render >= max_index ||
+        cached_begin == cached_pre_render || cached_frame_count_offset == 0 || cached_frame_count_offset > 0x4000)
+    {
+        return false;
+    }
+
+    const auto base_module = utility::get_module_within((void*)original_vtable[0]).value_or(nullptr);
+
+    for (const auto index : {cached_is_active, cached_begin, cached_pre_render}) {
+        const auto fn = original_vtable[index];
+
+        if (fn == nullptr || IsBadReadPtr(fn, sizeof(void*))) {
+            return false;
+        }
+
+        const auto fn_module = utility::get_module_within((void*)fn).value_or(nullptr);
+
+        if (base_module != nullptr && fn_module != base_module) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool SceneViewExtensionAnalyzer::try_apply_cached_discovery(void** original_vtable) {
+    if (!is_ue_5_7_or_newer()) {
+        return false;
+    }
+
+    const auto cached = sdk::discovery_cache::load_entry(UE57_VIEW_EXTENSION_DISCOVERY_CACHE_KEY, utility::get_executable());
+
+    if (!cached) {
+        return false;
+    }
+
+    if (!validate_cached_discovery(original_vtable, *cached)) {
+        sdk::discovery_cache::invalidate_entry(UE57_VIEW_EXTENSION_DISCOVERY_CACHE_KEY);
+        return false;
+    }
+
+    functions.clear();
+    total_call_count = 0;
+    has_found_is_active_this_frame_index = true;
+    has_found_begin_render_viewfamily = true;
+    index_0_called = cached->value("index_0_called", false);
+    is_active_this_frame_index = cached->value("is_active_this_frame_index", 0u);
+    begin_render_viewfamily_index = cached->value("begin_render_viewfamily_index", 0u);
+    pre_render_viewfamily_renderthread_index = cached->value("pre_render_viewfamily_renderthread_index", 0u);
+    frame_count_offset = cached->value("frame_count_offset", 0u);
+    sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+
+    FillVtable<g_view_extension_vtable.size() - 1>::fill2(g_view_extension_vtable);
+    g_view_extension_vtable[is_active_this_frame_index] = (uintptr_t)+[](ISceneViewExtension* ext) -> bool {
+        return true;
+    };
+
+    SPDLOG_INFO("[UE 5.7] Reused cached SceneViewExtension discovery");
+    setup_view_extension_hook();
+    return true;
+}
+
+void SceneViewExtensionAnalyzer::save_cached_discovery() {
+    if (!is_ue_5_7_or_newer() || !has_found_is_active_this_frame_index || !has_found_begin_render_viewfamily || frame_count_offset == 0) {
+        return;
+    }
+
+    sdk::discovery_cache::save_entry(UE57_VIEW_EXTENSION_DISCOVERY_CACHE_KEY, utility::get_executable(), {
+        {"index_0_called", index_0_called},
+        {"is_active_this_frame_index", is_active_this_frame_index},
+        {"begin_render_viewfamily_index", begin_render_viewfamily_index},
+        {"pre_render_viewfamily_renderthread_index", pre_render_viewfamily_renderthread_index},
+        {"frame_count_offset", frame_count_offset}
+    });
+}
+
 // 4.25something to 4.27
 // TODO: Add support for all versions via PDB dumps
 constexpr auto INIT_OPTIONS_OFFSET = 0x50;
@@ -3164,7 +3258,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
 
     if (auto view_family = init_options->get_view_family(); view_family != nullptr) {
-        sdk::FSceneViewFamily::update_offsets(view_family, nullptr);
+        if (sdk::FSceneViewFamily::update_offsets(view_family, nullptr)) {
+            g_hook->note_scene_view_family_offsets_ready();
+        }
     }
 
     const auto is_ue5 = g_hook->has_double_precision();
@@ -3567,7 +3663,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         return;
     }
 
-    sdk::FSceneViewFamily::update_offsets(&view_family, g_hook->get_render_target_manager()->get_viewport());
+    if (sdk::FSceneViewFamily::update_offsets(&view_family, g_hook->get_render_target_manager()->get_viewport())) {
+        g_hook->note_scene_view_family_offsets_ready();
+    }
     auto si = view_family.get_scene_interface();
 
     if (si != nullptr) {
@@ -3781,6 +3879,8 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     if (!vr->is_hmd_active()) {
         return;
     }
+
+    g_hook->note_prerender_viewfamily_seen();
 
     static size_t execution_count{0};
 
@@ -4389,9 +4489,18 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         }
 
         auto& vtable = *(uintptr_t**)entry.reference;
+        const auto original_vtable = (void**)vtable;
 
         g_hook->m_analyze_view_extensions_start_time = std::chrono::high_resolution_clock::now();
         g_hook->m_analyzing_view_extensions = true;
+
+        if (SceneViewExtensionAnalyzer::try_apply_cached_discovery(original_vtable)) {
+            vtable = g_view_extension_vtable.data();
+            g_hook->m_analyzing_view_extensions = false;
+            g_hook->m_has_view_extensions_installed = true;
+            m_has_view_extension_hook = true;
+            return true;
+        }
 
         if (!m_rendertarget_manager_embedded_in_stereo_device) {
             SceneViewExtensionAnalyzer::FillVtable<g_view_extension_vtable.size()-1>::fill(g_view_extension_vtable);
@@ -7567,7 +7676,13 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
+    reset_dedicated_ui_creation_state();
+}
+
+void VRRenderTargetManager_Base::reset_dedicated_ui_creation_state() {
     dedicated_ui_creation_pending = false;
+    dedicated_ui_object_created = false;
+    in_flight_dedicated_ui_generation = 0;
     dedicated_ui_pending_since = {};
     dedicated_ui_resource_pending_since = {};
 }
@@ -7584,8 +7699,6 @@ void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint
     dedicated_ui_width = width;
     dedicated_ui_height = height;
     dedicated_ui_creation_pending = false;
-    dedicated_ui_pending_since = {};
-    dedicated_ui_resource_pending_since = {};
 }
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
@@ -7604,9 +7717,7 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
         }
 
         dedicated_ui_last_attempt = {};
-        dedicated_ui_creation_pending = false;
-        dedicated_ui_pending_since = {};
-        dedicated_ui_resource_pending_since = {};
+        reset_dedicated_ui_creation_state();
     }
 
     try_schedule_dedicated_ui_creation();
@@ -7639,6 +7750,14 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
         return false;
     }
 
+    if (!g_hook->has_seen_prerender_viewfamily()) {
+        return false;
+    }
+
+    if (!g_hook->has_scene_view_family_offsets_ready()) {
+        return false;
+    }
+
     return true;
 }
 
@@ -7647,7 +7766,9 @@ bool VRRenderTargetManager_Base::try_schedule_dedicated_ui_creation() {
         return false;
     }
 
-    if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending) {
+    if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr ||
+        dedicated_ui_creation_pending || in_flight_dedicated_ui_generation != 0)
+    {
         return false;
     }
 
@@ -7672,15 +7793,24 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
     const auto width = dedicated_ui_width;
     const auto height = dedicated_ui_height;
+    const auto generation = ++dedicated_ui_generation;
     dedicated_ui_last_attempt = std::chrono::steady_clock::now();
     dedicated_ui_creation_pending = true;
+    dedicated_ui_object_created = false;
+    in_flight_dedicated_ui_generation = generation;
+    dedicated_ui_pending_since = {};
+    dedicated_ui_resource_pending_since = {};
 
-    GameThreadWorker::get().enqueue([this, width, height]() -> void {
+    SPDLOG_INFO("[VRRenderTargetManager] Scheduling dedicated UE 5.7 UI target creation for generation {} [{}x{}]", generation, width, height);
+
+    GameThreadWorker::get().enqueue([this, width, height, generation]() -> void {
         try {
-            if (this->in_flight_dedicated_ui_texture != nullptr || this->get_dedicated_ui_target() != nullptr) {
-                this->dedicated_ui_creation_pending = false;
-                this->dedicated_ui_pending_since = {};
-                this->dedicated_ui_resource_pending_since = {};
+            if (!this->is_dedicated_ui_generation_current(generation)) {
+                return;
+            }
+
+            if (this->in_flight_dedicated_ui_texture != nullptr || this->get_dedicated_ui_target() != nullptr || this->dedicated_ui_texture != nullptr) {
+                this->reset_dedicated_ui_creation_state();
                 return;
             }
 
@@ -7688,9 +7818,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             if (engine == nullptr) {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because UGameEngine is not ready");
-                this->dedicated_ui_creation_pending = false;
-                this->dedicated_ui_pending_since = {};
-                this->dedicated_ui_resource_pending_since = {};
+                this->reset_dedicated_ui_creation_state();
                 return;
             }
 
@@ -7698,9 +7826,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             if (world == nullptr) {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because the world is not ready");
-                this->dedicated_ui_creation_pending = false;
-                this->dedicated_ui_pending_since = {};
-                this->dedicated_ui_resource_pending_since = {};
+                this->reset_dedicated_ui_creation_state();
                 return;
             }
 
@@ -7708,9 +7834,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             if (kismet_rendering == nullptr) {
                 SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because KismetRenderingLibrary is not ready");
-                this->dedicated_ui_creation_pending = false;
-                this->dedicated_ui_pending_since = {};
-                this->dedicated_ui_resource_pending_since = {};
+                this->reset_dedicated_ui_creation_state();
                 return;
             }
 
@@ -7719,29 +7843,44 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             if (tgt_raw == nullptr) {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
-                this->dedicated_ui_creation_pending = false;
-                this->dedicated_ui_pending_since = {};
-                this->dedicated_ui_resource_pending_since = {};
+                this->reset_dedicated_ui_creation_state();
                 return;
             }
 
             tgt_raw->add_to_root();
 
+            if (!this->is_dedicated_ui_generation_current(generation)) {
+                try {
+                    tgt_raw->remove_from_root();
+                } catch (...) {
+                }
+                return;
+            }
+
             sdk::UObjectReference<sdk::UTexture> tgt{tgt_raw};
             this->in_flight_dedicated_ui_texture = tgt_raw;
+            this->dedicated_ui_object_created = true;
             this->dedicated_ui_pending_since = std::chrono::steady_clock::now();
             this->dedicated_ui_resource_pending_since = this->dedicated_ui_pending_since;
 
+            SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI UObject for generation {}", generation);
+
             RenderThreadWorker::get().enqueue_conditional(
-                [this, tgt, width, height]() -> bool {
+                [this, tgt, width, height, generation]() -> bool {
                     try {
+                        if (!this->is_dedicated_ui_generation_current(generation)) {
+                            return true;
+                        }
+
                         if (!tgt.valid()) {
                             SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI texture was destroyed before its render resource became valid");
-                            GameThreadWorker::get().enqueue([this]() -> void {
+                            GameThreadWorker::get().enqueue([this, generation]() -> void {
+                                if (!this->is_dedicated_ui_generation_current(generation)) {
+                                    return;
+                                }
+
                                 this->in_flight_dedicated_ui_texture = nullptr;
-                                this->dedicated_ui_creation_pending = false;
-                                this->dedicated_ui_pending_since = {};
-                                this->dedicated_ui_resource_pending_since = {};
+                                this->destroy_dedicated_ui_target();
                             });
                             return true;
                         }
@@ -7769,11 +7908,19 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return false;
                         }
 
+                        if (!this->is_dedicated_ui_generation_current(generation)) {
+                            return true;
+                        }
+
                         FRHITexture2D::set_vtable(*(void**)*frt_texture);
                         this->set_dedicated_ui_target(*frt_texture, width, height);
                         this->get_fallback_ui_target_ref() = nullptr;
 
-                        GameThreadWorker::get().enqueue([this, tgt]() -> void {
+                        GameThreadWorker::get().enqueue([this, tgt, generation]() -> void {
+                            if (!this->is_dedicated_ui_generation_current(generation)) {
+                                return;
+                            }
+
                             if (!tgt.valid()) {
                                 this->dedicated_ui_texture = nullptr;
                                 this->in_flight_dedicated_ui_texture = nullptr;
@@ -7783,16 +7930,18 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
                             this->dedicated_ui_texture = tgt;
                             this->in_flight_dedicated_ui_texture = nullptr;
-                            this->dedicated_ui_creation_pending = false;
-                            this->dedicated_ui_pending_since = {};
-                            this->dedicated_ui_resource_pending_since = {};
+                            this->reset_dedicated_ui_creation_state();
                         });
 
-                        SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI texture [{}x{}]", width, height);
+                        SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI target ready for generation {} [{}x{}]", generation, width, height);
                         return true;
                     } catch (...) {
                         SPDLOG_ERROR("[VRRenderTargetManager] Exception while waiting for the dedicated UE 5.7 UI texture render resource");
-                        GameThreadWorker::get().enqueue([this]() -> void {
+                        GameThreadWorker::get().enqueue([this, generation]() -> void {
+                            if (!this->is_dedicated_ui_generation_current(generation)) {
+                                return;
+                            }
+
                             this->dedicated_ui_texture = nullptr;
                             this->in_flight_dedicated_ui_texture = nullptr;
                             this->destroy_dedicated_ui_target();
@@ -7800,9 +7949,17 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         return true;
                     }
                 },
-                [this]() {
-                    SPDLOG_ERROR("[VRRenderTargetManager] Timed out waiting for the dedicated UE 5.7 UI texture render resource");
-                    GameThreadWorker::get().enqueue([this]() -> void {
+                [this, generation]() {
+                    if (!this->is_dedicated_ui_generation_current(generation)) {
+                        return;
+                    }
+
+                    SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI target generation {} timed out waiting for the render resource", generation);
+                    GameThreadWorker::get().enqueue([this, generation]() -> void {
+                        if (!this->is_dedicated_ui_generation_current(generation)) {
+                            return;
+                        }
+
                         this->dedicated_ui_texture = nullptr;
                         this->in_flight_dedicated_ui_texture = nullptr;
                         this->destroy_dedicated_ui_target();
@@ -7812,9 +7969,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
         } catch (...) {
             SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UE 5.7 UI texture creation");
             this->in_flight_dedicated_ui_texture = nullptr;
-            this->dedicated_ui_creation_pending = false;
-            this->dedicated_ui_pending_since = {};
-            this->dedicated_ui_resource_pending_since = {};
+            this->reset_dedicated_ui_creation_state();
         }
     });
 
@@ -7880,7 +8035,9 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] Dedicated UE 5.7 UI UObject is alive but its render resource is not ready");
     }
 
-    if (in_flight_dedicated_ui_texture != nullptr &&
+    if (dedicated_ui_object_created &&
+        in_flight_dedicated_ui_texture != nullptr &&
+        in_flight_dedicated_ui_generation != 0 &&
         dedicated_ui_resource_pending_since.time_since_epoch().count() != 0 &&
         std::chrono::steady_clock::now() - dedicated_ui_resource_pending_since > std::chrono::seconds(5))
     {
@@ -7888,7 +8045,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         destroy_dedicated_ui_target();
     }
 
-    if (in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending) {
+    if (in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending || in_flight_dedicated_ui_generation != 0) {
         return;
     }
 
