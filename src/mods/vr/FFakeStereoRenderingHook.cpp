@@ -3257,9 +3257,11 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
 
-    if (auto view_family = init_options->get_view_family(); view_family != nullptr) {
-        if (sdk::FSceneViewFamily::update_offsets(view_family, nullptr)) {
-            g_hook->note_scene_view_family_offsets_ready();
+    if (!is_ue_5_7_or_newer()) {
+        if (auto view_family = init_options->get_view_family(); view_family != nullptr) {
+            if (sdk::FSceneViewFamily::update_offsets(view_family, nullptr)) {
+                g_hook->note_scene_view_family_offsets_ready();
+            }
         }
     }
 
@@ -3663,7 +3665,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         return;
     }
 
-    if (sdk::FSceneViewFamily::update_offsets(&view_family, g_hook->get_render_target_manager()->get_viewport())) {
+    if (!g_hook->has_scene_view_family_offsets_ready() &&
+        sdk::FSceneViewFamily::update_offsets(&view_family, g_hook->get_render_target_manager()->get_viewport()))
+    {
         g_hook->note_scene_view_family_offsets_ready();
     }
     auto si = view_family.get_scene_interface();
