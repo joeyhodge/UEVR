@@ -4,6 +4,7 @@
 #include <memory>
 #include <string>
 
+#include <utility/Config.hpp>
 #include <sdk/CVar.hpp>
 
 #include "../../Mod.hpp"
@@ -64,6 +65,7 @@ public:
         virtual ~CVar() = default;
 
         virtual void load(bool set_defaults) = 0;
+        virtual void load_from_config(const utility::Config& cfg, bool set_defaults) = 0;
         virtual void save() = 0;
         virtual void freeze() = 0;
         virtual void update() = 0;
@@ -101,6 +103,7 @@ public:
 
     protected:
         void load_internal(const std::string& filename, bool set_defaults);
+        void load_from_config_internal(const utility::Config& cfg, bool set_defaults);
         void save_internal(const std::string& filename);
 
         std::wstring m_module{};
@@ -139,6 +142,7 @@ public:
         }
 
         void load(bool set_defaults) override;
+        void load_from_config(const utility::Config& cfg, bool set_defaults) override;
         void save() override;
         void freeze() override;
         void update() override;
@@ -161,6 +165,7 @@ public:
         }
 
         void load(bool set_defaults) override;
+        void load_from_config(const utility::Config& cfg, bool set_defaults) override;
         void save() override;
         void freeze() override;
         void update() override;
@@ -171,6 +176,8 @@ public:
     };
 
 private:
+    void refresh_frozen_cvar_state();
+
     std::vector<std::shared_ptr<CVar>> m_displayed_cvars{};
     std::vector<std::shared_ptr<CVar>> m_all_cvars{}; // ones the user can manually add to cvars.txt'
 
@@ -197,6 +204,9 @@ private:
     bool m_wants_display_console{false};
     bool m_native_console_spawned{false};
     bool m_should_execute_console_script{false};
+    bool m_has_frozen_cvars{false};
+    bool m_needs_full_refresh{true};
+    bool m_cvar_ui_open_this_frame{false};
 
     static inline std::vector<std::shared_ptr<CVarStandard>> s_default_standard_cvars {
         // Bools

@@ -1,5 +1,6 @@
 #define NOMINMAX
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -56,6 +57,12 @@ CVarManager::~CVarManager() {
     }*/
 }
 
+void CVarManager::refresh_frozen_cvar_state() {
+    m_has_frozen_cvars = std::any_of(m_all_cvars.begin(), m_all_cvars.end(), [](const auto& cvar) {
+        return cvar->is_frozen();
+    });
+}
+
 void CVarManager::spawn_console() {
     if (m_native_console_spawned) {
         return;
@@ -82,10 +89,29 @@ void CVarManager::spawn_console() {
 void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
-    for (auto& cvar : m_all_cvars) {
-        cvar->update();
-        cvar->freeze();
+    const bool process_all_cvars = m_needs_full_refresh || m_cvar_ui_open_this_frame;
+
+    if (process_all_cvars) {
+        for (auto& cvar : m_all_cvars) {
+            cvar->update();
+        }
+    } else if (m_has_frozen_cvars) {
+        for (auto& cvar : m_all_cvars) {
+            if (cvar->is_frozen()) {
+                cvar->update();
+            }
+        }
     }
+
+    if (m_has_frozen_cvars) {
+        for (auto& cvar : m_all_cvars) {
+            if (process_all_cvars || cvar->is_frozen()) {
+                cvar->freeze();
+            }
+        }
+    }
+
+    m_needs_full_refresh = false;
 
     if (m_should_execute_console_script) {
         execute_console_script(engine, user_script_txt_name.data());
@@ -96,8 +122,11 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 void CVarManager::on_draw_ui() {
     ZoneScopedN(__FUNCTION__);
 
+    m_cvar_ui_open_this_frame = false;
+
     ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
     if (ImGui::TreeNode("CVars")) {
+        m_cvar_ui_open_this_frame = true;
         ImGui::TextWrapped("Note: Any changes here will be frozen.");
 
         uint32_t frozen_cvars = 0;
@@ -131,6 +160,8 @@ void CVarManager::on_draw_ui() {
                 cvar->unfreeze();
             }
 
+            refresh_frozen_cvar_state();
+
             const auto cvars_txt = Framework::get_persistent_dir(cvars_standard_txt_name.data());
 
             try {
@@ -156,11 +187,17 @@ void CVarManager::on_draw_ui() {
             cvar->draw_ui();
         }
 
+        refresh_frozen_cvar_state();
+
         ImGui::TreePop();
     }
 }
 
 void CVarManager::on_frame() {
+    if (!g_framework->is_drawing_ui()) {
+        m_cvar_ui_open_this_frame = false;
+    }
+
     if (m_wants_display_console) {
         display_console();
     }
@@ -169,9 +206,32 @@ void CVarManager::on_frame() {
 void CVarManager::on_config_load(const utility::Config& cfg, bool set_defaults) {
     ZoneScopedN(__FUNCTION__);
 
-    for (auto& cvar : m_all_cvars) {
-        cvar->load(set_defaults);
+    const auto cvars_standard_txt = Framework::get_persistent_dir(cvars_standard_txt_name.data());
+    utility::Config standard_cfg{};
+
+    if (std::filesystem::exists(cvars_standard_txt)) {
+        spdlog::info("[CVarManager] Loading {}...", cvars_standard_txt_name.data());
+        standard_cfg.load(cvars_standard_txt.string());
     }
+
+    const auto cvars_data_txt = Framework::get_persistent_dir(cvars_data_txt_name.data());
+    utility::Config data_cfg{};
+
+    if (std::filesystem::exists(cvars_data_txt)) {
+        spdlog::info("[CVarManager] Loading {}...", cvars_data_txt_name.data());
+        data_cfg.load(cvars_data_txt.string());
+    }
+
+    for (auto& cvar : m_all_cvars) {
+        if (dynamic_cast<CVarStandard*>(cvar.get()) != nullptr) {
+            cvar->load_from_config(standard_cfg, set_defaults);
+        } else {
+            cvar->load_from_config(data_cfg, set_defaults);
+        }
+    }
+
+    refresh_frozen_cvar_state();
+    m_needs_full_refresh = true;
 
     // TODO: Add arbitrary cvars from the other configs the user can add.
 
@@ -471,6 +531,36 @@ void CVarManager::CVar::load_internal(const std::string& filename, bool set_defa
     spdlog::error("Failed to load {}: {}", filename, e.what());
 }
 
+void CVarManager::CVar::load_from_config_internal(const utility::Config& cfg, bool set_defaults) {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto value = cfg.get(get_key_name());
+
+    if (!value) {
+        return;
+    }
+
+    switch (m_type) {
+    case Type::BOOL:
+    case Type::INT:
+        try {
+            m_frozen_int_value = *cfg.get<int>(get_key_name());
+        } catch (...) {
+            m_frozen_int_value = (int)*cfg.get<float>(get_key_name());
+        }
+        break;
+    case Type::FLOAT:
+        try {
+            m_frozen_float_value = *cfg.get<float>(get_key_name());
+        } catch (...) {
+            m_frozen_float_value = (float)*cfg.get<int>(get_key_name());
+        }
+        break;
+    }
+
+    m_frozen = true;
+}
+
 void CVarManager::CVar::save_internal(const std::string& filename) try {
     ZoneScopedN(__FUNCTION__);
     
@@ -500,6 +590,12 @@ void CVarManager::CVarStandard::load(bool set_defaults) {
     ZoneScopedN(__FUNCTION__);
 
     load_internal(cvars_standard_txt_name.data(), set_defaults);
+}
+
+void CVarManager::CVarStandard::load_from_config(const utility::Config& cfg, bool set_defaults) {
+    ZoneScopedN(__FUNCTION__);
+
+    load_from_config_internal(cfg, set_defaults);
 }
 
 void CVarManager::CVarStandard::save() {
@@ -644,6 +740,12 @@ void CVarManager::CVarData::load(bool set_defaults) {
     ZoneScopedN(__FUNCTION__);
 
     load_internal(cvars_data_txt_name.data(), set_defaults);
+}
+
+void CVarManager::CVarData::load_from_config(const utility::Config& cfg, bool set_defaults) {
+    ZoneScopedN(__FUNCTION__);
+
+    load_from_config_internal(cfg, set_defaults);
 }
 
 void CVarManager::CVarData::save() {
