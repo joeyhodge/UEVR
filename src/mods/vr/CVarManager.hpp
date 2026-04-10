@@ -151,6 +151,7 @@ public:
     protected:
         std::wstring m_frozen_value{};
         sdk::IConsoleVariable** m_cvar{nullptr};
+        bool m_setter_unavailable{false};
     };
 
     class CVarData : public CVar {

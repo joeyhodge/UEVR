@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 
 #include <spdlog/spdlog.h>
 
@@ -43,6 +44,117 @@ bool is_eye_projection_valid(const Vector4f& projection) {
            projection[1] > epsilon &&
            projection[2] > epsilon &&
            projection[3] < -epsilon;
+}
+
+std::string format_space_location_flags(XrSpaceLocationFlags flags) {
+    std::ostringstream ss;
+    ss << "0x" << std::hex << static_cast<uint64_t>(flags) << std::dec << " [";
+
+    bool first = true;
+    const auto append = [&](const char* label, XrSpaceLocationFlags bit) {
+        if ((flags & bit) == 0) {
+            return;
+        }
+
+        if (!first) {
+            ss << ',';
+        }
+
+        first = false;
+        ss << label;
+    };
+
+    append("pos_valid", XR_SPACE_LOCATION_POSITION_VALID_BIT);
+    append("ori_valid", XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+    append("pos_tracked", XR_SPACE_LOCATION_POSITION_TRACKED_BIT);
+    append("ori_tracked", XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT);
+    ss << ']';
+    return ss.str();
+}
+
+std::string format_view_state_flags(XrViewStateFlags flags) {
+    std::ostringstream ss;
+    ss << "0x" << std::hex << static_cast<uint64_t>(flags) << std::dec << " [";
+
+    bool first = true;
+    const auto append = [&](const char* label, XrViewStateFlags bit) {
+        if ((flags & bit) == 0) {
+            return;
+        }
+
+        if (!first) {
+            ss << ',';
+        }
+
+        first = false;
+        ss << label;
+    };
+
+    append("pos_valid", XR_VIEW_STATE_POSITION_VALID_BIT);
+    append("ori_valid", XR_VIEW_STATE_ORIENTATION_VALID_BIT);
+    append("pos_tracked", XR_VIEW_STATE_POSITION_TRACKED_BIT);
+    append("ori_tracked", XR_VIEW_STATE_ORIENTATION_TRACKED_BIT);
+    ss << ']';
+    return ss.str();
+}
+
+bool has_required_location_validity(XrSpaceLocationFlags flags) {
+    constexpr auto required = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    return (flags & required) == required;
+}
+
+bool has_any_location_tracking(XrSpaceLocationFlags flags) {
+    constexpr auto tracked = XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+    return (flags & tracked) != 0;
+}
+
+bool has_required_view_validity(XrViewStateFlags flags) {
+    constexpr auto required = XR_VIEW_STATE_POSITION_VALID_BIT | XR_VIEW_STATE_ORIENTATION_VALID_BIT;
+    return (flags & required) == required;
+}
+
+bool has_any_view_tracking(XrViewStateFlags flags) {
+    constexpr auto tracked = XR_VIEW_STATE_POSITION_TRACKED_BIT | XR_VIEW_STATE_ORIENTATION_TRACKED_BIT;
+    return (flags & tracked) != 0;
+}
+
+bool should_accept_startup_poses(OpenXR* openxr) {
+    if (openxr->ever_submitted) {
+        return false;
+    }
+
+    return has_required_location_validity(openxr->view_space_location.locationFlags) &&
+           has_any_location_tracking(openxr->view_space_location.locationFlags) &&
+           has_required_view_validity(openxr->view_state.viewStateFlags) &&
+           has_any_view_tracking(openxr->view_state.viewStateFlags) &&
+           has_required_view_validity(openxr->stage_view_state.viewStateFlags) &&
+           has_any_view_tracking(openxr->stage_view_state.viewStateFlags);
+}
+
+void log_pose_validation_failure(OpenXR* openxr, const char* reason, uint32_t frame_count, XrTime display_time) {
+    const auto now = std::chrono::steady_clock::now();
+
+    if (openxr->last_pose_validation_failure_log.time_since_epoch().count() != 0 &&
+        now - openxr->last_pose_validation_failure_log < std::chrono::seconds(1))
+    {
+        return;
+    }
+
+    openxr->last_pose_validation_failure_log = now;
+
+    spdlog::warn(
+        "[OpenXR] Waiting for first valid poses: {} frame_count={} display_time={} session_state={} frame_synced={} frame_began={} got_first_poses={} view_flags={} stage_view_flags={} view_space_flags={}",
+        reason,
+        frame_count,
+        display_time,
+        openxr->get_session_state_string(openxr->session_state),
+        openxr->frame_synced,
+        openxr->frame_began,
+        openxr->got_first_poses,
+        format_view_state_flags(openxr->view_state.viewStateFlags),
+        format_view_state_flags(openxr->stage_view_state.viewStateFlags),
+        format_space_location_flags(openxr->view_space_location.locationFlags)
+    );
 }
 
 void emit_openxr_state_probes(OpenXR* openxr, const char* context) {
@@ -272,6 +384,7 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count) 
         spdlog::error("[VR] xrWaitFrame failed: {}", this->get_result_string(result));
         return (VRRuntime::Error)result;
     } else {
+        this->last_successful_wait_frame = std::chrono::steady_clock::now();
         std::scoped_lock __{this->sync_assignment_mtx};
 
         // Correct for invalid predictedDisplayPeriod values. Seen on SteamVR OpenXR
@@ -355,19 +468,22 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
     if (!this->got_first_valid_poses) {
         // Seen on VDXR
         if (pipeline_state.frame_state.predictedDisplayTime <= pipeline_state.frame_state.predictedDisplayPeriod) {
-            spdlog::info("[VR] Frame state predicted display time is less than predicted display period!");
+            log_pose_validation_failure(this, "predicted display time <= predicted display period", frame_count, pipeline_state.frame_state.predictedDisplayTime);
             return VRRuntime::Error::SUCCESS;
         }
 
         // Seen on VDXR. If for some reason the above if statement doesn't work, this will catch it.
         if (pipeline_state.frame_state.predictedDisplayTime == 11111111) {
-            spdlog::info("[VR] Frame state predicted display time is 11111111!");
+            log_pose_validation_failure(this, "predicted display time sentinel 11111111", frame_count, pipeline_state.frame_state.predictedDisplayTime);
             return VRRuntime::Error::SUCCESS;
         }
     }
     
     // Not a sane value
     if (pipeline_state.frame_state.predictedDisplayTime <= 1000) {
+        if (!this->got_first_valid_poses) {
+            log_pose_validation_failure(this, "predicted display time <= 1000", frame_count, pipeline_state.frame_state.predictedDisplayTime);
+        }
         return VRRuntime::Error::SUCCESS;
     }
 
@@ -470,16 +586,45 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
 
     if (!this->got_first_valid_poses) {
         constexpr auto wanted_flags = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
-        this->got_first_valid_poses = (this->view_space_location.locationFlags & wanted_flags) == wanted_flags;
+        const auto fully_tracked = (this->view_space_location.locationFlags & wanted_flags) == wanted_flags;
+        const auto startup_acceptable = !fully_tracked && should_accept_startup_poses(this);
+
+        this->got_first_valid_poses = fully_tracked || startup_acceptable;
 
         if (this->got_first_valid_poses) {
+            this->accepted_relaxed_startup_poses = startup_acceptable;
             this->last_valid_pose_probe_log = {};
+            this->last_pose_validation_failure_log = {};
+            if (startup_acceptable) {
+                spdlog::warn(
+                    "[OpenXR] Accepting startup poses without full tracked bits: display_time={} frame_count={} view_flags={} stage_view_flags={} view_space_flags={}",
+                    display_time,
+                    frame_count,
+                    format_view_state_flags(this->view_state.viewStateFlags),
+                    format_view_state_flags(this->stage_view_state.viewStateFlags),
+                    format_space_location_flags(this->view_space_location.locationFlags)
+                );
+            }
+
             spdlog::info("[OpenXR] Got first valid poses at time: {} {} {}", display_time, pipeline_state.frame_state.predictedDisplayTime, pipeline_state.frame_state.predictedDisplayPeriod);
+        } else {
+            log_pose_validation_failure(this, "view space location missing required valid/tracked bits", frame_count, display_time);
         }
+    }
+
+    if (!this->got_first_poses) {
+        spdlog::info(
+            "[OpenXR] Got first poses at time: {} frame_count={} view_flags={} stage_view_flags={}",
+            display_time,
+            frame_count,
+            format_view_state_flags(this->view_state.viewStateFlags),
+            format_view_state_flags(this->stage_view_state.viewStateFlags)
+        );
     }
 
     this->got_first_poses = true;
     this->needs_pose_update = false;
+    this->last_successful_pose_update = std::chrono::steady_clock::now();
     return VRRuntime::Error::SUCCESS;
 }
 
@@ -556,6 +701,11 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->session_ready = true;
                     this->frame_began = false;
                     this->frame_synced = false;
+                    this->last_successful_wait_frame = {};
+                    this->last_successful_begin_frame = {};
+                    this->last_successful_end_frame = {};
+                    this->last_successful_pose_update = {};
+                    this->accepted_relaxed_startup_poses = false;
                     this->session_ready_since = std::chrono::steady_clock::now();
                     this->last_ready_state_probe_log = {};
                     this->last_valid_pose_probe_log = {};
@@ -572,12 +722,29 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->session_ready = false;
                     this->frame_synced = false;
                     this->frame_began = false;
+                    this->last_successful_wait_frame = {};
+                    this->last_successful_begin_frame = {};
+                    this->last_successful_end_frame = {};
+                    this->last_successful_pose_update = {};
+                    this->accepted_relaxed_startup_poses = false;
                     this->session_ready_since = {};
 
                     if (this->wants_reinitialize) {
                         //initialize_openxr();
                     }
                 }
+            }
+
+            if (ev->state == XR_SESSION_STATE_VISIBLE || ev->state == XR_SESSION_STATE_FOCUSED || ev->state == XR_SESSION_STATE_SYNCHRONIZED) {
+                spdlog::info(
+                    "[OpenXR] Session transitioned to {}. session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={}",
+                    this->get_session_state_string(ev->state),
+                    this->session_ready,
+                    this->frame_synced,
+                    this->frame_began,
+                    this->got_first_poses,
+                    this->got_first_valid_poses
+                );
             }
 
             if (this->session_state != XR_SESSION_STATE_READY) {

@@ -5,6 +5,7 @@
 #include <memory>
 #include <string>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <unordered_map>
 
@@ -835,6 +836,10 @@ private:
     std::chrono::steady_clock::time_point m_last_xinput_l3_r3_menu_open{};
     std::chrono::steady_clock::time_point m_last_interaction_display{};
     std::chrono::steady_clock::time_point m_last_engine_tick{};
+    std::chrono::steady_clock::time_point m_last_mod_frame{};
+    std::chrono::steady_clock::time_point m_last_tick_gap_log{};
+    uint32_t m_post_focus_tick_gap_count{};
+    uint32_t m_post_focus_long_tick_gap_count{};
 
     uint32_t m_lowest_xinput_user_index{};
 

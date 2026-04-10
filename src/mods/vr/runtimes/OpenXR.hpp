@@ -307,12 +307,16 @@ public:
 
     uint32_t frame_began_skip_streak{0};
     uint32_t forced_frame_recovery_count{0};
+    bool accepted_relaxed_startup_poses{false};
     std::chrono::steady_clock::time_point last_frame_began_log{};
+    std::chrono::steady_clock::time_point last_successful_wait_frame{};
     std::chrono::steady_clock::time_point last_successful_begin_frame{};
     std::chrono::steady_clock::time_point last_successful_end_frame{};
+    std::chrono::steady_clock::time_point last_successful_pose_update{};
     std::chrono::steady_clock::time_point session_ready_since{};
     std::chrono::steady_clock::time_point last_ready_state_probe_log{};
     std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
+    std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
     
     Mod::ValueList options{
         *resolution_scale,

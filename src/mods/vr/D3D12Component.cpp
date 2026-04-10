@@ -81,6 +81,8 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    m_last_on_frame = std::chrono::steady_clock::now();
+
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Could not set up, trying again next frame");

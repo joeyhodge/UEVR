@@ -1467,8 +1467,37 @@ bool VR::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
 void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE* state) {
     ZoneScopedN(__FUNCTION__);
 
-    if (std::chrono::steady_clock::now() - m_last_engine_tick > std::chrono::seconds(1)) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[VR] XInputGetState called, but engine tick hasn't been called in over a second. Is the game loading?");
+    const auto now = std::chrono::steady_clock::now();
+
+    if (now - m_last_engine_tick > std::chrono::seconds(1)) {
+        const auto mod_frame_delta_ms = m_last_mod_frame.time_since_epoch().count() == 0
+            ? -1ll
+            : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_mod_frame).count();
+        const auto tick_delta_ms = m_last_engine_tick.time_since_epoch().count() == 0
+            ? -1ll
+            : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_engine_tick).count();
+
+        if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
+            if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    "[VR] XInputGetState called, but engine tick hasn't been called in over a second. tick_delta_ms={} mod_frame_delta_ms={} session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={}",
+                    tick_delta_ms,
+                    mod_frame_delta_ms,
+                    openxr->get_session_state_string(openxr->session_state),
+                    openxr->session_ready,
+                    openxr->frame_synced,
+                    openxr->frame_began,
+                    openxr->got_first_poses,
+                    openxr->got_first_valid_poses
+                );
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(1, "[VR] XInputGetState called, but engine tick hasn't been called in over a second. tick_delta_ms={} mod_frame_delta_ms={}", tick_delta_ms, mod_frame_delta_ms);
+            }
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(1, "[VR] XInputGetState called, but engine tick hasn't been called in over a second. tick_delta_ms={} mod_frame_delta_ms={}", tick_delta_ms, mod_frame_delta_ms);
+        }
+
         update_action_states();
     }
 
@@ -1477,8 +1506,6 @@ void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE
         update_imgui_state_from_xinput_state(*state, false);
         gamepad_snapturn(*state);
     }
-
-    const auto now = std::chrono::steady_clock::now();
 
     if (now - m_last_xinput_update > std::chrono::seconds(2)) {
         m_lowest_xinput_user_index = user_index;
@@ -2175,8 +2202,103 @@ void VR::update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_co
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
+    const auto now = std::chrono::steady_clock::now();
+    const auto previous_engine_tick = m_last_engine_tick;
+
     m_cvar_manager->on_pre_engine_tick(engine, delta);
-    m_last_engine_tick = std::chrono::steady_clock::now();
+    m_last_engine_tick = now;
+
+    if (previous_engine_tick.time_since_epoch().count() != 0) {
+        const auto tick_gap = now - previous_engine_tick;
+
+        if (tick_gap > std::chrono::milliseconds(250) &&
+            (m_last_tick_gap_log.time_since_epoch().count() == 0 || now - m_last_tick_gap_log >= std::chrono::seconds(1)))
+        {
+            m_last_tick_gap_log = now;
+
+            if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
+                if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
+                    const auto mod_frame_gap_ms = m_last_mod_frame.time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_mod_frame).count();
+                    const auto framework_frame_gap_ms = (g_framework == nullptr || g_framework->get_last_framework_on_frame_time().time_since_epoch().count() == 0)
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - g_framework->get_last_framework_on_frame_time()).count();
+                    const auto d3d12_frame_gap_ms = m_d3d12.get_last_on_frame_time().time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_d3d12.get_last_on_frame_time()).count();
+                    const auto xr_begin_gap_ms = openxr->last_successful_begin_frame.time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->last_successful_begin_frame).count();
+                    const auto xr_end_gap_ms = openxr->last_successful_end_frame.time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->last_successful_end_frame).count();
+                    const auto xr_wait_gap_ms = openxr->last_successful_wait_frame.time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->last_successful_wait_frame).count();
+                    const auto pose_update_gap_ms = openxr->last_successful_pose_update.time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->last_successful_pose_update).count();
+
+                    if (openxr->session_state == XR_SESSION_STATE_FOCUSED) {
+                        ++m_post_focus_tick_gap_count;
+
+                        if (tick_gap > std::chrono::seconds(1)) {
+                            ++m_post_focus_long_tick_gap_count;
+                        }
+                    }
+
+                    spdlog::warn(
+                        "[VR] Large engine tick gap detected: {} ms. mod_frame={}ms framework_frame={}ms d3d12_frame={}ms xrBegin={}ms xrEnd={}ms session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={} post_focus_gaps={} post_focus_long_gaps={}",
+                        std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
+                        mod_frame_gap_ms,
+                        framework_frame_gap_ms,
+                        d3d12_frame_gap_ms,
+                        xr_begin_gap_ms,
+                        xr_end_gap_ms,
+                        openxr->get_session_state_string(openxr->session_state),
+                        openxr->session_ready,
+                        openxr->frame_synced,
+                        openxr->frame_began,
+                        openxr->got_first_poses,
+                        openxr->got_first_valid_poses,
+                        m_post_focus_tick_gap_count,
+                        m_post_focus_long_tick_gap_count
+                    );
+
+                    if (openxr->session_state == XR_SESSION_STATE_FOCUSED) {
+                        const char* suspected_stall = "mixed_or_unknown";
+
+                        if (mod_frame_gap_ms > 500 && framework_frame_gap_ms <= 250 && d3d12_frame_gap_ms <= 250 && xr_wait_gap_ms <= 250 && xr_begin_gap_ms <= 250 && xr_end_gap_ms <= 250) {
+                            suspected_stall = "game_tick_starved_mod_frame_only";
+                        } else if (mod_frame_gap_ms > 500 && framework_frame_gap_ms > 500 && d3d12_frame_gap_ms <= 250 && xr_wait_gap_ms <= 250 && xr_begin_gap_ms <= 250 && xr_end_gap_ms <= 250) {
+                            suspected_stall = "game_or_framework_tick_starved_while_render_runtime_still_advancing";
+                        } else if (d3d12_frame_gap_ms > 500 && xr_begin_gap_ms <= 250 && xr_end_gap_ms <= 250) {
+                            suspected_stall = "d3d12_component_not_advancing";
+                        } else if (xr_wait_gap_ms > 500 && xr_begin_gap_ms > 500 && xr_end_gap_ms > 500) {
+                            suspected_stall = "openxr_frame_loop_not_advancing";
+                        } else if (pose_update_gap_ms > 500 && xr_wait_gap_ms <= 250) {
+                            suspected_stall = "pose_updates_not_advancing";
+                        }
+
+                        spdlog::warn(
+                            "[VR][stall-detail] tick={}ms mod_frame={}ms framework_frame={}ms d3d12_frame={}ms xrWait={}ms xrBegin={}ms xrEnd={}ms pose_update={}ms accepted_relaxed_startup_poses={} suspected={}",
+                            std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
+                            mod_frame_gap_ms,
+                            framework_frame_gap_ms,
+                            d3d12_frame_gap_ms,
+                            xr_wait_gap_ms,
+                            xr_begin_gap_ms,
+                            xr_end_gap_ms,
+                            pose_update_gap_ms,
+                            openxr->accepted_relaxed_startup_poses,
+                            suspected_stall
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     if (!get_runtime()->loaded || !is_hmd_active()) {
         return;
@@ -3544,6 +3666,7 @@ void VR::handle_keybinds() {
 void VR::on_frame() {
     ZoneScopedN(__FUNCTION__);
 
+    m_last_mod_frame = std::chrono::steady_clock::now();
     m_cvar_manager->on_frame();
     handle_keybinds();
 

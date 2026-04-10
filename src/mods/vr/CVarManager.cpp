@@ -628,7 +628,7 @@ void CVarManager::CVarStandard::save() {
 void CVarManager::CVarStandard::freeze() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_frozen) {
+    if (!m_frozen || m_setter_unavailable) {
         return;
     }
 
@@ -645,17 +645,26 @@ void CVarManager::CVarStandard::freeze() {
     case Type::BOOL:
         // Limiting the amount of times Set gets called with string conversions.
         if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            (*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str());
+            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
+                m_setter_unavailable = true;
+                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            }
         }
         break;
     case Type::INT:
         if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            (*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str());
+            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
+                m_setter_unavailable = true;
+                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            }
         }
         break;
     case Type::FLOAT:
         if ((*m_cvar)->GetFloat() != m_frozen_float_value) {
-            (*m_cvar)->Set(std::to_wstring(m_frozen_float_value).c_str());
+            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_float_value).c_str())) {
+                m_setter_unavailable = true;
+                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            }
         }
         break;
     default:
@@ -687,10 +696,15 @@ void CVarManager::CVarStandard::draw_ui() try {
         auto value = (bool)cvar->GetInt();
 
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
-            GameThreadWorker::get().enqueue([sft = shared_from_this(), cvar, value]() {
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
-                    cvar->Set(std::to_wstring(value).c_str());
-                    sft->save();
+                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                        sft->m_setter_unavailable = false;
+                        sft->save();
+                    } else {
+                        sft->m_setter_unavailable = true;
+                        spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
+                    }
                 } catch (...) {
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
@@ -702,10 +716,15 @@ void CVarManager::CVarStandard::draw_ui() try {
         auto value = cvar->GetInt();
 
         if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
-            GameThreadWorker::get().enqueue([sft = shared_from_this(), cvar, value]() {
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
-                    cvar->Set(std::to_wstring(value).c_str());
-                    sft->save();
+                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                        sft->m_setter_unavailable = false;
+                        sft->save();
+                    } else {
+                        sft->m_setter_unavailable = true;
+                        spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
+                    }
                 } catch(...) {
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
@@ -717,10 +736,15 @@ void CVarManager::CVarStandard::draw_ui() try {
         auto value = cvar->GetFloat();
 
         if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
-            GameThreadWorker::get().enqueue([sft = shared_from_this(), cvar, value]() {
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
-                    cvar->Set(std::to_wstring(value).c_str());
-                    sft->save();
+                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                        sft->m_setter_unavailable = false;
+                        sft->save();
+                    } else {
+                        sft->m_setter_unavailable = true;
+                        spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
+                    }
                 } catch(...) {
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }

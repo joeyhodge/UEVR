@@ -39,6 +39,9 @@ using namespace std::literals;
 std::unique_ptr<Framework> g_framework{};
 
 namespace {
+constexpr auto D3D12_INIT_RETRY_INITIAL_BACKOFF = 50ms;
+constexpr auto D3D12_INIT_RETRY_MAX_BACKOFF = 250ms;
+
 bool should_suppress_openxr_rehook_guard() {
     auto vr = VR::get();
 
@@ -665,12 +668,32 @@ void Framework::on_frame_d3d12() {
     //spdlog::debug("on_frame (D3D12)");
     
     if (!m_initialized) {
+        const auto now = std::chrono::steady_clock::now();
+
+        if (m_next_d3d12_init_attempt.time_since_epoch().count() != 0 && now < m_next_d3d12_init_attempt) {
+            return;
+        }
+
         if (!initialize()) {
-            spdlog::error("Failed to initialize Framework on DirectX 12");
+            ++m_d3d12_init_failure_count;
+
+            const auto backoff_multiplier = 1u << std::min(m_d3d12_init_failure_count - 1, 2u);
+            const auto retry_backoff = std::min(
+                D3D12_INIT_RETRY_INITIAL_BACKOFF * backoff_multiplier,
+                D3D12_INIT_RETRY_MAX_BACKOFF
+            );
+
+            m_next_d3d12_init_attempt = now + retry_backoff;
+            spdlog::warn(
+                "Failed to initialize Framework on DirectX 12; retrying in {} ms",
+                std::chrono::duration_cast<std::chrono::milliseconds>(retry_backoff).count()
+            );
             return;
         }
 
         spdlog::info("Framework initialized");
+        m_next_d3d12_init_attempt = {};
+        m_d3d12_init_failure_count = 0;
         m_initialized = true;
         return;
     }
@@ -690,6 +713,8 @@ void Framework::on_frame_d3d12() {
 
     if (device == nullptr) {
         spdlog::error("D3D12 Device was null when it shouldn't be, returning...");
+        m_next_d3d12_init_attempt = {};
+        m_d3d12_init_failure_count = 0;
         m_initialized = false;
         return;
     }
@@ -850,6 +875,8 @@ void Framework::on_reset(uint32_t w, uint32_t h) {
 
     m_has_frame = false;
     m_first_initialize = false;
+    m_next_d3d12_init_attempt = {};
+    m_d3d12_init_failure_count = 0;
     m_initialized = false;
 }
 
@@ -1886,6 +1913,7 @@ bool Framework::first_frame_initialize() {
 }
 
 void Framework::call_on_frame() {
+    m_last_framework_on_frame = std::chrono::steady_clock::now();
     const bool is_init_ok = m_error.empty() && m_game_data_initialized && m_mods_fully_initialized;
 
     if (is_init_ok) {

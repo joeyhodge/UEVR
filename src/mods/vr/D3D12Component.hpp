@@ -1,6 +1,7 @@
 #pragma once
 
 #include <span>
+#include <chrono>
 
 #include <d3d12.h>
 #include <dxgi.h>
@@ -43,6 +44,7 @@ public:
     const auto& get_backbuffer_size() const { return m_backbuffer_size; }
 
     auto is_initialized() const { return m_openvr.left_eye_tex[0].texture != nullptr; }
+    const auto& get_last_on_frame_time() const { return m_last_on_frame; }
 
     auto& openxr() { return m_openxr; }
     auto& get_openvr_ui_tex() { return m_openvr.ui_tex; }
@@ -64,6 +66,7 @@ private:
 
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
+    std::chrono::steady_clock::time_point m_last_on_frame{};
 
     d3d12::TextureContext m_backbuffer_copy{};
 

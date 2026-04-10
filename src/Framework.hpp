@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <unordered_set>
 #include <memory>
 #include <filesystem>
@@ -155,6 +156,7 @@ public:
     auto get_renderer_type() const { return m_renderer_type; }
     auto& get_d3d11_hook() const { return m_d3d11_hook; }
     auto& get_d3d12_hook() const { return m_d3d12_hook; }
+    const auto& get_last_framework_on_frame_time() const { return m_last_framework_on_frame; }
 
     auto get_window() const { return m_wnd; }
     auto get_last_window_pos() const { return m_last_window_pos; } // Framework imgui window
@@ -366,9 +368,12 @@ private:
     std::chrono::steady_clock::time_point m_last_message_time{};
     std::chrono::steady_clock::time_point m_last_sendmessage_time{};
     std::chrono::steady_clock::time_point m_last_chance_time{};
+    std::chrono::steady_clock::time_point m_last_framework_on_frame{};
     std::chrono::steady_clock::time_point m_last_page_dec_time{};
     std::chrono::steady_clock::time_point m_last_page_inc_time{};
+    std::chrono::steady_clock::time_point m_next_d3d12_init_attempt{};
     uint32_t m_frames_since_init{0};
+    uint32_t m_d3d12_init_failure_count{0};
     bool m_has_last_chance{true};
     bool m_first_initialize{true};
 
