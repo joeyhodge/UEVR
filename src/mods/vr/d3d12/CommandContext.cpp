@@ -1,5 +1,6 @@
 #include <spdlog/spdlog.h>
 #include <utility/String.hpp>
+#include <chrono>
 #include <string_view>
 
 #include "Framework.hpp"
@@ -9,6 +10,173 @@
 #include "CommandContext.hpp"
 
 namespace {
+constexpr auto FENCE_PROFILER_LOG_INTERVAL = std::chrono::seconds(5);
+
+struct FenceTimingStats {
+    uint64_t count{};
+    double total_ms{};
+    double max_ms{};
+
+    void add(std::chrono::steady_clock::duration duration) {
+        const auto ms = std::chrono::duration<double, std::milli>{duration}.count();
+        ++count;
+        total_ms += ms;
+        if (ms > max_ms) {
+            max_ms = ms;
+        }
+    }
+
+    double avg() const {
+        return count == 0 ? 0.0 : total_ms / (double)count;
+    }
+
+    void reset() {
+        count = 0;
+        total_ms = 0.0;
+        max_ms = 0.0;
+    }
+};
+
+struct FenceProfilerState {
+    std::mutex mtx{};
+    std::chrono::steady_clock::time_point last_log{};
+    FenceTimingStats wait{};
+    FenceTimingStats execute_signal{};
+    uint64_t wait_zero_timeout{};
+    uint64_t wait_nonzero_timeout{};
+    uint64_t wait_infinite{};
+    uint64_t long_wait{};
+    uint64_t pending_after_execute{};
+
+    void reset() {
+        wait.reset();
+        execute_signal.reset();
+        wait_zero_timeout = 0;
+        wait_nonzero_timeout = 0;
+        wait_infinite = 0;
+        long_wait = 0;
+        pending_after_execute = 0;
+    }
+};
+
+FenceProfilerState& fence_profiler() {
+    static FenceProfilerState state{};
+    return state;
+}
+
+void maybe_log_fence_profiler_locked(FenceProfilerState& state, std::chrono::steady_clock::time_point now) {
+    if (state.last_log.time_since_epoch().count() == 0) {
+        state.last_log = now;
+        return;
+    }
+
+    if (now - state.last_log < FENCE_PROFILER_LOG_INTERVAL) {
+        return;
+    }
+
+    if (state.wait.count == 0 && state.execute_signal.count == 0) {
+        state.last_log = now;
+        return;
+    }
+
+    spdlog::info(
+        "[D3D12][fence-profiler] wait avg={:.2f}ms max={:.2f}ms n={} execute_signal avg={:.2f}ms max={:.2f}ms n={} wait_zero_timeout={} wait_nonzero_timeout={} wait_infinite={} long_waits={} pending_after_execute={}",
+        state.wait.avg(),
+        state.wait.max_ms,
+        state.wait.count,
+        state.execute_signal.avg(),
+        state.execute_signal.max_ms,
+        state.execute_signal.count,
+        state.wait_zero_timeout,
+        state.wait_nonzero_timeout,
+        state.wait_infinite,
+        state.long_wait,
+        state.pending_after_execute
+    );
+
+    state.last_log = now;
+    state.reset();
+}
+
+void record_fence_wait(
+    std::chrono::steady_clock::duration duration,
+    uint32_t requested_ms,
+    DWORD wait_result,
+    UINT64 fence_value,
+    UINT64 completed_before,
+    UINT64 completed_after,
+    std::wstring_view name)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto duration_ms = std::chrono::duration<double, std::milli>{duration}.count();
+
+    auto& state = fence_profiler();
+    std::scoped_lock _{state.mtx};
+
+    state.wait.add(duration);
+
+    if (requested_ms == INFINITE) {
+        ++state.wait_infinite;
+    }
+
+    if (wait_result == WAIT_TIMEOUT) {
+        if (requested_ms == 0) {
+            ++state.wait_zero_timeout;
+        } else {
+            ++state.wait_nonzero_timeout;
+        }
+    }
+
+    if (duration_ms >= 10.0) {
+        ++state.long_wait;
+        const auto context_name = utility::narrow(std::wstring{name.begin(), name.end()});
+        spdlog::warn(
+            "[D3D12][fence-profiler] WaitForSingleObject took {:.2f}ms context={} requested_ms={} result={} fence={} completed_before={} completed_after={}",
+            duration_ms,
+            context_name,
+            requested_ms,
+            wait_result,
+            fence_value,
+            completed_before,
+            completed_after
+        );
+    }
+
+    maybe_log_fence_profiler_locked(state, now);
+}
+
+void record_fence_execute_signal(
+    std::chrono::steady_clock::duration duration,
+    UINT64 fence_value,
+    UINT64 completed_after_signal,
+    std::wstring_view name)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto duration_ms = std::chrono::duration<double, std::milli>{duration}.count();
+
+    auto& state = fence_profiler();
+    std::scoped_lock _{state.mtx};
+
+    state.execute_signal.add(duration);
+
+    if (completed_after_signal < fence_value) {
+        ++state.pending_after_execute;
+    }
+
+    if (duration_ms >= 10.0) {
+        const auto context_name = utility::narrow(std::wstring{name.begin(), name.end()});
+        spdlog::warn(
+            "[D3D12][fence-profiler] ExecuteCommandLists/Signal took {:.2f}ms context={} fence={} completed_after_signal={}",
+            duration_ms,
+            context_name,
+            fence_value,
+            completed_after_signal
+        );
+    }
+
+    maybe_log_fence_profiler_locked(state, now);
+}
+
 void record_barriers(std::string_view source, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
     render::D3D12Diagnostics::get().record_resource_barriers(source, count, barriers);
 }
@@ -71,7 +239,12 @@ void CommandContext::wait(uint32_t ms) {
     std::scoped_lock _{this->mtx};
 
 	if (this->fence_event && this->waiting_for_fence) {
-        WaitForSingleObject(this->fence_event, ms);
+        const auto completed_before = this->fence != nullptr ? this->fence->GetCompletedValue() : 0;
+        const auto wait_start = std::chrono::steady_clock::now();
+        const auto wait_result = WaitForSingleObject(this->fence_event, ms);
+        const auto wait_duration = std::chrono::steady_clock::now() - wait_start;
+        const auto completed_after = this->fence != nullptr ? this->fence->GetCompletedValue() : 0;
+        record_fence_wait(wait_duration, ms, wait_result, this->fence_value, completed_before, completed_after, this->internal_name);
         ResetEvent(this->fence_event);
         this->waiting_for_fence = false;
         if (FAILED(this->cmd_allocator->Reset())) {
@@ -362,9 +535,16 @@ void CommandContext::execute() {
         
         auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
         ID3D12CommandList* const cmd_lists[] = {this->cmd_list.Get()};
+        const auto execute_start = std::chrono::steady_clock::now();
         command_queue->ExecuteCommandLists(1, cmd_lists);
         command_queue->Signal(this->fence.Get(), ++this->fence_value);
         this->fence->SetEventOnCompletion(this->fence_value, this->fence_event);
+        record_fence_execute_signal(
+            std::chrono::steady_clock::now() - execute_start,
+            this->fence_value,
+            this->fence != nullptr ? this->fence->GetCompletedValue() : 0,
+            this->internal_name
+        );
         this->waiting_for_fence = true;
         this->has_commands = false;
     }

@@ -64,9 +64,43 @@ private:
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
+    struct FrameTimingStats {
+        uint64_t count{};
+        double total_ms{};
+        double max_ms{};
+
+        void add(std::chrono::steady_clock::duration duration) {
+            const auto ms = std::chrono::duration<double, std::milli>{duration}.count();
+            ++count;
+            total_ms += ms;
+            if (ms > max_ms) {
+                max_ms = ms;
+            }
+        }
+
+        double avg() const {
+            return count == 0 ? 0.0 : total_ms / (double)count;
+        }
+
+        void reset() {
+            count = 0;
+            total_ms = 0.0;
+            max_ms = 0.0;
+        }
+    };
+
+    void log_frame_timing_stats_if_needed(VR* vr);
+
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
     std::chrono::steady_clock::time_point m_last_on_frame{};
+    std::chrono::steady_clock::time_point m_last_frame_timing_log{};
+    FrameTimingStats m_perf_on_frame{};
+    FrameTimingStats m_perf_ui_copy{};
+    FrameTimingStats m_perf_swapchain_copy{};
+    FrameTimingStats m_perf_openxr_submit{};
+    FrameTimingStats m_perf_spectator_mirror{};
+    FrameTimingStats m_perf_post_present{};
 
     d3d12::TextureContext m_backbuffer_copy{};
 

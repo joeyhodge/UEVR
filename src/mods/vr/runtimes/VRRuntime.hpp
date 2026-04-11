@@ -30,6 +30,19 @@ struct VRRuntime {
         RIGHT,
     };
 
+    enum class SyncFrameCallsite : uint8_t {
+        Unknown,
+        RuntimeFixFrame,
+        VRLateOnPresent,
+        VREarlyRHICommand,
+        VRD3D11InitialSync,
+        VRPostPresentInitialSync,
+        VRVeryLatePostPresent,
+        OpenXRSessionReady,
+        OpenXRBeginFrameRecovery,
+        Count,
+    };
+
     enum Hand : uint8_t {
         LEFT,
         RIGHT,
@@ -53,13 +66,16 @@ struct VRRuntime {
         this->loaded = false;
     }
 
-    virtual Error synchronize_frame(std::optional<uint32_t> frame_count = std::nullopt) {
+    virtual Error synchronize_frame(
+        std::optional<uint32_t> frame_count = std::nullopt,
+        SyncFrameCallsite callsite = SyncFrameCallsite::Unknown)
+    {
         return Error::SUCCESS;
     }
 
     virtual Error fix_frame() {
         if (!this->frame_synced) {
-            synchronize_frame();
+            synchronize_frame(std::nullopt, SyncFrameCallsite::RuntimeFixFrame);
         }
 
         return Error::SUCCESS;

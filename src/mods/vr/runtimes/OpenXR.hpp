@@ -71,7 +71,9 @@ struct OpenXR final : public VRRuntime {
     void on_pre_render_render_thread(uint32_t frame_count) override {};
     void on_pre_render_rhi_thread(uint32_t frame_count) override {};
 
-    VRRuntime::Error synchronize_frame(std::optional<uint32_t> frame_count = std::nullopt) override;
+    VRRuntime::Error synchronize_frame(
+        std::optional<uint32_t> frame_count = std::nullopt,
+        SyncFrameCallsite callsite = SyncFrameCallsite::Unknown) override;
     VRRuntime::Error fix_frame() override {
         // sync if necessary.
         VRRuntime::fix_frame();
@@ -298,9 +300,37 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+
+    struct FrameTimingStats {
+        uint64_t count{};
+        double total_ms{};
+        double max_ms{};
+
+        void add(std::chrono::steady_clock::duration duration) {
+            const auto ms = std::chrono::duration<double, std::milli>{duration}.count();
+            ++count;
+            total_ms += ms;
+            if (ms > max_ms) {
+                max_ms = ms;
+            }
+        }
+
+        double avg() const {
+            return count == 0 ? 0.0 : total_ms / (double)count;
+        }
+
+        void reset() {
+            count = 0;
+            total_ms = 0.0;
+            max_ms = 0.0;
+        }
+    };
+
+    void log_frame_timing_stats_if_needed();
     
     const ModSlider::Ptr resolution_scale{ ModSlider::create("OpenXR_ResolutionScale", 0.1f, 3.0f, 1.0f) };
     const ModToggle::Ptr ignore_vd_checks{ ModToggle::create("OpenXR_IgnoreVirtualDesktopChecks", false) };
+    bool resolution_scale_reconfigure_pending{false};
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
     bool has_valid_projection_data{false};
@@ -317,6 +347,12 @@ public:
     std::chrono::steady_clock::time_point last_ready_state_probe_log{};
     std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
     std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
+    std::chrono::steady_clock::time_point last_frame_timing_log{};
+    FrameTimingStats wait_frame_timing{};
+    FrameTimingStats begin_frame_timing{};
+    FrameTimingStats end_frame_timing{};
+    FrameTimingStats pose_update_timing{};
+    std::array<FrameTimingStats, (size_t)SyncFrameCallsite::Count> wait_frame_callsite_timing{};
     
     Mod::ValueList options{
         *resolution_scale,

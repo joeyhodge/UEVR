@@ -3832,7 +3832,7 @@ void VR::on_present() {
 
     if (is_left_eye_frame && get_synchronize_stage() == VR::SynchronizeStage::LATE) {
         const auto had_sync = runtime->got_first_sync;
-        runtime->synchronize_frame();
+        runtime->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::VRLateOnPresent);
 
         if (!runtime->got_first_poses || !had_sync) {
             update_hmd_state();
@@ -3844,7 +3844,7 @@ void VR::on_present() {
         if (!runtime->got_first_sync) {
             SPDLOG_INFO_EVERY_N_SEC(1, "Attempting to sync!");
             if (get_synchronize_stage() == VR::SynchronizeStage::LATE) {
-                runtime->synchronize_frame();
+                runtime->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::VRD3D11InitialSync);
             }
 
             update_hmd_state();
@@ -3924,7 +3924,10 @@ void VR::on_post_present() {
     if (is_left_eye_frame) {
         if (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
             const auto had_sync = runtime->got_first_sync;
-            runtime->synchronize_frame();
+            const auto callsite = get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE
+                ? VRRuntime::SyncFrameCallsite::VRVeryLatePostPresent
+                : VRRuntime::SyncFrameCallsite::VRPostPresentInitialSync;
+            runtime->synchronize_frame(std::nullopt, callsite);
 
             if (!runtime->got_first_poses || !had_sync) {
                 update_hmd_state();
