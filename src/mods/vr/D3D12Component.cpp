@@ -28,6 +28,8 @@ constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
 
 namespace vrmod {
 namespace {
+constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
+
 std::pair<uint32_t, uint32_t> get_ui_extent() {
     const auto fallback = std::pair<uint32_t, uint32_t>{
         (uint32_t)g_framework->get_d3d12_rt_size().x,
@@ -81,6 +83,12 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    const auto on_frame_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard frame_timing_guard{[&]() {
+        m_perf_on_frame.add(std::chrono::steady_clock::now() - on_frame_start);
+        log_frame_timing_stats_if_needed(vr);
+    }};
+
     m_last_on_frame = std::chrono::steady_clock::now();
 
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
@@ -435,6 +443,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     };
 
     if (runtime->is_openvr() && m_openvr.ui_tex.texture.Get() != nullptr) {
+        const auto ui_copy_start = std::chrono::steady_clock::now();
+        utility::ScopeGuard ui_copy_timing_guard{[&]() {
+            m_perf_ui_copy.add(std::chrono::steady_clock::now() - ui_copy_start);
+        }};
+
         m_openvr.ui_tex.commands.wait(INFINITE);
 
         draw_2d_view(m_openvr.ui_tex.commands, nullptr);
@@ -452,6 +465,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         clear_rt(m_openvr.ui_tex.commands);
         m_openvr.ui_tex.commands.execute();
     } else if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && vr->m_openxr->frame_began) {
+        const auto ui_copy_start = std::chrono::steady_clock::now();
+        utility::ScopeGuard ui_copy_timing_guard{[&]() {
+            m_perf_ui_copy.add(std::chrono::steady_clock::now() - ui_copy_start);
+        }};
+
         if (is_right_eye_frame) {
             if (is_2d_screen) {
                 if (is_afr) {
@@ -515,6 +533,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
+            const auto swapchain_copy_start = std::chrono::steady_clock::now();
+            utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
+                m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
+            }};
+
             D3D12_BOX src_box{};
             src_box.left = 0;
             src_box.top = 0;
@@ -569,6 +592,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // OpenXR texture
         if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
+            const auto swapchain_copy_start = std::chrono::steady_clock::now();
+            utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
+                m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
+            }};
+
             if (is_actually_afr && !is_afr && !m_submitted_left_eye) {
                 D3D12_BOX src_box{};
                 src_box.left = 0;
@@ -715,6 +743,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         // OpenXR start ////////////////////////////////////////////////////////////////
         ////////////////////////////////////////////////////////////////////////////////
         if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
+            const auto openxr_submit_start = std::chrono::steady_clock::now();
+            utility::ScopeGuard openxr_submit_timing_guard{[&]() {
+                m_perf_openxr_submit.add(std::chrono::steady_clock::now() - openxr_submit_start);
+            }};
+
             if (!vr->m_openxr->frame_began) {
                 vr->m_openxr->begin_frame();
             }
@@ -792,6 +825,96 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     return e;
 }
 
+void D3D12Component::log_frame_timing_stats_if_needed(VR* vr) {
+    const auto now = std::chrono::steady_clock::now();
+
+    if (m_last_frame_timing_log.time_since_epoch().count() == 0) {
+        m_last_frame_timing_log = now;
+        return;
+    }
+
+    if (now - m_last_frame_timing_log < FRAME_TIMING_LOG_INTERVAL) {
+        return;
+    }
+
+    if (m_perf_on_frame.count == 0 &&
+        m_perf_ui_copy.count == 0 &&
+        m_perf_swapchain_copy.count == 0 &&
+        m_perf_openxr_submit.count == 0 &&
+        m_perf_spectator_mirror.count == 0 &&
+        m_perf_post_present.count == 0)
+    {
+        m_last_frame_timing_log = now;
+        return;
+    }
+
+    bool has_ui_target = false;
+    bool ui_target_pending = false;
+    uint32_t dedicated_ui_width = 0;
+    uint32_t dedicated_ui_height = 0;
+
+    if (vr != nullptr && vr->m_fake_stereo_hook != nullptr) {
+        const auto rtm = vr->m_fake_stereo_hook->get_render_target_manager();
+
+        if (rtm != nullptr) {
+            has_ui_target = rtm->get_ui_target() != nullptr;
+            ui_target_pending = rtm->is_dedicated_ui_target_pending();
+            dedicated_ui_width = rtm->get_dedicated_ui_width();
+            dedicated_ui_height = rtm->get_dedicated_ui_height();
+        }
+    }
+
+    const auto mirror_mode = vr != nullptr ? (int)vr->get_desktop_mirror_mode() : -1;
+    const auto desktop_fix = vr != nullptr && vr->m_desktop_fix->value();
+    const auto hmd_active = vr != nullptr && vr->is_hmd_active();
+    const auto afr = vr != nullptr && vr->is_using_afr();
+    const auto native_stereo = vr != nullptr && vr->is_native_stereo_fix_enabled();
+    const auto has_ui_tex = m_game_ui_tex.texture.Get() != nullptr;
+    const auto has_game_tex = m_game_tex.texture.Get() != nullptr;
+
+    spdlog::info(
+        "[D3D12][frame-profiler] on_frame avg={:.2f}ms max={:.2f}ms n={} ui_copy avg={:.2f}ms max={:.2f}ms n={} swapchain_copy avg={:.2f}ms max={:.2f}ms n={} openxr_submit avg={:.2f}ms max={:.2f}ms n={} spectator_mirror avg={:.2f}ms max={:.2f}ms n={} post_present avg={:.2f}ms max={:.2f}ms n={} mirror_mode={} desktop_fix={} hmd={} afr={} native_stereo={} has_game_tex={} has_ui_tex={} has_ui_target={} ui_pending={} ui_extent={}x{} submitted={}",
+        m_perf_on_frame.avg(),
+        m_perf_on_frame.max_ms,
+        m_perf_on_frame.count,
+        m_perf_ui_copy.avg(),
+        m_perf_ui_copy.max_ms,
+        m_perf_ui_copy.count,
+        m_perf_swapchain_copy.avg(),
+        m_perf_swapchain_copy.max_ms,
+        m_perf_swapchain_copy.count,
+        m_perf_openxr_submit.avg(),
+        m_perf_openxr_submit.max_ms,
+        m_perf_openxr_submit.count,
+        m_perf_spectator_mirror.avg(),
+        m_perf_spectator_mirror.max_ms,
+        m_perf_spectator_mirror.count,
+        m_perf_post_present.avg(),
+        m_perf_post_present.max_ms,
+        m_perf_post_present.count,
+        mirror_mode,
+        desktop_fix,
+        hmd_active,
+        afr,
+        native_stereo,
+        has_game_tex,
+        has_ui_tex,
+        has_ui_target,
+        ui_target_pending,
+        dedicated_ui_width,
+        dedicated_ui_height,
+        vr != nullptr && vr->m_submitted
+    );
+
+    m_last_frame_timing_log = now;
+    m_perf_on_frame.reset();
+    m_perf_ui_copy.reset();
+    m_perf_swapchain_copy.reset();
+    m_perf_openxr_submit.reset();
+    m_perf_spectator_mirror.reset();
+    m_perf_post_present.reset();
+}
+
 std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_pso(
     DXGI_FORMAT output_format, 
     std::span<const uint8_t> ps, 
@@ -849,6 +972,11 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     if (!vr->is_hmd_active() || !vr->m_desktop_fix->value()) {
         return;
     }
+
+    const auto spectator_mirror_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard spectator_mirror_timing_guard{[&]() {
+        m_perf_spectator_mirror.add(std::chrono::steady_clock::now() - spectator_mirror_start);
+    }};
 
     auto& hook = g_framework->get_d3d12_hook();
 
@@ -1098,6 +1226,11 @@ void D3D12Component::clear_backbuffer() {
 }
 
 void D3D12Component::on_post_present(VR* vr) {
+    const auto post_present_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard post_present_timing_guard{[&]() {
+        m_perf_post_present.add(std::chrono::steady_clock::now() - post_present_start);
+    }};
+
     if (m_graphics_memory != nullptr) {
         auto& hook = g_framework->get_d3d12_hook();
 
@@ -1115,6 +1248,13 @@ void D3D12Component::on_post_present(VR* vr) {
 
 void D3D12Component::on_reset(VR* vr) {
     m_force_reset = true;
+    m_last_frame_timing_log = {};
+    m_perf_on_frame.reset();
+    m_perf_ui_copy.reset();
+    m_perf_swapchain_copy.reset();
+    m_perf_openxr_submit.reset();
+    m_perf_spectator_mirror.reset();
+    m_perf_post_present.reset();
 
     auto runtime = vr->get_runtime();
 

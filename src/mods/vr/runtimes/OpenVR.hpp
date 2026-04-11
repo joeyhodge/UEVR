@@ -24,7 +24,9 @@ struct OpenVR final : public VRRuntime {
         return VRRuntime::ready() && this->is_hmd_active && this->got_first_poses;
 
     }
-    VRRuntime::Error synchronize_frame(std::optional<uint32_t> frame_count = std::nullopt) override;
+    VRRuntime::Error synchronize_frame(
+        std::optional<uint32_t> frame_count = std::nullopt,
+        SyncFrameCallsite callsite = SyncFrameCallsite::Unknown) override;
     VRRuntime::Error update_poses(bool from_view_extensions = false, uint32_t frame_count = 0) override;
     VRRuntime::Error update_render_target_size() override;
 

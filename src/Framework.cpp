@@ -42,6 +42,29 @@ namespace {
 constexpr auto D3D12_INIT_RETRY_INITIAL_BACKOFF = 50ms;
 constexpr auto D3D12_INIT_RETRY_MAX_BACKOFF = 250ms;
 
+bool is_imgui_mouse_message(UINT message) {
+    switch (message) {
+    case WM_MOUSEMOVE:
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONUP:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONUP:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONUP:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONUP:
+    case WM_XBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool should_suppress_openxr_rehook_guard() {
     auto vr = VR::get();
 
@@ -1039,6 +1062,15 @@ bool Framework::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_para
             };
 
             if (!forcefully_allowed_messages.contains(message)) {      
+                // Only eat game mouse input while the cursor is actually over/using ImGui.
+                const auto imgui_has_mouse = io.WantCaptureMouse ||
+                    ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow) ||
+                    ImGui::IsAnyItemActive();
+
+                if ((is_imgui_mouse_message(message) || message == WM_INPUT) && imgui_has_mouse) {
+                    return false;
+                }
+
                 if (m_is_ui_focused) {
                     if (io.WantCaptureMouse || io.WantCaptureKeyboard || io.WantTextInput)
                         return false;
