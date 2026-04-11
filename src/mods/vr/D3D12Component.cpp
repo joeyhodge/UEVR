@@ -84,12 +84,58 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto on_frame_start = std::chrono::steady_clock::now();
+    const auto previous_on_frame_gap_ms = m_last_on_frame.time_since_epoch().count() == 0
+        ? -1ll
+        : std::chrono::duration_cast<std::chrono::milliseconds>(on_frame_start - m_last_on_frame).count();
+    const auto post_present_gap_ms = m_last_post_present.time_since_epoch().count() == 0
+        ? -1ll
+        : std::chrono::duration_cast<std::chrono::milliseconds>(on_frame_start - m_last_post_present).count();
     utility::ScopeGuard frame_timing_guard{[&]() {
         m_perf_on_frame.add(std::chrono::steady_clock::now() - on_frame_start);
         log_frame_timing_stats_if_needed(vr);
     }};
 
-    m_last_on_frame = std::chrono::steady_clock::now();
+    m_last_on_frame = on_frame_start;
+
+    if (vr != nullptr) {
+        const auto openxr = vr->get_openxr_runtime();
+
+        if (openxr != nullptr &&
+            openxr->session_state == XR_SESSION_STATE_FOCUSED &&
+            previous_on_frame_gap_ms > 250 &&
+            (m_last_on_frame_gap_log.time_since_epoch().count() == 0 ||
+             on_frame_start - m_last_on_frame_gap_log >= std::chrono::seconds(1)))
+        {
+            m_last_on_frame_gap_log = on_frame_start;
+
+            bool has_ui_target = false;
+            bool ui_target_pending = false;
+
+            if (vr->m_fake_stereo_hook != nullptr) {
+                const auto rtm = vr->m_fake_stereo_hook->get_render_target_manager();
+
+                if (rtm != nullptr) {
+                    has_ui_target = rtm->get_ui_target() != nullptr;
+                    ui_target_pending = rtm->is_dedicated_ui_target_pending();
+                }
+            }
+
+            spdlog::warn(
+                "[D3D12][frame-entry-gap] previous_on_frame={}ms post_present_age={}ms render_frame={} game_frame={} frame_synced={} frame_began={} got_first_valid_poses={} submitted={} has_ui_target={} ui_pending={} session={}",
+                previous_on_frame_gap_ms,
+                post_present_gap_ms,
+                vr->m_render_frame_count,
+                vr->m_frame_count,
+                openxr->frame_synced,
+                openxr->frame_began,
+                openxr->got_first_valid_poses,
+                vr->m_submitted,
+                has_ui_target,
+                ui_target_pending,
+                openxr->get_session_state_string(openxr->session_state)
+            );
+        }
+    }
 
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
@@ -1227,9 +1273,43 @@ void D3D12Component::clear_backbuffer() {
 
 void D3D12Component::on_post_present(VR* vr) {
     const auto post_present_start = std::chrono::steady_clock::now();
+    const auto previous_post_present_gap_ms = m_last_post_present.time_since_epoch().count() == 0
+        ? -1ll
+        : std::chrono::duration_cast<std::chrono::milliseconds>(post_present_start - m_last_post_present).count();
+    const auto on_frame_gap_ms = m_last_on_frame.time_since_epoch().count() == 0
+        ? -1ll
+        : std::chrono::duration_cast<std::chrono::milliseconds>(post_present_start - m_last_on_frame).count();
+    m_last_post_present = post_present_start;
+
     utility::ScopeGuard post_present_timing_guard{[&]() {
         m_perf_post_present.add(std::chrono::steady_clock::now() - post_present_start);
     }};
+
+    if (vr != nullptr) {
+        const auto openxr = vr->get_openxr_runtime();
+
+        if (openxr != nullptr &&
+            openxr->session_state == XR_SESSION_STATE_FOCUSED &&
+            previous_post_present_gap_ms > 250 &&
+            (m_last_post_present_gap_log.time_since_epoch().count() == 0 ||
+             post_present_start - m_last_post_present_gap_log >= std::chrono::seconds(1)))
+        {
+            m_last_post_present_gap_log = post_present_start;
+
+            spdlog::warn(
+                "[D3D12][post-present-gap] previous_post_present={}ms on_frame_age={}ms render_frame={} game_frame={} frame_synced={} frame_began={} got_first_valid_poses={} submitted={} session={}",
+                previous_post_present_gap_ms,
+                on_frame_gap_ms,
+                vr->m_render_frame_count,
+                vr->m_frame_count,
+                openxr->frame_synced,
+                openxr->frame_began,
+                openxr->got_first_valid_poses,
+                vr->m_submitted,
+                openxr->get_session_state_string(openxr->session_state)
+            );
+        }
+    }
 
     if (m_graphics_memory != nullptr) {
         auto& hook = g_framework->get_d3d12_hook();
@@ -1248,6 +1328,10 @@ void D3D12Component::on_post_present(VR* vr) {
 
 void D3D12Component::on_reset(VR* vr) {
     m_force_reset = true;
+    m_last_on_frame = {};
+    m_last_post_present = {};
+    m_last_on_frame_gap_log = {};
+    m_last_post_present_gap_log = {};
     m_last_frame_timing_log = {};
     m_perf_on_frame.reset();
     m_perf_ui_copy.reset();

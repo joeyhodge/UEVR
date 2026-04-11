@@ -186,7 +186,12 @@ bool has_any_view_tracking(XrViewStateFlags flags) {
 }
 
 bool should_accept_startup_poses(OpenXR* openxr) {
-    if (openxr->ever_submitted) {
+    const auto post_focus_initial_pose =
+        openxr->session_state == XR_SESSION_STATE_FOCUSED &&
+        openxr->session_focused_since.time_since_epoch().count() != 0 &&
+        openxr->frame_state.shouldRender == XR_TRUE;
+
+    if (openxr->ever_submitted && !post_focus_initial_pose) {
         return false;
     }
 
@@ -253,7 +258,7 @@ void emit_openxr_state_probes(OpenXR* openxr, const char* context) {
         openxr->last_valid_pose_probe_log = now;
 
         spdlog::warn(
-            "[OpenXR] got_first_valid_poses is still false during {}. session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} predictedDisplayTime={} predictedDisplayPeriod={}",
+            "[OpenXR] got_first_valid_poses is still false during {}. session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} predictedDisplayTime={} predictedDisplayPeriod={} focused_age_ms={} view_flags={} stage_view_flags={} view_space_flags={}",
             context,
             openxr->get_session_state_string(openxr->session_state),
             openxr->session_ready,
@@ -261,7 +266,13 @@ void emit_openxr_state_probes(OpenXR* openxr, const char* context) {
             openxr->frame_began,
             openxr->got_first_poses,
             openxr->frame_state.predictedDisplayTime,
-            openxr->frame_state.predictedDisplayPeriod
+            openxr->frame_state.predictedDisplayPeriod,
+            openxr->session_focused_since.time_since_epoch().count() == 0
+                ? -1
+                : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->session_focused_since).count(),
+            format_view_state_flags(openxr->view_state.viewStateFlags),
+            format_view_state_flags(openxr->stage_view_state.viewStateFlags),
+            format_space_location_flags(openxr->view_space_location.locationFlags)
         );
     }
 }
@@ -845,9 +856,11 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
             this->last_pose_validation_failure_log = {};
             if (startup_acceptable) {
                 spdlog::warn(
-                    "[OpenXR] Accepting startup poses without full tracked bits: display_time={} frame_count={} view_flags={} stage_view_flags={} view_space_flags={}",
+                    "[OpenXR] Accepting initial poses without full tracked bits: display_time={} frame_count={} session_state={} ever_submitted={} view_flags={} stage_view_flags={} view_space_flags={}",
                     display_time,
                     frame_count,
+                    this->get_session_state_string(this->session_state),
+                    this->ever_submitted,
                     format_view_state_flags(this->view_state.viewStateFlags),
                     format_view_state_flags(this->stage_view_state.viewStateFlags),
                     format_space_location_flags(this->view_space_location.locationFlags)
@@ -2368,6 +2381,49 @@ XrResult OpenXR::begin_frame(BeginFrameCallsite callsite) {
                 this->frame_state.predictedDisplayTime,
                 this->frame_state.predictedDisplayPeriod
             );
+        }
+
+        const auto should_close_ready_pre_submit_frame =
+            result == XR_SUCCESS &&
+            callsite == BeginFrameCallsite::VRPostPresent &&
+            this->session_state == XR_SESSION_STATE_READY &&
+            !this->ever_submitted &&
+            this->frame_state.shouldRender == XR_FALSE;
+
+        if (should_close_ready_pre_submit_frame) {
+            XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+            frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+            frame_end_info.environmentBlendMode = this->blend_mode;
+            frame_end_info.layerCount = 0;
+            frame_end_info.layers = nullptr;
+
+            const auto end_frame_start = std::chrono::steady_clock::now();
+            const auto end_result = xrEndFrame(this->session, &frame_end_info);
+            const auto end_frame_end = std::chrono::steady_clock::now();
+            const auto end_frame_duration = end_frame_end - end_frame_start;
+            this->end_frame_timing.add(end_frame_duration);
+
+            if (end_result == XR_SUCCESS) {
+                this->ever_submitted = true;
+                this->last_successful_end_frame = end_frame_end;
+            } else {
+                spdlog::error("[OpenXR] Immediate READY empty xrEndFrame failed: {}", this->get_result_string(end_result));
+            }
+
+            spdlog::warn(
+                "[OpenXR][ready-empty-submit] Closed non-renderable READY frame immediately result={} duration_ms={:.2f} predictedDisplayTime={} predictedDisplayPeriod={} last_xrWaitFrame_age_ms={}",
+                this->get_result_string(end_result),
+                std::chrono::duration<double, std::milli>{end_frame_duration}.count(),
+                this->frame_state.predictedDisplayTime,
+                this->frame_state.predictedDisplayPeriod,
+                this->last_successful_wait_frame.time_since_epoch().count() == 0
+                    ? -1
+                    : std::chrono::duration_cast<std::chrono::milliseconds>(end_frame_end - this->last_successful_wait_frame).count()
+            );
+
+            this->frame_began = false;
+            this->frame_synced = false;
+            return end_result;
         }
     }
 

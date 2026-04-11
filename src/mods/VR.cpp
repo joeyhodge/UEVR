@@ -2227,6 +2227,9 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                     const auto d3d12_frame_gap_ms = m_d3d12.get_last_on_frame_time().time_since_epoch().count() == 0
                         ? -1ll
                         : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_d3d12.get_last_on_frame_time()).count();
+                    const auto d3d12_post_present_gap_ms = m_d3d12.get_last_post_present_time().time_since_epoch().count() == 0
+                        ? -1ll
+                        : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_d3d12.get_last_post_present_time()).count();
                     const auto xr_begin_gap_ms = openxr->last_successful_begin_frame.time_since_epoch().count() == 0
                         ? -1ll
                         : std::chrono::duration_cast<std::chrono::milliseconds>(now - openxr->last_successful_begin_frame).count();
@@ -2249,11 +2252,12 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                     }
 
                     spdlog::warn(
-                        "[VR] Large engine tick gap detected: {} ms. mod_frame={}ms framework_frame={}ms d3d12_frame={}ms xrBegin={}ms xrEnd={}ms session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={} post_focus_gaps={} post_focus_long_gaps={}",
+                        "[VR] Large engine tick gap detected: {} ms. mod_frame={}ms framework_frame={}ms d3d12_frame={}ms d3d12_post_present={}ms xrBegin={}ms xrEnd={}ms session_state={} session_ready={} frame_synced={} frame_began={} got_first_poses={} got_first_valid_poses={} post_focus_gaps={} post_focus_long_gaps={}",
                         std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
                         mod_frame_gap_ms,
                         framework_frame_gap_ms,
                         d3d12_frame_gap_ms,
+                        d3d12_post_present_gap_ms,
                         xr_begin_gap_ms,
                         xr_end_gap_ms,
                         openxr->get_session_state_string(openxr->session_state),
@@ -2273,6 +2277,10 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                             suspected_stall = "game_tick_starved_mod_frame_only";
                         } else if (mod_frame_gap_ms > 500 && framework_frame_gap_ms > 500 && d3d12_frame_gap_ms <= 250 && xr_wait_gap_ms <= 250 && xr_begin_gap_ms <= 250 && xr_end_gap_ms <= 250) {
                             suspected_stall = "game_or_framework_tick_starved_while_render_runtime_still_advancing";
+                        } else if (d3d12_frame_gap_ms > 500 && d3d12_post_present_gap_ms <= 250) {
+                            suspected_stall = "d3d12_on_frame_not_advancing_but_post_present_is";
+                        } else if (d3d12_frame_gap_ms > 500 && d3d12_post_present_gap_ms > 500) {
+                            suspected_stall = "present_and_d3d12_on_frame_not_advancing";
                         } else if (d3d12_frame_gap_ms > 500 && xr_begin_gap_ms <= 250 && xr_end_gap_ms <= 250) {
                             suspected_stall = "d3d12_component_not_advancing";
                         } else if (xr_wait_gap_ms > 500 && xr_begin_gap_ms > 500 && xr_end_gap_ms > 500) {
@@ -2282,11 +2290,12 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                         }
 
                         spdlog::warn(
-                            "[VR][stall-detail] tick={}ms mod_frame={}ms framework_frame={}ms d3d12_frame={}ms xrWait={}ms xrBegin={}ms xrEnd={}ms pose_update={}ms accepted_relaxed_startup_poses={} suspected={}",
+                            "[VR][stall-detail] tick={}ms mod_frame={}ms framework_frame={}ms d3d12_frame={}ms d3d12_post_present={}ms xrWait={}ms xrBegin={}ms xrEnd={}ms pose_update={}ms accepted_relaxed_startup_poses={} suspected={}",
                             std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
                             mod_frame_gap_ms,
                             framework_frame_gap_ms,
                             d3d12_frame_gap_ms,
+                            d3d12_post_present_gap_ms,
                             xr_wait_gap_ms,
                             xr_begin_gap_ms,
                             xr_end_gap_ms,
