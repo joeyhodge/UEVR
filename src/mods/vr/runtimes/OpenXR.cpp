@@ -29,6 +29,10 @@ constexpr auto FRAME_BEGIN_STUCK_LOG_INTERVAL = std::chrono::seconds(1);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
+constexpr auto BEGIN_FRAME_NOT_READY_LOG_INTERVAL = std::chrono::seconds(2);
+constexpr auto READY_BEGIN_FRAME_CALLSITE_LOG_INTERVAL = std::chrono::seconds(1);
+constexpr auto READY_WAIT_FRAME_CALLSITE_LOG_INTERVAL = std::chrono::seconds(1);
+constexpr auto SUBMIT_PIPELINE_LOG_INTERVAL = std::chrono::seconds(5);
 
 struct ScopedOpenXRTiming {
     OpenXR::FrameTimingStats& stats;
@@ -57,6 +61,36 @@ const char* sync_frame_callsite_name(VRRuntime::SyncFrameCallsite callsite) {
         return "openxr_session_ready";
     case VRRuntime::SyncFrameCallsite::OpenXRBeginFrameRecovery:
         return "openxr_begin_frame_recovery";
+    default:
+        return "unknown";
+    }
+}
+
+const char* sync_stage_name(VR::SynchronizeStage stage) {
+    switch (stage) {
+    case VR::SynchronizeStage::EARLY:
+        return "Early";
+    case VR::SynchronizeStage::LATE:
+        return "Late";
+    case VR::SynchronizeStage::VERY_LATE:
+        return "Very Late";
+    default:
+        return "Unknown";
+    }
+}
+
+const char* begin_frame_callsite_name(OpenXR::BeginFrameCallsite callsite) {
+    switch (callsite) {
+    case OpenXR::BeginFrameCallsite::FixFrame:
+        return "fix_frame";
+    case OpenXR::BeginFrameCallsite::VRPostPresent:
+        return "vr_post_present";
+    case OpenXR::BeginFrameCallsite::D3D12Submit:
+        return "d3d12_submit";
+    case OpenXR::BeginFrameCallsite::VREarlyRHICommand:
+        return "vr_early_rhi_command";
+    case OpenXR::BeginFrameCallsite::Recovery:
+        return "recovery";
     default:
         return "unknown";
     }
@@ -365,6 +399,75 @@ void OpenXR::log_frame_lifecycle_state(const char* prefix) const {
     );
 }
 
+void OpenXR::log_begin_frame_not_ready(BeginFrameCallsite callsite) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto is_first_log = this->last_begin_frame_not_ready_log.time_since_epoch().count() == 0;
+
+    if (!is_first_log && now - this->last_begin_frame_not_ready_log < BEGIN_FRAME_NOT_READY_LOG_INTERVAL) {
+        ++this->begin_frame_not_ready_suppressed;
+        return;
+    }
+
+    const auto suppressed = this->begin_frame_not_ready_suppressed;
+    this->begin_frame_not_ready_suppressed = 0;
+    this->last_begin_frame_not_ready_log = now;
+
+    spdlog::warn(
+        "[OpenXR] begin_frame refused because runtime was not ready callsite={} session_ready={} session_state={} frame_synced={} frame_began={} got_first_sync={} got_first_poses={} got_first_valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={} recoveries={} suppressed_since_last={}",
+        begin_frame_callsite_name(callsite),
+        this->session_ready,
+        this->get_session_state_string(this->session_state),
+        this->frame_synced,
+        this->frame_began,
+        this->got_first_sync,
+        this->got_first_poses,
+        this->got_first_valid_poses,
+        this->frame_state.predictedDisplayTime,
+        this->frame_state.predictedDisplayPeriod,
+        this->forced_frame_recovery_count,
+        suppressed
+    );
+}
+
+void OpenXR::log_ready_pre_submit_begin_frame(BeginFrameCallsite callsite) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto is_first_log = this->last_ready_begin_frame_callsite_log.time_since_epoch().count() == 0;
+
+    if (!is_first_log && now - this->last_ready_begin_frame_callsite_log < READY_BEGIN_FRAME_CALLSITE_LOG_INTERVAL) {
+        ++this->ready_begin_frame_callsite_suppressed;
+        return;
+    }
+
+    const auto suppressed = this->ready_begin_frame_callsite_suppressed;
+    this->ready_begin_frame_callsite_suppressed = 0;
+    this->last_ready_begin_frame_callsite_log = now;
+
+    const auto last_wait_age_ms = this->last_successful_wait_frame.time_since_epoch().count() == 0
+        ? -1
+        : std::chrono::duration_cast<std::chrono::milliseconds>(now - this->last_successful_wait_frame).count();
+    const auto last_end_age_ms = this->last_successful_end_frame.time_since_epoch().count() == 0
+        ? -1
+        : std::chrono::duration_cast<std::chrono::milliseconds>(now - this->last_successful_end_frame).count();
+
+    spdlog::warn(
+        "[OpenXR][ready-begin-callsite] begin_frame attempted while READY before first submit callsite={} session_ready={} frame_synced={} frame_began={} got_first_sync={} got_first_poses={} got_first_valid_poses={} internal_frame={} internal_render_frame={} predictedDisplayTime={} predictedDisplayPeriod={} last_xrWaitFrame_age_ms={} last_xrEndFrame_age_ms={} suppressed_since_last={}",
+        begin_frame_callsite_name(callsite),
+        this->session_ready,
+        this->frame_synced,
+        this->frame_began,
+        this->got_first_sync,
+        this->got_first_poses,
+        this->got_first_valid_poses,
+        this->internal_frame_count,
+        this->internal_render_frame_count,
+        this->frame_state.predictedDisplayTime,
+        this->frame_state.predictedDisplayPeriod,
+        last_wait_age_ms,
+        last_end_age_ms,
+        suppressed
+    );
+}
+
 XrResult OpenXR::recover_wedged_frame(const char* reason) {
     if (!this->frame_began || this->session == XR_NULL_HANDLE) {
         return XR_SUCCESS;
@@ -429,9 +532,13 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
+    const auto had_first_sync_before_wait = this->got_first_sync;
+    const auto was_frame_synced_before_wait = this->frame_synced;
+    const auto was_frame_began_before_wait = this->frame_began;
     const auto wait_frame_start = std::chrono::steady_clock::now();
     auto result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
-    const auto wait_frame_duration = std::chrono::steady_clock::now() - wait_frame_start;
+    const auto wait_frame_end = std::chrono::steady_clock::now();
+    const auto wait_frame_duration = wait_frame_end - wait_frame_start;
     this->wait_frame_timing.add(wait_frame_duration);
 
     const auto callsite_index = (size_t)callsite;
@@ -440,12 +547,73 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     }
 
     const auto wait_frame_ms = std::chrono::duration<double, std::milli>{wait_frame_duration}.count();
+    const auto focused_age_ms = this->session_focused_since.time_since_epoch().count() == 0
+        ? -1
+        : std::chrono::duration_cast<std::chrono::milliseconds>(wait_frame_end - this->session_focused_since).count();
+
+    if (this->session_state == XR_SESSION_STATE_READY && !this->ever_submitted) {
+        const auto is_first_log = this->last_ready_wait_frame_callsite_log.time_since_epoch().count() == 0;
+
+        if (!is_first_log && wait_frame_end - this->last_ready_wait_frame_callsite_log < READY_WAIT_FRAME_CALLSITE_LOG_INTERVAL) {
+            ++this->ready_wait_frame_callsite_suppressed;
+        } else {
+            const auto last_end_age_ms = this->last_successful_end_frame.time_since_epoch().count() == 0
+                ? -1
+                : std::chrono::duration_cast<std::chrono::milliseconds>(wait_frame_end - this->last_successful_end_frame).count();
+            const auto vr = VR::get();
+            const auto sync_stage = vr != nullptr ? vr->get_synchronize_stage() : VR::SynchronizeStage::EARLY;
+            const auto suppressed = this->ready_wait_frame_callsite_suppressed;
+
+            this->ready_wait_frame_callsite_suppressed = 0;
+            this->last_ready_wait_frame_callsite_log = wait_frame_end;
+
+            spdlog::warn(
+                "[OpenXR][ready-wait-callsite] xrWaitFrame while READY before first submit callsite={} duration_ms={:.2f} result={} sync_mode={} frame_count={} had_first_sync_before_wait={} frame_synced_before_wait={} frame_began_before_wait={} session={} synced={} began={} first_poses={} valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={} shouldRender={} internal_frame={} internal_render_frame={} last_submit_frame={} last_xrEndFrame_age_ms={} suppressed_since_last={}",
+                sync_frame_callsite_name(callsite),
+                wait_frame_ms,
+                this->get_result_string(result),
+                sync_stage_name(sync_stage),
+                frame_count.value_or(this->internal_frame_count),
+                had_first_sync_before_wait,
+                was_frame_synced_before_wait,
+                was_frame_began_before_wait,
+                this->get_session_state_string(this->session_state),
+                this->frame_synced,
+                this->frame_began,
+                this->got_first_poses,
+                this->got_first_valid_poses,
+                local_frame_state.predictedDisplayTime,
+                local_frame_state.predictedDisplayPeriod,
+                local_frame_state.shouldRender,
+                this->internal_frame_count,
+                this->internal_render_frame_count,
+                this->last_submit_state.frame_count,
+                last_end_age_ms,
+                suppressed
+            );
+        }
+    }
+
     if (wait_frame_ms >= 100.0) {
+        const auto last_end_age_ms = this->last_successful_end_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(wait_frame_end - this->last_successful_end_frame).count();
+        const auto vr = VR::get();
+        const auto sync_stage = vr != nullptr ? vr->get_synchronize_stage() : VR::SynchronizeStage::EARLY;
+
         spdlog::warn(
-            "[OpenXR][wait-profiler] xrWaitFrame took {:.2f}ms callsite={} frame_count={} session={} synced={} began={} first_poses={} valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={}",
+            "[OpenXR][wait-profiler] xrWaitFrame took {:.2f}ms callsite={} sync_mode={} since_focused_ms={} frame_count={} had_first_sync_before_wait={} frame_synced_before_wait={} frame_began_before_wait={} ever_submitted={} last_submit_frame={} last_xrEndFrame_age_ms={} session={} synced={} began={} first_poses={} valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={}",
             wait_frame_ms,
             sync_frame_callsite_name(callsite),
+            sync_stage_name(sync_stage),
+            focused_age_ms,
             frame_count.value_or(this->internal_frame_count),
+            had_first_sync_before_wait,
+            was_frame_synced_before_wait,
+            was_frame_began_before_wait,
+            this->ever_submitted,
+            this->last_submit_state.frame_count,
+            last_end_age_ms,
             this->get_session_state_string(this->session_state),
             this->frame_synced,
             this->frame_began,
@@ -787,9 +955,17 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->last_successful_pose_update = {};
                     this->accepted_relaxed_startup_poses = false;
                     this->session_ready_since = std::chrono::steady_clock::now();
+                    this->session_focused_since = {};
                     this->last_ready_state_probe_log = {};
                     this->last_valid_pose_probe_log = {};
                     this->last_frame_timing_log = {};
+                    this->last_begin_frame_not_ready_log = {};
+                    this->last_ready_begin_frame_callsite_log = {};
+                    this->last_ready_wait_frame_callsite_log = {};
+                    this->last_submit_pipeline_log = {};
+                    this->begin_frame_not_ready_suppressed = 0;
+                    this->ready_begin_frame_callsite_suppressed = 0;
+                    this->ready_wait_frame_callsite_suppressed = 0;
                     this->wait_frame_timing.reset();
                     this->begin_frame_timing.reset();
                     this->end_frame_timing.reset();
@@ -797,7 +973,9 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     for (auto& timing : this->wait_frame_callsite_timing) {
                         timing.reset();
                     }
-                    synchronize_frame(std::nullopt, SyncFrameCallsite::OpenXRSessionReady);
+                    // Do not pre-open a READY-stage frame here. UE 5.7 startup can spend
+                    // several seconds discovering render targets before the first real submit,
+                    // and ending that stale READY frame can stall OpenXR/WMR hard.
                 }
             } else if (ev->state == XR_SESSION_STATE_LOSS_PENDING) {
                 spdlog::info("VR: XR_SESSION_STATE_LOSS_PENDING");
@@ -816,7 +994,15 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->last_successful_pose_update = {};
                     this->accepted_relaxed_startup_poses = false;
                     this->session_ready_since = {};
+                    this->session_focused_since = {};
                     this->last_frame_timing_log = {};
+                    this->last_begin_frame_not_ready_log = {};
+                    this->last_ready_begin_frame_callsite_log = {};
+                    this->last_ready_wait_frame_callsite_log = {};
+                    this->last_submit_pipeline_log = {};
+                    this->begin_frame_not_ready_suppressed = 0;
+                    this->ready_begin_frame_callsite_suppressed = 0;
+                    this->ready_wait_frame_callsite_suppressed = 0;
                     this->wait_frame_timing.reset();
                     this->begin_frame_timing.reset();
                     this->end_frame_timing.reset();
@@ -841,6 +1027,14 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->got_first_poses,
                     this->got_first_valid_poses
                 );
+            }
+
+            if (ev->state == XR_SESSION_STATE_FOCUSED) {
+                this->session_focused_since = std::chrono::steady_clock::now();
+                this->last_begin_frame_not_ready_log = {};
+                this->begin_frame_not_ready_suppressed = 0;
+            } else {
+                this->session_focused_since = {};
             }
 
             if (this->session_state != XR_SESSION_STATE_READY) {
@@ -1115,6 +1309,8 @@ void OpenXR::destroy() {
 
 OpenXR::PipelineState OpenXR::get_submit_state() {
     std::scoped_lock __{ this->sync_assignment_mtx };
+
+    this->last_submit_used_render_frame_count = this->has_render_frame_count;
 
     if (this->has_render_frame_count) {
         last_submit_state = this->pipeline_states[this->internal_render_frame_count % QUEUE_SIZE];
@@ -2114,13 +2310,17 @@ void OpenXR::save_bindings() {
     this->wants_reinitialize = true;
 }
 
-XrResult OpenXR::begin_frame() {
+XrResult OpenXR::begin_frame(BeginFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
 
     emit_openxr_state_probes(this, "begin_frame");
 
+    if (this->session_state == XR_SESSION_STATE_READY && !this->ever_submitted) {
+        this->log_ready_pre_submit_begin_frame(callsite);
+    }
+
     if (!this->ready() || !this->got_first_poses || !this->frame_synced) {
-        this->log_frame_lifecycle_state("begin_frame refused because runtime was not ready");
+        this->log_begin_frame_not_ready(callsite);
         return XR_ERROR_SESSION_NOT_READY;
     }
 
@@ -2139,11 +2339,11 @@ XrResult OpenXR::begin_frame() {
     this->end_profile("xrBeginFrame");
 
     if (result != XR_SUCCESS) {
-        spdlog::error("[VR] xrBeginFrame failed: {}", this->get_result_string(result));
+        spdlog::error("[VR] xrBeginFrame failed callsite={}: {}", begin_frame_callsite_name(callsite), this->get_result_string(result));
     }
 
     if (result == XR_ERROR_CALL_ORDER_INVALID) {
-        spdlog::warn("[OpenXR] xrBeginFrame returned XR_ERROR_CALL_ORDER_INVALID, attempting recovery");
+        spdlog::warn("[OpenXR] xrBeginFrame returned XR_ERROR_CALL_ORDER_INVALID callsite={}, attempting recovery", begin_frame_callsite_name(callsite));
         this->recover_wedged_frame("xrBeginFrame call order invalid");
         synchronize_frame(std::nullopt, SyncFrameCallsite::OpenXRBeginFrameRecovery);
         const auto retry_begin_frame_start = std::chrono::steady_clock::now();
@@ -2162,7 +2362,8 @@ XrResult OpenXR::begin_frame() {
 
         if (should_log) {
             spdlog::info(
-                "[OpenXR] xrBeginFrame succeeded: session_state={} predictedDisplayTime={} predictedDisplayPeriod={}",
+                "[OpenXR] xrBeginFrame succeeded callsite={} session_state={} predictedDisplayTime={} predictedDisplayPeriod={}",
+                begin_frame_callsite_name(callsite),
                 this->get_session_state_string(this->session_state),
                 this->frame_state.predictedDisplayTime,
                 this->frame_state.predictedDisplayPeriod
@@ -2370,15 +2571,103 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     frame_end_info.layerCount = (uint32_t)layers.size();
     frame_end_info.layers = layers.data();
 
+    const auto submit_pipeline_now = std::chrono::steady_clock::now();
+    if (this->last_submit_pipeline_log.time_since_epoch().count() == 0 ||
+        submit_pipeline_now - this->last_submit_pipeline_log >= SUBMIT_PIPELINE_LOG_INTERVAL)
+    {
+        this->last_submit_pipeline_log = submit_pipeline_now;
+
+        const auto display_time_delta_ms =
+            pipelined_frame_state.predictedDisplayTime > 0 && this->frame_state.predictedDisplayTime > 0
+                ? (double)(this->frame_state.predictedDisplayTime - pipelined_frame_state.predictedDisplayTime) / 1'000'000.0
+                : 0.0;
+        const auto predicted_period_ms = this->frame_state.predictedDisplayPeriod > 0
+            ? (double)this->frame_state.predictedDisplayPeriod / 1'000'000.0
+            : 0.0;
+        const auto frame_lag = (int64_t)this->internal_frame_count - (int64_t)submit_state.frame_count;
+        const auto render_lag = (int64_t)this->internal_frame_count - (int64_t)this->internal_render_frame_count;
+        const auto last_wait_age_ms = this->last_successful_wait_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(submit_pipeline_now - this->last_successful_wait_frame).count();
+        const auto last_end_age_ms = this->last_successful_end_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(submit_pipeline_now - this->last_successful_end_frame).count();
+
+        spdlog::info(
+            "[OpenXR][submit-pipeline] submit_frame={} internal_frame={} render_frame={} frame_lag={} render_lag={} display_delta_ms={:.2f} predicted_period_ms={:.2f} layerCount={} shouldRender={} stage_views={} quad_layers={} used_render_frame_count={} last_xrWaitFrame_age_ms={} last_xrEndFrame_age_ms={} session={} synced={} began={}",
+            submit_state.frame_count,
+            this->internal_frame_count,
+            this->internal_render_frame_count,
+            frame_lag,
+            render_lag,
+            display_time_delta_ms,
+            predicted_period_ms,
+            frame_end_info.layerCount,
+            pipelined_frame_state.shouldRender,
+            pipelined_stage_views.size(),
+            quad_layers.size(),
+            this->last_submit_used_render_frame_count,
+            last_wait_age_ms,
+            last_end_age_ms,
+            this->get_session_state_string(this->session_state),
+            this->frame_synced,
+            this->frame_began
+        );
+    }
+
     //spdlog::info("[VR] display time diff: {}", pipelined_frame_state.predictedDisplayTime - this->frame_state.predictedDisplayTime);
     //spdlog::info("[VR] Ending frame, {} layers", frame_end_info.layerCount);
     //spdlog::info("[VR] Ending frame, layer ptr: {:x}", (uintptr_t)frame_end_info.layers);
 
     this->begin_profile();
+    const auto had_submitted_before_end = this->ever_submitted;
     const auto end_frame_start = std::chrono::steady_clock::now();
     auto result = xrEndFrame(this->session, &frame_end_info);
-    this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
+    const auto end_frame_end = std::chrono::steady_clock::now();
+    const auto end_frame_duration = end_frame_end - end_frame_start;
+    this->end_frame_timing.add(end_frame_duration);
     this->end_profile("xrEndFrame");
+
+    const auto end_frame_ms = std::chrono::duration<double, std::milli>{end_frame_duration}.count();
+    if (end_frame_ms >= 100.0) {
+        const auto focused_age_ms = this->session_focused_since.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(end_frame_end - this->session_focused_since).count();
+        const auto last_wait_age_ms = this->last_successful_wait_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(end_frame_end - this->last_successful_wait_frame).count();
+        const auto last_begin_age_ms = this->last_successful_begin_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(end_frame_end - this->last_successful_begin_frame).count();
+        const auto last_end_age_ms = this->last_successful_end_frame.time_since_epoch().count() == 0
+            ? -1
+            : std::chrono::duration_cast<std::chrono::milliseconds>(end_frame_end - this->last_successful_end_frame).count();
+        const auto vr = VR::get();
+        const auto sync_stage = vr != nullptr ? vr->get_synchronize_stage() : VR::SynchronizeStage::EARLY;
+
+        spdlog::warn(
+            "[OpenXR][end-profiler] xrEndFrame took {:.2f}ms result={} sync_mode={} since_focused_ms={} frame_count={} internal_frame_count={} ever_submitted_before_end={} layerCount={} shouldRender={} last_xrWaitFrame_age_ms={} last_xrBeginFrame_age_ms={} last_xrEndFrame_age_ms={} session={} synced={} began={} first_poses={} valid_poses={} displayTime={} frame_state_time={}",
+            end_frame_ms,
+            this->get_result_string(result),
+            sync_stage_name(sync_stage),
+            focused_age_ms,
+            submit_state.frame_count,
+            this->internal_frame_count,
+            had_submitted_before_end,
+            frame_end_info.layerCount,
+            pipelined_frame_state.shouldRender,
+            last_wait_age_ms,
+            last_begin_age_ms,
+            last_end_age_ms,
+            this->get_session_state_string(this->session_state),
+            this->frame_synced,
+            this->frame_began,
+            this->got_first_poses,
+            this->got_first_valid_poses,
+            frame_end_info.displayTime,
+            this->frame_state.predictedDisplayTime
+        );
+    }
     
     if (result != XR_SUCCESS) {
         spdlog::error("[VR] xrEndFrame failed: {}", this->get_result_string(result));

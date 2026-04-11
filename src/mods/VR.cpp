@@ -3936,7 +3936,7 @@ void VR::on_post_present() {
 
         if (runtime->is_openxr() && runtime->ready() && get_synchronize_stage() > VR::SynchronizeStage::EARLY) {
             if (!m_openxr->frame_began) {
-                m_openxr->begin_frame();
+                m_openxr->begin_frame(runtimes::OpenXR::BeginFrameCallsite::VRPostPresent);
             }
         }
     }

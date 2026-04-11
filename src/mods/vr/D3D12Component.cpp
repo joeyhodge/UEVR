@@ -749,7 +749,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }};
 
             if (!vr->m_openxr->frame_began) {
-                vr->m_openxr->begin_frame();
+                vr->m_openxr->begin_frame(runtimes::OpenXR::BeginFrameCallsite::D3D12Submit);
             }
 
             std::vector<XrCompositionLayerBaseHeader*> quad_layers{};

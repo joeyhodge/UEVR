@@ -34,6 +34,15 @@ struct OpenXR final : public VRRuntime {
         int32_t height;
     };
 
+    enum class BeginFrameCallsite : uint8_t {
+        Unknown,
+        FixFrame,
+        VRPostPresent,
+        D3D12Submit,
+        VREarlyRHICommand,
+        Recovery,
+    };
+
     VRRuntime::Type type() const override { 
         return VRRuntime::Type::OPENXR;
     }
@@ -79,7 +88,7 @@ struct OpenXR final : public VRRuntime {
         VRRuntime::fix_frame();
 
         if (!this->frame_began) {
-            this->begin_frame();
+            this->begin_frame(BeginFrameCallsite::FixFrame);
         }
 
         return VRRuntime::Error::SUCCESS;
@@ -135,10 +144,12 @@ public:
 
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
-    XrResult begin_frame();
+    XrResult begin_frame(BeginFrameCallsite callsite = BeginFrameCallsite::Unknown);
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
     void log_frame_lifecycle_state(const char* prefix) const;
+    void log_begin_frame_not_ready(BeginFrameCallsite callsite);
+    void log_ready_pre_submit_begin_frame(BeginFrameCallsite callsite);
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -299,6 +310,7 @@ public:
     }
 
     PipelineState last_submit_state{};
+    bool last_submit_used_render_frame_count{false};
     PipelineState get_submit_state();
 
     struct FrameTimingStats {
@@ -344,10 +356,18 @@ public:
     std::chrono::steady_clock::time_point last_successful_end_frame{};
     std::chrono::steady_clock::time_point last_successful_pose_update{};
     std::chrono::steady_clock::time_point session_ready_since{};
+    std::chrono::steady_clock::time_point session_focused_since{};
     std::chrono::steady_clock::time_point last_ready_state_probe_log{};
     std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
     std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
     std::chrono::steady_clock::time_point last_frame_timing_log{};
+    std::chrono::steady_clock::time_point last_begin_frame_not_ready_log{};
+    std::chrono::steady_clock::time_point last_ready_begin_frame_callsite_log{};
+    std::chrono::steady_clock::time_point last_ready_wait_frame_callsite_log{};
+    std::chrono::steady_clock::time_point last_submit_pipeline_log{};
+    uint64_t begin_frame_not_ready_suppressed{0};
+    uint64_t ready_begin_frame_callsite_suppressed{0};
+    uint64_t ready_wait_frame_callsite_suppressed{0};
     FrameTimingStats wait_frame_timing{};
     FrameTimingStats begin_frame_timing{};
     FrameTimingStats end_frame_timing{};

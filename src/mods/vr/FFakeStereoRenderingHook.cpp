@@ -2987,7 +2987,7 @@ struct SceneViewExtensionAnalyzer {
                     return call_orig();
                 }
 
-                vr->get_openxr_runtime()->begin_frame();
+                vr->get_openxr_runtime()->begin_frame(runtimes::OpenXR::BeginFrameCallsite::VREarlyRHICommand);
             } else {
                 if (runtime->synchronize_frame(frame_count, VRRuntime::SyncFrameCallsite::VREarlyRHICommand) != VRRuntime::Error::SUCCESS) {
                     return call_orig();
@@ -3107,7 +3107,7 @@ struct SceneViewExtensionAnalyzer {
                         return call_orig();
                     }
 
-                    vr->get_openxr_runtime()->begin_frame();
+                    vr->get_openxr_runtime()->begin_frame(runtimes::OpenXR::BeginFrameCallsite::VREarlyRHICommand);
                 } else {
                     if (runtime->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::VREarlyRHICommand) != VRRuntime::Error::SUCCESS) {
                         return call_orig();
