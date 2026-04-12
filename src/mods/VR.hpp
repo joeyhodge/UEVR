@@ -671,6 +671,7 @@ private:
 
     bool detect_controllers();
     bool is_any_action_down();
+    void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -838,6 +839,9 @@ private:
     std::chrono::steady_clock::time_point m_last_engine_tick{};
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
+    std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
+    bool m_shf_auto_2d_active{false};
+    bool m_shf_auto_2d_previous_mode{false};
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
 
