@@ -59,8 +59,26 @@ private:
         std::optional<DirectX::SpriteBatchPipelineStateDescription> pd = std::nullopt
     );
 
-    void draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame);
+    void draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override = nullptr);
     void clear_backbuffer();
+    bool ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc);
+
+    enum class ShfSceneMode {
+        Unknown,
+        Stereo3D,
+        Mono2D,
+    };
+
+    static const char* shf_scene_mode_name(ShfSceneMode mode);
+    ShfSceneMode classify_shf_scene_mode(const D3D12_RESOURCE_DESC& source_desc, const D3D12_RESOURCE_DESC& real_desc) const;
+    void log_shf_scene_mode_if_needed(
+        ShfSceneMode mode,
+        const D3D12_RESOURCE_DESC& source_desc,
+        const D3D12_RESOURCE_DESC& real_desc,
+        uint64_t frame_count,
+        bool using_mono_expansion);
+    bool ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    d3d12::TextureContext* render_shf_mono_scene_texture(ID3D12Device* device);
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -107,10 +125,16 @@ private:
     d3d12::TextureContext m_game_ui_tex{};
     d3d12::TextureContext m_game_tex{};
     d3d12::TextureContext m_scene_capture_tex{};
+    d3d12::TextureContext m_shf_mono_scene_tex{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
+    d3d12::CommandContext m_shf_mono_scene_commands{};
+    uint64_t m_shf_mono_scene_width{};
+    uint32_t m_shf_mono_scene_height{};
+    DXGI_FORMAT m_shf_mono_scene_format{DXGI_FORMAT_UNKNOWN};
     std::array<d3d12::TextureContext, 2> m_2d_screen_tex{};
     std::vector<std::unique_ptr<d3d12::TextureContext>> m_backbuffer_textures{};
     bool m_skip_spectator_view_for_volatile_external_rt{};
+    ShfSceneMode m_shf_scene_mode{ShfSceneMode::Unknown};
 
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_backbuffer_batch{};
