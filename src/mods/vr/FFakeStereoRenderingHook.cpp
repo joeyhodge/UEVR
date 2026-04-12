@@ -136,6 +136,30 @@ std::optional<D3D12_RESOURCE_DESC> shf_try_get_d3d12_desc(FRHITexture2D* texture
     }
 }
 
+bool shf_can_reuse_current_ui_target(VRRenderTargetManager_Base* rtm, uint32_t expected_width, uint32_t expected_height) {
+    if (!shf_is_current_game() || !g_framework->is_dx12() || rtm == nullptr || expected_width == 0 || expected_height == 0) {
+        return false;
+    }
+
+    auto* ui_target = rtm->get_ui_target();
+
+    if (ui_target == nullptr || ui_target == rtm->get_render_target()) {
+        return false;
+    }
+
+    const auto desc = shf_try_get_d3d12_desc(ui_target);
+
+    if (!desc || desc->Width != expected_width || desc->Height != expected_height) {
+        return false;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[SHf] Reusing stable UI texture {:x} [{}x{} fmt={}]; skipping duplicate UI texture creation",
+        (uintptr_t)ui_target, desc->Width, desc->Height, (uint32_t)desc->Format);
+
+    return true;
+}
+
 void shf_log_texture_probe_candidate(
     const char* source,
     const char* base_name,
@@ -7058,6 +7082,14 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
         VR::get()->reinitialize_renderer();
         return;
+    }
+
+    if (g_framework->is_dx12() && shf_is_current_game() && rtm->allocate_texture_called) {
+        const auto size = g_framework->get_d3d12_rt_size();
+
+        if (shf_can_reuse_current_ui_target(rtm, (uint32_t)size.x, (uint32_t)size.y)) {
+            return;
+        }
     }
 
     // maybe do some work later to bruteforce the registers/offsets for these
