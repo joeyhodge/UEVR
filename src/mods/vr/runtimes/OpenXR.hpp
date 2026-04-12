@@ -87,7 +87,7 @@ struct OpenXR final : public VRRuntime {
         VRRuntime::fix_frame();
 
         if (!this->frame_began) {
-            this->begin_frame();
+            this->begin_frame("runtime_fix_frame");
         }
 
         return VRRuntime::Error::SUCCESS;
@@ -143,10 +143,13 @@ public:
 
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
-    XrResult begin_frame();
+    XrResult begin_frame(const char* caller = "unknown");
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
     void log_frame_lifecycle_state(const char* prefix) const;
+    void trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite);
+    void trace_begin_frame_request(const char* caller);
+    void clear_frame_synced(const char* reason);
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -338,10 +341,20 @@ public:
     
     const ModSlider::Ptr resolution_scale{ ModSlider::create("OpenXR_ResolutionScale", 0.1f, 3.0f, 1.0f) };
     const ModToggle::Ptr ignore_vd_checks{ ModToggle::create("OpenXR_IgnoreVirtualDesktopChecks", false) };
+    const ModToggle::Ptr debug_submit_empty_frame{ ModToggle::create("OpenXR_DebugSubmitEmptyFrame", false) };
+    const ModToggle::Ptr debug_skip_scene_copy{ ModToggle::create("OpenXR_DebugSkipSceneCopy", false) };
+    const ModToggle::Ptr debug_skip_ui_copy{ ModToggle::create("OpenXR_DebugSkipUICopy", false) };
+    const ModToggle::Ptr debug_disable_depth_submit{ ModToggle::create("OpenXR_DebugDisableDepthSubmit", false) };
     bool resolution_scale_reconfigure_pending{false};
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
     bool has_valid_projection_data{false};
+    uint64_t last_wait_trace_sequence{};
+    uint32_t last_wait_trace_frame_count{};
+    SyncFrameCallsite last_wait_trace_callsite{SyncFrameCallsite::Unknown};
+    const char* last_begin_frame_caller{"none"};
+    const char* last_frame_synced_clear_reason{"none"};
+    std::chrono::steady_clock::time_point last_frame_synced_clear_time{};
 
     uint32_t frame_began_skip_streak{0};
     uint32_t forced_frame_recovery_count{0};
@@ -365,6 +378,10 @@ public:
     Mod::ValueList options{
         *resolution_scale,
         *ignore_vd_checks,
+        *debug_submit_empty_frame,
+        *debug_skip_scene_copy,
+        *debug_skip_ui_copy,
+        *debug_disable_depth_submit,
     };
 
     enum class SwapchainIndex {
