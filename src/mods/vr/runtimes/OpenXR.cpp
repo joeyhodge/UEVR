@@ -2173,6 +2173,36 @@ XrResult OpenXR::begin_frame() {
                 this->frame_state.predictedDisplayPeriod
             );
         }
+
+        // Some games/runtimes briefly report only partial startup pose state. Do not
+        // leave that pre-submit READY frame open, or later setup failures can wedge
+        // the frame loop before the D3D12 submit path has anything valid to end.
+        if (!this->ever_submitted && !this->got_first_valid_poses) {
+            static auto last_empty_startup_frame_log = std::chrono::steady_clock::time_point{};
+            XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+            frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+            frame_end_info.environmentBlendMode = this->blend_mode;
+            frame_end_info.layerCount = 0;
+            frame_end_info.layers = nullptr;
+
+            const auto end_result = xrEndFrame(this->session, &frame_end_info);
+            this->frame_began = false;
+            this->frame_synced = false;
+            ++this->forced_frame_recovery_count;
+
+            if (last_empty_startup_frame_log.time_since_epoch().count() == 0 ||
+                now - last_empty_startup_frame_log >= std::chrono::seconds(1))
+            {
+                last_empty_startup_frame_log = now;
+                spdlog::warn(
+                    "[OpenXR] Closed startup frame without layers while waiting for first valid poses: end_result={} session_state={} predictedDisplayTime={} predictedDisplayPeriod={}",
+                    this->get_result_string(end_result),
+                    this->get_session_state_string(this->session_state),
+                    this->frame_state.predictedDisplayTime,
+                    this->frame_state.predictedDisplayPeriod
+                );
+            }
+        }
     }
 
     return result;
