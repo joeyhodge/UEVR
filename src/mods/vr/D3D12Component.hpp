@@ -110,6 +110,7 @@ private:
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     std::array<d3d12::TextureContext, 2> m_2d_screen_tex{};
     std::vector<std::unique_ptr<d3d12::TextureContext>> m_backbuffer_textures{};
+    bool m_skip_spectator_view_for_volatile_external_rt{};
 
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_backbuffer_batch{};

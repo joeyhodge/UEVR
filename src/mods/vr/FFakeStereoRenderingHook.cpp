@@ -74,6 +74,9 @@ namespace {
 std::mutex g_shf_texture_probe_mutex{};
 std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
 std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_texture_probe_by_base{};
+std::unordered_set<uintptr_t> g_shf_logged_rtm_candidate_natives{};
+uint64_t g_shf_rtm_candidate_count{};
+uint64_t g_shf_rtm_candidate_suppressed{};
 
 bool shf_is_current_game() {
     static const bool result = []() {
@@ -133,6 +136,60 @@ std::optional<D3D12_RESOURCE_DESC> shf_try_get_d3d12_desc(FRHITexture2D* texture
         return native->GetDesc();
     } catch (...) {
         return std::nullopt;
+    }
+}
+
+void shf_log_rtm_candidate(VRRenderTargetManager_Base* rtm, FRHITexture2D* texture, const char* source) {
+    if (!shf_is_current_game() || !g_framework->is_dx12() || rtm == nullptr || texture == nullptr) {
+        return;
+    }
+
+    ID3D12Resource* native = nullptr;
+    std::optional<D3D12_RESOURCE_DESC> desc{};
+
+    try {
+        native = (ID3D12Resource*)texture->get_native_resource();
+
+        if (native != nullptr && !IsBadReadPtr(native, sizeof(void*))) {
+            desc = native->GetDesc();
+        }
+    } catch (...) {
+    }
+
+    bool log_unique = false;
+    uint64_t seen = 0;
+    uint64_t unique = 0;
+    uint64_t suppressed = 0;
+
+    {
+        std::scoped_lock _{g_shf_texture_probe_mutex};
+        ++g_shf_rtm_candidate_count;
+        seen = g_shf_rtm_candidate_count;
+
+        const auto key = (uintptr_t)(native != nullptr ? native : (ID3D12Resource*)texture);
+
+        if (!g_shf_logged_rtm_candidate_natives.contains(key)) {
+            g_shf_logged_rtm_candidate_natives.insert(key);
+            log_unique = g_shf_logged_rtm_candidate_natives.size() <= 64;
+        } else {
+            ++g_shf_rtm_candidate_suppressed;
+        }
+
+        unique = g_shf_logged_rtm_candidate_natives.size();
+        suppressed = g_shf_rtm_candidate_suppressed;
+    }
+
+    if (log_unique && desc) {
+        SPDLOG_WARN("[SHf][RTM] accepting unique texture candidate #{} source={} tex={:x} native={:x} [{}x{} fmt={} flags=0x{:x}] current_rt={:x}",
+            seen, source, (uintptr_t)texture, (uintptr_t)native, desc->Width, desc->Height, (uint32_t)desc->Format,
+            (uint32_t)desc->Flags, (uintptr_t)rtm->get_render_target());
+    } else if (log_unique) {
+        SPDLOG_WARN("[SHf][RTM] accepting unique texture candidate #{} source={} tex={:x} native={:x} desc=<unavailable> current_rt={:x}",
+            seen, source, (uintptr_t)texture, (uintptr_t)native, (uintptr_t)rtm->get_render_target());
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[SHf][RTM] texture candidate summary seen={} unique_natives={} duplicate_suppressed={} last_source={} last_tex={:x} last_native={:x} current_rt={:x}",
+            seen, unique, suppressed, source, (uintptr_t)texture, (uintptr_t)native, (uintptr_t)rtm->get_render_target());
     }
 }
 
@@ -7002,7 +7059,11 @@ bool VRRenderTargetManager_Base::need_reallocate_depth_texture(const void* Depth
 }
 
 void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
-    SPDLOG_INFO("PreTextureHook called! {}", ctx.r8);
+    if (g_framework->is_dx12() && shf_is_current_game()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] PreTextureHook summary last_desc={:x}", ctx.r8);
+    } else {
+        SPDLOG_INFO("PreTextureHook called! {}", ctx.r8);
+    }
 
     auto rtm = g_hook->get_render_target_manager();
 
@@ -7088,6 +7149,13 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         const auto size = g_framework->get_d3d12_rt_size();
 
         if (shf_can_reuse_current_ui_target(rtm, (uint32_t)size.x, (uint32_t)size.y)) {
+            if (rtm->is_using_texture_desc && rtm->is_version_greq_5_1 && !rtm->is_pre_texture_call_e8 &&
+                ctx.rdx != 0 && !IsBadReadPtr((void*)ctx.rdx, sizeof(FTexture2DRHIRef)))
+            {
+                rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rdx;
+                SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] Reusing stable UI texture; tracking current UE5 texture-desc output ref {:x}", ctx.rdx);
+            }
+
             return;
         }
     }
@@ -7774,8 +7842,12 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     auto rtm = g_hook->get_render_target_manager();
 
-    SPDLOG_INFO("Post texture hook called!");
-    SPDLOG_INFO(" Ref: {:x}", (uintptr_t)rtm->texture_hook_ref);
+    if (g_framework->is_dx12() && shf_is_current_game()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] PostTextureHook summary last_ref={:x}", (uintptr_t)rtm->texture_hook_ref);
+    } else {
+        SPDLOG_INFO("Post texture hook called!");
+        SPDLOG_INFO(" Ref: {:x}", (uintptr_t)rtm->texture_hook_ref);
+    }
 
     if (!rtm->allocate_texture_called) {
         g_hook->set_should_recreate_textures(true);
@@ -7885,9 +7957,11 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     };
 
     FRHITexture2D* texture = nullptr;
+    const char* texture_source = "unknown";
 
     if (rtm->texture_hook_ref != nullptr) {
         texture = rtm->texture_hook_ref->texture;
+        texture_source = "texture_hook_ref";
 
         // happens?
         if (texture == nullptr) {
@@ -7900,6 +7974,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
                 if (!IsBadReadPtr(ref, sizeof(void*)) && is_valid_texture_candidate(ref->texture, "RAX")) {
                     texture = ref->texture;
+                    texture_source = "RAX";
                 } else {
                     SPDLOG_ERROR(" RAX is bad! Can't get texture!");
                 }
@@ -7907,15 +7982,21 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
 
         if (is_valid_texture_candidate(texture, "texture_hook_ref")) {
-            SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
-            SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
+            if (shf_is_current_game() && g_framework->is_dx12()) {
+                shf_log_rtm_candidate(rtm, texture, texture_source);
+            } else {
+                SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
+                SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
+            }
         } else {
             texture = nullptr;
             SPDLOG_INFO(" Texture is still null!");
         }
     }
 
-    SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
+    if (!shf_is_current_game() || !g_framework->is_dx12()) {
+        SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
+    }
 
     if (texture != nullptr) {
         rtm->render_target = texture;
@@ -9485,7 +9566,14 @@ bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t
     OutShaderResourceTexture.texture = OutTargetableTexture.texture;*/
 
     m_last_allocate_render_target_return_address = (uintptr_t)_ReturnAddress();
-    SPDLOG_INFO("AllocateRenderTargetTexture called from: {:x}", m_last_allocate_render_target_return_address - (uintptr_t)*utility::get_module_within((void*)m_last_allocate_render_target_return_address));
+    const auto relative_allocate_render_target_return_address =
+        m_last_allocate_render_target_return_address - (uintptr_t)*utility::get_module_within((void*)m_last_allocate_render_target_return_address);
+
+    if (g_framework->is_dx12() && shf_is_current_game()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] AllocateRenderTargetTexture summary last_caller={:x}", relative_allocate_render_target_return_address);
+    } else {
+        SPDLOG_INFO("AllocateRenderTargetTexture called from: {:x}", relative_allocate_render_target_return_address);
+    }
 
     // So, if CalculateRenderTargetSize was *never* called before this function
     // that means we have the virtual index of this function wrong, and we must swap the vtable out.
