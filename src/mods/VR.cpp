@@ -25,6 +25,7 @@
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FStructProperty.hpp>
+#include <sdk/TArray.hpp>
 
 #include <tracy/Tracy.hpp>
 
@@ -34,6 +35,7 @@
 #include "utility/Logging.hpp"
 
 #include "VR.hpp"
+#include "UObjectHook.hpp"
 
 std::shared_ptr<VR>& VR::get() {
     //static std::shared_ptr<VR> instance = std::make_shared<VR>();
@@ -805,6 +807,281 @@ std::optional<float> read_default_fov(sdk::APlayerCameraManager* pcm) {
     }
 
     return fov;
+}
+
+bool is_shf_executable() {
+    static const bool is_shf = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"shf-win64-shipping") != std::wstring::npos;
+    }();
+
+    return is_shf;
+}
+
+bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
+    auto value_lower = std::wstring{value};
+    auto needle_lower = std::wstring{needle};
+
+    std::transform(value_lower.begin(), value_lower.end(), value_lower.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+    std::transform(needle_lower.begin(), needle_lower.end(), needle_lower.begin(), [](wchar_t ch) {
+        return static_cast<wchar_t>(std::towlower(ch));
+    });
+
+    return value_lower.find(needle_lower) != std::wstring::npos;
+}
+
+std::optional<std::wstring> read_object_text_property(sdk::UObject* object, std::wstring_view name) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    const auto prop_addr = (uint8_t*)object + prop->get_offset();
+
+    if (prop_type == L"NameProperty") {
+        return ((sdk::FName*)prop_addr)->to_string();
+    }
+
+    if (prop_type == L"StrProperty") {
+        const auto str = (sdk::TArray<wchar_t>*)prop_addr;
+        if (str->data == nullptr || str->count <= 0 || str->count > 4096 || str->capacity < str->count) {
+            return std::wstring{};
+        }
+
+        if (IsBadReadPtr(str->data, (size_t)str->count * sizeof(wchar_t))) {
+            return std::nullopt;
+        }
+
+        auto count = (size_t)str->count;
+        while (count > 0 && str->data[count - 1] == L'\0') {
+            --count;
+        }
+
+        return std::wstring{str->data, count};
+    }
+
+    return std::nullopt;
+} catch (...) {
+    return std::nullopt;
+}
+
+std::optional<sdk::UObject*> read_object_property(sdk::UObject* object, std::wstring_view name) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    if (prop_type != L"ObjectProperty") {
+        return std::nullopt;
+    }
+
+    auto value = *(sdk::UObject**)((uint8_t*)object + prop->get_offset());
+    if (value == nullptr || IsBadReadPtr(value, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    return value;
+} catch (...) {
+    return std::nullopt;
+}
+
+std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& class_name) {
+    std::vector<sdk::UObject*> result{};
+
+    const auto klass = sdk::find_uobject<sdk::UClass>(class_name);
+    if (klass == nullptr) {
+        return result;
+    }
+
+    auto& object_hook = UObjectHook::get();
+    object_hook->activate();
+
+    const auto cdo = klass->get_class_default_object();
+    for (auto object_base : object_hook->get_objects_by_class(klass)) {
+        if (object_base == nullptr || object_base == cdo) {
+            continue;
+        }
+
+        auto object = (sdk::UObject*)object_base;
+        if (object_hook->exists(object)) {
+            result.push_back(object);
+        }
+    }
+
+    return result;
+}
+
+sdk::UObject* get_first_live_object_by_class_name(const std::wstring& class_name) {
+    const auto objects = get_live_objects_by_class_name(class_name);
+    return objects.empty() ? nullptr : objects.front();
+}
+
+std::optional<sdk::UObject*> read_pcm_view_target(sdk::APlayerCameraManager* pcm) try {
+    struct ViewTargetResolver {
+        bool attempted{false};
+        bool valid{false};
+        int32_t view_target_offset{-1};
+        int32_t target_offset{-1};
+    };
+
+    static ViewTargetResolver resolver{};
+
+    if (pcm == nullptr) {
+        return std::nullopt;
+    }
+
+    if (!resolver.attempted) {
+        resolver.attempted = true;
+
+        const auto pcm_class = sdk::APlayerCameraManager::static_class();
+        if (pcm_class != nullptr) {
+            if (const auto view_target_prop = (sdk::FStructProperty*)pcm_class->find_property(L"ViewTarget"); view_target_prop != nullptr) {
+                if (const auto view_target_struct = view_target_prop->get_struct(); view_target_struct != nullptr) {
+                    if (const auto target_prop = view_target_struct->find_property(L"Target"); target_prop != nullptr) {
+                        resolver.view_target_offset = view_target_prop->get_offset();
+                        resolver.target_offset = target_prop->get_offset();
+                        resolver.valid = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if (!resolver.valid) {
+        return std::nullopt;
+    }
+
+    const auto target = *(sdk::UObject**)((uint8_t*)pcm + resolver.view_target_offset + resolver.target_offset);
+    if (target == nullptr || IsBadReadPtr(target, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    return target;
+} catch (...) {
+    return std::nullopt;
+}
+
+sdk::APlayerCameraManager* get_primary_player_camera_manager(sdk::UGameEngine* engine) {
+    auto world = engine != nullptr ? engine->get_world() : nullptr;
+    auto gameplay = sdk::UGameplayStatics::get();
+
+    if (world == nullptr || gameplay == nullptr) {
+        return nullptr;
+    }
+
+    auto pc = gameplay->get_player_controller(world, 0);
+    return pc != nullptr ? pc->get_player_camera_manager() : nullptr;
+}
+
+std::optional<std::wstring> find_shf_bink_url() {
+    static const std::wstring tool_class_name = L"BlueprintGeneratedClass /Game/Cinematic/Asset/BinkPlayer/CS_BinkPlayTool.CS_BinkPlayTool_C";
+    static const std::wstring player_class_name = L"Class /Script/BinkMediaPlayer.BinkMediaPlayer";
+
+    constexpr std::wstring_view target_movie = L"noce_prerender_sc0101_l1_bk";
+
+    for (auto* tool : get_live_objects_by_class_name(tool_class_name)) {
+        for (const auto property_name : {L"CurrentBinkLinkUrl", L"BinkLinkUrl"}) {
+            if (const auto url = read_object_text_property(tool, property_name); url.has_value() && contains_case_insensitive(*url, target_movie)) {
+                return url;
+            }
+        }
+
+        if (const auto player = read_object_property(tool, L"CurrentBinkPlayerSource"); player.has_value() && *player != nullptr) {
+            if (const auto url = read_object_text_property(*player, L"URL"); url.has_value() && contains_case_insensitive(*url, target_movie)) {
+                return url;
+            }
+        }
+    }
+
+    for (auto* player : get_live_objects_by_class_name(player_class_name)) {
+        if (const auto url = read_object_text_property(player, L"URL"); url.has_value() && contains_case_insensitive(*url, target_movie)) {
+            return url;
+        }
+    }
+
+    return std::nullopt;
+}
+
+struct ShfAuto2DDecision {
+    bool should_force{false};
+    std::wstring cutscene{};
+    std::wstring url{};
+    std::wstring target{};
+    std::optional<float> fov{};
+};
+
+ShfAuto2DDecision evaluate_shf_auto_2d(sdk::UGameEngine* engine) {
+    static const std::wstring widget_class_name = L"WidgetBlueprintGeneratedClass /Game/UI/Cutscene/WBP_Cutscene.WBP_Cutscene_C";
+
+    ShfAuto2DDecision decision{};
+
+    sdk::UObject* widget = nullptr;
+    for (auto* candidate : get_live_objects_by_class_name(widget_class_name)) {
+        const auto candidate_cutscene = read_object_text_property(candidate, L"CutsceneName");
+        if (candidate_cutscene.has_value() && *candidate_cutscene == L"LS_SC0101_L1_M") {
+            widget = candidate;
+            decision.cutscene = *candidate_cutscene;
+            break;
+        }
+    }
+
+    if (widget == nullptr) {
+        return decision;
+    }
+
+    const auto bink_url = find_shf_bink_url();
+    if (!bink_url.has_value()) {
+        return decision;
+    }
+
+    decision.url = *bink_url;
+
+    auto* pcm = get_primary_player_camera_manager(engine);
+    decision.fov = read_game_fov(pcm);
+    if (!decision.fov.has_value() || *decision.fov < 37.3f || *decision.fov > 37.7f) {
+        return decision;
+    }
+
+    if (const auto target = read_pcm_view_target(pcm); target.has_value() && *target != nullptr) {
+        decision.target = (*target)->get_full_name();
+        if (!contains_case_insensitive(decision.target, L"CineCameraActor")) {
+            return decision;
+        }
+    }
+
+    decision.should_force = true;
+    return decision;
 }
 }
 
@@ -2310,11 +2587,57 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 
     update_statistics_overlay(engine);
     update_game_fov();
+    update_shf_auto_2d_mode(engine);
 
     // Dont update action states on AFR frames
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->is_ignoring_next_viewport_draw()) {
         update_action_states();
+    }
+}
+
+void VR::update_shf_auto_2d_mode(sdk::UGameEngine* engine) {
+    if (!is_shf_executable()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_shf_auto_2d_last_sample.time_since_epoch().count() != 0 &&
+        now - m_shf_auto_2d_last_sample < std::chrono::milliseconds(250)) {
+        return;
+    }
+
+    m_shf_auto_2d_last_sample = now;
+
+    const auto decision = evaluate_shf_auto_2d(engine);
+
+    if (decision.should_force) {
+        if (!m_shf_auto_2d_active) {
+            m_shf_auto_2d_previous_mode = m_2d_screen_mode->value();
+            m_shf_auto_2d_active = true;
+            spdlog::info(
+                "[SHf][Auto2D] active=true previous={} cutscene={} fov={:.3f} url={} target={}",
+                m_shf_auto_2d_previous_mode,
+                utility::narrow(decision.cutscene),
+                decision.fov.value_or(0.0f),
+                utility::narrow(decision.url),
+                decision.target.empty() ? "unresolved" : utility::narrow(decision.target));
+        }
+
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (m_shf_auto_2d_active) {
+        m_2d_screen_mode->value() = m_shf_auto_2d_previous_mode;
+        m_shf_auto_2d_active = false;
+        spdlog::info(
+            "[SHf][Auto2D] active=false restored={} cutscene={} fov={} url={} target={}",
+            m_shf_auto_2d_previous_mode,
+            utility::narrow(decision.cutscene),
+            decision.fov.has_value() ? std::format("{:.3f}", *decision.fov) : "unresolved",
+            decision.url.empty() ? "unresolved" : utility::narrow(decision.url),
+            decision.target.empty() ? "unresolved" : utility::narrow(decision.target));
     }
 }
 
