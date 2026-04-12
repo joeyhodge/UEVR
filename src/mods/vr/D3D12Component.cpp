@@ -32,6 +32,8 @@ constexpr auto ENGINE_SRC_COLOR = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
 namespace vrmod {
 namespace {
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
+constexpr bool SHF_AUTO_MONO_CINEMATIC = true;
+constexpr bool SHF_AUTO_2D_SCREEN_FROM_MONO_CINEMATIC = true;
 
 std::pair<uint32_t, uint32_t> get_ui_extent() {
     const auto fallback = std::pair<uint32_t, uint32_t>{
@@ -167,6 +169,353 @@ bool shf_texture_desc_matches(const D3D12_RESOURCE_DESC& a, const D3D12_RESOURCE
            a.SampleDesc.Count == b.SampleDesc.Count &&
            a.SampleDesc.Quality == b.SampleDesc.Quality;
 }
+
+}
+
+const char* D3D12Component::shf_scene_mode_name(ShfSceneMode mode) {
+    switch (mode) {
+    case ShfSceneMode::Stereo3D:
+        return "Stereo3D";
+    case ShfSceneMode::Mono2D:
+        return "Mono2D";
+    default:
+        return "Unknown";
+    }
+}
+
+bool D3D12Component::ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc) {
+    if (device == nullptr) {
+        return false;
+    }
+
+    auto screen_desc = base_desc;
+    screen_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    screen_desc.Alignment = 0;
+    screen_desc.Width = (uint32_t)g_framework->get_d3d12_rt_size().x;
+    screen_desc.Height = (uint32_t)g_framework->get_d3d12_rt_size().y;
+    screen_desc.DepthOrArraySize = 1;
+    screen_desc.MipLevels = 1;
+    screen_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    screen_desc.SampleDesc.Count = 1;
+    screen_desc.SampleDesc.Quality = 0;
+    screen_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    screen_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    screen_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    if (screen_desc.Width == 0 || screen_desc.Height == 0) {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Refusing to create zero-sized 2D screen textures (D3D12).");
+        return false;
+    }
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    bool all_ready = true;
+
+    for (auto& context : m_2d_screen_tex) {
+        bool needs_create = context.texture.Get() == nullptr;
+
+        if (!needs_create) {
+            const auto existing_desc = context.texture->GetDesc();
+            needs_create =
+                existing_desc.Width != screen_desc.Width ||
+                existing_desc.Height != screen_desc.Height ||
+                existing_desc.Format != screen_desc.Format ||
+                existing_desc.SampleDesc.Count != screen_desc.SampleDesc.Count ||
+                existing_desc.SampleDesc.Quality != screen_desc.SampleDesc.Quality;
+        }
+
+        if (!needs_create) {
+            continue;
+        }
+
+        context.reset();
+
+        ComPtr<ID3D12Resource> screen_tex{};
+        if (FAILED(device->CreateCommittedResource(
+                &heap_props,
+                D3D12_HEAP_FLAG_NONE,
+                &screen_desc,
+                ENGINE_SRC_COLOR,
+                nullptr,
+                IID_PPV_ARGS(&screen_tex)))) {
+            spdlog::error("[VR] Failed to create 2D screen texture.");
+            all_ready = false;
+            continue;
+        }
+
+        screen_tex->SetName(L"2D Screen Texture");
+
+        if (!context.setup(device, screen_tex.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"2D Screen")) {
+            spdlog::error("[VR] Failed to setup 2D screen context.");
+            context.reset();
+            all_ready = false;
+            continue;
+        }
+
+        SPDLOG_INFO("[VR] Created D3D12 2D screen texture [{}x{} fmt={}]", screen_desc.Width, screen_desc.Height, (uint32_t)screen_desc.Format);
+    }
+
+    return all_ready;
+}
+
+D3D12Component::ShfSceneMode D3D12Component::classify_shf_scene_mode(
+    const D3D12_RESOURCE_DESC& source_desc,
+    const D3D12_RESOURCE_DESC& real_desc) const
+{
+    const auto source_width = (uint64_t)source_desc.Width;
+    const auto source_height = (uint32_t)source_desc.Height;
+    const auto real_width = (uint64_t)real_desc.Width;
+    const auto real_height = (uint32_t)real_desc.Height;
+
+    if (real_width > 0 && real_height > 0 && source_width == real_width * 2 && source_height == real_height) {
+        return ShfSceneMode::Mono2D;
+    }
+
+    if (m_backbuffer_size[0] != 0 && m_backbuffer_size[1] != 0 &&
+        source_width == m_backbuffer_size[0] && source_height == m_backbuffer_size[1]) {
+        return ShfSceneMode::Stereo3D;
+    }
+
+    if (source_width > real_width * 2 || source_height > real_height) {
+        return ShfSceneMode::Stereo3D;
+    }
+
+    return ShfSceneMode::Unknown;
+}
+
+void D3D12Component::log_shf_scene_mode_if_needed(
+    ShfSceneMode mode,
+    const D3D12_RESOURCE_DESC& source_desc,
+    const D3D12_RESOURCE_DESC& real_desc,
+    uint64_t frame_count,
+    bool using_mono_expansion)
+{
+    if (!is_shf_current_game()) {
+        return;
+    }
+
+    if (m_shf_scene_mode != mode) {
+        SPDLOG_WARN(
+            "[SHf][D3D12] Scene mode changed {} -> {} frame={} src=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}] normal_dw={}x{} mono_expanded={}",
+            shf_scene_mode_name(m_shf_scene_mode),
+            shf_scene_mode_name(mode),
+            frame_count,
+            source_desc.Width,
+            source_desc.Height,
+            (uint32_t)source_desc.Format,
+            (uint32_t)source_desc.Flags,
+            real_desc.Width,
+            real_desc.Height,
+            (uint32_t)real_desc.Format,
+            (uint32_t)real_desc.Flags,
+            m_backbuffer_size[0],
+            m_backbuffer_size[1],
+            using_mono_expansion);
+        m_shf_scene_mode = mode;
+        return;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[SHf][D3D12] Scene mode summary mode={} frame={} src=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}] normal_dw={}x{} mono_expanded={}",
+        shf_scene_mode_name(mode),
+        frame_count,
+        source_desc.Width,
+        source_desc.Height,
+        (uint32_t)source_desc.Format,
+        (uint32_t)source_desc.Flags,
+        real_desc.Width,
+        real_desc.Height,
+        (uint32_t)real_desc.Format,
+        (uint32_t)real_desc.Flags,
+        m_backbuffer_size[0],
+        m_backbuffer_size[1],
+        using_mono_expansion);
+}
+
+bool D3D12Component::ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc) {
+    if (device == nullptr || m_backbuffer_size[0] == 0 || m_backbuffer_size[1] == 0) {
+        return false;
+    }
+
+    auto mono_desc = source_desc;
+    mono_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    mono_desc.Alignment = 0;
+    mono_desc.Width = m_backbuffer_size[0];
+    mono_desc.Height = m_backbuffer_size[1];
+    mono_desc.DepthOrArraySize = 1;
+    mono_desc.MipLevels = 1;
+    mono_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    mono_desc.SampleDesc.Count = 1;
+    mono_desc.SampleDesc.Quality = 0;
+    mono_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    mono_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    mono_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    const auto needs_create =
+        m_shf_mono_scene_tex.texture.Get() == nullptr ||
+        m_shf_mono_scene_width != mono_desc.Width ||
+        m_shf_mono_scene_height != mono_desc.Height ||
+        m_shf_mono_scene_format != mono_desc.Format;
+
+    if (!needs_create) {
+        return m_shf_mono_scene_tex.srv_heap != nullptr && m_shf_mono_scene_tex.rtv_heap != nullptr;
+    }
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    m_shf_mono_scene_tex.reset();
+
+    ComPtr<ID3D12Resource> mono_tex{};
+    if (FAILED(device->CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &mono_desc,
+            ENGINE_SRC_COLOR,
+            nullptr,
+            IID_PPV_ARGS(&mono_tex)))) {
+        SPDLOG_ERROR_EVERY_N_SEC(
+            1,
+            "[SHf][D3D12] Failed to create mono cutscene expansion texture [{}x{} fmt={} flags=0x{:x}]",
+            mono_desc.Width,
+            mono_desc.Height,
+            (uint32_t)mono_desc.Format,
+            (uint32_t)mono_desc.Flags);
+        return false;
+    }
+
+    mono_tex->SetName(L"SHf Mono Cutscene Expansion");
+
+    if (!m_shf_mono_scene_tex.setup(device, mono_tex.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"SHf Mono Cutscene Expansion")) {
+        spdlog::error("[SHf][D3D12] Failed to setup mono cutscene expansion texture.");
+        m_shf_mono_scene_tex.reset();
+        m_shf_mono_scene_width = 0;
+        m_shf_mono_scene_height = 0;
+        m_shf_mono_scene_format = DXGI_FORMAT_UNKNOWN;
+        return false;
+    }
+
+    m_shf_mono_scene_width = mono_desc.Width;
+    m_shf_mono_scene_height = mono_desc.Height;
+    m_shf_mono_scene_format = mono_desc.Format;
+
+    if (!m_shf_mono_scene_commands.ready()) {
+        m_shf_mono_scene_commands.setup(L"SHf Mono Cutscene Expansion Commands");
+    }
+
+    SPDLOG_WARN(
+        "[SHf][D3D12] Created mono cutscene expansion texture [{}x{}] from source [{}x{}]",
+        mono_desc.Width,
+        mono_desc.Height,
+        source_desc.Width,
+        source_desc.Height);
+
+    return true;
+}
+
+d3d12::TextureContext* D3D12Component::render_shf_mono_scene_texture(ID3D12Device* device) {
+    if (!SHF_AUTO_MONO_CINEMATIC ||
+        m_game_batch == nullptr ||
+        m_game_tex.texture.Get() == nullptr ||
+        m_game_tex.srv_heap == nullptr ||
+        m_game_tex.srv_heap->Heap() == nullptr) {
+        return nullptr;
+    }
+
+    const auto source_desc = m_game_tex.texture->GetDesc();
+
+    if (!ensure_shf_mono_scene_texture(device, source_desc) ||
+        m_shf_mono_scene_tex.texture.Get() == nullptr ||
+        m_shf_mono_scene_tex.rtv_heap == nullptr) {
+        return nullptr;
+    }
+
+    auto& command_ctx = m_shf_mono_scene_commands;
+
+    if (!command_ctx.ready()) {
+        command_ctx.setup(L"SHf Mono Cutscene Expansion Commands");
+    }
+
+    if (!command_ctx.ready()) {
+        return nullptr;
+    }
+
+    command_ctx.wait(INFINITE);
+
+    const float clear_color[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    command_ctx.clear_rtv(m_shf_mono_scene_tex, clear_color, ENGINE_SRC_COLOR);
+
+    const auto half_width = (LONG)(m_backbuffer_size[0] / 2);
+    const auto full_width = (LONG)m_backbuffer_size[0];
+    const auto full_height = (LONG)m_backbuffer_size[1];
+    const auto source_half_width = (LONG)(source_desc.Width / 2);
+    const auto source_height = (LONG)source_desc.Height;
+
+    const RECT left_src{0, 0, source_half_width, source_height};
+    const RECT right_src{source_half_width, 0, (LONG)source_desc.Width, source_height};
+
+    auto fit_eye_rect = [&](LONG eye_left, LONG eye_right) {
+        RECT dest{eye_left, 0, eye_right, full_height};
+        const auto eye_width = (float)(eye_right - eye_left);
+        const auto eye_height = (float)full_height;
+        const auto source_aspect = source_half_width > 0 && source_height > 0 ? (float)source_half_width / (float)source_height : 1.0f;
+        const auto eye_aspect = eye_height > 0.0f ? eye_width / eye_height : source_aspect;
+
+        if (source_aspect > eye_aspect) {
+            const auto fitted_height = (LONG)(eye_width / source_aspect);
+            const auto y = (full_height - fitted_height) / 2;
+            dest.top = y;
+            dest.bottom = y + fitted_height;
+        } else {
+            const auto fitted_width = (LONG)(eye_height * source_aspect);
+            const auto x = eye_left + ((LONG)eye_width - fitted_width) / 2;
+            dest.left = x;
+            dest.right = x + fitted_width;
+        }
+
+        return dest;
+    };
+
+    const auto left_dest = fit_eye_rect(0, half_width);
+    const auto right_dest = fit_eye_rect(half_width, full_width);
+
+    d3d12::render_srv_to_rtv(
+        m_game_batch.get(),
+        command_ctx.cmd_list.Get(),
+        m_game_tex,
+        m_shf_mono_scene_tex,
+        left_src,
+        left_dest,
+        ENGINE_SRC_COLOR,
+        ENGINE_SRC_COLOR);
+
+    d3d12::render_srv_to_rtv(
+        m_game_batch.get(),
+        command_ctx.cmd_list.Get(),
+        m_game_tex,
+        m_shf_mono_scene_tex,
+        right_src,
+        right_dest,
+        ENGINE_SRC_COLOR,
+        ENGINE_SRC_COLOR);
+
+    command_ctx.execute();
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[SHf][D3D12] Expanded low-res cutscene source [{}x{}] into stereo-safe double-wide [{}x{}]",
+        source_desc.Width,
+        source_desc.Height,
+        m_backbuffer_size[0],
+        m_backbuffer_size[1]);
+
+    return &m_shf_mono_scene_tex;
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
@@ -442,6 +791,31 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer = m_game_tex.texture;
     }
 
+    auto* effective_game_tex = &m_game_tex;
+    bool shf_using_mono_expansion = false;
+    auto shf_scene_mode = ShfSceneMode::Unknown;
+
+    if (is_shf_external_backbuffer && m_game_tex.texture.Get() != nullptr && real_backbuffer.Get() != nullptr) {
+        const auto source_desc = m_game_tex.texture->GetDesc();
+        const auto real_desc = real_backbuffer->GetDesc();
+        shf_scene_mode = classify_shf_scene_mode(source_desc, real_desc);
+
+        if (SHF_AUTO_MONO_CINEMATIC && shf_scene_mode == ShfSceneMode::Mono2D) {
+            if (auto* mono_scene = render_shf_mono_scene_texture(device); mono_scene != nullptr && mono_scene->texture.Get() != nullptr) {
+                effective_game_tex = mono_scene;
+                backbuffer = mono_scene->texture;
+                scene_source_state = ENGINE_SRC_COLOR;
+                shf_using_mono_expansion = true;
+            } else {
+                SPDLOG_ERROR_EVERY_N_SEC(
+                    1,
+                    "[SHf][D3D12] Mono scene source detected but expansion texture was unavailable; leaving existing stereo copy path active");
+            }
+        }
+
+        log_shf_scene_mode_if_needed(shf_scene_mode, source_desc, real_desc, frame_count, shf_using_mono_expansion);
+    }
+
     if (ui_target != nullptr) {
         if (m_game_ui_tex.texture.Get() != ui_target->get_native_resource()) {
             if (!m_game_ui_tex.setup(device, 
@@ -501,8 +875,29 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     const auto is_2d_screen = vr->is_using_2d_screen();
+    const auto shf_auto_2d_screen =
+        SHF_AUTO_2D_SCREEN_FROM_MONO_CINEMATIC &&
+        is_shf_external_backbuffer &&
+        shf_scene_mode == ShfSceneMode::Mono2D &&
+        m_game_tex.texture.Get() != nullptr &&
+        m_game_tex.srv_heap != nullptr;
+    const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen;
+
+    if (shf_auto_2d_screen) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[SHf][D3D12] Auto 2D screen active for detected Mono2D cinematic segment");
+    }
+
+    if (use_2d_screen && effective_game_tex != nullptr && effective_game_tex->texture.Get() != nullptr) {
+        ensure_2d_screen_textures(device, effective_game_tex->texture->GetDesc());
+    }
 
     auto draw_2d_view = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
+        auto& view_game_tex = effective_game_tex != nullptr ? *effective_game_tex : m_game_tex;
+        const auto view_game_tex_clear_state =
+            (is_shf_external_backbuffer || shf_using_mono_expansion) ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
+
         if (ui_invert_alpha > 0.0f && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
             const std::array<float, 4> blend_factor{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
             const DirectX::XMFLOAT4 invert_alpha_tint{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
@@ -517,21 +912,99 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame);
+        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame, &view_game_tex);
 
-        if (is_2d_screen && m_game_tex.texture.Get() != nullptr && m_game_tex.srv_heap != nullptr) {
+        const auto has_2d_screen_textures =
+            m_2d_screen_tex[0].texture.Get() != nullptr &&
+            m_2d_screen_tex[1].texture.Get() != nullptr &&
+            m_2d_screen_tex[0].rtv_heap != nullptr &&
+            m_2d_screen_tex[1].rtv_heap != nullptr;
+
+        if (use_2d_screen && has_2d_screen_textures && view_game_tex.texture.Get() != nullptr && view_game_tex.srv_heap != nullptr) {
             // Clear previous frame
             for (auto& screen : m_2d_screen_tex) {
                 commands.clear_rtv(screen, clear_color, ENGINE_SRC_COLOR);
             }
 
-            // Render left side to left screen tex
+            const auto use_shf_flat_screen_source = is_shf_current_game();
+            auto* screen_source_tex = &view_game_tex;
+
+            if (use_shf_flat_screen_source &&
+                shf_scene_mode == ShfSceneMode::Mono2D &&
+                m_game_tex.texture.Get() != nullptr &&
+                m_game_tex.srv_heap != nullptr) {
+                screen_source_tex = &m_game_tex;
+            }
+
+            const auto view_desc = screen_source_tex->texture->GetDesc();
+            RECT left_source_rect{0, 0, (LONG)((float)m_backbuffer_size[0] / 2.0f), (LONG)m_backbuffer_size[1]};
+            RECT right_source_rect{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]};
+            std::optional<RECT> screen_dest_rect = std::nullopt;
+
+            if (use_shf_flat_screen_source) {
+                const auto source_width = (LONG)view_desc.Width;
+                const auto source_height = (LONG)view_desc.Height;
+                left_source_rect = RECT{0, 0, source_width, source_height};
+
+                // Mono2D uses the original wide cinematic source. Other manual 2D cases use a matched single eye.
+                if (shf_scene_mode != ShfSceneMode::Mono2D &&
+                    view_desc.Width >= (uint64_t)view_desc.Height * 2 &&
+                    view_desc.Width >= 2) {
+                    left_source_rect.right = (LONG)(view_desc.Width / 2);
+                }
+
+                right_source_rect = left_source_rect;
+                const auto screen_desc = m_2d_screen_tex[0].texture->GetDesc();
+                const auto source_rect_width = (float)(left_source_rect.right - left_source_rect.left);
+                const auto source_rect_height = (float)(left_source_rect.bottom - left_source_rect.top);
+                const auto screen_width = (float)screen_desc.Width;
+                const auto screen_height = (float)screen_desc.Height;
+                RECT dest_rect{0, 0, (LONG)screen_desc.Width, (LONG)screen_desc.Height};
+
+                if (source_rect_width > 0.0f && source_rect_height > 0.0f && screen_width > 0.0f && screen_height > 0.0f) {
+                    const auto source_aspect = source_rect_width / source_rect_height;
+                    const auto screen_aspect = screen_width / screen_height;
+
+                    if (source_aspect > screen_aspect) {
+                        const auto fitted_height = (LONG)(screen_width / source_aspect);
+                        const auto y = ((LONG)screen_desc.Height - fitted_height) / 2;
+                        dest_rect.top = y;
+                        dest_rect.bottom = y + fitted_height;
+                    } else {
+                        const auto fitted_width = (LONG)(screen_height * source_aspect);
+                        const auto x = ((LONG)screen_desc.Width - fitted_width) / 2;
+                        dest_rect.left = x;
+                        dest_rect.right = x + fitted_width;
+                    }
+
+                    screen_dest_rect = dest_rect;
+                }
+
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SHf][D3D12] 2D screen using matched mono source mode={} auto={} tex=[{}x{} fmt={}] src=[{},{} -> {},{}] dst=[{},{} -> {},{}]",
+                    shf_scene_mode_name(m_shf_scene_mode),
+                    shf_auto_2d_screen,
+                    view_desc.Width,
+                    view_desc.Height,
+                    (uint32_t)view_desc.Format,
+                    left_source_rect.left,
+                    left_source_rect.top,
+                    left_source_rect.right,
+                    left_source_rect.bottom,
+                    screen_dest_rect ? screen_dest_rect->left : 0,
+                    screen_dest_rect ? screen_dest_rect->top : 0,
+                    screen_dest_rect ? screen_dest_rect->right : (LONG)m_2d_screen_tex[0].texture->GetDesc().Width,
+                    screen_dest_rect ? screen_dest_rect->bottom : (LONG)m_2d_screen_tex[0].texture->GetDesc().Height);
+            }
+
             d3d12::render_srv_to_rtv(
                 m_game_batch.get(),
                 commands.cmd_list.Get(),
-                m_game_tex,
+                *screen_source_tex,
                 m_2d_screen_tex[0],
-                RECT{0, 0, (LONG)((float)m_backbuffer_size[0] / 2.0f), (LONG)m_backbuffer_size[1]},
+                left_source_rect,
+                screen_dest_rect,
                 ENGINE_SRC_COLOR,
                 ENGINE_SRC_COLOR
             );
@@ -548,8 +1021,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (!is_afr) {
-                // Render right side to right screen tex
-                if (m_scene_capture_tex.texture.Get() != nullptr) {
+                if (!use_shf_flat_screen_source && m_scene_capture_tex.texture.Get() != nullptr) {
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
                         commands.cmd_list.Get(),
@@ -562,9 +1034,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
                         commands.cmd_list.Get(),
-                        m_game_tex,
+                        *screen_source_tex,
                         m_2d_screen_tex[1],
-                        RECT{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]},
+                        right_source_rect,
+                        screen_dest_rect,
                         ENGINE_SRC_COLOR,
                         ENGINE_SRC_COLOR
                     );
@@ -583,7 +1056,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             // Clear the RT so the entire background is black when submitting to the compositor
-            commands.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            commands.clear_rtv(view_game_tex, (float*)&clear_color, view_game_tex_clear_state);
 
             if (m_scene_capture_tex.texture.Get() != nullptr) {
                 commands.clear_rtv(m_scene_capture_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -612,12 +1085,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         draw_2d_view(m_openvr.ui_tex.commands, nullptr);
 
         if (is_right_eye_frame) {
-            if (is_2d_screen) {
+            if (use_2d_screen) {
                 m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             } else if (ui_target != nullptr) {
                 m_openvr.ui_tex.commands.copy((ID3D12Resource*)ui_target->get_native_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             }
-        } else if (is_2d_screen) {
+        } else if (use_2d_screen) {
             m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
         }
 
@@ -630,7 +1103,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }};
 
         if (is_right_eye_frame) {
-            if (is_2d_screen) {
+            if (use_2d_screen) {
                 if (is_afr) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
                 } else {
@@ -646,7 +1119,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             if (fw_rt && g_framework->is_drawing_anything()) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, g_framework->get_rendertarget_d3d12().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
             }
-        } else if (is_2d_screen) {
+        } else if (use_2d_screen) {
             m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
         } else if (m_game_ui_tex.commands.ready()) {
             m_game_ui_tex.commands.wait(INFINITE);
@@ -684,6 +1157,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             scene_depth_tex.Reset();
         }
     #endif
+    }
+
+    if (shf_using_mono_expansion && scene_depth_tex != nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Suppressing depth submit while mono cutscene expansion is active");
+        scene_depth_tex.Reset();
     }
 
     // If m_frame_count is even, we're rendering the left eye.
@@ -812,7 +1290,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
             } else {
                 // Copy over the entire double wide instead
-                if (m_scene_capture_tex.texture.Get() == nullptr) {
+                if (m_scene_capture_tex.texture.Get() == nullptr || shf_using_mono_expansion) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
@@ -924,7 +1402,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
-            if (vr->m_2d_screen_mode->value()) {
+            if (use_2d_screen) {
+                if (shf_auto_2d_screen) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[SHf][D3D12] Submitting auto 2D screen as eye-specific OpenXR slate layers");
+                }
+
                 const auto left_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_LEFT);
                 const auto right_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI_RIGHT, XrEyeVisibility::XR_EYE_VISIBILITY_RIGHT);
 
@@ -1122,7 +1606,7 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
     return batch;
 }
 
-void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame) {
+void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override) {
     if (command_list == nullptr) {
         return;
     }
@@ -1132,7 +1616,8 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
         return;
     }
 
-    const auto has_game_tex = m_game_tex.texture != nullptr && m_game_tex.srv_heap != nullptr && m_game_tex.srv_heap->Heap() != nullptr;
+    auto& game_tex = game_tex_override != nullptr ? *game_tex_override : m_game_tex;
+    const auto has_game_tex = game_tex.texture != nullptr && game_tex.srv_heap != nullptr && game_tex.srv_heap->Heap() != nullptr;
     const auto has_ui_tex = m_game_ui_tex.texture != nullptr && m_game_ui_tex.srv_heap != nullptr && m_game_ui_tex.srv_heap->Heap() != nullptr;
 
     if (!has_game_tex) {
@@ -1302,11 +1787,11 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     }
 
     // Set descriptor heaps
-    ID3D12DescriptorHeap* game_heaps[] = { m_game_tex.srv_heap->Heap() };
+    ID3D12DescriptorHeap* game_heaps[] = { game_tex.srv_heap->Heap() };
     render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/GameSRV", 1, game_heaps);
     command_list->SetDescriptorHeaps(1, game_heaps);
 
-    batch->Draw(m_game_tex.get_srv_gpu(), 
+    batch->Draw(game_tex.get_srv_gpu(),
         DirectX::XMUINT2{ (uint32_t)m_backbuffer_size[0], (uint32_t)m_backbuffer_size[1] },
         dest_rect,
         &source_rect, 
@@ -1459,7 +1944,13 @@ void D3D12Component::on_reset(VR* vr) {
     m_game_ui_tex.reset();
     m_game_tex.reset();
     m_scene_capture_tex.reset();
+    m_shf_mono_scene_tex.reset();
+    m_shf_mono_scene_commands.reset();
+    m_shf_mono_scene_width = 0;
+    m_shf_mono_scene_height = 0;
+    m_shf_mono_scene_format = DXGI_FORMAT_UNKNOWN;
     m_skip_spectator_view_for_volatile_external_rt = false;
+    m_shf_scene_mode = ShfSceneMode::Unknown;
     m_backbuffer_batch.reset();
     m_game_batch.reset();
     m_ui_batch_alpha_invert.reset();
@@ -1568,28 +2059,7 @@ bool D3D12Component::setup() {
     heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
     if (vr->is_using_2d_screen()) {
-        auto screen_desc = backbuffer_desc;
-        screen_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        screen_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
-
-        screen_desc.Width = (uint32_t)g_framework->get_d3d12_rt_size().x;
-        screen_desc.Height = (uint32_t)g_framework->get_d3d12_rt_size().y;
-
-        for (auto& context : m_2d_screen_tex) {
-            ComPtr<ID3D12Resource> screen_tex{};
-            if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &screen_desc, ENGINE_SRC_COLOR, nullptr,
-                    IID_PPV_ARGS(&screen_tex)))) {
-                spdlog::error("[VR] Failed to create 2D screen texture.");
-                continue;
-            }
-
-            screen_tex->SetName(L"2D Screen Texture");
-
-            if (!context.setup(device, screen_tex.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"2D Screen")) {
-                spdlog::error("[VR] Failed to setup 2D screen context.");
-                continue;
-            }
-        }
+        ensure_2d_screen_textures(device, backbuffer_desc);
     }
 
     if (vr->get_runtime()->is_openvr()) {
