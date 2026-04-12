@@ -464,7 +464,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         clear_rt(m_openvr.ui_tex.commands);
         m_openvr.ui_tex.commands.execute();
-    } else if (runtime->is_openxr() && runtime->ready() && vr->m_openxr->frame_began) {
+    } else if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && vr->m_openxr->frame_began) {
         const auto ui_copy_start = std::chrono::steady_clock::now();
         utility::ScopeGuard ui_copy_timing_guard{[&]() {
             m_perf_ui_copy.add(std::chrono::steady_clock::now() - ui_copy_start);
@@ -532,7 +532,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_submitted_left_eye = true;
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             const auto swapchain_copy_start = std::chrono::steady_clock::now();
             utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
                 m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
@@ -591,7 +591,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }};
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             const auto swapchain_copy_start = std::chrono::steady_clock::now();
             utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
                 m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
@@ -742,7 +742,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         ////////////////////////////////////////////////////////////////////////////////
         // OpenXR start ////////////////////////////////////////////////////////////////
         ////////////////////////////////////////////////////////////////////////////////
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             const auto openxr_submit_start = std::chrono::steady_clock::now();
             utility::ScopeGuard openxr_submit_timing_guard{[&]() {
                 m_perf_openxr_submit.add(std::chrono::steady_clock::now() - openxr_submit_start);
