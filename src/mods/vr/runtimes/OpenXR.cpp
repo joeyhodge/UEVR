@@ -343,7 +343,6 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count) {
     std::scoped_lock _{sync_mtx};
 
-    // cant sync frame between begin and endframe
     if (!this->session_ready || this->frame_began) {
         if (this->frame_began) {
             ++this->frame_began_skip_streak;
@@ -709,6 +708,7 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->session_ready_since = std::chrono::steady_clock::now();
                     this->last_ready_state_probe_log = {};
                     this->last_valid_pose_probe_log = {};
+                    spdlog::info("[OpenXR] Session is READY; synchronizing first frame");
                     synchronize_frame();
                 }
             } else if (ev->state == XR_SESSION_STATE_LOSS_PENDING) {
@@ -745,6 +745,11 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
                     this->got_first_poses,
                     this->got_first_valid_poses
                 );
+
+                if (this->session_ready && !this->frame_synced && !this->frame_began) {
+                    spdlog::info("[OpenXR] Session reached frame-loop state; synchronizing first frame");
+                    synchronize_frame();
+                }
             }
 
             if (this->session_state != XR_SESSION_STATE_READY) {
@@ -2023,7 +2028,7 @@ XrResult OpenXR::begin_frame() {
 
     emit_openxr_state_probes(this, "begin_frame");
 
-    if (!this->ready() || !this->got_first_poses || !this->frame_synced) {
+    if (!this->can_run_frame_loop() || !this->got_first_poses || !this->frame_synced) {
         this->log_frame_lifecycle_state("begin_frame refused because runtime was not ready");
         return XR_ERROR_SESSION_NOT_READY;
     }
@@ -2078,7 +2083,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     emit_openxr_state_probes(this, "end_frame");
 
-    if (!this->ready() || !this->got_first_poses || !this->frame_synced) {
+    if (!this->can_run_frame_loop() || !this->got_first_poses || !this->frame_synced) {
         this->log_frame_lifecycle_state("end_frame refused because runtime was not ready");
 
         if (this->frame_began) {

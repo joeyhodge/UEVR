@@ -451,7 +451,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         clear_rt(m_openvr.ui_tex.commands);
         m_openvr.ui_tex.commands.execute();
-    } else if (runtime->is_openxr() && runtime->ready() && vr->m_openxr->frame_began) {
+    } else if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && vr->m_openxr->frame_began) {
         if (is_right_eye_frame) {
             if (is_2d_screen) {
                 if (is_afr) {
@@ -514,7 +514,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_submitted_left_eye = true;
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             D3D12_BOX src_box{};
             src_box.left = 0;
             src_box.top = 0;
@@ -568,7 +568,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }};
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             if (is_actually_afr && !is_afr && !m_submitted_left_eye) {
                 D3D12_BOX src_box{};
                 src_box.left = 0;
@@ -714,7 +714,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         ////////////////////////////////////////////////////////////////////////////////
         // OpenXR start ////////////////////////////////////////////////////////////////
         ////////////////////////////////////////////////////////////////////////////////
-        if (runtime->is_openxr() && vr->m_openxr->ready()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
             if (!vr->m_openxr->frame_began) {
                 vr->m_openxr->begin_frame();
             }

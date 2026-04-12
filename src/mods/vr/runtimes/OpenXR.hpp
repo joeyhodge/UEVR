@@ -46,6 +46,14 @@ struct OpenXR final : public VRRuntime {
         return VRRuntime::ready() && this->session_ready;
     }
 
+    bool can_run_frame_loop() const {
+        return ready() &&
+            (this->session_state == XR_SESSION_STATE_READY ||
+             this->session_state == XR_SESSION_STATE_SYNCHRONIZED ||
+             this->session_state == XR_SESSION_STATE_VISIBLE ||
+             this->session_state == XR_SESSION_STATE_FOCUSED);
+    }
+
     bool is_depth_allowed() const override {
         return this->enabled_extensions.contains(XR_KHR_COMPOSITION_LAYER_DEPTH_EXTENSION_NAME);
     }

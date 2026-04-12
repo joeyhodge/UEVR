@@ -5,8 +5,11 @@
 
 #include <asmjit/asmjit.h>
 #include <array>
+#include <chrono>
 #include <future>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -68,6 +71,19 @@ FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 
 namespace {
+std::mutex g_shf_texture_probe_mutex{};
+std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
+std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_texture_probe_by_base{};
+
+bool shf_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"SHf-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_ue_5_7_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -79,6 +95,217 @@ bool is_ue_5_7_or_newer() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50007;
+}
+
+bool shf_is_valid_texture_with_vtable(FRHITexture2D* texture, void* required_vtable) {
+    if (texture == nullptr || required_vtable == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return false;
+    }
+
+    void* vtable{};
+
+    try {
+        vtable = *(void**)texture;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable != required_vtable) {
+        return false;
+    }
+
+    FRHITexture2D::set_vtable(vtable);
+    return true;
+}
+
+std::optional<D3D12_RESOURCE_DESC> shf_try_get_d3d12_desc(FRHITexture2D* texture) {
+    if (texture == nullptr) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto native = (ID3D12Resource*)texture->get_native_resource();
+
+        if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
+            return std::nullopt;
+        }
+
+        return native->GetDesc();
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+void shf_log_texture_probe_candidate(
+    const char* source,
+    const char* base_name,
+    uintptr_t base,
+    uintptr_t offset,
+    int32_t array_index,
+    FRHITexture2D* texture,
+    const D3D12_RESOURCE_DESC& desc)
+{
+    const auto key = ((uintptr_t)texture >> 4) ^
+                     (base << 9) ^
+                     (offset << 21) ^
+                     ((uintptr_t)(array_index + 1) << 53);
+
+    {
+        std::scoped_lock _{g_shf_texture_probe_mutex};
+
+        if (g_shf_logged_texture_probe_keys.contains(key)) {
+            return;
+        }
+
+        g_shf_logged_texture_probe_keys.insert(key);
+    }
+
+    if (array_index >= 0) {
+        SPDLOG_WARN("[SHf] FSceneViewport probe {} {}+0x{:x}[{}] -> tex {:x} [{}x{} fmt={} flags=0x{:x}]",
+            source, base_name, offset, array_index, (uintptr_t)texture, desc.Width, desc.Height, (uint32_t)desc.Format, (uint32_t)desc.Flags);
+    } else {
+        SPDLOG_WARN("[SHf] FSceneViewport probe {} {}+0x{:x} -> tex {:x} [{}x{} fmt={} flags=0x{:x}]",
+            source, base_name, offset, (uintptr_t)texture, desc.Width, desc.Height, (uint32_t)desc.Format, (uint32_t)desc.Flags);
+    }
+}
+
+void shf_probe_scene_viewport_memory(sdk::FViewport* viewport, const char* source, FRHITexture2D* known_texture) {
+    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return;
+    }
+
+    void* required_vtable = nullptr;
+
+    if (known_texture != nullptr && !IsBadReadPtr(known_texture, sizeof(void*))) {
+        required_vtable = *(void**)known_texture;
+    }
+
+    if (required_vtable == nullptr) {
+        required_vtable = FRHITexture2D::get_vtable();
+    }
+
+    if (required_vtable == nullptr) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto viewport_base = (uintptr_t)viewport;
+
+    {
+        std::scoped_lock _{g_shf_texture_probe_mutex};
+        auto& last_probe = g_shf_last_texture_probe_by_base[viewport_base];
+
+        if (last_probe.time_since_epoch().count() != 0 && now - last_probe < std::chrono::seconds(2)) {
+            return;
+        }
+
+        last_probe = now;
+    }
+
+    auto probe_base = [&](uintptr_t base, const char* base_name) {
+        if (base == 0 || IsBadReadPtr((void*)base, 0x340)) {
+            return;
+        }
+
+        for (uintptr_t offset = 0; offset <= 0x330; offset += sizeof(void*)) try {
+            const auto field = base + offset;
+
+            if (IsBadReadPtr((void*)field, sizeof(void*))) {
+                continue;
+            }
+
+            const auto texture = *(FRHITexture2D**)field;
+
+            if (shf_is_valid_texture_with_vtable(texture, required_vtable)) {
+                if (const auto desc = shf_try_get_d3d12_desc(texture)) {
+                    shf_log_texture_probe_candidate(source, base_name, base, offset, -1, texture, *desc);
+                }
+            }
+
+            if (IsBadReadPtr((void*)field, sizeof(void*) + sizeof(int32_t) * 2)) {
+                continue;
+            }
+
+            const auto array_data = *(FRHITexture2D***)field;
+            const auto array_count = *(int32_t*)(field + sizeof(void*));
+            const auto array_capacity = *(int32_t*)(field + sizeof(void*) + sizeof(int32_t));
+
+            if (array_data == nullptr || array_count <= 0 || array_count > 8 || array_capacity < array_count ||
+                IsBadReadPtr(array_data, sizeof(FRHITexture2D*) * array_count))
+            {
+                continue;
+            }
+
+            for (int32_t i = 0; i < array_count; ++i) {
+                const auto array_texture = array_data[i];
+
+                if (!shf_is_valid_texture_with_vtable(array_texture, required_vtable)) {
+                    continue;
+                }
+
+                if (const auto desc = shf_try_get_d3d12_desc(array_texture)) {
+                    shf_log_texture_probe_candidate(source, base_name, base, offset, i, array_texture, *desc);
+                }
+            }
+        } catch (...) {
+        }
+    };
+
+    probe_base(viewport_base, "FViewport");
+
+    if (viewport_base > 0x1000) {
+        probe_base(viewport_base - sizeof(void*), "FSceneViewport");
+    }
+}
+
+void shf_force_scene_viewport_separate_rt(const sdk::FViewport& viewport, const char* source) {
+    if (!shf_is_current_game() || g_framework == nullptr || !g_framework->is_game_data_intialized()) {
+        return;
+    }
+
+    const auto vr = VR::get();
+
+    if (vr == nullptr || !vr->is_hmd_active() || vr->is_stereo_emulation_enabled() || vr->is_extreme_compatibility_mode_enabled()) {
+        return;
+    }
+
+    constexpr uintptr_t fviewport_base_offset = 0x08;
+    constexpr uintptr_t b_use_separate_rt_full_offset = 0x287;
+    constexpr uintptr_t b_force_separate_rt_full_offset = 0x288;
+    constexpr uintptr_t b_use_separate_rt_fviewport_offset = b_use_separate_rt_full_offset - fviewport_base_offset;
+    constexpr uintptr_t b_force_separate_rt_fviewport_offset = b_force_separate_rt_full_offset - fviewport_base_offset;
+
+    const auto viewport_base = reinterpret_cast<uintptr_t>(&viewport);
+
+    if (viewport_base <= fviewport_base_offset ||
+        IsBadReadPtr(reinterpret_cast<void*>(viewport_base - fviewport_base_offset), sizeof(void*)) ||
+        IsBadReadPtr(reinterpret_cast<void*>(viewport_base + b_force_separate_rt_fviewport_offset), sizeof(uint8_t)))
+    {
+        return;
+    }
+
+    const auto fscene_viewport_vtable = *reinterpret_cast<uintptr_t*>(viewport_base - fviewport_base_offset);
+
+    if (fscene_viewport_vtable == 0 || !utility::get_module_within(fscene_viewport_vtable).has_value()) {
+        return;
+    }
+
+    auto* use_separate_rt = reinterpret_cast<uint8_t*>(viewport_base + b_use_separate_rt_fviewport_offset);
+    auto* force_separate_rt = reinterpret_cast<uint8_t*>(viewport_base + b_force_separate_rt_fviewport_offset);
+
+    if (*use_separate_rt > 1 || *force_separate_rt > 1) {
+        SPDLOG_WARN_ONCE("[SHf] Refusing to force separate RT from {}; unexpected FSceneViewport bool bytes use={} force={}",
+            source, *use_separate_rt, *force_separate_rt);
+        return;
+    }
+
+    if (*use_separate_rt == 0 || *force_separate_rt == 0) {
+        SPDLOG_WARN_ONCE("[SHf] Forcing FSceneViewport separate RT from {} at viewport {:x} use+0x{:x} force+0x{:x}",
+            source, viewport_base, b_use_separate_rt_fviewport_offset, b_force_separate_rt_fviewport_offset);
+    }
+
+    *use_separate_rt = 1;
+    *force_separate_rt = 1;
 }
 
 constexpr auto UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY = "ue57_prefer_slate_thread";
@@ -668,6 +895,15 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     }
 
     auto func = alternate ? sdk::slate::locate_draw_window_renderthread_fn_alternate() : sdk::slate::locate_draw_window_renderthread_fn();
+
+    if (!func && !alternate) {
+        func = sdk::slate::locate_draw_window_renderthread_fn_alternate();
+
+        if (func) {
+            SPDLOG_INFO("Using alternate SlateRHIRenderer::DrawWindow_RenderThread scan result after primary scan failed");
+            m_attempted_hook_slate_thread_alternate = true;
+        }
+    }
 
     if (!func && return_address == 0) {
         SPDLOG_ERROR("Cannot hook FSlateRHIRenderer::DrawWindow_RenderThread");
@@ -2482,6 +2718,73 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
     return og(viewport);
 }
 
+void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
+    constexpr bool allow_scene_viewport_rt_adoption = false;
+
+    if (is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return;
+    }
+
+    auto vr = VR::get();
+
+    if (!vr->is_hmd_active() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return;
+    }
+
+    auto rtm = get_render_target_manager();
+
+    if (rtm == nullptr || rtm->get_render_target() != nullptr) {
+        return;
+    }
+
+    auto candidate = viewport->get_scene_viewport_render_target_texture_direct();
+
+    if (candidate == nullptr) {
+        shf_probe_scene_viewport_memory(viewport, source, nullptr);
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target is not available yet from {}", source);
+        return;
+    }
+
+    ID3D12Resource* native_resource = nullptr;
+
+    try {
+        native_resource = (ID3D12Resource*)candidate->get_native_resource();
+    } catch (const std::exception& e) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", source, e.what());
+        return;
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource threw", source);
+        return;
+    }
+
+    if (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*))) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target from {} has no native D3D12 resource yet", source);
+        return;
+    }
+
+    const auto desc = native_resource->GetDesc();
+
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) {
+        SPDLOG_WARNING_EVERY_N_SEC(2,
+            "[SHf] Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
+            source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+        return;
+    }
+
+    if (!allow_scene_viewport_rt_adoption) {
+        shf_probe_scene_viewport_memory(viewport, source, candidate);
+        SPDLOG_WARNING_EVERY_N_SEC(2,
+            "[SHf] Found FSceneViewport render target candidate from {} at {:x} [{}x{} fmt={}] but not adopting it yet",
+            source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+        return;
+    }
+
+    rtm->set_render_target(candidate);
+
+    SPDLOG_WARN_ONCE("[SHf] Adopted real FSceneViewport render target from {} at {:x} [{}x{} fmt={}]",
+        source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+}
+
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
 
@@ -2514,6 +2817,10 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     g_hook->m_in_viewport_client_draw = true;
     g_hook->m_was_in_viewport_client_draw = false;
     g_hook->get_render_target_manager()->set_viewport(viewport);
+    if (viewport != nullptr) {
+        shf_force_scene_viewport_separate_rt(*viewport, "UGameViewportClient::Draw");
+    }
+    g_hook->try_adopt_scene_viewport_render_target(viewport, "UGameViewportClient::Draw viewport");
 
     utility::ScopeGuard _{ 
         []() { 
@@ -3562,6 +3869,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     auto& views = *views_ptr;
     const auto prev_count = views.count;
 
+    if (auto view_family_target = view_family->get_render_target(); view_family_target != nullptr) {
+        g_hook->try_adopt_scene_viewport_render_target(
+            reinterpret_cast<sdk::FViewport*>(view_family_target),
+            "BeginRenderingViewFamily RenderTarget");
+    }
+
     const auto rt = rtm->get_scene_capture_utexture();
     const auto rtrsrc = rt != nullptr ? (sdk::FTextureRenderTargetResource*)rt->get_resource() : nullptr;
     const auto rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
@@ -3670,6 +3983,13 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     {
         g_hook->note_scene_view_family_offsets_ready();
     }
+
+    if (auto view_family_target = view_family.get_render_target(); view_family_target != nullptr) {
+        g_hook->try_adopt_scene_viewport_render_target(
+            reinterpret_cast<sdk::FViewport*>(view_family_target),
+            "FSceneViewFamily::RenderTarget");
+    }
+
     auto si = view_family.get_scene_interface();
 
     if (si != nullptr) {
@@ -6338,7 +6658,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (viewport_info != nullptr && !is_ue_5_7_or_newer()) {
         const auto known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
-        const auto viewport_rt_provider = viewport_info->get_rt_provider(known_texture);
+        const auto viewport_rt_provider = known_texture != nullptr ? viewport_info->get_rt_provider(known_texture) : nullptr;
 
         if (viewport_rt_provider != nullptr) {
             provider_resource = viewport_rt_provider->get_viewport_render_target_texture();
@@ -6346,7 +6666,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (provider_resource != nullptr) {
                 provider_texture = provider_resource->get_mutable_resource();
             }
-        } else if (slate_viewport == nullptr) {
+        } else if (slate_viewport == nullptr && rtm->get_render_target() == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
             return call_orig();
         }
@@ -6501,6 +6821,8 @@ void VRRenderTargetManager_Base::update_viewport(bool use_separate_rt, const sdk
     if (!g_framework->is_game_data_intialized()) {
         return;
     }
+
+    shf_force_scene_viewport_separate_rt(vp, "RenderTargetManager::UpdateViewport");
 
     //SPDLOG_INFO("Widget: {:x}", (uintptr_t)ViewportWidget);
 }

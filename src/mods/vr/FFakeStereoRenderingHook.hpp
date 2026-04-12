@@ -527,6 +527,7 @@ private:
     bool patch_vtable_checks();
     bool attempt_runtime_inject_stereo();
     void post_init_properties(uintptr_t localplayer);
+    void try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source);
 
     // Hooks
     // UGameEngine
