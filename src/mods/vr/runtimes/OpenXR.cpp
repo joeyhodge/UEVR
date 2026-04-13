@@ -375,10 +375,18 @@ void OpenXR::log_frame_lifecycle_state(const char* prefix) const {
     );
 }
 
+bool OpenXR::should_trace_frame_flow() const {
+    return this->debug_frame_trace->value();
+}
+
 void OpenXR::trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     ++this->last_wait_trace_sequence;
     this->last_wait_trace_frame_count = frame_count.value_or(this->internal_frame_count);
     this->last_wait_trace_callsite = callsite;
+
+    if (!this->should_trace_frame_flow()) {
+        return;
+    }
 
     spdlog::info(
         "[OpenXR][trace] wait_success seq={} callsite={} frame_count={} frame_synced={} frame_began={} session={} shouldRender={} displayTime={} displayPeriod={} last_clear_reason={} last_begin_caller={}",
@@ -398,6 +406,10 @@ void OpenXR::trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncF
 
 void OpenXR::trace_begin_frame_request(const char* caller) {
     this->last_begin_frame_caller = caller != nullptr ? caller : "unknown";
+
+    if (!this->should_trace_frame_flow()) {
+        return;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const auto wait_age_ms = this->last_successful_wait_frame.time_since_epoch().count() == 0
@@ -427,6 +439,14 @@ void OpenXR::trace_begin_frame_request(const char* caller) {
 }
 
 void OpenXR::clear_frame_synced(const char* reason) {
+    this->frame_synced = false;
+    this->last_frame_synced_clear_reason = reason != nullptr ? reason : "unknown";
+    this->last_frame_synced_clear_time = std::chrono::steady_clock::now();
+
+    if (!this->should_trace_frame_flow()) {
+        return;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     const auto wait_age_ms = this->last_successful_wait_frame.time_since_epoch().count() == 0
         ? -1LL
@@ -446,10 +466,6 @@ void OpenXR::clear_frame_synced(const char* reason) {
         this->frame_state.predictedDisplayTime,
         this->frame_state.predictedDisplayPeriod
     );
-
-    this->frame_synced = false;
-    this->last_frame_synced_clear_reason = reason != nullptr ? reason : "unknown";
-    this->last_frame_synced_clear_time = now;
 }
 
 XrResult OpenXR::recover_wedged_frame(const char* reason) {

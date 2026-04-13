@@ -150,6 +150,7 @@ public:
     void trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite);
     void trace_begin_frame_request(const char* caller);
     void clear_frame_synced(const char* reason);
+    bool should_trace_frame_flow() const;
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -341,6 +342,7 @@ public:
     
     const ModSlider::Ptr resolution_scale{ ModSlider::create("OpenXR_ResolutionScale", 0.1f, 3.0f, 1.0f) };
     const ModToggle::Ptr ignore_vd_checks{ ModToggle::create("OpenXR_IgnoreVirtualDesktopChecks", false) };
+    const ModToggle::Ptr debug_frame_trace{ ModToggle::create("OpenXR_DebugFrameTrace", false) };
     const ModToggle::Ptr debug_submit_empty_frame{ ModToggle::create("OpenXR_DebugSubmitEmptyFrame", false) };
     const ModToggle::Ptr debug_skip_scene_copy{ ModToggle::create("OpenXR_DebugSkipSceneCopy", false) };
     const ModToggle::Ptr debug_skip_ui_copy{ ModToggle::create("OpenXR_DebugSkipUICopy", false) };
@@ -378,6 +380,7 @@ public:
     Mod::ValueList options{
         *resolution_scale,
         *ignore_vd_checks,
+        *debug_frame_trace,
         *debug_submit_empty_frame,
         *debug_skip_scene_copy,
         *debug_skip_ui_copy,
