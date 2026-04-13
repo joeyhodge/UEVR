@@ -845,12 +845,14 @@ HRESULT WINAPI D3D12Hook::create_graphics_pipeline_state(
 
     const auto result = original(device, desc, riid, pipeline_state);
 
-    if (SUCCEEDED(result) &&
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (shader_registry.should_track_d3d12_pipelines() &&
+        SUCCEEDED(result) &&
         pipeline_state != nullptr &&
         *pipeline_state != nullptr &&
         riid == __uuidof(ID3D12PipelineState) &&
         desc != nullptr) {
-        render::ShaderOverrideRegistry::get().register_d3d12_graphics_pipeline_state_creation(
+        shader_registry.register_d3d12_graphics_pipeline_state_creation(
             device,
             static_cast<ID3D12PipelineState*>(*pipeline_state),
             desc
@@ -877,12 +879,14 @@ HRESULT WINAPI D3D12Hook::create_pipeline_state(
 
     const auto result = original(device, desc, riid, pipeline_state);
 
-    if (SUCCEEDED(result) &&
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (shader_registry.should_track_d3d12_pipelines() &&
+        SUCCEEDED(result) &&
         pipeline_state != nullptr &&
         *pipeline_state != nullptr &&
         riid == __uuidof(ID3D12PipelineState) &&
         desc != nullptr) {
-        render::ShaderOverrideRegistry::get().register_d3d12_pipeline_state_stream_creation(
+        shader_registry.register_d3d12_pipeline_state_stream_creation(
             device,
             static_cast<ID3D12PipelineState*>(*pipeline_state),
             desc
@@ -940,8 +944,14 @@ void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_lis
         return;
     }
 
-    auto bound_pipeline_state = render::ShaderOverrideRegistry::get().resolve_d3d12_pipeline_state(pipeline_state);
-    render::ShaderOverrideRegistry::get().note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (!shader_registry.should_track_d3d12_pipelines()) {
+        original(command_list, pipeline_state);
+        return;
+    }
+
+    auto bound_pipeline_state = shader_registry.resolve_d3d12_pipeline_state(pipeline_state);
+    shader_registry.note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
     original(command_list, bound_pipeline_state);
 }
 

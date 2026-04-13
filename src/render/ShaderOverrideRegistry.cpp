@@ -24,6 +24,7 @@ using json = nlohmann::json;
 namespace {
 constexpr size_t MAX_RECENT_EVENTS = 64;
 constexpr auto AUTO_RELOAD_INTERVAL = std::chrono::milliseconds(1000);
+constexpr auto IDLE_AUTO_RELOAD_INTERVAL = std::chrono::milliseconds(30000);
 constexpr uint64_t MAX_PSO_BIND_CONTEXT_AGE_FRAMES = 2;
 constexpr size_t MAX_PSO_USAGE_ENTRIES = 8;
 
@@ -621,11 +622,29 @@ void ShaderOverrideRegistry::on_present(Framework&) {
     ++m_frame;
 
     const auto now = std::chrono::steady_clock::now();
-    if (m_force_reload || m_last_scan_time.time_since_epoch().count() == 0 || (now - m_last_scan_time) >= AUTO_RELOAD_INTERVAL) {
+    const auto full_tracking_active = should_track_d3d11_shaders() || should_track_d3d12_pipelines();
+    const auto reload_interval = full_tracking_active ? AUTO_RELOAD_INTERVAL : IDLE_AUTO_RELOAD_INTERVAL;
+
+    if (m_force_reload || m_last_scan_time.time_since_epoch().count() == 0 || (now - m_last_scan_time) >= reload_interval) {
         m_force_reload = false;
         m_last_scan_time = now;
         scan_override_directories();
     }
+}
+
+void ShaderOverrideRegistry::set_inspector_tracking_enabled(bool enabled) {
+    m_inspector_tracking_enabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool ShaderOverrideRegistry::should_track_d3d11_shaders() const {
+    return m_has_active_d3d11_overrides.load(std::memory_order_relaxed) ||
+        m_inspector_tracking_enabled.load(std::memory_order_relaxed);
+}
+
+bool ShaderOverrideRegistry::should_track_d3d12_pipelines() const {
+    return m_has_active_d3d12_overrides.load(std::memory_order_relaxed) ||
+        m_inspector_tracking_enabled.load(std::memory_order_relaxed) ||
+        m_capture_next_d3d12_change_hot_path.load(std::memory_order_relaxed);
 }
 
 void ShaderOverrideRegistry::request_reload() {
@@ -636,11 +655,13 @@ void ShaderOverrideRegistry::request_reload() {
 void ShaderOverrideRegistry::request_capture_next_d3d12_change() {
     std::scoped_lock _{m_mutex};
     m_capture_next_d3d12_change = true;
+    m_capture_next_d3d12_change_hot_path.store(true, std::memory_order_relaxed);
 }
 
 void ShaderOverrideRegistry::clear_captured_d3d12_change() {
     std::scoped_lock _{m_mutex};
     m_capture_next_d3d12_change = false;
+    m_capture_next_d3d12_change_hot_path.store(false, std::memory_order_relaxed);
     m_captured_d3d12_pair.reset();
 }
 
@@ -894,6 +915,10 @@ void ShaderOverrideRegistry::set_d3d11_create_callbacks(CreateVertexShaderFn cre
 }
 
 void ShaderOverrideRegistry::register_d3d11_shader_creation(Stage stage, ID3D11Device* device, IUnknown* shader, const void* bytecode, size_t bytecode_size) {
+    if (!should_track_d3d11_shaders()) {
+        return;
+    }
+
     if (shader == nullptr || bytecode == nullptr || bytecode_size == 0) {
         return;
     }
@@ -916,6 +941,10 @@ void ShaderOverrideRegistry::register_d3d11_shader_creation(Stage stage, ID3D11D
 }
 
 ID3D11VertexShader* ShaderOverrideRegistry::resolve_d3d11_vertex_shader(ID3D11Device* device, ID3D11VertexShader* shader) {
+    if (!should_track_d3d11_shaders()) {
+        return shader;
+    }
+
     std::scoped_lock _{m_mutex};
 
     if (shader == nullptr) {
@@ -938,6 +967,10 @@ ID3D11VertexShader* ShaderOverrideRegistry::resolve_d3d11_vertex_shader(ID3D11De
 }
 
 ID3D11PixelShader* ShaderOverrideRegistry::resolve_d3d11_pixel_shader(ID3D11Device* device, ID3D11PixelShader* shader) {
+    if (!should_track_d3d11_shaders()) {
+        return shader;
+    }
+
     std::scoped_lock _{m_mutex};
 
     if (shader == nullptr) {
@@ -960,6 +993,10 @@ ID3D11PixelShader* ShaderOverrideRegistry::resolve_d3d11_pixel_shader(ID3D11Devi
 }
 
 void ShaderOverrideRegistry::note_d3d11_shader_bound(Stage stage, IUnknown* original_shader, IUnknown* bound_shader) {
+    if (!should_track_d3d11_shaders()) {
+        return;
+    }
+
     std::scoped_lock _{m_mutex};
 
     BoundShaderInfo info{};
@@ -998,6 +1035,10 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
     ID3D12PipelineState* pipeline_state,
     const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc
 ) {
+    if (!should_track_d3d12_pipelines()) {
+        return;
+    }
+
     if (device == nullptr || pipeline_state == nullptr || desc == nullptr) {
         return;
     }
@@ -1074,6 +1115,10 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
     ID3D12PipelineState* pipeline_state,
     const D3D12_PIPELINE_STATE_STREAM_DESC* desc
 ) {
+    if (!should_track_d3d12_pipelines()) {
+        return;
+    }
+
     if (device == nullptr || pipeline_state == nullptr || desc == nullptr) {
         return;
     }
@@ -1129,6 +1174,10 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
 }
 
 ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state) {
+    if (!should_track_d3d12_pipelines()) {
+        return pipeline_state;
+    }
+
     std::scoped_lock _{m_mutex};
 
     if (pipeline_state == nullptr) {
@@ -1151,6 +1200,10 @@ ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12
 }
 
 void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState* original_pipeline_state, ID3D12PipelineState* bound_pipeline_state) {
+    if (!should_track_d3d12_pipelines()) {
+        return;
+    }
+
     std::scoped_lock _{m_mutex};
 
     auto fill_info = [this, original_pipeline_state, bound_pipeline_state](Stage stage) {
@@ -1239,6 +1292,7 @@ void ShaderOverrideRegistry::scan_override_directories() {
     }
 
     remove_deleted_entries(discovered_entries);
+    refresh_active_override_flags_locked();
 }
 
 void ShaderOverrideRegistry::scan_single_directory(const std::filesystem::path& dir, bool from_profile_dir) {
@@ -1466,6 +1520,26 @@ void ShaderOverrideRegistry::push_event(std::string message) {
     m_recent_events.emplace_back(std::move(message));
 }
 
+void ShaderOverrideRegistry::refresh_active_override_flags_locked() {
+    bool has_d3d11 = false;
+    bool has_d3d12 = false;
+
+    for (const auto& [_, entry] : m_overrides) {
+        if (!entry.enabled || !entry.compiled || !entry.apply_supported) {
+            continue;
+        }
+
+        if (entry.backend == Backend::D3D11) {
+            has_d3d11 = true;
+        } else if (entry.backend == Backend::D3D12) {
+            has_d3d12 = true;
+        }
+    }
+
+    m_has_active_d3d11_overrides.store(has_d3d11, std::memory_order_relaxed);
+    m_has_active_d3d12_overrides.store(has_d3d12, std::memory_order_relaxed);
+}
+
 void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairInfo& info) {
     ++m_total_d3d12_pair_samples;
 
@@ -1498,6 +1572,7 @@ void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairI
     if (pair_changed && m_capture_next_d3d12_change) {
         m_captured_d3d12_pair = pair;
         m_capture_next_d3d12_change = false;
+        m_capture_next_d3d12_change_hot_path.store(false, std::memory_order_relaxed);
 
         std::ostringstream ss{};
         ss << "Captured DX12 shader change at frame " << pair.frame;

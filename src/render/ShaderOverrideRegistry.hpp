@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -126,6 +127,9 @@ public:
     static ShaderOverrideRegistry& get();
 
     void on_present(Framework& framework);
+    void set_inspector_tracking_enabled(bool enabled);
+    bool should_track_d3d11_shaders() const;
+    bool should_track_d3d12_pipelines() const;
     void request_reload();
     void request_capture_next_d3d12_change();
     void clear_captured_d3d12_change();
@@ -288,6 +292,7 @@ private:
     std::optional<OverrideEntry> parse_manifest(const std::filesystem::path& manifest_path, bool from_profile_dir);
     bool compile_entry(OverrideEntry& entry, std::string& error_out);
     void push_event(std::string message);
+    void refresh_active_override_flags_locked();
     void update_d3d11_override_shader(D3D11ShaderRecord& record, ID3D11Device* device);
     void update_d3d12_override_pipeline_state(D3D12GraphicsPsoRecord& record);
     static bool copy_pipeline_state_stream(const D3D12_PIPELINE_STATE_STREAM_DESC* desc, OwnedD3D12PipelineStateStream& out, std::string& error_out);
@@ -322,5 +327,9 @@ private:
     uint64_t m_override_revision{};
     CreateVertexShaderFn m_create_vertex_shader{};
     CreatePixelShaderFn m_create_pixel_shader{};
+    std::atomic_bool m_has_active_d3d11_overrides{false};
+    std::atomic_bool m_has_active_d3d12_overrides{false};
+    std::atomic_bool m_inspector_tracking_enabled{false};
+    std::atomic_bool m_capture_next_d3d12_change_hot_path{false};
 };
 } // namespace render
