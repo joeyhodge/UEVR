@@ -908,16 +908,41 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             RECT source_rect{};
 
             const auto aspect_ratio = (float)m_real_backbuffer_size[0] / (float)m_real_backbuffer_size[1];
+            const auto full_source_width = (float)m_backbuffer_size[0];
+            const auto full_source_height = (float)m_backbuffer_size[1];
 
             const auto eye_width = ((float)m_backbuffer_size[0] / 2.0f);
-            const auto eye_height = (float)m_backbuffer_size[1];
+            const auto eye_height = full_source_height;
             const auto eye_aspect_ratio = eye_width / eye_height;
+            const auto full_source_aspect_ratio = full_source_width / full_source_height;
+            auto aspect_matches = [](float a, float b) {
+                const auto diff = a > b ? a - b : b - a;
+                return diff <= (b * 0.12f);
+            };
 
-            const auto original_centerw = (float)eye_width / 2.0f;
-            const auto original_centerh = (float)eye_height / 2.0f;
+            const bool use_full_source_for_spectator =
+                !vr->is_using_afr() &&
+                !vr->is_native_stereo_fix_enabled() &&
+                full_source_width > 0.0f &&
+                full_source_height > 0.0f &&
+                aspect_matches(full_source_aspect_ratio, aspect_ratio) &&
+                !aspect_matches(eye_aspect_ratio, aspect_ratio);
 
-            // left side of double wide tex only on AFR/synced
-            if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+            const auto source_width_for_aspect = use_full_source_for_spectator ? full_source_width : eye_width;
+            const auto source_height_for_aspect = full_source_height;
+            const auto source_aspect_ratio = use_full_source_for_spectator ? full_source_aspect_ratio : eye_aspect_ratio;
+
+            const auto original_centerw = source_width_for_aspect / 2.0f;
+            const auto original_centerh = source_height_for_aspect / 2.0f;
+
+            if (use_full_source_for_spectator) {
+                SPDLOG_INFO_ONCE("[VR] D3D11 spectator using full scene source rect [{}x{}] because it does not look double-wide", m_backbuffer_size[0], m_backbuffer_size[1]);
+                source_rect.left = 0;
+                source_rect.top = 0;
+                source_rect.right = (LONG)full_source_width;
+                source_rect.bottom = (LONG)full_source_height;
+            } else if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+                // left side of double wide tex only on AFR/synced
                 source_rect.left = 0;
                 source_rect.top = 0;
                 source_rect.right = (LONG)eye_width;
@@ -930,13 +955,13 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             }
 
             // Correct left/top/right/bottom to match the aspect ratio of the game
-            if (eye_aspect_ratio > aspect_ratio) {
-                const auto new_width = eye_height * aspect_ratio;
+            if (source_aspect_ratio > aspect_ratio) {
+                const auto new_width = source_height_for_aspect * aspect_ratio;
                 const auto new_centerw = new_width / 2.0f;
-                source_rect.left = (LONG)(original_centerw - new_centerw);
-                source_rect.right = (LONG)(original_centerw + new_centerw);
+                source_rect.left += (LONG)(original_centerw - new_centerw);
+                source_rect.right = source_rect.left + (LONG)new_width;
             } else {
-                const auto new_height = eye_width / aspect_ratio;
+                const auto new_height = source_width_for_aspect / aspect_ratio;
                 const auto new_centerh = new_height / 2.0f;
                 source_rect.top = (LONG)(original_centerh - new_centerh);
                 source_rect.bottom = (LONG)(original_centerh + new_centerh);
