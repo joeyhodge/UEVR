@@ -438,13 +438,15 @@ void RenderInspector::on_present() {
     }
 
     const auto resources_active = g_framework->is_sidebar_entry_selected("Resources");
+    const auto shader_tracking_active =
+        g_framework->is_sidebar_entry_selected("PSO Profiler") ||
+        g_framework->is_sidebar_entry_selected("Shaders");
     const auto dx12_diagnostics_active =
         g_framework->is_dx12() &&
-        (g_framework->is_sidebar_entry_selected("DX12 Diagnostics") ||
-         g_framework->is_sidebar_entry_selected("PSO Profiler") ||
-         g_framework->is_sidebar_entry_selected("Shaders"));
+        (g_framework->is_sidebar_entry_selected("DX12 Diagnostics") || shader_tracking_active);
 
     render::D3D12Diagnostics::get().set_enabled(dx12_diagnostics_active);
+    render::ShaderOverrideRegistry::get().set_inspector_tracking_enabled(shader_tracking_active);
     render::ShaderOverrideRegistry::get().on_present(*g_framework);
 
     if (resources_active) {

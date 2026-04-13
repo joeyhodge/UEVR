@@ -77,6 +77,37 @@ std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_
 std::unordered_set<uintptr_t> g_shf_logged_rtm_candidate_natives{};
 uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
+constexpr auto ENGINE_RENDER_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
+
+struct EngineRenderTimingStats {
+    uint64_t count{};
+    double total_ms{};
+    double max_ms{};
+
+    void add(std::chrono::steady_clock::duration duration) {
+        const auto ms = std::chrono::duration<double, std::milli>{duration}.count();
+        ++count;
+        total_ms += ms;
+        if (ms > max_ms) {
+            max_ms = ms;
+        }
+    }
+
+    double avg() const {
+        return count == 0 ? 0.0 : total_ms / (double)count;
+    }
+
+    void reset() {
+        count = 0;
+        total_ms = 0.0;
+        max_ms = 0.0;
+    }
+};
+
+EngineRenderTimingStats g_begin_render_viewfamily_real_timing{};
+EngineRenderTimingStats g_begin_render_viewfamily_timing{};
+EngineRenderTimingStats g_prerender_viewfamily_rt_timing{};
+std::chrono::steady_clock::time_point g_engine_render_last_log{};
 
 bool shf_is_current_game() {
     static const bool result = []() {
@@ -98,6 +129,55 @@ bool is_ue_5_7_or_newer() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50007;
+}
+
+void log_engine_render_timing_if_needed() {
+    if (!is_ue_5_7_or_newer()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (g_engine_render_last_log.time_since_epoch().count() == 0) {
+        g_engine_render_last_log = now;
+        return;
+    }
+
+    if (now - g_engine_render_last_log < ENGINE_RENDER_TIMING_LOG_INTERVAL) {
+        return;
+    }
+
+    if (g_begin_render_viewfamily_real_timing.count == 0 &&
+        g_begin_render_viewfamily_timing.count == 0 &&
+        g_prerender_viewfamily_rt_timing.count == 0)
+    {
+        g_engine_render_last_log = now;
+        return;
+    }
+
+    auto vr = VR::get();
+    const auto hmd_active = vr != nullptr && vr->is_hmd_active();
+    const auto native_stereo = vr != nullptr && vr->is_native_stereo_fix_enabled();
+
+    spdlog::info(
+        "[UE57][engine-render-profiler] begin_render_viewfamily_real avg={:.2f}ms max={:.2f}ms n={} begin_render_viewfamily avg={:.2f}ms max={:.2f}ms n={} prerender_viewfamily_rt avg={:.2f}ms max={:.2f}ms n={} hmd={} native_stereo={}",
+        g_begin_render_viewfamily_real_timing.avg(),
+        g_begin_render_viewfamily_real_timing.max_ms,
+        g_begin_render_viewfamily_real_timing.count,
+        g_begin_render_viewfamily_timing.avg(),
+        g_begin_render_viewfamily_timing.max_ms,
+        g_begin_render_viewfamily_timing.count,
+        g_prerender_viewfamily_rt_timing.avg(),
+        g_prerender_viewfamily_rt_timing.max_ms,
+        g_prerender_viewfamily_rt_timing.count,
+        hmd_active,
+        native_stereo
+    );
+
+    g_engine_render_last_log = now;
+    g_begin_render_viewfamily_real_timing.reset();
+    g_begin_render_viewfamily_timing.reset();
+    g_prerender_viewfamily_rt_timing.reset();
 }
 
 bool shf_is_valid_texture_with_vtable(FRHITexture2D* texture, void* required_vtable) {
@@ -3907,6 +3987,11 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
 
 void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family_candidate) {
     ZoneScopedN("BeginRenderViewFamilyReal");
+    const auto begin_render_viewfamily_real_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard begin_render_viewfamily_real_timing_guard{[&]() {
+        g_begin_render_viewfamily_real_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_real_start);
+        log_engine_render_timing_if_needed();
+    }};
 
     SPDLOG_INFO_ONCE("Called BeginRenderViewFamilyReal for the first time");
 
@@ -4052,6 +4137,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
 void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("BeginRenderViewFamily");
+    const auto begin_render_viewfamily_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard begin_render_viewfamily_timing_guard{[&]() {
+        g_begin_render_viewfamily_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_start);
+        log_engine_render_timing_if_needed();
+    }};
 
     SPDLOG_INFO_ONCE("Called BeginRenderViewFamily for the first time");
 
@@ -4268,6 +4358,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("PreRenderViewFamily_RenderThread");
+    const auto prerender_viewfamily_rt_start = std::chrono::steady_clock::now();
+    utility::ScopeGuard prerender_viewfamily_rt_timing_guard{[&]() {
+        g_prerender_viewfamily_rt_timing.add(std::chrono::steady_clock::now() - prerender_viewfamily_rt_start);
+        log_engine_render_timing_if_needed();
+    }};
 
     utility::ScopeGuard _{[]() {
         RenderThreadWorker::get().execute();

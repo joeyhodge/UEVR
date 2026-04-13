@@ -301,8 +301,9 @@ HRESULT WINAPI D3D11Hook::create_vertex_shader(
     auto original = d3d11->m_create_vertex_shader_hook->get_original<decltype(D3D11Hook::create_vertex_shader)*>();
     const auto result = original(device, bytecode, bytecode_size, linkage, shader);
 
-    if (SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
-        render::ShaderOverrideRegistry::get().register_d3d11_shader_creation(
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (shader_registry.should_track_d3d11_shaders() && SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
+        shader_registry.register_d3d11_shader_creation(
             render::ShaderOverrideRegistry::Stage::Vertex,
             device,
             *shader,
@@ -325,8 +326,9 @@ HRESULT WINAPI D3D11Hook::create_pixel_shader(
     auto original = d3d11->m_create_pixel_shader_hook->get_original<decltype(D3D11Hook::create_pixel_shader)*>();
     const auto result = original(device, bytecode, bytecode_size, linkage, shader);
 
-    if (SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
-        render::ShaderOverrideRegistry::get().register_d3d11_shader_creation(
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (shader_registry.should_track_d3d11_shaders() && SUCCEEDED(result) && shader != nullptr && *shader != nullptr) {
+        shader_registry.register_d3d11_shader_creation(
             render::ShaderOverrideRegistry::Stage::Pixel,
             device,
             *shader,
@@ -347,11 +349,17 @@ void WINAPI D3D11Hook::vs_set_shader(
     auto d3d11 = g_d3d11_hook;
     auto original = d3d11->m_vs_set_shader_hook->get_original<decltype(D3D11Hook::vs_set_shader)*>();
 
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (!shader_registry.should_track_d3d11_shaders()) {
+        original(context, shader, class_instances, num_class_instances);
+        return;
+    }
+
     Microsoft::WRL::ComPtr<ID3D11Device> device{};
     context->GetDevice(&device);
 
-    auto bound_shader = render::ShaderOverrideRegistry::get().resolve_d3d11_vertex_shader(device.Get(), shader);
-    render::ShaderOverrideRegistry::get().note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Vertex, shader, bound_shader);
+    auto bound_shader = shader_registry.resolve_d3d11_vertex_shader(device.Get(), shader);
+    shader_registry.note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Vertex, shader, bound_shader);
     original(context, bound_shader, class_instances, num_class_instances);
 }
 
@@ -364,11 +372,17 @@ void WINAPI D3D11Hook::ps_set_shader(
     auto d3d11 = g_d3d11_hook;
     auto original = d3d11->m_ps_set_shader_hook->get_original<decltype(D3D11Hook::ps_set_shader)*>();
 
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    if (!shader_registry.should_track_d3d11_shaders()) {
+        original(context, shader, class_instances, num_class_instances);
+        return;
+    }
+
     Microsoft::WRL::ComPtr<ID3D11Device> device{};
     context->GetDevice(&device);
 
-    auto bound_shader = render::ShaderOverrideRegistry::get().resolve_d3d11_pixel_shader(device.Get(), shader);
-    render::ShaderOverrideRegistry::get().note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Pixel, shader, bound_shader);
+    auto bound_shader = shader_registry.resolve_d3d11_pixel_shader(device.Get(), shader);
+    shader_registry.note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Pixel, shader, bound_shader);
     original(context, bound_shader, class_instances, num_class_instances);
 }
 
