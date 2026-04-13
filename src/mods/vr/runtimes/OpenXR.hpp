@@ -357,6 +357,8 @@ public:
     const char* last_begin_frame_caller{"none"};
     const char* last_frame_synced_clear_reason{"none"};
     std::chrono::steady_clock::time_point last_frame_synced_clear_time{};
+    uint32_t frame_synced_skip_streak{0};
+    std::chrono::steady_clock::time_point last_frame_synced_skip_log{};
 
     uint32_t frame_began_skip_streak{0};
     uint32_t forced_frame_recovery_count{0};

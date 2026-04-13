@@ -27,6 +27,7 @@ namespace runtimes {
 namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_STUCK_LOG_INTERVAL = std::chrono::seconds(1);
+constexpr auto FRAME_SYNCED_SKIP_LOG_INTERVAL = std::chrono::minutes(1);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
@@ -522,11 +523,24 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     this->frame_began_skip_streak = 0;
 
     if (this->frame_synced) {
-        spdlog::info("Frame already synchronized, skipping xrWaitFrame call.");
+        ++this->frame_synced_skip_streak;
+
+        const auto now = std::chrono::steady_clock::now();
+
+        if (this->last_frame_synced_skip_log.time_since_epoch().count() == 0 || now - this->last_frame_synced_skip_log >= FRAME_SYNCED_SKIP_LOG_INTERVAL) {
+            this->last_frame_synced_skip_log = now;
+            spdlog::info(
+                "[OpenXR] Frame already synchronized, skipping xrWaitFrame call. repeat_count={} session={} last_clear_reason={} last_begin_caller={}",
+                this->frame_synced_skip_streak,
+                this->get_session_state_string(this->session_state),
+                this->last_frame_synced_clear_reason,
+                this->last_begin_frame_caller
+            );
+            this->frame_synced_skip_streak = 0;
+        }
 
         return VRRuntime::Error::SUCCESS;
     }
-
     this->begin_profile();
 
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
