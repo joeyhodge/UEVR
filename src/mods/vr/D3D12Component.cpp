@@ -1471,6 +1471,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
             }
 
+            vr->m_openxr->refresh_stale_pose_before_submit(frame_count, "d3d12_submit");
+
             std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();

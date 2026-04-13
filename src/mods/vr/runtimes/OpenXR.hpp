@@ -2,6 +2,7 @@
 
 #include <unordered_set>
 #include <deque>
+#include <chrono>
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -151,6 +152,8 @@ public:
     void trace_begin_frame_request(const char* caller);
     void clear_frame_synced(const char* reason);
     bool should_trace_frame_flow() const;
+    int64_t get_pose_update_age_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const;
+    VRRuntime::Error refresh_stale_pose_before_submit(uint32_t frame_count, const char* caller);
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -347,6 +350,7 @@ public:
     const ModToggle::Ptr debug_skip_scene_copy{ ModToggle::create("OpenXR_DebugSkipSceneCopy", false) };
     const ModToggle::Ptr debug_skip_ui_copy{ ModToggle::create("OpenXR_DebugSkipUICopy", false) };
     const ModToggle::Ptr debug_disable_depth_submit{ ModToggle::create("OpenXR_DebugDisableDepthSubmit", false) };
+    const ModToggle::Ptr refresh_stale_pose_before_submit_enabled{ ModToggle::create("OpenXR_RefreshStalePoseBeforeSubmit", true) };
     bool resolution_scale_reconfigure_pending{false};
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
@@ -373,11 +377,26 @@ public:
     std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
     std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
     std::chrono::steady_clock::time_point last_frame_timing_log{};
+    std::chrono::steady_clock::time_point last_slow_pose_update_log{};
+    std::chrono::steady_clock::time_point last_stale_pose_submit_log{};
     FrameTimingStats wait_frame_timing{};
     FrameTimingStats begin_frame_timing{};
     FrameTimingStats end_frame_timing{};
     FrameTimingStats pose_update_timing{};
     std::array<FrameTimingStats, (size_t)SyncFrameCallsite::Count> wait_frame_callsite_timing{};
+    uint64_t pose_update_call_count{};
+    uint64_t pose_update_view_extension_count{};
+    uint64_t pose_update_non_view_extension_count{};
+    uint64_t stale_pose_refresh_attempt_count{};
+    uint64_t stale_pose_refresh_success_count{};
+    uint64_t stale_pose_refresh_failed_count{};
+    uint32_t last_pose_update_frame_count{};
+    bool last_pose_update_from_view_extensions{};
+    int64_t last_pose_update_result{};
+    double last_pose_update_ms{};
+    double last_pose_view_locate_ms{};
+    double last_pose_stage_locate_ms{};
+    double last_pose_space_locate_ms{};
     
     Mod::ValueList options{
         *resolution_scale,
@@ -387,6 +406,7 @@ public:
         *debug_skip_scene_copy,
         *debug_skip_ui_copy,
         *debug_disable_depth_submit,
+        *refresh_stale_pose_before_submit_enabled,
     };
 
     enum class SwapchainIndex {
