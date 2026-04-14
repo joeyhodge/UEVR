@@ -131,27 +131,31 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
-bool supports_ue57_dedicated_ui_target() {
-    return is_ue_5_7_or_newer() && g_framework != nullptr && (g_framework->is_dx12() || g_framework->is_dx11());
+bool is_ue57_dx11_backend() {
+    return is_ue_5_7_or_newer() && g_framework != nullptr && g_framework->is_dx11();
 }
 
-bool is_probable_ue57_texture_desc_prepare_function(uintptr_t fn) {
+bool supports_ue57_dedicated_ui_target() {
+    if (!is_ue_5_7_or_newer() || g_framework == nullptr) {
+        return false;
+    }
+
+    return g_framework->is_dx12() || g_framework->is_dx11();
+}
+
+bool is_probable_ue57_dx11_texture_desc_prepare_function(uintptr_t fn) {
     if (fn == 0 || IsBadReadPtr((void*)fn, 0x80)) {
         return false;
     }
 
     try {
-        // UE 5.7 D3D11 can place an FRHITextureCreateDesc prepare/copy helper
-        // immediately before the real CreateTexture wrapper. Calling that helper
-        // with the texture-create signature corrupts the output ref and crashes.
-        const auto reads_desc_format = utility::scan(fn, 0x100, "0F B6 42 32").has_value();
-        const auto advances_extended_desc = utility::scan(fn, 0x100, "48 83 C2 38").has_value();
-        const auto copies_desc_payload =
-            utility::scan(fn, 0x100, "0F 10 42 08").has_value() ||
-            utility::scan(fn, 0x100, "48 8B 02").has_value() ||
-            utility::scan(fn, 0x100, "48 8B 42 24").has_value();
-
-        return reads_desc_format && advances_extended_desc && copies_desc_payload;
+        // D3D11 UE 5.7 can put a descriptor prepare/copy helper before the real
+        // create wrapper. Calling that helper with the create signature is unsafe.
+        return utility::scan(fn, 0x100, "0F B6 42 32").has_value()
+            && utility::scan(fn, 0x100, "48 83 C2 38").has_value()
+            && (utility::scan(fn, 0x100, "0F 10 42 08").has_value() ||
+                utility::scan(fn, 0x100, "48 8B 02").has_value() ||
+                utility::scan(fn, 0x100, "48 8B 42 24").has_value());
     } catch (...) {
         return false;
     }
@@ -6898,7 +6902,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue_5_7_or_newer()) {
-        if (g_framework->is_dx12() && !g_hook->m_hooked_ue57_slate_elements_pass) {
+        if (!g_hook->m_hooked_ue57_slate_elements_pass) {
             g_hook->attempt_hook_ue57_slate_elements_pass();
         }
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
@@ -7765,10 +7769,8 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     } else {
         SPDLOG_INFO("Calling E8 version of texture create");
 
-        if (is_ue_5_7_or_newer() && g_framework->is_dx11() &&
-            rtm->is_using_texture_desc && rtm->is_version_greq_5_1)
-        {
-            if (is_probable_ue57_texture_desc_prepare_function(func_ptr)) {
+        if (is_ue57_dx11_backend() && rtm->is_using_texture_desc && rtm->is_version_greq_5_1) {
+            if (is_probable_ue57_dx11_texture_desc_prepare_function(func_ptr)) {
                 SPDLOG_WARN_ONCE("Skipping UE 5.7 D3D11 texture-desc prepare helper");
                 return;
             }
@@ -7776,7 +7778,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
             SPDLOG_WARN_ONCE("Skipping UE 5.7 D3D11 texture-create replay; RHICmdList texture initializers are not safe to duplicate here");
             return;
         }
-        
+
         // check if RCX is near the stack pointer
         // if it is then it's a different form of E8 call that takes the texture in the first parameter.
         if (ctx.rcx != 0 && std::abs((int64_t)ctx.rcx - (int64_t)ctx.rsp) <= 0x300) {
@@ -8562,31 +8564,27 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     auto existing_target = get_dedicated_ui_target();
 
     if (existing_target != nullptr && !IsBadReadPtr(existing_target, sizeof(void*))) {
-        bool existing_matches_extent = false;
+        if (g_framework->is_dx11()) {
+            auto* native_resource = (ID3D11Texture2D*)existing_target->get_native_resource();
 
-        try {
-            if (g_framework->is_dx12()) {
-                auto* native_resource = (ID3D12Resource*)existing_target->get_native_resource();
+            if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
+                D3D11_TEXTURE2D_DESC desc{};
+                native_resource->GetDesc(&desc);
 
-                if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
-                    const auto desc = native_resource->GetDesc();
-                    existing_matches_extent = desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height;
-                }
-            } else if (g_framework->is_dx11()) {
-                auto* native_resource = (ID3D11Texture2D*)existing_target->get_native_resource();
-
-                if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
-                    D3D11_TEXTURE2D_DESC desc{};
-                    native_resource->GetDesc(&desc);
-                    existing_matches_extent = desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height;
+                if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+                    return;
                 }
             }
-        } catch (...) {
-            existing_matches_extent = false;
-        }
+        } else {
+            auto* native_resource = (ID3D12Resource*)existing_target->get_native_resource();
 
-        if (existing_matches_extent) {
-            return;
+            if (native_resource != nullptr) {
+                const auto desc = native_resource->GetDesc();
+
+                if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+                    return;
+                }
+            }
         }
 
         SPDLOG_INFO("[VRRenderTargetManager] Recreating dedicated UE 5.7 UI target [{}x{}]", dedicated_ui_width, dedicated_ui_height);
@@ -9293,7 +9291,7 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             this->is_using_texture_desc = true;
             this->is_version_greq_5_1 = true;
 
-            if (is_ue_5_7_or_newer() && g_framework->is_dx11()) {
+            if (is_ue57_dx11_backend()) {
                 SPDLOG_WARN_ONCE("Skipping UE 5.7 D3D11 BufferedRT texture-create replay hook; using the engine allocation path");
                 this->set_up_texture_hook = true;
                 return false;
@@ -9328,6 +9326,12 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             "B2 2B", // mov dl, 2Bh, (seen in UE4.25 debug/dev builds)
             "BA 2F 00 00 00", // mov edx, 2Fh (seen in UE5 debug/dev builds)
             "F6 85 ? ? ? ? 05", // test byte ptr [rbp+?], 5 (seen in UE5 debug/dev builds)
+        };
+
+        auto is_probable_ue57_texture_desc_prepare = [](uintptr_t fn) {
+            return utility::scan(fn, 0x80, "0F B6 42 32").has_value()
+                && utility::scan(fn, 0x80, "48 8B 42 24").has_value()
+                && utility::scan(fn, 0x80, "48 83 C2 38").has_value();
         };
 
         struct DirectCallInfo {
@@ -9412,8 +9416,8 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (is_ue_5_7_or_newer() && g_framework->is_dx11() &&
-                            this->is_version_greq_5_1 && is_probable_ue57_texture_desc_prepare_function(fn))
+                        if (is_ue57_dx11_backend() && this->is_version_greq_5_1 &&
+                            is_probable_ue57_dx11_texture_desc_prepare_function(fn))
                         {
                             SPDLOG_INFO("Skipping UE 5.7 D3D11 texture-desc prepare helper at {:x}; continuing to the real texture-create wrapper", fn);
                             next_call_is_not_the_right_one = true;
@@ -9477,7 +9481,7 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                                 return false;
                             }
 
-                            if (is_probable_ue57_texture_desc_prepare_function(fn)) {
+                            if (is_probable_ue57_texture_desc_prepare(fn)) {
                                 SPDLOG_INFO("Detected UE 5.7 texture-desc prepare helper at {:x}, but failed to resolve the wrapper/finalize sequence", fn);
                             }
                         } else if (auto result = utility::scan(fn, 10, "41 B8 30 00 00 00"); result.has_value() && *result == fn) {

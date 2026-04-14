@@ -920,7 +920,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 return diff <= (b * 0.12f);
             };
 
-            const bool use_full_source_for_spectator =
+            const bool source_looks_mono =
                 !vr->is_using_afr() &&
                 !vr->is_native_stereo_fix_enabled() &&
                 full_source_width > 0.0f &&
@@ -928,14 +928,14 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 aspect_matches(full_source_aspect_ratio, aspect_ratio) &&
                 !aspect_matches(eye_aspect_ratio, aspect_ratio);
 
-            const auto source_width_for_aspect = use_full_source_for_spectator ? full_source_width : eye_width;
+            const auto source_width_for_aspect = source_looks_mono ? full_source_width : eye_width;
             const auto source_height_for_aspect = full_source_height;
-            const auto source_aspect_ratio = use_full_source_for_spectator ? full_source_aspect_ratio : eye_aspect_ratio;
+            const auto source_aspect_ratio = source_looks_mono ? full_source_aspect_ratio : eye_aspect_ratio;
 
             const auto original_centerw = source_width_for_aspect / 2.0f;
             const auto original_centerh = source_height_for_aspect / 2.0f;
 
-            if (use_full_source_for_spectator) {
+            if (source_looks_mono) {
                 SPDLOG_INFO_ONCE("[VR] D3D11 spectator using full scene source rect [{}x{}] because it does not look double-wide", m_backbuffer_size[0], m_backbuffer_size[1]);
                 source_rect.left = 0;
                 source_rect.top = 0;
