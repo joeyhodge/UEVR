@@ -5,6 +5,7 @@
 
 #include <asmjit/asmjit.h>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <mutex>
@@ -628,6 +629,34 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
 
     SPDLOG_WARN("[PostInitProperties] Could not validate the expected UObject::PostInitProperties slots on this build");
     return std::nullopt;
+}
+}
+
+namespace {
+bool is_writable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)mbi.BaseAddress;
+    if (address + size > base + mbi.RegionSize) {
+        return false;
+    }
+
+    if ((mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_READWRITE ||
+           protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READWRITE ||
+           protect == PAGE_EXECUTE_WRITECOPY;
 }
 }
 
@@ -1305,6 +1334,58 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
     SPDLOG_INFO("Hooked FSceneView::FSceneView constructor!");
 }
 
+bool FFakeStereoRenderingHook::hook_ue418_oculus_pixel_density_sink() {
+    if (m_ue418_oculus_pixel_density_hook) {
+        return true;
+    }
+
+    const auto engine_version = sdk::search_for_version(utility::get_executable()).value_or(L"");
+    if (!engine_version.starts_with(L"4.18")) {
+        return false;
+    }
+
+    // UE4.18 OculusHMD registers a CVar sink that can be called with stale
+    // settings after UEVR redirects stereo rendering. Guard the exact old sink
+    // before it writes through an invalid FSettings pointer.
+    const auto update_pixel_density = utility::scan(
+        utility::get_executable(),
+        "40 53 48 83 EC 20 80 B9 44 02 00 00 00 48 8B D9 75 ? 65 48 8B 04 25 58 00 00 00");
+
+    if (!update_pixel_density) {
+        return false;
+    }
+
+    SPDLOG_INFO("[UE4.18 Oculus] Hooking FSettings::UpdatePixelDensityFromScreenPercentage at {:x}", *update_pixel_density);
+    m_ue418_oculus_pixel_density_hook = safetyhook::create_inline((void*)*update_pixel_density, &ue418_oculus_update_pixel_density_hook);
+
+    if (!m_ue418_oculus_pixel_density_hook) {
+        SPDLOG_WARN("[UE4.18 Oculus] Failed to hook FSettings::UpdatePixelDensityFromScreenPercentage");
+        return false;
+    }
+
+    return true;
+}
+
+bool FFakeStereoRenderingHook::ue418_oculus_update_pixel_density_hook(void* settings) {
+    const auto settings_addr = (uintptr_t)settings;
+
+    // The CTTS crash passed a UEVRBackend code/shadow-vtable address as
+    // FSettings*. The original function writes floats at +0x238/+0x23c/+0x240.
+    if (!is_writable_process_range(settings_addr + 0x238, 0x10)) {
+        static std::atomic<uint32_t> suppressed_invalid_calls{};
+        const auto count = ++suppressed_invalid_calls;
+
+        if (count == 1 || (count % 120) == 0) {
+            SPDLOG_WARN("[UE4.18 Oculus] Suppressed invalid pixel-density sink call settings={:x} count={}",
+                        settings_addr, count);
+        }
+
+        return true;
+    }
+
+    return g_hook->m_ue418_oculus_pixel_density_hook.call<bool>(settings);
+}
+
 bool FFakeStereoRenderingHook::hook() {
     SPDLOG_INFO("Entering FFakeStereoRenderingHook::hook");
 
@@ -1313,6 +1394,8 @@ bool FFakeStereoRenderingHook::hook() {
     // Locking the hook monitor mutex stops our code from trying to re-hook DX11 and 12 after
     // Long pauses in code execution, due to us doing massive scans for code in this function.
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+
+    hook_ue418_oculus_pixel_density_sink();
 
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
