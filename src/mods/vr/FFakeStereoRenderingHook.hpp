@@ -526,6 +526,7 @@ private:
 
     bool patch_vtable_checks();
     bool attempt_runtime_inject_stereo();
+    bool hook_ue418_oculus_pixel_density_sink();
     void post_init_properties(uintptr_t localplayer);
     void try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source);
 
@@ -547,6 +548,7 @@ private:
     static void init_canvas(FFakeStereoRendering* stereo, sdk::FSceneView* view, UCanvas* canvas);
     static uint32_t get_desired_number_of_views_hook(FFakeStereoRendering* stereo, bool is_stereo_enabled);
     static EStereoscopicPass get_view_pass_for_index_hook(FFakeStereoRendering* stereo, bool stereo_requested, int32_t view_index);
+    static bool ue418_oculus_update_pixel_density_hook(void* settings);
 
     static IStereoRenderTargetManager* get_render_target_manager_hook(FFakeStereoRendering* stereo);
     static IStereoLayers* get_stereo_layers_hook(FFakeStereoRendering* stereo);
@@ -595,6 +597,7 @@ private:
     std::unique_ptr<PointerHook> m_calculate_stereo_view_offset_hook_ptr{}; // some games have a short jmp which isnt supported by safetyhook right now so we use pointerhook
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
+    safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};

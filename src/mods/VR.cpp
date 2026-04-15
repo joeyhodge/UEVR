@@ -26,6 +26,7 @@
 #include <sdk/UClass.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/TArray.hpp>
+#include <sdk/Utility.hpp>
 
 #include <tracy/Tracy.hpp>
 
@@ -61,6 +62,15 @@ struct GameFovResolver {
 };
 
 GameFovResolver g_game_fov_resolver{};
+
+bool is_ue418_executable() {
+    static const auto result = []() {
+        const auto version = sdk::search_for_version(utility::get_executable()).value_or(L"");
+        return version.starts_with(L"4.18");
+    }();
+
+    return result;
+}
 
 enum class ProSpiCameraPreset : int32_t {
     None = 0,
@@ -4205,12 +4215,18 @@ void VR::on_present() {
         // so the user doesn't have to click on the window to get input.
         if (m_first_submit) {
             m_first_submit = false;
+            const auto skip_initial_mouse_warp = is_ue418_executable() && should_skip_post_init_properties();
 
             // for some reason this doesn't work if called directly from here
             // so we have to do it in a separate thread
-            std::thread worker([]() {
-                g_framework->activate_window();
-                g_framework->set_mouse_to_center();
+            std::thread worker([skip_initial_mouse_warp]() {
+                if (!skip_initial_mouse_warp) {
+                    g_framework->activate_window();
+                    g_framework->set_mouse_to_center();
+                } else {
+                    spdlog::info("Skipping first-submit window activation/mouse recenter for UE4.18 SkipPostInitProperties compatibility");
+                }
+
                 spdlog::info("Finished first submit from worker thread!");
             });
             worker.detach();
