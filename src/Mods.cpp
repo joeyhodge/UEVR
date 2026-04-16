@@ -21,8 +21,8 @@ namespace {
 
 constexpr const char* UI_INVERT_ALPHA_KEY = "UI_InvertAlpha";
 const std::string UI_INVERT_ALPHA_KEY_STRING{UI_INVERT_ALPHA_KEY};
-constexpr float UI_INVERT_ALPHA_SLIDER_MIN = 0.01f;
-constexpr float UI_INVERT_ALPHA_SLIDER_MAX = 0.99f;
+constexpr float UI_INVERT_ALPHA_SLIDER_MIN = 0.0f;
+constexpr float UI_INVERT_ALPHA_SLIDER_MAX = 1.0f;
 
 std::string_view trim(std::string_view value) {
     while (!value.empty() && std::isspace(static_cast<unsigned char>(value.front()))) {
