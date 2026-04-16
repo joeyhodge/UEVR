@@ -53,6 +53,14 @@ int64_t elapsed_ms_since(std::chrono::steady_clock::time_point now, std::chrono:
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
 }
 
+bool is_older_frame_count(uint32_t frame_count, uint32_t current_frame_count) {
+    if (frame_count == 0 || current_frame_count == 0) {
+        return false;
+    }
+
+    return static_cast<int32_t>(frame_count - current_frame_count) < 0;
+}
+
 const char* sync_frame_callsite_name(VRRuntime::SyncFrameCallsite callsite) {
     switch (callsite) {
     case VRRuntime::SyncFrameCallsite::RuntimeFixFrame:
@@ -505,6 +513,34 @@ VRRuntime::Error OpenXR::refresh_stale_pose_before_submit(uint32_t frame_count, 
     const auto stale_threshold_ms = std::max<int64_t>(STALE_POSE_REFRESH_MIN_AGE_MS, predicted_period_ms * 3);
 
     if (pose_age_ms >= 0 && pose_age_ms < stale_threshold_ms) {
+        return VRRuntime::Error::SUCCESS;
+    }
+
+    uint32_t current_internal_frame_count{};
+    {
+        std::scoped_lock _{this->sync_assignment_mtx};
+        current_internal_frame_count = this->internal_frame_count;
+    }
+
+    if (is_older_frame_count(frame_count, current_internal_frame_count)) {
+        static auto last_stale_frame_skip_log = std::chrono::steady_clock::time_point{};
+
+        if (last_stale_frame_skip_log.time_since_epoch().count() == 0 ||
+            now - last_stale_frame_skip_log >= STALE_POSE_SUBMIT_LOG_INTERVAL)
+        {
+            last_stale_frame_skip_log = now;
+            spdlog::warn(
+                "[OpenXR][stale-pose] skipped refresh for older submit frame to avoid internal frame regression caller={} frame_count={} internal_frame_count={} pose_age_ms={} threshold_ms={} session={} shouldRender={}",
+                caller != nullptr ? caller : "unknown",
+                frame_count,
+                current_internal_frame_count,
+                pose_age_ms,
+                stale_threshold_ms,
+                this->get_session_state_string(this->session_state),
+                this->frame_state.shouldRender
+            );
+        }
+
         return VRRuntime::Error::SUCCESS;
     }
 
