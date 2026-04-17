@@ -78,6 +78,8 @@ std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_
 std::unordered_set<uintptr_t> g_shf_logged_rtm_candidate_natives{};
 uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
+std::mutex g_ue56_rt_probe_mutex{};
+std::unordered_map<uintptr_t, bool> g_ue56_native_resource_probe_cache{};
 constexpr auto ENGINE_RENDER_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 
 struct EngineRenderTimingStats {
@@ -130,6 +132,66 @@ bool is_ue_5_7_or_newer() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50007;
+}
+
+bool is_ue_5_6_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.6");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50006 && disk_version.dwFileVersionMS < 0x50007;
+}
+
+bool ue56_dx12_try_get_native_resource(FRHITexture2D* texture, const char* source, ID3D12Resource** out_native = nullptr, D3D12_RESOURCE_DESC* out_desc = nullptr) {
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    if (!is_ue_5_6_dx12_backend()) {
+        return true;
+    }
+
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.6][RT] {} candidate is not readable yet: tex={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        return false;
+    }
+
+    void* vtable = nullptr;
+
+    try {
+        vtable = *(void**)texture;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.6][RT] {} candidate has no readable vtable: tex={:x} vtable={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture, (uintptr_t)vtable);
+        return false;
+    }
+
+    // UE 5.6 can expose Slate/viewport FRHITexture candidates whose native-resource
+    // vtable discovery executes unsafe render-thread thunks. Do not probe them from
+    // the fallback path; let the D3D12 backbuffer/texture hooks discover the scene.
+    SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Refusing unsafe FRHITexture::GetNativeResource probing for {} candidate: tex={:x} vtable={:x}",
+        source != nullptr ? source : "<unknown>", (uintptr_t)texture, (uintptr_t)vtable);
+    {
+        std::scoped_lock _{g_ue56_rt_probe_mutex};
+        g_ue56_native_resource_probe_cache[(uintptr_t)vtable] = false;
+    }
+    return false;
 }
 
 bool is_ue57_dx11_backend() {
@@ -3020,23 +3082,33 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     ID3D12Resource* native_resource = nullptr;
+    D3D12_RESOURCE_DESC desc{};
 
-    try {
-        native_resource = (ID3D12Resource*)candidate->get_native_resource();
-    } catch (const std::exception& e) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", source, e.what());
-        return;
-    } catch (...) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource threw", source);
-        return;
+    if (is_ue_5_6_dx12_backend()) {
+        if (!ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc)) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
+            return;
+        }
+    } else {
+        try {
+            native_resource = (ID3D12Resource*)candidate->get_native_resource();
+        } catch (const std::exception& e) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", source, e.what());
+            return;
+        } catch (...) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource threw", source);
+            return;
+        }
+
+        if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
+            desc = native_resource->GetDesc();
+        }
     }
 
     if (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*))) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target from {} has no native D3D12 resource yet", source);
         return;
     }
-
-    const auto desc = native_resource->GetDesc();
 
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) {
         SPDLOG_WARNING_EVERY_N_SEC(2,
@@ -6945,9 +7017,22 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         slate_resource = slate_viewport->GetViewportRenderTargetTexture();
     }
 
+    bool skip_ue56_viewport_provider = false;
+
     if (viewport_info != nullptr && !is_ue_5_7_or_newer()) {
         const auto known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
-        const auto viewport_rt_provider = known_texture != nullptr ? viewport_info->get_rt_provider(known_texture) : nullptr;
+        const auto known_texture_is_safe =
+            known_texture == nullptr ||
+            !is_ue_5_6_dx12_backend() ||
+            ue56_dx12_try_get_native_resource(known_texture, "FViewportInfo known texture");
+
+        if (!known_texture_is_safe) {
+            skip_ue56_viewport_provider = true;
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[UE5.6][RT] Skipping FViewportInfo::GetRenderTargetProvider probing because the known texture cannot expose a stable native resource; deferring to D3D12 hooks");
+        }
+
+        const auto viewport_rt_provider = known_texture != nullptr && known_texture_is_safe ? viewport_info->get_rt_provider(known_texture) : nullptr;
 
         if (viewport_rt_provider != nullptr) {
             provider_resource = viewport_rt_provider->get_viewport_render_target_texture();
@@ -6973,15 +7058,32 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     const auto engine_texture = slate_resource->get_mutable_resource();
+    bool engine_texture_native_ok = true;
+    bool provider_texture_native_ok = true;
 
     if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
-        FRHITexture2D::set_vtable(*(void**)engine_texture);
-        g_hook->note_stable_slate_draw();
+        engine_texture_native_ok =
+            !is_ue_5_6_dx12_backend() ||
+            ue56_dx12_try_get_native_resource(engine_texture, "Slate viewport texture");
 
-        if (rtm->get_render_target() == nullptr) {
+        if (engine_texture_native_ok) {
+            FRHITexture2D::set_vtable(*(void**)engine_texture);
+            g_hook->note_stable_slate_draw();
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[UE5.6][RT] Not adopting Slate viewport texture because native-resource discovery failed; waiting for D3D12 texture/backbuffer hooks");
+        }
+
+        if (engine_texture_native_ok && rtm->get_render_target() == nullptr) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
             rtm->set_render_target(engine_texture);
         }
+    }
+
+    if (provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*))) {
+        provider_texture_native_ok =
+            !is_ue_5_6_dx12_backend() ||
+            ue56_dx12_try_get_native_resource(provider_texture, "Viewport RT provider texture");
     }
 
     if (is_ue_5_7_or_newer()) {
@@ -7007,19 +7109,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         ui_target = rtm->get_ui_target();
     } else {
-        if (ui_target == nullptr && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
+        if (ui_target == nullptr && provider_texture_native_ok && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
             ui_target = provider_texture;
             rtm->get_fallback_ui_target_ref() = provider_texture;
         }
 
-        if (ui_target == nullptr && engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*)) && engine_texture != render_target_fallback) {
+        if (ui_target == nullptr && engine_texture_native_ok && engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*)) && engine_texture != render_target_fallback) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as dedicated UI target fallback");
             ui_target = engine_texture;
             rtm->get_fallback_ui_target_ref() = engine_texture;
         }
 
-        if (ui_target == nullptr && render_target_fallback != nullptr) {
+        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
             ui_target = render_target_fallback;
             rtm->get_fallback_ui_target_ref() = render_target_fallback;
