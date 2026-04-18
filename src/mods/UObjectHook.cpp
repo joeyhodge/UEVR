@@ -1,3 +1,4 @@
+#include <atomic>
 #include <fstream>
 
 #include <utility/Logging.hpp>
@@ -25,6 +26,13 @@
 #include <sdk/FObjectProperty.hpp>
 #include <sdk/FArrayProperty.hpp>
 #include <sdk/UMotionControllerComponent.hpp>
+#include <sdk/Utility.hpp>
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
 
 #include "uobjecthook/SDKDumper.hpp"
 #include "VR.hpp"
@@ -36,6 +44,170 @@
 std::shared_ptr<UObjectHook>& UObjectHook::get() {
     static std::shared_ptr<UObjectHook> instance = std::make_shared<UObjectHook>();
     return instance;
+}
+
+namespace {
+bool is_ue_5_1_uobjecthook_guard_enabled() {
+    static const bool is_ue_5_1 = []() {
+        const auto disk_version = sdk::get_file_version_info();
+        const auto found_version = sdk::search_for_version(GetModuleHandleW(nullptr));
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
+
+    return is_ue_5_1;
+}
+
+bool is_readable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    const auto readable =
+        protect == PAGE_READONLY ||
+        protect == PAGE_READWRITE ||
+        protect == PAGE_WRITECOPY ||
+        protect == PAGE_EXECUTE_READ ||
+        protect == PAGE_EXECUTE_READWRITE ||
+        protect == PAGE_EXECUTE_WRITECOPY;
+
+    if (!readable) {
+        return false;
+    }
+
+    const auto region_start = (uintptr_t)mbi.BaseAddress;
+    const auto region_end = region_start + mbi.RegionSize;
+
+    return address >= region_start && address <= region_end && size <= (region_end - address);
+}
+
+bool safe_read_uintptr(uintptr_t address, uintptr_t& value) {
+    if (!is_readable_process_range(address, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    __try {
+        value = *(uintptr_t*)address;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
+}
+
+bool safe_read_u32(uintptr_t address, uint32_t& value) {
+    if (!is_readable_process_range(address, sizeof(uint32_t))) {
+        return false;
+    }
+
+    __try {
+        value = *(uint32_t*)address;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
+}
+
+bool has_plausible_fname(uintptr_t object_address) {
+    if (!is_readable_process_range(object_address + sdk::UObjectBase::get_fname_offset(), sizeof(sdk::FName))) {
+        return false;
+    }
+
+    uint32_t comparison_index{};
+
+    if (!safe_read_u32(object_address + sdk::UObjectBase::get_fname_offset(), comparison_index)) {
+        return false;
+    }
+
+    const auto block_index = comparison_index >> 16;
+
+    // Keep this intentionally loose; the goal is to reject obvious non-UObjects without
+    // depending on a specific game's name-pool limits during very early object startup.
+    return block_index < 0x4000;
+}
+
+bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_address = nullptr) {
+    const auto object_address = (uintptr_t)object;
+
+    if (!is_readable_process_range(object_address, sdk::UObjectBase::get_class_size())) {
+        return false;
+    }
+
+    uintptr_t object_vtable{};
+
+    if (!safe_read_uintptr(object_address, object_vtable) || !is_readable_process_range(object_vtable, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    uintptr_t class_ptr{};
+
+    if (!safe_read_uintptr(object_address + sdk::UObjectBase::get_class_private_offset(), class_ptr) || class_ptr == 0) {
+        return false;
+    }
+
+    if (!is_readable_process_range(class_ptr, sdk::UObjectBase::get_class_size())) {
+        return false;
+    }
+
+    uintptr_t class_vtable{};
+
+    if (!safe_read_uintptr(class_ptr, class_vtable) || !is_readable_process_range(class_vtable, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    uintptr_t class_class_ptr{};
+
+    if (!safe_read_uintptr(class_ptr + sdk::UObjectBase::get_class_private_offset(), class_class_ptr) || class_class_ptr == 0) {
+        return false;
+    }
+
+    if (!is_readable_process_range(class_class_ptr, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    if (!has_plausible_fname(object_address) || !has_plausible_fname(class_ptr)) {
+        return false;
+    }
+
+    if (class_address != nullptr) {
+        *class_address = class_ptr;
+    }
+
+    return true;
+}
+
+bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object) {
+    uintptr_t class_address{};
+
+    if (!is_probably_uobject_layout(object, &class_address)) {
+        return false;
+    }
+
+    const auto cls = (sdk::UObjectBase*)class_address;
+
+    if (hook.exists(cls)) {
+        return true;
+    }
+
+    return is_probably_uobject_layout(cls);
+}
 }
 
 UObjectHook::MotionControllerState::~MotionControllerState() {
@@ -418,6 +590,11 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
 }
 
 void UObjectHook::add_new_object(sdk::UObjectBase* object) {
+    if (is_ue_5_1_uobjecthook_guard_enabled() && !is_safe_uobject_candidate(*this, object)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping unsafe UE 5.1 UObject candidate {:x}", (uintptr_t)object);
+        return;
+    }
+
     std::unique_lock _{m_mutex};
     std::unique_ptr<MetaObject> meta_object{};
 
@@ -4059,25 +4236,60 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
     auto result = hook->m_add_object_hook.unsafe_call<void*>(rcx, rdx, r8, r9, stack1, stack2, stack3, stack4);
 
     {
-        static bool is_rcx = [&]() {
-            if (!IsBadReadPtr(rcx, sizeof(void*)) && 
-                !IsBadReadPtr(*(void**)rcx, sizeof(void*)) &&
-                !IsBadReadPtr(**(void***)rcx, sizeof(void*))) 
-            {
-                SPDLOG_INFO("[UObjectHook] RCX is UObjectBase*");
-                return true;
-            } else {
-                SPDLOG_INFO("[UObjectHook] RDX is UObjectBase*");
-                return false;
-            }
-        }();
-
         sdk::UObjectBase* obj = nullptr;
 
-        if (is_rcx) {
-            obj = (sdk::UObjectBase*)rcx;
+        if (is_ue_5_1_uobjecthook_guard_enabled()) {
+            static std::atomic<int> preferred_register{0}; // 0 unset, 1 RCX, 2 RDX
+            static std::atomic<int> logged_register{0};
+
+            const auto rcx_object = (sdk::UObjectBase*)rcx;
+            const auto rdx_object = (sdk::UObjectBase*)rdx;
+            const auto rcx_valid = is_safe_uobject_candidate(*hook, rcx_object);
+            const auto rdx_valid = is_safe_uobject_candidate(*hook, rdx_object);
+
+            if (rcx_valid || rdx_valid) {
+                const auto previous = preferred_register.load(std::memory_order_relaxed);
+                int selected_register{};
+
+                if (rcx_valid && rdx_valid) {
+                    selected_register = previous == 1 || previous == 2 ? previous : 2;
+                } else if (rcx_valid) {
+                    selected_register = 1;
+                } else {
+                    selected_register = 2;
+                }
+
+                preferred_register.store(selected_register, std::memory_order_relaxed);
+                obj = selected_register == 1 ? rcx_object : rdx_object;
+
+                const auto previous_logged = logged_register.exchange(selected_register, std::memory_order_relaxed);
+
+                if (previous_logged != selected_register) {
+                    SPDLOG_INFO("[UObjectHook] UE 5.1 AddObject selected {} as UObjectBase*", selected_register == 1 ? "RCX" : "RDX");
+                }
+            } else {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping AddObject call with no safe UE 5.1 UObject candidate (rcx={:x}, rdx={:x})", (uintptr_t)rcx, (uintptr_t)rdx);
+                return result;
+            }
         } else {
-            obj = (sdk::UObjectBase*)rdx;
+            static bool is_rcx = [&]() {
+                if (!IsBadReadPtr(rcx, sizeof(void*)) && 
+                    !IsBadReadPtr(*(void**)rcx, sizeof(void*)) &&
+                    !IsBadReadPtr(**(void***)rcx, sizeof(void*))) 
+                {
+                    SPDLOG_INFO("[UObjectHook] RCX is UObjectBase*");
+                    return true;
+                } else {
+                    SPDLOG_INFO("[UObjectHook] RDX is UObjectBase*");
+                    return false;
+                }
+            }();
+
+            if (is_rcx) {
+                obj = (sdk::UObjectBase*)rcx;
+            } else {
+                obj = (sdk::UObjectBase*)rdx;
+            }
         }
 
         ++hook->m_debug.constructor_calls;

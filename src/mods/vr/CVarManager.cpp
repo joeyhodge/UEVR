@@ -1,17 +1,20 @@
 #define NOMINMAX
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
 
 #include <utility/Config.hpp>
+#include <utility/Module.hpp>
 #include <utility/String.hpp>
 
 #include <sdk/CVar.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/ConsoleManager.hpp>
 #include <sdk/UGameplayStatics.hpp>
+#include <sdk/Utility.hpp>
 
 #include "Framework.hpp"
 
@@ -22,6 +25,153 @@
 constexpr std::string_view cvars_standard_txt_name = "cvars_standard.txt";
 constexpr std::string_view cvars_data_txt_name = "cvars_data.txt";
 constexpr std::string_view user_script_txt_name = "user_script.txt";
+
+namespace {
+bool is_ue_5_1_dx12_backend_for_cvars() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const bool is_ue_5_1 = []() {
+        const auto found_version = sdk::search_for_version(utility::get_executable());
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
+
+    return is_ue_5_1;
+}
+
+bool is_stalker2_current_game_for_cvars() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
+    if (!is_ue_5_1_dx12_backend_for_cvars() || !is_stalker2_current_game_for_cvars()) {
+        return true;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+
+    if (console_manager == nullptr) {
+        return false;
+    }
+
+    const auto has_fsr3_plugin_cvars =
+        console_manager->find(L"r.FidelityFX.FSR3.Enabled") != nullptr ||
+        console_manager->find(L"r.FidelityFX.FI.OverrideSwapChainDX12") != nullptr;
+
+    if (!has_fsr3_plugin_cvars) {
+        return false;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        const wchar_t* value;
+    };
+
+    // Stalker2's current UE 5.1 build leaves FidelityFX frame interpolation
+    // swapchain hooks enabled by project config even when FSR3 itself is off.
+    // Keep this pass narrowly gated because these settings affect core DX12 work.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.AllowAsyncWorkloads", L"0"},
+        ForcedCVar{L"r.FidelityFX.FSR3.Enabled", L"0"},
+        ForcedCVar{L"r.FidelityFX.FSR3.UseNativeDX12", L"0"},
+        ForcedCVar{L"r.FidelityFX.FSR3.UseRHI", L"0"},
+        ForcedCVar{L"r.D3D12.AllowPayloadMerge", L"0"},
+        ForcedCVar{L"d3d12.BatchResourceBarriers", L"0"},
+        ForcedCVar{L"r.D3D12.AllowAsyncCompute", L"0"},
+        ForcedCVar{L"r.RDG.AsyncCompute", L"0"},
+        ForcedCVar{L"r.Nanite.Streaming.AsyncCompute", L"0"},
+        ForcedCVar{L"r.TSR.WaveOps", L"0"},
+        ForcedCVar{L"r.Lumen.Reflections.TraceCompaction.WaveOps", L"0"},
+        ForcedCVar{L"r.Lumen.ScreenProbeGather.Filtering.WaveOps", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceField", L"0"},
+        ForcedCVar{L"r.AOUpdateGlobalDistanceField", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldPartialUpdates", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldStaggeredUpdates", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldClipmapUpdatesPerFrame", L"0"},
+        ForcedCVar{L"r.DistanceFields", L"0"},
+        ForcedCVar{L"r.GenerateMeshDistanceFields", L"0"},
+        ForcedCVar{L"r.DistanceFields.ParallelUpdate", L"0"},
+        ForcedCVar{L"r.DistanceFields.DefragmentIndirectionAtlas", L"0"},
+        ForcedCVar{L"r.DistanceFields.UseApproximateGlobalDistanceFields", L"0"},
+        ForcedCVar{L"r.Lumen.Reflections.TraceGlobalSDF", L"0"},
+        ForcedCVar{L"fx.Niagara.AsyncGpuTrace.GlobalSdfEnabled", L"0"},
+        ForcedCVar{L"r.D3D12.NvAfterMath", L"0"},
+        ForcedCVar{L"r.GPUCrashDebugging.Aftermath.Markers", L"0"},
+        ForcedCVar{L"r.AllowOcclusionQueries", L"0"},
+        ForcedCVar{L"r.AllowPreciseQueries", L"0"},
+        ForcedCVar{L"r.AllowSubPrimitiveQueries", L"0"},
+    };
+
+    int found{};
+    int set_ok{};
+    int set_failed{};
+    int missing{};
+
+    for (const auto& forced : forced_cvars) {
+        auto object = console_manager->find(forced.name);
+
+        if (object == nullptr) {
+            ++missing;
+            SPDLOG_INFO("[UE5.1][DX12] cvar missing: {}", utility::narrow(forced.name));
+            continue;
+        }
+
+        ++found;
+        auto variable = (sdk::IConsoleVariable*)object;
+
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            ok = variable->Set(forced.value);
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++set_ok;
+        } else {
+            ++set_failed;
+        }
+
+        SPDLOG_INFO(
+            "[UE5.1][DX12] forced {}: before={} requested={} after={} ok={}",
+            utility::narrow(forced.name),
+            before,
+            utility::narrow(forced.value),
+            after,
+            ok);
+    }
+
+    SPDLOG_INFO(
+        "[UE5.1][DX12] runtime cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
+        attempt,
+        found,
+        missing,
+        set_ok,
+        set_failed);
+
+    return true;
+}
+}
 
 CVarManager::CVarManager() {
     ZoneScopedN(__FUNCTION__);
@@ -116,6 +266,19 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     if (m_should_execute_console_script) {
         execute_console_script(engine, user_script_txt_name.data());
         m_should_execute_console_script = false;
+        m_ue51_fsr3_runtime_cvars_done = false;
+        m_ue51_fsr3_runtime_cvar_attempts = 0;
+    }
+
+    if (!m_ue51_fsr3_runtime_cvars_done) {
+        ++m_ue51_fsr3_runtime_cvar_attempts;
+
+        if (force_ue51_fsr3_runtime_cvars_once(m_ue51_fsr3_runtime_cvar_attempts)) {
+            m_ue51_fsr3_runtime_cvars_done = true;
+        } else if (m_ue51_fsr3_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN("[UE5.1][DX12] runtime cvars were not found after {} attempts; giving up", m_ue51_fsr3_runtime_cvar_attempts);
+            m_ue51_fsr3_runtime_cvars_done = true;
+        }
     }
 }
 
