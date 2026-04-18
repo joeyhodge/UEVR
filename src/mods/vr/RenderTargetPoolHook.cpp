@@ -5,6 +5,7 @@
 
 #include <sdk/FRenderTargetPool.hpp>
 #include <sdk/EngineModule.hpp>
+#include <sdk/Utility.hpp>
 #include <sdk/threading/RHIThreadWorker.hpp>
 
 #include "../VR.hpp"
@@ -12,6 +13,24 @@
 #include "RenderTargetPoolHook.hpp"
 
 RenderTargetPoolHook* g_hook{nullptr};
+
+namespace {
+bool is_ue_5_1() {
+    static const bool result = []() {
+        const auto found_version = sdk::search_for_version(GetModuleHandleW(nullptr));
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
+
+    return result;
+}
+}
 
 RenderTargetPoolHook::RenderTargetPoolHook() {
     g_hook = this;
@@ -33,6 +52,11 @@ bool RenderTargetPoolHook::hook() {
 
     const auto is_ue5 = VR::get()->get_fake_stereo_hook()->has_double_precision();
     const auto find_free_element = sdk::FRenderTargetPool::get_find_free_element_fn(is_ue5);
+
+    if (is_ue5 && is_ue_5_1()) {
+        SPDLOG_WARN("[UE5.1] Skipping RenderTargetPool::FindFreeElement hook; UE 5.1 has multiple FindFreeElement overloads and depth pass-through can crash during level load");
+        return false;
+    }
 
     if (!find_free_element) {
         SPDLOG_ERROR("Failed to find FRenderTargetPool::FindFreeElement, cannot hook");
@@ -121,7 +145,7 @@ bool RenderTargetPoolHook::find_free_element_hook_ue5(
 {
     SPDLOG_INFO_ONCE("FRenderTargetPool::FindFreeElement (UE5) called for the first time!");
 
-    const auto result = g_hook->m_find_free_element_hook.call<bool>(pool, desc, out, name, a6, a7, a8, a9, a10);
+    const auto result = g_hook->m_find_free_element_hook.call<bool>(pool, desc, out, name, a5, a6, a7, a8, a9, a10);
 
     SPDLOG_INFO_ONCE("Finished calling FRenderTargetPool::FindFreeElement! (UE5)");
 
