@@ -2,6 +2,7 @@
 #include <fstream>
 
 #include <utility/Logging.hpp>
+#include <utility/Module.hpp>
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
 
@@ -61,6 +62,19 @@ bool is_ue_5_1_uobjecthook_guard_enabled() {
     }();
 
     return is_ue_5_1;
+}
+
+bool is_avowed_uobjecthook_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool use_dynamic_uobjecthook_candidate_guard() {
+    return is_ue_5_1_uobjecthook_guard_enabled() || is_avowed_uobjecthook_guard_enabled();
 }
 
 bool is_readable_process_range(uintptr_t address, size_t size) {
@@ -143,6 +157,46 @@ bool has_plausible_fname(uintptr_t object_address) {
     return block_index < 0x4000;
 }
 
+bool is_uobject_array_member(sdk::UObjectBase* object) {
+    const auto object_address = (uintptr_t)object;
+
+    if (object_address == 0) {
+        return false;
+    }
+
+    uint32_t internal_index{};
+
+    if (!safe_read_u32(object_address + sdk::UObjectBase::get_internal_index_offset(), internal_index)) {
+        return false;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
+        return false;
+    }
+
+    auto item = object_array->get_object((int32_t)internal_index);
+
+    if (item == nullptr || !is_readable_process_range((uintptr_t)item, sizeof(sdk::FUObjectItem))) {
+        return false;
+    }
+
+    uintptr_t item_object{};
+
+    if (!safe_read_uintptr((uintptr_t)item + sdk::FUObjectArray::get_item_object_offset(), item_object)) {
+        return false;
+    }
+
+    return item_object == object_address;
+}
+
 bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_address = nullptr) {
     const auto object_address = (uintptr_t)object;
 
@@ -193,10 +247,14 @@ bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_addre
     return true;
 }
 
-bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object) {
+bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object, bool require_array_member = false) {
     uintptr_t class_address{};
 
     if (!is_probably_uobject_layout(object, &class_address)) {
+        return false;
+    }
+
+    if (require_array_member && !is_uobject_array_member(object)) {
         return false;
     }
 
@@ -590,8 +648,10 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
 }
 
 void UObjectHook::add_new_object(sdk::UObjectBase* object) {
-    if (is_ue_5_1_uobjecthook_guard_enabled() && !is_safe_uobject_candidate(*this, object)) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping unsafe UE 5.1 UObject candidate {:x}", (uintptr_t)object);
+    const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
+
+    if (use_dynamic_uobjecthook_candidate_guard() && !is_safe_uobject_candidate(*this, object, require_array_member)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping unsafe UObject candidate {:x}", (uintptr_t)object);
         return;
     }
 
@@ -4238,14 +4298,15 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
     {
         sdk::UObjectBase* obj = nullptr;
 
-        if (is_ue_5_1_uobjecthook_guard_enabled()) {
+        if (use_dynamic_uobjecthook_candidate_guard()) {
             static std::atomic<int> preferred_register{0}; // 0 unset, 1 RCX, 2 RDX
             static std::atomic<int> logged_register{0};
 
             const auto rcx_object = (sdk::UObjectBase*)rcx;
             const auto rdx_object = (sdk::UObjectBase*)rdx;
-            const auto rcx_valid = is_safe_uobject_candidate(*hook, rcx_object);
-            const auto rdx_valid = is_safe_uobject_candidate(*hook, rdx_object);
+            const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
+            const auto rcx_valid = is_safe_uobject_candidate(*hook, rcx_object, require_array_member);
+            const auto rdx_valid = is_safe_uobject_candidate(*hook, rdx_object, require_array_member);
 
             if (rcx_valid || rdx_valid) {
                 const auto previous = preferred_register.load(std::memory_order_relaxed);
@@ -4265,10 +4326,10 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
                 const auto previous_logged = logged_register.exchange(selected_register, std::memory_order_relaxed);
 
                 if (previous_logged != selected_register) {
-                    SPDLOG_INFO("[UObjectHook] UE 5.1 AddObject selected {} as UObjectBase*", selected_register == 1 ? "RCX" : "RDX");
+                    SPDLOG_INFO("[UObjectHook] Guarded AddObject selected {} as UObjectBase*", selected_register == 1 ? "RCX" : "RDX");
                 }
             } else {
-                SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping AddObject call with no safe UE 5.1 UObject candidate (rcx={:x}, rdx={:x})", (uintptr_t)rcx, (uintptr_t)rdx);
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping AddObject call with no safe UObject candidate (rcx={:x}, rdx={:x})", (uintptr_t)rcx, (uintptr_t)rdx);
                 return result;
             }
         } else {
