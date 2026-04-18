@@ -837,6 +837,24 @@ bool is_shf_executable() {
     return is_shf;
 }
 
+bool is_avowed_executable() {
+    static const bool is_avowed = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"avowed-win64-shipping") != std::wstring::npos;
+    }();
+
+    return is_avowed;
+}
+
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
     auto value_lower = std::wstring{value};
     auto needle_lower = std::wstring{needle};
@@ -1093,6 +1111,19 @@ ShfAuto2DDecision evaluate_shf_auto_2d(sdk::UGameEngine* engine) {
     decision.should_force = true;
     return decision;
 }
+}
+
+bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
+    if (!is_avowed_executable() || !m_native_stereo_fix->value()) {
+        return false;
+    }
+
+    if (m_rendering_method->value() != RenderingMethod::SYNCHRONIZED) {
+        return false;
+    }
+
+    SPDLOG_INFO_ONCE("[Avowed][NativeStereoFix] Ignoring Native Stereo Fix while Synced Sequential rendering is active");
+    return true;
 }
 
 // Called when the mod is initialized

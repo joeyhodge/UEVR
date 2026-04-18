@@ -4,6 +4,7 @@
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -78,6 +79,25 @@ std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_
 std::unordered_set<uintptr_t> g_shf_logged_rtm_candidate_natives{};
 uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
+
+constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
+constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
+constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
+
+struct AvowedNativeFixGateState {
+    uintptr_t scene{};
+    uintptr_t render_target{};
+    uintptr_t scene_capture_render_target{};
+    uintptr_t scene_capture_native{};
+    std::chrono::steady_clock::time_point last_update{};
+    std::chrono::steady_clock::time_point hold_until{};
+    uint32_t stable_frames{};
+    bool ready{};
+    bool has_baseline{};
+};
+
+std::mutex g_avowed_native_fix_gate_mutex{};
+AvowedNativeFixGateState g_avowed_native_fix_gate{};
 std::mutex g_ue56_rt_probe_mutex{};
 std::unordered_map<uintptr_t, bool> g_ue56_native_resource_probe_cache{};
 
@@ -152,6 +172,172 @@ bool avowed_is_current_game() {
     }();
 
     return result;
+}
+
+void avowed_native_fix_gate_reset(const char* reason) {
+    if (!avowed_is_current_game()) {
+        return;
+    }
+
+    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
+
+    if (g_avowed_native_fix_gate.has_baseline || g_avowed_native_fix_gate.ready || g_avowed_native_fix_gate.stable_frames != 0) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Resetting render transition gate: {}",
+            reason != nullptr ? reason : "<unknown>");
+    }
+
+    g_avowed_native_fix_gate = {};
+}
+
+uintptr_t avowed_try_get_native_resource(FRHITexture2D* texture) {
+    if (!avowed_is_current_game() || texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return 0;
+    }
+
+    try {
+        const auto native = texture->get_native_resource();
+
+        if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
+            return 0;
+        }
+
+        return (uintptr_t)native;
+    } catch (...) {
+        return 0;
+    }
+}
+
+bool avowed_native_fix_gate_update(
+    uintptr_t scene,
+    uintptr_t render_target,
+    uintptr_t scene_capture_render_target,
+    uintptr_t scene_capture_native,
+    bool prerequisites_ready,
+    uint32_t* out_stable_frames = nullptr)
+{
+    if (!avowed_is_current_game()) {
+        return true;
+    }
+
+    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
+
+    if (out_stable_frames != nullptr) {
+        *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (g_avowed_native_fix_gate.last_update.time_since_epoch().count() != 0) {
+        const auto render_gap = now - g_avowed_native_fix_gate.last_update;
+
+        if (render_gap > AVOWED_NATIVE_FIX_RENDER_GAP) {
+            g_avowed_native_fix_gate.ready = false;
+            g_avowed_native_fix_gate.stable_frames = 0;
+            g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety",
+                std::chrono::duration<double, std::milli>(render_gap).count());
+        }
+    }
+
+    g_avowed_native_fix_gate.last_update = now;
+
+    if (!prerequisites_ready || scene == 0 || render_target == 0 || scene_capture_render_target == 0) {
+        if (g_avowed_native_fix_gate.has_baseline || g_avowed_native_fix_gate.ready || g_avowed_native_fix_gate.stable_frames != 0) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Avowed][NativeStereoFix] Holding one view while render targets are unavailable scene={:x} target={:x} capture_rt={:x} capture_native={:x} prereqs={}",
+                scene,
+                render_target,
+                scene_capture_render_target,
+                scene_capture_native,
+                prerequisites_ready);
+        }
+
+        g_avowed_native_fix_gate = {};
+        return false;
+    }
+
+    const auto baseline_changed =
+        !g_avowed_native_fix_gate.has_baseline ||
+        g_avowed_native_fix_gate.scene != scene ||
+        g_avowed_native_fix_gate.render_target != render_target ||
+        g_avowed_native_fix_gate.scene_capture_render_target != scene_capture_render_target ||
+        g_avowed_native_fix_gate.scene_capture_native != scene_capture_native;
+
+    if (baseline_changed) {
+        g_avowed_native_fix_gate.scene = scene;
+        g_avowed_native_fix_gate.render_target = render_target;
+        g_avowed_native_fix_gate.scene_capture_render_target = scene_capture_render_target;
+        g_avowed_native_fix_gate.scene_capture_native = scene_capture_native;
+        g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+        g_avowed_native_fix_gate.stable_frames = 0;
+        g_avowed_native_fix_gate.ready = false;
+        g_avowed_native_fix_gate.has_baseline = true;
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x}",
+            scene,
+            render_target,
+            scene_capture_render_target,
+            scene_capture_native);
+
+        return false;
+    }
+
+    if (g_avowed_native_fix_gate.hold_until > now) {
+        if (out_stable_frames != nullptr) {
+            *out_stable_frames = 0;
+        }
+
+        g_avowed_native_fix_gate.ready = false;
+        g_avowed_native_fix_gate.stable_frames = 0;
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Holding one view during transition grace window remaining={:.1f}s",
+            std::chrono::duration<double>(g_avowed_native_fix_gate.hold_until - now).count());
+
+        return false;
+    }
+
+    if (!g_avowed_native_fix_gate.ready) {
+        if (g_avowed_native_fix_gate.stable_frames < AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+            ++g_avowed_native_fix_gate.stable_frames;
+        }
+
+        if (out_stable_frames != nullptr) {
+            *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+        }
+
+        if (g_avowed_native_fix_gate.stable_frames >= AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+            g_avowed_native_fix_gate.ready = true;
+            SPDLOG_INFO(
+                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix",
+                g_avowed_native_fix_gate.stable_frames);
+        }
+    }
+
+    return g_avowed_native_fix_gate.ready;
+}
+
+bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr) {
+    if (!avowed_is_current_game()) {
+        return true;
+    }
+
+    std::scoped_lock _{g_avowed_native_fix_gate_mutex};
+
+    if (out_stable_frames != nullptr) {
+        *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+    }
+
+    return g_avowed_native_fix_gate.ready;
 }
 
 bool is_ue_5_7_or_newer() {
@@ -4504,6 +4690,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     auto rtm = g_hook->get_render_target_manager();
 
     if (!vr->is_hmd_active() || !vr->is_native_stereo_fix_enabled()) {
+        avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
         rtm->destroy_scene_capture();
 
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
@@ -4544,20 +4731,31 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto rt = rtm->get_scene_capture_utexture();
     const auto rtrsrc = rt != nullptr ? (sdk::FTextureRenderTargetResource*)rt->get_resource() : nullptr;
     const auto rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
+    const auto scene_capture_rhi = rtm->get_scene_capture_render_target();
+    const auto scene_capture_native = avowed_try_get_native_resource(scene_capture_rhi);
 
     if (avowed_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[Avowed][NativeStereoFix] BeginRenderViewFamilyReal: uses_tarrayview={} views={} scene_utexture={} resource={} render_target={} fixed_localplayer={}",
+            "[Avowed][NativeStereoFix] BeginRenderViewFamilyReal: uses_tarrayview={} views={} scene_utexture={} resource={} render_target={} capture_rhi={:x} capture_native={:x} fixed_localplayer={}",
             uses_tarrayview,
             views.count,
             rt != nullptr,
             rtrsrc != nullptr,
             rtfrt != nullptr,
+            (uintptr_t)scene_capture_rhi,
+            scene_capture_native,
             g_hook->m_fixed_localplayer_view_count);
     }
 
     if (rtfrt == nullptr) {
+        avowed_native_fix_gate_update(
+            (uintptr_t)view_family->get_scene_interface(),
+            0,
+            (uintptr_t)scene_capture_rhi,
+            scene_capture_native,
+            false);
+
         // This is fine to call constantly because we use an in-flight render target
         // that gets unset after the texture is fully created. This function exits early otherwise.
         rtm->create_scene_capture();
@@ -4568,36 +4766,63 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     auto view_family_target = view_family->get_render_target();
+    const auto view_family_scene = view_family->get_scene_interface();
 
     if (view_family_target == nullptr) {
+        avowed_native_fix_gate_update(
+            (uintptr_t)view_family_scene,
+            0,
+            (uintptr_t)scene_capture_rhi,
+            scene_capture_native,
+            false);
+
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
+    uint32_t avowed_gate_stable_frames = 0;
+    const auto avowed_gate_ready = avowed_native_fix_gate_update(
+        (uintptr_t)view_family_scene,
+        (uintptr_t)view_family_target,
+        (uintptr_t)scene_capture_rhi,
+        scene_capture_native,
+        rtfrt != nullptr && scene_capture_rhi != nullptr,
+        &avowed_gate_stable_frames);
+
     bool wants_swap = false;
     if (views.count > 1) {
         views.count = 1;
-        wants_swap = true;
+        wants_swap = !avowed_is_current_game() || avowed_gate_ready;
 
-        auto runtime = vr->get_runtime();
-        const auto frame_count = runtime->internal_frame_count;
+        if (avowed_is_current_game() && !avowed_gate_ready) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Avowed][NativeStereoFix] Suppressing right-eye pass during render transition stabilization stable={}/{}",
+                avowed_gate_stable_frames,
+                AVOWED_NATIVE_FIX_STABLE_FRAMES);
+        }
 
-        // We need to clone the VR state from last frame to this frame
-        if (runtime->is_openxr()) {
-            auto openxr = (runtimes::OpenXR*)runtime;
-            std::scoped_lock __{ openxr->sync_assignment_mtx };
+        if (wants_swap) {
+            auto runtime = vr->get_runtime();
+            const auto frame_count = runtime->internal_frame_count;
 
-            const auto last_frame = (frame_count) % runtimes::OpenXR::QUEUE_SIZE;
-            const auto now_frame = (frame_count + 1) % runtimes::OpenXR::QUEUE_SIZE;
-            openxr->pipeline_states[now_frame] = openxr->pipeline_states[last_frame];
-            openxr->pipeline_states[now_frame].frame_count = now_frame;
-        } else {
-            auto openvr = (runtimes::OpenVR*)runtime;
-            std::unique_lock __{ openvr->pose_mtx };
+            // We need to clone the VR state from last frame to this frame
+            if (runtime->is_openxr()) {
+                auto openxr = (runtimes::OpenXR*)runtime;
+                std::scoped_lock __{ openxr->sync_assignment_mtx };
 
-            const auto last_frame = (frame_count) % openvr->pose_queue.size();
-            const auto now_frame = (frame_count + 1) % openvr->pose_queue.size();
-            openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
+                const auto last_frame = (frame_count) % runtimes::OpenXR::QUEUE_SIZE;
+                const auto now_frame = (frame_count + 1) % runtimes::OpenXR::QUEUE_SIZE;
+                openxr->pipeline_states[now_frame] = openxr->pipeline_states[last_frame];
+                openxr->pipeline_states[now_frame].frame_count = now_frame;
+            } else {
+                auto openvr = (runtimes::OpenVR*)runtime;
+                std::unique_lock __{ openvr->pose_mtx };
+
+                const auto last_frame = (frame_count) % openvr->pose_queue.size();
+                const auto now_frame = (frame_count + 1) % openvr->pose_queue.size();
+                openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
+            }
         }
 
         /*auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[0] + INIT_OPTIONS_OFFSET);
@@ -6680,6 +6905,19 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             }
 
             return 1; // wait for the scene capture render target to be set and FSceneView constructor to be hooked
+        }
+
+        if (avowed_is_current_game()) {
+            uint32_t stable_frames = 0;
+
+            if (!avowed_native_fix_gate_ready(&stable_frames)) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Avowed][NativeStereoFix] Returning one view while render transition stabilizes stable={}/{}",
+                    stable_frames,
+                    AVOWED_NATIVE_FIX_STABLE_FRAMES);
+                return 1;
+            }
         }
     }
 
