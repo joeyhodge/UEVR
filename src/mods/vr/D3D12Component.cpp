@@ -14,6 +14,8 @@
 #include "render/D3D12Diagnostics.hpp"
 #include "../VR.hpp"
 
+#include <sdk/Utility.hpp>
+
 #include <../../directxtk12-src/Inc/ResourceUploadBatch.h>
 #include <../../directxtk12-src/Inc/RenderTargetState.h>
 
@@ -93,6 +95,43 @@ bool is_shf_current_game() {
     }();
 
     return result;
+}
+
+bool is_stalker2_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool is_ue_5_1_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const bool result = []() {
+        const auto found_version = sdk::search_for_version(utility::get_executable());
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
+
+    return result;
+}
+
+bool texture_context_has_views(const d3d12::TextureContext& context) {
+    return context.texture.Get() != nullptr &&
+        context.rtv_heap != nullptr &&
+        context.rtv_heap->Heap() != nullptr &&
+        context.srv_heap != nullptr &&
+        context.srv_heap->Heap() != nullptr;
 }
 
 void log_shf_texture_reference_rebuild(
@@ -579,6 +618,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_stalker2_ue51_dx12 = is_stalker2_current_game() && is_ue_5_1_dx12_backend();
+    const auto skip_in_place_ui_invert = is_stalker2_current_game();
     m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
     auto scene_source_state = is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
@@ -619,7 +660,34 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto frame_count = vr->m_render_frame_count;
 
-    if (m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
+    const auto needs_game_texture_context =
+        !is_stalker2_ue51_dx12 ||
+        vr->m_desktop_fix->value() ||
+        vr->is_using_2d_screen() ||
+        vr->is_native_stereo_fix_enabled();
+
+    if (is_stalker2_ue51_dx12 &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get() &&
+        !needs_game_texture_context)
+    {
+        if (m_game_tex.texture.Get() != nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Stalker2][D3D12] Releasing unused game texture context while desktop mirror/2D/native stereo are inactive");
+            m_game_tex.reset();
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[Stalker2][D3D12] Deferring external RT TextureContext setup; HMD copy uses direct backbuffer resource desktop_fix={} 2d={} native_stereo_fix={}",
+            vr->m_desktop_fix->value(),
+            vr->is_using_2d_screen(),
+            vr->is_native_stereo_fix_enabled());
+    }
+
+    if (needs_game_texture_context && m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
         spdlog::info("[VR] Setting up game texture as copy of backbuffer");
         
         ComPtr<ID3D12Resource> backbuffer_copy{};
@@ -661,7 +729,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 commands.setup(L"Game Texture Commands");
             }
         }
-    } else if (backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get())) {
+    } else if (needs_game_texture_context && backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
         if (is_shf_external_backbuffer) {
@@ -911,7 +979,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         const auto view_game_tex_clear_state =
             (is_shf_external_backbuffer || shf_using_mono_expansion) ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
-        if (ui_invert_alpha > 0.0f && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
+        if (ui_invert_alpha > 0.0f && !skip_in_place_ui_invert && m_game_ui_tex.texture.Get() != nullptr && m_game_ui_tex.srv_heap != nullptr) {
             const std::array<float, 4> blend_factor{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
             const DirectX::XMFLOAT4 invert_alpha_tint{ 1.0f, 1.0f, 1.0f, ui_invert_alpha };
             d3d12::render_srv_to_rtv(
@@ -1687,6 +1755,7 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
 
 void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override) {
     if (command_list == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(5, "[D3D12][spectator] disabled: command list is null");
         return;
     }
 
@@ -1695,18 +1764,42 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
         return;
     }
 
-    auto& game_tex = game_tex_override != nullptr ? *game_tex_override : m_game_tex;
-    const auto has_game_tex = game_tex.texture != nullptr && game_tex.srv_heap != nullptr && game_tex.srv_heap->Heap() != nullptr;
+    const auto& vr = VR::get();
+    const auto mirror_mode = vr->get_desktop_mirror_mode();
     const auto has_ui_tex = m_game_ui_tex.texture != nullptr && m_game_ui_tex.srv_heap != nullptr && m_game_ui_tex.srv_heap->Heap() != nullptr;
 
-    if (!has_game_tex) {
+    if (!vr->is_hmd_active()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[D3D12][spectator] disabled: HMD inactive mirror_mode={} desktop_fix={} has_ui_tex={}",
+            (int)mirror_mode,
+            vr->m_desktop_fix->value(),
+            has_ui_tex);
         return;
     }
 
-    const auto& vr = VR::get();
-    const auto mirror_mode = vr->get_desktop_mirror_mode();
+    if (!vr->m_desktop_fix->value()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[D3D12][spectator] disabled: Desktop Spectator View is off mirror_mode={} has_ui_tex={} right_eye_frame={}",
+            (int)mirror_mode,
+            has_ui_tex,
+            is_right_eye_frame);
+        return;
+    }
 
-    if (!vr->is_hmd_active() || !vr->m_desktop_fix->value()) {
+    auto& game_tex = game_tex_override != nullptr ? *game_tex_override : m_game_tex;
+    const auto has_game_tex = game_tex.texture != nullptr && game_tex.srv_heap != nullptr && game_tex.srv_heap->Heap() != nullptr;
+
+    if (!has_game_tex) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[D3D12][spectator] disabled: game texture context unavailable tex={} srv_heap={} srv={} mirror_mode={} desktop_fix={}",
+            game_tex.texture.Get() != nullptr,
+            game_tex.srv_heap != nullptr,
+            game_tex.srv_heap != nullptr && game_tex.srv_heap->Heap() != nullptr,
+            (int)mirror_mode,
+            vr->m_desktop_fix->value());
         return;
     }
 
