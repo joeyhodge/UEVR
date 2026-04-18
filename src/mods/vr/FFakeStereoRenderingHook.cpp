@@ -145,6 +145,15 @@ bool stalker2_is_current_game() {
     return result;
 }
 
+bool avowed_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_ue_5_7_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -847,6 +856,178 @@ bool is_writable_process_range(uintptr_t address, size_t size) {
            protect == PAGE_WRITECOPY ||
            protect == PAGE_EXECUTE_READWRITE ||
            protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool is_readable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)mbi.BaseAddress;
+    if (address + size > base + mbi.RegionSize) {
+        return false;
+    }
+
+    if ((mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_READONLY ||
+           protect == PAGE_READWRITE ||
+           protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE ||
+           protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool is_executable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)mbi.BaseAddress;
+    if (address + size > base + mbi.RegionSize) {
+        return false;
+    }
+
+    if ((mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_EXECUTE ||
+           protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE ||
+           protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool looks_like_virtual_function_table(uintptr_t table) {
+    if (!is_readable_process_range(table, sizeof(uintptr_t) * 12)) {
+        return false;
+    }
+
+    auto executable_entries = 0;
+
+    for (auto i = 0; i < 12; ++i) {
+        const auto fn = ((uintptr_t*)table)[i];
+
+        if (fn == 0 || !is_executable_process_range(fn, 1)) {
+            continue;
+        }
+
+        ++executable_entries;
+    }
+
+    return executable_entries >= 6;
+}
+
+template <typename T>
+bool safe_read_value(uintptr_t address, T& out) {
+    if (!is_readable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    memcpy(&out, (void*)address, sizeof(T));
+    return true;
+}
+
+bool avowed_is_live_uobject(uintptr_t object, uintptr_t* out_vtable = nullptr, uintptr_t* out_class = nullptr) {
+    if (!avowed_is_current_game() || object == 0) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    if (!safe_read_value(object, vtable) || !looks_like_virtual_function_table(vtable)) {
+        return false;
+    }
+
+    uintptr_t cls{};
+    if (!safe_read_value(object + sdk::UObjectBase::get_class_private_offset(), cls) || cls == 0) {
+        return false;
+    }
+
+    uint32_t internal_index{};
+    if (!safe_read_value(object + sdk::UObjectBase::get_internal_index_offset(), internal_index)) {
+        return false;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto object_count = object_array->get_object_count();
+    if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
+        return false;
+    }
+
+    auto item = object_array->get_object((int32_t)internal_index);
+    if (item == nullptr || !is_readable_process_range((uintptr_t)item, sizeof(sdk::FUObjectItem))) {
+        return false;
+    }
+
+    uintptr_t item_object{};
+    if (!safe_read_value((uintptr_t)item + sdk::FUObjectArray::get_item_object_offset(), item_object) || item_object != object) {
+        return false;
+    }
+
+    if (out_vtable != nullptr) {
+        *out_vtable = vtable;
+    }
+
+    if (out_class != nullptr) {
+        *out_class = cls;
+    }
+
+    return true;
+}
+
+std::optional<uintptr_t> locate_vtable_from_constructor_rip_references(uintptr_t constructor) {
+    constexpr auto MAX_CONSTRUCTOR_SCAN_BYTES = 0x800;
+    auto best_candidate = std::optional<uintptr_t>{};
+
+    for (auto ip = constructor; ip < constructor + MAX_CONSTRUCTOR_SCAN_BYTES;) {
+        const auto decoded = utility::decode_one((uint8_t*)ip);
+
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        if (decoded->OperandsCount >= 2 &&
+            decoded->IsRipRelative &&
+            (decoded->Instruction == ND_INS_LEA || decoded->Instruction == ND_INS_MOV) &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[1].Type == ND_OP_MEM)
+        {
+            const auto referenced_addr = utility::resolve_displacement(ip);
+
+            if (referenced_addr && looks_like_virtual_function_table(*referenced_addr)) {
+                SPDLOG_INFO("Found FFakeStereoRendering vtable candidate via constructor RIP reference at {:x} -> {:x}",
+                            ip, *referenced_addr);
+                best_candidate = *referenced_addr;
+                break;
+            }
+        }
+
+        if (std::string_view{decoded->Mnemonic}.starts_with("RET")) {
+            break;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return best_candidate;
 }
 }
 
@@ -2192,7 +2373,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         // pretty consistent patterns
         if (sdk::is_vfunc_pattern(*func_ptr, "0F B6 C2 FF C0 C3") ||
             sdk::is_vfunc_pattern(*func_ptr, "33 C0 84 D2 0F 95 C0 FF C0 C3") || 
-            sdk::is_vfunc_pattern(*func_ptr, "84 D2 74 04 8B 41 ? C3 B8 01"))
+            sdk::is_vfunc_pattern(*func_ptr, "84 D2 74 04 8B 41 ? C3 B8 01") ||
+            sdk::is_vfunc_pattern(*func_ptr, "B8 01 00 00 00 84 D2 74 03 8B 41 ? C3"))
         {
             SPDLOG_INFO("Found GetDesiredNumberOfViews function at index: {}", i);
             get_desired_number_of_views_index = i;
@@ -2403,6 +2585,11 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     auto stereo_rendering_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
     if (!stereo_rendering_device_offset) {
+        if (avowed_is_current_game()) {
+            SPDLOG_ERROR("[Avowed] StereoRenderingDevice offset discovery failed; refusing legacy 0xAC8 nonstandard fallback");
+            return false;
+        }
+
         stereo_rendering_device_offset = 0xAC8; // fallback for the engine this was originally made for.
     }
 
@@ -4358,6 +4545,18 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto rtrsrc = rt != nullptr ? (sdk::FTextureRenderTargetResource*)rt->get_resource() : nullptr;
     const auto rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
 
+    if (avowed_is_current_game()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] BeginRenderViewFamilyReal: uses_tarrayview={} views={} scene_utexture={} resource={} render_target={} fixed_localplayer={}",
+            uses_tarrayview,
+            views.count,
+            rt != nullptr,
+            rtrsrc != nullptr,
+            rtfrt != nullptr,
+            g_hook->m_fixed_localplayer_view_count);
+    }
+
     if (rtfrt == nullptr) {
         // This is fine to call constantly because we use an in-flight render target
         // that gets unset after the texture is fully created. This function exits early otherwise.
@@ -4420,6 +4619,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
 
     if (wants_swap) {
+        if (avowed_is_current_game()) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Executing right-eye second render pass into scene capture target");
+        }
+
         // Swap out the existing render target for our custom one
         // Also, the entire point of swapping the render target
         // instead of "just" re-using the existing one is that doing that causes a 90% FPS drop
@@ -5435,6 +5638,14 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
     const auto vtable_ref = utility::scan(*fake_stereo_rendering_constructor, 100, "48 8D 05 ? ? ? ?");
 
     if (!vtable_ref) {
+        SPDLOG_WARN("Failed to find FFakeStereoRendering VTable Reference through legacy pattern, trying constructor RIP-reference scan");
+
+        if (const auto vtable_from_constructor = locate_vtable_from_constructor_rip_references(*fake_stereo_rendering_constructor)) {
+            SPDLOG_INFO("FFakeStereoRendering VTable: {:x}", *vtable_from_constructor);
+            cached_result = vtable_from_constructor;
+            return vtable_from_constructor;
+        }
+
         SPDLOG_ERROR("Failed to find FFakeStereoRendering VTable Reference");
         return std::nullopt;
     }
@@ -6442,13 +6653,38 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
     if (vr->is_native_stereo_fix_enabled()) {
         auto rtm = g_hook->get_render_target_manager();
-        if ((rtm->get_scene_capture_render_target() == nullptr || !g_hook->m_sceneview_data.constructor_hook || !g_hook->m_render_module_begin_render_viewfamily_hook)) {
+        const auto scene_capture_rt_ready = rtm->get_scene_capture_render_target() != nullptr;
+        const auto scene_capture_utexture_ready = rtm->get_scene_capture_utexture() != nullptr;
+        const auto fsceneview_hook_ready = !!g_hook->m_sceneview_data.constructor_hook;
+        const auto begin_viewfamily_hook_ready = !!g_hook->m_render_module_begin_render_viewfamily_hook;
+
+        if (avowed_is_current_game()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Avowed][NativeStereoFix] GetDesiredNumberOfViews state: stereo_enabled={} scene_rt={} scene_utexture={} fsceneview_hook={} begin_viewfamily_hook={} fixed_localplayer={}",
+                is_stereo_enabled,
+                scene_capture_rt_ready,
+                scene_capture_utexture_ready,
+                fsceneview_hook_ready,
+                begin_viewfamily_hook_ready,
+                g_hook->m_fixed_localplayer_view_count);
+        }
+
+        if ((!scene_capture_rt_ready || !fsceneview_hook_ready || !begin_viewfamily_hook_ready)) {
             if (rtm->get_scene_capture_utexture() == nullptr) {
                 rtm->create_scene_capture();
             }
 
+            if (avowed_is_current_game()) {
+                SPDLOG_INFO_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Returning one view while native-fix prerequisites initialize");
+            }
+
             return 1; // wait for the scene capture render target to be set and FSceneView constructor to be hooked
         }
+    }
+
+    if (avowed_is_current_game() && vr->is_native_stereo_fix_enabled()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Returning two views for native stereo fix");
     }
 
     return 2;
@@ -6666,6 +6902,69 @@ void FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix(safetyhoo
         return;
     }
 
+    if (avowed_is_current_game() && !avowed_is_live_uobject(localplayer)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] CalculateStereoProjectionMatrix yielded non-UObject LocalPlayer candidate {:x}; switching to GetProjectionData scan",
+            localplayer);
+
+        auto try_hook_get_projection_data = [&]() -> bool {
+            if (g_hook->m_hooked_alternative_localplayer_scan || g_hook->m_fixed_localplayer_view_count) {
+                return false;
+            }
+
+            if (g_hook->m_projection_matrix_stack.size() < 3) {
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[Avowed][NativeStereoFix] Cannot install GetProjectionData LocalPlayer scan; projection stack has {} entries",
+                    g_hook->m_projection_matrix_stack.size());
+                return false;
+            }
+
+            const auto post_get_projection_data = g_hook->m_projection_matrix_stack[2];
+            const auto get_projection_data_candidate_1 = utility::find_function_start_with_call(post_get_projection_data);
+            const auto get_projection_data_candidate_2 = utility::find_virtual_function_start(post_get_projection_data);
+            std::optional<uintptr_t> get_projection_data{};
+
+            if (get_projection_data_candidate_1 && get_projection_data_candidate_2) {
+                const auto candidate_1_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_1);
+                const auto candidate_2_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_2);
+                get_projection_data = candidate_1_distance < candidate_2_distance ? get_projection_data_candidate_1 : get_projection_data_candidate_2;
+            } else if (get_projection_data_candidate_1) {
+                get_projection_data = get_projection_data_candidate_1;
+            } else if (get_projection_data_candidate_2) {
+                get_projection_data = get_projection_data_candidate_2;
+            } else {
+                get_projection_data = utility::find_function_start(post_get_projection_data);
+            }
+
+            if (!get_projection_data) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Failed to locate GetProjectionData; disabling LocalPlayer bootstrap spam");
+                return false;
+            }
+
+            SPDLOG_INFO("[Avowed][NativeStereoFix] Hooking GetProjectionData at {:x}", *get_projection_data);
+
+            auto hook = safetyhook::create_mid((void*)*get_projection_data, &FFakeStereoRenderingHook::pre_get_projection_data);
+            if (!hook) {
+                SPDLOG_ERROR("[Avowed][NativeStereoFix] Failed to hook GetProjectionData");
+                return false;
+            }
+
+            g_hook->m_get_projection_data_pre_hook = std::move(hook);
+            g_hook->m_hooked_alternative_localplayer_scan = true;
+            g_hook->m_projection_matrix_stack.clear();
+            SPDLOG_INFO("[Avowed][NativeStereoFix] Installed GetProjectionData LocalPlayer scan");
+            return true;
+        };
+
+        if (!try_hook_get_projection_data()) {
+            g_hook->m_fixed_localplayer_view_count = true;
+        }
+
+        return;
+    }
+
     g_hook->post_init_properties(localplayer);
 }
 
@@ -6689,6 +6988,15 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
         return;
     }
 
+    if (avowed_is_current_game() && !avowed_is_live_uobject(localplayer)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] GetProjectionData yielded non-UObject LocalPlayer candidate {:x}; disabling LocalPlayer bootstrap",
+            localplayer);
+        g_hook->m_fixed_localplayer_view_count = true;
+        return;
+    }
+
     g_hook->post_init_properties(localplayer);
 }
 
@@ -6703,7 +7011,28 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    const auto vtable = *(uintptr_t**)localplayer;
+    uintptr_t vtable_address{};
+
+    if (avowed_is_current_game()) {
+        uintptr_t class_address{};
+        if (!avowed_is_live_uobject(localplayer, &vtable_address, &class_address)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Avowed][NativeStereoFix] Refusing PostInitProperties on unsafe LocalPlayer candidate {:x}",
+                localplayer);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        SPDLOG_INFO_ONCE("[Avowed][NativeStereoFix] LocalPlayer candidate validated via GUObjectArray (object={:x}, class={:x}, vtable={:x})",
+            localplayer,
+            class_address,
+            vtable_address);
+    } else {
+        vtable_address = *(uintptr_t*)localplayer;
+    }
+
+    const auto vtable = (uintptr_t*)vtable_address;
 
     if (vtable == nullptr || IsBadReadPtr((void*)vtable, sizeof(void*))) {
         SPDLOG_ERROR("Cannot proceed, vtable for so-called \"local player\" is invalid!");

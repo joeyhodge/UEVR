@@ -106,6 +106,15 @@ bool is_stalker2_current_game() {
     return result;
 }
 
+bool is_avowed_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_ue_5_1_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -804,6 +813,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (vr->is_native_stereo_fix_enabled()) {
         const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
         const auto scene_capture_rt = scene_capture != nullptr ? (ID3D12Resource*)scene_capture->get_native_resource() : nullptr;
+
+        if (is_avowed_current_game()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Avowed][D3D12][NativeStereoFix] Scene capture texture state: rhi={} native={} cached={} game_tex={}",
+                (uintptr_t)scene_capture,
+                (uintptr_t)scene_capture_rt,
+                (uintptr_t)m_scene_capture_tex.texture.Get(),
+                (uintptr_t)m_game_tex.texture.Get());
+        }
 
         if (scene_capture_rt != nullptr && m_scene_capture_tex.texture.Get() != scene_capture_rt) {
             spdlog::info("[VR] Setting up scene capture texture as reference to original");
