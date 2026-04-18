@@ -365,6 +365,7 @@ public:
     std::chrono::steady_clock::time_point last_frame_synced_skip_log{};
 
     uint32_t frame_began_skip_streak{0};
+    uint64_t frame_began_skip_suppressed_count{0};
     uint32_t forced_frame_recovery_count{0};
     bool accepted_relaxed_startup_poses{false};
     std::chrono::steady_clock::time_point last_frame_began_log{};
@@ -378,6 +379,7 @@ public:
     std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
     std::chrono::steady_clock::time_point last_frame_timing_log{};
     std::chrono::steady_clock::time_point last_slow_pose_update_log{};
+    std::chrono::steady_clock::time_point last_stale_pose_skip_log{};
     std::chrono::steady_clock::time_point last_stale_pose_submit_log{};
     FrameTimingStats wait_frame_timing{};
     FrameTimingStats begin_frame_timing{};
@@ -387,6 +389,7 @@ public:
     uint64_t pose_update_call_count{};
     uint64_t pose_update_view_extension_count{};
     uint64_t pose_update_non_view_extension_count{};
+    uint64_t stale_pose_skip_suppressed_count{};
     uint64_t stale_pose_refresh_attempt_count{};
     uint64_t stale_pose_refresh_success_count{};
     uint64_t stale_pose_refresh_failed_count{};

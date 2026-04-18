@@ -26,12 +26,13 @@ using namespace nlohmann;
 namespace runtimes {
 namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
-constexpr auto FRAME_BEGIN_STUCK_LOG_INTERVAL = std::chrono::seconds(1);
+constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto FRAME_SYNCED_SKIP_LOG_INTERVAL = std::chrono::minutes(1);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 constexpr auto STALE_POSE_SUBMIT_LOG_INTERVAL = std::chrono::seconds(2);
+constexpr auto STALE_POSE_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto SLOW_POSE_UPDATE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto SLOW_POSE_UPDATE_LOG_THRESHOLD_MS = 10.0;
 constexpr auto STALE_POSE_REFRESH_MIN_AGE_MS = 50LL;
@@ -523,12 +524,10 @@ VRRuntime::Error OpenXR::refresh_stale_pose_before_submit(uint32_t frame_count, 
     }
 
     if (is_older_frame_count(frame_count, current_internal_frame_count)) {
-        static auto last_stale_frame_skip_log = std::chrono::steady_clock::time_point{};
+        const auto first_log = this->last_stale_pose_skip_log.time_since_epoch().count() == 0;
 
-        if (last_stale_frame_skip_log.time_since_epoch().count() == 0 ||
-            now - last_stale_frame_skip_log >= STALE_POSE_SUBMIT_LOG_INTERVAL)
-        {
-            last_stale_frame_skip_log = now;
+        if (first_log) {
+            this->last_stale_pose_skip_log = now;
             spdlog::warn(
                 "[OpenXR][stale-pose] skipped refresh for older submit frame to avoid internal frame regression caller={} frame_count={} internal_frame_count={} pose_age_ms={} threshold_ms={} session={} shouldRender={}",
                 caller != nullptr ? caller : "unknown",
@@ -539,6 +538,25 @@ VRRuntime::Error OpenXR::refresh_stale_pose_before_submit(uint32_t frame_count, 
                 this->get_session_state_string(this->session_state),
                 this->frame_state.shouldRender
             );
+        } else {
+            ++this->stale_pose_skip_suppressed_count;
+
+            if (now - this->last_stale_pose_skip_log >= STALE_POSE_SKIP_SUMMARY_INTERVAL) {
+                spdlog::warn(
+                    "[OpenXR][stale-pose] suppressed repeated older-frame refresh skips count={} caller={} frame_count={} internal_frame_count={} pose_age_ms={} threshold_ms={} session={} shouldRender={}",
+                    this->stale_pose_skip_suppressed_count,
+                    caller != nullptr ? caller : "unknown",
+                    frame_count,
+                    current_internal_frame_count,
+                    pose_age_ms,
+                    stale_threshold_ms,
+                    this->get_session_state_string(this->session_state),
+                    this->frame_state.shouldRender
+                );
+
+                this->last_stale_pose_skip_log = now;
+                this->stale_pose_skip_suppressed_count = 0;
+            }
         }
 
         return VRRuntime::Error::SUCCESS;
@@ -623,9 +641,29 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
             const auto now = std::chrono::steady_clock::now();
 
-            if (this->frame_began_skip_streak == 1 || now - this->last_frame_began_log >= FRAME_BEGIN_STUCK_LOG_INTERVAL) {
+            const auto first_log = this->last_frame_began_log.time_since_epoch().count() == 0;
+
+            if (first_log) {
                 this->last_frame_began_log = now;
+                this->frame_began_skip_suppressed_count = 0;
                 this->log_frame_lifecycle_state("Frame already began, skipping xrWaitFrame call");
+            } else {
+                ++this->frame_began_skip_suppressed_count;
+
+                if (now - this->last_frame_began_log >= FRAME_BEGIN_SKIP_SUMMARY_INTERVAL) {
+                    spdlog::warn(
+                        "[OpenXR] suppressed repeated frame-began xrWaitFrame skip logs count={} streak={} session={} frame_synced={} last_begin_caller={} recoveries={}",
+                        this->frame_began_skip_suppressed_count,
+                        this->frame_began_skip_streak,
+                        this->get_session_state_string(this->session_state),
+                        this->frame_synced,
+                        this->last_begin_frame_caller,
+                        this->forced_frame_recovery_count
+                    );
+
+                    this->last_frame_began_log = now;
+                    this->frame_began_skip_suppressed_count = 0;
+                }
             }
 
             if (this->frame_began_skip_streak >= FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD) {
