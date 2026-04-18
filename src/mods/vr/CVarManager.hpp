@@ -208,6 +208,8 @@ private:
     bool m_has_frozen_cvars{false};
     bool m_needs_full_refresh{true};
     bool m_cvar_ui_open_this_frame{false};
+    bool m_ue51_fsr3_runtime_cvars_done{false};
+    int m_ue51_fsr3_runtime_cvar_attempts{0};
 
     static inline std::vector<std::shared_ptr<CVarStandard>> s_default_standard_cvars {
         // Bools

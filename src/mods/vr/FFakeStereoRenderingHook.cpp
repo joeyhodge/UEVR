@@ -80,6 +80,21 @@ uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
 std::mutex g_ue56_rt_probe_mutex{};
 std::unordered_map<uintptr_t, bool> g_ue56_native_resource_probe_cache{};
+
+struct UE51RenderTargetChurnStats {
+    uint64_t allocate_seen{};
+    uint64_t ui_created{};
+    uint64_t ui_reused{};
+    uintptr_t last_allocate_return_address{};
+    uintptr_t last_ui_create_return_address{};
+    uintptr_t last_ui_texture{};
+    uint32_t last_ui_width{};
+    uint32_t last_ui_height{};
+    std::chrono::steady_clock::time_point last_log{};
+};
+
+std::mutex g_ue51_rt_churn_mutex{};
+UE51RenderTargetChurnStats g_ue51_rt_churn{};
 constexpr auto ENGINE_RENDER_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 
 struct EngineRenderTimingStats {
@@ -121,6 +136,15 @@ bool shf_is_current_game() {
     return result;
 }
 
+bool stalker2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_ue_5_7_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -132,6 +156,21 @@ bool is_ue_5_7_or_newer() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50007;
+}
+
+bool is_ue_5_1_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.1");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
 bool is_ue_5_6_dx12_backend() {
@@ -386,6 +425,95 @@ bool shf_can_reuse_current_ui_target(VRRenderTargetManager_Base* rtm, uint32_t e
     SPDLOG_INFO_EVERY_N_SEC(2,
         "[SHf] Reusing stable UI texture {:x} [{}x{} fmt={}]; skipping duplicate UI texture creation",
         (uintptr_t)ui_target, desc->Width, desc->Height, (uint32_t)desc->Format);
+
+    return true;
+}
+
+void ue51_log_rt_churn_summary_locked(const char* reason) {
+    const auto now = std::chrono::steady_clock::now();
+
+    if (g_ue51_rt_churn.last_log.time_since_epoch().count() != 0 &&
+        now - g_ue51_rt_churn.last_log < std::chrono::seconds(30))
+    {
+        return;
+    }
+
+    g_ue51_rt_churn.last_log = now;
+
+    uint32_t current_width = 0;
+    uint32_t current_height = 0;
+
+    if (g_framework != nullptr) {
+        const auto size = g_framework->get_d3d12_rt_size();
+        current_width = (uint32_t)size.x;
+        current_height = (uint32_t)size.y;
+    }
+
+    SPDLOG_INFO(
+        "[UE5.1][RTChurn] summary reason={} alloc_seen={} ui_created={} ui_reused={} last_alloc={:x} last_create={:x} last_ui={:x} last_ui_size={}x{} current_rt_size={}x{}",
+        reason != nullptr ? reason : "<unknown>",
+        g_ue51_rt_churn.allocate_seen,
+        g_ue51_rt_churn.ui_created,
+        g_ue51_rt_churn.ui_reused,
+        g_ue51_rt_churn.last_allocate_return_address,
+        g_ue51_rt_churn.last_ui_create_return_address,
+        g_ue51_rt_churn.last_ui_texture,
+        g_ue51_rt_churn.last_ui_width,
+        g_ue51_rt_churn.last_ui_height,
+        current_width,
+        current_height);
+}
+
+void ue51_note_rt_allocation(uintptr_t relative_return_address) {
+    if (!is_ue_5_1_dx12_backend()) {
+        return;
+    }
+
+    std::scoped_lock _{g_ue51_rt_churn_mutex};
+    ++g_ue51_rt_churn.allocate_seen;
+    g_ue51_rt_churn.last_allocate_return_address = relative_return_address;
+    ue51_log_rt_churn_summary_locked("allocate");
+}
+
+void ue51_note_ui_created(FRHITexture2D* ui_texture, uint32_t width, uint32_t height) {
+    if (!is_ue_5_1_dx12_backend() || ui_texture == nullptr) {
+        return;
+    }
+
+    std::scoped_lock _{g_ue51_rt_churn_mutex};
+    ++g_ue51_rt_churn.ui_created;
+    g_ue51_rt_churn.last_ui_create_return_address = g_ue51_rt_churn.last_allocate_return_address;
+    g_ue51_rt_churn.last_ui_texture = (uintptr_t)ui_texture;
+    g_ue51_rt_churn.last_ui_width = width;
+    g_ue51_rt_churn.last_ui_height = height;
+    ue51_log_rt_churn_summary_locked("ui_created");
+}
+
+bool ue51_can_reuse_current_ui_target(VRRenderTargetManager_Base* rtm, uint32_t expected_width, uint32_t expected_height) {
+    if (!is_ue_5_1_dx12_backend() || rtm == nullptr || expected_width == 0 || expected_height == 0) {
+        return false;
+    }
+
+    const auto* ui_target = rtm->get_ui_target();
+
+    if (ui_target == nullptr || ui_target == rtm->get_render_target()) {
+        return false;
+    }
+
+    std::scoped_lock _{g_ue51_rt_churn_mutex};
+
+    if (g_ue51_rt_churn.ui_created == 0 ||
+        g_ue51_rt_churn.last_allocate_return_address == 0 ||
+        g_ue51_rt_churn.last_allocate_return_address != g_ue51_rt_churn.last_ui_create_return_address ||
+        g_ue51_rt_churn.last_ui_texture != (uintptr_t)ui_target ||
+        g_ue51_rt_churn.last_ui_width != expected_width ||
+        g_ue51_rt_churn.last_ui_height != expected_height)
+    {
+        return false;
+    }
+
+    ++g_ue51_rt_churn.ui_reused;
+    ue51_log_rt_churn_summary_locked("ui_reused");
 
     return true;
 }
@@ -4697,6 +4825,15 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         }
     };
 
+    if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[Stalker2][RHI] Skipping FRHICommandBase vtable hijack; enqueueing render poses from PreRenderViewFamily frame={}",
+            frame_count + compensation);
+        vr->get_runtime()->on_pre_render_render_thread(frame_count + compensation);
+        vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+        return;
+    }
+
     if (is_ue_5_7_or_newer() &&
         g_hook->has_slate_hook() &&
         g_hook->has_seen_stable_slate_draw() &&
@@ -7371,6 +7508,8 @@ bool VRRenderTargetManager_Base::need_reallocate_depth_texture(const void* Depth
 void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     if (g_framework->is_dx12() && shf_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] PreTextureHook summary last_desc={:x}", ctx.r8);
+    } else if (is_ue_5_1_dx12_backend()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.1][RTChurn] PreTextureHook summary last_desc={:x}", ctx.r8);
     } else {
         SPDLOG_INFO("PreTextureHook called! {}", ctx.r8);
     }
@@ -7453,6 +7592,30 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
         VR::get()->reinitialize_renderer();
         return;
+    }
+
+    if (is_ue_5_1_dx12_backend() && rtm->allocate_texture_called) {
+        const auto size = g_framework->get_d3d12_rt_size();
+
+        if (ue51_can_reuse_current_ui_target(rtm, (uint32_t)size.x, (uint32_t)size.y)) {
+            // The engine allocation still continues after this pre-hook. Reusing the
+            // existing duplicate UI target avoids rebuilding UEVR's UI texture every
+            // frame when UE 5.1 repeatedly hits the same RT allocation path.
+            if (rtm->is_using_texture_desc && rtm->is_version_greq_5_1) {
+                if (!rtm->is_pre_texture_call_e8 &&
+                    ctx.rdx != 0 && !IsBadReadPtr((void*)ctx.rdx, sizeof(FTexture2DRHIRef)))
+                {
+                    rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rdx;
+                } else if (rtm->is_pre_texture_call_e8 &&
+                    ctx.rcx != 0 && !IsBadReadPtr((void*)ctx.rcx, sizeof(FTexture2DRHIRef)))
+                {
+                    rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rcx;
+                }
+            }
+
+            SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.1][RTChurn] Reusing stable UI texture; skipping duplicate UI texture creation");
+            return;
+        }
     }
 
     if (g_framework->is_dx12() && shf_is_current_game() && rtm->allocate_texture_called) {
@@ -8149,6 +8312,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         SPDLOG_ERROR("Failed to create UI texture!");
     } else {
         SPDLOG_INFO("Created UI texture at {:x}", (uintptr_t)out.texture);
+        ue51_note_ui_created(out.texture, (uint32_t)size.x, (uint32_t)size.y);
     }
 
     //call_with_context((uintptr_t)func, out);
@@ -8164,6 +8328,8 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
 
     if (g_framework->is_dx12() && shf_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] PostTextureHook summary last_ref={:x}", (uintptr_t)rtm->texture_hook_ref);
+    } else if (is_ue_5_1_dx12_backend()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.1][RTChurn] PostTextureHook summary last_ref={:x}", (uintptr_t)rtm->texture_hook_ref);
     } else {
         SPDLOG_INFO("Post texture hook called!");
         SPDLOG_INFO(" Ref: {:x}", (uintptr_t)rtm->texture_hook_ref);
@@ -8304,6 +8470,9 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         if (is_valid_texture_candidate(texture, "texture_hook_ref")) {
             if (shf_is_current_game() && g_framework->is_dx12()) {
                 shf_log_rtm_candidate(rtm, texture, texture_source);
+            } else if (is_ue_5_1_dx12_backend()) {
+                SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.1][RTChurn] Resulting texture summary source={} tex={:x}",
+                    texture_source, (uintptr_t)texture);
             } else {
                 SPDLOG_INFO(" Resulting texture: {:x}", (uintptr_t)texture);
                 SPDLOG_INFO(" Real resource: {:x}", (uintptr_t)texture->get_native_resource());
@@ -8314,7 +8483,7 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
     }
 
-    if (!shf_is_current_game() || !g_framework->is_dx12()) {
+    if ((!shf_is_current_game() || !g_framework->is_dx12()) && !is_ue_5_1_dx12_backend()) {
         SPDLOG_INFO(" last texture index: {}", rtm->last_texture_index);
     }
 
@@ -9915,6 +10084,9 @@ bool VRRenderTargetManager::AllocateRenderTargetTexture(uint32_t Index, uint32_t
 
     if (g_framework->is_dx12() && shf_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] AllocateRenderTargetTexture summary last_caller={:x}", relative_allocate_render_target_return_address);
+    } else if (is_ue_5_1_dx12_backend()) {
+        ue51_note_rt_allocation(relative_allocate_render_target_return_address);
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.1][RTChurn] AllocateRenderTargetTexture summary last_caller={:x}", relative_allocate_render_target_return_address);
     } else {
         SPDLOG_INFO("AllocateRenderTargetTexture called from: {:x}", relative_allocate_render_target_return_address);
     }
