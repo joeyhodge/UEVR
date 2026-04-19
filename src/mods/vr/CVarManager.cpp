@@ -80,9 +80,10 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
         const wchar_t* value;
     };
 
-    // Stalker2's current UE 5.1 build leaves FidelityFX frame interpolation
+    // Stalker2's current UE 5.1 build can leave FidelityFX frame interpolation
     // swapchain hooks enabled by project config even when FSR3 itself is off.
-    // Keep this pass narrowly gated because these settings affect core DX12 work.
+    // Keep this pass narrowly gated and avoid broad D3D12/async compute toggles
+    // unless later crash evidence proves they are required.
     static constexpr std::array forced_cvars{
         ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
         ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
@@ -90,11 +91,6 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
         ForcedCVar{L"r.FidelityFX.FSR3.Enabled", L"0"},
         ForcedCVar{L"r.FidelityFX.FSR3.UseNativeDX12", L"0"},
         ForcedCVar{L"r.FidelityFX.FSR3.UseRHI", L"0"},
-        ForcedCVar{L"r.D3D12.AllowPayloadMerge", L"0"},
-        ForcedCVar{L"d3d12.BatchResourceBarriers", L"0"},
-        ForcedCVar{L"r.D3D12.AllowAsyncCompute", L"0"},
-        ForcedCVar{L"r.RDG.AsyncCompute", L"0"},
-        ForcedCVar{L"r.Nanite.Streaming.AsyncCompute", L"0"},
     };
 
     int found{};
