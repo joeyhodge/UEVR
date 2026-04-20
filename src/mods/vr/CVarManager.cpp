@@ -82,18 +82,14 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
 
     // Stalker2's current UE 5.1 build can leave FidelityFX frame interpolation
     // swapchain hooks enabled by project config even when FSR3 itself is off.
-    // Reports after stripping the D3D12/async safety cvars showed level-load
-    // command-list crashes returning, so keep the known-good set gated here.
-    static constexpr std::array forced_cvars{
+    // Reports after stripping this set showed level-load D3D12 copy command-list
+    // crashes returning, so keep the last known-good Stalker2 set gated here.    static constexpr std::array forced_cvars{
         ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
         ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
         ForcedCVar{L"r.FidelityFX.FI.AllowAsyncWorkloads", L"0"},
         ForcedCVar{L"r.FidelityFX.FSR3.Enabled", L"0"},
         ForcedCVar{L"r.FidelityFX.FSR3.UseNativeDX12", L"0"},
         ForcedCVar{L"r.FidelityFX.FSR3.UseRHI", L"0"},
-        ForcedCVar{L"r.SceneCapture.AllowRenderInMainRenderer", L"1"},
-        ForcedCVar{L"r.SceneCapture.DepthPrepassOptimization", L"0"},
-        ForcedCVar{L"r.SceneCapture.CullByDetailMode", L"0"},
         ForcedCVar{L"r.D3D12.AllowPayloadMerge", L"0"},
         ForcedCVar{L"d3d12.BatchResourceBarriers", L"0"},
         ForcedCVar{L"r.D3D12.AllowAsyncCompute", L"0"},
@@ -102,8 +98,23 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
         ForcedCVar{L"r.TSR.WaveOps", L"0"},
         ForcedCVar{L"r.Lumen.Reflections.TraceCompaction.WaveOps", L"0"},
         ForcedCVar{L"r.Lumen.ScreenProbeGather.Filtering.WaveOps", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceField", L"0"},
+        ForcedCVar{L"r.AOUpdateGlobalDistanceField", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldPartialUpdates", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldStaggeredUpdates", L"0"},
+        ForcedCVar{L"r.AOGlobalDistanceFieldClipmapUpdatesPerFrame", L"0"},
+        ForcedCVar{L"r.DistanceFields", L"0"},
+        ForcedCVar{L"r.GenerateMeshDistanceFields", L"0"},
+        ForcedCVar{L"r.DistanceFields.ParallelUpdate", L"0"},
+        ForcedCVar{L"r.DistanceFields.DefragmentIndirectionAtlas", L"0"},
+        ForcedCVar{L"r.DistanceFields.UseApproximateGlobalDistanceFields", L"0"},
+        ForcedCVar{L"r.Lumen.Reflections.TraceGlobalSDF", L"0"},
+        ForcedCVar{L"fx.Niagara.AsyncGpuTrace.GlobalSdfEnabled", L"0"},
         ForcedCVar{L"r.D3D12.NvAfterMath", L"0"},
         ForcedCVar{L"r.GPUCrashDebugging.Aftermath.Markers", L"0"},
+        ForcedCVar{L"r.AllowOcclusionQueries", L"0"},
+        ForcedCVar{L"r.AllowPreciseQueries", L"0"},
+        ForcedCVar{L"r.AllowSubPrimitiveQueries", L"0"},
     };
 
     int found{};
