@@ -987,9 +987,9 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
-    // UE 5.7 source/PDB puts PostInitProperties immediately after GetDetailedInfoInternal.
+    // UE 5.6/5.7 source/PDB puts PostInitProperties immediately after GetDetailedInfoInternal.
     // The runtime slot shifts by one depending on whether RegisterDependencies is compiled in,
-    // so prefer the expected 5.7 slots first and keep the older nearby slot as a fallback.
+    // so prefer the expected modern UE slots first and keep the older nearby slot as a fallback.
     constexpr std::array<uint32_t, 3> candidate_slots{9, 10, 8};
 
     for (const auto slot : candidate_slots) {
@@ -7277,7 +7277,9 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    if (is_ue_5_7_or_newer()) {
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend();
+
+    if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
@@ -7318,8 +7320,8 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     if (!idx) {
-        if (is_ue_5_7_or_newer()) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.7+; skipping LocalPlayer bootstrap for safety");
+        if (needs_source_informed_post_init) {
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.6+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
