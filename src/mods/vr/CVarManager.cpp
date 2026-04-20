@@ -83,7 +83,8 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
     // Stalker2's current UE 5.1 build can leave FidelityFX frame interpolation
     // swapchain hooks enabled by project config even when FSR3 itself is off.
     // Reports after stripping this set showed level-load D3D12 copy command-list
-    // crashes returning, so keep the last known-good Stalker2 set gated here.    static constexpr std::array forced_cvars{
+    // crashes returning, so keep the last known-good Stalker2 set gated here.
+    static constexpr std::array forced_cvars{
         ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
         ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
         ForcedCVar{L"r.FidelityFX.FI.AllowAsyncWorkloads", L"0"},
