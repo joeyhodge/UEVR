@@ -99,6 +99,11 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
         ForcedCVar{L"r.D3D12.AllowAsyncCompute", L"0"},
         ForcedCVar{L"r.RDG.AsyncCompute", L"0"},
         ForcedCVar{L"r.Nanite.Streaming.AsyncCompute", L"0"},
+        ForcedCVar{L"r.TSR.WaveOps", L"0"},
+        ForcedCVar{L"r.Lumen.Reflections.TraceCompaction.WaveOps", L"0"},
+        ForcedCVar{L"r.Lumen.ScreenProbeGather.Filtering.WaveOps", L"0"},
+        ForcedCVar{L"r.D3D12.NvAfterMath", L"0"},
+        ForcedCVar{L"r.GPUCrashDebugging.Aftermath.Markers", L"0"},
     };
 
     int found{};
