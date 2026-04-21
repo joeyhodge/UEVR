@@ -627,8 +627,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
-    const auto is_stalker2_ue51_dx12 = is_stalker2_current_game() && is_ue_5_1_dx12_backend();
-    const auto skip_in_place_ui_invert = is_stalker2_current_game();
+    const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
     auto scene_source_state = is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
@@ -669,34 +668,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto frame_count = vr->m_render_frame_count;
 
-    const auto needs_game_texture_context =
-        !is_stalker2_ue51_dx12 ||
-        vr->m_desktop_fix->value() ||
-        vr->is_using_2d_screen() ||
-        vr->is_native_stereo_fix_enabled();
-
-    if (is_stalker2_ue51_dx12 &&
-        backbuffer.Get() != nullptr &&
-        real_backbuffer.Get() != nullptr &&
-        backbuffer.Get() != real_backbuffer.Get() &&
-        !needs_game_texture_context)
-    {
-        if (m_game_tex.texture.Get() != nullptr) {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Stalker2][D3D12] Releasing unused game texture context while desktop mirror/2D/native stereo are inactive");
-            m_game_tex.reset();
-        }
-
-        SPDLOG_INFO_EVERY_N_SEC(
-            5,
-            "[Stalker2][D3D12] Deferring external RT TextureContext setup; HMD copy uses direct backbuffer resource desktop_fix={} 2d={} native_stereo_fix={}",
-            vr->m_desktop_fix->value(),
-            vr->is_using_2d_screen(),
-            vr->is_native_stereo_fix_enabled());
-    }
-
-    if (needs_game_texture_context && m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
+    if (m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
         spdlog::info("[VR] Setting up game texture as copy of backbuffer");
         
         ComPtr<ID3D12Resource> backbuffer_copy{};
@@ -738,7 +710,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 commands.setup(L"Game Texture Commands");
             }
         }
-    } else if (needs_game_texture_context && backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
+    } else if (backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
         if (is_shf_external_backbuffer) {

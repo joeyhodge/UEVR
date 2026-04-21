@@ -5253,15 +5253,6 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         }
     };
 
-    if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
-        SPDLOG_INFO_EVERY_N_SEC(2,
-            "[Stalker2][RHI] Skipping FRHICommandBase vtable hijack; enqueueing render poses from PreRenderViewFamily frame={}",
-            frame_count + compensation);
-        vr->get_runtime()->on_pre_render_render_thread(frame_count + compensation);
-        vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
-        return;
-    }
-
     if (is_ue_5_7_or_newer() &&
         g_hook->has_slate_hook() &&
         g_hook->has_seen_stable_slate_draw() &&
