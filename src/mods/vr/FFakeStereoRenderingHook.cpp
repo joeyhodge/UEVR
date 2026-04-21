@@ -962,6 +962,42 @@ bool looks_like_nontrivial_virtual(uintptr_t fn) {
     return saw_terminator && decoded_bytes >= 64 && call_count >= 1;
 }
 
+bool looks_like_callable_virtual(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+        return false;
+    }
+
+    size_t decoded_bytes = 0;
+
+    for (auto ip = (uint8_t*)fn; decoded_bytes < 256;) {
+        const auto decoded = utility::decode_one(ip);
+
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        decoded_bytes += decoded->Length;
+
+        const std::string_view mnemonic{decoded->Mnemonic};
+
+        if (mnemonic.starts_with("RET")) {
+            return decoded_bytes > 0;
+        }
+
+        if (mnemonic.starts_with("JMP")) {
+            return decoded_bytes <= 16;
+        }
+
+        if (mnemonic.starts_with("INT3")) {
+            return false;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return false;
+}
+
 std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_t localplayer) {
     auto* object_class = sdk::UObject::static_class();
 
@@ -984,6 +1020,36 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         IsBadReadPtr(object_vtable, sizeof(void*)) || IsBadReadPtr(localplayer_vtable, sizeof(void*)))
     {
         SPDLOG_WARN("[PostInitProperties] UObject or LocalPlayer vtable is invalid");
+        return std::nullopt;
+    }
+
+    // UE5.1 source and the Stalker2 PDB/IDA view place UObject::PostInitProperties
+    // immediately after GetDetailedInfoInternal. Stalker2 inherits the UObject slot;
+    // only accept the exact slot when both UObject CDO and LocalPlayer agree.
+    if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
+        constexpr uint32_t UE51_POST_INIT_PROPERTIES_SLOT = 10;
+
+        if (IsBadReadPtr(&object_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)) ||
+            IsBadReadPtr(&localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)))
+        {
+            SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 is not readable; skipping LocalPlayer bootstrap");
+            return std::nullopt;
+        }
+
+        const auto object_fn = object_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
+        const auto localplayer_fn = localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
+
+        if (object_fn != 0 && object_fn == localplayer_fn && looks_like_callable_virtual(object_fn)) {
+            SPDLOG_INFO("[PostInitProperties] Resolved UE5.1/Stalker2 UObject::PostInitProperties through validated slot {} at {:x}",
+                UE51_POST_INIT_PROPERTIES_SLOT,
+                object_fn);
+            return UE51_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN(
+            "[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate object_fn={:x} localplayer_fn={:x}; skipping LocalPlayer bootstrap",
+            object_fn,
+            localplayer_fn);
         return std::nullopt;
     }
 
@@ -7268,10 +7334,17 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend();
+    const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || stalker2_ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
+    }
+
+    if (stalker2_ue51_post_init && !idx) {
+        g_hook->m_sceneview_data.known_scene_states.clear();
+        g_hook->m_fixed_localplayer_view_count = true;
+        return;
     }
 
     for (auto i = 1; !idx && i < 25; ++i) {
