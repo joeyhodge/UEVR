@@ -1032,16 +1032,24 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_third_base_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiThirdBaseDollyDistance"), 10.0f, 50000.0f, 7000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_third_base_relay_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiThirdBaseRelayLowDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_third_base_relay_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiThirdBaseRelayLowDollyDistance"), 10.0f, 50000.0f, 250.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiThirdBaseOutfieldLineLowDollyOverride"), true) };
+    const ModSlider::Ptr m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiThirdBaseOutfieldLineLowDollyDistance"), 10.0f, 50000.0f, 1000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_third_base_foul_territory_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiThirdBaseFoulTerritoryLowDollyOverride"), true) };
+    const ModSlider::Ptr m_match_game_fov_prospi_third_base_foul_territory_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiThirdBaseFoulTerritoryLowDollyDistance"), 10.0f, 50000.0f, 1000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_third_base_wide_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiThirdBaseWideDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_third_base_wide_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiThirdBaseWideDollyDistance"), 10.0f, 50000.0f, 8000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_first_base_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiFirstBaseDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_first_base_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiFirstBaseDollyDistance"), 10.0f, 50000.0f, 7000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_first_base_wide_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiFirstBaseWideDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_first_base_wide_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiFirstBaseWideDollyDistance"), 10.0f, 50000.0f, 8000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_first_base_outfield_line_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiFirstBaseOutfieldLineLowDollyOverride"), true) };
+    const ModSlider::Ptr m_match_game_fov_prospi_first_base_outfield_line_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiFirstBaseOutfieldLineLowDollyDistance"), 10.0f, 50000.0f, 1000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_backstop_high_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiBackstopHighDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_backstop_high_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiBackstopHighDollyDistance"), 10.0f, 50000.0f, 5000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_right_field_corner_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiRightFieldCornerDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_right_field_corner_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiRightFieldCornerDollyDistance"), 10.0f, 50000.0f, 7000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_right_field_line_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiRightFieldLineDollyOverride"), true) };
+    const ModSlider::Ptr m_match_game_fov_prospi_right_field_line_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiRightFieldLineDollyDistance"), 10.0f, 50000.0f, 7000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_right_center_field_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiRightCenterFieldDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_right_center_field_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiRightCenterFieldDollyDistance"), 10.0f, 50000.0f, 10000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_plate_high_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiPlateHighDollyOverride"), true) };
@@ -1238,16 +1246,24 @@ public:
             *m_match_game_fov_prospi_third_base_dolly_distance,
             *m_match_game_fov_prospi_third_base_relay_low_dolly_override,
             *m_match_game_fov_prospi_third_base_relay_low_dolly_distance,
+            *m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override,
+            *m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance,
+            *m_match_game_fov_prospi_third_base_foul_territory_low_dolly_override,
+            *m_match_game_fov_prospi_third_base_foul_territory_low_dolly_distance,
             *m_match_game_fov_prospi_third_base_wide_dolly_override,
             *m_match_game_fov_prospi_third_base_wide_dolly_distance,
             *m_match_game_fov_prospi_first_base_dolly_override,
             *m_match_game_fov_prospi_first_base_dolly_distance,
             *m_match_game_fov_prospi_first_base_wide_dolly_override,
             *m_match_game_fov_prospi_first_base_wide_dolly_distance,
+            *m_match_game_fov_prospi_first_base_outfield_line_low_dolly_override,
+            *m_match_game_fov_prospi_first_base_outfield_line_low_dolly_distance,
             *m_match_game_fov_prospi_backstop_high_dolly_override,
             *m_match_game_fov_prospi_backstop_high_dolly_distance,
             *m_match_game_fov_prospi_right_field_corner_dolly_override,
             *m_match_game_fov_prospi_right_field_corner_dolly_distance,
+            *m_match_game_fov_prospi_right_field_line_dolly_override,
+            *m_match_game_fov_prospi_right_field_line_dolly_distance,
             *m_match_game_fov_prospi_right_center_field_dolly_override,
             *m_match_game_fov_prospi_right_center_field_dolly_distance,
             *m_match_game_fov_prospi_plate_high_dolly_override,

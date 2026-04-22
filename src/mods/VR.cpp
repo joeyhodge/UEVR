@@ -92,15 +92,19 @@ enum class ProSpiCameraPreset : int32_t {
     UpperDeckHomeSkyTelephoto,
     ThirdBaseTelephoto,
     ThirdBaseRelayLow,
+    ThirdBaseOutfieldLineLow,
+    ThirdBaseFoulTerritoryLow,
     ThirdBaseCornerLow,
     ThirdBaseWideTelephoto,
     FirstBaseTelephoto,
     FirstBaseWideTelephoto,
+    FirstBaseOutfieldLineLow,
     FirstBaseCornerLow,
     FirstBaseInfieldLow,
     LowInfieldSideCloseUp,
     BackstopHighTelephoto,
     RightFieldCornerTelephoto,
+    RightFieldLineTelephoto,
     RightCenterFieldTelephoto,
     GenericTelephoto,
 };
@@ -143,6 +147,10 @@ const char* get_prospi_camera_preset_name(ProSpiCameraPreset preset) {
         return "ProSpi: Third Base Line Telephoto";
     case ProSpiCameraPreset::ThirdBaseRelayLow:
         return "ProSpi: Third Base Relay Low";
+    case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+        return "ProSpi: Third Base Outfield Line Low";
+    case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
+        return "ProSpi: Third Base Foul Territory Low";
     case ProSpiCameraPreset::ThirdBaseCornerLow:
         return "ProSpi: Third Base Corner Low";
     case ProSpiCameraPreset::ThirdBaseWideTelephoto:
@@ -151,6 +159,8 @@ const char* get_prospi_camera_preset_name(ProSpiCameraPreset preset) {
         return "ProSpi: First Base Line Telephoto";
     case ProSpiCameraPreset::FirstBaseWideTelephoto:
         return "ProSpi: First Base Wide Telephoto";
+    case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
+        return "ProSpi: First Base Outfield Line Low";
     case ProSpiCameraPreset::FirstBaseCornerLow:
         return "ProSpi: First Base Corner Low";
     case ProSpiCameraPreset::FirstBaseInfieldLow:
@@ -161,6 +171,8 @@ const char* get_prospi_camera_preset_name(ProSpiCameraPreset preset) {
         return "ProSpi: Backstop High Telephoto";
     case ProSpiCameraPreset::RightFieldCornerTelephoto:
         return "ProSpi: Right Field Corner Telephoto";
+    case ProSpiCameraPreset::RightFieldLineTelephoto:
+        return "ProSpi: Right Field Line Telephoto";
     case ProSpiCameraPreset::RightCenterFieldTelephoto:
         return "ProSpi: Right Center Field Telephoto";
     case ProSpiCameraPreset::GenericTelephoto:
@@ -202,7 +214,10 @@ float get_prospi_sticky_location_tolerance(ProSpiCameraPreset preset) {
     case ProSpiCameraPreset::BehindPlateElevatedSweep:
         return 3200.0f;
     case ProSpiCameraPreset::ThirdBaseRelayLow:
+    case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+    case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
     case ProSpiCameraPreset::ThirdBaseCornerLow:
+    case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
     case ProSpiCameraPreset::FirstBaseCornerLow:
         return 1800.0f;
     case ProSpiCameraPreset::HomePlateOverheadTelephoto:
@@ -258,6 +273,9 @@ bool is_prospi_nontelephoto_preset(ProSpiCameraPreset preset) {
     case ProSpiCameraPreset::HomePlateWaistHighReverse:
     case ProSpiCameraPreset::BehindPlateWideTelephoto:
     case ProSpiCameraPreset::BehindPlateElevatedSweep:
+    case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+    case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
+    case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
     case ProSpiCameraPreset::FirstBaseInfieldLow:
     case ProSpiCameraPreset::LowInfieldSideCloseUp:
         return true;
@@ -542,6 +560,24 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
         return ProSpiCameraPreset::ThirdBaseRelayLow;
     }
 
+    if (nearly_equal(location.x, -500.0f, 1800.0f) &&
+        nearly_equal(location.y, -3500.0f, 2000.0f) &&
+        nearly_equal(location.z, 250.0f, 800.0f) &&
+        nearly_equal(rotation.x, -15.0f, 16.0f) &&
+        nearly_equal(rotation.y, -52.0f, 18.0f) &&
+        raw_fov >= 35.0f && raw_fov <= 75.0f) {
+        return ProSpiCameraPreset::ThirdBaseOutfieldLineLow;
+    }
+
+    if (nearly_equal(location.x, -250.0f, 1250.0f) &&
+        nearly_equal(location.y, 0.0f, 1000.0f) &&
+        nearly_equal(location.z, 0.0f, 550.0f) &&
+        rotation.x >= -12.0f && rotation.x <= 8.0f &&
+        nearly_equal(rotation.y, 140.0f, 18.0f) &&
+        raw_fov >= 35.0f && raw_fov <= 75.0f) {
+        return ProSpiCameraPreset::ThirdBaseFoulTerritoryLow;
+    }
+
     if (nearly_equal(location.x, -4000.0f, 1600.0f) &&
         nearly_equal(location.y, -6000.0f, 2200.0f) &&
         nearly_equal(location.z, 0.0f, 550.0f) &&
@@ -576,6 +612,15 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
          nearly_equal(rotation.y, 170.0f, 18.0f) ||
          nearly_equal(rotation.y, 180.0f, 18.0f))) {
         return ProSpiCameraPreset::FirstBaseWideTelephoto;
+    }
+
+    if (nearly_equal(location.x, 4250.0f, 1400.0f) &&
+        nearly_equal(location.y, -7750.0f, 1800.0f) &&
+        nearly_equal(location.z, 0.0f, 650.0f) &&
+        rotation.x >= 5.0f && rotation.x <= 28.0f &&
+        rotation.y >= -150.0f && rotation.y <= -95.0f &&
+        raw_fov >= 40.0f && raw_fov <= 75.0f) {
+        return ProSpiCameraPreset::FirstBaseOutfieldLineLow;
     }
 
     if ((((nearly_equal(location.x, 2500.0f, 2200.0f) &&
@@ -621,6 +666,15 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
         nearly_equal(rotation.y, 138.0f, 12.0f) &&
         raw_fov <= 24.0f) {
         return ProSpiCameraPreset::RightFieldCornerTelephoto;
+    }
+
+    if (nearly_equal(location.x, 7000.0f, 1800.0f) &&
+        nearly_equal(location.y, -2500.0f, 1800.0f) &&
+        nearly_equal(location.z, 1500.0f, 1000.0f) &&
+        nearly_equal(rotation.x, -10.0f, 14.0f) &&
+        nearly_equal(rotation.y, 160.0f, 20.0f) &&
+        raw_fov <= 24.0f) {
+        return ProSpiCameraPreset::RightFieldLineTelephoto;
     }
 
     if (nearly_equal(location.x, 4000.0f, 1800.0f) &&
@@ -2979,6 +3033,18 @@ void VR::update_game_fov() {
                     prospi_dolly_source = "ThirdBaseRelayLow";
                 }
                 break;
+            case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+                if (m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override->value()) {
+                    active_dolly_distance = std::clamp(m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance->value(), 10.0f, 50000.0f);
+                    prospi_dolly_source = "ThirdBaseOutfieldLineLow";
+                }
+                break;
+            case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
+                if (m_match_game_fov_prospi_third_base_foul_territory_low_dolly_override->value()) {
+                    active_dolly_distance = std::clamp(m_match_game_fov_prospi_third_base_foul_territory_low_dolly_distance->value(), 10.0f, 50000.0f);
+                    prospi_dolly_source = "ThirdBaseFoulTerritoryLow";
+                }
+                break;
             case ProSpiCameraPreset::ThirdBaseCornerLow:
                 if (m_match_game_fov_prospi_third_base_sweep_dolly_override->value()) {
                     active_dolly_distance = std::clamp(m_match_game_fov_prospi_third_base_sweep_dolly_distance->value(), 10.0f, 50000.0f);
@@ -3003,6 +3069,12 @@ void VR::update_game_fov() {
                     prospi_dolly_source = "FirstBaseWideTelephoto";
                 }
                 break;
+            case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
+                if (m_match_game_fov_prospi_first_base_outfield_line_low_dolly_override->value()) {
+                    active_dolly_distance = std::clamp(m_match_game_fov_prospi_first_base_outfield_line_low_dolly_distance->value(), 10.0f, 50000.0f);
+                    prospi_dolly_source = "FirstBaseOutfieldLineLow";
+                }
+                break;
             case ProSpiCameraPreset::FirstBaseCornerLow:
                 if (m_match_game_fov_prospi_first_base_corner_low_dolly_override->value()) {
                     active_dolly_distance = std::clamp(m_match_game_fov_prospi_first_base_corner_low_dolly_distance->value(), 10.0f, 50000.0f);
@@ -3025,6 +3097,12 @@ void VR::update_game_fov() {
                 if (m_match_game_fov_prospi_right_field_corner_dolly_override->value()) {
                     active_dolly_distance = std::clamp(m_match_game_fov_prospi_right_field_corner_dolly_distance->value(), 10.0f, 50000.0f);
                     prospi_dolly_source = "RightFieldCornerTelephoto";
+                }
+                break;
+            case ProSpiCameraPreset::RightFieldLineTelephoto:
+                if (m_match_game_fov_prospi_right_field_line_dolly_override->value()) {
+                    active_dolly_distance = std::clamp(m_match_game_fov_prospi_right_field_line_dolly_distance->value(), 10.0f, 50000.0f);
+                    prospi_dolly_source = "RightFieldLineTelephoto";
                 }
                 break;
             case ProSpiCameraPreset::RightCenterFieldTelephoto:
@@ -3067,9 +3145,13 @@ void VR::update_game_fov() {
                 return std::clamp(m_match_game_fov_prospi_deep_outfield_actual_min->value(), 5.0f, 175.0f);
             case ProSpiCameraPreset::ThirdBaseTelephoto:
             case ProSpiCameraPreset::ThirdBaseRelayLow:
+            case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+            case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
             case ProSpiCameraPreset::ThirdBaseWideTelephoto:
             case ProSpiCameraPreset::FirstBaseTelephoto:
             case ProSpiCameraPreset::FirstBaseWideTelephoto:
+            case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
+            case ProSpiCameraPreset::RightFieldLineTelephoto:
             case ProSpiCameraPreset::GenericTelephoto:
             case ProSpiCameraPreset::None:
             default:
@@ -4743,6 +4825,14 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     if (m_match_game_fov_prospi_third_base_relay_low_dolly_override->value()) {
                         m_match_game_fov_prospi_third_base_relay_low_dolly_distance->draw_drag("Third Base Relay Low Dolly Distance", 10.0f, "%.0f");
                     }
+                    m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override->draw("Auto Override Third Base Outfield Line Low Dolly");
+                    if (m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override->value()) {
+                        m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance->draw_drag("Third Base Outfield Line Low Dolly Distance", 10.0f, "%.0f");
+                    }
+                    m_match_game_fov_prospi_third_base_foul_territory_low_dolly_override->draw("Auto Override Third Base Foul Territory Low Dolly");
+                    if (m_match_game_fov_prospi_third_base_foul_territory_low_dolly_override->value()) {
+                        m_match_game_fov_prospi_third_base_foul_territory_low_dolly_distance->draw_drag("Third Base Foul Territory Low Dolly Distance", 10.0f, "%.0f");
+                    }
                     m_match_game_fov_prospi_third_base_sweep_dolly_override->draw("Auto Override Third Base Corner Low Dolly");
                     if (m_match_game_fov_prospi_third_base_sweep_dolly_override->value()) {
                         m_match_game_fov_prospi_third_base_sweep_dolly_distance->draw_drag("Third Base Corner Low Dolly Distance", 10.0f, "%.0f");
@@ -4759,6 +4849,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     if (m_match_game_fov_prospi_first_base_wide_dolly_override->value()) {
                         m_match_game_fov_prospi_first_base_wide_dolly_distance->draw_drag("First Base Wide Dolly Distance", 10.0f, "%.0f");
                     }
+                    m_match_game_fov_prospi_first_base_outfield_line_low_dolly_override->draw("Auto Override First Base Outfield Line Low Dolly");
+                    if (m_match_game_fov_prospi_first_base_outfield_line_low_dolly_override->value()) {
+                        m_match_game_fov_prospi_first_base_outfield_line_low_dolly_distance->draw_drag("First Base Outfield Line Low Dolly Distance", 10.0f, "%.0f");
+                    }
                     m_match_game_fov_prospi_first_base_corner_low_dolly_override->draw("Auto Override First Base Corner Low Dolly");
                     if (m_match_game_fov_prospi_first_base_corner_low_dolly_override->value()) {
                         m_match_game_fov_prospi_first_base_corner_low_dolly_distance->draw_drag("First Base Corner Low Dolly Distance", 10.0f, "%.0f");
@@ -4770,6 +4864,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     m_match_game_fov_prospi_right_field_corner_dolly_override->draw("Auto Override Right Field Corner Dolly");
                     if (m_match_game_fov_prospi_right_field_corner_dolly_override->value()) {
                         m_match_game_fov_prospi_right_field_corner_dolly_distance->draw_drag("Right Field Corner Dolly Distance", 10.0f, "%.0f");
+                    }
+                    m_match_game_fov_prospi_right_field_line_dolly_override->draw("Auto Override Right Field Line Telephoto Dolly");
+                    if (m_match_game_fov_prospi_right_field_line_dolly_override->value()) {
+                        m_match_game_fov_prospi_right_field_line_dolly_distance->draw_drag("Right Field Line Telephoto Dolly Distance", 10.0f, "%.0f");
                     }
                     m_match_game_fov_prospi_right_center_field_dolly_override->draw("Auto Override Right Center Field Dolly");
                     if (m_match_game_fov_prospi_right_center_field_dolly_override->value()) {
