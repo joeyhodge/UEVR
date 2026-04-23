@@ -1581,6 +1581,8 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     ZoneScopedN("UGameEngine::Tick Hook");
     FrameMarkStart("UGameEngine::Tick");
 
+    sdk::UEngine::set_runtime_engine(engine);
+
     auto hook = g_hook;
     
     hook->m_in_engine_tick = true;
