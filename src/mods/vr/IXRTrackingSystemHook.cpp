@@ -32,6 +32,25 @@
 
 #include "IXRTrackingSystemHook.hpp"
 
+namespace {
+bool is_deadzone_ue56_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path || exe_path->find(L"DeadzoneSteam-Win64-Shipping") == std::wstring::npos) {
+            return false;
+        }
+
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+        const auto file_version = sdk::get_file_version_info();
+
+        return str_version.starts_with("5.6") || file_version.dwFileVersionMS == 0x00050006;
+    }();
+
+    return result;
+}
+}
+
 detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::string> version_override = std::nullopt) {
     const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
     auto version = sdk::get_file_version_info();
@@ -522,6 +541,12 @@ void IXRTrackingSystemHook::on_draw_ui() {
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
 
+    if (is_deadzone_ue56_executable() && vr->is_any_aim_method_active()) {
+        SPDLOG_WARN_ONCE("[Deadzone][Aim] Disabling non-game aim on UE5.6 to avoid APlayerCameraManager camera-modify crash");
+        vr->set_aim_method(VR::AimMethod::GAME);
+        return;
+    }
+
     if (!m_initialized && (vr->is_any_aim_method_active() || vr->wants_blueprint_load())) {
         if (!m_initialized) {
             initialize();
@@ -704,7 +729,7 @@ void IXRTrackingSystemHook::initialize() {
             }
 
             if (hmdvt.ResetOrientation_index().has_value()) {
-                m_hmd_vtable[hmdvt.ResetPosition_index().value()] = (uintptr_t)&reset_orientation;
+                m_hmd_vtable[hmdvt.ResetOrientation_index().value()] = (uintptr_t)&reset_orientation;
             } else {
                 SPDLOG_ERROR("IXRTrackingSystemHook::IXRTrackingSystemHook: reset_orientation_index not implemented");
             }
