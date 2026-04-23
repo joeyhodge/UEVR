@@ -49,6 +49,15 @@ bool is_deadzone_ue56_executable() {
 
     return result;
 }
+
+bool is_deadzone_experimental_controller_aim_active() {
+    if (!is_deadzone_ue56_executable()) {
+        return false;
+    }
+
+    auto& vr = VR::get();
+    return vr->is_controller_aim_enabled() && vr->is_using_controllers();
+}
 }
 
 detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::string> version_override = std::nullopt) {
@@ -540,17 +549,35 @@ void IXRTrackingSystemHook::on_draw_ui() {
 
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
+    const auto deadzone_controller_aim = is_deadzone_experimental_controller_aim_active();
 
     if (is_deadzone_ue56_executable() && vr->is_any_aim_method_active()) {
-        SPDLOG_WARN_ONCE("[Deadzone][Aim] Disabling non-game aim on UE5.6 to avoid APlayerCameraManager camera-modify crash");
-        vr->set_aim_method(VR::AimMethod::GAME);
-        return;
+        const auto aim_method = vr->get_aim_method();
+
+        if (aim_method == VR::AimMethod::HEAD) {
+            SPDLOG_WARN_ONCE("[Deadzone][Aim] Disabling HMD aim on UE5.6 to avoid APlayerCameraManager camera-modify crash");
+            vr->set_aim_method(VR::AimMethod::GAME);
+            return;
+        }
+
+        if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
+            SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
+            vr->set_aim_method(VR::AimMethod::GAME);
+            return;
+        }
+
+        SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; HMD aim remains disabled");
     }
 
-    if (!m_initialized && (vr->is_any_aim_method_active() || vr->wants_blueprint_load())) {
+    if (!m_initialized && (((vr->is_any_aim_method_active() && !deadzone_controller_aim) || vr->wants_blueprint_load()))) {
         if (!m_initialized) {
             initialize();
         }
+    }
+
+    if (deadzone_controller_aim) {
+        SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving controller aim through direct control rotation updates");
+        manual_update_control_rotation();
     }
 
     if (vr->is_any_aim_method_active()) {
@@ -566,6 +593,14 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             SPDLOG_INFO("IXRTrackingSystemHook: Recentering view because of timeout");
         }
     }
+}
+
+void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (!is_deadzone_experimental_controller_aim_active()) {
+        return;
+    }
+
+    manual_update_control_rotation();
 }
 
 void IXRTrackingSystemHook::initialize() {
@@ -1102,6 +1137,10 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed(sdk::IXRTrackingSystem*) {
 
     auto& vr = VR::get();
 
+    if (is_deadzone_experimental_controller_aim_active()) {
+        return false;
+    }
+
     if (!vr->is_hmd_active()) {
         return false;
     }
@@ -1191,6 +1230,10 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed_for_world(sdk::IXRTrackingS
     SPDLOG_INFO_ONCE("is_head_tracking_allowed_for_world {:x}", (uintptr_t)_ReturnAddress());
 
     auto& vr = VR::get();
+
+    if (is_deadzone_experimental_controller_aim_active()) {
+        return false;
+    }
 
     if (!vr->is_hmd_active() || !vr->is_any_aim_method_active()) {
         return false;
@@ -2032,6 +2075,14 @@ void IXRTrackingSystemHook::process_view_rotation(
     auto& vr = VR::get();
 
     if (!vr->is_hmd_active() || !vr->is_any_aim_method_active()) {
+        call_orig();
+        return;
+    }
+
+    if (is_deadzone_experimental_controller_aim_active()) {
+        // Deadzone crashes in APlayerCameraManager camera-modify code when we mutate the
+        // PCM rotation path directly. Keep the game path intact and drive control
+        // rotation through the safer manual controller update path instead.
         call_orig();
         return;
     }
