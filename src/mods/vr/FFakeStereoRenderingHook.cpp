@@ -84,6 +84,23 @@ constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
 
+bool is_deadzone_ue56_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path || exe_path->find(L"DeadzoneSteam-Win64-Shipping") == std::wstring::npos) {
+            return false;
+        }
+
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+        const auto file_version = sdk::get_file_version_info();
+
+        return str_version.starts_with("5.6") || file_version.dwFileVersionMS == 0x00050006;
+    }();
+
+    return result;
+}
+
 struct AvowedNativeFixGateState {
     uintptr_t scene{};
     uintptr_t render_target{};
@@ -1695,6 +1712,10 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
 
     for (auto& mod : mods) {
         mod->on_post_engine_tick(engine, delta);
+    }
+
+    if (hook->m_tracking_system_hook != nullptr) {
+        hook->m_tracking_system_hook->on_post_engine_tick(engine, delta);
     }
 
     return result;
@@ -6612,7 +6633,15 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
 
         // Modify Player Control Rotation
-        if (true_index == 1 && vr->is_aim_modify_player_control_rotation_enabled() && vr->is_any_aim_method_active()) {
+        const auto deadzone_controller_aim_fallback =
+            is_deadzone_ue56_executable() &&
+            vr->is_controller_aim_enabled() &&
+            vr->is_using_controllers();
+
+        if (true_index == 1 &&
+            vr->is_any_aim_method_active() &&
+            (vr->is_aim_modify_player_control_rotation_enabled() || deadzone_controller_aim_fallback))
+        {
             if (g_hook->m_tracking_system_hook != nullptr) {
                 g_hook->m_tracking_system_hook->manual_update_control_rotation();
             }
