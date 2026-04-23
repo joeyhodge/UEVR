@@ -33,6 +33,7 @@ public:
 
     void on_draw_ui() override;
     void on_pre_engine_tick(sdk::UGameEngine* engine, float delta) override;
+    void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
 
     auto& get_process_view_rotation_data() { return m_process_view_rotation_data; }
 
