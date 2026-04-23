@@ -50,12 +50,21 @@ bool is_deadzone_ue56_executable() {
     return result;
 }
 
-bool is_deadzone_experimental_controller_aim_active() {
+bool is_deadzone_experimental_direct_aim_active() {
     if (!is_deadzone_ue56_executable()) {
         return false;
     }
 
     auto& vr = VR::get();
+
+    if (!vr->is_hmd_active()) {
+        return false;
+    }
+
+    if (vr->is_headlocked_aim_enabled()) {
+        return true;
+    }
+
     return vr->is_controller_aim_enabled() && vr->is_using_controllers();
 }
 }
@@ -549,34 +558,30 @@ void IXRTrackingSystemHook::on_draw_ui() {
 
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
-    const auto deadzone_controller_aim = is_deadzone_experimental_controller_aim_active();
+    const auto deadzone_direct_aim = is_deadzone_experimental_direct_aim_active();
 
     if (is_deadzone_ue56_executable() && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
         if (aim_method == VR::AimMethod::HEAD) {
-            SPDLOG_WARN_ONCE("[Deadzone][Aim] Disabling HMD aim on UE5.6 to avoid APlayerCameraManager camera-modify crash");
-            vr->set_aim_method(VR::AimMethod::GAME);
-            return;
-        }
-
-        if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
+            SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental HMD aim on UE5.6 through direct control rotation updates");
+        } else if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
             SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             vr->set_aim_method(VR::AimMethod::GAME);
             return;
+        } else {
+            SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
         }
-
-        SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; HMD aim remains disabled");
     }
 
-    if (!m_initialized && (((vr->is_any_aim_method_active() && !deadzone_controller_aim) || vr->wants_blueprint_load()))) {
+    if (!m_initialized && (((vr->is_any_aim_method_active() && !deadzone_direct_aim) || vr->wants_blueprint_load()))) {
         if (!m_initialized) {
             initialize();
         }
     }
 
-    if (deadzone_controller_aim) {
-        SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving controller aim through direct control rotation updates");
+    if (deadzone_direct_aim) {
+        SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
         manual_update_control_rotation();
     }
 
@@ -596,7 +601,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
-    if (!is_deadzone_experimental_controller_aim_active()) {
+    if (!is_deadzone_experimental_direct_aim_active()) {
         return;
     }
 
@@ -1137,7 +1142,7 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed(sdk::IXRTrackingSystem*) {
 
     auto& vr = VR::get();
 
-    if (is_deadzone_experimental_controller_aim_active()) {
+    if (is_deadzone_experimental_direct_aim_active()) {
         return false;
     }
 
@@ -1231,7 +1236,7 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed_for_world(sdk::IXRTrackingS
 
     auto& vr = VR::get();
 
-    if (is_deadzone_experimental_controller_aim_active()) {
+    if (is_deadzone_experimental_direct_aim_active()) {
         return false;
     }
 
@@ -2079,7 +2084,7 @@ void IXRTrackingSystemHook::process_view_rotation(
         return;
     }
 
-    if (is_deadzone_experimental_controller_aim_active()) {
+    if (is_deadzone_experimental_direct_aim_active()) {
         // Deadzone crashes in APlayerCameraManager camera-modify code when we mutate the
         // PCM rotation path directly. Keep the game path intact and drive control
         // rotation through the safer manual controller update path instead.
