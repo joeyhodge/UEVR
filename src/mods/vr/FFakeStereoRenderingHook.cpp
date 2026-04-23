@@ -6633,14 +6633,15 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
 
         // Modify Player Control Rotation
-        const auto deadzone_controller_aim_fallback =
+        const auto deadzone_direct_aim_fallback =
             is_deadzone_ue56_executable() &&
-            vr->is_controller_aim_enabled() &&
-            vr->is_using_controllers();
+            vr->is_hmd_active() &&
+            (vr->is_headlocked_aim_enabled() ||
+                (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
         if (true_index == 1 &&
             vr->is_any_aim_method_active() &&
-            (vr->is_aim_modify_player_control_rotation_enabled() || deadzone_controller_aim_fallback))
+            (vr->is_aim_modify_player_control_rotation_enabled() || deadzone_direct_aim_fallback))
         {
             if (g_hook->m_tracking_system_hook != nullptr) {
                 g_hook->m_tracking_system_hook->manual_update_control_rotation();
