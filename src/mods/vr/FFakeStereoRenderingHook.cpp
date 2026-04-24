@@ -84,6 +84,23 @@ constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
 
+bool is_deadzone_ue56_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path || exe_path->find(L"DeadzoneSteam-Win64-Shipping") == std::wstring::npos) {
+            return false;
+        }
+
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+        const auto file_version = sdk::get_file_version_info();
+
+        return str_version.starts_with("5.6") || file_version.dwFileVersionMS == 0x00050006;
+    }();
+
+    return result;
+}
+
 struct AvowedNativeFixGateState {
     uintptr_t scene{};
     uintptr_t render_target{};
@@ -1581,6 +1598,8 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     ZoneScopedN("UGameEngine::Tick Hook");
     FrameMarkStart("UGameEngine::Tick");
 
+    sdk::UEngine::set_runtime_engine(engine);
+
     auto hook = g_hook;
     
     hook->m_in_engine_tick = true;
@@ -1693,6 +1712,10 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
 
     for (auto& mod : mods) {
         mod->on_post_engine_tick(engine, delta);
+    }
+
+    if (hook->m_tracking_system_hook != nullptr) {
+        hook->m_tracking_system_hook->on_post_engine_tick(engine, delta);
     }
 
     return result;
@@ -6610,7 +6633,16 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
 
         // Modify Player Control Rotation
-        if (true_index == 1 && vr->is_aim_modify_player_control_rotation_enabled() && vr->is_any_aim_method_active()) {
+        const auto direct_aim_compatibility_fallback =
+            vr->is_hmd_active() &&
+            (is_deadzone_ue56_executable() || vr->is_direct_aim_compatibility_enabled()) &&
+            (vr->is_headlocked_aim_enabled() ||
+                (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
+
+        if (true_index == 1 &&
+            vr->is_any_aim_method_active() &&
+            (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
+        {
             if (g_hook->m_tracking_system_hook != nullptr) {
                 g_hook->m_tracking_system_hook->manual_update_control_rotation();
             }
@@ -7564,6 +7596,45 @@ void FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook(safetyhook
     }
 }
 
+namespace {
+struct UE55SlateDrawWindowPassInputsHead {
+    void* renderer;
+    void* window_element_list;
+    void* window;
+    sdk::FViewportInfo* viewport_info;
+};
+
+bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateDrawWindowPassInputsHead& out) {
+    if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputsHead))) {
+        return false;
+    }
+
+    memcpy(&out, candidate, sizeof(out));
+
+    if (out.renderer != renderer || out.window == nullptr) {
+        return false;
+    }
+
+    return is_readable_process_range((uintptr_t)out.window, sizeof(void*));
+}
+
+bool looks_like_vtable_object(void* object) {
+    uintptr_t vtable{};
+    return safe_read_value((uintptr_t)object, vtable) && looks_like_virtual_function_table(vtable);
+}
+
+sdk::FSlateResource* try_get_slate_viewport_render_target_texture(sdk::ISlateViewport* viewport, bool& faulted) {
+    faulted = false;
+
+    __try {
+        return viewport != nullptr ? viewport->GetViewportRenderTargetTexture() : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = true;
+        return nullptr;
+    }
+}
+}
+
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
                                                                 void* a4, void* params, void* unk1, void* unk2) 
 {
@@ -7581,30 +7652,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto viewport_info = (sdk::FViewportInfo*)a3;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
-    void** a4_ptr = (void**)a4;
+    UE55SlateDrawWindowPassInputsHead ue55_inputs{};
+    const auto a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
 
-    static bool a4_is_ue_5_5_variant = [&]() -> bool {
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Checking if a4 is UE 5.5 variant...");
-
-        __try {
-            if (a4_ptr[0] == renderer) {
-                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is UE 5.5 variant!");
-                return true;
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-            SPDLOG_WARN("Exception occurred while checking if a4 is UE 5.5 variant!");
-        }
-
-        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] a4 is not UE 5.5 variant!");
-
-        return false;
-    }();
+    if (a4_is_ue_5_5_variant) {
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 FSlateDrawWindowPassInputs layout");
+        viewport_info = ue55_inputs.viewport_info;
+    }
 
     if (!a4_is_ue_5_5_variant) {
         // How are we going to fix this on UE5.5?
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
     } else {
-        const auto window = (uintptr_t)a4_ptr[2];
+        const auto window = (uintptr_t)ue55_inputs.window;
 
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
             std::optional<size_t> result{};
@@ -7746,7 +7806,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }();
 
         if (viewport_offset) {
-            slate_viewport = *(sdk::ISlateViewport**)((uintptr_t)window + *viewport_offset);
+            sdk::ISlateViewport* candidate{};
+
+            if (safe_read_value((uintptr_t)window + *viewport_offset, candidate) && looks_like_vtable_object(candidate)) {
+                slate_viewport = candidate;
+            } else {
+                SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE 5.5 Slate viewport candidate was not a valid vtable object");
+            }
         }
     }
 
@@ -7784,12 +7850,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto rtm = g_hook->get_render_target_manager();
 
     if (slate_viewport != nullptr) {
-        slate_resource = slate_viewport->GetViewportRenderTargetTexture();
+        bool slate_viewport_faulted = false;
+        slate_resource = try_get_slate_viewport_render_target_texture(slate_viewport, slate_viewport_faulted);
+
+        if (slate_viewport_faulted) {
+            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] UE 5.5 Slate viewport resource call faulted; deferring to fallback path");
+        }
     }
 
     bool skip_ue56_viewport_provider = false;
 
-    if (viewport_info != nullptr && !is_ue_5_7_or_newer()) {
+    if (viewport_info != nullptr && !a4_is_ue_5_5_variant && !is_ue_5_7_or_newer()) {
         const auto known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
         const auto known_texture_is_safe =
             known_texture == nullptr ||
@@ -7814,6 +7885,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
             return call_orig();
         }
+    } else if (viewport_info != nullptr && a4_is_ue_5_5_variant) {
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping FViewportInfo RT provider probing on UE 5.5 direct Slate inputs");
     } else if (viewport_info != nullptr && is_ue_5_7_or_newer()) {
         SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping FViewportInfo RT provider probing on UE 5.7+ for stability");
     }

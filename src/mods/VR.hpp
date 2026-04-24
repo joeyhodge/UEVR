@@ -569,6 +569,10 @@ public:
         return m_compatibility_ahud->value();
     }
 
+    bool is_direct_aim_compatibility_enabled() const {
+        return m_compatibility_direct_aim->value();
+    }
+
     bool is_ghosting_fix_enabled() const {
         return m_ghosting_fix->value();
     }
@@ -1077,6 +1081,7 @@ private:
     const ModToggle::Ptr m_compatibility_skip_uobjectarray_init{ ModToggle::create(generate_name("Compatibility_SkipUObjectArrayInit"), false, true) };
 
     const ModToggle::Ptr m_compatibility_ahud{ ModToggle::create(generate_name("Compatibility_AHUD"), false, true) };
+    const ModToggle::Ptr m_compatibility_direct_aim{ ModToggle::create(generate_name("Compatibility_DirectAimFallback"), false, true) };
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1283,6 +1288,7 @@ public:
             *m_compatibility_skip_pip,
             *m_compatibility_skip_uobjectarray_init,
             *m_compatibility_ahud,
+            *m_compatibility_direct_aim,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,

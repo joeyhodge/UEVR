@@ -5015,6 +5015,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_ahud->draw("AHUD UI Compatibility");
             m_compatibility_skip_uobjectarray_init->draw("Skip UObjectArray Init");
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
+            m_compatibility_direct_aim->draw("Direct Aim Fallback");
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 
