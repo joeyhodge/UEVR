@@ -236,6 +236,7 @@ private:
         // Bools
         std::make_unique<CVarData>(L"Engine", L"r.OneFrameThreadLag", CVar::Type::BOOL, 0, 1),
         std::make_unique<CVarData>(L"Engine", L"r.AllowOcclusionQueries", CVar::Type::BOOL, 0, 1),
+        std::make_unique<CVarData>(L"Engine", L"r.PostProcessing.PropagateAlpha", CVar::Type::INT, 0, 2),
         std::make_unique<CVarData>(L"Engine", L"r.VolumetricCloud", CVar::Type::BOOL, 0, 1),
 
         // Ints
