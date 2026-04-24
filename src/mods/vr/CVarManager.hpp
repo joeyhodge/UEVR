@@ -223,6 +223,7 @@ private:
         std::make_unique<CVarStandard>(L"Renderer", L"r.DefaultFeature.AmbientOcclusion", CVar::Type::INT, 0, 2),
         std::make_unique<CVarStandard>(L"Renderer", L"r.TemporalAA.Algorithm", CVar::Type::INT, 0, 1),
         std::make_unique<CVarStandard>(L"Renderer", L"r.TemporalAA.Upsampling", CVar::Type::INT, 0, 1),
+        std::make_unique<CVarStandard>(L"Renderer", L"r.PostProcessing.PropagateAlpha", CVar::Type::INT, 0, 2),
         std::make_unique<CVarStandard>(L"Renderer", L"r.Upscale.Quality", CVar::Type::INT, 0, 5),
         std::make_unique<CVarStandard>(L"Renderer", L"r.LightCulling.Quality", CVar::Type::INT, 0, 2),
         std::make_unique<CVarStandard>(L"Renderer", L"r.SubsurfaceScattering", CVar::Type::INT, 0, 2),
@@ -236,7 +237,6 @@ private:
         // Bools
         std::make_unique<CVarData>(L"Engine", L"r.OneFrameThreadLag", CVar::Type::BOOL, 0, 1),
         std::make_unique<CVarData>(L"Engine", L"r.AllowOcclusionQueries", CVar::Type::BOOL, 0, 1),
-        std::make_unique<CVarData>(L"Engine", L"r.PostProcessing.PropagateAlpha", CVar::Type::INT, 0, 2),
         std::make_unique<CVarData>(L"Engine", L"r.VolumetricCloud", CVar::Type::BOOL, 0, 1),
 
         // Ints
