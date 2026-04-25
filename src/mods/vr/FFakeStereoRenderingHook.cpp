@@ -5571,7 +5571,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
 
             // Get the start of the previous instruction
-            const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+            auto previous_instruction = utility::resolve_instruction(exception_address - 1);
 
             if (!previous_instruction) {
                 SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
@@ -5581,8 +5581,54 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
                 previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
-                SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
+                const auto can_use_stalker2_backscan = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
+
+                if (!can_use_stalker2_backscan) {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                std::optional<utility::Resolved> xr_hmd_load{};
+                const auto prior_instructions = utility::get_disassembly_behind(exception_address);
+
+                for (auto it = prior_instructions.rbegin(); it != prior_instructions.rend(); ++it) {
+                    const auto& candidate = *it;
+                    const auto& candidate_ix = candidate.instrux;
+
+                    if ((exception_address - candidate.addr) > 0x40) {
+                        break;
+                    }
+
+                    if (candidate_ix.OperandsCount < 2 ||
+                        candidate_ix.Operands[0].Type != ND_OP_REG ||
+                        candidate_ix.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
+                    {
+                        continue;
+                    }
+
+                    const auto& candidate_op2 = candidate_ix.Operands[1];
+
+                    if (candidate_op2.Type == ND_OP_MEM &&
+                        candidate_op2.Info.Memory.HasBase &&
+                        candidate_op2.Info.Memory.HasDisp &&
+                        candidate_op2.Info.Memory.Disp == potential_hmd_device_offset)
+                    {
+                        xr_hmd_load = candidate;
+                        break;
+                    }
+                }
+
+                if (!xr_hmd_load) {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                SPDLOG_INFO(
+                    "[Stalker2][UE5.1] Matched non-adjacent XRSystem/HMDDevice load at {:x} for null dereference at {:x}",
+                    xr_hmd_load->addr,
+                    exception_address);
+
+                previous_instruction = *xr_hmd_load;
             }
 
             const auto prev_op2 = previous_instruction->instrux.Operands[1];
