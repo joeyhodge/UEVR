@@ -909,6 +909,24 @@ bool is_avowed_executable() {
     return is_avowed;
 }
 
+bool is_dispatch_executable() {
+    static const bool is_dispatch = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"dispatch-win64-shipping") != std::wstring::npos;
+    }();
+
+    return is_dispatch;
+}
+
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
     auto value_lower = std::wstring{value};
     auto needle_lower = std::wstring{needle};
@@ -996,6 +1014,78 @@ std::optional<sdk::UObject*> read_object_property(sdk::UObject* object, std::wst
     return value;
 } catch (...) {
     return std::nullopt;
+}
+
+std::optional<sdk::UObject*> read_struct_object_field(sdk::UObject* object, std::wstring_view struct_property, size_t field_offset) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop = klass->find_property(struct_property);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    if (prop_type != L"StructProperty") {
+        return std::nullopt;
+    }
+
+    const auto value_addr = (uint8_t*)object + prop->get_offset() + field_offset;
+    if (IsBadReadPtr(value_addr, sizeof(sdk::UObject*))) {
+        return std::nullopt;
+    }
+
+    const auto value = *(sdk::UObject**)value_addr;
+    if (value == nullptr || IsBadReadPtr(value, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    return value;
+} catch (...) {
+    return std::nullopt;
+}
+
+std::optional<bool> call_object_bool_function(sdk::UObject* object, std::wstring_view function_name) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto fn = klass->find_function(function_name);
+    if (fn == nullptr) {
+        return std::nullopt;
+    }
+
+    struct BoolReturnParams {
+        bool ret{false};
+    } params{};
+
+    object->process_event(fn, &params);
+    return params.ret;
+} catch (...) {
+    return std::nullopt;
+}
+
+std::string get_log_object_name(sdk::UObject* object) {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return "null";
+    }
+
+    try {
+        return utility::narrow(object->get_full_name());
+    } catch (...) {
+        return "unresolved";
+    }
 }
 
 std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& class_name) {
@@ -1163,6 +1253,88 @@ ShfAuto2DDecision evaluate_shf_auto_2d(sdk::UGameEngine* engine) {
     }
 
     decision.should_force = true;
+    return decision;
+}
+
+struct DispatchAuto2DDecision {
+    bool should_force{false};
+    std::string reason{};
+    std::string subsystem{};
+    std::string source{};
+    std::string player{};
+    std::string texture{};
+    std::optional<bool> playing{};
+    std::optional<bool> preparing{};
+    std::optional<bool> buffering{};
+    std::optional<bool> ready{};
+};
+
+bool is_dispatch_media_player_active(sdk::UObject* player, DispatchAuto2DDecision& decision) {
+    decision.playing = call_object_bool_function(player, L"IsPlaying");
+    decision.preparing = call_object_bool_function(player, L"IsPreparing");
+    decision.buffering = call_object_bool_function(player, L"IsBuffering");
+    decision.ready = call_object_bool_function(player, L"IsReady");
+
+    if (decision.playing.value_or(false)) {
+        decision.reason = "media-player-playing";
+        return true;
+    }
+
+    if (decision.preparing.value_or(false) || decision.buffering.value_or(false)) {
+        decision.reason = "media-player-loading";
+        return true;
+    }
+
+    // If UE4 media functions cannot be resolved in this title, trust Dispatch's
+    // explicit ActiveMediaObjects struct instead of leaving movie scenes in HMD space.
+    if (!decision.playing.has_value() && !decision.preparing.has_value() && !decision.buffering.has_value() && !decision.ready.has_value()) {
+        decision.reason = "active-media-objects";
+        return true;
+    }
+
+    return false;
+}
+
+DispatchAuto2DDecision evaluate_dispatch_auto_2d(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    static const std::wstring media_subsystem_class_name = L"Class /Script/AdHocMedia.AdHocMediaSubsystem";
+    static const std::wstring map_transition_widget_class_name =
+        L"WidgetBlueprintGeneratedClass /Game/Shared/Shifts/Gameplay/Widgets/HeroDatabase/SubWidgets/WBP_VideoPlayerMapTransition.WBP_VideoPlayerMapTransition_C";
+
+    DispatchAuto2DDecision decision{};
+
+    for (auto* subsystem : get_live_objects_by_class_name(media_subsystem_class_name)) {
+        const auto source = read_struct_object_field(subsystem, L"ActiveMediaObjects", 0x0);
+        const auto player = read_struct_object_field(subsystem, L"ActiveMediaObjects", 0x8);
+        const auto texture = read_struct_object_field(subsystem, L"ActiveMediaObjects", 0x10);
+
+        if (!source.has_value() && !player.has_value() && !texture.has_value()) {
+            continue;
+        }
+
+        decision.subsystem = get_log_object_name(subsystem);
+        decision.source = source.has_value() ? get_log_object_name(*source) : "null";
+        decision.player = player.has_value() ? get_log_object_name(*player) : "null";
+        decision.texture = texture.has_value() ? get_log_object_name(*texture) : "null";
+
+        if (player.has_value() && *player != nullptr && is_dispatch_media_player_active(*player, decision)) {
+            decision.should_force = true;
+            return decision;
+        }
+    }
+
+    for (auto* widget : get_live_objects_by_class_name(map_transition_widget_class_name)) {
+        const auto in_viewport = call_object_bool_function(widget, L"IsInViewport");
+        const auto visible = call_object_bool_function(widget, L"IsVisible");
+        if (in_viewport.value_or(false) || (!in_viewport.has_value() && visible.value_or(false))) {
+            decision.should_force = true;
+            decision.reason = "video-map-transition-widget";
+            decision.player = get_log_object_name(widget);
+            return decision;
+        }
+    }
+
     return decision;
 }
 }
@@ -2683,6 +2855,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_statistics_overlay(engine);
     update_game_fov();
     update_shf_auto_2d_mode(engine);
+    update_dispatch_auto_2d_mode(engine);
 
     // Dont update action states on AFR frames
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
@@ -2733,6 +2906,50 @@ void VR::update_shf_auto_2d_mode(sdk::UGameEngine* engine) {
             decision.fov.has_value() ? std::format("{:.3f}", *decision.fov) : "unresolved",
             decision.url.empty() ? "unresolved" : utility::narrow(decision.url),
             decision.target.empty() ? "unresolved" : utility::narrow(decision.target));
+    }
+}
+
+void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
+    if (!is_dispatch_executable()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_dispatch_auto_2d_last_sample.time_since_epoch().count() != 0 &&
+        now - m_dispatch_auto_2d_last_sample < std::chrono::milliseconds(250)) {
+        return;
+    }
+
+    m_dispatch_auto_2d_last_sample = now;
+
+    const auto decision = evaluate_dispatch_auto_2d(engine);
+
+    if (decision.should_force) {
+        if (!m_dispatch_auto_2d_active) {
+            m_dispatch_auto_2d_previous_mode = m_2d_screen_mode->value();
+            m_dispatch_auto_2d_active = true;
+            spdlog::info(
+                "[Dispatch][Auto2D] active=true previous={} reason={} subsystem={} source={} player={} texture={} playing={} preparing={} buffering={} ready={}",
+                m_dispatch_auto_2d_previous_mode,
+                decision.reason,
+                decision.subsystem.empty() ? "unresolved" : decision.subsystem,
+                decision.source.empty() ? "unresolved" : decision.source,
+                decision.player.empty() ? "unresolved" : decision.player,
+                decision.texture.empty() ? "unresolved" : decision.texture,
+                decision.playing.has_value() ? (*decision.playing ? "true" : "false") : "unresolved",
+                decision.preparing.has_value() ? (*decision.preparing ? "true" : "false") : "unresolved",
+                decision.buffering.has_value() ? (*decision.buffering ? "true" : "false") : "unresolved",
+                decision.ready.has_value() ? (*decision.ready ? "true" : "false") : "unresolved");
+        }
+
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (m_dispatch_auto_2d_active) {
+        m_2d_screen_mode->value() = m_dispatch_auto_2d_previous_mode;
+        m_dispatch_auto_2d_active = false;
+        spdlog::info("[Dispatch][Auto2D] active=false restored={}", m_dispatch_auto_2d_previous_mode);
     }
 }
 
