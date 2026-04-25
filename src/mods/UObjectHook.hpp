@@ -60,6 +60,8 @@ public:
         return m_fully_hooked;
     }
 
+    bool try_track_object(sdk::UObjectBase* object, std::string_view context, bool require_array_member = true);
+
 protected:
     std::string_view get_name() const override { return "UObjectHook"; };
     bool is_advanced_mod() const override { return true; }
@@ -218,6 +220,7 @@ private:
     std::shared_ptr<PersistentCameraState> deserialize_camera(const nlohmann::json& data);
     std::shared_ptr<PersistentCameraState> deserialize_camera_state();
     void update_persistent_states();
+    void refresh_new_objects_from_uobject_array(uint32_t max_objects = 4096);
     void update_motion_controller_components(
         const glm::vec3& hmd_location, const glm::vec3& hmd_euler,
         const glm::vec3& left_hand_location, const glm::vec3& left_hand_euler,
@@ -266,6 +269,7 @@ private:
 
     std::deque<sdk::UObject*> m_most_recent_objects{};
     std::unordered_set<sdk::UObject*> m_motion_controller_attached_objects{};
+    int32_t m_uobject_array_scan_cursor{0};
 
     std::unordered_map<sdk::USceneComponent*, std::shared_ptr<MotionControllerState>> m_motion_controller_attached_components{};
     sdk::AActor* m_overlap_detection_actor{nullptr};
@@ -398,7 +402,7 @@ private:
         }
 
         sdk::UObject* resolve_base_object() const;
-        ResolvedObject resolve()  const;
+        ResolvedObject resolve(bool require_tracked_objects = false) const;
 
     private:
         void clear() {
