@@ -11,6 +11,7 @@
 
 #include <utility/String.hpp>
 #include <utility/Module.hpp>
+#include <utility/Logging.hpp>
 
 #include <sdk/UEngine.hpp>
 #include <sdk/CVar.hpp>
@@ -305,7 +306,25 @@ UEVR_SDKFunctions g_sdk_functions {
             return nullptr;
         }
 
-        return (UEVR_UObjectHandle)pc->get_acknowledged_pawn();
+        const auto pawn = pc->get_acknowledged_pawn();
+
+        if (pawn != nullptr) {
+            auto& object_hook = UObjectHook::get();
+
+            auto pawn_base = (sdk::UObjectBase*)pawn;
+
+            if (object_hook != nullptr && object_hook->is_fully_hooked() && !object_hook->exists(pawn_base)) {
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[UObjectHook] get_local_pawn returned non-null but untracked pawn {:x}; attempting safe adoption",
+                    (uintptr_t)pawn);
+                if (!object_hook->try_track_object(pawn_base, "get_local_pawn", true)) {
+                    return nullptr;
+                }
+            }
+        }
+
+        return (UEVR_UObjectHandle)pawn;
     },
     // spawn_object
     [](UEVR_UClassHandle klass, UEVR_UObjectHandle outer) -> UEVR_UObjectHandle {
