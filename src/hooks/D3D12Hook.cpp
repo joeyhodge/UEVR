@@ -775,19 +775,32 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
         d3d12->m_on_present(*d3d12);
 
         if (d3d12->m_next_present_interval) {
-            sync_interval = *d3d12->m_next_present_interval;
+            const auto requested_sync_interval = *d3d12->m_next_present_interval;
             d3d12->m_next_present_interval = std::nullopt;
 
-            if (sync_interval == 0) {
-                BOOL is_fullscreen = 0;
-                swap_chain->GetFullscreenState(&is_fullscreen, nullptr);
-                flags &= ~DXGI_PRESENT_DO_NOT_SEQUENCE;
+            const auto swapchain_key = reinterpret_cast<uintptr_t>(swap_chain);
 
-                DXGI_SWAP_CHAIN_DESC swap_desc{};
-                swap_chain->GetDesc(&swap_desc);
+            if (d3d12->m_swapchains_requiring_original_present_params.contains(swapchain_key)) {
+                if (!d3d12->m_original_present_param_skip_logged_swapchains.contains(swapchain_key)) {
+                    spdlog::warn(
+                        "Skipping UEVR Present param override for swapchain {:x} after prior original-param recovery",
+                        swapchain_key);
+                    d3d12->m_original_present_param_skip_logged_swapchains.insert(swapchain_key);
+                }
+            } else {
+                sync_interval = requested_sync_interval;
 
-                if (!is_fullscreen && (swap_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0) {
-                    flags |= DXGI_PRESENT_ALLOW_TEARING;
+                if (sync_interval == 0) {
+                    BOOL is_fullscreen = 0;
+                    swap_chain->GetFullscreenState(&is_fullscreen, nullptr);
+                    flags &= ~DXGI_PRESENT_DO_NOT_SEQUENCE;
+
+                    DXGI_SWAP_CHAIN_DESC swap_desc{};
+                    swap_chain->GetDesc(&swap_desc);
+
+                    if (!is_fullscreen && (swap_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0) {
+                        flags |= DXGI_PRESENT_ALLOW_TEARING;
+                    }
                 }
             }
         }
@@ -814,6 +827,13 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
 
             if (result == S_OK) {
                 spdlog::warn("Present retry with original params succeeded");
+                const auto swapchain_key = reinterpret_cast<uintptr_t>(swap_chain);
+
+                if (d3d12->m_swapchains_requiring_original_present_params.insert(swapchain_key).second) {
+                    spdlog::warn(
+                        "Marked swapchain {:x} to preserve original Present params after DXGI_ERROR_INVALID_CALL recovery",
+                        swapchain_key);
+                }
             } else {
                 spdlog::error("Present retry with original params failed: {:x}", result);
             }
