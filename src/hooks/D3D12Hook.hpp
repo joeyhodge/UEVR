@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #pragma comment(lib, "d3d12.lib")
@@ -128,6 +129,8 @@ protected:
     bool m_is_phase_1{ true };
     bool m_inside_present{false};
     bool m_ignore_next_present{false};
+    std::unordered_set<uintptr_t> m_swapchains_requiring_original_present_params{};
+    std::unordered_set<uintptr_t> m_original_present_param_skip_logged_swapchains{};
 
     std::unique_ptr<PointerHook> m_present_hook{};
     std::unique_ptr<PointerHook> m_present1_hook{};
