@@ -659,6 +659,8 @@ thread_local int32_t g_present_depth = 0;
 
 HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_interval, UINT flags, DXGI_PRESENT_PARAMETERS* params, bool present1) {
     auto d3d12 = g_d3d12_hook;
+    const auto original_sync_interval = sync_interval;
+    const auto original_flags = flags;
 
     HWND swapchain_wnd{nullptr};
     swap_chain->GetHwnd(&swapchain_wnd);
@@ -797,6 +799,25 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
     
     if (!d3d12->m_ignore_next_present) {
         result = present_fn(swap_chain, sync_interval, flags, params);
+
+        if (result == DXGI_ERROR_INVALID_CALL &&
+            (sync_interval != original_sync_interval || flags != original_flags))
+        {
+            spdlog::warn(
+                "Present failed with modified params, retrying original params. modified_sync={} modified_flags={:x} original_sync={} original_flags={:x}",
+                sync_interval,
+                flags,
+                original_sync_interval,
+                original_flags);
+
+            result = present_fn(swap_chain, original_sync_interval, original_flags, params);
+
+            if (result == S_OK) {
+                spdlog::warn("Present retry with original params succeeded");
+            } else {
+                spdlog::error("Present retry with original params failed: {:x}", result);
+            }
+        }
 
         if (result != S_OK) {
             spdlog::error("Present failed: {:x}", result);
