@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -51,6 +52,27 @@ bool is_stalker2_current_game_for_cvars() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool legacy_propagate_alpha_allows_tonemapper_value() {
+    static const bool result = []() {
+        int major{};
+        int minor{};
+
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            if (swscanf_s(found_version->c_str(), L"%d.%d", &major, &minor) == 2) {
+                return major == 4 && minor <= 24;
+            }
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        major = (int)((disk_version.dwFileVersionMS >> 16) & 0xffff);
+        minor = (int)(disk_version.dwFileVersionMS & 0xffff);
+
+        return major == 4 && minor <= 24;
     }();
 
     return result;
@@ -621,6 +643,26 @@ std::string CVarManager::CVar::get_key_name() {
     return std::format("{}_{}", utility::narrow(m_module), utility::narrow(m_name));
 }
 
+int CVarManager::CVar::clamp_int_value(int value) const {
+    return std::clamp(value, m_min_int_value, effective_max_int_value());
+}
+
+float CVarManager::CVar::clamp_float_value(float value) const {
+    if (!std::isfinite(value)) {
+        return m_min_float_value;
+    }
+
+    return std::clamp(value, m_min_float_value, m_max_float_value);
+}
+
+int CVarManager::CVar::effective_max_int_value() const {
+    if (m_name == L"r.PostProcessing.PropagateAlpha" && !legacy_propagate_alpha_allows_tonemapper_value()) {
+        return std::min(m_max_int_value, 1);
+    }
+
+    return m_max_int_value;
+}
+
 void CVarManager::CVar::load_internal(const std::string& filename, bool set_defaults) try {
     ZoneScopedN(__FUNCTION__);
 
@@ -644,16 +686,16 @@ void CVarManager::CVar::load_internal(const std::string& filename, bool set_defa
     case Type::BOOL:
     case Type::INT:
         try {
-            m_frozen_int_value = *cfg.get<int>(get_key_name());
+            m_frozen_int_value = clamp_int_value(*cfg.get<int>(get_key_name()));
         } catch(...) {
-            m_frozen_int_value = (int)*cfg.get<float>(get_key_name());
+            m_frozen_int_value = clamp_int_value((int)*cfg.get<float>(get_key_name()));
         }
         break;
     case Type::FLOAT:
         try {
-            m_frozen_float_value = *cfg.get<float>(get_key_name());
+            m_frozen_float_value = clamp_float_value(*cfg.get<float>(get_key_name()));
         } catch(...) {
-            m_frozen_float_value = (float)*cfg.get<int>(get_key_name());
+            m_frozen_float_value = clamp_float_value((float)*cfg.get<int>(get_key_name()));
         }
         break;
     }
@@ -676,16 +718,16 @@ void CVarManager::CVar::load_from_config_internal(const utility::Config& cfg, bo
     case Type::BOOL:
     case Type::INT:
         try {
-            m_frozen_int_value = *cfg.get<int>(get_key_name());
+            m_frozen_int_value = clamp_int_value(*cfg.get<int>(get_key_name()));
         } catch (...) {
-            m_frozen_int_value = (int)*cfg.get<float>(get_key_name());
+            m_frozen_int_value = clamp_int_value((int)*cfg.get<float>(get_key_name()));
         }
         break;
     case Type::FLOAT:
         try {
-            m_frozen_float_value = *cfg.get<float>(get_key_name());
+            m_frozen_float_value = clamp_float_value(*cfg.get<float>(get_key_name()));
         } catch (...) {
-            m_frozen_float_value = (float)*cfg.get<int>(get_key_name());
+            m_frozen_float_value = clamp_float_value((float)*cfg.get<int>(get_key_name()));
         }
         break;
     }
@@ -705,9 +747,11 @@ void CVarManager::CVar::save_internal(const std::string& filename) try {
     switch (m_type) {
     case Type::BOOL:
     case Type::INT:
+        m_frozen_int_value = clamp_int_value(m_frozen_int_value);
         cfg.set<int>(get_key_name(), m_frozen_int_value);
         break;
     case Type::FLOAT:
+        m_frozen_float_value = clamp_float_value(m_frozen_float_value);
         cfg.set<float>(get_key_name(), m_frozen_float_value);
         break;
     };
@@ -825,14 +869,17 @@ void CVarManager::CVarStandard::draw_ui() try {
     
     switch (m_type) {
     case Type::BOOL: {
-        auto value = (bool)cvar->GetInt();
+        auto value = (bool)(m_frozen ? m_frozen_int_value : cvar->GetInt());
 
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
+            m_frozen_int_value = clamp_int_value((int)value);
+            m_setter_unavailable = false;
+            save_internal(cvars_standard_txt_name.data());
+
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
-                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                    if (cvar->Set(std::to_wstring((int)value).c_str())) {
                         sft->m_setter_unavailable = false;
-                        sft->save();
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
@@ -845,14 +892,18 @@ void CVarManager::CVarStandard::draw_ui() try {
         break;
     }
     case Type::INT: {
-        auto value = cvar->GetInt();
+        auto value = m_frozen ? m_frozen_int_value : cvar->GetInt();
 
-        if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
+        if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, effective_max_int_value())) {
+            value = clamp_int_value(value);
+            m_frozen_int_value = value;
+            m_setter_unavailable = false;
+            save_internal(cvars_standard_txt_name.data());
+
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
                     if (cvar->Set(std::to_wstring(value).c_str())) {
                         sft->m_setter_unavailable = false;
-                        sft->save();
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
@@ -865,14 +916,18 @@ void CVarManager::CVarStandard::draw_ui() try {
         break;
     }
     case Type::FLOAT: {
-        auto value = cvar->GetFloat();
+        auto value = m_frozen ? m_frozen_float_value : cvar->GetFloat();
 
         if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
+            value = clamp_float_value(value);
+            m_frozen_float_value = value;
+            m_setter_unavailable = false;
+            save_internal(cvars_standard_txt_name.data());
+
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
                 try {
                     if (cvar->Set(std::to_wstring(value).c_str())) {
                         sft->m_setter_unavailable = false;
-                        sft->save();
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
