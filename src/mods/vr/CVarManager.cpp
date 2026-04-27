@@ -57,14 +57,14 @@ bool is_stalker2_current_game_for_cvars() {
     return result;
 }
 
-bool legacy_propagate_alpha_allows_tonemapper_value() {
+bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
         int major{};
         int minor{};
 
         if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
             if (swscanf_s(found_version->c_str(), L"%d.%d", &major, &minor) == 2) {
-                return major == 4 && minor <= 24;
+                return major < 5 || (major == 5 && minor <= 4);
             }
         }
 
@@ -72,7 +72,7 @@ bool legacy_propagate_alpha_allows_tonemapper_value() {
         major = (int)((disk_version.dwFileVersionMS >> 16) & 0xffff);
         minor = (int)(disk_version.dwFileVersionMS & 0xffff);
 
-        return major == 4 && minor <= 24;
+        return major < 5 || (major == 5 && minor <= 4);
     }();
 
     return result;
@@ -656,7 +656,7 @@ float CVarManager::CVar::clamp_float_value(float value) const {
 }
 
 int CVarManager::CVar::effective_max_int_value() const {
-    if (m_name == L"r.PostProcessing.PropagateAlpha" && !legacy_propagate_alpha_allows_tonemapper_value()) {
+    if (m_name == L"r.PostProcessing.PropagateAlpha" && !propagate_alpha_allows_tonemapper_value()) {
         return std::min(m_max_int_value, 1);
     }
 
