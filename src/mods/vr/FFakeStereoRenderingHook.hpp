@@ -363,6 +363,7 @@ public:
     void attempt_hook_game_engine_tick(uintptr_t return_address = 0);
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
     void attempt_hook_ue57_slate_elements_pass();
+    void attempt_hook_ue55_slate_output_texture_register();
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_fsceneview_constructor();
     
@@ -561,6 +562,7 @@ private:
     static void* slate_draw_window_render_thread(void* renderer, void* command_list, void* viewport_info, 
                                                  void* elements, void* params, void* unk1, void* unk2);
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
+    static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -600,6 +602,7 @@ private:
     safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
+    safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -653,6 +656,7 @@ private:
     bool m_hooked_game_engine_tick{false};
     bool m_hooked_slate_thread{false};
     bool m_hooked_ue57_slate_elements_pass{false};
+    bool m_hooked_ue55_slate_output_texture_register{false};
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
     bool m_has_seen_prerender_viewfamily{false};
@@ -663,6 +667,7 @@ private:
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
     bool m_attempted_hook_ue57_slate_elements_pass{false};
+    bool m_attempted_hook_ue55_slate_output_texture_register{false};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
