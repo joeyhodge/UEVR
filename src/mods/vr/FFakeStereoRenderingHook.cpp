@@ -8,6 +8,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <mutex>
 #include <unordered_map>
@@ -181,6 +182,7 @@ bool aphelion_is_current_game() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path &&
             (exe_path->find(L"PIO-WinGDK-Shipping") != std::wstring::npos ||
+             exe_path->find(L"PIO-Win64-Shipping") != std::wstring::npos ||
              exe_path->find(L"Aphelion") != std::wstring::npos);
     }();
 
@@ -192,7 +194,8 @@ bool mechwarrior_clans_is_current_game() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path &&
             (exe_path->find(L"MechWarrior-Win64-Shipping") != std::wstring::npos ||
-             exe_path->find(L"MW5Clans") != std::wstring::npos);
+             exe_path->find(L"MW5Clans") != std::wstring::npos ||
+             exe_path->find(L"ArkAscended") != std::wstring::npos);
     }();
 
     return result;
@@ -1607,6 +1610,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         m_recreate_textures_on_reset->draw("Recreate Textures on Reset");
         m_frame_delay_compensation->draw("Frame Delay Compensation");
         m_use_fmalloc_scene_view_extensions->draw("Use FMalloc for ISceneViewExtensions");
+        m_ue55_apply_viewport_scale_to_dedicated_ui_extent->draw("UE5.5: Apply Slate Viewport UI Scale to Dedicated UI Extent");
 
         if (m_tracking_system_hook != nullptr) {
             m_tracking_system_hook->on_draw_ui();
@@ -8061,6 +8065,31 @@ std::optional<UE55SlateExtent> ue55_get_slate_expected_extent(const UE55SlateDra
     return UE55SlateExtent{(uint32_t)width, (uint32_t)height};
 }
 
+std::optional<UE55SlateExtent> ue55_get_adjusted_slate_expected_extent(
+    const UE55SlateDrawWindowPassInputs& inputs,
+    bool apply_viewport_scale)
+{
+    const auto base_extent = ue55_get_slate_expected_extent(inputs);
+    if (!base_extent) {
+        return std::nullopt;
+    }
+
+    if (!apply_viewport_scale) {
+        return base_extent;
+    }
+
+    const auto scale = inputs.viewport_scale_ui;
+    if (!std::isfinite(scale) || scale <= 0.01f || scale > 4.0f) {
+        SPDLOG_WARN_ONCE("[UE5.5][SlateUI] Ignoring invalid viewport_scale_ui value: {}", scale);
+        return base_extent;
+    }
+
+    const auto scaled_width = std::clamp((uint32_t)std::lround((double)base_extent->width * (double)scale), 1u, 16384u);
+    const auto scaled_height = std::clamp((uint32_t)std::lround((double)base_extent->height * (double)scale), 1u, 16384u);
+
+    return UE55SlateExtent{scaled_width, scaled_height};
+}
+
 bool looks_like_vtable_object(void* object) {
     uintptr_t vtable{};
     return safe_read_value((uintptr_t)object, vtable) && looks_like_virtual_function_table(vtable);
@@ -8488,7 +8517,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         g_hook->note_stable_slate_draw();
         g_hook->attempt_hook_ue55_slate_output_texture_register();
 
-        const auto expected_extent = a4_has_ue_5_5_full_inputs ? ue55_get_slate_expected_extent(ue55_inputs_full) : std::nullopt;
+        const auto expected_extent = a4_has_ue_5_5_full_inputs
+            ? ue55_get_adjusted_slate_expected_extent(
+                ue55_inputs_full,
+                g_hook->m_ue55_apply_viewport_scale_to_dedicated_ui_extent->value())
+            : std::nullopt;
 
         if (expected_extent) {
             SPDLOG_INFO_EVERY_N_SEC(2,

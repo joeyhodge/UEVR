@@ -734,13 +734,16 @@ private:
     const ModToggle::Ptr m_asynchronous_scan{ ModToggle::create("VR_AsynchronousScan", true) };
     // Off by default because it can cause issues with some games
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
+    // Off by default to preserve existing UE5.5 behavior unless explicitly enabled.
+    const ModToggle::Ptr m_ue55_apply_viewport_scale_to_dedicated_ui_extent{ ModToggle::create("VR_UE55ApplyViewportScaleToDedicatedUIExtent", false) };
 
     void setup_options() {
         m_options = {
             *m_recreate_textures_on_reset,
             *m_frame_delay_compensation,
             *m_asynchronous_scan,
-            *m_use_fmalloc_scene_view_extensions
+            *m_use_fmalloc_scene_view_extensions,
+            *m_ue55_apply_viewport_scale_to_dedicated_ui_extent
         };
     }
 
