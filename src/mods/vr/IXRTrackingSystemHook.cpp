@@ -611,8 +611,9 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         manual_update_control_rotation();
     }
 
+    auto& data = m_process_view_rotation_data;
+
     if (vr->is_any_aim_method_active()) {
-        auto& data = m_process_view_rotation_data;
 
         // This can happen if player logic stops running (e.g. player has died or entered a loading screen)
         // so we dont want the UI off in nowhere land
@@ -623,6 +624,11 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 
             SPDLOG_INFO("IXRTrackingSystemHook: Recentering view because of timeout");
         }
+    } else if (data.auto_enabled_decoupled_pitch) {
+        data.auto_enabled_decoupled_pitch = false;
+        vr->set_decoupled_pitch(false);
+        vr->set_pre_flattened_rotation(glm::identity<glm::quat>());
+        SPDLOG_INFO("[IXRTrackingSystemHook] Restored decoupled pitch after aim method was disabled");
     }
 }
 
@@ -2184,7 +2190,10 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
         return;
     }
 
-    vr->set_decoupled_pitch(true);
+    if (!vr->is_decoupled_pitch_enabled()) {
+        m_process_view_rotation_data.auto_enabled_decoupled_pitch = true;
+        vr->set_decoupled_pitch(true);
+    }
 
     auto rot_d = (Rotator<double>*)rot;
     const glm::vec3 input_euler = has_double
