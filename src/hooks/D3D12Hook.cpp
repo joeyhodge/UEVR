@@ -25,6 +25,15 @@ constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
 constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
 
+bool should_preserve_present_params_for_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"MafiaTheOldCountry") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 template <typename TInterface>
 void add_unique_pointer_hook(
     TInterface* iface,
@@ -779,13 +788,21 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
             d3d12->m_next_present_interval = std::nullopt;
 
             const auto swapchain_key = reinterpret_cast<uintptr_t>(swap_chain);
+            const auto preserve_for_current_game = should_preserve_present_params_for_current_game();
 
-            if (d3d12->m_swapchains_requiring_original_present_params.contains(swapchain_key)) {
-                if (!d3d12->m_original_present_param_skip_logged_swapchains.contains(swapchain_key)) {
-                    spdlog::warn(
-                        "Skipping UEVR Present param override for swapchain {:x} after prior original-param recovery",
-                        swapchain_key);
-                    d3d12->m_original_present_param_skip_logged_swapchains.insert(swapchain_key);
+            if (preserve_for_current_game || d3d12->m_swapchains_requiring_original_present_params.contains(swapchain_key)) {
+                if (d3d12->m_original_present_param_skip_logged_swapchains.insert(swapchain_key).second) {
+                    if (preserve_for_current_game) {
+                        spdlog::warn(
+                            "Skipping UEVR Present param override for MafiaTheOldCountry swapchain {:x}; preserving original sync={} flags={:x}",
+                            swapchain_key,
+                            original_sync_interval,
+                            original_flags);
+                    } else {
+                        spdlog::warn(
+                            "Skipping UEVR Present param override for swapchain {:x} after prior original-param recovery",
+                            swapchain_key);
+                    }
                 }
             } else {
                 sync_interval = requested_sync_interval;
