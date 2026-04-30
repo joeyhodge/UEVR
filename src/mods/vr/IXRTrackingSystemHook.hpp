@@ -26,6 +26,7 @@ public:
         std::chrono::high_resolution_clock::time_point last_update{std::chrono::high_resolution_clock::now()};
         glm::quat last_aim_rot{glm::identity<glm::quat>()};
         bool was_called{false};
+        bool auto_enabled_decoupled_pitch{false};
     };
 
 public:

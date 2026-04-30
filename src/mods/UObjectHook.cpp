@@ -358,8 +358,7 @@ void UObjectHook::hook() {
     auto add_object_fn = sdk::UObjectBase::get_add_object();
 
     if (!add_object_fn) {
-        SPDLOG_ERROR("[UObjectHook] Failed to find UObjectBase::AddObject, cannot hook UObjectBase");
-        return;
+        SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
 
     m_destructor_hook = safetyhook::create_inline((void**)destructor_fn.value(), &destructor);
@@ -369,14 +368,23 @@ void UObjectHook::hook() {
         return;
     }
 
-    m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
+    if (add_object_fn) {
+        m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
 
-    if (!m_add_object_hook) {
-        SPDLOG_ERROR("[UObjectHook] Failed to hook UObjectBase::AddObject, cannot hook UObjectBase");
-        return;
+        if (m_add_object_hook) {
+            m_add_object_hooked = true;
+        } else {
+            SPDLOG_WARN("[UObjectHook] Failed to hook UObjectBase::AddObject; using incremental FUObjectArray creation tracking");
+        }
     }
 
-    SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
+    m_force_uobject_array_creation_scan = !m_add_object_hooked;
+
+    if (m_add_object_hooked) {
+        SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
+    } else {
+        SPDLOG_INFO("[UObjectHook] Hooked UObjectBase destructor; AddObject creation tracking is using FUObjectArray scanning");
+    }
 
     // Add all the objects that already exist
     auto uobjectarray = sdk::FUObjectArray::get();
@@ -794,7 +802,7 @@ bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view co
 }
 
 void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
-    if (!should_incrementally_refresh_uobject_array() || max_objects == 0) {
+    if ((!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) || max_objects == 0) {
         return;
     }
 
@@ -811,6 +819,10 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
     }
 
     if (m_uobject_array_scan_cursor < 0 || m_uobject_array_scan_cursor > object_count) {
+        m_uobject_array_scan_cursor = 0;
+    }
+
+    if (m_force_uobject_array_creation_scan && m_uobject_array_scan_cursor == object_count) {
         m_uobject_array_scan_cursor = 0;
     }
 
