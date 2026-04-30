@@ -232,6 +232,8 @@ private:
     bool m_hooked{false};
     bool m_fully_hooked{false};
     bool m_wants_activate{false};
+    bool m_add_object_hooked{false};
+    bool m_force_uobject_array_creation_scan{false};
     float m_last_delta_time{1000.0f / 60.0f};
 
     struct DebugInfo {

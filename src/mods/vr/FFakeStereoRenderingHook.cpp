@@ -1275,6 +1275,91 @@ bool looks_like_callable_virtual(uintptr_t fn) {
     return false;
 }
 
+bool looks_like_post_init_properties_virtual(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+        return false;
+    }
+
+    size_t decoded_bytes = 0;
+    size_t call_count = 0;
+
+    for (auto ip = (uint8_t*)fn; decoded_bytes < 256;) {
+        const auto decoded = utility::decode_one(ip);
+
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        decoded_bytes += decoded->Length;
+        const std::string_view mnemonic{decoded->Mnemonic};
+
+        if (mnemonic.starts_with("CALL")) {
+            ++call_count;
+        }
+
+        if (mnemonic.starts_with("RET")) {
+            return decoded_bytes > 8 || call_count > 0;
+        }
+
+        if (mnemonic.starts_with("JMP")) {
+            return decoded_bytes > 8 || call_count > 0;
+        }
+
+        if (mnemonic.starts_with("INT3")) {
+            return false;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return call_count > 0;
+}
+
+std::optional<uint32_t> validate_source_informed_post_init_slot(
+    uintptr_t* object_vtable,
+    uintptr_t* localplayer_vtable,
+    uint32_t slot,
+    const char* source_note,
+    bool require_inherited_uobject_slot)
+{
+    if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
+        IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
+    {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} is not readable", source_note, slot);
+        return std::nullopt;
+    }
+
+    const auto object_fn = object_vtable[slot];
+    const auto localplayer_fn = localplayer_vtable[slot];
+
+    if (!looks_like_post_init_properties_virtual(object_fn) ||
+        !looks_like_post_init_properties_virtual(localplayer_fn))
+    {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} did not look callable object_fn={:x} localplayer_fn={:x}",
+            source_note,
+            slot,
+            object_fn,
+            localplayer_fn);
+        return std::nullopt;
+    }
+
+    if (require_inherited_uobject_slot && object_fn != localplayer_fn) {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} did not inherit UObject function object_fn={:x} localplayer_fn={:x}",
+            source_note,
+            slot,
+            object_fn,
+            localplayer_fn);
+        return std::nullopt;
+    }
+
+    SPDLOG_INFO("[PostInitProperties] Resolved {} slot {} object_fn={:x} localplayer_fn={:x}",
+        source_note,
+        slot,
+        object_fn,
+        localplayer_fn);
+    return slot;
+}
+
 std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_t localplayer) {
     auto* object_class = sdk::UObject::static_class();
 
@@ -1301,41 +1386,53 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
     }
 
     // UE5.1 source and the Stalker2 PDB/IDA view place UObject::PostInitProperties
-    // immediately after GetDetailedInfoInternal. Stalker2 inherits the UObject slot;
+    // at slot 10 for the shipped UObject layout. Stalker2 inherits the UObject slot;
     // only accept the exact slot when both UObject CDO and LocalPlayer agree.
     if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
         constexpr uint32_t UE51_POST_INIT_PROPERTIES_SLOT = 10;
 
-        if (IsBadReadPtr(&object_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)) ||
-            IsBadReadPtr(&localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)))
-        {
-            SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 is not readable; skipping LocalPlayer bootstrap");
-            return std::nullopt;
-        }
-
-        const auto object_fn = object_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
-        const auto localplayer_fn = localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
-
-        if (object_fn != 0 && object_fn == localplayer_fn && looks_like_callable_virtual(object_fn)) {
-            SPDLOG_INFO("[PostInitProperties] Resolved UE5.1/Stalker2 UObject::PostInitProperties through validated slot {} at {:x}",
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
                 UE51_POST_INIT_PROPERTIES_SLOT,
-                object_fn);
+                "UE5.1/Stalker2 UObject::PostInitProperties",
+                true))
+        {
             return UE51_POST_INIT_PROPERTIES_SLOT;
         }
 
-        SPDLOG_WARN(
-            "[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate object_fn={:x} localplayer_fn={:x}; skipping LocalPlayer bootstrap",
-            object_fn,
-            localplayer_fn);
+        SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate; skipping LocalPlayer bootstrap");
         return std::nullopt;
     }
 
-    // UE 5.6/5.7 source/PDB puts PostInitProperties immediately after GetDetailedInfoInternal.
-    // The runtime slot shifts by one depending on whether RegisterDependencies is compiled in,
-    // so prefer the expected modern UE slots first and keep the older nearby slot as a fallback.
-    constexpr std::array<uint32_t, 3> candidate_slots{9, 10, 8};
+    // UE 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
+    // for shipped game layouts:
+    // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
+    // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
+    if (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+        constexpr uint32_t UE55_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                UE55_PLUS_POST_INIT_PROPERTIES_SLOT,
+                "UE5.5+ UObject::PostInitProperties",
+                false))
+        {
+            return UE55_PLUS_POST_INIT_PROPERTIES_SLOT;
+        }
+    }
+
+    // Keep the nearby slots as a fail-closed fallback for unusual/custom layouts.
+    constexpr std::array<uint32_t, 4> candidate_slots{10, 9, 8, 11};
 
     for (const auto slot : candidate_slots) {
+        if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
+            IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
+        {
+            continue;
+        }
+
         const auto object_fn = object_vtable[slot];
         const auto localplayer_fn = localplayer_vtable[slot];
 
@@ -1343,15 +1440,16 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
             continue;
         }
 
-        if (object_fn != localplayer_fn) {
+        if (!looks_like_post_init_properties_virtual(object_fn) ||
+            !looks_like_post_init_properties_virtual(localplayer_fn))
+        {
             continue;
         }
 
-        if (!looks_like_nontrivial_virtual(object_fn)) {
-            continue;
-        }
-
-        SPDLOG_INFO("[PostInitProperties] Resolved UObject::PostInitProperties through source/PDB-informed slot {} at {:x}", slot, object_fn);
+        SPDLOG_INFO("[PostInitProperties] Resolved UObject::PostInitProperties through nearby fallback slot {} object_fn={:x} localplayer_fn={:x}",
+            slot,
+            object_fn,
+            localplayer_fn);
         return slot;
     }
 
@@ -7760,7 +7858,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || stalker2_ue51_post_init;
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx12_backend() || stalker2_ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
@@ -7810,7 +7908,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     if (!idx) {
         if (needs_source_informed_post_init) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.6+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
