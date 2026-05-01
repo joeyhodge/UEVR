@@ -105,6 +105,9 @@ public:
         void load_internal(const std::string& filename, bool set_defaults);
         void load_from_config_internal(const utility::Config& cfg, bool set_defaults);
         void save_internal(const std::string& filename);
+        int clamp_int_value(int value) const;
+        float clamp_float_value(float value) const;
+        int effective_max_int_value() const;
 
         std::wstring m_module{};
         std::wstring m_name{};
