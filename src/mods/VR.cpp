@@ -37,6 +37,7 @@
 
 #include "VR.hpp"
 #include "UObjectHook.hpp"
+#include "GameSpecific.hpp"
 
 std::shared_ptr<VR>& VR::get() {
     //static std::shared_ptr<VR> instance = std::make_shared<VR>();
@@ -898,12 +899,7 @@ bool is_avowed_executable() {
             return false;
         }
 
-        auto lowered = *module_path;
-        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
-            return static_cast<wchar_t>(std::towlower(ch));
-        });
-
-        return lowered.find(L"avowed-win64-shipping") != std::wstring::npos;
+        return uevr::games::is_avowed_executable_path(*module_path);
     }();
 
     return is_avowed;
