@@ -49,6 +49,46 @@ public:
     auto& openxr() { return m_openxr; }
     auto& get_openvr_ui_tex() { return m_openvr.ui_tex; }
 
+    struct HitchFrameSnapshot {
+        bool initialized{};
+        bool force_reset{};
+        bool last_afr_state{};
+        bool has_prev_backbuffer{};
+        bool has_game_tex{};
+        bool has_ui_tex{};
+        bool has_scene_capture_tex{};
+        uint32_t backbuffer_width{};
+        uint32_t backbuffer_height{};
+        uint32_t ui_extent_width{};
+        uint32_t ui_extent_height{};
+        uint32_t hmd_width{};
+        uint32_t hmd_height{};
+        uint32_t openxr_swapchain_count{};
+        uint32_t ui_swapchain_width{};
+        uint32_t ui_swapchain_height{};
+        uint32_t eye_swapchain_width{};
+        uint32_t eye_swapchain_height{};
+        uint32_t depth_swapchain_width{};
+        uint32_t depth_swapchain_height{};
+        uint64_t swapchain_recreate_count{};
+        uint32_t last_swapchain_recreate_reasons{};
+        uint64_t perf_on_frame_count{};
+        double perf_on_frame_avg_ms{};
+        double perf_on_frame_max_ms{};
+        uint64_t perf_ui_copy_count{};
+        double perf_ui_copy_avg_ms{};
+        double perf_ui_copy_max_ms{};
+        uint64_t perf_swapchain_copy_count{};
+        double perf_swapchain_copy_avg_ms{};
+        double perf_swapchain_copy_max_ms{};
+        uint64_t perf_openxr_submit_count{};
+        double perf_openxr_submit_avg_ms{};
+        double perf_openxr_submit_max_ms{};
+    };
+
+    HitchFrameSnapshot get_hitch_frame_snapshot(VR* vr) const;
+    bool has_game_and_ui_textures() const;
+
 private:
     friend class render::FrameResourceInspector;
 
@@ -108,6 +148,7 @@ private:
     };
 
     void log_frame_timing_stats_if_needed(VR* vr);
+    void log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width = 0, uint32_t new_depth_height = 0);
 
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
@@ -287,5 +328,7 @@ private:
     bool m_force_reset{true};
     bool m_last_afr_state{false};
     bool m_submitted_left_eye{false};
+    uint64_t m_swapchain_recreate_count{};
+    uint32_t m_last_swapchain_recreate_reasons{};
 };
 } // namespace vrmod

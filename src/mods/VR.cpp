@@ -5,7 +5,10 @@
 #include <algorithm>
 #include <cwctype>
 #include <filesystem>
+#include <iomanip>
+#include <sstream>
 #include <string_view>
+#include <vector>
 
 #include <windows.h>
 #include <dbt.h>
@@ -46,6 +49,25 @@ std::shared_ptr<VR>& VR::get() {
 
 namespace {
 using json = nlohmann::json;
+
+int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point then) {
+    if (then.time_since_epoch().count() == 0) {
+        return -1;
+    }
+
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
+}
+
+std::string hitch_timestamp_suffix() {
+    const auto now = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+    localtime_s(&tm, &time);
+
+    std::ostringstream out{};
+    out << std::put_time(&tm, "%Y%m%d_%H%M%S");
+    return out.str();
+}
 
 struct GameFovResolver {
     int32_t read_camera_cache_offset{-1};
@@ -2685,6 +2707,166 @@ void VR::update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_co
     ZeroMemory(&state.Gamepad, sizeof(XINPUT_GAMEPAD));
 }
 
+void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now) {
+    auto& sample = m_hitch_snapshot_samples[m_hitch_snapshot_cursor];
+    sample = {};
+    sample.timestamp = now;
+    sample.sequence = ++m_hitch_snapshot_sequence;
+    sample.frame_count = m_frame_count;
+    sample.render_frame_count = m_render_frame_count;
+    sample.rendering_method = m_rendering_method != nullptr ? m_rendering_method->value() : -1;
+    sample.hmd_active = is_hmd_active();
+    sample.runtime_loaded = get_runtime() != nullptr && get_runtime()->loaded;
+    sample.runtime_ready = get_runtime() != nullptr && get_runtime()->ready();
+    sample.using_controllers = is_using_controllers();
+    sample.using_afr = is_using_afr();
+    sample.native_stereo_fix = is_native_stereo_fix_enabled();
+    sample.submitted = m_submitted;
+    sample.framework_frame_age_ms = g_framework == nullptr ? -1 : hitch_age_ms(now, g_framework->get_last_framework_on_frame_time());
+    sample.mod_frame_age_ms = hitch_age_ms(now, m_last_mod_frame);
+    sample.d3d12_frame_age_ms = hitch_age_ms(now, m_d3d12.get_last_on_frame_time());
+    sample.cvar_change = m_cvar_manager != nullptr ? m_cvar_manager->get_change_snapshot() : CVarManager::ChangeSnapshot{};
+    sample.d3d12 = m_is_d3d12 ? m_d3d12.get_hitch_frame_snapshot(this) : vrmod::D3D12Component::HitchFrameSnapshot{};
+
+    if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
+        if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
+            sample.xr_wait_age_ms = hitch_age_ms(now, openxr->last_successful_wait_frame);
+            sample.xr_begin_age_ms = hitch_age_ms(now, openxr->last_successful_begin_frame);
+            sample.xr_end_age_ms = hitch_age_ms(now, openxr->last_successful_end_frame);
+            sample.pose_update_age_ms = hitch_age_ms(now, openxr->last_successful_pose_update);
+            sample.session_state = (int)openxr->session_state;
+            sample.session_ready = openxr->session_ready;
+            sample.frame_synced = openxr->frame_synced;
+            sample.frame_began = openxr->frame_began;
+            sample.got_first_poses = openxr->got_first_poses;
+            sample.got_first_valid_poses = openxr->got_first_valid_poses;
+            sample.accepted_relaxed_startup_poses = openxr->accepted_relaxed_startup_poses;
+        }
+    }
+
+    m_hitch_snapshot_cursor = (m_hitch_snapshot_cursor + 1) % HITCH_SNAPSHOT_RING_SIZE;
+    if (m_hitch_snapshot_cursor == 0) {
+        m_hitch_snapshot_wrapped = true;
+    }
+}
+
+void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall) try {
+    const auto now = std::chrono::steady_clock::now();
+
+    if (m_last_hitch_snapshot_dump.time_since_epoch().count() != 0 && now - m_last_hitch_snapshot_dump < std::chrono::seconds(30)) {
+        return;
+    }
+
+    m_last_hitch_snapshot_dump = now;
+    const auto dir = Framework::get_persistent_dir("hitch_snapshots");
+    std::filesystem::create_directories(dir);
+
+    const auto path = dir / std::format(
+        "hitch_snapshot_{}_{}.json",
+        hitch_timestamp_suffix(),
+        ++m_hitch_snapshot_dump_count);
+
+    json samples = json::array();
+    const auto count = m_hitch_snapshot_wrapped ? HITCH_SNAPSHOT_RING_SIZE : m_hitch_snapshot_cursor;
+    const auto start = m_hitch_snapshot_wrapped ? m_hitch_snapshot_cursor : 0;
+
+    for (size_t i = 0; i < count; ++i) {
+        const auto& sample = m_hitch_snapshot_samples[(start + i) % HITCH_SNAPSHOT_RING_SIZE];
+
+        if (sample.timestamp.time_since_epoch().count() == 0) {
+            continue;
+        }
+
+        const auto& d3d12 = sample.d3d12;
+        samples.push_back({
+            {"age_ms", hitch_age_ms(now, sample.timestamp)},
+            {"sequence", sample.sequence},
+            {"frame_count", sample.frame_count},
+            {"render_frame_count", sample.render_frame_count},
+            {"rendering_method", sample.rendering_method},
+            {"hmd_active", sample.hmd_active},
+            {"runtime_loaded", sample.runtime_loaded},
+            {"runtime_ready", sample.runtime_ready},
+            {"using_controllers", sample.using_controllers},
+            {"using_afr", sample.using_afr},
+            {"native_stereo_fix", sample.native_stereo_fix},
+            {"submitted", sample.submitted},
+            {"framework_frame_age_ms", sample.framework_frame_age_ms},
+            {"mod_frame_age_ms", sample.mod_frame_age_ms},
+            {"d3d12_frame_age_ms", sample.d3d12_frame_age_ms},
+            {"xr_wait_age_ms", sample.xr_wait_age_ms},
+            {"xr_begin_age_ms", sample.xr_begin_age_ms},
+            {"xr_end_age_ms", sample.xr_end_age_ms},
+            {"pose_update_age_ms", sample.pose_update_age_ms},
+            {"session_state", sample.session_state},
+            {"session_ready", sample.session_ready},
+            {"frame_synced", sample.frame_synced},
+            {"frame_began", sample.frame_began},
+            {"got_first_poses", sample.got_first_poses},
+            {"got_first_valid_poses", sample.got_first_valid_poses},
+            {"accepted_relaxed_startup_poses", sample.accepted_relaxed_startup_poses},
+            {"last_cvar_change", {
+                {"counter", sample.cvar_change.counter},
+                {"name", sample.cvar_change.name},
+                {"value", sample.cvar_change.value},
+                {"source", sample.cvar_change.source},
+            }},
+            {"d3d12", {
+                {"initialized", d3d12.initialized},
+                {"force_reset", d3d12.force_reset},
+                {"last_afr_state", d3d12.last_afr_state},
+                {"has_prev_backbuffer", d3d12.has_prev_backbuffer},
+                {"has_game_tex", d3d12.has_game_tex},
+                {"has_ui_tex", d3d12.has_ui_tex},
+                {"has_scene_capture_tex", d3d12.has_scene_capture_tex},
+                {"backbuffer_width", d3d12.backbuffer_width},
+                {"backbuffer_height", d3d12.backbuffer_height},
+                {"ui_extent_width", d3d12.ui_extent_width},
+                {"ui_extent_height", d3d12.ui_extent_height},
+                {"hmd_width", d3d12.hmd_width},
+                {"hmd_height", d3d12.hmd_height},
+                {"openxr_swapchain_count", d3d12.openxr_swapchain_count},
+                {"ui_swapchain_width", d3d12.ui_swapchain_width},
+                {"ui_swapchain_height", d3d12.ui_swapchain_height},
+                {"eye_swapchain_width", d3d12.eye_swapchain_width},
+                {"eye_swapchain_height", d3d12.eye_swapchain_height},
+                {"depth_swapchain_width", d3d12.depth_swapchain_width},
+                {"depth_swapchain_height", d3d12.depth_swapchain_height},
+                {"swapchain_recreate_count", d3d12.swapchain_recreate_count},
+                {"last_swapchain_recreate_reasons", d3d12.last_swapchain_recreate_reasons},
+                {"perf_on_frame_count", d3d12.perf_on_frame_count},
+                {"perf_on_frame_avg_ms", d3d12.perf_on_frame_avg_ms},
+                {"perf_on_frame_max_ms", d3d12.perf_on_frame_max_ms},
+                {"perf_ui_copy_count", d3d12.perf_ui_copy_count},
+                {"perf_ui_copy_avg_ms", d3d12.perf_ui_copy_avg_ms},
+                {"perf_ui_copy_max_ms", d3d12.perf_ui_copy_max_ms},
+                {"perf_swapchain_copy_count", d3d12.perf_swapchain_copy_count},
+                {"perf_swapchain_copy_avg_ms", d3d12.perf_swapchain_copy_avg_ms},
+                {"perf_swapchain_copy_max_ms", d3d12.perf_swapchain_copy_max_ms},
+                {"perf_openxr_submit_count", d3d12.perf_openxr_submit_count},
+                {"perf_openxr_submit_avg_ms", d3d12.perf_openxr_submit_avg_ms},
+                {"perf_openxr_submit_max_ms", d3d12.perf_openxr_submit_max_ms},
+            }},
+        });
+    }
+
+    json root{
+        {"type", "uevr_hitch_snapshot"},
+        {"tick_gap_ms", std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count()},
+        {"suspected_stall", suspected_stall != nullptr ? suspected_stall : "unknown"},
+        {"sample_count", samples.size()},
+        {"samples", std::move(samples)},
+    };
+
+    std::ofstream file{path};
+    file << root.dump(2);
+    SPDLOG_INFO("[VR][hitch-snapshot] Wrote {}", path.string());
+} catch (const std::exception& e) {
+    SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot: {}", e.what());
+} catch (...) {
+    SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot");
+}
+
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
@@ -2692,6 +2874,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     const auto previous_engine_tick = m_last_engine_tick;
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
+    record_hitch_snapshot_sample(now);
     m_last_engine_tick = now;
 
     if (previous_engine_tick.time_since_epoch().count() != 0) {
@@ -2780,6 +2963,12 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                             openxr->accepted_relaxed_startup_poses,
                             suspected_stall
                         );
+
+                        if (tick_gap > std::chrono::seconds(1)) {
+                            dump_hitch_snapshot(tick_gap, suspected_stall);
+                        }
+                    } else if (tick_gap > std::chrono::seconds(2)) {
+                        dump_hitch_snapshot(tick_gap, "non_focused_or_unknown");
                     }
                 }
             }
