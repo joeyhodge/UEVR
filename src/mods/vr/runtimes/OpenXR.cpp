@@ -28,6 +28,8 @@ namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto FRAME_SYNCED_SKIP_LOG_INTERVAL = std::chrono::minutes(1);
+constexpr auto FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE = std::chrono::milliseconds(1000);
+constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(2);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
@@ -604,6 +606,63 @@ VRRuntime::Error OpenXR::refresh_stale_pose_before_submit(uint32_t frame_count, 
     return result;
 }
 
+bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
+    if (this->session == XR_NULL_HANDLE ||
+        this->session_state != XR_SESSION_STATE_FOCUSED ||
+        !this->session_ready ||
+        !this->ever_submitted ||
+        !this->got_first_poses ||
+        !this->got_first_valid_poses ||
+        !this->frame_synced ||
+        !this->frame_began)
+    {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (this->last_focused_frame_loop_recovery.time_since_epoch().count() != 0 &&
+        now - this->last_focused_frame_loop_recovery < FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN)
+    {
+        return false;
+    }
+
+    const auto wait_age_ms = elapsed_ms_since(now, this->last_successful_wait_frame);
+    const auto begin_age_ms = elapsed_ms_since(now, this->last_successful_begin_frame);
+    const auto end_age_ms = elapsed_ms_since(now, this->last_successful_end_frame);
+
+    if (wait_age_ms < 0 || begin_age_ms < 0 || end_age_ms < 0) {
+        return false;
+    }
+
+    if (std::chrono::milliseconds{wait_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
+        std::chrono::milliseconds{begin_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
+        std::chrono::milliseconds{end_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE)
+    {
+        return false;
+    }
+
+    spdlog::warn(
+        "[OpenXR] Recovering focused stale frame loop caller={} wait_age={}ms begin_age={}ms end_age={}ms frame_synced={} frame_began={} recoveries={}",
+        caller != nullptr ? caller : "unknown",
+        wait_age_ms,
+        begin_age_ms,
+        end_age_ms,
+        this->frame_synced,
+        this->frame_began,
+        this->focused_frame_loop_recovery_count
+    );
+
+    this->recover_wedged_frame("focused stale frame loop");
+
+    this->last_focused_frame_loop_recovery = now;
+    ++this->focused_frame_loop_recovery_count;
+    this->frame_began_skip_streak = 0;
+    this->frame_synced_skip_streak = 0;
+
+    return true;
+}
+
 XrResult OpenXR::recover_wedged_frame(const char* reason) {
     if (!this->frame_began || this->session == XR_NULL_HANDLE) {
         return XR_SUCCESS;
@@ -634,6 +693,10 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
+
+    if (this->recover_focused_stale_frame_loop(sync_frame_callsite_name(callsite))) {
+        return VRRuntime::Error::UNSPECIFIED;
+    }
 
     if (!this->session_ready || this->frame_began) {
         if (this->frame_began) {
