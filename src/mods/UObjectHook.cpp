@@ -212,6 +212,46 @@ bool is_uobject_array_member(sdk::UObjectBase* object) {
     return item_object == object_address;
 }
 
+std::optional<std::pair<int32_t, int32_t>> get_uobject_index_serial(sdk::UObjectBase* object) {
+    const auto object_address = (uintptr_t)object;
+
+    if (object_address == 0) {
+        return std::nullopt;
+    }
+
+    uint32_t internal_index{};
+
+    if (!safe_read_u32(object_address + sdk::UObjectBase::get_internal_index_offset(), internal_index)) {
+        return std::nullopt;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
+        return std::nullopt;
+    }
+
+    auto item = object_array->get_object((int32_t)internal_index);
+
+    if (item == nullptr || !is_readable_process_range((uintptr_t)item, sizeof(sdk::FUObjectItem))) {
+        return std::nullopt;
+    }
+
+    uintptr_t item_object{};
+
+    if (!safe_read_uintptr((uintptr_t)item + sdk::FUObjectArray::get_item_object_offset(), item_object) || item_object != object_address) {
+        return std::nullopt;
+    }
+
+    return std::pair{(int32_t)internal_index, item->get_serial_number()};
+}
+
 bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_address = nullptr) {
     const auto object_address = (uintptr_t)object;
 
@@ -403,6 +443,8 @@ void UObjectHook::hook() {
     }
 
     m_uobject_array_scan_cursor = object_count;
+    m_uobject_array_last_object_count = object_count;
+    m_uobject_array_startup_scan_until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 
     SPDLOG_INFO("[UObjectHook] Added {} existing objects", m_objects.size());
 
@@ -852,6 +894,126 @@ bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view co
     return tracked;
 }
 
+void UObjectHook::mark_persistent_tracking_miss() {
+    m_last_persistent_tracking_miss = std::chrono::steady_clock::now();
+    ++m_uobject_array_scan_stats.persistent_tracking_misses;
+}
+
+void UObjectHook::prune_destroyed_object_tombstones(std::chrono::steady_clock::time_point now) {
+    std::unique_lock _{m_mutex};
+
+    if (m_destroyed_object_tombstones.empty()) {
+        return;
+    }
+
+    if (m_last_tombstone_prune.time_since_epoch().count() != 0 && now - m_last_tombstone_prune < std::chrono::seconds(5)) {
+        return;
+    }
+
+    m_last_tombstone_prune = now;
+
+    for (auto it = m_destroyed_object_tombstones.begin(); it != m_destroyed_object_tombstones.end();) {
+        if (it->second.time.time_since_epoch().count() == 0 || now - it->second.time > std::chrono::seconds(30)) {
+            it = m_destroyed_object_tombstones.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
+    if (!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) {
+        m_uobject_array_scan_stats.last_budget = 0;
+        return 0;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        m_uobject_array_scan_stats.last_budget = 0;
+        return 0;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0) {
+        m_uobject_array_scan_stats.last_budget = 0;
+        return 0;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (m_uobject_array_scan_cursor < 0 || m_uobject_array_scan_cursor > object_count || object_count < m_uobject_array_last_object_count) {
+        m_uobject_array_scan_cursor = 0;
+        m_uobject_array_full_sweep_active = true;
+        ++m_uobject_array_scan_stats.full_sweeps;
+    }
+
+    if (object_count > m_uobject_array_last_object_count && m_uobject_array_scan_cursor >= m_uobject_array_last_object_count) {
+        // Prefer fresh indices first when the array grows; this catches new pawns/components without
+        // continuously sweeping the whole FUObjectArray.
+        m_uobject_array_scan_cursor = m_uobject_array_last_object_count;
+    }
+
+    m_uobject_array_last_object_count = object_count;
+
+    bool pawn_tracking_unhealthy = false;
+
+    if (engine != nullptr) {
+        if (const auto world = engine->get_world(); world != nullptr) {
+            if (const auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0); player_controller != nullptr) {
+                if (const auto pawn = player_controller->get_acknowledged_pawn(); pawn != nullptr && !exists(pawn)) {
+                    pawn_tracking_unhealthy = true;
+                    m_last_untracked_pawn_seen = now;
+                    SPDLOG_WARNING_EVERY_N_SEC(
+                        5,
+                        "[UObjectHook] Local pawn is valid but not tracked; raising FUObjectArray scan budget pawn={:x}",
+                        (uintptr_t)pawn);
+                }
+            }
+        }
+    }
+
+    const bool startup_window = now < m_uobject_array_startup_scan_until;
+    const bool recent_tracking_miss =
+        m_last_persistent_tracking_miss.time_since_epoch().count() != 0 &&
+        now - m_last_persistent_tracking_miss < std::chrono::seconds(10);
+    const bool recent_untracked_pawn =
+        m_last_untracked_pawn_seen.time_since_epoch().count() != 0 &&
+        now - m_last_untracked_pawn_seen < std::chrono::seconds(10);
+    const bool high_priority =
+        startup_window ||
+        m_force_uobject_array_creation_scan ||
+        recent_tracking_miss ||
+        recent_untracked_pawn ||
+        pawn_tracking_unhealthy;
+
+    uint32_t budget = 0;
+
+    if (high_priority) {
+        if (m_uobject_array_scan_cursor >= object_count) {
+            m_uobject_array_scan_cursor = 0;
+            m_uobject_array_full_sweep_active = true;
+            ++m_uobject_array_scan_stats.full_sweeps;
+        }
+
+        budget = 8192;
+    } else if (m_uobject_array_scan_cursor < object_count) {
+        budget = 1024;
+    } else if (!m_uobject_array_full_sweep_active && now - m_last_uobject_array_full_sweep >= std::chrono::seconds(5)) {
+        m_uobject_array_full_sweep_active = true;
+        m_last_uobject_array_full_sweep = now;
+        m_uobject_array_scan_cursor = 0;
+        ++m_uobject_array_scan_stats.full_sweeps;
+        budget = 512;
+    } else if (m_uobject_array_full_sweep_active) {
+        budget = 512;
+    }
+
+    m_uobject_array_scan_stats.last_budget = budget;
+    return budget;
+}
+
 void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
     ZoneScopedN("UObjectHook UObjectArray scan");
 
@@ -875,13 +1037,16 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
         m_uobject_array_scan_cursor = 0;
     }
 
-    if (m_force_uobject_array_creation_scan && m_uobject_array_scan_cursor == object_count) {
-        m_uobject_array_scan_cursor = 0;
-    }
-
+    const auto now = std::chrono::steady_clock::now();
+    prune_destroyed_object_tombstones(now);
     const auto start = m_uobject_array_scan_cursor;
     const auto end = (int32_t)std::min<uint32_t>((uint32_t)object_count, (uint32_t)start + max_objects);
     uint32_t added = 0;
+    uint32_t rejected = 0;
+    uint32_t tombstone_skips = 0;
+
+    ++m_uobject_array_scan_stats.ticks;
+    m_uobject_array_scan_stats.scanned += (uint64_t)std::max(0, end - start);
 
     for (auto i = start; i < end; ++i) {
         auto item = object_array->get_object(i);
@@ -896,8 +1061,33 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
             continue;
         }
 
+        bool skip_tombstoned_object = false;
+
+        {
+            std::unique_lock _{m_mutex};
+
+            if (const auto tombstone_it = m_destroyed_object_tombstones.find(object); tombstone_it != m_destroyed_object_tombstones.end()) {
+                const auto serial = item->get_serial_number();
+
+                if (tombstone_it->second.index == i &&
+                    tombstone_it->second.serial == serial &&
+                    now - tombstone_it->second.time <= std::chrono::seconds(30))
+                {
+                    skip_tombstoned_object = true;
+                } else {
+                    m_destroyed_object_tombstones.erase(tombstone_it);
+                }
+            }
+        }
+
+        if (skip_tombstoned_object) {
+            ++tombstone_skips;
+            continue;
+        }
+
         // Objects found directly through FUObjectArray must still pass layout and index validation.
         if (!is_safe_uobject_candidate(*this, object, true)) {
+            ++rejected;
             continue;
         }
 
@@ -909,6 +1099,13 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
     }
 
     m_uobject_array_scan_cursor = end;
+    m_uobject_array_scan_stats.added += added;
+    m_uobject_array_scan_stats.rejected += rejected;
+    m_uobject_array_scan_stats.tombstone_skips += tombstone_skips;
+
+    if (m_uobject_array_scan_cursor >= object_count && m_uobject_array_full_sweep_active) {
+        m_uobject_array_full_sweep_active = false;
+    }
 
     if (added > 0) {
         static auto last_log = std::chrono::steady_clock::time_point{};
@@ -964,7 +1161,9 @@ void UObjectHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
             }
         }
 
-        refresh_new_objects_from_uobject_array();
+        if (const auto scan_budget = get_uobject_array_scan_budget(engine); scan_budget > 0) {
+            refresh_new_objects_from_uobject_array(scan_budget);
+        }
         update_persistent_states();
     }
 }
@@ -1937,6 +2136,8 @@ void UObjectHook::update_persistent_states() {
         m_fixed_visibilities = true;
     }};
 
+    bool had_tracking_miss = false;
+
     // Camera state
     if (m_persistent_camera_state != nullptr) {
         auto obj = m_persistent_camera_state->path.resolve(true);
@@ -1944,6 +2145,8 @@ void UObjectHook::update_persistent_states() {
         if (obj != nullptr) {
             m_camera_attach.object = obj;
             m_camera_attach.offset = m_persistent_camera_state->offset;
+        } else {
+            had_tracking_miss = true;
         }
     }
 
@@ -1957,6 +2160,7 @@ void UObjectHook::update_persistent_states() {
             auto obj = state->path.resolve(true);
 
             if (obj == nullptr) {
+                had_tracking_miss = true;
                 continue;
             }
 
@@ -2002,6 +2206,7 @@ void UObjectHook::update_persistent_states() {
             auto obj = prop_base->path.resolve(true);
 
             if (obj == nullptr) {
+                had_tracking_miss = true;
                 continue;
             }
 
@@ -2084,6 +2289,10 @@ void UObjectHook::update_persistent_states() {
                 };
             }
         }
+    }
+
+    if (had_tracking_miss) {
+        mark_persistent_tracking_miss();
     }
 }
 
@@ -2868,7 +3077,33 @@ void UObjectHook::draw_main() {
         }
     }
 
-    ImGui::Text("Objects: %zu (%zu actual)", m_objects.size(), sdk::FUObjectArray::get()->get_object_count());
+    const auto uobject_array = sdk::FUObjectArray::get();
+    const auto actual_object_count = uobject_array != nullptr ? uobject_array->get_object_count() : 0;
+    ImGui::Text("Objects: %zu (%zu actual)", m_objects.size(), actual_object_count);
+
+    if (ImGui::TreeNode("UObjectHook Health")) {
+        ImGui::Text("AddObject hook: %s", m_add_object_hooked ? "hooked" : "fallback scan");
+        ImGui::Text(
+            "Scan: cursor=%d/%d budget=%u full_sweep=%s force_scan=%s",
+            m_uobject_array_scan_cursor,
+            actual_object_count,
+            m_uobject_array_scan_stats.last_budget,
+            m_uobject_array_full_sweep_active ? "yes" : "no",
+            m_force_uobject_array_creation_scan ? "yes" : "no");
+        ImGui::Text(
+            "Scan totals: ticks=%llu scanned=%llu added=%llu rejected=%llu tombstone_skips=%llu full_sweeps=%llu",
+            m_uobject_array_scan_stats.ticks,
+            m_uobject_array_scan_stats.scanned,
+            m_uobject_array_scan_stats.added,
+            m_uobject_array_scan_stats.rejected,
+            m_uobject_array_scan_stats.tombstone_skips,
+            m_uobject_array_scan_stats.full_sweeps);
+        ImGui::Text(
+            "Persistent misses: %llu tombstones=%zu",
+            m_uobject_array_scan_stats.persistent_tracking_misses,
+            m_destroyed_object_tombstones.size());
+        ImGui::TreePop();
+    }
 
     if (ImGui::TreeNode("Recent Objects")) {
         for (auto& object : m_most_recent_objects) {
@@ -4650,6 +4885,16 @@ void* UObjectHook::destructor(sdk::UObjectBase* object, void* rdx, void* r8, voi
 #ifdef VERBOSE_UOBJECTHOOK
             SPDLOG_INFO("Removing object {:x} {:s}", (uintptr_t)object, utility::narrow(it->second->full_name));
 #endif
+            if (should_incrementally_refresh_uobject_array() || hook->m_force_uobject_array_creation_scan) {
+                if (const auto index_serial = get_uobject_index_serial(object); index_serial.has_value()) {
+                    hook->m_destroyed_object_tombstones[object] = UObjectHook::DestroyedObjectTombstone{
+                        index_serial->first,
+                        index_serial->second,
+                        std::chrono::steady_clock::now()
+                    };
+                }
+            }
+
             hook->m_objects.erase(object);
             hook->m_motion_controller_attached_components.erase((sdk::USceneComponent*)object);
             hook->m_spawned_spheres.erase((sdk::USceneComponent*)object);

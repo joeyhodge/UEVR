@@ -625,6 +625,15 @@ bool ue56_dx12_try_get_native_resource(FRHITexture2D* texture, const char* sourc
         return false;
     }
 
+    {
+        std::scoped_lock _{g_ue56_rt_probe_mutex};
+        if (const auto it = g_ue56_native_resource_probe_cache.find((uintptr_t)vtable);
+            it != g_ue56_native_resource_probe_cache.end() && !it->second)
+        {
+            return false;
+        }
+    }
+
     // UE 5.6 can expose Slate/viewport FRHITexture candidates whose native-resource
     // vtable discovery executes unsafe render-thread thunks. Do not probe them from
     // the fallback path; let the D3D12 backbuffer/texture hooks discover the scene.
@@ -4853,10 +4862,15 @@ struct SceneViewExtensionAnalyzer {
 
         if (original_vtables.contains(last_command) || *(void**)last_command == new_vtable.data()) {
             static auto last_log_time = std::chrono::high_resolution_clock::time_point{};
+            static uint64_t suppressed_count = 0;
             const auto now = std::chrono::high_resolution_clock::now();
+            ++suppressed_count;
             
-            if (now - last_log_time > std::chrono::seconds(1)) {
-                SPDLOG_WARN("Something strange is going on, the vtable is already hooked, maybe previous frame was not rendered?");
+            if (last_log_time.time_since_epoch().count() == 0 || now - last_log_time > std::chrono::seconds(30)) {
+                SPDLOG_WARN(
+                    "Something strange is going on, the vtable is already hooked, maybe previous frame was not rendered? suppressed={}",
+                    suppressed_count);
+                suppressed_count = 0;
                 last_log_time = now;
             }
 
@@ -4881,10 +4895,15 @@ struct SceneViewExtensionAnalyzer {
 
         if (original_funcs.contains(last_command)) {
             static auto last_log_time = std::chrono::high_resolution_clock::time_point{};
+            static uint64_t suppressed_count = 0;
             const auto now = std::chrono::high_resolution_clock::now();
+            ++suppressed_count;
             
-            if (now - last_log_time > std::chrono::seconds(1)) {
-                SPDLOG_WARN("Something strange is going on, the function is already hooked, maybe previous frame was not rendered?");
+            if (last_log_time.time_since_epoch().count() == 0 || now - last_log_time > std::chrono::seconds(30)) {
+                SPDLOG_WARN(
+                    "Something strange is going on, the function is already hooked, maybe previous frame was not rendered? suppressed={}",
+                    suppressed_count);
+                suppressed_count = 0;
                 last_log_time = now;
             }
 
@@ -8850,6 +8869,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     const auto engine_texture = slate_resource->get_mutable_resource();
     bool engine_texture_native_ok = true;
     bool provider_texture_native_ok = true;
+    const auto vr_state = VR::get();
+    const bool ue56_d3d12_targets_ready =
+        is_ue_5_6_dx12_backend() &&
+        vr_state != nullptr &&
+        vr_state->has_d3d12_game_ui_textures() &&
+        rtm->get_render_target() != nullptr &&
+        rtm->get_ui_target() != nullptr;
 
     if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
         engine_texture_native_ok =
@@ -8859,7 +8885,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         if (engine_texture_native_ok) {
             FRHITexture2D::set_vtable(*(void**)engine_texture);
             g_hook->note_stable_slate_draw();
-        } else {
+        } else if (!ue56_d3d12_targets_ready) {
             SPDLOG_WARNING_EVERY_N_SEC(2,
                 "[UE5.6][RT] Not adopting Slate viewport texture because native-resource discovery failed; waiting for D3D12 texture/backbuffer hooks");
         }

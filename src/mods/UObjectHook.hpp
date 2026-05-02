@@ -1,11 +1,14 @@
 #pragma once
 
 #include <filesystem>
+#include <chrono>
 #include <shared_mutex>
 #include <unordered_set>
+#include <unordered_map>
 #include <memory>
 #include <deque>
 #include <future>
+#include <optional>
 
 #include <nlohmann/json.hpp>
 
@@ -223,6 +226,9 @@ private:
     std::shared_ptr<PersistentCameraState> deserialize_camera_state();
     void update_persistent_states();
     void refresh_new_objects_from_uobject_array(uint32_t max_objects = 4096);
+    uint32_t get_uobject_array_scan_budget(sdk::UGameEngine* engine);
+    void mark_persistent_tracking_miss();
+    void prune_destroyed_object_tombstones(std::chrono::steady_clock::time_point now);
     void update_motion_controller_components(
         const glm::vec3& hmd_location, const glm::vec3& hmd_euler,
         const glm::vec3& left_hand_location, const glm::vec3& left_hand_euler,
@@ -274,6 +280,32 @@ private:
     std::deque<sdk::UObject*> m_most_recent_objects{};
     std::unordered_set<sdk::UObject*> m_motion_controller_attached_objects{};
     int32_t m_uobject_array_scan_cursor{0};
+
+    struct DestroyedObjectTombstone {
+        int32_t index{-1};
+        int32_t serial{-1};
+        std::chrono::steady_clock::time_point time{};
+    };
+
+    struct UObjectArrayScanStats {
+        uint64_t ticks{};
+        uint64_t scanned{};
+        uint64_t added{};
+        uint64_t rejected{};
+        uint64_t tombstone_skips{};
+        uint64_t full_sweeps{};
+        uint64_t persistent_tracking_misses{};
+        uint32_t last_budget{};
+    } m_uobject_array_scan_stats{};
+
+    std::unordered_map<sdk::UObjectBase*, DestroyedObjectTombstone> m_destroyed_object_tombstones{};
+    int32_t m_uobject_array_last_object_count{0};
+    bool m_uobject_array_full_sweep_active{false};
+    std::chrono::steady_clock::time_point m_uobject_array_startup_scan_until{};
+    std::chrono::steady_clock::time_point m_last_uobject_array_full_sweep{};
+    std::chrono::steady_clock::time_point m_last_persistent_tracking_miss{};
+    std::chrono::steady_clock::time_point m_last_untracked_pawn_seen{};
+    std::chrono::steady_clock::time_point m_last_tombstone_prune{};
 
     std::unordered_map<sdk::USceneComponent*, std::shared_ptr<MotionControllerState>> m_motion_controller_attached_components{};
     sdk::AActor* m_overlap_detection_actor{nullptr};

@@ -5,9 +5,11 @@
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <algorithm>
 #include <array>
 #include <DirectXMath.h>
 #include <mutex>
+#include <sstream>
 #include <unordered_set>
 
 #include <tracy/Tracy.hpp>
@@ -39,6 +41,43 @@ namespace {
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 constexpr bool SHF_AUTO_MONO_CINEMATIC = true;
 constexpr bool SHF_AUTO_2D_SCREEN_FROM_MONO_CINEMATIC = true;
+
+enum SwapchainRecreateReason : uint32_t {
+    SWAPCHAIN_RECREATE_NONE = 0,
+    SWAPCHAIN_RECREATE_HMD_RESOLUTION = 1 << 0,
+    SWAPCHAIN_RECREATE_EMPTY = 1 << 1,
+    SWAPCHAIN_RECREATE_UI_EXTENT = 1 << 2,
+    SWAPCHAIN_RECREATE_AFR_STATE = 1 << 3,
+    SWAPCHAIN_RECREATE_DEPTH_EXTENT = 1 << 4,
+    SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS = 1 << 5,
+};
+
+std::string format_swapchain_recreate_reasons(uint32_t reasons) {
+    if (reasons == SWAPCHAIN_RECREATE_NONE) {
+        return "none";
+    }
+
+    std::string out{};
+    const auto append = [&](uint32_t flag, const char* name) {
+        if ((reasons & flag) == 0) {
+            return;
+        }
+
+        if (!out.empty()) {
+            out += "|";
+        }
+
+        out += name;
+    };
+
+    append(SWAPCHAIN_RECREATE_HMD_RESOLUTION, "hmd_resolution");
+    append(SWAPCHAIN_RECREATE_EMPTY, "empty_swapchains");
+    append(SWAPCHAIN_RECREATE_UI_EXTENT, "ui_extent");
+    append(SWAPCHAIN_RECREATE_AFR_STATE, "afr_state");
+    append(SWAPCHAIN_RECREATE_DEPTH_EXTENT, "depth_extent");
+    append(SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS, "depth_null_defaults");
+    return out;
+}
 
 std::pair<uint32_t, uint32_t> get_ui_extent() {
     const auto fallback = std::pair<uint32_t, uint32_t>{
@@ -1250,7 +1289,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (runtime->is_openxr()) {
                 if (vr->m_openxr->needs_depth_resize(desc.Width, desc.Height) || m_openxr.made_depth_with_null_defaults) {
-                    spdlog::info("[OpenXR] Depth size changed, recreating swapchains [{}x{}]", desc.Width, desc.Height);
+                    uint32_t reasons = SWAPCHAIN_RECREATE_DEPTH_EXTENT;
+                    if (m_openxr.made_depth_with_null_defaults) {
+                        reasons |= SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS;
+                    }
+                    log_openxr_swapchain_recreate(vr, reasons, (uint32_t)desc.Width, (uint32_t)desc.Height);
                     m_openxr.create_swapchains(); // recreate swapchains to match the new depth size
                 }
             }
@@ -1710,6 +1753,132 @@ void D3D12Component::log_frame_timing_stats_if_needed(VR* vr) {
     m_perf_post_present.reset();
 }
 
+bool D3D12Component::has_game_and_ui_textures() const {
+    return m_game_tex.texture.Get() != nullptr &&
+        m_game_ui_tex.texture.Get() != nullptr;
+}
+
+D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR* vr) const {
+    HitchFrameSnapshot snapshot{};
+    snapshot.initialized = is_initialized();
+    snapshot.force_reset = m_force_reset;
+    snapshot.last_afr_state = m_last_afr_state;
+    snapshot.has_prev_backbuffer = m_prev_backbuffer.Get() != nullptr;
+    snapshot.has_game_tex = m_game_tex.texture.Get() != nullptr;
+    snapshot.has_ui_tex = m_game_ui_tex.texture.Get() != nullptr;
+    snapshot.has_scene_capture_tex = m_scene_capture_tex.texture.Get() != nullptr;
+    snapshot.backbuffer_width = m_backbuffer_size[0];
+    snapshot.backbuffer_height = m_backbuffer_size[1];
+    const auto [ui_width, ui_height] = get_ui_extent();
+    snapshot.ui_extent_width = ui_width;
+    snapshot.ui_extent_height = ui_height;
+    snapshot.hmd_width = vr != nullptr ? vr->get_hmd_width() : 0;
+    snapshot.hmd_height = vr != nullptr ? vr->get_hmd_height() : 0;
+    snapshot.swapchain_recreate_count = m_swapchain_recreate_count;
+    snapshot.last_swapchain_recreate_reasons = m_last_swapchain_recreate_reasons;
+    snapshot.perf_on_frame_count = m_perf_on_frame.count;
+    snapshot.perf_on_frame_avg_ms = m_perf_on_frame.avg();
+    snapshot.perf_on_frame_max_ms = m_perf_on_frame.max_ms;
+    snapshot.perf_ui_copy_count = m_perf_ui_copy.count;
+    snapshot.perf_ui_copy_avg_ms = m_perf_ui_copy.avg();
+    snapshot.perf_ui_copy_max_ms = m_perf_ui_copy.max_ms;
+    snapshot.perf_swapchain_copy_count = m_perf_swapchain_copy.count;
+    snapshot.perf_swapchain_copy_avg_ms = m_perf_swapchain_copy.avg();
+    snapshot.perf_swapchain_copy_max_ms = m_perf_swapchain_copy.max_ms;
+    snapshot.perf_openxr_submit_count = m_perf_openxr_submit.count;
+    snapshot.perf_openxr_submit_avg_ms = m_perf_openxr_submit.avg();
+    snapshot.perf_openxr_submit_max_ms = m_perf_openxr_submit.max_ms;
+
+    if (vr != nullptr && vr->m_openxr != nullptr) {
+        std::scoped_lock _{vr->m_openxr->swapchain_mtx};
+        snapshot.openxr_swapchain_count = (uint32_t)vr->m_openxr->swapchains.size();
+
+        const auto read_swapchain = [&](runtimes::OpenXR::SwapchainIndex index, uint32_t& width, uint32_t& height) {
+            const auto it = vr->m_openxr->swapchains.find((uint32_t)index);
+
+            if (it != vr->m_openxr->swapchains.end()) {
+                width = (uint32_t)std::max(0, it->second.width);
+                height = (uint32_t)std::max(0, it->second.height);
+            }
+        };
+
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
+        if (snapshot.eye_swapchain_width == 0 || snapshot.eye_swapchain_height == 0) {
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
+        }
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::UI, snapshot.ui_swapchain_width, snapshot.ui_swapchain_height);
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::DEPTH, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
+        if (snapshot.depth_swapchain_width == 0 || snapshot.depth_swapchain_height == 0) {
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
+        }
+    }
+
+    return snapshot;
+}
+
+void D3D12Component::log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width, uint32_t new_depth_height) {
+    if (reasons == SWAPCHAIN_RECREATE_NONE || vr == nullptr || vr->m_openxr == nullptr) {
+        return;
+    }
+
+    uint32_t old_ui_width = 0;
+    uint32_t old_ui_height = 0;
+    uint32_t old_depth_width = 0;
+    uint32_t old_depth_height = 0;
+    uint32_t old_eye_width = 0;
+    uint32_t old_eye_height = 0;
+    size_t swapchain_count = 0;
+
+    {
+        std::scoped_lock _{vr->m_openxr->swapchain_mtx};
+        swapchain_count = vr->m_openxr->swapchains.size();
+
+        const auto read_swapchain = [&](runtimes::OpenXR::SwapchainIndex index, uint32_t& width, uint32_t& height) {
+            const auto it = vr->m_openxr->swapchains.find((uint32_t)index);
+
+            if (it != vr->m_openxr->swapchains.end()) {
+                width = (uint32_t)std::max(0, it->second.width);
+                height = (uint32_t)std::max(0, it->second.height);
+            }
+        };
+
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, old_eye_width, old_eye_height);
+        if (old_eye_width == 0 || old_eye_height == 0) {
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, old_eye_width, old_eye_height);
+        }
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::UI, old_ui_width, old_ui_height);
+        read_swapchain(runtimes::OpenXR::SwapchainIndex::DEPTH, old_depth_width, old_depth_height);
+        if (old_depth_width == 0 || old_depth_height == 0) {
+            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, old_depth_width, old_depth_height);
+        }
+    }
+
+    const auto [new_ui_width, new_ui_height] = get_ui_extent();
+    ++m_swapchain_recreate_count;
+    m_last_swapchain_recreate_reasons = reasons;
+
+    SPDLOG_INFO(
+        "[OpenXR][swapchain-recreate] reasons={} old_hmd={}x{} new_hmd={}x{} old_eye={}x{} old_ui={}x{} new_ui={}x{} old_depth={}x{} new_depth={}x{} old_afr={} new_afr={} swapchains={}",
+        format_swapchain_recreate_reasons(reasons),
+        m_openxr.last_resolution[0],
+        m_openxr.last_resolution[1],
+        vr->get_hmd_width(),
+        vr->get_hmd_height(),
+        old_eye_width,
+        old_eye_height,
+        old_ui_width,
+        old_ui_height,
+        new_ui_width,
+        new_ui_height,
+        old_depth_width,
+        old_depth_height,
+        new_depth_width,
+        new_depth_height,
+        m_last_afr_state,
+        vr->is_using_afr(),
+        swapchain_count);
+}
+
 std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_pso(
     DXGI_FORMAT output_format, 
     std::span<const uint8_t> ps, 
@@ -2143,14 +2312,51 @@ void D3D12Component::on_reset(VR* vr) {
 
 
         const auto [ui_width, ui_height] = get_ui_extent();
+        uint32_t reasons = SWAPCHAIN_RECREATE_NONE;
+        int32_t old_ui_width = 0;
+        int32_t old_ui_height = 0;
+        bool swapchains_empty = false;
 
-        if (m_openxr.last_resolution[0] != vr->get_hmd_width() || m_openxr.last_resolution[1] != vr->get_hmd_height() ||
-            vr->m_openxr->swapchains.empty() ||
-            ui_width != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].width ||
-            ui_height != vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].height ||
-            m_last_afr_state != vr->is_using_afr() ||
-            needs_depth_resize)
         {
+            std::scoped_lock _{vr->m_openxr->swapchain_mtx};
+            swapchains_empty = vr->m_openxr->swapchains.empty();
+            const auto ui_it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
+
+            if (ui_it != vr->m_openxr->swapchains.end()) {
+                old_ui_width = ui_it->second.width;
+                old_ui_height = ui_it->second.height;
+            }
+        }
+
+        if (m_openxr.last_resolution[0] != vr->get_hmd_width() || m_openxr.last_resolution[1] != vr->get_hmd_height()) {
+            reasons |= SWAPCHAIN_RECREATE_HMD_RESOLUTION;
+        }
+
+        if (swapchains_empty) {
+            reasons |= SWAPCHAIN_RECREATE_EMPTY;
+        } else if ((uint32_t)old_ui_width != ui_width || (uint32_t)old_ui_height != ui_height) {
+            reasons |= SWAPCHAIN_RECREATE_UI_EXTENT;
+        }
+
+        if (m_last_afr_state != vr->is_using_afr()) {
+            reasons |= SWAPCHAIN_RECREATE_AFR_STATE;
+        }
+
+        if (needs_depth_resize) {
+            reasons |= SWAPCHAIN_RECREATE_DEPTH_EXTENT;
+        }
+
+        if (reasons != SWAPCHAIN_RECREATE_NONE) {
+            uint32_t new_depth_width = 0;
+            uint32_t new_depth_height = 0;
+
+            if (scene_depth_tex != nullptr) {
+                const auto desc = scene_depth_tex->GetDesc();
+                new_depth_width = (uint32_t)desc.Width;
+                new_depth_height = (uint32_t)desc.Height;
+            }
+
+            log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
             m_openxr.create_swapchains();
             m_last_afr_state = vr->is_using_afr();
         }
