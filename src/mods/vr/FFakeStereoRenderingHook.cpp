@@ -52,6 +52,7 @@
 #include "Framework.hpp"
 #include "Mods.hpp"
 #include "mods/UObjectHook.hpp"
+#include "mods/GameSpecific.hpp"
 
 #include <bdshemu.h>
 #include <bddisasm.h>
@@ -84,8 +85,11 @@ uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
 
 constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
+constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
+constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD = std::chrono::milliseconds(1500);
+constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING = std::chrono::seconds(60);
 
 bool is_deadzone_ue56_executable() {
     static const bool result = []() {
@@ -109,11 +113,18 @@ struct AvowedNativeFixGateState {
     uintptr_t render_target{};
     uintptr_t scene_capture_render_target{};
     uintptr_t scene_capture_native{};
+    uintptr_t last_ready_scene{};
+    uintptr_t last_ready_render_target{};
     std::chrono::steady_clock::time_point last_update{};
     std::chrono::steady_clock::time_point hold_until{};
+    std::chrono::steady_clock::time_point missing_since{};
     uint32_t stable_frames{};
+    uint32_t required_stable_frames{AVOWED_NATIVE_FIX_STABLE_FRAMES};
     bool ready{};
     bool has_baseline{};
+    bool had_ready_baseline{};
+    bool targets_missing{};
+    bool fast_reacquire{};
 };
 
 std::mutex g_avowed_native_fix_gate_mutex{};
@@ -222,7 +233,7 @@ bool stalker2_is_current_game() {
 bool avowed_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+        return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
     }();
 
     return result;
@@ -269,7 +280,8 @@ bool avowed_native_fix_gate_update(
     uintptr_t scene_capture_render_target,
     uintptr_t scene_capture_native,
     bool prerequisites_ready,
-    uint32_t* out_stable_frames = nullptr)
+    uint32_t* out_stable_frames = nullptr,
+    uint32_t* out_required_stable_frames = nullptr)
 {
     if (!avowed_is_current_game()) {
         return true;
@@ -281,20 +293,36 @@ bool avowed_native_fix_gate_update(
         *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
     }
 
+    if (out_required_stable_frames != nullptr) {
+        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+    }
+
     const auto now = std::chrono::steady_clock::now();
 
     if (g_avowed_native_fix_gate.last_update.time_since_epoch().count() != 0) {
         const auto render_gap = now - g_avowed_native_fix_gate.last_update;
 
         if (render_gap > AVOWED_NATIVE_FIX_RENDER_GAP) {
+            const auto can_fast_reacquire = g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready;
             g_avowed_native_fix_gate.ready = false;
             g_avowed_native_fix_gate.stable_frames = 0;
-            g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+            g_avowed_native_fix_gate.required_stable_frames =
+                can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+            g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
+            const auto requested_hold_duration = can_fast_reacquire
+                ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+                : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+            g_avowed_native_fix_gate.hold_until = std::max(
+                g_avowed_native_fix_gate.hold_until,
+                now + requested_hold_duration);
 
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety",
-                std::chrono::duration<double, std::milli>(render_gap).count());
+                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety fast_reacquire={}",
+                std::chrono::duration<double, std::milli>(render_gap).count(),
+                can_fast_reacquire);
         }
     }
 
@@ -312,7 +340,32 @@ bool avowed_native_fix_gate_update(
                 prerequisites_ready);
         }
 
-        g_avowed_native_fix_gate = {};
+        if (g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready) {
+            if (!g_avowed_native_fix_gate.targets_missing) {
+                g_avowed_native_fix_gate.missing_since = now;
+            }
+
+            // Inventory/menu transitions briefly remove Avowed's capture target. Keep the last
+            // known-good gameplay baseline so reacquiring the same path can use a short gate.
+            g_avowed_native_fix_gate.targets_missing = true;
+            g_avowed_native_fix_gate.ready = false;
+            g_avowed_native_fix_gate.stable_frames = 0;
+            g_avowed_native_fix_gate.fast_reacquire = false;
+            g_avowed_native_fix_gate.required_stable_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        } else {
+            g_avowed_native_fix_gate = {};
+        }
+
+        if (out_stable_frames != nullptr) {
+            *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+        }
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+                ? g_avowed_native_fix_gate.required_stable_frames
+                : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        }
+
         return false;
     }
 
@@ -324,29 +377,96 @@ bool avowed_native_fix_gate_update(
         g_avowed_native_fix_gate.scene_capture_native != scene_capture_native;
 
     if (baseline_changed) {
+        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
+            ? now - g_avowed_native_fix_gate.missing_since
+            : std::chrono::steady_clock::duration{};
+        const auto matches_last_ready_path =
+            g_avowed_native_fix_gate.had_ready_baseline &&
+            g_avowed_native_fix_gate.last_ready_scene == scene &&
+            g_avowed_native_fix_gate.last_ready_render_target == render_target;
+        const auto can_fast_reacquire =
+            g_avowed_native_fix_gate.targets_missing &&
+            matches_last_ready_path &&
+            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
+
         g_avowed_native_fix_gate.scene = scene;
         g_avowed_native_fix_gate.render_target = render_target;
         g_avowed_native_fix_gate.scene_capture_render_target = scene_capture_render_target;
         g_avowed_native_fix_gate.scene_capture_native = scene_capture_native;
-        g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+        const auto requested_hold_duration = can_fast_reacquire
+            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+        const auto requested_hold_until = now + requested_hold_duration;
+        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
+            ? requested_hold_until
+            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
         g_avowed_native_fix_gate.stable_frames = 0;
+        g_avowed_native_fix_gate.required_stable_frames =
+            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
         g_avowed_native_fix_gate.ready = false;
         g_avowed_native_fix_gate.has_baseline = true;
+        g_avowed_native_fix_gate.targets_missing = false;
+        g_avowed_native_fix_gate.missing_since = {};
+        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
 
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x}",
+            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x} fast_reacquire={} stable_required={}",
             scene,
             render_target,
             scene_capture_render_target,
-            scene_capture_native);
+            scene_capture_native,
+            can_fast_reacquire,
+            g_avowed_native_fix_gate.required_stable_frames);
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
+        }
 
         return false;
+    }
+
+    if (g_avowed_native_fix_gate.targets_missing) {
+        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
+            ? now - g_avowed_native_fix_gate.missing_since
+            : std::chrono::steady_clock::duration{};
+        const auto matches_last_ready_path =
+            g_avowed_native_fix_gate.had_ready_baseline &&
+            g_avowed_native_fix_gate.last_ready_scene == scene &&
+            g_avowed_native_fix_gate.last_ready_render_target == render_target;
+        const auto can_fast_reacquire =
+            matches_last_ready_path &&
+            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
+
+        const auto requested_hold_duration = can_fast_reacquire
+            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+        const auto requested_hold_until = now + requested_hold_duration;
+        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
+            ? requested_hold_until
+            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
+        g_avowed_native_fix_gate.ready = false;
+        g_avowed_native_fix_gate.stable_frames = 0;
+        g_avowed_native_fix_gate.required_stable_frames =
+            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        g_avowed_native_fix_gate.targets_missing = false;
+        g_avowed_native_fix_gate.missing_since = {};
+        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Render targets reacquired on existing baseline fast_reacquire={} stable_required={}",
+            can_fast_reacquire,
+            g_avowed_native_fix_gate.required_stable_frames);
     }
 
     if (g_avowed_native_fix_gate.hold_until > now) {
         if (out_stable_frames != nullptr) {
             *out_stable_frames = 0;
+        }
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
         }
 
         g_avowed_native_fix_gate.ready = false;
@@ -361,7 +481,11 @@ bool avowed_native_fix_gate_update(
     }
 
     if (!g_avowed_native_fix_gate.ready) {
-        if (g_avowed_native_fix_gate.stable_frames < AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+        const auto required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+
+        if (g_avowed_native_fix_gate.stable_frames < required_stable_frames) {
             ++g_avowed_native_fix_gate.stable_frames;
         }
 
@@ -369,18 +493,26 @@ bool avowed_native_fix_gate_update(
             *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
         }
 
-        if (g_avowed_native_fix_gate.stable_frames >= AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = required_stable_frames;
+        }
+
+        if (g_avowed_native_fix_gate.stable_frames >= required_stable_frames) {
             g_avowed_native_fix_gate.ready = true;
+            g_avowed_native_fix_gate.had_ready_baseline = true;
+            g_avowed_native_fix_gate.last_ready_scene = scene;
+            g_avowed_native_fix_gate.last_ready_render_target = render_target;
             SPDLOG_INFO(
-                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix",
-                g_avowed_native_fix_gate.stable_frames);
+                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix fast_reacquire={}",
+                g_avowed_native_fix_gate.stable_frames,
+                g_avowed_native_fix_gate.fast_reacquire);
         }
     }
 
     return g_avowed_native_fix_gate.ready;
 }
 
-bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr) {
+bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr, uint32_t* out_required_stable_frames = nullptr) {
     if (!avowed_is_current_game()) {
         return true;
     }
@@ -389,6 +521,12 @@ bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr) {
 
     if (out_stable_frames != nullptr) {
         *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+    }
+
+    if (out_required_stable_frames != nullptr) {
+        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
     }
 
     return g_avowed_native_fix_gate.ready;
@@ -5315,13 +5453,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     uint32_t avowed_gate_stable_frames = 0;
+    uint32_t avowed_gate_required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
     const auto avowed_gate_ready = avowed_native_fix_gate_update(
         (uintptr_t)view_family_scene,
         (uintptr_t)view_family_target,
         (uintptr_t)scene_capture_rhi,
         scene_capture_native,
         rtfrt != nullptr && scene_capture_rhi != nullptr,
-        &avowed_gate_stable_frames);
+        &avowed_gate_stable_frames,
+        &avowed_gate_required_frames);
 
     bool wants_swap = false;
     if (views.count > 1) {
@@ -5333,7 +5473,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 2,
                 "[Avowed][NativeStereoFix] Suppressing right-eye pass during render transition stabilization stable={}/{}",
                 avowed_gate_stable_frames,
-                AVOWED_NATIVE_FIX_STABLE_FRAMES);
+                avowed_gate_required_frames);
         }
 
         if (wants_swap) {
@@ -7489,13 +7629,14 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
         if (avowed_is_current_game()) {
             uint32_t stable_frames = 0;
+            uint32_t required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
 
-            if (!avowed_native_fix_gate_ready(&stable_frames)) {
+            if (!avowed_native_fix_gate_ready(&stable_frames, &required_frames)) {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[Avowed][NativeStereoFix] Returning one view while render transition stabilizes stable={}/{}",
                     stable_frames,
-                    AVOWED_NATIVE_FIX_STABLE_FRAMES);
+                    required_frames);
                 return 1;
             }
         }
