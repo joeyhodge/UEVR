@@ -38,6 +38,7 @@
 #include "uobjecthook/SDKDumper.hpp"
 #include "VR.hpp"
 
+#include "GameSpecific.hpp"
 #include "UObjectHook.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
@@ -67,7 +68,7 @@ bool is_ue_5_1_uobjecthook_guard_enabled() {
 bool is_avowed_uobjecthook_guard_enabled() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+        return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
     }();
 
     return result;
