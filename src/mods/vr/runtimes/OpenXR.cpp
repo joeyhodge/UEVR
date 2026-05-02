@@ -11,6 +11,7 @@
 #include <nlohmann/json.hpp>
 #include <utility/String.hpp>
 #include <imgui.h>
+#include <tracy/Tracy.hpp>
 
 #include <sdk/CVar.hpp>
 #include <sdk/Globals.hpp>
@@ -664,6 +665,8 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
 }
 
 XrResult OpenXR::recover_wedged_frame(const char* reason) {
+    ZoneScopedN("OpenXR::recover_wedged_frame");
+
     if (!this->frame_began || this->session == XR_NULL_HANDLE) {
         return XR_SUCCESS;
     }
@@ -676,7 +679,11 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
     frame_end_info.layerCount = 0;
     frame_end_info.layers = nullptr;
 
-    const auto result = xrEndFrame(this->session, &frame_end_info);
+    XrResult result{};
+    {
+        ZoneScopedN("xrEndFrame recovery");
+        result = xrEndFrame(this->session, &frame_end_info);
+    }
 
     if (result != XR_SUCCESS) {
         spdlog::error("[OpenXR] Recovery xrEndFrame failed ({}): {}", reason, this->get_result_string(result));
@@ -692,6 +699,8 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
 }
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
+    ZoneScopedN("OpenXR::synchronize_frame");
+
     std::scoped_lock _{sync_mtx};
 
     if (this->recover_focused_stale_frame_loop(sync_frame_callsite_name(callsite))) {
@@ -764,7 +773,11 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     XrFrameWaitInfo frame_wait_info{XR_TYPE_FRAME_WAIT_INFO};
     XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
     const auto wait_frame_start = std::chrono::steady_clock::now();
-    auto result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
+    XrResult result{};
+    {
+        ZoneScopedN("xrWaitFrame");
+        result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
+    }
     const auto wait_frame_duration = std::chrono::steady_clock::now() - wait_frame_start;
     this->wait_frame_timing.add(wait_frame_duration);
 
@@ -2512,6 +2525,8 @@ void OpenXR::save_bindings() {
 }
 
 XrResult OpenXR::begin_frame(const char* caller) {
+    ZoneScopedN("OpenXR::begin_frame");
+
     std::scoped_lock _{sync_mtx};
 
     this->trace_begin_frame_request(caller);
@@ -2531,7 +2546,11 @@ XrResult OpenXR::begin_frame(const char* caller) {
 
     XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
     const auto begin_frame_start = std::chrono::steady_clock::now();
-    auto result = xrBeginFrame(this->session, &frame_begin_info);
+    XrResult result{};
+    {
+        ZoneScopedN("xrBeginFrame");
+        result = xrBeginFrame(this->session, &frame_begin_info);
+    }
     this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
 
     this->end_profile("xrBeginFrame");
@@ -2545,7 +2564,10 @@ XrResult OpenXR::begin_frame(const char* caller) {
         this->recover_wedged_frame("xrBeginFrame call order invalid");
         synchronize_frame(std::nullopt, SyncFrameCallsite::OpenXRBeginFrameRecovery);
         const auto retry_begin_frame_start = std::chrono::steady_clock::now();
-        result = xrBeginFrame(this->session, &frame_begin_info);
+        {
+            ZoneScopedN("xrBeginFrame retry");
+            result = xrBeginFrame(this->session, &frame_begin_info);
+        }
         this->begin_frame_timing.add(std::chrono::steady_clock::now() - retry_begin_frame_start);
     }
 
@@ -2602,6 +2624,8 @@ XrResult OpenXR::begin_frame(const char* caller) {
 }
 
 XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth) {
+    ZoneScopedN("OpenXR::end_frame");
+
     std::scoped_lock _{sync_mtx};
 
     emit_openxr_state_probes(this, "end_frame");
@@ -2813,7 +2837,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     this->begin_profile();
     const auto end_frame_start = std::chrono::steady_clock::now();
-    auto result = xrEndFrame(this->session, &frame_end_info);
+    XrResult result{};
+    {
+        ZoneScopedN("xrEndFrame");
+        result = xrEndFrame(this->session, &frame_end_info);
+    }
     this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
     this->end_profile("xrEndFrame");
     

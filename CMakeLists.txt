@@ -27,6 +27,9 @@ if(CMKR_ROOT_PROJECT)
 	configure_file(cmake.toml cmake.toml COPYONLY)
 endif()
 
+# Options
+option(UEVR_ENABLE_TRACY "" OFF)
+
  
 set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 add_compile_options($<$<CXX_COMPILER_ID:MSVC>:/MP>)
@@ -58,6 +61,9 @@ if ("${CMAKE_BUILD_TYPE}" MATCHES "Release")
 endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+set(UESDK_ENABLE_TRACY ${UEVR_ENABLE_TRACY} CACHE BOOL "" FORCE)
+message(STATUS "UEVR Tracy profiling: ${UEVR_ENABLE_TRACY}")
 
 add_subdirectory(dependencies/submodules/UESDK)
 
@@ -122,7 +128,7 @@ FetchContent_Declare(asmjit
 FetchContent_MakeAvailable(asmjit)
 
 set(TRACY_STATIC ON CACHE BOOL "" FORCE)
-set(TRACY_ENABLE OFF CACHE BOOL "" FORCE)
+set(TRACY_ENABLE ${UEVR_ENABLE_TRACY} CACHE BOOL "" FORCE)
 
 message(STATUS "Fetching tracy (897aec5b062664d2485f4f9a213715d2e527e0ca)...")
 FetchContent_Declare(tracy
@@ -833,6 +839,12 @@ if(uevr_SOURCES)
 	target_sources(uevr PRIVATE ${uevr_SOURCES})
 endif()
 
+target_compile_definitions(uevr PUBLIC
+	"$<$<BOOL:${UEVR_ENABLE_TRACY}>:TRACY_ENABLE>"
+	"$<$<BOOL:${UEVR_ENABLE_TRACY}>:NOMINMAX>"
+	"$<$<BOOL:${UEVR_ENABLE_TRACY}>:UEVR_ENABLE_TRACY=1>"
+	"$<$<NOT:$<BOOL:${UEVR_ENABLE_TRACY}>>:UEVR_ENABLE_TRACY=0>"
+)
 
 target_compile_features(uevr PUBLIC
 	cxx_std_23

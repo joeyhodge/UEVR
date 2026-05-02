@@ -1,4 +1,6 @@
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
 #include <algorithm>
 #include <array>
@@ -1149,7 +1151,10 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
         }
 
         spdlog::debug("[execute_console_script] Attempting to execute \"{}\"", line);
-        engine->exec(utility::widen(line));
+        {
+            ZoneScopedN("CVarManager console exec");
+            engine->exec(utility::widen(line));
+        }
     }
 
     spdlog::debug("[execute_console_script] done");

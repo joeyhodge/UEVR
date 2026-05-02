@@ -10,6 +10,8 @@
 #include <mutex>
 #include <unordered_set>
 
+#include <tracy/Tracy.hpp>
+
 #include "Framework.hpp"
 #include "render/D3D12Diagnostics.hpp"
 #include "../GameSpecific.hpp"
@@ -568,6 +570,8 @@ d3d12::TextureContext* D3D12Component::render_shf_mono_scene_texture(ID3D12Devic
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    ZoneScopedN("D3D12Component::on_frame");
+
     const auto on_frame_start = std::chrono::steady_clock::now();
     utility::ScopeGuard frame_timing_guard{[&]() {
         m_perf_on_frame.add(std::chrono::steady_clock::now() - on_frame_start);
@@ -2717,6 +2721,8 @@ void D3D12Component::OpenXR::copy(
     D3D12_RESOURCE_STATES src_state, 
     D3D12_BOX* src_box) 
 {
+    ZoneScopedN("D3D12 OpenXR swapchain copy");
+
     std::scoped_lock _{this->mtx};
 
     auto vr = VR::get();
@@ -2752,7 +2758,11 @@ void D3D12Component::OpenXR::copy(
     XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
 
     uint32_t texture_index{};
-    auto result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &texture_index);
+    XrResult result{};
+    {
+        ZoneScopedN("xrAcquireSwapchainImage");
+        result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &texture_index);
+    }
 
     if (result == XR_ERROR_RUNTIME_FAILURE) {
         spdlog::error("[VR] xrAcquireSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
@@ -2763,7 +2773,10 @@ void D3D12Component::OpenXR::copy(
         }
 
         texture_index = 0;
-        result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &texture_index);
+        {
+            ZoneScopedN("xrAcquireSwapchainImage retry");
+            result = xrAcquireSwapchainImage(swapchain.handle, &acquire_info, &texture_index);
+        }
     }
 
 
@@ -2775,7 +2788,10 @@ void D3D12Component::OpenXR::copy(
         XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
         //wait_info.timeout = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(1)).count();
         wait_info.timeout = XR_INFINITE_DURATION;
-        result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+        {
+            ZoneScopedN("xrWaitSwapchainImage");
+            result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+        }
 
         if (result != XR_SUCCESS) {
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
@@ -2789,24 +2805,28 @@ void D3D12Component::OpenXR::copy(
 
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
-            if (resource != nullptr) {
-                if (src_box == nullptr) {
-                    const auto is_depth = swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
-                    const auto dst_state = is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+            {
+                ZoneScopedN("D3D12 copy to OpenXR swapchain");
 
-                    texture_ctx->commands.copy(
-                        resource, 
-                        ctx.textures[texture_index].texture, 
-                        src_state, 
-                        dst_state);
-                } else {
-                    texture_ctx->commands.copy_region(
-                        resource, 
-                        ctx.textures[texture_index].texture, src_box,
-                        src_state, 
-                        D3D12_RESOURCE_STATE_RENDER_TARGET);
+                if (resource != nullptr) {
+                    if (src_box == nullptr) {
+                        const auto is_depth = swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH || 
+                                            swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE || 
+                                            swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
+                        const auto dst_state = is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+                        texture_ctx->commands.copy(
+                            resource, 
+                            ctx.textures[texture_index].texture, 
+                            src_state, 
+                            dst_state);
+                    } else {
+                        texture_ctx->commands.copy_region(
+                            resource, 
+                            ctx.textures[texture_index].texture, src_box,
+                            src_state, 
+                            D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    }
                 }
             }
 
@@ -2817,14 +2837,20 @@ void D3D12Component::OpenXR::copy(
             texture_ctx->commands.execute();
 
             XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
-            auto result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+            {
+                ZoneScopedN("xrReleaseSwapchainImage");
+                result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+            }
 
             // SteamVR shenanigans.
             if (result == XR_ERROR_RUNTIME_FAILURE) {
                 spdlog::error("[VR] xrReleaseSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
                 spdlog::info("[VR] Attempting to correct...");
 
-                result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+                {
+                    ZoneScopedN("xrWaitSwapchainImage recovery");
+                    result = xrWaitSwapchainImage(swapchain.handle, &wait_info);
+                }
 
                 if (result != XR_SUCCESS) {
                     spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
@@ -2834,7 +2860,10 @@ void D3D12Component::OpenXR::copy(
                     texture_ctx->commands.wait(INFINITE);
                 }
 
-                result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+                {
+                    ZoneScopedN("xrReleaseSwapchainImage retry");
+                    result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
+                }
             }
 
             if (result != XR_SUCCESS) {

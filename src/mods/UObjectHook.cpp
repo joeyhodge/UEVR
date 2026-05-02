@@ -28,6 +28,7 @@
 #include <sdk/FArrayProperty.hpp>
 #include <sdk/UMotionControllerComponent.hpp>
 #include <sdk/Utility.hpp>
+#include <tracy/Tracy.hpp>
 #ifdef min
 #undef min
 #endif
@@ -852,6 +853,8 @@ bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view co
 }
 
 void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
+    ZoneScopedN("UObjectHook UObjectArray scan");
+
     if ((!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) || max_objects == 0) {
         return;
     }

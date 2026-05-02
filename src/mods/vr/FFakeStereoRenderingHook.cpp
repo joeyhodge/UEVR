@@ -1,4 +1,6 @@
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
 #include <windows.h>
 #include <winternl.h>
@@ -8522,6 +8524,8 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
                                                                 void* a4, void* params, void* unk1, void* unk2) 
 {
+    ZoneScopedN("FSlateRHIRenderer::DrawWindow_RenderThread hook");
+
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("SlateRHIRenderer::DrawWindow_RenderThread called!");
 #else

@@ -35,12 +35,18 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+set(UESDK_ENABLE_TRACY ${UEVR_ENABLE_TRACY} CACHE BOOL "" FORCE)
+message(STATUS "UEVR Tracy profiling: ${UEVR_ENABLE_TRACY}")
+
 add_subdirectory(dependencies/submodules/UESDK)
 
 set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 message(STATUS "Using vendored safetyhook (b62c7356f3e364209a2ae14489550156d7b58b8b + UEVR patches)...")
 add_subdirectory(dependencies/vendor/safetyhook)
 """
+
+[options]
+UEVR_ENABLE_TRACY = false
 
 [target.spdlog]
 type = "static"
@@ -84,7 +90,7 @@ git = "https://github.com/wolfpld/tracy"
 tag = "897aec5b062664d2485f4f9a213715d2e527e0ca"
 cmake-before="""
 set(TRACY_STATIC ON CACHE BOOL "" FORCE)
-set(TRACY_ENABLE OFF CACHE BOOL "" FORCE)
+set(TRACY_ENABLE ${UEVR_ENABLE_TRACY} CACHE BOOL "" FORCE)
 """
 
 [fetch-content.directxtk]
@@ -236,7 +242,12 @@ include-directories = [
 ]
 compile-options = ["/GS-", "/bigobj", "/EHa", "/MP"]
 compile-features = ["cxx_std_23"]
-compile-definitions = []
+compile-definitions = [
+    "$<$<BOOL:${UEVR_ENABLE_TRACY}>:TRACY_ENABLE>",
+    "$<$<BOOL:${UEVR_ENABLE_TRACY}>:NOMINMAX>",
+    "$<$<BOOL:${UEVR_ENABLE_TRACY}>:UEVR_ENABLE_TRACY=1>",
+    "$<$<NOT:$<BOOL:${UEVR_ENABLE_TRACY}>>:UEVR_ENABLE_TRACY=0>",
+]
 link-libraries = [
     "shlwapi",
     "d3d11",
