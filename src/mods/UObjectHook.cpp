@@ -672,7 +672,7 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
     return result;
 }
 
-void UObjectHook::add_new_object(sdk::UObjectBase* object) {
+void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_jobs) {
     {
         std::shared_lock _{m_mutex};
         if (exists_unsafe(object)) {
@@ -735,7 +735,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
 
         m_objects_by_class[(sdk::UClass*)super].insert(object);
 
-        if (auto it = m_on_creation_add_component_jobs.find((sdk::UClass*)super); it != m_on_creation_add_component_jobs.end()) {
+        if (run_creation_jobs && m_on_creation_add_component_jobs.contains((sdk::UClass*)super)) {
             GameThreadWorker::get().enqueue([object, this]() {
                 if (!this->exists(object)) {
                     return;
@@ -765,6 +765,55 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
 #ifdef VERBOSE_UOBJECTHOOK
     SPDLOG_INFO("Adding object {:x} {:s}", (uintptr_t)object, utility::narrow(m_meta_objects[object]->full_name));
 #endif
+}
+
+bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::UObjectBase* child, std::string_view context) {
+    if (parent == nullptr || child == nullptr) {
+        return false;
+    }
+
+    if (exists(child)) {
+        return true;
+    }
+
+    if (!exists(parent)) {
+        return false;
+    }
+
+    if (!is_safe_uobject_candidate(*this, child, true)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Refusing to adopt reachable UI UObject from {}: parent={:x} child={:x}",
+            context,
+            (uintptr_t)parent,
+            (uintptr_t)child);
+        return false;
+    }
+
+    // UI browsing can reveal valid objects that AddObject missed. Track metadata only;
+    // do not run creation jobs from a passive explorer expansion.
+    add_new_object(child, false);
+
+    const auto tracked = exists(child);
+
+    if (tracked) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Adopted reachable UI UObject from {}: parent={:x} child={:x}",
+            context,
+            (uintptr_t)parent,
+            (uintptr_t)child);
+    }
+
+    return tracked;
+}
+
+void UObjectHook::ui_handle_reachable_object(sdk::UObject* parent, sdk::UObject* child, std::string_view context) {
+    if (child != nullptr && !exists(child)) {
+        try_track_reachable_ui_object(parent, child, context);
+    }
+
+    ui_handle_object(child);
 }
 
 bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view context, bool require_array_member) {
@@ -3168,7 +3217,7 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
             auto def = ((sdk::UClass*)object)->get_class_default_object();
 
             if (def != nullptr) {
-                ui_handle_object(def);
+                ui_handle_reachable_object(object, def, "ui default object");
             } else {
                 ImGui::Text("Null default object");
             }
@@ -3181,7 +3230,7 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
 
     if (ImGui::TreeNode("Outer")) {
         auto outer_scope = m_path.enter("Outer");
-        ui_handle_object(object->get_outer());
+        ui_handle_reachable_object(object, object->get_outer(), "ui outer");
         ImGui::TreePop();
     }
 
@@ -3856,7 +3905,7 @@ void UObjectHook::ui_handle_actor(sdk::UObject* object) {
 
             if (made) {
                 auto scope2 = m_path.enter(utility::narrow(comp_name));
-                ui_handle_object(comp_obj);
+                ui_handle_reachable_object(object, comp_obj, "ui actor component");
                 ImGui::TreePop();
             }
 
@@ -4254,7 +4303,13 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
                 
                 if (ImGui::TreeNode(utility::narrow(prop->get_field_name().to_string()).data())) {
                     auto scope2 = m_path.enter(utility::narrow(prop->get_field_name().to_string()));
-                    ui_handle_object(value);
+                    auto parent_object = (sdk::UObject*)object;
+
+                    if (!exists(parent_object)) {
+                        parent_object = nullptr;
+                    }
+
+                    ui_handle_reachable_object(parent_object, value, "ui object property");
                     ImGui::TreePop();
                 }
             }
@@ -4374,6 +4429,11 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
     case "ObjectProperty"_fnv:
     {
         const auto& array_obj = *(sdk::TArray<sdk::UObject*>*)((uintptr_t)addr + prop->get_offset());
+        auto parent_object = (sdk::UObject*)addr;
+
+        if (!exists(parent_object)) {
+            parent_object = nullptr;
+        }
 
         for (auto obj : array_obj) {
             std::wstring name = obj->get_class()->get_fname().to_string() + L" " + obj->get_fname().to_string();
@@ -4381,7 +4441,7 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
 
             if (ImGui::TreeNode(narrow_name.data())) {
                 auto scope = m_path.enter(narrow_name);
-                ui_handle_object(obj);
+                ui_handle_reachable_object(parent_object, obj, "ui object array");
                 ImGui::TreePop();
             }
         }
