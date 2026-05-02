@@ -12,6 +12,7 @@
 
 #include "Framework.hpp"
 #include "render/D3D12Diagnostics.hpp"
+#include "../GameSpecific.hpp"
 #include "../VR.hpp"
 
 #include <sdk/Utility.hpp>
@@ -109,7 +110,7 @@ bool is_stalker2_current_game() {
 bool is_avowed_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+        return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
     }();
 
     return result;
