@@ -381,6 +381,7 @@ public:
     std::chrono::steady_clock::time_point last_valid_pose_probe_log{};
     std::chrono::steady_clock::time_point last_pose_validation_failure_log{};
     std::chrono::steady_clock::time_point last_frame_timing_log{};
+    std::chrono::steady_clock::time_point last_long_wait_log{};
     std::chrono::steady_clock::time_point last_slow_pose_update_log{};
     std::chrono::steady_clock::time_point last_stale_pose_skip_log{};
     std::chrono::steady_clock::time_point last_stale_pose_submit_log{};
@@ -396,6 +397,8 @@ public:
     uint64_t stale_pose_refresh_attempt_count{};
     uint64_t stale_pose_refresh_success_count{};
     uint64_t stale_pose_refresh_failed_count{};
+    uint64_t long_wait_suppressed_count{};
+    double long_wait_max_suppressed_ms{};
     uint32_t last_pose_update_frame_count{};
     bool last_pose_update_from_view_extensions{};
     int64_t last_pose_update_result{};

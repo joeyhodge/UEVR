@@ -57,6 +57,18 @@ bool is_stalker2_current_game_for_cvars() {
     return result;
 }
 
+bool is_aphelion_current_game_for_cvars() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"PIO-WinGDK-Shipping") != std::wstring::npos ||
+             exe_path->find(L"PIO-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"Aphelion") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
 bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
         int major{};
@@ -154,6 +166,95 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
 
     SPDLOG_INFO(
         "[UE5.1][DX12] runtime cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
+        attempt,
+        found,
+        missing,
+        set_ok,
+        set_failed);
+
+    return true;
+}
+
+bool force_aphelion_framegen_runtime_cvars_once(int attempt) {
+    if (g_framework == nullptr || !g_framework->is_dx12() || !is_aphelion_current_game_for_cvars()) {
+        return true;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+
+    if (console_manager == nullptr) {
+        return false;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        const wchar_t* value;
+    };
+
+    // Aphelion ships both Streamline/DLSSG and FSR3 frame-interpolation paths.
+    // In VR these custom-present/frame-generation layers can fight UEVR's OpenXR
+    // submission and produce gameplay-only stalls or one-frame camera-cut ghosting.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.RHIPacingMode", L"0"},
+        ForcedCVar{L"r.Streamline.DLSSG.Enable", L"0"},
+        ForcedCVar{L"r.Streamline.Latewarp.Enable", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Enable", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Auto", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Mode", L"0"},
+        ForcedCVar{L"r.Streamline.Reflex.PredictiveRendering", L"0"},
+    };
+
+    int found{};
+    int set_ok{};
+    int set_failed{};
+    int missing{};
+
+    for (const auto& forced : forced_cvars) {
+        auto object = console_manager->find(forced.name);
+
+        if (object == nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto variable = (sdk::IConsoleVariable*)object;
+
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            ok = variable->Set(forced.value);
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++set_ok;
+        } else {
+            ++set_failed;
+        }
+
+        SPDLOG_INFO(
+            "[Aphelion][DX12] forced {}: before={} requested={} after={} ok={}",
+            utility::narrow(forced.name),
+            before,
+            utility::narrow(forced.value),
+            after,
+            ok);
+    }
+
+    if (found == 0) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Aphelion][DX12] frame-generation cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
         attempt,
         found,
         missing,
@@ -280,6 +381,8 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_should_execute_console_script = false;
         m_ue51_fsr3_runtime_cvars_done = false;
         m_ue51_fsr3_runtime_cvar_attempts = 0;
+        m_aphelion_framegen_runtime_cvars_done = false;
+        m_aphelion_framegen_runtime_cvar_attempts = 0;
     }
 
     if (!m_ue51_fsr3_runtime_cvars_done) {
@@ -290,6 +393,17 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         } else if (m_ue51_fsr3_runtime_cvar_attempts >= 600) {
             SPDLOG_WARN("[UE5.1][DX12] runtime cvars were not found after {} attempts; giving up", m_ue51_fsr3_runtime_cvar_attempts);
             m_ue51_fsr3_runtime_cvars_done = true;
+        }
+    }
+
+    if (!m_aphelion_framegen_runtime_cvars_done) {
+        ++m_aphelion_framegen_runtime_cvar_attempts;
+
+        if (force_aphelion_framegen_runtime_cvars_once(m_aphelion_framegen_runtime_cvar_attempts)) {
+            m_aphelion_framegen_runtime_cvars_done = true;
+        } else if (m_aphelion_framegen_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN("[Aphelion][DX12] frame-generation cvars were not found after {} attempts; giving up", m_aphelion_framegen_runtime_cvar_attempts);
+            m_aphelion_framegen_runtime_cvars_done = true;
         }
     }
 }

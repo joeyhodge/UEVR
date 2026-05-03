@@ -227,6 +227,8 @@ private:
     bool m_cvar_ui_open_this_frame{false};
     bool m_ue51_fsr3_runtime_cvars_done{false};
     int m_ue51_fsr3_runtime_cvar_attempts{0};
+    bool m_aphelion_framegen_runtime_cvars_done{false};
+    int m_aphelion_framegen_runtime_cvar_attempts{0};
 
     static inline std::mutex s_change_mutex{};
     static inline ChangeSnapshot s_change_snapshot{};
