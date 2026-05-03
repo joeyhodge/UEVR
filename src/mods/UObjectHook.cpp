@@ -38,6 +38,7 @@
 #include "uobjecthook/SDKDumper.hpp"
 #include "VR.hpp"
 
+#include "GameSpecific.hpp"
 #include "UObjectHook.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
@@ -67,14 +68,27 @@ bool is_ue_5_1_uobjecthook_guard_enabled() {
 bool is_avowed_uobjecthook_guard_enabled() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+        return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+bool is_stalker2_uobjecthook_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
     }();
 
     return result;
 }
 
 bool use_dynamic_uobjecthook_candidate_guard() {
-    return is_ue_5_1_uobjecthook_guard_enabled() || is_avowed_uobjecthook_guard_enabled();
+    return is_ue_5_1_uobjecthook_guard_enabled() || is_avowed_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
+}
+
+bool should_incrementally_refresh_uobject_array() {
+    return is_ue_5_1_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
 }
 
 bool is_readable_process_range(uintptr_t address, size_t size) {
@@ -345,8 +359,7 @@ void UObjectHook::hook() {
     auto add_object_fn = sdk::UObjectBase::get_add_object();
 
     if (!add_object_fn) {
-        SPDLOG_ERROR("[UObjectHook] Failed to find UObjectBase::AddObject, cannot hook UObjectBase");
-        return;
+        SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
 
     m_destructor_hook = safetyhook::create_inline((void**)destructor_fn.value(), &destructor);
@@ -356,19 +369,29 @@ void UObjectHook::hook() {
         return;
     }
 
-    m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
+    if (add_object_fn) {
+        m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
 
-    if (!m_add_object_hook) {
-        SPDLOG_ERROR("[UObjectHook] Failed to hook UObjectBase::AddObject, cannot hook UObjectBase");
-        return;
+        if (m_add_object_hook) {
+            m_add_object_hooked = true;
+        } else {
+            SPDLOG_WARN("[UObjectHook] Failed to hook UObjectBase::AddObject; using incremental FUObjectArray creation tracking");
+        }
     }
 
-    SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
+    m_force_uobject_array_creation_scan = !m_add_object_hooked;
+
+    if (m_add_object_hooked) {
+        SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
+    } else {
+        SPDLOG_INFO("[UObjectHook] Hooked UObjectBase destructor; AddObject creation tracking is using FUObjectArray scanning");
+    }
 
     // Add all the objects that already exist
     auto uobjectarray = sdk::FUObjectArray::get();
+    const auto object_count = uobjectarray != nullptr ? uobjectarray->get_object_count() : 0;
 
-    for (auto i = 0; i < uobjectarray->get_object_count(); ++i) {
+    for (auto i = 0; i < object_count; ++i) {
         auto object = uobjectarray->get_object(i);
 
         if (object == nullptr || object->get_object() == nullptr) {
@@ -377,6 +400,8 @@ void UObjectHook::hook() {
 
         add_new_object(object->get_object());
     }
+
+    m_uobject_array_scan_cursor = object_count;
 
     SPDLOG_INFO("[UObjectHook] Added {} existing objects", m_objects.size());
 
@@ -647,7 +672,14 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
     return result;
 }
 
-void UObjectHook::add_new_object(sdk::UObjectBase* object) {
+void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_jobs) {
+    {
+        std::shared_lock _{m_mutex};
+        if (exists_unsafe(object)) {
+            return;
+        }
+    }
+
     const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
 
     if (use_dynamic_uobjecthook_candidate_guard() && !is_safe_uobject_candidate(*this, object, require_array_member)) {
@@ -656,6 +688,11 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
     }
 
     std::unique_lock _{m_mutex};
+
+    if (exists_unsafe(object)) {
+        return;
+    }
+
     std::unique_ptr<MetaObject> meta_object{};
 
     /*static const auto prim_comp_t = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.PrimitiveComponent");
@@ -698,7 +735,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
 
         m_objects_by_class[(sdk::UClass*)super].insert(object);
 
-        if (auto it = m_on_creation_add_component_jobs.find((sdk::UClass*)super); it != m_on_creation_add_component_jobs.end()) {
+        if (run_creation_jobs && m_on_creation_add_component_jobs.contains((sdk::UClass*)super)) {
             GameThreadWorker::get().enqueue([object, this]() {
                 if (!this->exists(object)) {
                     return;
@@ -728,6 +765,161 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object) {
 #ifdef VERBOSE_UOBJECTHOOK
     SPDLOG_INFO("Adding object {:x} {:s}", (uintptr_t)object, utility::narrow(m_meta_objects[object]->full_name));
 #endif
+}
+
+bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::UObjectBase* child, std::string_view context) {
+    if (parent == nullptr || child == nullptr) {
+        return false;
+    }
+
+    if (exists(child)) {
+        return true;
+    }
+
+    if (!exists(parent)) {
+        return false;
+    }
+
+    if (!is_safe_uobject_candidate(*this, child, true)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Refusing to adopt reachable UI UObject from {}: parent={:x} child={:x}",
+            context,
+            (uintptr_t)parent,
+            (uintptr_t)child);
+        return false;
+    }
+
+    // UI browsing can reveal valid objects that AddObject missed. Track metadata only;
+    // do not run creation jobs from a passive explorer expansion.
+    add_new_object(child, false);
+
+    const auto tracked = exists(child);
+
+    if (tracked) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Adopted reachable UI UObject from {}: parent={:x} child={:x}",
+            context,
+            (uintptr_t)parent,
+            (uintptr_t)child);
+    }
+
+    return tracked;
+}
+
+void UObjectHook::ui_handle_reachable_object(sdk::UObject* parent, sdk::UObject* child, std::string_view context) {
+    if (child != nullptr && !exists(child)) {
+        try_track_reachable_ui_object(parent, child, context);
+    }
+
+    ui_handle_object(child);
+}
+
+bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view context, bool require_array_member) {
+    if (object == nullptr) {
+        return false;
+    }
+
+    if (exists(object)) {
+        return true;
+    }
+
+    if (!is_safe_uobject_candidate(*this, object, require_array_member)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Refusing to adopt untracked UObject from {}: {:x}",
+            context,
+            (uintptr_t)object);
+        return false;
+    }
+
+    add_new_object(object);
+
+    const auto tracked = exists(object);
+
+    if (tracked) {
+        SPDLOG_INFO("[UObjectHook] Adopted untracked UObject from {}: {:x}", context, (uintptr_t)object);
+    } else {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UObjectHook] Failed to adopt untracked UObject from {} after validation: {:x}",
+            context,
+            (uintptr_t)object);
+    }
+
+    return tracked;
+}
+
+void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
+    if ((!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) || max_objects == 0) {
+        return;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        return;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0) {
+        return;
+    }
+
+    if (m_uobject_array_scan_cursor < 0 || m_uobject_array_scan_cursor > object_count) {
+        m_uobject_array_scan_cursor = 0;
+    }
+
+    if (m_force_uobject_array_creation_scan && m_uobject_array_scan_cursor == object_count) {
+        m_uobject_array_scan_cursor = 0;
+    }
+
+    const auto start = m_uobject_array_scan_cursor;
+    const auto end = (int32_t)std::min<uint32_t>((uint32_t)object_count, (uint32_t)start + max_objects);
+    uint32_t added = 0;
+
+    for (auto i = start; i < end; ++i) {
+        auto item = object_array->get_object(i);
+
+        if (item == nullptr) {
+            continue;
+        }
+
+        auto object = item->get_object();
+
+        if (object == nullptr || exists(object)) {
+            continue;
+        }
+
+        // Objects found directly through FUObjectArray must still pass layout and index validation.
+        if (!is_safe_uobject_candidate(*this, object, true)) {
+            continue;
+        }
+
+        add_new_object(object);
+
+        if (exists(object)) {
+            ++added;
+        }
+    }
+
+    m_uobject_array_scan_cursor = end;
+
+    if (added > 0) {
+        static auto last_log = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+
+        if (now - last_log >= std::chrono::seconds(2)) {
+            SPDLOG_INFO(
+                "[UObjectHook] Incrementally tracked {} UObjectArray objects (cursor {}/{})",
+                added,
+                m_uobject_array_scan_cursor,
+                object_count);
+            last_log = now;
+        }
+    }
 }
 
 void UObjectHook::on_config_load(const utility::Config& cfg, bool set_defaults) {
@@ -769,6 +961,7 @@ void UObjectHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
             }
         }
 
+        refresh_new_objects_from_uobject_array();
         update_persistent_states();
     }
 }
@@ -1743,7 +1936,7 @@ void UObjectHook::update_persistent_states() {
 
     // Camera state
     if (m_persistent_camera_state != nullptr) {
-        auto obj = m_persistent_camera_state->path.resolve();
+        auto obj = m_persistent_camera_state->path.resolve(true);
 
         if (obj != nullptr) {
             m_camera_attach.object = obj;
@@ -1758,7 +1951,7 @@ void UObjectHook::update_persistent_states() {
                 continue;
             }
 
-            auto obj = state->path.resolve();
+            auto obj = state->path.resolve(true);
 
             if (obj == nullptr) {
                 continue;
@@ -1803,7 +1996,7 @@ void UObjectHook::update_persistent_states() {
                 continue;
             }
 
-            auto obj = prop_base->path.resolve();
+            auto obj = prop_base->path.resolve(true);
 
             if (obj == nullptr) {
                 continue;
@@ -2027,10 +2220,26 @@ sdk::UObject* UObjectHook::StatePath::resolve_base_object() const {
     return nullptr;
 }
 
-UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
+UObjectHook::ResolvedObject UObjectHook::StatePath::resolve(bool require_tracked_objects) const {
     const auto base = resolve_base_object();
 
     if (base == nullptr) {
+        return nullptr;
+    }
+
+    const auto hook = UObjectHook::get();
+    const auto is_stalker2_acknowledged_pawn_path =
+        is_stalker2_uobjecthook_guard_enabled() &&
+        !m_path.empty() &&
+        m_path.front() == "Acknowledged Pawn";
+
+    if (require_tracked_objects && !hook->try_track_object(base, "persistent path base", true)) {
+        if (is_stalker2_acknowledged_pawn_path) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UObjectHook] Deferring persistent Acknowledged Pawn path because the pawn is not tracked yet");
+        }
+
         return nullptr;
     }
 
@@ -2085,7 +2294,13 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
                 return nullptr;
             }
 
+            bool found = false;
+
             for (auto comp : components) {
+                if (comp == nullptr) {
+                    continue;
+                }
+
                 const auto& comp_fname = comp->get_fname();
                 const auto comp_name = comp_fname.to_string_remove_numbers();
                 const auto comp_ends_with_number = comp_fname.get_number() != 0;
@@ -2095,11 +2310,20 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
                                                             : *next_it == comp_expanded_name;
 
                 if (is_match) {
+                    if (require_tracked_objects && !hook->try_track_object(comp, "persistent path component", true)) {
+                        return nullptr;
+                    }
+
+                    found = true;
                     previous_data = comp;
                     previous_data_desc = comp->get_class();
                     ++it;
                     break;
                 }
+            }
+
+            if (!found) {
+                return nullptr;
             }
 
             break;
@@ -2134,6 +2358,10 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
                 const auto obj = obj_ptr != nullptr ? *obj_ptr : nullptr;
 
                 if (obj == nullptr) {
+                    return nullptr;
+                }
+
+                if (require_tracked_objects && !hook->try_track_object(obj, "persistent path object property", true)) {
                     return nullptr;
                 }
 
@@ -2213,6 +2441,10 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve() const {
                                                                : *prop_it == obj_expanded_name;
 
                     if (is_match) {
+                        if (require_tracked_objects && !hook->try_track_object(obj, "persistent path array object", true)) {
+                            return nullptr;
+                        }
+
                         found = true;
                         previous_data = obj;
                         previous_data_desc = obj->get_class();
@@ -2677,6 +2909,7 @@ void UObjectHook::draw_main() {
                     auto pawn = player_controller->get_acknowledged_pawn();
 
                     if (pawn != nullptr) {
+                        try_track_object((sdk::UObjectBase*)pawn, "Common Objects/Acknowledged Pawn", true);
                         ui_handle_object(pawn);
                     } else {
                         ImGui::Text("No pawn");
@@ -2984,7 +3217,7 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
             auto def = ((sdk::UClass*)object)->get_class_default_object();
 
             if (def != nullptr) {
-                ui_handle_object(def);
+                ui_handle_reachable_object(object, def, "ui default object");
             } else {
                 ImGui::Text("Null default object");
             }
@@ -2997,7 +3230,7 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
 
     if (ImGui::TreeNode("Outer")) {
         auto outer_scope = m_path.enter("Outer");
-        ui_handle_object(object->get_outer());
+        ui_handle_reachable_object(object, object->get_outer(), "ui outer");
         ImGui::TreePop();
     }
 
@@ -3672,7 +3905,7 @@ void UObjectHook::ui_handle_actor(sdk::UObject* object) {
 
             if (made) {
                 auto scope2 = m_path.enter(utility::narrow(comp_name));
-                ui_handle_object(comp_obj);
+                ui_handle_reachable_object(object, comp_obj, "ui actor component");
                 ImGui::TreePop();
             }
 
@@ -4070,7 +4303,13 @@ void UObjectHook::ui_handle_properties(void* object, sdk::UStruct* uclass) {
                 
                 if (ImGui::TreeNode(utility::narrow(prop->get_field_name().to_string()).data())) {
                     auto scope2 = m_path.enter(utility::narrow(prop->get_field_name().to_string()));
-                    ui_handle_object(value);
+                    auto parent_object = (sdk::UObject*)object;
+
+                    if (!exists(parent_object)) {
+                        parent_object = nullptr;
+                    }
+
+                    ui_handle_reachable_object(parent_object, value, "ui object property");
                     ImGui::TreePop();
                 }
             }
@@ -4190,6 +4429,11 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
     case "ObjectProperty"_fnv:
     {
         const auto& array_obj = *(sdk::TArray<sdk::UObject*>*)((uintptr_t)addr + prop->get_offset());
+        auto parent_object = (sdk::UObject*)addr;
+
+        if (!exists(parent_object)) {
+            parent_object = nullptr;
+        }
 
         for (auto obj : array_obj) {
             std::wstring name = obj->get_class()->get_fname().to_string() + L" " + obj->get_fname().to_string();
@@ -4197,7 +4441,7 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
 
             if (ImGui::TreeNode(narrow_name.data())) {
                 auto scope = m_path.enter(narrow_name);
-                ui_handle_object(obj);
+                ui_handle_reachable_object(parent_object, obj, "ui object array");
                 ImGui::TreePop();
             }
         }
@@ -4299,37 +4543,68 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
         sdk::UObjectBase* obj = nullptr;
 
         if (use_dynamic_uobjecthook_candidate_guard()) {
-            static std::atomic<int> preferred_register{0}; // 0 unset, 1 RCX, 2 RDX
-            static std::atomic<int> logged_register{0};
+            struct Candidate {
+                const char* name;
+                sdk::UObjectBase* object;
+            };
 
-            const auto rcx_object = (sdk::UObjectBase*)rcx;
-            const auto rdx_object = (sdk::UObjectBase*)rdx;
-            const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
-            const auto rcx_valid = is_safe_uobject_candidate(*hook, rcx_object, require_array_member);
-            const auto rdx_valid = is_safe_uobject_candidate(*hook, rdx_object, require_array_member);
+            static std::atomic<int> preferred_candidate{0}; // 0 unset, otherwise 1-based index into candidates.
+            static std::atomic<int> logged_candidate{0};
 
-            if (rcx_valid || rdx_valid) {
-                const auto previous = preferred_register.load(std::memory_order_relaxed);
-                int selected_register{};
+            const Candidate candidates[] = {
+                {"RCX", (sdk::UObjectBase*)rcx},
+                {"RDX", (sdk::UObjectBase*)rdx},
+                {"R8", (sdk::UObjectBase*)r8},
+                {"R9", (sdk::UObjectBase*)r9},
+                {"stack1", (sdk::UObjectBase*)stack1},
+                {"stack2", (sdk::UObjectBase*)stack2},
+                {"stack3", (sdk::UObjectBase*)stack3},
+                {"stack4", (sdk::UObjectBase*)stack4},
+            };
 
-                if (rcx_valid && rdx_valid) {
-                    selected_register = previous == 1 || previous == 2 ? previous : 2;
-                } else if (rcx_valid) {
-                    selected_register = 1;
-                } else {
-                    selected_register = 2;
+            constexpr size_t candidate_count = sizeof(candidates) / sizeof(candidates[0]);
+            bool valid_candidates[candidate_count]{};
+
+            // The original call has completed by this point, so a real AddObject candidate
+            // should now be present in FUObjectArray. Requiring array membership keeps
+            // wrong callsites from polluting UObjectHook with random UObject-looking values.
+            constexpr bool require_array_member = true;
+
+            for (size_t i = 0; i < candidate_count; ++i) {
+                valid_candidates[i] = is_safe_uobject_candidate(*hook, candidates[i].object, require_array_member);
+            }
+
+            const auto previous = preferred_candidate.load(std::memory_order_relaxed);
+            int selected_candidate{};
+
+            if (previous > 0 && previous <= (int)candidate_count && valid_candidates[previous - 1]) {
+                selected_candidate = previous;
+            } else {
+                for (size_t i = 0; i < candidate_count; ++i) {
+                    if (valid_candidates[i]) {
+                        selected_candidate = (int)i + 1;
+                        break;
+                    }
                 }
+            }
 
-                preferred_register.store(selected_register, std::memory_order_relaxed);
-                obj = selected_register == 1 ? rcx_object : rdx_object;
+            if (selected_candidate != 0) {
+                preferred_candidate.store(selected_candidate, std::memory_order_relaxed);
+                obj = candidates[selected_candidate - 1].object;
 
-                const auto previous_logged = logged_register.exchange(selected_register, std::memory_order_relaxed);
+                const auto previous_logged = logged_candidate.exchange(selected_candidate, std::memory_order_relaxed);
 
-                if (previous_logged != selected_register) {
-                    SPDLOG_INFO("[UObjectHook] Guarded AddObject selected {} as UObjectBase*", selected_register == 1 ? "RCX" : "RDX");
+                if (previous_logged != selected_candidate) {
+                    SPDLOG_INFO("[UObjectHook] Guarded AddObject selected {} as UObjectBase*", candidates[selected_candidate - 1].name);
                 }
             } else {
-                SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping AddObject call with no safe UObject candidate (rcx={:x}, rdx={:x})", (uintptr_t)rcx, (uintptr_t)rdx);
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[UObjectHook] Skipping AddObject call with no safe UObject candidate (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
+                    (uintptr_t)rcx,
+                    (uintptr_t)rdx,
+                    (uintptr_t)r8,
+                    (uintptr_t)r9);
                 return result;
             }
         } else {

@@ -25,6 +25,15 @@ constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
 constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
 
+bool should_preserve_present_params_for_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"MafiaTheOldCountry") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 template <typename TInterface>
 void add_unique_pointer_hook(
     TInterface* iface,
@@ -659,6 +668,8 @@ thread_local int32_t g_present_depth = 0;
 
 HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_interval, UINT flags, DXGI_PRESENT_PARAMETERS* params, bool present1) {
     auto d3d12 = g_d3d12_hook;
+    const auto original_sync_interval = sync_interval;
+    const auto original_flags = flags;
 
     HWND swapchain_wnd{nullptr};
     swap_chain->GetHwnd(&swapchain_wnd);
@@ -773,19 +784,40 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
         d3d12->m_on_present(*d3d12);
 
         if (d3d12->m_next_present_interval) {
-            sync_interval = *d3d12->m_next_present_interval;
+            const auto requested_sync_interval = *d3d12->m_next_present_interval;
             d3d12->m_next_present_interval = std::nullopt;
 
-            if (sync_interval == 0) {
-                BOOL is_fullscreen = 0;
-                swap_chain->GetFullscreenState(&is_fullscreen, nullptr);
-                flags &= ~DXGI_PRESENT_DO_NOT_SEQUENCE;
+            const auto swapchain_key = reinterpret_cast<uintptr_t>(swap_chain);
+            const auto preserve_for_current_game = should_preserve_present_params_for_current_game();
 
-                DXGI_SWAP_CHAIN_DESC swap_desc{};
-                swap_chain->GetDesc(&swap_desc);
+            if (preserve_for_current_game || d3d12->m_swapchains_requiring_original_present_params.contains(swapchain_key)) {
+                if (d3d12->m_original_present_param_skip_logged_swapchains.insert(swapchain_key).second) {
+                    if (preserve_for_current_game) {
+                        spdlog::warn(
+                            "Skipping UEVR Present param override for MafiaTheOldCountry swapchain {:x}; preserving original sync={} flags={:x}",
+                            swapchain_key,
+                            original_sync_interval,
+                            original_flags);
+                    } else {
+                        spdlog::warn(
+                            "Skipping UEVR Present param override for swapchain {:x} after prior original-param recovery",
+                            swapchain_key);
+                    }
+                }
+            } else {
+                sync_interval = requested_sync_interval;
 
-                if (!is_fullscreen && (swap_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0) {
-                    flags |= DXGI_PRESENT_ALLOW_TEARING;
+                if (sync_interval == 0) {
+                    BOOL is_fullscreen = 0;
+                    swap_chain->GetFullscreenState(&is_fullscreen, nullptr);
+                    flags &= ~DXGI_PRESENT_DO_NOT_SEQUENCE;
+
+                    DXGI_SWAP_CHAIN_DESC swap_desc{};
+                    swap_chain->GetDesc(&swap_desc);
+
+                    if (!is_fullscreen && (swap_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0) {
+                        flags |= DXGI_PRESENT_ALLOW_TEARING;
+                    }
                 }
             }
         }
@@ -797,6 +829,32 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
     
     if (!d3d12->m_ignore_next_present) {
         result = present_fn(swap_chain, sync_interval, flags, params);
+
+        if (result == DXGI_ERROR_INVALID_CALL &&
+            (sync_interval != original_sync_interval || flags != original_flags))
+        {
+            spdlog::warn(
+                "Present failed with modified params, retrying original params. modified_sync={} modified_flags={:x} original_sync={} original_flags={:x}",
+                sync_interval,
+                flags,
+                original_sync_interval,
+                original_flags);
+
+            result = present_fn(swap_chain, original_sync_interval, original_flags, params);
+
+            if (result == S_OK) {
+                spdlog::warn("Present retry with original params succeeded");
+                const auto swapchain_key = reinterpret_cast<uintptr_t>(swap_chain);
+
+                if (d3d12->m_swapchains_requiring_original_present_params.insert(swapchain_key).second) {
+                    spdlog::warn(
+                        "Marked swapchain {:x} to preserve original Present params after DXGI_ERROR_INVALID_CALL recovery",
+                        swapchain_key);
+                }
+            } else {
+                spdlog::error("Present retry with original params failed: {:x}", result);
+            }
+        }
 
         if (result != S_OK) {
             spdlog::error("Present failed: {:x}", result);

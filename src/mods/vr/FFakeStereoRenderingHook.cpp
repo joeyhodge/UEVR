@@ -52,6 +52,7 @@
 #include "Framework.hpp"
 #include "Mods.hpp"
 #include "mods/UObjectHook.hpp"
+#include "mods/GameSpecific.hpp"
 
 #include <bdshemu.h>
 #include <bddisasm.h>
@@ -73,6 +74,9 @@ FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 
 namespace {
+bool is_readable_process_range(uintptr_t address, size_t size);
+bool is_executable_process_range(uintptr_t address, size_t size);
+
 std::mutex g_shf_texture_probe_mutex{};
 std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
 std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_texture_probe_by_base{};
@@ -81,8 +85,11 @@ uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
 
 constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
+constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
+constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD = std::chrono::milliseconds(1500);
+constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING = std::chrono::seconds(60);
 
 bool is_deadzone_ue56_executable() {
     static const bool result = []() {
@@ -106,11 +113,18 @@ struct AvowedNativeFixGateState {
     uintptr_t render_target{};
     uintptr_t scene_capture_render_target{};
     uintptr_t scene_capture_native{};
+    uintptr_t last_ready_scene{};
+    uintptr_t last_ready_render_target{};
     std::chrono::steady_clock::time_point last_update{};
     std::chrono::steady_clock::time_point hold_until{};
+    std::chrono::steady_clock::time_point missing_since{};
     uint32_t stable_frames{};
+    uint32_t required_stable_frames{AVOWED_NATIVE_FIX_STABLE_FRAMES};
     bool ready{};
     bool has_baseline{};
+    bool had_ready_baseline{};
+    bool targets_missing{};
+    bool fast_reacquire{};
 };
 
 std::mutex g_avowed_native_fix_gate_mutex{};
@@ -173,6 +187,40 @@ bool shf_is_current_game() {
     return result;
 }
 
+bool aphelion_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"PIO-WinGDK-Shipping") != std::wstring::npos ||
+             exe_path->find(L"PIO-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"Aphelion") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+bool ark_ascended_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"ArkAscended.exe") != std::wstring::npos ||
+             exe_path->find(L"ArkAscended-Win64-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+bool mechwarrior_clans_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"MechWarrior-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"MW5Clans") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
 bool stalker2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -185,7 +233,7 @@ bool stalker2_is_current_game() {
 bool avowed_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"Avowed-Win64-Shipping") != std::wstring::npos;
+        return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
     }();
 
     return result;
@@ -232,7 +280,8 @@ bool avowed_native_fix_gate_update(
     uintptr_t scene_capture_render_target,
     uintptr_t scene_capture_native,
     bool prerequisites_ready,
-    uint32_t* out_stable_frames = nullptr)
+    uint32_t* out_stable_frames = nullptr,
+    uint32_t* out_required_stable_frames = nullptr)
 {
     if (!avowed_is_current_game()) {
         return true;
@@ -244,20 +293,36 @@ bool avowed_native_fix_gate_update(
         *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
     }
 
+    if (out_required_stable_frames != nullptr) {
+        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+    }
+
     const auto now = std::chrono::steady_clock::now();
 
     if (g_avowed_native_fix_gate.last_update.time_since_epoch().count() != 0) {
         const auto render_gap = now - g_avowed_native_fix_gate.last_update;
 
         if (render_gap > AVOWED_NATIVE_FIX_RENDER_GAP) {
+            const auto can_fast_reacquire = g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready;
             g_avowed_native_fix_gate.ready = false;
             g_avowed_native_fix_gate.stable_frames = 0;
-            g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+            g_avowed_native_fix_gate.required_stable_frames =
+                can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+            g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
+            const auto requested_hold_duration = can_fast_reacquire
+                ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+                : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+            g_avowed_native_fix_gate.hold_until = std::max(
+                g_avowed_native_fix_gate.hold_until,
+                now + requested_hold_duration);
 
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety",
-                std::chrono::duration<double, std::milli>(render_gap).count());
+                "[Avowed][NativeStereoFix] Render gap {:.0f}ms detected; holding one view for transition safety fast_reacquire={}",
+                std::chrono::duration<double, std::milli>(render_gap).count(),
+                can_fast_reacquire);
         }
     }
 
@@ -275,7 +340,32 @@ bool avowed_native_fix_gate_update(
                 prerequisites_ready);
         }
 
-        g_avowed_native_fix_gate = {};
+        if (g_avowed_native_fix_gate.had_ready_baseline || g_avowed_native_fix_gate.ready) {
+            if (!g_avowed_native_fix_gate.targets_missing) {
+                g_avowed_native_fix_gate.missing_since = now;
+            }
+
+            // Inventory/menu transitions briefly remove Avowed's capture target. Keep the last
+            // known-good gameplay baseline so reacquiring the same path can use a short gate.
+            g_avowed_native_fix_gate.targets_missing = true;
+            g_avowed_native_fix_gate.ready = false;
+            g_avowed_native_fix_gate.stable_frames = 0;
+            g_avowed_native_fix_gate.fast_reacquire = false;
+            g_avowed_native_fix_gate.required_stable_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        } else {
+            g_avowed_native_fix_gate = {};
+        }
+
+        if (out_stable_frames != nullptr) {
+            *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+        }
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+                ? g_avowed_native_fix_gate.required_stable_frames
+                : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        }
+
         return false;
     }
 
@@ -287,29 +377,96 @@ bool avowed_native_fix_gate_update(
         g_avowed_native_fix_gate.scene_capture_native != scene_capture_native;
 
     if (baseline_changed) {
+        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
+            ? now - g_avowed_native_fix_gate.missing_since
+            : std::chrono::steady_clock::duration{};
+        const auto matches_last_ready_path =
+            g_avowed_native_fix_gate.had_ready_baseline &&
+            g_avowed_native_fix_gate.last_ready_scene == scene &&
+            g_avowed_native_fix_gate.last_ready_render_target == render_target;
+        const auto can_fast_reacquire =
+            g_avowed_native_fix_gate.targets_missing &&
+            matches_last_ready_path &&
+            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
+
         g_avowed_native_fix_gate.scene = scene;
         g_avowed_native_fix_gate.render_target = render_target;
         g_avowed_native_fix_gate.scene_capture_render_target = scene_capture_render_target;
         g_avowed_native_fix_gate.scene_capture_native = scene_capture_native;
-        g_avowed_native_fix_gate.hold_until = std::max(g_avowed_native_fix_gate.hold_until, now + AVOWED_NATIVE_FIX_TRANSITION_HOLD);
+        const auto requested_hold_duration = can_fast_reacquire
+            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+        const auto requested_hold_until = now + requested_hold_duration;
+        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
+            ? requested_hold_until
+            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
         g_avowed_native_fix_gate.stable_frames = 0;
+        g_avowed_native_fix_gate.required_stable_frames =
+            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
         g_avowed_native_fix_gate.ready = false;
         g_avowed_native_fix_gate.has_baseline = true;
+        g_avowed_native_fix_gate.targets_missing = false;
+        g_avowed_native_fix_gate.missing_since = {};
+        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
 
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x}",
+            "[Avowed][NativeStereoFix] Render transition detected; holding one view scene={:x} target={:x} capture_rt={:x} capture_native={:x} fast_reacquire={} stable_required={}",
             scene,
             render_target,
             scene_capture_render_target,
-            scene_capture_native);
+            scene_capture_native,
+            can_fast_reacquire,
+            g_avowed_native_fix_gate.required_stable_frames);
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
+        }
 
         return false;
+    }
+
+    if (g_avowed_native_fix_gate.targets_missing) {
+        const auto missing_duration = g_avowed_native_fix_gate.missing_since.time_since_epoch().count() != 0
+            ? now - g_avowed_native_fix_gate.missing_since
+            : std::chrono::steady_clock::duration{};
+        const auto matches_last_ready_path =
+            g_avowed_native_fix_gate.had_ready_baseline &&
+            g_avowed_native_fix_gate.last_ready_scene == scene &&
+            g_avowed_native_fix_gate.last_ready_render_target == render_target;
+        const auto can_fast_reacquire =
+            matches_last_ready_path &&
+            missing_duration <= AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING;
+
+        const auto requested_hold_duration = can_fast_reacquire
+            ? std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD}
+            : std::chrono::steady_clock::duration{AVOWED_NATIVE_FIX_TRANSITION_HOLD};
+        const auto requested_hold_until = now + requested_hold_duration;
+        g_avowed_native_fix_gate.hold_until = can_fast_reacquire
+            ? requested_hold_until
+            : std::max(g_avowed_native_fix_gate.hold_until, requested_hold_until);
+        g_avowed_native_fix_gate.ready = false;
+        g_avowed_native_fix_gate.stable_frames = 0;
+        g_avowed_native_fix_gate.required_stable_frames =
+            can_fast_reacquire ? AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        g_avowed_native_fix_gate.targets_missing = false;
+        g_avowed_native_fix_gate.missing_since = {};
+        g_avowed_native_fix_gate.fast_reacquire = can_fast_reacquire;
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Render targets reacquired on existing baseline fast_reacquire={} stable_required={}",
+            can_fast_reacquire,
+            g_avowed_native_fix_gate.required_stable_frames);
     }
 
     if (g_avowed_native_fix_gate.hold_until > now) {
         if (out_stable_frames != nullptr) {
             *out_stable_frames = 0;
+        }
+
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames;
         }
 
         g_avowed_native_fix_gate.ready = false;
@@ -324,7 +481,11 @@ bool avowed_native_fix_gate_update(
     }
 
     if (!g_avowed_native_fix_gate.ready) {
-        if (g_avowed_native_fix_gate.stable_frames < AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+        const auto required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
+
+        if (g_avowed_native_fix_gate.stable_frames < required_stable_frames) {
             ++g_avowed_native_fix_gate.stable_frames;
         }
 
@@ -332,18 +493,26 @@ bool avowed_native_fix_gate_update(
             *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
         }
 
-        if (g_avowed_native_fix_gate.stable_frames >= AVOWED_NATIVE_FIX_STABLE_FRAMES) {
+        if (out_required_stable_frames != nullptr) {
+            *out_required_stable_frames = required_stable_frames;
+        }
+
+        if (g_avowed_native_fix_gate.stable_frames >= required_stable_frames) {
             g_avowed_native_fix_gate.ready = true;
+            g_avowed_native_fix_gate.had_ready_baseline = true;
+            g_avowed_native_fix_gate.last_ready_scene = scene;
+            g_avowed_native_fix_gate.last_ready_render_target = render_target;
             SPDLOG_INFO(
-                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix",
-                g_avowed_native_fix_gate.stable_frames);
+                "[Avowed][NativeStereoFix] Render transition stabilized after {} frames; enabling two-view native fix fast_reacquire={}",
+                g_avowed_native_fix_gate.stable_frames,
+                g_avowed_native_fix_gate.fast_reacquire);
         }
     }
 
     return g_avowed_native_fix_gate.ready;
 }
 
-bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr) {
+bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr, uint32_t* out_required_stable_frames = nullptr) {
     if (!avowed_is_current_game()) {
         return true;
     }
@@ -352,6 +521,12 @@ bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr) {
 
     if (out_stable_frames != nullptr) {
         *out_stable_frames = g_avowed_native_fix_gate.stable_frames;
+    }
+
+    if (out_required_stable_frames != nullptr) {
+        *out_required_stable_frames = g_avowed_native_fix_gate.required_stable_frames != 0
+            ? g_avowed_native_fix_gate.required_stable_frames
+            : AVOWED_NATIVE_FIX_STABLE_FRAMES;
     }
 
     return g_avowed_native_fix_gate.ready;
@@ -383,6 +558,21 @@ bool is_ue_5_1_dx12_backend() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
+}
+
+bool is_ue_5_5_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.5");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50005 && disk_version.dwFileVersionMS < 0x50006;
 }
 
 bool is_ue_5_6_dx12_backend() {
@@ -455,6 +645,20 @@ bool supports_ue57_dedicated_ui_target() {
     }
 
     return g_framework->is_dx12() || g_framework->is_dx11();
+}
+
+bool supports_ue55_dedicated_ui_target_for_current_game() {
+    // These UE5.5 titles expose a valid Slate UI texture but route Slate to the
+    // wrong target, leaving the HUD clipped in the upper-left/left-eye path.
+    // Keep this allowlisted and DX12-only until more UE5.5 games validate it.
+    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game()) &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        !is_ue_5_7_or_newer();
+}
+
+bool supports_dedicated_ui_target_for_current_game() {
+    return supports_ue57_dedicated_ui_target() || supports_ue55_dedicated_ui_target_for_current_game();
 }
 
 bool is_probable_ue57_dx11_texture_desc_prepare_function(uintptr_t fn) {
@@ -561,6 +765,200 @@ std::optional<D3D12_RESOURCE_DESC> shf_try_get_d3d12_desc(FRHITexture2D* texture
     } catch (...) {
         return std::nullopt;
     }
+}
+
+bool is_probable_d3d_native_resource(void* native) {
+    if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
+        return false;
+    }
+
+    void* vtable{};
+
+    try {
+        vtable = *(void**)native;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within(vtable);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path) {
+        return false;
+    }
+
+    auto module_path_lower = std::string(*module_path);
+    std::transform(module_path_lower.begin(), module_path_lower.end(), module_path_lower.begin(), ::tolower);
+    return module_path_lower.ends_with("d3d12.dll") ||
+        module_path_lower.ends_with("d3d12core.dll") ||
+        module_path_lower.ends_with("dxgi.dll") ||
+        module_path_lower.ends_with("d3d12sdklayers.dll");
+}
+
+std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto texture_address = (uintptr_t)texture;
+    constexpr std::array<uintptr_t, 2> desc_offsets{0x20, 0xf0};
+
+    for (const auto desc_offset : desc_offsets) {
+        if (texture_address + desc_offset < texture_address ||
+            IsBadReadPtr((void*)(texture_address + desc_offset), 0x38)) {
+            continue;
+        }
+
+        const auto extent_x = *(const int32_t*)(texture_address + desc_offset + 0x24);
+        const auto extent_y = *(const int32_t*)(texture_address + desc_offset + 0x28);
+        const auto num_mips = *(const uint8_t*)(texture_address + desc_offset + 0x30);
+        const auto num_samples = *(const uint8_t*)(texture_address + desc_offset + 0x31);
+        const auto dimension = *(const uint8_t*)(texture_address + desc_offset + 0x32);
+        const auto format = *(const uint8_t*)(texture_address + desc_offset + 0x33);
+
+        if (extent_x <= 0 || extent_y <= 0 || extent_x > 65536 || extent_y > 65536) {
+            continue;
+        }
+
+        if (num_mips == 0 || num_mips > 32) {
+            continue;
+        }
+
+        if (!(num_samples == 1 || num_samples == 2 || num_samples == 4 || num_samples == 8 || num_samples == 16)) {
+            continue;
+        }
+
+        if (dimension > 8 || format == 0 || format > 128) {
+            continue;
+        }
+
+        return desc_offset;
+    }
+
+    return std::nullopt;
+}
+
+bool ue55_dx12_try_get_native_resource_direct(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native = nullptr,
+    D3D12_RESOURCE_DESC* out_desc = nullptr)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] {} candidate is not readable: tex={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        return false;
+    }
+
+    void** vtable{};
+
+    try {
+        vtable = *(void***)texture;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 6)) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] {} candidate has no readable vtable: tex={:x} vtable={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture, (uintptr_t)vtable);
+        return false;
+    }
+
+    const auto desc_offset = ue55_find_texture_desc_offset(texture);
+    if (!desc_offset) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] refusing {} candidate without a UE5.5/5.6 FRHITextureDesc: tex={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        return false;
+    }
+
+    const std::array<size_t, 2> direct_slots = *desc_offset == 0xf0
+        ? std::array<size_t, 2>{5ull, 4ull}
+        : std::array<size_t, 2>{4ull, 5ull};
+
+    for (const auto slot : direct_slots) {
+        using GetNativeResourceFn = void* (*)(const FRHITexture2D*);
+        const auto fn = (GetNativeResourceFn)vtable[slot];
+
+        if (fn == nullptr || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+            continue;
+        }
+
+        void* native_raw = nullptr;
+
+        try {
+            native_raw = fn(texture);
+        } catch (...) {
+            continue;
+        }
+
+        if (!is_probable_d3d_native_resource(native_raw)) {
+            continue;
+        }
+
+        auto* native = (ID3D12Resource*)native_raw;
+        D3D12_RESOURCE_DESC desc{};
+
+        try {
+            desc = native->GetDesc();
+        } catch (...) {
+            continue;
+        }
+
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            desc.Width == 0 ||
+            desc.Height == 0 ||
+            desc.Width > 65536 ||
+            desc.Height > 65536)
+        {
+            continue;
+        }
+
+        FRHITexture2D::set_vtable(vtable);
+
+        if (out_native != nullptr) {
+            *out_native = native;
+        }
+
+        if (out_desc != nullptr) {
+            *out_desc = desc;
+        }
+
+        return true;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.5][SlateUI] direct GetNativeResource slots {} and {} did not produce a valid D3D12 texture for {} tex={:x}",
+        direct_slots[0],
+        direct_slots[1],
+        source != nullptr ? source : "<unknown>",
+        (uintptr_t)texture);
+
+    return false;
+}
+
+std::optional<D3D12_RESOURCE_DESC> ue55_try_get_d3d12_desc(FRHITexture2D* texture, const char* source) {
+    D3D12_RESOURCE_DESC desc{};
+
+    if (!ue55_dx12_try_get_native_resource_direct(texture, source, nullptr, &desc)) {
+        return std::nullopt;
+    }
+
+    return desc;
 }
 
 void shf_log_rtm_candidate(VRRenderTargetManager_Base* rtm, FRHITexture2D* texture, const char* source) {
@@ -1015,6 +1413,91 @@ bool looks_like_callable_virtual(uintptr_t fn) {
     return false;
 }
 
+bool looks_like_post_init_properties_virtual(uintptr_t fn) {
+    if (fn == 0 || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+        return false;
+    }
+
+    size_t decoded_bytes = 0;
+    size_t call_count = 0;
+
+    for (auto ip = (uint8_t*)fn; decoded_bytes < 256;) {
+        const auto decoded = utility::decode_one(ip);
+
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        decoded_bytes += decoded->Length;
+        const std::string_view mnemonic{decoded->Mnemonic};
+
+        if (mnemonic.starts_with("CALL")) {
+            ++call_count;
+        }
+
+        if (mnemonic.starts_with("RET")) {
+            return decoded_bytes > 8 || call_count > 0;
+        }
+
+        if (mnemonic.starts_with("JMP")) {
+            return decoded_bytes > 8 || call_count > 0;
+        }
+
+        if (mnemonic.starts_with("INT3")) {
+            return false;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return call_count > 0;
+}
+
+std::optional<uint32_t> validate_source_informed_post_init_slot(
+    uintptr_t* object_vtable,
+    uintptr_t* localplayer_vtable,
+    uint32_t slot,
+    const char* source_note,
+    bool require_inherited_uobject_slot)
+{
+    if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
+        IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
+    {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} is not readable", source_note, slot);
+        return std::nullopt;
+    }
+
+    const auto object_fn = object_vtable[slot];
+    const auto localplayer_fn = localplayer_vtable[slot];
+
+    if (!looks_like_post_init_properties_virtual(object_fn) ||
+        !looks_like_post_init_properties_virtual(localplayer_fn))
+    {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} did not look callable object_fn={:x} localplayer_fn={:x}",
+            source_note,
+            slot,
+            object_fn,
+            localplayer_fn);
+        return std::nullopt;
+    }
+
+    if (require_inherited_uobject_slot && object_fn != localplayer_fn) {
+        SPDLOG_WARN("[PostInitProperties] {} slot {} did not inherit UObject function object_fn={:x} localplayer_fn={:x}",
+            source_note,
+            slot,
+            object_fn,
+            localplayer_fn);
+        return std::nullopt;
+    }
+
+    SPDLOG_INFO("[PostInitProperties] Resolved {} slot {} object_fn={:x} localplayer_fn={:x}",
+        source_note,
+        slot,
+        object_fn,
+        localplayer_fn);
+    return slot;
+}
+
 std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_t localplayer) {
     auto* object_class = sdk::UObject::static_class();
 
@@ -1041,41 +1524,53 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
     }
 
     // UE5.1 source and the Stalker2 PDB/IDA view place UObject::PostInitProperties
-    // immediately after GetDetailedInfoInternal. Stalker2 inherits the UObject slot;
+    // at slot 10 for the shipped UObject layout. Stalker2 inherits the UObject slot;
     // only accept the exact slot when both UObject CDO and LocalPlayer agree.
     if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
         constexpr uint32_t UE51_POST_INIT_PROPERTIES_SLOT = 10;
 
-        if (IsBadReadPtr(&object_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)) ||
-            IsBadReadPtr(&localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT], sizeof(uintptr_t)))
-        {
-            SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 is not readable; skipping LocalPlayer bootstrap");
-            return std::nullopt;
-        }
-
-        const auto object_fn = object_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
-        const auto localplayer_fn = localplayer_vtable[UE51_POST_INIT_PROPERTIES_SLOT];
-
-        if (object_fn != 0 && object_fn == localplayer_fn && looks_like_callable_virtual(object_fn)) {
-            SPDLOG_INFO("[PostInitProperties] Resolved UE5.1/Stalker2 UObject::PostInitProperties through validated slot {} at {:x}",
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
                 UE51_POST_INIT_PROPERTIES_SLOT,
-                object_fn);
+                "UE5.1/Stalker2 UObject::PostInitProperties",
+                true))
+        {
             return UE51_POST_INIT_PROPERTIES_SLOT;
         }
 
-        SPDLOG_WARN(
-            "[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate object_fn={:x} localplayer_fn={:x}; skipping LocalPlayer bootstrap",
-            object_fn,
-            localplayer_fn);
+        SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate; skipping LocalPlayer bootstrap");
         return std::nullopt;
     }
 
-    // UE 5.6/5.7 source/PDB puts PostInitProperties immediately after GetDetailedInfoInternal.
-    // The runtime slot shifts by one depending on whether RegisterDependencies is compiled in,
-    // so prefer the expected modern UE slots first and keep the older nearby slot as a fallback.
-    constexpr std::array<uint32_t, 3> candidate_slots{9, 10, 8};
+    // UE 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
+    // for shipped game layouts:
+    // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
+    // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
+    if (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+        constexpr uint32_t UE55_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                UE55_PLUS_POST_INIT_PROPERTIES_SLOT,
+                "UE5.5+ UObject::PostInitProperties",
+                false))
+        {
+            return UE55_PLUS_POST_INIT_PROPERTIES_SLOT;
+        }
+    }
+
+    // Keep the nearby slots as a fail-closed fallback for unusual/custom layouts.
+    constexpr std::array<uint32_t, 4> candidate_slots{10, 9, 8, 11};
 
     for (const auto slot : candidate_slots) {
+        if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
+            IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
+        {
+            continue;
+        }
+
         const auto object_fn = object_vtable[slot];
         const auto localplayer_fn = localplayer_vtable[slot];
 
@@ -1083,15 +1578,16 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
             continue;
         }
 
-        if (object_fn != localplayer_fn) {
+        if (!looks_like_post_init_properties_virtual(object_fn) ||
+            !looks_like_post_init_properties_virtual(localplayer_fn))
+        {
             continue;
         }
 
-        if (!looks_like_nontrivial_virtual(object_fn)) {
-            continue;
-        }
-
-        SPDLOG_INFO("[PostInitProperties] Resolved UObject::PostInitProperties through source/PDB-informed slot {} at {:x}", slot, object_fn);
+        SPDLOG_INFO("[PostInitProperties] Resolved UObject::PostInitProperties through nearby fallback slot {} object_fn={:x} localplayer_fn={:x}",
+            slot,
+            object_fn,
+            localplayer_fn);
         return slot;
     }
 
@@ -1921,6 +2417,93 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
 
     m_hooked_ue57_slate_elements_pass = true;
     SPDLOG_INFO("Hooked {} UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection", hooked_count);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register() {
+    if (!supports_ue55_dedicated_ui_target_for_current_game()) {
+        return;
+    }
+
+    if (m_attempted_hook_ue55_slate_output_texture_register) {
+        return;
+    }
+
+    m_attempted_hook_ue55_slate_output_texture_register = true;
+
+    const auto draw_window = g_hook != nullptr ? g_hook->m_slate_thread_hook.target_address() : 0;
+
+    if (draw_window == 0) {
+        SPDLOG_ERROR("[UE5.5][SlateUI] Cannot scan DrawWindow_RenderThread because the Slate hook has no target address");
+        return;
+    }
+
+    uintptr_t slate_output_ref_ip{};
+    uintptr_t register_callsite{};
+    uintptr_t register_target{};
+    bool after_slate_output_ref = false;
+
+    // Decode linearly here. exhaustive_decode follows early CALL branches in this
+    // function and can miss the straight-line RegisterExternalTexture callsite.
+    for (auto* ip = (uint8_t*)draw_window; (uintptr_t)ip < draw_window + 0x3000;) {
+        const auto decoded = utility::decode_one(ip);
+
+        if (!decoded) {
+            break;
+        }
+
+        if (!after_slate_output_ref) {
+            const auto referenced = utility::resolve_displacement((uintptr_t)ip);
+
+            if (referenced &&
+                is_readable_process_range(*referenced, sizeof(wchar_t) * 19) &&
+                std::wstring_view{(const wchar_t*)*referenced, 18}.starts_with(L"SlateOutputTexture"))
+            {
+                slate_output_ref_ip = (uintptr_t)ip;
+                after_slate_output_ref = true;
+                SPDLOG_INFO("[UE5.5][SlateUI] found SlateOutputTexture reference at {:x}", slate_output_ref_ip);
+            }
+
+            ip += decoded->Length;
+            continue;
+        }
+
+        const auto mnemonic = std::string_view{decoded->Mnemonic};
+
+        if (mnemonic.starts_with("CALL")) {
+            const auto target = utility::resolve_displacement((uintptr_t)ip);
+
+            if (target.has_value()) {
+                register_callsite = (uintptr_t)ip;
+                register_target = *target;
+                break;
+            }
+        }
+
+        if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
+            break;
+        }
+
+        ip += decoded->Length;
+    }
+
+    if (slate_output_ref_ip == 0 || register_callsite == 0) {
+        SPDLOG_ERROR("[UE5.5][SlateUI] Failed to find SlateOutputTexture RegisterExternalTexture callsite in DrawWindow_RenderThread");
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid(
+        reinterpret_cast<void*>(register_callsite),
+        &FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook);
+
+    if (!hook_result) {
+        SPDLOG_ERROR("[UE5.5][SlateUI] Failed to hook SlateOutputTexture RegisterExternalTexture callsite {:x}", register_callsite);
+        return;
+    }
+
+    m_ue55_slate_output_texture_register_hook = std::move(hook_result);
+    m_hooked_ue55_slate_output_texture_register = true;
+
+    SPDLOG_WARN("[UE5.5][SlateUI] Hooked SlateOutputTexture RegisterExternalTexture callsite {:x} -> {:x}", register_callsite, register_target);
 }
 
 namespace detail{
@@ -4870,13 +5453,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     uint32_t avowed_gate_stable_frames = 0;
+    uint32_t avowed_gate_required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
     const auto avowed_gate_ready = avowed_native_fix_gate_update(
         (uintptr_t)view_family_scene,
         (uintptr_t)view_family_target,
         (uintptr_t)scene_capture_rhi,
         scene_capture_native,
         rtfrt != nullptr && scene_capture_rhi != nullptr,
-        &avowed_gate_stable_frames);
+        &avowed_gate_stable_frames,
+        &avowed_gate_required_frames);
 
     bool wants_swap = false;
     if (views.count > 1) {
@@ -4888,7 +5473,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 2,
                 "[Avowed][NativeStereoFix] Suppressing right-eye pass during render transition stabilization stable={}/{}",
                 avowed_gate_stable_frames,
-                AVOWED_NATIVE_FIX_STABLE_FRAMES);
+                avowed_gate_required_frames);
         }
 
         if (wants_swap) {
@@ -5571,7 +6156,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
 
             // Get the start of the previous instruction
-            const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+            auto previous_instruction = utility::resolve_instruction(exception_address - 1);
 
             if (!previous_instruction) {
                 SPDLOG_ERROR("Could not resolve previous instruction at {:x}", exception_address - 1);
@@ -5581,8 +6166,54 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             if (previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
                 previous_instruction->instrux.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
             {
-                SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
-                return EXCEPTION_CONTINUE_SEARCH;
+                const auto can_use_stalker2_backscan = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
+
+                if (!can_use_stalker2_backscan) {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                std::optional<utility::Resolved> xr_hmd_load{};
+                const auto prior_instructions = utility::get_disassembly_behind(exception_address);
+
+                for (auto it = prior_instructions.rbegin(); it != prior_instructions.rend(); ++it) {
+                    const auto& candidate = *it;
+                    const auto& candidate_ix = candidate.instrux;
+
+                    if ((exception_address - candidate.addr) > 0x40) {
+                        break;
+                    }
+
+                    if (candidate_ix.OperandsCount < 2 ||
+                        candidate_ix.Operands[0].Type != ND_OP_REG ||
+                        candidate_ix.Operands[0].Info.Register.Reg != op2.Info.Memory.Base)
+                    {
+                        continue;
+                    }
+
+                    const auto& candidate_op2 = candidate_ix.Operands[1];
+
+                    if (candidate_op2.Type == ND_OP_MEM &&
+                        candidate_op2.Info.Memory.HasBase &&
+                        candidate_op2.Info.Memory.HasDisp &&
+                        candidate_op2.Info.Memory.Disp == potential_hmd_device_offset)
+                    {
+                        xr_hmd_load = candidate;
+                        break;
+                    }
+                }
+
+                if (!xr_hmd_load) {
+                    SPDLOG_ERROR("Previous instruction does not use the same register as the dereference");
+                    return EXCEPTION_CONTINUE_SEARCH;
+                }
+
+                SPDLOG_INFO(
+                    "[Stalker2][UE5.1] Matched non-adjacent XRSystem/HMDDevice load at {:x} for null dereference at {:x}",
+                    xr_hmd_load->addr,
+                    exception_address);
+
+                previous_instruction = *xr_hmd_load;
             }
 
             const auto prev_op2 = previous_instruction->instrux.Operands[1];
@@ -6998,13 +7629,14 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
         if (avowed_is_current_game()) {
             uint32_t stable_frames = 0;
+            uint32_t required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
 
-            if (!avowed_native_fix_gate_ready(&stable_frames)) {
+            if (!avowed_native_fix_gate_ready(&stable_frames, &required_frames)) {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[Avowed][NativeStereoFix] Returning one view while render transition stabilizes stable={}/{}",
                     stable_frames,
-                    AVOWED_NATIVE_FIX_STABLE_FRAMES);
+                    required_frames);
                 return 1;
             }
         }
@@ -7367,7 +7999,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || stalker2_ue51_post_init;
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx12_backend() || stalker2_ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
@@ -7417,7 +8049,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     if (!idx) {
         if (needs_source_informed_post_init) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.6+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
@@ -7604,6 +8236,43 @@ struct UE55SlateDrawWindowPassInputsHead {
     sdk::FViewportInfo* viewport_info;
 };
 
+struct UE55SlatePostProcessArrayView {
+    void* data;
+    uint64_t count;
+};
+
+struct UE55FIntPoint {
+    int32_t x;
+    int32_t y;
+};
+
+struct UE55FIntRect {
+    UE55FIntPoint min;
+    UE55FIntPoint max;
+};
+
+struct UE55SlateDrawWindowPassInputs {
+    void* renderer;
+    void* window_element_list;
+    void* window;
+    sdk::FViewportInfo* viewport_info;
+    UE55SlatePostProcessArrayView post_process_requests;
+    UE55FIntPoint cursor_position;
+    UE55FIntRect scene_view_rect;
+    float viewport_scale_ui;
+};
+
+struct UE55SlateDrawWindowPassOutputs {
+    void* viewport_rhi;
+    FRHITexture2D* viewport_texture_rhi;
+    FRHITexture2D* output_texture_rhi;
+};
+
+struct UE55SlateExtent {
+    uint32_t width{};
+    uint32_t height{};
+};
+
 bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateDrawWindowPassInputsHead& out) {
     if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputsHead))) {
         return false;
@@ -7618,9 +8287,66 @@ bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateD
     return is_readable_process_range((uintptr_t)out.window, sizeof(void*));
 }
 
+bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55SlateDrawWindowPassInputs& out) {
+    if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputs))) {
+        return false;
+    }
+
+    memcpy(&out, candidate, sizeof(out));
+
+    if (out.renderer != renderer || out.window == nullptr) {
+        return false;
+    }
+
+    return is_readable_process_range((uintptr_t)out.window, sizeof(void*));
+}
+
+std::optional<UE55SlateExtent> ue55_get_slate_expected_extent(const UE55SlateDrawWindowPassInputs& inputs) {
+    const auto width = inputs.scene_view_rect.max.x - inputs.scene_view_rect.min.x;
+    const auto height = inputs.scene_view_rect.max.y - inputs.scene_view_rect.min.y;
+
+    if (width <= 0 || height <= 0 || width > 16384 || height > 16384) {
+        return std::nullopt;
+    }
+
+    return UE55SlateExtent{(uint32_t)width, (uint32_t)height};
+}
+
 bool looks_like_vtable_object(void* object) {
     uintptr_t vtable{};
     return safe_read_value((uintptr_t)object, vtable) && looks_like_virtual_function_table(vtable);
+}
+
+bool try_call_slate_viewport_bool_slot(sdk::ISlateViewport* viewport, size_t slot, bool& out) {
+    out = false;
+
+    if (viewport == nullptr || !looks_like_vtable_object(viewport)) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    if (!safe_read_value((uintptr_t)viewport, vtable) ||
+        !is_readable_process_range(vtable + (slot * sizeof(void*)), sizeof(void*)))
+    {
+        return false;
+    }
+
+    uintptr_t fn{};
+    if (!safe_read_value(vtable + (slot * sizeof(void*)), fn) ||
+        fn == 0 ||
+        !is_executable_process_range(fn, 1))
+    {
+        return false;
+    }
+
+    using BoolVirtualFn = bool (*)(sdk::ISlateViewport*);
+
+    __try {
+        out = ((BoolVirtualFn)fn)(viewport);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 
 sdk::FSlateResource* try_get_slate_viewport_render_target_texture(sdk::ISlateViewport* viewport, bool& faulted) {
@@ -7633,6 +8359,164 @@ sdk::FSlateResource* try_get_slate_viewport_render_target_texture(sdk::ISlateVie
         return nullptr;
     }
 }
+
+bool ue55_is_valid_ui_texture_candidate(
+    VRRenderTargetManager_Base* rtm,
+    FRHITexture2D* texture,
+    std::optional<UE55SlateExtent> expected_extent,
+    const char* source)
+{
+    if (!supports_ue55_dedicated_ui_target_for_current_game() || rtm == nullptr || texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return false;
+    }
+
+    if (texture == rtm->get_render_target()) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] rejecting {} candidate because it matches the scene render target: tex={:x}",
+            source != nullptr ? source : "<unknown>", (uintptr_t)texture);
+        return false;
+    }
+
+    const auto desc = ue55_try_get_d3d12_desc(texture, source);
+    if (!desc) {
+        return false;
+    }
+
+    if (!expected_extent || expected_extent->width == 0 || expected_extent->height == 0) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] observing {} candidate tex={:x} [{}x{} fmt={} flags=0x{:x}] but no trusted Slate extent is available yet",
+            source != nullptr ? source : "<unknown>",
+            (uintptr_t)texture,
+            desc->Width,
+            desc->Height,
+            (uint32_t)desc->Format,
+            (uint32_t)desc->Flags);
+        return false;
+    }
+
+    if (desc->Width != expected_extent->width || desc->Height != expected_extent->height) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] rejecting {} candidate tex={:x} because extent [{}x{}] != expected Slate [{}x{}]",
+            source != nullptr ? source : "<unknown>",
+            (uintptr_t)texture,
+            desc->Width,
+            desc->Height,
+            expected_extent->width,
+            expected_extent->height);
+        return false;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.5][SlateUI] accepted {} candidate tex={:x} [{}x{} fmt={} flags=0x{:x}]",
+        source != nullptr ? source : "<unknown>",
+        (uintptr_t)texture,
+        desc->Width,
+        desc->Height,
+        (uint32_t)desc->Format,
+        (uint32_t)desc->Flags);
+
+    return true;
+}
+
+void ue55_promote_slate_outputs(
+    VRRenderTargetManager_Base* rtm,
+    void* outputs_ptr,
+    std::optional<UE55SlateExtent> expected_extent)
+{
+    if (!supports_ue55_dedicated_ui_target_for_current_game() || rtm == nullptr || outputs_ptr == nullptr) {
+        return;
+    }
+
+    if (!is_readable_process_range((uintptr_t)outputs_ptr, sizeof(UE55SlateDrawWindowPassOutputs))) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] DrawWindow outputs are not readable yet: {:x}", (uintptr_t)outputs_ptr);
+        return;
+    }
+
+    UE55SlateDrawWindowPassOutputs outputs{};
+    memcpy(&outputs, outputs_ptr, sizeof(outputs));
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.5][SlateUI] DrawWindow outputs viewport_rhi={:x} viewport_texture={:x} output_texture={:x} expected={}x{}",
+        (uintptr_t)outputs.viewport_rhi,
+        (uintptr_t)outputs.viewport_texture_rhi,
+        (uintptr_t)outputs.output_texture_rhi,
+        expected_extent ? expected_extent->width : 0,
+        expected_extent ? expected_extent->height : 0);
+
+    if (ue55_is_valid_ui_texture_candidate(rtm, outputs.viewport_texture_rhi, expected_extent, "DrawWindow viewport texture output")) {
+        if (rtm->get_dedicated_ui_target() != outputs.viewport_texture_rhi) {
+            rtm->set_dedicated_ui_target(outputs.viewport_texture_rhi, expected_extent->width, expected_extent->height);
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            SPDLOG_WARN("[UE5.5][SlateUI] promoted DrawWindow viewport texture output as dedicated UI target");
+        }
+        return;
+    }
+
+    if (ue55_is_valid_ui_texture_candidate(rtm, outputs.output_texture_rhi, expected_extent, "DrawWindow output texture")) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] DrawWindow output texture is window-sized but not promoted; explicit SlateOutputTexture routing remains preferred");
+    }
+}
+}
+
+void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !supports_ue55_dedicated_ui_target_for_current_game()) {
+        return;
+    }
+
+    if (!g_hook->m_inside_slate_draw_window || GetCurrentThreadId() != g_hook->m_slate_draw_window_thread_id) {
+        return;
+    }
+
+    if (ctx.r8 == 0 ||
+        !is_readable_process_range(ctx.r8, sizeof(wchar_t) * 19) ||
+        !std::wstring_view{(const wchar_t*)ctx.r8, 18}.starts_with(L"SlateOutputTexture"))
+    {
+        return;
+    }
+
+    auto* rtm = g_hook->get_render_target_manager();
+    auto* ui_target = rtm != nullptr ? rtm->get_dedicated_ui_target() : nullptr;
+
+    if (rtm == nullptr || ui_target == nullptr || ui_target == rtm->get_render_target()) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] SlateOutputTexture call reached before a valid dedicated UI target exists");
+        return;
+    }
+
+    const auto desc = ue55_try_get_d3d12_desc(ui_target, "dedicated UI target at SlateOutputTexture");
+    if (!desc) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] dedicated UI target is not a valid D3D12 texture yet: {:x}", (uintptr_t)ui_target);
+        return;
+    }
+
+    const auto expected_width = rtm->get_dedicated_ui_width();
+    const auto expected_height = rtm->get_dedicated_ui_height();
+
+    if (expected_width != 0 && expected_height != 0 &&
+        (desc->Width != expected_width || desc->Height != expected_height))
+    {
+        SPDLOG_INFO_EVERY_N_SEC(1,
+            "[UE5.5][SlateUI] refusing SlateOutputTexture replacement because dedicated UI target extent [{}x{}] != requested [{}x{}]",
+            desc->Width,
+            desc->Height,
+            expected_width,
+            expected_height);
+        return;
+    }
+
+    const auto original = (FRHITexture2D*)ctx.rdx;
+    const auto original_desc = ue55_try_get_d3d12_desc(original, "original SlateOutputTexture");
+
+    SPDLOG_INFO_EVERY_N_SEC(1,
+        "[UE5.5][SlateUI] routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+        (uintptr_t)original,
+        original_desc ? original_desc->Width : 0,
+        original_desc ? original_desc->Height : 0,
+        (uintptr_t)ui_target,
+        desc->Width,
+        desc->Height,
+        (uint32_t)desc->Format);
+
+    ctx.rdx = (uintptr_t)ui_target;
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
@@ -7653,7 +8537,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto viewport_info = (sdk::FViewportInfo*)a3;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
+    UE55SlateDrawWindowPassInputs ue55_inputs_full{};
     const auto a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
+    const auto a4_has_ue_5_5_full_inputs = a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full);
 
     if (a4_is_ue_5_5_variant) {
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 FSlateDrawWindowPassInputs layout");
@@ -7663,7 +8549,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (!a4_is_ue_5_5_variant) {
         // How are we going to fix this on UE5.5?
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
-    } else {
+    } else if (!supports_ue55_dedicated_ui_target_for_current_game()) {
         const auto window = (uintptr_t)ue55_inputs.window;
 
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
@@ -7849,6 +8735,63 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     FRHITexture2D* provider_texture = nullptr;
     auto rtm = g_hook->get_render_target_manager();
 
+    if (supports_ue55_dedicated_ui_target_for_current_game() && a4_is_ue_5_5_variant) {
+        g_hook->note_stable_slate_draw();
+        g_hook->attempt_hook_ue55_slate_output_texture_register();
+
+        const auto expected_extent = a4_has_ue_5_5_full_inputs ? ue55_get_slate_expected_extent(ue55_inputs_full) : std::nullopt;
+
+        if (expected_extent) {
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[UE5.5][SlateUI] DrawWindow trusted Slate extent [{}x{}] scene_rect min=[{},{}] max=[{},{}] scale={:.3f}",
+                expected_extent->width,
+                expected_extent->height,
+                ue55_inputs_full.scene_view_rect.min.x,
+                ue55_inputs_full.scene_view_rect.min.y,
+                ue55_inputs_full.scene_view_rect.max.x,
+                ue55_inputs_full.scene_view_rect.max.y,
+                ue55_inputs_full.viewport_scale_ui);
+
+            rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
+            rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] No trusted Slate extent yet; dedicated UI creation is deferred");
+        }
+
+        if (slate_viewport != nullptr) {
+            bool use_separate{};
+            bool stereo{};
+            const auto have_use_separate = try_call_slate_viewport_bool_slot(slate_viewport, 7, use_separate);
+            const auto have_stereo = try_call_slate_viewport_bool_slot(slate_viewport, 6, stereo);
+
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[UE5.5][SlateUI] ISlateViewport={:x} UseSeparate={}{} IsStereoscopic3D={}{}",
+                (uintptr_t)slate_viewport,
+                have_use_separate ? "" : "unreadable/",
+                have_use_separate ? use_separate : false,
+                have_stereo ? "" : "unreadable/",
+                have_stereo ? stereo : false);
+
+            if (have_use_separate && use_separate) {
+                bool slate_viewport_faulted = false;
+                auto* direct_resource = try_get_slate_viewport_render_target_texture(slate_viewport, slate_viewport_faulted);
+                auto* direct_texture = direct_resource != nullptr ? direct_resource->get_mutable_resource() : nullptr;
+
+                if (slate_viewport_faulted) {
+                    SPDLOG_WARN_ONCE("[UE5.5][SlateUI] GetViewportRenderTargetTexture faulted; relying on DrawWindow outputs and dedicated target");
+                } else if (ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture")) {
+                    rtm->set_dedicated_ui_target(direct_texture, expected_extent->width, expected_extent->height);
+                    rtm->get_fallback_ui_target_ref() = nullptr;
+                    SPDLOG_WARN_ONCE("[UE5.5][SlateUI] promoted ISlateViewport direct texture as dedicated UI target");
+                }
+            }
+        }
+
+        const auto ret = call_orig();
+        ue55_promote_slate_outputs(rtm, a2, expected_extent);
+        return ret;
+    }
+
     if (slate_viewport != nullptr) {
         bool slate_viewport_faulted = false;
         slate_resource = try_get_slate_viewport_render_target_texture(slate_viewport, slate_viewport_faulted);
@@ -7973,7 +8916,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     if (ui_target == nullptr) {
         if (is_ue_5_7_or_newer()) {
-            SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] No dedicated UE 5.7 UI target yet");
+            SPDLOG_INFO_EVERY_N_SEC(1, "[SlateRHIRenderer::DrawWindow_RenderThread] No dedicated UI target yet");
             return call_orig();
         }
 
@@ -9141,8 +10084,8 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         rtm->set_dedicated_ui_target(candidate, desc.Width, desc.Height);
         rtm->get_fallback_ui_target_ref() = nullptr;
 
-        SPDLOG_WARN_ONCE("[VRRenderTargetManager] Promoted an engine-created texture to the dedicated UE 5.7 UI target");
-        SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI target from {} [{:x}] [{}x{}]",
+        SPDLOG_WARN_ONCE("[VRRenderTargetManager] Promoted an engine-created texture to the dedicated UI target");
+        SPDLOG_INFO("[VRRenderTargetManager] dedicated UI target from {} [{:x}] [{}x{}]",
             source, (uintptr_t)candidate, desc.Width, desc.Height);
 
         return true;
@@ -9336,7 +10279,7 @@ void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint
 }
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
-    if (!supports_ue57_dedicated_ui_target() || width == 0 || height == 0) {
+    if (!supports_dedicated_ui_target_for_current_game() || width == 0 || height == 0) {
         return;
     }
 
@@ -9346,7 +10289,7 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 
     if (extent_changed) {
         if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr) {
-            SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI extent changed to [{}x{}], recreating", width, height);
+            SPDLOG_INFO("[VRRenderTargetManager] Dedicated UI extent changed to [{}x{}], recreating", width, height);
             destroy_dedicated_ui_target();
         }
 
@@ -9358,7 +10301,7 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 }
 
 bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
-    if (!supports_ue57_dedicated_ui_target() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+    if (!supports_dedicated_ui_target_for_current_game() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
         return false;
     }
 
@@ -9372,12 +10315,12 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
         return false;
     }
 
-    if (engine->get_world() == nullptr) {
+    if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
         return false;
     }
 
-    if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
-        return false;
+    if (supports_ue55_dedicated_ui_target_for_current_game()) {
+        return true;
     }
 
     if (!g_hook->prefers_slate_thread_for_session()) {
@@ -9417,7 +10360,7 @@ bool VRRenderTargetManager_Base::try_schedule_dedicated_ui_creation() {
 }
 
 bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
-    if (!supports_ue57_dedicated_ui_target()) {
+    if (!supports_dedicated_ui_target_for_current_game()) {
         return false;
     }
 
@@ -9435,7 +10378,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
     dedicated_ui_pending_since = {};
     dedicated_ui_resource_pending_since = {};
 
-    SPDLOG_INFO("[VRRenderTargetManager] Scheduling dedicated UE 5.7 UI target creation for generation {} [{}x{}]", generation, width, height);
+    SPDLOG_INFO("[VRRenderTargetManager] Scheduling dedicated UI target creation for generation {} [{}x{}]", generation, width, height);
 
     GameThreadWorker::get().enqueue([this, width, height, generation]() -> void {
         try {
@@ -9451,7 +10394,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* engine = sdk::UGameEngine::get();
 
             if (engine == nullptr) {
-                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because UGameEngine is not ready");
+                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UI texture creation because UGameEngine is not ready");
                 this->reset_dedicated_ui_creation_state();
                 return;
             }
@@ -9459,7 +10402,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* world = engine->get_world();
 
             if (world == nullptr) {
-                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because the world is not ready");
+                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UI texture creation because the world is not ready");
                 this->reset_dedicated_ui_creation_state();
                 return;
             }
@@ -9467,7 +10410,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* kismet_rendering = sdk::UKismetRenderingLibrary::get();
 
             if (kismet_rendering == nullptr) {
-                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UE 5.7 UI texture creation because KismetRenderingLibrary is not ready");
+                SPDLOG_INFO_EVERY_N_SEC(2, "[VRRenderTargetManager] Delaying dedicated UI texture creation because KismetRenderingLibrary is not ready");
                 this->reset_dedicated_ui_creation_state();
                 return;
             }
@@ -9476,7 +10419,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* tgt_raw = kismet_rendering->create_render_target_2d(world, width, height, 2, clear_color, false);
 
             if (tgt_raw == nullptr) {
-                SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UE 5.7 UI texture [{}x{}] on the game thread", width, height);
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UI texture [{}x{}] on the game thread", width, height);
                 this->reset_dedicated_ui_creation_state();
                 return;
             }
@@ -9497,7 +10440,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             this->dedicated_ui_pending_since = std::chrono::steady_clock::now();
             this->dedicated_ui_resource_pending_since = this->dedicated_ui_pending_since;
 
-            SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UE 5.7 UI UObject for generation {}", generation);
+            SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UI UObject for generation {}", generation);
 
             RenderThreadWorker::get().enqueue_conditional(
                 [this, tgt, width, height, generation]() -> bool {
@@ -9507,7 +10450,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         }
 
                         if (!tgt.valid()) {
-                            SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI texture was destroyed before its render resource became valid");
+                            SPDLOG_ERROR("[VRRenderTargetManager] dedicated UI texture was destroyed before its render resource became valid");
                             GameThreadWorker::get().enqueue([this, generation]() -> void {
                                 if (!this->is_dedicated_ui_generation_current(generation)) {
                                     return;
@@ -9567,10 +10510,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             this->reset_dedicated_ui_creation_state();
                         });
 
-                        SPDLOG_INFO("[VRRenderTargetManager] Dedicated UE 5.7 UI target ready for generation {} [{}x{}]", generation, width, height);
+                        SPDLOG_INFO("[VRRenderTargetManager] dedicated UI target ready for generation {} [{}x{}]", generation, width, height);
                         return true;
                     } catch (...) {
-                        SPDLOG_ERROR("[VRRenderTargetManager] Exception while waiting for the dedicated UE 5.7 UI texture render resource");
+                        SPDLOG_ERROR("[VRRenderTargetManager] Exception while waiting for the dedicated UI texture render resource");
                         GameThreadWorker::get().enqueue([this, generation]() -> void {
                             if (!this->is_dedicated_ui_generation_current(generation)) {
                                 return;
@@ -9588,7 +10531,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         return;
                     }
 
-                    SPDLOG_ERROR("[VRRenderTargetManager] Dedicated UE 5.7 UI target generation {} timed out waiting for the render resource", generation);
+                    SPDLOG_ERROR("[VRRenderTargetManager] dedicated UI target generation {} timed out waiting for the render resource", generation);
                     GameThreadWorker::get().enqueue([this, generation]() -> void {
                         if (!this->is_dedicated_ui_generation_current(generation)) {
                             return;
@@ -9601,7 +10544,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 },
                 std::chrono::seconds(2));
         } catch (...) {
-            SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UE 5.7 UI texture creation");
+            SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UI texture creation");
             this->in_flight_dedicated_ui_texture = nullptr;
             this->reset_dedicated_ui_creation_state();
         }
@@ -9613,7 +10556,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_list) {
     (void)command_list;
 
-    if (!supports_ue57_dedicated_ui_target()) {
+    if (!supports_dedicated_ui_target_for_current_game()) {
         return;
     }
 
@@ -9647,7 +10590,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
             }
         }
 
-        SPDLOG_INFO("[VRRenderTargetManager] Recreating dedicated UE 5.7 UI target [{}x{}]", dedicated_ui_width, dedicated_ui_height);
+        SPDLOG_INFO("[VRRenderTargetManager] Recreating dedicated UI target [{}x{}]", dedicated_ui_width, dedicated_ui_height);
         destroy_dedicated_ui_target();
     }
 
@@ -9679,7 +10622,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
             }
         }
 
-        SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] Dedicated UE 5.7 UI UObject is alive but its render resource is not ready");
+        SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] dedicated UI UObject is alive but its render resource is not ready");
     }
 
     if (dedicated_ui_object_created &&
@@ -9688,7 +10631,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         dedicated_ui_resource_pending_since.time_since_epoch().count() != 0 &&
         std::chrono::steady_clock::now() - dedicated_ui_resource_pending_since > std::chrono::seconds(5))
     {
-        SPDLOG_WARN("[VRRenderTargetManager] Dedicated UE 5.7 UI target creation appears stuck; resetting and retrying");
+        SPDLOG_WARN("[VRRenderTargetManager] dedicated UI target creation appears stuck; resetting and retrying");
         destroy_dedicated_ui_target();
     }
 

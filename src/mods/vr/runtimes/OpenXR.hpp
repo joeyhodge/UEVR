@@ -147,6 +147,7 @@ public:
     XrResult begin_frame(const char* caller = "unknown");
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
+    bool recover_focused_stale_frame_loop(const char* caller);
     void log_frame_lifecycle_state(const char* prefix) const;
     void trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite);
     void trace_begin_frame_request(const char* caller);
@@ -367,8 +368,10 @@ public:
     uint32_t frame_began_skip_streak{0};
     uint64_t frame_began_skip_suppressed_count{0};
     uint32_t forced_frame_recovery_count{0};
+    uint32_t focused_frame_loop_recovery_count{0};
     bool accepted_relaxed_startup_poses{false};
     std::chrono::steady_clock::time_point last_frame_began_log{};
+    std::chrono::steady_clock::time_point last_focused_frame_loop_recovery{};
     std::chrono::steady_clock::time_point last_successful_wait_frame{};
     std::chrono::steady_clock::time_point last_successful_begin_frame{};
     std::chrono::steady_clock::time_point last_successful_end_frame{};
