@@ -57,6 +57,18 @@ bool is_stalker2_current_game_for_cvars() {
     return result;
 }
 
+bool is_aphelion_current_game_for_cvars() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"PIO-WinGDK-Shipping") != std::wstring::npos ||
+             exe_path->find(L"PIO-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"Aphelion") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
 bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
         int major{};
@@ -162,6 +174,95 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
 
     return true;
 }
+
+bool force_aphelion_framegen_runtime_cvars_once(int attempt) {
+    if (g_framework == nullptr || !g_framework->is_dx12() || !is_aphelion_current_game_for_cvars()) {
+        return true;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+
+    if (console_manager == nullptr) {
+        return false;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        const wchar_t* value;
+    };
+
+    // Aphelion ships both Streamline/DLSSG and FSR3 frame-interpolation paths.
+    // In VR these custom-present/frame-generation layers can fight UEVR's OpenXR
+    // submission and produce gameplay-only stalls or one-frame camera-cut ghosting.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.FidelityFX.FI.Enabled", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.OverrideSwapChainDX12", L"0"},
+        ForcedCVar{L"r.FidelityFX.FI.RHIPacingMode", L"0"},
+        ForcedCVar{L"r.Streamline.DLSSG.Enable", L"0"},
+        ForcedCVar{L"r.Streamline.Latewarp.Enable", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Enable", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Auto", L"0"},
+        ForcedCVar{L"t.Streamline.Reflex.Mode", L"0"},
+        ForcedCVar{L"r.Streamline.Reflex.PredictiveRendering", L"0"},
+    };
+
+    int found{};
+    int set_ok{};
+    int set_failed{};
+    int missing{};
+
+    for (const auto& forced : forced_cvars) {
+        auto object = console_manager->find(forced.name);
+
+        if (object == nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto variable = (sdk::IConsoleVariable*)object;
+
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            ok = variable->Set(forced.value);
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++set_ok;
+        } else {
+            ++set_failed;
+        }
+
+        SPDLOG_INFO(
+            "[Aphelion][DX12] forced {}: before={} requested={} after={} ok={}",
+            utility::narrow(forced.name),
+            before,
+            utility::narrow(forced.value),
+            after,
+            ok);
+    }
+
+    if (found == 0) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Aphelion][DX12] frame-generation cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
+        attempt,
+        found,
+        missing,
+        set_ok,
+        set_failed);
+
+    return true;
+}
 }
 
 CVarManager::CVarManager() {
@@ -196,6 +297,27 @@ CVarManager::~CVarManager() {
     /*for (auto& cvar : m_cvars) {
         cvar->save();
     }*/
+}
+
+CVarManager::ChangeSnapshot CVarManager::get_change_snapshot() const {
+    std::scoped_lock _{s_change_mutex};
+    return s_change_snapshot;
+}
+
+void CVarManager::record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source) {
+    std::scoped_lock _{s_change_mutex};
+    ++s_change_snapshot.counter;
+    s_change_snapshot.name = utility::narrow(std::wstring{name});
+    s_change_snapshot.value = utility::narrow(std::wstring{value});
+    s_change_snapshot.source = std::string{source};
+}
+
+void CVarManager::record_global_command(std::string_view command, std::string_view source) {
+    std::scoped_lock _{s_change_mutex};
+    ++s_change_snapshot.counter;
+    s_change_snapshot.name = "<console_command>";
+    s_change_snapshot.value = std::string{command};
+    s_change_snapshot.source = std::string{source};
 }
 
 void CVarManager::refresh_frozen_cvar_state() {
@@ -259,6 +381,8 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_should_execute_console_script = false;
         m_ue51_fsr3_runtime_cvars_done = false;
         m_ue51_fsr3_runtime_cvar_attempts = 0;
+        m_aphelion_framegen_runtime_cvars_done = false;
+        m_aphelion_framegen_runtime_cvar_attempts = 0;
     }
 
     if (!m_ue51_fsr3_runtime_cvars_done) {
@@ -269,6 +393,17 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         } else if (m_ue51_fsr3_runtime_cvar_attempts >= 600) {
             SPDLOG_WARN("[UE5.1][DX12] runtime cvars were not found after {} attempts; giving up", m_ue51_fsr3_runtime_cvar_attempts);
             m_ue51_fsr3_runtime_cvars_done = true;
+        }
+    }
+
+    if (!m_aphelion_framegen_runtime_cvars_done) {
+        ++m_aphelion_framegen_runtime_cvar_attempts;
+
+        if (force_aphelion_framegen_runtime_cvars_once(m_aphelion_framegen_runtime_cvar_attempts)) {
+            m_aphelion_framegen_runtime_cvars_done = true;
+        } else if (m_aphelion_framegen_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN("[Aphelion][DX12] frame-generation cvars were not found after {} attempts; giving up", m_aphelion_framegen_runtime_cvar_attempts);
+            m_aphelion_framegen_runtime_cvars_done = true;
         }
     }
 }
@@ -874,6 +1009,7 @@ void CVarManager::CVarStandard::draw_ui() try {
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
             m_frozen_int_value = clamp_int_value((int)value);
             m_setter_unavailable = false;
+            CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
@@ -898,6 +1034,7 @@ void CVarManager::CVarStandard::draw_ui() try {
             value = clamp_int_value(value);
             m_frozen_int_value = value;
             m_setter_unavailable = false;
+            CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
@@ -922,6 +1059,7 @@ void CVarManager::CVarStandard::draw_ui() try {
             value = clamp_float_value(value);
             m_frozen_float_value = value;
             m_setter_unavailable = false;
+            CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
             GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
@@ -1063,6 +1201,7 @@ void CVarManager::CVarData::draw_ui() try {
 
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
             cvar_int->set((int)value); // no need to run on game thread, direct access
+            CVarManager::record_global_change(m_name, std::to_wstring((int)value), "data_ui");
             this->save();
         }
         break;
@@ -1072,6 +1211,7 @@ void CVarManager::CVarData::draw_ui() try {
 
         if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
             cvar_int->set(value); // no need to run on game thread, direct access
+            CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
         break;
@@ -1081,6 +1221,7 @@ void CVarManager::CVarData::draw_ui() try {
 
         if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
             cvar_float->set(value); // no need to run on game thread, direct access
+            CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
         break;
@@ -1149,6 +1290,7 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
         }
 
         spdlog::debug("[execute_console_script] Attempting to execute \"{}\"", line);
+        CVarManager::record_global_command(line, "console_script");
         engine->exec(utility::widen(line));
     }
 

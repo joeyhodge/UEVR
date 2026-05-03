@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <mutex>
@@ -663,6 +664,10 @@ public:
         return m_d3d12;
     }
 
+    bool has_d3d12_game_ui_textures() const {
+        return m_is_d3d12 && m_d3d12.has_game_and_ui_textures();
+    }
+
     uint32_t get_present_thread_id() const {
         return m_present_thread_id;
     }
@@ -683,6 +688,8 @@ private:
     bool is_any_action_down();
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
+    void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall);
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -850,6 +857,46 @@ private:
     std::chrono::steady_clock::time_point m_last_engine_tick{};
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
+
+    struct HitchSnapshotSample {
+        std::chrono::steady_clock::time_point timestamp{};
+        uint64_t sequence{};
+        int frame_count{};
+        int render_frame_count{};
+        int rendering_method{};
+        bool hmd_active{};
+        bool runtime_loaded{};
+        bool runtime_ready{};
+        bool using_controllers{};
+        bool using_afr{};
+        bool native_stereo_fix{};
+        bool submitted{};
+        int64_t framework_frame_age_ms{-1};
+        int64_t mod_frame_age_ms{-1};
+        int64_t d3d12_frame_age_ms{-1};
+        int64_t xr_wait_age_ms{-1};
+        int64_t xr_begin_age_ms{-1};
+        int64_t xr_end_age_ms{-1};
+        int64_t pose_update_age_ms{-1};
+        int session_state{};
+        bool session_ready{};
+        bool frame_synced{};
+        bool frame_began{};
+        bool got_first_poses{};
+        bool got_first_valid_poses{};
+        bool accepted_relaxed_startup_poses{};
+        CVarManager::ChangeSnapshot cvar_change{};
+        vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
+    };
+
+    static constexpr size_t HITCH_SNAPSHOT_RING_SIZE = 600;
+    std::array<HitchSnapshotSample, HITCH_SNAPSHOT_RING_SIZE> m_hitch_snapshot_samples{};
+    size_t m_hitch_snapshot_cursor{};
+    bool m_hitch_snapshot_wrapped{};
+    uint64_t m_hitch_snapshot_sequence{};
+    uint32_t m_hitch_snapshot_dump_count{};
+    std::chrono::steady_clock::time_point m_last_hitch_snapshot_dump{};
+
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
     bool m_shf_auto_2d_active{false};
     bool m_shf_auto_2d_previous_mode{false};

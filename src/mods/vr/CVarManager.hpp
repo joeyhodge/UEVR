@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstdint>
+#include <mutex>
 #include <optional>
 #include <memory>
 #include <string>
+#include <string_view>
 
 #include <utility/Config.hpp>
 #include <sdk/CVar.hpp>
@@ -25,6 +28,17 @@ public:
     void spawn_console();
 
     void execute_console_script(sdk::UGameEngine* engine, const std::string& filename);
+
+    struct ChangeSnapshot {
+        uint64_t counter{};
+        std::string name{};
+        std::string value{};
+        std::string source{};
+    };
+
+    ChangeSnapshot get_change_snapshot() const;
+    static void record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source);
+    static void record_global_command(std::string_view command, std::string_view source);
 
     bool is_hzbo_frozen_and_enabled() const {
         if (m_hzbo == nullptr) {
@@ -213,6 +227,11 @@ private:
     bool m_cvar_ui_open_this_frame{false};
     bool m_ue51_fsr3_runtime_cvars_done{false};
     int m_ue51_fsr3_runtime_cvar_attempts{0};
+    bool m_aphelion_framegen_runtime_cvars_done{false};
+    int m_aphelion_framegen_runtime_cvar_attempts{0};
+
+    static inline std::mutex s_change_mutex{};
+    static inline ChangeSnapshot s_change_snapshot{};
 
     static inline std::vector<std::shared_ptr<CVarStandard>> s_default_standard_cvars {
         // Bools
