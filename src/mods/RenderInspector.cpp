@@ -775,6 +775,14 @@ void RenderInspector::draw_dx12_diagnostics() {
             draw_dx12_summary_row("Active Sampler Heap", format_pointer_hex(snapshot.active_sampler_heap));
             draw_dx12_summary_row("Proton Swapchain", snapshot.proton_swapchain ? "yes" : "no");
             draw_dx12_summary_row("Framegen Swapchain", snapshot.framegen_swapchain ? "yes" : "no");
+            if (snapshot.framegen_swapchain || snapshot.streamline_module_loaded) {
+                draw_dx12_summary_row("Framegen Kind", snapshot.framegen_kind.empty() ? "none" : snapshot.framegen_kind);
+                draw_dx12_summary_row("Framegen Wrapper", format_pointer_hex(snapshot.framegen_wrapper_swapchain));
+                draw_dx12_summary_row("Framegen Internal", format_pointer_hex(snapshot.framegen_internal_swapchain));
+                draw_dx12_summary_row("Framegen Internal Offset", format_pointer_hex(snapshot.framegen_internal_swapchain_offset));
+                draw_dx12_summary_row("Streamline Module", snapshot.streamline_module_loaded ? "yes" : "no");
+                draw_dx12_summary_row("Streamline Relink Hook", snapshot.streamline_link_hooked ? "yes" : "no");
+            }
             draw_dx12_summary_row("Heap sets / frame", std::to_string(snapshot.descriptor_heap_sets_this_frame));
             draw_dx12_summary_row("Heap switches / frame", std::to_string(snapshot.descriptor_heap_switches_this_frame));
             draw_dx12_summary_row("Barriers / frame", std::to_string(snapshot.resource_barriers_this_frame));

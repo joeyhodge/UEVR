@@ -33,6 +33,7 @@ constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(2);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
+constexpr auto LONG_WAIT_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto STALE_POSE_SUBMIT_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto STALE_POSE_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto SLOW_POSE_UPDATE_LOG_INTERVAL = std::chrono::seconds(2);
@@ -770,7 +771,8 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
     XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
     const auto wait_frame_start = std::chrono::steady_clock::now();
     auto result = xrWaitFrame(this->session, &frame_wait_info, &local_frame_state);
-    const auto wait_frame_duration = std::chrono::steady_clock::now() - wait_frame_start;
+    const auto wait_frame_end = std::chrono::steady_clock::now();
+    const auto wait_frame_duration = wait_frame_end - wait_frame_start;
     this->wait_frame_timing.add(wait_frame_duration);
 
     const auto callsite_index = (size_t)callsite;
@@ -780,19 +782,38 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
     const auto wait_frame_ms = std::chrono::duration<double, std::milli>{wait_frame_duration}.count();
     if (wait_frame_ms >= 100.0) {
-        spdlog::warn(
-            "[OpenXR][wait-profiler] xrWaitFrame took {:.2f}ms callsite={} frame_count={} session={} synced={} began={} first_poses={} valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={}",
-            wait_frame_ms,
-            sync_frame_callsite_name(callsite),
-            frame_count.value_or(this->internal_frame_count),
-            this->get_session_state_string(this->session_state),
-            this->frame_synced,
-            this->frame_began,
-            this->got_first_poses,
-            this->got_first_valid_poses,
-            local_frame_state.predictedDisplayTime,
-            local_frame_state.predictedDisplayPeriod
-        );
+        const auto should_log =
+            this->last_long_wait_log.time_since_epoch().count() == 0 ||
+            wait_frame_end - this->last_long_wait_log >= LONG_WAIT_LOG_INTERVAL;
+
+        if (should_log) {
+            const auto suppressed = this->long_wait_suppressed_count;
+            const auto suppressed_max = this->long_wait_max_suppressed_ms;
+            this->last_long_wait_log = wait_frame_end;
+            this->long_wait_suppressed_count = 0;
+            this->long_wait_max_suppressed_ms = 0.0;
+
+            spdlog::warn(
+                "[OpenXR][wait-profiler] xrWaitFrame took {:.2f}ms callsite={} frame_count={} session={} synced={} began={} first_poses={} valid_poses={} predictedDisplayTime={} predictedDisplayPeriod={} suppressed={} suppressed_max_ms={:.2f}",
+                wait_frame_ms,
+                sync_frame_callsite_name(callsite),
+                frame_count.value_or(this->internal_frame_count),
+                this->get_session_state_string(this->session_state),
+                this->frame_synced,
+                this->frame_began,
+                this->got_first_poses,
+                this->got_first_valid_poses,
+                local_frame_state.predictedDisplayTime,
+                local_frame_state.predictedDisplayPeriod,
+                suppressed,
+                suppressed_max
+            );
+        } else {
+            ++this->long_wait_suppressed_count;
+            if (wait_frame_ms > this->long_wait_max_suppressed_ms) {
+                this->long_wait_max_suppressed_ms = wait_frame_ms;
+            }
+        }
     }
 
     this->end_profile("xrWaitFrame");

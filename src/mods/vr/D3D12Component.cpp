@@ -3046,19 +3046,22 @@ void D3D12Component::OpenXR::copy(
                 ? D3D12_RESOURCE_STATE_DEPTH_WRITE
                 : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
-            render::D3D12Diagnostics::get().record_texture_copy(
-                "D3D12Component::OpenXR::copy",
-                swapchain_idx,
-                openxr_swapchain_name(swapchain_idx),
-                resource,
-                ctx.textures[texture_index].texture,
-                src_state,
-                dst_state,
-                src_box,
-                is_scene_swapchain(swapchain_idx),
-                is_ui_swapchain(swapchain_idx),
-                is_depth
-            );
+            auto& dx12_diagnostics = render::D3D12Diagnostics::get();
+            if (dx12_diagnostics.is_enabled()) {
+                dx12_diagnostics.record_texture_copy(
+                    "D3D12Component::OpenXR::copy",
+                    swapchain_idx,
+                    openxr_swapchain_name(swapchain_idx),
+                    resource,
+                    ctx.textures[texture_index].texture,
+                    src_state,
+                    dst_state,
+                    src_box,
+                    is_scene_swapchain(swapchain_idx),
+                    is_ui_swapchain(swapchain_idx),
+                    is_depth
+                );
+            }
 
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.

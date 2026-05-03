@@ -4,6 +4,9 @@
 #include <iostream>
 #include <memory>
 #include <optional>
+#include <chrono>
+#include <cstdint>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,6 +23,12 @@
 class D3D12Hook
 {
 public:
+    enum class FrameGenerationSwapchainKind : uint8_t {
+        None,
+        StreamlineDlssg,
+        Fsr3
+    };
+
 	typedef std::function<void(D3D12Hook&)> OnPresentFn;
 	typedef std::function<void(D3D12Hook&, uint32_t w, uint32_t h)> OnResizeBuffersFn;
     typedef std::function<void(D3D12Hook&, uint32_t w, uint32_t h)> OnResizeTargetFn;
@@ -98,6 +107,28 @@ public:
         return m_using_frame_generation_swapchain;
     }
 
+    const char* get_framegen_swapchain_kind_name() const;
+
+    uintptr_t get_framegen_wrapper_swapchain() const {
+        return m_frame_generation_wrapper_swapchain;
+    }
+
+    uintptr_t get_framegen_internal_swapchain() const {
+        return m_frame_generation_internal_swapchain;
+    }
+
+    uint32_t get_framegen_internal_swapchain_offset() const {
+        return m_frame_generation_internal_swapchain_offset;
+    }
+
+    bool is_streamline_module_loaded() const {
+        return m_streamline_module_loaded;
+    }
+
+    bool is_streamline_link_hooked() const {
+        return m_streamline_link_hooked;
+    }
+
     void ignore_next_present() {
         m_ignore_next_present = true;
     }
@@ -107,6 +138,11 @@ public:
     }
 
 protected:
+    static void hook_streamline(HMODULE dlssg_module = nullptr, bool quiet_missing = true);
+    static void* streamline_link_swapchain_to_cmd_queue(void* rcx, void* rdx, void* r8, void* r9);
+    void maybe_probe_streamline();
+    void mark_framegen_swapchain(FrameGenerationSwapchainKind kind, uintptr_t wrapper, std::string_view type_name, std::string_view raw_name);
+
     ID3D12Device4* m_device{ nullptr };
     IDXGISwapChain3* m_swap_chain{ nullptr };
     IDXGISwapChain3* m_swapchain_0{};
@@ -119,18 +155,25 @@ protected:
 
     uint32_t m_command_queue_offset{};
     uint32_t m_proton_swapchain_offset{};
+    uint32_t m_frame_generation_internal_swapchain_offset{};
 
     std::optional<uint32_t> m_next_present_interval{};
 
     bool m_using_proton_swapchain{ false };
     bool m_using_frame_generation_swapchain{ false };
     bool m_skip_dummy_swapchain_type_info_probe{ false };
+    bool m_streamline_module_loaded{ false };
+    bool m_streamline_link_hooked{ false };
     bool m_hooked{ false };
     bool m_is_phase_1{ true };
     bool m_inside_present{false};
     bool m_ignore_next_present{false};
     std::unordered_set<uintptr_t> m_swapchains_requiring_original_present_params{};
     std::unordered_set<uintptr_t> m_original_present_param_skip_logged_swapchains{};
+    FrameGenerationSwapchainKind m_frame_generation_swapchain_kind{ FrameGenerationSwapchainKind::None };
+    uintptr_t m_frame_generation_wrapper_swapchain{};
+    uintptr_t m_frame_generation_internal_swapchain{};
+    std::chrono::steady_clock::time_point m_next_streamline_probe{};
 
     std::unique_ptr<PointerHook> m_present_hook{};
     std::unique_ptr<PointerHook> m_present1_hook{};

@@ -690,7 +690,7 @@ private:
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
-    void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall);
+    void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown = false);
     void prune_hitch_snapshots(const std::filesystem::path& dir) const;
     void draw_hitch_diagnostics_ui();
 
@@ -930,6 +930,11 @@ private:
     bool m_dispatch_auto_2d_previous_mode{false};
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
+    static constexpr size_t PROSPI_ROLLING_HITCH_GAP_RING_SIZE = 16;
+    std::array<std::chrono::steady_clock::time_point, PROSPI_ROLLING_HITCH_GAP_RING_SIZE> m_prospi_rolling_hitch_gaps{};
+    size_t m_prospi_rolling_hitch_gap_cursor{};
+    bool m_prospi_rolling_hitch_gap_wrapped{};
+    std::chrono::steady_clock::time_point m_last_prospi_rolling_hitch_snapshot{};
 
     uint32_t m_lowest_xinput_user_index{};
 
@@ -1408,6 +1413,9 @@ private:
     float m_prospi_telephoto_perf_baseline_static_mesh_lod_distance_scale{1.0f};
     int m_prospi_telephoto_perf_baseline_skeletal_mesh_lod_bias{0};
     bool m_prospi_telephoto_perf_override_applied{false};
+    bool m_prospi_telephoto_perf_pending_valid{false};
+    bool m_prospi_telephoto_perf_pending_state{false};
+    std::chrono::steady_clock::time_point m_prospi_telephoto_perf_pending_since{};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{ false };

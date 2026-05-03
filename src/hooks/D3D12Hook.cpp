@@ -1,13 +1,21 @@
 #include <array>
+#include <chrono>
+#include <cstring>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <future>
 #include <unordered_set>
 
+#include <safetyhook.hpp>
 #include <spdlog/spdlog.h>
 #include <wrl/client.h>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
 #include <utility/RTTI.hpp>
+#include <utility/Scan.hpp>
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
@@ -17,6 +25,7 @@
 #include "D3D12Hook.hpp"
 
 static D3D12Hook* g_d3d12_hook = nullptr;
+thread_local bool g_inside_d3d12_hook = false;
 
 namespace {
 constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
@@ -25,11 +34,173 @@ constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
 constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
 constexpr size_t OM_SET_RENDER_TARGETS_VTABLE_INDEX = 46;
+constexpr size_t MAX_SWAPCHAIN_SCAN_BYTES = 512 * sizeof(void*);
+constexpr std::chrono::milliseconds STREAMLINE_REPROBE_INTERVAL{1000};
+
+std::mutex g_streamline_hook_mutex{};
+safetyhook::InlineHook g_streamline_link_swapchain_hook{};
+bool g_streamline_hook_attempted{};
+bool g_streamline_hook_logged_missing{};
+bool g_streamline_hook_logged_failure{};
+bool g_streamline_hooked{};
+bool g_command_queue_resolve_failure_logged{};
+
+struct BoolFlagGuard {
+    bool& target;
+    bool previous;
+
+    explicit BoolFlagGuard(bool& value)
+        : target(value),
+          previous(value) {
+        target = true;
+    }
+
+    ~BoolFlagGuard() {
+        target = previous;
+    }
+};
+
+bool is_readable_memory(const void* ptr, size_t size) {
+    if (ptr == nullptr || size == 0) {
+        return false;
+    }
+
+    const auto start = reinterpret_cast<uintptr_t>(ptr);
+    const auto end = start + size;
+
+    if (end < start) {
+        return false;
+    }
+
+    auto cursor = start;
+    while (cursor < end) {
+        MEMORY_BASIC_INFORMATION mbi{};
+
+        if (VirtualQuery(reinterpret_cast<const void*>(cursor), &mbi, sizeof(mbi)) == 0) {
+            return false;
+        }
+
+        if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0) {
+            return false;
+        }
+
+        const auto region_end = reinterpret_cast<uintptr_t>(mbi.BaseAddress) + mbi.RegionSize;
+        if (region_end <= cursor) {
+            return false;
+        }
+
+        cursor = region_end;
+    }
+
+    return true;
+}
+
+bool is_readable_pointer(const void* ptr) {
+    return is_readable_memory(ptr, sizeof(void*)) && !IsBadReadPtr(ptr, sizeof(void*));
+}
+
+std::optional<std::string> safe_copy_cstr(const char* value, size_t max_len = 512) {
+    if (value == nullptr || !is_readable_memory(value, 1) || IsBadReadPtr(value, 1)) {
+        return std::nullopt;
+    }
+
+    size_t len = 0;
+    for (; len < max_len; ++len) {
+        const auto* current = value + len;
+        if (!is_readable_memory(current, 1) || IsBadReadPtr(current, 1)) {
+            return std::nullopt;
+        }
+
+        if (*current == '\0') {
+            return std::string{value, len};
+        }
+    }
+
+    return std::string{value, max_len};
+}
+
+struct SafeSwapchainTypeInfo {
+    std::string name{};
+    std::string raw_name{};
+};
+
+std::optional<SafeSwapchainTypeInfo> try_get_swapchain_type_info(const void* object) {
+    if (!is_readable_pointer(object)) {
+        return std::nullopt;
+    }
+
+    const auto vtable = *reinterpret_cast<void* const*>(object);
+    if (!is_readable_pointer(vtable) || !utility::get_module_within(vtable).has_value()) {
+        return std::nullopt;
+    }
+
+    const auto locator_slot = reinterpret_cast<void* const*>(vtable) - 1;
+    if (!is_readable_pointer(locator_slot)) {
+        return std::nullopt;
+    }
+
+    const auto locator = *locator_slot;
+    if (!is_readable_memory(locator, sizeof(void*) * 3) || !utility::get_module_within(locator).has_value()) {
+        return std::nullopt;
+    }
+
+    try {
+        const auto ti = utility::rtti::get_type_info(object);
+
+        if (ti == nullptr) {
+            return std::nullopt;
+        }
+
+        const auto name = safe_copy_cstr(ti->name()).value_or("unknown");
+        const auto raw_name = safe_copy_cstr(ti->raw_name()).value_or("unknown");
+
+        return SafeSwapchainTypeInfo{name, raw_name};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
+const char* framegen_kind_to_string(D3D12Hook::FrameGenerationSwapchainKind kind) {
+    switch (kind) {
+    case D3D12Hook::FrameGenerationSwapchainKind::StreamlineDlssg:
+        return "streamline_dlssg";
+    case D3D12Hook::FrameGenerationSwapchainKind::Fsr3:
+        return "fsr3";
+    default:
+        return "none";
+    }
+}
+
+void get_current_swapchain_size(const D3D12Hook* hook, uint32_t& width, uint32_t& height) {
+    width = hook != nullptr ? hook->get_render_width() : 0;
+    height = hook != nullptr ? hook->get_render_height() : 0;
+
+    if ((width != 0 && height != 0) || hook == nullptr || hook->get_swap_chain() == nullptr) {
+        return;
+    }
+
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (SUCCEEDED(hook->get_swap_chain()->GetDesc(&desc))) {
+        width = desc.BufferDesc.Width;
+        height = desc.BufferDesc.Height;
+    }
+}
 
 bool should_preserve_present_params_for_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && exe_path->find(L"MafiaTheOldCountry") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool should_hook_om_set_render_targets_for_diagnostics() {
+    static const bool result = []() {
+        wchar_t value[8]{};
+        const auto length = GetEnvironmentVariableW(L"UEVR_DX12_OMSET_DIAGNOSTICS", value, static_cast<DWORD>(sizeof(value) / sizeof(value[0])));
+
+        return length > 0 && value[0] == L'1';
     }();
 
     return result;
@@ -65,10 +236,197 @@ D3D12Hook::~D3D12Hook() {
     unhook();
 }
 
+const char* D3D12Hook::get_framegen_swapchain_kind_name() const {
+    return framegen_kind_to_string(m_frame_generation_swapchain_kind);
+}
+
+void D3D12Hook::mark_framegen_swapchain(
+    FrameGenerationSwapchainKind kind,
+    uintptr_t wrapper,
+    std::string_view type_name,
+    std::string_view raw_name
+) {
+    m_using_frame_generation_swapchain = kind != FrameGenerationSwapchainKind::None;
+    m_frame_generation_swapchain_kind = kind;
+    m_frame_generation_wrapper_swapchain = wrapper;
+
+    spdlog::info(
+        "[D3D12Hook][FrameGen] Detected wrapper kind={} wrapper={:x} type='{}' raw='{}'",
+        get_framegen_swapchain_kind_name(),
+        wrapper,
+        type_name,
+        raw_name
+    );
+}
+
+void* D3D12Hook::streamline_link_swapchain_to_cmd_queue(void* rcx, void* rdx, void* r8, void* r9) {
+    using LinkSwapchainToCmdQueueFn = void* (*)(void*, void*, void*, void*);
+
+    auto original = g_streamline_link_swapchain_hook.original<LinkSwapchainToCmdQueueFn>();
+    if (original == nullptr) {
+        return nullptr;
+    }
+
+    if (g_inside_d3d12_hook) {
+        spdlog::info("[D3D12Hook][FrameGen] Streamline linkSwapchainToCmdQueue while probing; forwarding to original");
+        return original(rcx, rdx, r8, r9);
+    }
+
+    while (g_framework == nullptr) {
+        std::this_thread::yield();
+    }
+
+    std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
+
+    spdlog::info(
+        "[D3D12Hook][FrameGen] Streamline linkSwapchainToCmdQueue rcx={:x} rdx={:x} r8={:x} r9={:x}",
+        reinterpret_cast<uintptr_t>(rcx),
+        reinterpret_cast<uintptr_t>(rdx),
+        reinterpret_cast<uintptr_t>(r8),
+        reinterpret_cast<uintptr_t>(r9)
+    );
+
+    auto* current_hook = g_d3d12_hook;
+    const auto had_hook = current_hook != nullptr && current_hook->is_hooked();
+
+    uint32_t reset_width{};
+    uint32_t reset_height{};
+    get_current_swapchain_size(current_hook, reset_width, reset_height);
+
+    if (had_hook) {
+        if (reset_width != 0 && reset_height != 0) {
+            spdlog::info("[D3D12Hook][FrameGen] Resetting D3D12 resources before Streamline swapchain relink: {}x{}", reset_width, reset_height);
+            g_framework->on_reset(reset_width, reset_height);
+        } else {
+            spdlog::warn("[D3D12Hook][FrameGen] Streamline relink had no known swapchain size; skipping resource reset");
+        }
+
+        current_hook->unhook();
+    }
+
+    const auto result = original(rcx, rdx, r8, r9);
+
+    if (had_hook && current_hook != nullptr) {
+        spdlog::info("[D3D12Hook][FrameGen] Re-hooking D3D12 after Streamline swapchain relink");
+        current_hook->hook();
+    }
+
+    return result;
+}
+
+void D3D12Hook::hook_streamline(HMODULE dlssg_module, bool quiet_missing) try {
+    {
+        std::scoped_lock _{g_streamline_hook_mutex};
+        if (g_streamline_hooked) {
+            if (g_d3d12_hook != nullptr) {
+                g_d3d12_hook->m_streamline_module_loaded = true;
+                g_d3d12_hook->m_streamline_link_hooked = true;
+            }
+            return;
+        }
+    }
+
+    if (dlssg_module == nullptr) {
+        dlssg_module = GetModuleHandleW(L"sl.dlss_g.dll");
+    }
+
+    if (dlssg_module == nullptr) {
+        if (!quiet_missing && !g_streamline_hook_logged_missing) {
+            spdlog::info("[D3D12Hook][FrameGen] Streamline sl.dlss_g.dll is not loaded");
+            g_streamline_hook_logged_missing = true;
+        }
+        return;
+    }
+
+    std::scoped_lock _{g_streamline_hook_mutex};
+    if (g_streamline_hooked || g_streamline_hook_attempted) {
+        if (g_d3d12_hook != nullptr) {
+            g_d3d12_hook->m_streamline_module_loaded = true;
+            g_d3d12_hook->m_streamline_link_hooked = g_streamline_hooked;
+        }
+        return;
+    }
+
+    g_streamline_hook_attempted = true;
+
+    if (g_d3d12_hook != nullptr) {
+        g_d3d12_hook->m_streamline_module_loaded = true;
+    }
+
+    spdlog::info("[D3D12Hook][FrameGen] Streamline sl.dlss_g.dll loaded at {:x}; scanning for linkSwapchainToCmdQueue", reinterpret_cast<uintptr_t>(dlssg_module));
+
+    const auto str = utility::scan_string(dlssg_module, "linkSwapchainToCmdQueue");
+    if (!str) {
+        spdlog::warn("[D3D12Hook][FrameGen] Streamline linkSwapchainToCmdQueue string was not found");
+        return;
+    }
+
+    const auto str_ref = utility::scan_displacement_reference(dlssg_module, *str);
+    if (!str_ref) {
+        spdlog::warn("[D3D12Hook][FrameGen] Streamline linkSwapchainToCmdQueue reference was not found");
+        return;
+    }
+
+    const auto fn = utility::find_function_start_with_call(*str_ref);
+    if (!fn) {
+        spdlog::warn("[D3D12Hook][FrameGen] Streamline linkSwapchainToCmdQueue function start was not found");
+        return;
+    }
+
+    auto hook_result = safetyhook::InlineHook::create(reinterpret_cast<void*>(*fn), reinterpret_cast<void*>(&D3D12Hook::streamline_link_swapchain_to_cmd_queue));
+    if (!hook_result) {
+        if (!g_streamline_hook_logged_failure) {
+            spdlog::warn("[D3D12Hook][FrameGen] Failed to hook Streamline linkSwapchainToCmdQueue at {:x}", *fn);
+            g_streamline_hook_logged_failure = true;
+        }
+        return;
+    }
+
+    g_streamline_link_swapchain_hook = std::move(*hook_result);
+    g_streamline_hooked = static_cast<bool>(g_streamline_link_swapchain_hook);
+
+    if (g_d3d12_hook != nullptr) {
+        g_d3d12_hook->m_streamline_link_hooked = g_streamline_hooked;
+    }
+
+    spdlog::info("[D3D12Hook][FrameGen] Hooked Streamline linkSwapchainToCmdQueue at {:x}", *fn);
+} catch (const std::exception& e) {
+    spdlog::warn("[D3D12Hook][FrameGen] Streamline hook setup failed safely: {}", e.what());
+} catch (...) {
+    spdlog::warn("[D3D12Hook][FrameGen] Streamline hook setup failed safely: unknown exception");
+}
+
+void D3D12Hook::maybe_probe_streamline() {
+    if (g_streamline_hooked || g_streamline_hook_attempted) {
+        m_streamline_module_loaded = g_streamline_hook_attempted || GetModuleHandleW(L"sl.dlss_g.dll") != nullptr;
+        m_streamline_link_hooked = g_streamline_hooked;
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_next_streamline_probe != std::chrono::steady_clock::time_point{} && now < m_next_streamline_probe) {
+        return;
+    }
+
+    m_next_streamline_probe = now + STREAMLINE_REPROBE_INTERVAL;
+    hook_streamline(nullptr, true);
+    m_streamline_module_loaded = GetModuleHandleW(L"sl.dlss_g.dll") != nullptr;
+    m_streamline_link_hooked = g_streamline_hooked;
+}
+
 bool D3D12Hook::hook() {
     spdlog::info("Hooking D3D12");
 
     g_d3d12_hook = this;
+    BoolFlagGuard inside_guard{g_inside_d3d12_hook};
+    hook_streamline(nullptr, true);
+
+    m_using_proton_swapchain = false;
+    m_using_frame_generation_swapchain = false;
+    m_frame_generation_swapchain_kind = FrameGenerationSwapchainKind::None;
+    m_frame_generation_wrapper_swapchain = 0;
+    m_frame_generation_internal_swapchain = 0;
+    m_frame_generation_internal_swapchain_offset = 0;
 
     IDXGISwapChain1* swap_chain1{ nullptr };
     IDXGISwapChain3* swap_chain{ nullptr };
@@ -284,29 +642,23 @@ bool D3D12Hook::hook() {
     }
 
     if (!m_skip_dummy_swapchain_type_info_probe) {
-        try {
-            const auto ti = utility::rtti::get_type_info(swap_chain1);
-            const auto swapchain_classname = ti != nullptr && ti->name() != nullptr ? std::string_view{ti->name()} : "unknown";
-            const auto raw_name = ti != nullptr && ti->raw_name() != nullptr ? std::string_view{ti->raw_name()} : "unknown";
+        const auto type_info = try_get_swapchain_type_info(swap_chain1);
+
+        if (!type_info) {
+            spdlog::warn("[D3D12Hook][FrameGen] Dummy swapchain RTTI probe failed validation; disabling RTTI probing for this session");
+            m_skip_dummy_swapchain_type_info_probe = true;
+        } else {
+            const auto swapchain_classname = std::string_view{type_info->name};
+            const auto raw_name = std::string_view{type_info->raw_name};
 
             spdlog::info("Swapchain type info: {}", swapchain_classname);
             spdlog::info("Swapchain raw type info: {}", raw_name);
-            
-            if (swapchain_classname.contains("interposer::DXGISwapChain")) { // DLSS3
-                spdlog::info("Found Streamline (DLSSFG) swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
-                m_using_frame_generation_swapchain = true;
+
+            if (swapchain_classname.contains("interposer::DXGISwapChain")) { // DLSS3/Streamline
+                mark_framegen_swapchain(FrameGenerationSwapchainKind::StreamlineDlssg, reinterpret_cast<uintptr_t>(swap_chain1), swapchain_classname, raw_name);
+            } else if (swapchain_classname.contains("FrameInterpolationSwapChain")) { // FSR3
+                mark_framegen_swapchain(FrameGenerationSwapchainKind::Fsr3, reinterpret_cast<uintptr_t>(swap_chain1), swapchain_classname, raw_name);
             }
-            // Need to test this one to see if it actually has the same issues - disabling it for now
-            /*else if (swapchain_classname.contains("FrameInterpolationSwapChain")) { // FSR3
-                spdlog::info("Found FSR3 swapchain during dummy initialization: {:x}", (uintptr_t)swap_chain1);
-                m_using_frame_generation_swapchain = true;
-            }*/
-        } catch (const std::exception& e) {
-            spdlog::error("Failed to get type info: {}. Disabling dummy swapchain RTTI probe for this session.", e.what());
-            m_skip_dummy_swapchain_type_info_probe = true;
-        } catch (...) {
-            spdlog::error("Failed to get type info: unknown exception. Disabling dummy swapchain RTTI probe for this session.");
-            m_skip_dummy_swapchain_type_info_probe = true;
         }
     }
 
@@ -315,7 +667,7 @@ bool D3D12Hook::hook() {
     m_command_queue_offset = 0;
 
     // Find the command queue offset in the swapchain
-    for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
+    for (auto i = 0; i < MAX_SWAPCHAIN_SCAN_BYTES; i += sizeof(void*)) {
         const auto base = (uintptr_t)swap_chain1 + i;
 
         // reached the end
@@ -339,7 +691,7 @@ bool D3D12Hook::hook() {
     if (m_command_queue_offset == 0) {
         bool should_break = false;
 
-        for (auto base = 0; base < 512 * sizeof(void*); base += sizeof(void*)) {
+        for (auto base = 0; base < MAX_SWAPCHAIN_SCAN_BYTES; base += sizeof(void*)) {
             const auto pre_scan_base = (uintptr_t)swap_chain1 + base;
 
             // reached the end
@@ -353,7 +705,7 @@ bool D3D12Hook::hook() {
                 continue;
             }
 
-            for (auto i = 0; i < 512 * sizeof(void*); i += sizeof(void*)) {
+            for (auto i = 0; i < MAX_SWAPCHAIN_SCAN_BYTES; i += sizeof(void*)) {
                 const auto pre_data = scan_base + i;
 
                 if (IsBadReadPtr((void*)pre_data, sizeof(void*))) {
@@ -369,17 +721,26 @@ bool D3D12Hook::hook() {
                     // this doubles as an offset scanner for the real swapchain inside Streamline (or FSR3)
                     if (m_using_frame_generation_swapchain) {
                         target_swapchain = (IDXGISwapChain3*)scan_base;
+                        m_frame_generation_internal_swapchain = scan_base;
+                        m_frame_generation_internal_swapchain_offset = base;
+                        spdlog::info(
+                            "[D3D12Hook][FrameGen] Using internal swapchain {:x} from wrapper {:x}+{:x}; command queue offset {:x}",
+                            scan_base,
+                            reinterpret_cast<uintptr_t>(swap_chain1),
+                            base,
+                            i
+                        );
                     }
 
                     if (!m_using_frame_generation_swapchain) {
                         m_using_proton_swapchain = true;
+                        spdlog::info("Proton potentially detected");
                     }
 
                     m_command_queue_offset = i;
                     m_proton_swapchain_offset = base;
                     should_break = true;
 
-                    spdlog::info("Proton potentially detected");
                     spdlog::info("Found command queue offset: {:x}", i);
                     break;
                 }
@@ -533,14 +894,19 @@ bool D3D12Hook::hook() {
             set_pipeline_state_slots
         );
 
-        add_unique_pointer_hook(
-            command_list,
-            OM_SET_RENDER_TARGETS_VTABLE_INDEX,
-            reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
-            m_om_set_render_targets_hooks,
-            m_om_set_render_targets_hook_lookup,
-            om_set_render_targets_slots
-        );
+        const auto hook_om_set_render_targets = should_hook_om_set_render_targets_for_diagnostics();
+
+        if (hook_om_set_render_targets) {
+            spdlog::info("[D3D12Hook] OMSetRenderTargets diagnostics hook enabled by UEVR_DX12_OMSET_DIAGNOSTICS=1");
+            add_unique_pointer_hook(
+                command_list,
+                OM_SET_RENDER_TARGETS_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
+                m_om_set_render_targets_hooks,
+                m_om_set_render_targets_hook_lookup,
+                om_set_render_targets_slots
+            );
+        }
 
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> command_list1{};
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> command_list2{};
@@ -578,14 +944,16 @@ bool D3D12Hook::hook() {
                 set_pipeline_state_slots
             );
 
-            add_unique_pointer_hook(
-                iface,
-                OM_SET_RENDER_TARGETS_VTABLE_INDEX,
-                reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
-                m_om_set_render_targets_hooks,
-                m_om_set_render_targets_hook_lookup,
-                om_set_render_targets_slots
-            );
+            if (hook_om_set_render_targets) {
+                add_unique_pointer_hook(
+                    iface,
+                    OM_SET_RENDER_TARGETS_VTABLE_INDEX,
+                    reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
+                    m_om_set_render_targets_hooks,
+                    m_om_set_render_targets_hook_lookup,
+                    om_set_render_targets_slots
+                );
+            }
         }
 
         m_hooked = true;
@@ -702,6 +1070,7 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
     auto d3d12 = g_d3d12_hook;
     const auto original_sync_interval = sync_interval;
     const auto original_flags = flags;
+    d3d12->maybe_probe_streamline();
 
     HWND swapchain_wnd{nullptr};
     swap_chain->GetHwnd(&swapchain_wnd);
@@ -754,11 +1123,35 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
     swap_chain->GetDevice(IID_PPV_ARGS(&d3d12->m_device));
 
     if (d3d12->m_device != nullptr) {
+        auto queue_base = reinterpret_cast<uintptr_t>(swap_chain);
+
         if (d3d12->m_using_proton_swapchain) {
-            const auto real_swapchain = *(uintptr_t*)((uintptr_t)swap_chain + d3d12->m_proton_swapchain_offset);
-            d3d12->m_command_queue = *(ID3D12CommandQueue**)(real_swapchain + d3d12->m_command_queue_offset);
+            const auto wrapper_slot = reinterpret_cast<uintptr_t>(swap_chain) + d3d12->m_proton_swapchain_offset;
+            if (is_readable_memory(reinterpret_cast<void*>(wrapper_slot), sizeof(uintptr_t))) {
+                queue_base = *reinterpret_cast<uintptr_t*>(wrapper_slot);
+            }
+        } else if (
+            d3d12->m_using_frame_generation_swapchain &&
+            d3d12->m_frame_generation_internal_swapchain != 0 &&
+            reinterpret_cast<uintptr_t>(swap_chain) == d3d12->m_frame_generation_wrapper_swapchain
+        ) {
+            queue_base = d3d12->m_frame_generation_internal_swapchain;
+        }
+
+        const auto queue_slot = queue_base + d3d12->m_command_queue_offset;
+        if (queue_base != 0 && is_readable_memory(reinterpret_cast<void*>(queue_slot), sizeof(ID3D12CommandQueue*))) {
+            d3d12->m_command_queue = *reinterpret_cast<ID3D12CommandQueue**>(queue_slot);
         } else {
-            d3d12->m_command_queue = *(ID3D12CommandQueue**)((uintptr_t)swap_chain + d3d12->m_command_queue_offset);
+            d3d12->m_command_queue = nullptr;
+            spdlog::warn(
+                "[D3D12Hook][FrameGen] Failed to resolve command queue safely. swapchain={:x} base={:x} queue_offset={:x} proton={} framegen={} kind={}",
+                reinterpret_cast<uintptr_t>(swap_chain),
+                queue_base,
+                d3d12->m_command_queue_offset,
+                d3d12->m_using_proton_swapchain,
+                d3d12->m_using_frame_generation_swapchain,
+                d3d12->get_framegen_swapchain_kind_name()
+            );
         }
 
         render::D3D12Diagnostics::get().begin_frame(
@@ -770,8 +1163,22 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
             d3d12->m_display_width,
             d3d12->m_display_height,
             d3d12->m_using_proton_swapchain,
-            d3d12->m_using_frame_generation_swapchain
+            d3d12->m_using_frame_generation_swapchain,
+            d3d12->get_framegen_swapchain_kind_name(),
+            d3d12->m_frame_generation_wrapper_swapchain,
+            d3d12->m_frame_generation_internal_swapchain,
+            d3d12->m_frame_generation_internal_swapchain_offset,
+            d3d12->m_streamline_module_loaded,
+            d3d12->m_streamline_link_hooked
         );
+
+        if (d3d12->m_command_queue == nullptr) {
+            if (!g_command_queue_resolve_failure_logged) {
+                spdlog::warn("[D3D12Hook][FrameGen] Command queue was unavailable; forwarding Present without UEVR D3D12 frame work");
+                g_command_queue_resolve_failure_logged = true;
+            }
+            return present_fn(swap_chain, original_sync_interval, original_flags, params);
+        }
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {

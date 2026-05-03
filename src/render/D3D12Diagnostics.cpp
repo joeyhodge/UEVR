@@ -265,7 +265,13 @@ void D3D12Diagnostics::begin_frame(
     uint32_t display_width,
     uint32_t display_height,
     bool proton_swapchain,
-    bool framegen_swapchain
+    bool framegen_swapchain,
+    std::string_view framegen_kind,
+    uintptr_t framegen_wrapper_swapchain,
+    uintptr_t framegen_internal_swapchain,
+    uint32_t framegen_internal_swapchain_offset,
+    bool streamline_module_loaded,
+    bool streamline_link_hooked
 ) {
     if (!is_enabled()) {
         return;
@@ -286,6 +292,12 @@ void D3D12Diagnostics::begin_frame(
     m_display_height = display_height;
     m_proton_swapchain = proton_swapchain;
     m_framegen_swapchain = framegen_swapchain;
+    m_framegen_kind = framegen_kind.empty() ? "none" : std::string{framegen_kind};
+    m_framegen_wrapper_swapchain = framegen_wrapper_swapchain;
+    m_framegen_internal_swapchain = framegen_internal_swapchain;
+    m_framegen_internal_swapchain_offset = framegen_internal_swapchain_offset;
+    m_streamline_module_loaded = streamline_module_loaded;
+    m_streamline_link_hooked = streamline_link_hooked;
     m_descriptor_heap_sets_this_frame = 0;
     m_descriptor_heap_switches_this_frame = 0;
     m_resource_barriers_this_frame = 0;
@@ -763,6 +775,12 @@ D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
     out.display_height = m_display_height;
     out.proton_swapchain = m_proton_swapchain;
     out.framegen_swapchain = m_framegen_swapchain;
+    out.framegen_kind = m_framegen_kind;
+    out.framegen_wrapper_swapchain = m_framegen_wrapper_swapchain;
+    out.framegen_internal_swapchain = m_framegen_internal_swapchain;
+    out.framegen_internal_swapchain_offset = m_framegen_internal_swapchain_offset;
+    out.streamline_module_loaded = m_streamline_module_loaded;
+    out.streamline_link_hooked = m_streamline_link_hooked;
     out.active_cbv_srv_uav_heap = m_active_cbv_srv_uav_heap;
     out.active_sampler_heap = m_active_sampler_heap;
     out.descriptor_heap_sets_this_frame = m_descriptor_heap_sets_this_frame;
@@ -926,6 +944,12 @@ void D3D12Diagnostics::clear_state_locked() {
     m_display_height = 0;
     m_proton_swapchain = false;
     m_framegen_swapchain = false;
+    m_framegen_kind.clear();
+    m_framegen_wrapper_swapchain = 0;
+    m_framegen_internal_swapchain = 0;
+    m_framegen_internal_swapchain_offset = 0;
+    m_streamline_module_loaded = false;
+    m_streamline_link_hooked = false;
     m_active_cbv_srv_uav_heap = 0;
     m_active_sampler_heap = 0;
     m_descriptor_heap_sets_this_frame = 0;

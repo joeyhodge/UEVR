@@ -115,6 +115,12 @@ public:
         uint32_t display_height{};
         bool proton_swapchain{};
         bool framegen_swapchain{};
+        std::string framegen_kind{};
+        uintptr_t framegen_wrapper_swapchain{};
+        uintptr_t framegen_internal_swapchain{};
+        uint32_t framegen_internal_swapchain_offset{};
+        bool streamline_module_loaded{};
+        bool streamline_link_hooked{};
         uintptr_t active_cbv_srv_uav_heap{};
         uintptr_t active_sampler_heap{};
         uint32_t descriptor_heap_sets_this_frame{};
@@ -149,7 +155,13 @@ public:
         uint32_t display_width,
         uint32_t display_height,
         bool proton_swapchain,
-        bool framegen_swapchain
+        bool framegen_swapchain,
+        std::string_view framegen_kind = {},
+        uintptr_t framegen_wrapper_swapchain = 0,
+        uintptr_t framegen_internal_swapchain = 0,
+        uint32_t framegen_internal_swapchain_offset = 0,
+        bool streamline_module_loaded = false,
+        bool streamline_link_hooked = false
     );
 
     void register_descriptor_heap(
@@ -275,6 +287,12 @@ private:
     uint32_t m_display_height{};
     bool m_proton_swapchain{};
     bool m_framegen_swapchain{};
+    std::string m_framegen_kind{};
+    uintptr_t m_framegen_wrapper_swapchain{};
+    uintptr_t m_framegen_internal_swapchain{};
+    uint32_t m_framegen_internal_swapchain_offset{};
+    bool m_streamline_module_loaded{};
+    bool m_streamline_link_hooked{};
     uintptr_t m_active_cbv_srv_uav_heap{};
     uintptr_t m_active_sampler_heap{};
     uint32_t m_descriptor_heap_sets_this_frame{};
