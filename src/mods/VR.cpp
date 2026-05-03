@@ -2804,10 +2804,13 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
     }
 }
 
-void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall) try {
+void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown) try {
     const auto now = std::chrono::steady_clock::now();
 
-    if (m_last_hitch_snapshot_dump.time_since_epoch().count() != 0 && now - m_last_hitch_snapshot_dump < std::chrono::seconds(30)) {
+    if (!bypass_cooldown &&
+        m_last_hitch_snapshot_dump.time_since_epoch().count() != 0 &&
+        now - m_last_hitch_snapshot_dump < std::chrono::seconds(30))
+    {
         return;
     }
 
@@ -3018,6 +3021,43 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                             suspected_stall
                         );
 
+                        if (is_prospi_executable() && tick_gap <= std::chrono::seconds(1)) {
+                            constexpr auto rolling_window = std::chrono::seconds{10};
+                            constexpr size_t rolling_threshold = 3;
+
+                            m_prospi_rolling_hitch_gaps[m_prospi_rolling_hitch_gap_cursor] = now;
+                            m_prospi_rolling_hitch_gap_cursor = (m_prospi_rolling_hitch_gap_cursor + 1) % PROSPI_ROLLING_HITCH_GAP_RING_SIZE;
+                            if (m_prospi_rolling_hitch_gap_cursor == 0) {
+                                m_prospi_rolling_hitch_gap_wrapped = true;
+                            }
+
+                            size_t rolling_count = 0;
+                            const auto rolling_sample_count = m_prospi_rolling_hitch_gap_wrapped
+                                ? PROSPI_ROLLING_HITCH_GAP_RING_SIZE
+                                : m_prospi_rolling_hitch_gap_cursor;
+
+                            for (size_t i = 0; i < rolling_sample_count; ++i) {
+                                const auto& sample_time = m_prospi_rolling_hitch_gaps[i];
+                                if (sample_time.time_since_epoch().count() != 0 && now - sample_time <= rolling_window) {
+                                    ++rolling_count;
+                                }
+                            }
+
+                            if (rolling_count >= rolling_threshold &&
+                                (m_last_prospi_rolling_hitch_snapshot.time_since_epoch().count() == 0 ||
+                                    now - m_last_prospi_rolling_hitch_snapshot >= rolling_window))
+                            {
+                                m_last_prospi_rolling_hitch_snapshot = now;
+                                spdlog::warn(
+                                    "[PROSPI_HITCH] rolling tick-gap trigger: count={} window={}s latest={}ms suspected={}",
+                                    rolling_count,
+                                    std::chrono::duration_cast<std::chrono::seconds>(rolling_window).count(),
+                                    std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
+                                    suspected_stall);
+                                dump_hitch_snapshot(tick_gap, "prospi_rolling_tick_gaps", true);
+                            }
+                        }
+
                         if (tick_gap > std::chrono::seconds(1)) {
                             dump_hitch_snapshot(tick_gap, suspected_stall);
                         }
@@ -3139,8 +3179,10 @@ void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
 }
 
 void VR::update_game_fov() {
-    const auto update_prospi_telephoto_perf_override = [&](bool should_apply) {
+    const auto update_prospi_telephoto_perf_override = [&](bool should_apply, bool force = false) {
         const auto restore = [&]() {
+            m_prospi_telephoto_perf_pending_valid = false;
+
             if (!m_prospi_telephoto_perf_override_applied) {
                 m_match_game_fov_prospi_telephoto_perf_active.store(false, std::memory_order_relaxed);
                 return;
@@ -3162,6 +3204,25 @@ void VR::update_game_fov() {
         if (!is_prospi_executable() || !m_match_game_fov_prospi_telephoto_perf_override->value()) {
             restore();
             return;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        constexpr auto debounce_window = std::chrono::milliseconds{750};
+
+        if (m_prospi_telephoto_perf_override_applied != should_apply) {
+            if (!m_prospi_telephoto_perf_pending_valid ||
+                m_prospi_telephoto_perf_pending_state != should_apply)
+            {
+                m_prospi_telephoto_perf_pending_valid = true;
+                m_prospi_telephoto_perf_pending_state = should_apply;
+                m_prospi_telephoto_perf_pending_since = now;
+            }
+
+            if (!force && now - m_prospi_telephoto_perf_pending_since < debounce_window) {
+                return;
+            }
+        } else {
+            m_prospi_telephoto_perf_pending_valid = false;
         }
 
         if (!should_apply) {
@@ -3198,7 +3259,7 @@ void VR::update_game_fov() {
     };
 
     const auto reset_prospi_state = [&]() {
-        update_prospi_telephoto_perf_override(false);
+        update_prospi_telephoto_perf_override(false, true);
         m_match_game_fov_prospi_preset.store((int32_t)ProSpiCameraPreset::None, std::memory_order_relaxed);
         m_match_game_fov_prospi_actual_min_active.store(0.0f, std::memory_order_relaxed);
         m_match_game_fov_prospi_calibration_applied.store(false, std::memory_order_relaxed);
