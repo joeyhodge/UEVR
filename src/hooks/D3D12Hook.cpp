@@ -24,6 +24,7 @@ constexpr size_t CREATE_PIPELINE_STATE_VTABLE_INDEX = 47;
 constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
 constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
+constexpr size_t OM_SET_RENDER_TARGETS_VTABLE_INDEX = 46;
 
 bool should_preserve_present_params_for_current_game() {
     static const bool result = []() {
@@ -404,11 +405,13 @@ bool D3D12Hook::hook() {
         m_create_render_target_view_hooks.clear();
         m_create_depth_stencil_view_hooks.clear();
         m_set_pipeline_state_hooks.clear();
+        m_om_set_render_targets_hooks.clear();
         m_create_graphics_pipeline_state_hook_lookup.clear();
         m_create_pipeline_state_hook_lookup.clear();
         m_create_render_target_view_hook_lookup.clear();
         m_create_depth_stencil_view_hook_lookup.clear();
         m_set_pipeline_state_hook_lookup.clear();
+        m_om_set_render_targets_hook_lookup.clear();
         m_swapchain_hook.reset();
 
         m_is_phase_1 = true;
@@ -423,6 +426,7 @@ bool D3D12Hook::hook() {
         std::unordered_set<uintptr_t> render_target_view_slots{};
         std::unordered_set<uintptr_t> depth_stencil_view_slots{};
         std::unordered_set<uintptr_t> set_pipeline_state_slots{};
+        std::unordered_set<uintptr_t> om_set_render_targets_slots{};
 
         add_unique_pointer_hook(
             device,
@@ -529,6 +533,15 @@ bool D3D12Hook::hook() {
             set_pipeline_state_slots
         );
 
+        add_unique_pointer_hook(
+            command_list,
+            OM_SET_RENDER_TARGETS_VTABLE_INDEX,
+            reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
+            m_om_set_render_targets_hooks,
+            m_om_set_render_targets_hook_lookup,
+            om_set_render_targets_slots
+        );
+
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> command_list1{};
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> command_list2{};
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList3> command_list3{};
@@ -563,6 +576,15 @@ bool D3D12Hook::hook() {
                 m_set_pipeline_state_hooks,
                 m_set_pipeline_state_hook_lookup,
                 set_pipeline_state_slots
+            );
+
+            add_unique_pointer_hook(
+                iface,
+                OM_SET_RENDER_TARGETS_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::om_set_render_targets),
+                m_om_set_render_targets_hooks,
+                m_om_set_render_targets_hook_lookup,
+                om_set_render_targets_slots
             );
         }
 
@@ -611,11 +633,13 @@ bool D3D12Hook::unhook() {
     m_create_render_target_view_hooks.clear();
     m_create_depth_stencil_view_hooks.clear();
     m_set_pipeline_state_hooks.clear();
+    m_om_set_render_targets_hooks.clear();
     m_create_graphics_pipeline_state_hook_lookup.clear();
     m_create_pipeline_state_hook_lookup.clear();
     m_create_render_target_view_hook_lookup.clear();
     m_create_depth_stencil_view_hook_lookup.clear();
     m_set_pipeline_state_hook_lookup.clear();
+    m_om_set_render_targets_hook_lookup.clear();
     m_swapchain_hook.reset();
 
     m_hooked = false;
@@ -662,6 +686,14 @@ PointerHook* D3D12Hook::find_set_pipeline_state_hook(void* slot) const {
     }
 
     return m_set_pipeline_state_hooks.empty() ? nullptr : m_set_pipeline_state_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_om_set_render_targets_hook(void* slot) const {
+    if (const auto it = m_om_set_render_targets_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_om_set_render_targets_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_om_set_render_targets_hooks.empty() ? nullptr : m_om_set_render_targets_hooks.front().get();
 }
 
 thread_local int32_t g_present_depth = 0;
@@ -1011,6 +1043,94 @@ void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_lis
     auto bound_pipeline_state = shader_registry.resolve_d3d12_pipeline_state(pipeline_state);
     shader_registry.note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
     original(command_list, bound_pipeline_state);
+}
+
+void WINAPI D3D12Hook::om_set_render_targets(
+    ID3D12GraphicsCommandList* command_list,
+    UINT num_render_target_descriptors,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* render_target_descriptors,
+    BOOL rts_single_handle_to_descriptor_range,
+    const D3D12_CPU_DESCRIPTOR_HANDLE* depth_stencil_descriptor
+) {
+    auto d3d12 = g_d3d12_hook;
+    const auto slot = command_list != nullptr ? &(*(void***)command_list)[OM_SET_RENDER_TARGETS_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_om_set_render_targets_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::om_set_render_targets)*>() : nullptr;
+
+    if (original == nullptr) {
+        return;
+    }
+
+    original(
+        command_list,
+        num_render_target_descriptors,
+        render_target_descriptors,
+        rts_single_handle_to_descriptor_range,
+        depth_stencil_descriptor
+    );
+
+    auto& diagnostics = render::D3D12Diagnostics::get();
+    if (!diagnostics.is_enabled()) {
+        return;
+    }
+
+    if (render_target_descriptors == nullptr || num_render_target_descriptors == 0) {
+        diagnostics.record_rtv_bind(
+            "D3D12Hook::OMSetRenderTargets",
+            num_render_target_descriptors,
+            render_target_descriptors,
+            depth_stencil_descriptor
+        );
+        return;
+    }
+
+    if (!rts_single_handle_to_descriptor_range) {
+        diagnostics.record_rtv_bind(
+            "D3D12Hook::OMSetRenderTargets",
+            num_render_target_descriptors,
+            render_target_descriptors,
+            depth_stencil_descriptor
+        );
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device> device{};
+    if (command_list == nullptr || FAILED(command_list->GetDevice(IID_PPV_ARGS(&device))) || device == nullptr) {
+        diagnostics.record_rtv_bind(
+            "D3D12Hook::OMSetRenderTargets/RTVRangeUnknown",
+            1,
+            render_target_descriptors,
+            depth_stencil_descriptor
+        );
+        return;
+    }
+
+    const auto descriptor_size = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    if (descriptor_size == 0) {
+        diagnostics.record_rtv_bind(
+            "D3D12Hook::OMSetRenderTargets/RTVRangeUnknown",
+            1,
+            render_target_descriptors,
+            depth_stencil_descriptor
+        );
+        return;
+    }
+
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> expanded_rtvs{};
+    expanded_rtvs.reserve(num_render_target_descriptors);
+    auto current = *render_target_descriptors;
+
+    for (UINT i = 0; i < num_render_target_descriptors; ++i) {
+        expanded_rtvs.emplace_back(current);
+        current.ptr += descriptor_size;
+    }
+
+    diagnostics.record_rtv_bind(
+        "D3D12Hook::OMSetRenderTargets/RTVRange",
+        num_render_target_descriptors,
+        expanded_rtvs.data(),
+        depth_stencil_descriptor
+    );
 }
 
 thread_local int32_t g_resize_buffers_depth = 0;

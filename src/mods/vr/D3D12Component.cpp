@@ -128,6 +128,54 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
     return {(uint32_t)desc.Width, (uint32_t)desc.Height};
 }
 
+const char* openxr_swapchain_name(uint32_t index) {
+    switch (static_cast<runtimes::OpenXR::SwapchainIndex>(index)) {
+    case runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE:
+        return "DOUBLE_WIDE";
+    case runtimes::OpenXR::SwapchainIndex::DEPTH:
+        return "DEPTH";
+    case runtimes::OpenXR::SwapchainIndex::DUMMY_VIRTUAL_DESKTOP:
+        return "DUMMY_VIRTUAL_DESKTOP";
+    case runtimes::OpenXR::SwapchainIndex::UI:
+        return "UI";
+    case runtimes::OpenXR::SwapchainIndex::UI_RIGHT:
+        return "UI_RIGHT";
+    case runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI:
+        return "FRAMEWORK_UI";
+    case runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE:
+        return "AFR_LEFT_EYE";
+    case runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE:
+        return "AFR_RIGHT_EYE";
+    case runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE:
+        return "AFR_DEPTH_LEFT_EYE";
+    case runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE:
+        return "AFR_DEPTH_RIGHT_EYE";
+    default:
+        return "UNKNOWN";
+    }
+}
+
+bool is_depth_swapchain(uint32_t index) {
+    const auto swapchain = static_cast<runtimes::OpenXR::SwapchainIndex>(index);
+    return swapchain == runtimes::OpenXR::SwapchainIndex::DEPTH ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
+}
+
+bool is_ui_swapchain(uint32_t index) {
+    const auto swapchain = static_cast<runtimes::OpenXR::SwapchainIndex>(index);
+    return swapchain == runtimes::OpenXR::SwapchainIndex::UI ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::UI_RIGHT ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI;
+}
+
+bool is_scene_swapchain(uint32_t index) {
+    const auto swapchain = static_cast<runtimes::OpenXR::SwapchainIndex>(index);
+    return swapchain == runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE ||
+        swapchain == runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE;
+}
+
 bool is_shf_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2993,15 +3041,29 @@ void D3D12Component::OpenXR::copy(
                 (*pre_commands)(texture_ctx->commands, ctx.textures[texture_index].texture);
             }
 
+            const auto is_depth = is_depth_swapchain(swapchain_idx);
+            const auto dst_state = src_box == nullptr && is_depth
+                ? D3D12_RESOURCE_STATE_DEPTH_WRITE
+                : D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+            render::D3D12Diagnostics::get().record_texture_copy(
+                "D3D12Component::OpenXR::copy",
+                swapchain_idx,
+                openxr_swapchain_name(swapchain_idx),
+                resource,
+                ctx.textures[texture_index].texture,
+                src_state,
+                dst_state,
+                src_box,
+                is_scene_swapchain(swapchain_idx),
+                is_ui_swapchain(swapchain_idx),
+                is_depth
+            );
+
             // We may simply just want to render to the render target directly
             // hence, a null resource is allowed.
             if (resource != nullptr) {
                 if (src_box == nullptr) {
-                    const auto is_depth = swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE || 
-                                        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
-                    const auto dst_state = is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
-
                     texture_ctx->commands.copy(
                         resource, 
                         ctx.textures[texture_index].texture, 

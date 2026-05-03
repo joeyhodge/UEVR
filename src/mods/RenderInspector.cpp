@@ -73,14 +73,40 @@ ImTextureID to_imgui_texture_id(uint64_t texture_id) {
     return reinterpret_cast<ImTextureID>(static_cast<uintptr_t>(texture_id));
 }
 
+const char* shader_stage_to_string(render::ShaderOverrideRegistry::Stage stage) {
+    switch (stage) {
+    case render::ShaderOverrideRegistry::Stage::Vertex:
+        return "VS";
+    case render::ShaderOverrideRegistry::Stage::Pixel:
+        return "PS";
+    case render::ShaderOverrideRegistry::Stage::Domain:
+        return "DS";
+    case render::ShaderOverrideRegistry::Stage::Hull:
+        return "HS";
+    case render::ShaderOverrideRegistry::Stage::Geometry:
+        return "GS";
+    case render::ShaderOverrideRegistry::Stage::Compute:
+        return "CS";
+    case render::ShaderOverrideRegistry::Stage::Amplification:
+        return "AS";
+    case render::ShaderOverrideRegistry::Stage::Mesh:
+        return "MS";
+    default:
+        return "Unknown";
+    }
+}
+
 std::string make_d3d12_pair_key(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) {
     std::ostringstream ss{};
     ss << std::hex << std::uppercase
        << pair.original_pipeline_state << ':'
        << pair.bound_pipeline_state << ':'
        << pair.vertex_shader.hash << ':'
-       << pair.pixel_shader.hash << ':'
-       << pair.tracking_note;
+       << pair.pixel_shader.hash;
+    for (const auto& shader : pair.additional_shaders) {
+        ss << ':' << shader_stage_to_string(shader.stage) << '=' << shader.hash;
+    }
+    ss << ':' << pair.tracking_note;
     return ss.str();
 }
 
@@ -89,8 +115,11 @@ std::string make_d3d12_pso_key(const render::ShaderOverrideRegistry::D3D12PsoAgg
     ss << std::hex << std::uppercase
        << aggregate.original_pso << ':'
        << aggregate.vs_hash << ':'
-       << aggregate.ps_hash << ':'
-       << static_cast<uint32_t>(aggregate.pipeline_stream) << ':'
+       << aggregate.ps_hash;
+    for (const auto& shader : aggregate.additional_shaders) {
+        ss << ':' << shader_stage_to_string(shader.stage) << '=' << shader.hash;
+    }
+    ss << ':' << static_cast<uint32_t>(aggregate.pipeline_stream) << ':'
        << aggregate.tracking_note;
     return ss.str();
 }
@@ -289,7 +318,7 @@ void draw_dx12_summary_row(const char* label, const std::string& value) {
 void draw_bound_shader_table_row(const render::ShaderOverrideRegistry::BoundShaderInfo& shader) {
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    ImGui::TextUnformatted(shader.stage == render::ShaderOverrideRegistry::Stage::Vertex ? "VS" : "PS");
+    ImGui::TextUnformatted(shader_stage_to_string(shader.stage));
     ImGui::TableNextColumn();
     ImGui::TextUnformatted(shader.backend == render::ShaderOverrideRegistry::Backend::D3D11 ? "DX11" : "DX12");
     ImGui::TableNextColumn();
@@ -322,6 +351,9 @@ void draw_d3d12_pair_summary(const render::ShaderOverrideRegistry::D3D12Pipeline
         ImGui::TableHeadersRow();
         draw_bound_shader_table_row(pair.vertex_shader);
         draw_bound_shader_table_row(pair.pixel_shader);
+        for (const auto& shader : pair.additional_shaders) {
+            draw_bound_shader_table_row(shader);
+        }
         ImGui::EndTable();
     }
 }
@@ -344,6 +376,18 @@ void draw_d3d12_pso_summary(const render::ShaderOverrideRegistry::D3D12PsoAggreg
     ImGui::TextWrapped("Tracking: %s", aggregate.tracking_note.empty() ? "-" : aggregate.tracking_note.c_str());
     ImGui::TextWrapped("VS: %s", aggregate.vs_hash.empty() ? "-" : aggregate.vs_hash.c_str());
     ImGui::TextWrapped("PS: %s", aggregate.ps_hash.empty() ? "-" : aggregate.ps_hash.c_str());
+    if (!aggregate.additional_shaders.empty()) {
+        std::string extra_summary{};
+        for (const auto& shader : aggregate.additional_shaders) {
+            if (!extra_summary.empty()) {
+                extra_summary += " | ";
+            }
+            extra_summary += shader_stage_to_string(shader.stage);
+            extra_summary += ':';
+            extra_summary += shader.hash;
+        }
+        ImGui::TextWrapped("Extra stages: %s", extra_summary.c_str());
+    }
     std::string override_summary{};
     if (!aggregate.vs_override.empty()) {
         override_summary += "VS:";
@@ -1237,7 +1281,7 @@ void RenderInspector::draw_shaders() {
             ImGui::TableSetupColumn("Note");
             ImGui::TableHeadersRow();
 
-            std::array<render::ShaderOverrideRegistry::BoundShaderInfo, 2> bound{
+            std::vector<render::ShaderOverrideRegistry::BoundShaderInfo> bound{
                 snapshot.bound_vertex_shader,
                 snapshot.bound_pixel_shader
             };
@@ -1247,6 +1291,11 @@ void RenderInspector::draw_shaders() {
                     m_displayed_dx12_pair->vertex_shader,
                     m_displayed_dx12_pair->pixel_shader
                 };
+                bound.insert(
+                    bound.end(),
+                    m_displayed_dx12_pair->additional_shaders.begin(),
+                    m_displayed_dx12_pair->additional_shaders.end()
+                );
             }
 
             for (const auto& shader : bound) {
@@ -1300,7 +1349,7 @@ void RenderInspector::draw_shaders() {
 
         if (recent_pairs.empty()) {
             ImGui::TextUnformatted("No distinct DX12 PSO/shader pairs captured yet.");
-        } else if (ImGui::BeginTable("RecentDX12Pairs", 12, pair_table_flags, ImVec2(0.0f, 260.0f))) {
+        } else if (ImGui::BeginTable("RecentDX12Pairs", 13, pair_table_flags, ImVec2(0.0f, 260.0f))) {
             ImGui::TableSetupColumn("View");
             ImGui::TableSetupColumn("Last Frame");
             ImGui::TableSetupColumn("First Frame");
@@ -1310,6 +1359,7 @@ void RenderInspector::draw_shaders() {
             ImGui::TableSetupColumn("Bound PSO");
             ImGui::TableSetupColumn("VS Hash");
             ImGui::TableSetupColumn("PS Hash");
+            ImGui::TableSetupColumn("Extra Stages");
             ImGui::TableSetupColumn("Stream");
             ImGui::TableSetupColumn("Tracking");
             ImGui::TableSetupColumn("Override");
@@ -1352,6 +1402,17 @@ void RenderInspector::draw_shaders() {
                 ImGui::TextUnformatted(pair.vertex_shader.known ? abbreviate_for_table(pair.vertex_shader.hash).c_str() : "-");
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(pair.pixel_shader.known ? abbreviate_for_table(pair.pixel_shader.hash).c_str() : "-");
+                ImGui::TableNextColumn();
+                std::string extra_summary{};
+                for (const auto& shader : pair.additional_shaders) {
+                    if (!extra_summary.empty()) {
+                        extra_summary += " | ";
+                    }
+                    extra_summary += shader_stage_to_string(shader.stage);
+                    extra_summary += ':';
+                    extra_summary += abbreviate_for_table(shader.hash, 10);
+                }
+                ImGui::TextWrapped("%s", extra_summary.empty() ? "-" : extra_summary.c_str());
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(pair.pipeline_stream ? "yes" : "no");
                 ImGui::TableNextColumn();
@@ -1411,7 +1472,7 @@ void RenderInspector::draw_shaders() {
                 ImGui::TableNextColumn();
                 ImGui::TextUnformatted(entry.backend == render::ShaderOverrideRegistry::Backend::D3D11 ? "DX11" : "DX12");
                 ImGui::TableNextColumn();
-                ImGui::TextUnformatted(entry.stage == render::ShaderOverrideRegistry::Stage::Vertex ? "VS" : "PS");
+                ImGui::TextUnformatted(shader_stage_to_string(entry.stage));
                 ImGui::TableNextColumn();
                 ImGui::TextWrapped("%s", entry.target_hash.c_str());
                 ImGui::TableNextColumn();

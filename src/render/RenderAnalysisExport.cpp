@@ -48,6 +48,18 @@ const char* shader_stage_to_string(render::ShaderOverrideRegistry::Stage stage) 
         return "VS";
     case render::ShaderOverrideRegistry::Stage::Pixel:
         return "PS";
+    case render::ShaderOverrideRegistry::Stage::Domain:
+        return "DS";
+    case render::ShaderOverrideRegistry::Stage::Hull:
+        return "HS";
+    case render::ShaderOverrideRegistry::Stage::Geometry:
+        return "GS";
+    case render::ShaderOverrideRegistry::Stage::Compute:
+        return "CS";
+    case render::ShaderOverrideRegistry::Stage::Amplification:
+        return "AS";
+    case render::ShaderOverrideRegistry::Stage::Mesh:
+        return "MS";
     default:
         return "Unknown";
     }
@@ -158,6 +170,45 @@ json to_json(const render::D3D12Diagnostics::WarningEvent& event) {
     };
 }
 
+json to_json(const render::D3D12Diagnostics::TextureCopyEvent& event) {
+    return {
+        {"frame", event.frame},
+        {"source", event.source},
+        {"swapchain_name", event.swapchain_name},
+        {"swapchain_index", event.swapchain_index},
+        {"src_resource", format_pointer(event.src_resource)},
+        {"dst_resource", format_pointer(event.dst_resource)},
+        {"src_width", event.src_width},
+        {"src_height", event.src_height},
+        {"dst_width", event.dst_width},
+        {"dst_height", event.dst_height},
+        {"src_format", event.src_format},
+        {"dst_format", event.dst_format},
+        {"src_state", event.src_state},
+        {"dst_state", event.dst_state},
+        {"has_src_box", event.has_src_box},
+        {"box_left", event.box_left},
+        {"box_top", event.box_top},
+        {"box_right", event.box_right},
+        {"box_bottom", event.box_bottom},
+        {"scene", event.scene},
+        {"ui", event.ui},
+        {"depth", event.depth},
+        {"note", event.note}
+    };
+}
+
+json to_json(const render::D3D12Diagnostics::EyeMismatchEvent& event) {
+    return {
+        {"frame", event.frame},
+        {"kind", event.kind},
+        {"message", event.message},
+        {"left", to_json(event.left)},
+        {"right", to_json(event.right)},
+        {"double_wide", to_json(event.double_wide)}
+    };
+}
+
 json to_json(const render::D3D12Diagnostics::BoundTargetInfo& target) {
     return {
         {"handle", format_pointer(target.handle)},
@@ -202,7 +253,7 @@ json to_json(const render::ShaderOverrideRegistry::BoundShaderInfo& shader) {
 }
 
 json to_json(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) {
-    return {
+    json result{
         {"frame", pair.frame},
         {"first_seen_frame", pair.first_seen_frame},
         {"last_seen_frame", pair.last_seen_frame},
@@ -212,8 +263,15 @@ json to_json(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) 
         {"pipeline_stream", pair.pipeline_stream},
         {"tracking_note", pair.tracking_note},
         {"vertex_shader", to_json(pair.vertex_shader)},
-        {"pixel_shader", to_json(pair.pixel_shader)}
+        {"pixel_shader", to_json(pair.pixel_shader)},
+        {"additional_shaders", json::array()}
     };
+
+    for (const auto& shader : pair.additional_shaders) {
+        result["additional_shaders"].push_back(to_json(shader));
+    }
+
+    return result;
 }
 
 json to_json(const render::ShaderOverrideRegistry::PsoRenderUsageInfo& usage) {
@@ -240,6 +298,7 @@ json to_json(const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo& aggreg
         {"tracking_note", aggregate.tracking_note},
         {"vs_hash", aggregate.vs_hash},
         {"ps_hash", aggregate.ps_hash},
+        {"additional_shaders", json::array()},
         {"vs_override", aggregate.vs_override},
         {"ps_override", aggregate.ps_override},
         {"likely_targets", json::array()}
@@ -247,6 +306,10 @@ json to_json(const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo& aggreg
 
     for (const auto& usage : aggregate.likely_targets) {
         result["likely_targets"].push_back(to_json(usage));
+    }
+
+    for (const auto& shader : aggregate.additional_shaders) {
+        result["additional_shaders"].push_back(to_json(shader));
     }
 
     return result;
@@ -290,6 +353,8 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
 
         const auto resources_json_path = result.bundle_dir / "resources.json";
         const auto dx12_json_path = result.bundle_dir / "dx12_diagnostics.json";
+        const auto copy_events_json_path = result.bundle_dir / "copy_events.json";
+        const auto eye_mismatches_json_path = result.bundle_dir / "eye_mismatches.json";
         const auto shader_pairs_json_path = result.bundle_dir / "shader_pairs.json";
         const auto pso_profiler_json_path = result.bundle_dir / "pso_profiler.json";
         const auto overrides_json_path = result.bundle_dir / "overrides.json";
@@ -330,7 +395,9 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
             {"heaps", json::array()},
             {"recent_bindings", json::array()},
             {"recent_barriers", json::array()},
-            {"recent_warnings", json::array()}
+            {"recent_warnings", json::array()},
+            {"recent_copy_events", json::array()},
+            {"recent_eye_mismatches", json::array()}
         };
         if (input.d3d12.current_bind_context.has_value()) {
             dx12_json["current_bind_context"] = to_json(*input.d3d12.current_bind_context);
@@ -347,7 +414,25 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
         for (const auto& event : input.d3d12.recent_warnings) {
             dx12_json["recent_warnings"].push_back(to_json(event));
         }
+        for (const auto& event : input.d3d12.recent_copy_events) {
+            dx12_json["recent_copy_events"].push_back(to_json(event));
+        }
+        for (const auto& event : input.d3d12.recent_eye_mismatches) {
+            dx12_json["recent_eye_mismatches"].push_back(to_json(event));
+        }
         write_json_file(dx12_json_path, dx12_json);
+
+        json copy_events_json = json::array();
+        for (const auto& event : input.d3d12.recent_copy_events) {
+            copy_events_json.push_back(to_json(event));
+        }
+        write_json_file(copy_events_json_path, copy_events_json);
+
+        json eye_mismatches_json = json::array();
+        for (const auto& event : input.d3d12.recent_eye_mismatches) {
+            eye_mismatches_json.push_back(to_json(event));
+        }
+        write_json_file(eye_mismatches_json_path, eye_mismatches_json);
 
         json shader_pairs_json{
             {"frame", input.shaders.frame},
@@ -408,8 +493,16 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
 
         {
             std::ofstream csv{shader_pairs_csv_path, std::ios::binary | std::ios::trunc};
-            csv << "frame,first_seen_frame,last_seen_frame,hit_count,original_pso,bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,vs_override,ps_override\n";
+            csv << "frame,first_seen_frame,last_seen_frame,hit_count,original_pso,bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,extra_shader_hashes,vs_override,ps_override\n";
             for (const auto& pair : input.shaders.distinct_d3d12_pairs) {
+                std::ostringstream extra_hashes{};
+                for (size_t i = 0; i < pair.additional_shaders.size(); ++i) {
+                    if (i > 0) {
+                        extra_hashes << ';';
+                    }
+                    extra_hashes << shader_stage_to_string(pair.additional_shaders[i].stage) << '=' << pair.additional_shaders[i].hash;
+                }
+
                 csv << pair.frame << ','
                     << pair.first_seen_frame << ','
                     << pair.last_seen_frame << ','
@@ -420,6 +513,7 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
                     << csv_escape(pair.tracking_note) << ','
                     << csv_escape(pair.vertex_shader.hash) << ','
                     << csv_escape(pair.pixel_shader.hash) << ','
+                    << csv_escape(extra_hashes.str()) << ','
                     << csv_escape(pair.vertex_shader.override_name) << ','
                     << csv_escape(pair.pixel_shader.override_name) << '\n';
             }
@@ -427,9 +521,17 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
 
         {
             std::ofstream csv{pso_profiler_csv_path, std::ios::binary | std::ios::trunc};
-            csv << "total_samples,sample_share,bind_count_with_known_targets,first_seen_frame,last_seen_frame,original_pso,last_bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,vs_override,ps_override,top_render_target,top_depth_target,top_target_share\n";
+            csv << "total_samples,sample_share,bind_count_with_known_targets,first_seen_frame,last_seen_frame,original_pso,last_bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,extra_shader_hashes,vs_override,ps_override,top_render_target,top_depth_target,top_target_share\n";
             for (const auto& aggregate : input.shaders.d3d12_pso_aggregates) {
                 const auto* top_target = !aggregate.likely_targets.empty() ? &aggregate.likely_targets.front() : nullptr;
+                std::ostringstream extra_hashes{};
+                for (size_t i = 0; i < aggregate.additional_shaders.size(); ++i) {
+                    if (i > 0) {
+                        extra_hashes << ';';
+                    }
+                    extra_hashes << shader_stage_to_string(aggregate.additional_shaders[i].stage) << '=' << aggregate.additional_shaders[i].hash;
+                }
+
                 csv << aggregate.total_samples << ','
                     << std::fixed << std::setprecision(6) << aggregate.sample_share << ','
                     << aggregate.bind_count_with_known_targets << ','
@@ -441,6 +543,7 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
                     << csv_escape(aggregate.tracking_note) << ','
                     << csv_escape(aggregate.vs_hash) << ','
                     << csv_escape(aggregate.ps_hash) << ','
+                    << csv_escape(extra_hashes.str()) << ','
                     << csv_escape(aggregate.vs_override) << ','
                     << csv_escape(aggregate.ps_override) << ','
                     << csv_escape(top_target != nullptr ? top_target->render_target_name : "") << ','
@@ -457,6 +560,8 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
             {"files", json::array({
                 "resources.json",
                 "dx12_diagnostics.json",
+                "copy_events.json",
+                "eye_mismatches.json",
                 "shader_pairs.json",
                 "pso_profiler.json",
                 "overrides.json",
@@ -471,6 +576,8 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
             manifest_json_path,
             resources_json_path,
             dx12_json_path,
+            copy_events_json_path,
+            eye_mismatches_json_path,
             shader_pairs_json_path,
             pso_profiler_json_path,
             overrides_json_path,

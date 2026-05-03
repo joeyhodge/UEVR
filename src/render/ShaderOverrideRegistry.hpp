@@ -29,6 +29,12 @@ public:
     enum class Stage : uint8_t {
         Vertex,
         Pixel,
+        Domain,
+        Hull,
+        Geometry,
+        Compute,
+        Amplification,
+        Mesh,
     };
 
     using CreateVertexShaderFn = HRESULT (WINAPI*)(ID3D11Device*, const void*, SIZE_T, ID3D11ClassLinkage*, ID3D11VertexShader**);
@@ -78,6 +84,7 @@ public:
         std::string tracking_note{};
         BoundShaderInfo vertex_shader{};
         BoundShaderInfo pixel_shader{};
+        std::vector<BoundShaderInfo> additional_shaders{};
     };
 
     struct PsoRenderUsageInfo {
@@ -101,6 +108,7 @@ public:
         std::string tracking_note{};
         std::string vs_hash{};
         std::string ps_hash{};
+        std::vector<BoundShaderInfo> additional_shaders{};
         std::string vs_override{};
         std::string ps_override{};
         std::vector<PsoRenderUsageInfo> likely_targets{};
@@ -245,6 +253,12 @@ private:
         uintptr_t pipeline_state_pointer{};
         std::string vertex_hash{};
         std::string pixel_hash{};
+        std::string domain_hash{};
+        std::string hull_hash{};
+        std::string geometry_hash{};
+        std::string compute_hash{};
+        std::string amplification_hash{};
+        std::string mesh_hash{};
         uint64_t first_seen_frame{};
         uint64_t last_seen_frame{};
         uint64_t seen_count{};
@@ -276,6 +290,7 @@ private:
         std::string tracking_note{};
         std::string vs_hash{};
         std::string ps_hash{};
+        std::vector<BoundShaderInfo> additional_shaders{};
         std::string vs_override{};
         std::string ps_override{};
         uint64_t total_samples{};

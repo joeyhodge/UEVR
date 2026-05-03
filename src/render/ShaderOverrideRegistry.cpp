@@ -45,6 +45,18 @@ std::string stage_to_string(render::ShaderOverrideRegistry::Stage stage) {
         return "vs";
     case render::ShaderOverrideRegistry::Stage::Pixel:
         return "ps";
+    case render::ShaderOverrideRegistry::Stage::Domain:
+        return "ds";
+    case render::ShaderOverrideRegistry::Stage::Hull:
+        return "hs";
+    case render::ShaderOverrideRegistry::Stage::Geometry:
+        return "gs";
+    case render::ShaderOverrideRegistry::Stage::Compute:
+        return "cs";
+    case render::ShaderOverrideRegistry::Stage::Amplification:
+        return "as";
+    case render::ShaderOverrideRegistry::Stage::Mesh:
+        return "ms";
     default:
         return "unknown";
     }
@@ -307,7 +319,13 @@ bool same_d3d12_pipeline_pair(
            lhs.pipeline_stream == rhs.pipeline_stream &&
            lhs.tracking_note == rhs.tracking_note &&
            same_bound_shader_info(lhs.vertex_shader, rhs.vertex_shader) &&
-           same_bound_shader_info(lhs.pixel_shader, rhs.pixel_shader);
+           same_bound_shader_info(lhs.pixel_shader, rhs.pixel_shader) &&
+           lhs.additional_shaders.size() == rhs.additional_shaders.size() &&
+           std::equal(
+               lhs.additional_shaders.begin(),
+               lhs.additional_shaders.end(),
+               rhs.additional_shaders.begin(),
+               same_bound_shader_info);
 }
 } // namespace
 
@@ -712,6 +730,17 @@ bool ShaderOverrideRegistry::export_d3d12_pairs_json(std::filesystem::path& out_
                 {"override_name", pair.pixel_shader.override_name},
                 {"note", pair.pixel_shader.note}
             };
+            entry["additional_shaders"] = json::array();
+            for (const auto& shader : pair.additional_shaders) {
+                entry["additional_shaders"].push_back({
+                    {"stage", stage_to_string(shader.stage)},
+                    {"hash", shader.hash},
+                    {"known", shader.known},
+                    {"override_active", shader.override_active},
+                    {"override_name", shader.override_name},
+                    {"note", shader.note}
+                });
+            }
 
             root["distinct_pairs"].push_back(std::move(entry));
         }
@@ -747,7 +776,7 @@ bool ShaderOverrideRegistry::export_d3d12_pairs_csv(std::filesystem::path& out_p
         });
 
         std::ofstream file{out_path, std::ios::binary | std::ios::trunc};
-        file << "first_seen_frame,last_seen_frame,hit_count,sample_share,original_pso,bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,vs_override,ps_override,vs_note,ps_note\n";
+        file << "first_seen_frame,last_seen_frame,hit_count,sample_share,original_pso,bound_pso,pipeline_stream,tracking_note,vs_hash,ps_hash,extra_shader_hashes,vs_override,ps_override,vs_note,ps_note\n";
 
         auto csv_escape = [](std::string_view value) {
             std::string out{value};
@@ -779,6 +808,16 @@ bool ShaderOverrideRegistry::export_d3d12_pairs_csv(std::filesystem::path& out_p
                  << csv_escape(pair.tracking_note) << ','
                  << csv_escape(pair.vertex_shader.hash) << ','
                  << csv_escape(pair.pixel_shader.hash) << ','
+                 << csv_escape([&pair]() {
+                     std::ostringstream ss{};
+                     for (size_t i = 0; i < pair.additional_shaders.size(); ++i) {
+                         if (i > 0) {
+                             ss << ';';
+                         }
+                         ss << stage_to_string(pair.additional_shaders[i].stage) << '=' << pair.additional_shaders[i].hash;
+                     }
+                     return ss.str();
+                 }()) << ','
                  << csv_escape(pair.vertex_shader.override_name) << ','
                  << csv_escape(pair.pixel_shader.override_name) << ','
                  << csv_escape(pair.vertex_shader.note) << ','
@@ -829,6 +868,7 @@ ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
         info.tracking_note = aggregate.tracking_note;
         info.vs_hash = aggregate.vs_hash;
         info.ps_hash = aggregate.ps_hash;
+        info.additional_shaders = aggregate.additional_shaders;
         info.vs_override = aggregate.vs_override;
         info.ps_override = aggregate.ps_override;
 
@@ -1100,6 +1140,12 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
     record.owned_desc.refresh_views();
     record.vertex_hash = hash_shader_bytecode(desc->VS.pShaderBytecode, desc->VS.BytecodeLength);
     record.pixel_hash = hash_shader_bytecode(desc->PS.pShaderBytecode, desc->PS.BytecodeLength);
+    record.domain_hash = hash_shader_bytecode(desc->DS.pShaderBytecode, desc->DS.BytecodeLength);
+    record.hull_hash = hash_shader_bytecode(desc->HS.pShaderBytecode, desc->HS.BytecodeLength);
+    record.geometry_hash = hash_shader_bytecode(desc->GS.pShaderBytecode, desc->GS.BytecodeLength);
+    record.compute_hash.clear();
+    record.amplification_hash.clear();
+    record.mesh_hash.clear();
     record.last_seen_frame = m_frame;
     if (record.first_seen_frame == 0) {
         record.first_seen_frame = m_frame;
@@ -1151,6 +1197,12 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
 
     record.vertex_hash = hash_shader_bytecode(record.owned_stream.vertex_shader.data(), record.owned_stream.vertex_shader.size());
     record.pixel_hash = hash_shader_bytecode(record.owned_stream.pixel_shader.data(), record.owned_stream.pixel_shader.size());
+    record.domain_hash = hash_shader_bytecode(record.owned_stream.domain_shader.data(), record.owned_stream.domain_shader.size());
+    record.hull_hash = hash_shader_bytecode(record.owned_stream.hull_shader.data(), record.owned_stream.hull_shader.size());
+    record.geometry_hash = hash_shader_bytecode(record.owned_stream.geometry_shader.data(), record.owned_stream.geometry_shader.size());
+    record.compute_hash = hash_shader_bytecode(record.owned_stream.compute_shader.data(), record.owned_stream.compute_shader.size());
+    record.amplification_hash = hash_shader_bytecode(record.owned_stream.amplification_shader.data(), record.owned_stream.amplification_shader.size());
+    record.mesh_hash = hash_shader_bytecode(record.owned_stream.mesh_shader.data(), record.owned_stream.mesh_shader.size());
     record.last_seen_frame = m_frame;
 
     if (record.first_seen_frame == 0) {
@@ -1226,23 +1278,56 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
         }
 
         const auto& record = it->second;
-        if (!record.tracking_note.empty()) {
+        if (!record.tracking_note.empty() && stage != Stage::Compute && stage != Stage::Amplification && stage != Stage::Mesh) {
             info.note = record.tracking_note;
             return info;
         }
 
-        const auto& hash = stage == Stage::Vertex ? record.vertex_hash : record.pixel_hash;
-        const auto& override_name = stage == Stage::Vertex ? record.vertex_override_name : record.pixel_override_name;
+        const std::string* hash = nullptr;
+        const std::string* override_name = nullptr;
 
-        if (hash.empty()) {
-            info.note = stage == Stage::Vertex ? "no vertex shader bytecode" : "no pixel shader bytecode";
+        switch (stage) {
+        case Stage::Vertex:
+            hash = &record.vertex_hash;
+            override_name = &record.vertex_override_name;
+            break;
+        case Stage::Pixel:
+            hash = &record.pixel_hash;
+            override_name = &record.pixel_override_name;
+            break;
+        case Stage::Domain:
+            hash = &record.domain_hash;
+            break;
+        case Stage::Hull:
+            hash = &record.hull_hash;
+            break;
+        case Stage::Geometry:
+            hash = &record.geometry_hash;
+            break;
+        case Stage::Compute:
+            hash = &record.compute_hash;
+            break;
+        case Stage::Amplification:
+            hash = &record.amplification_hash;
+            break;
+        case Stage::Mesh:
+            hash = &record.mesh_hash;
+            break;
+        default:
+            break;
+        }
+
+        if (hash == nullptr || hash->empty()) {
+            info.note = "no " + stage_to_string(stage) + " shader bytecode";
             return info;
         }
 
         info.known = true;
-        info.hash = hash;
-        info.override_active = !override_name.empty();
-        info.override_name = override_name;
+        info.hash = *hash;
+        if (override_name != nullptr) {
+            info.override_active = !override_name->empty();
+            info.override_name = *override_name;
+        }
 
         if (bound_pipeline_state != nullptr && bound_pipeline_state != original_pipeline_state) {
             info.note = "replacement pso";
@@ -1262,6 +1347,13 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
     pair.bound_pipeline_state = reinterpret_cast<uintptr_t>(bound_pipeline_state);
     pair.vertex_shader = m_bound_vertex_shader;
     pair.pixel_shader = m_bound_pixel_shader;
+
+    for (const auto stage : {Stage::Domain, Stage::Hull, Stage::Geometry, Stage::Compute, Stage::Amplification, Stage::Mesh}) {
+        auto shader = fill_info(stage);
+        if (shader.known) {
+            pair.additional_shaders.emplace_back(std::move(shader));
+        }
+    }
 
     if (original_pipeline_state != nullptr) {
         if (const auto it = m_d3d12_graphics_pso_records.find(reinterpret_cast<uintptr_t>(original_pipeline_state)); it != m_d3d12_graphics_pso_records.end()) {
@@ -1557,6 +1649,7 @@ void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairI
         pair.hit_count = aggregate.hit_count;
         aggregate.vertex_shader = pair.vertex_shader;
         aggregate.pixel_shader = pair.pixel_shader;
+        aggregate.additional_shaders = pair.additional_shaders;
         aggregate.tracking_note = pair.tracking_note;
         aggregate.bound_pipeline_state = pair.bound_pipeline_state;
     } else {
@@ -1594,6 +1687,7 @@ void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo
         aggregate.tracking_note = info.tracking_note;
         aggregate.vs_hash = info.vertex_shader.hash;
         aggregate.ps_hash = info.pixel_shader.hash;
+        aggregate.additional_shaders = info.additional_shaders;
     }
 
     aggregate.last_seen_frame = info.frame;
@@ -1602,6 +1696,7 @@ void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo
     aggregate.tracking_note = info.tracking_note;
     aggregate.vs_hash = info.vertex_shader.hash;
     aggregate.ps_hash = info.pixel_shader.hash;
+    aggregate.additional_shaders = info.additional_shaders;
     aggregate.vs_override = info.vertex_shader.override_active ? info.vertex_shader.override_name : "";
     aggregate.ps_override = info.pixel_shader.override_active ? info.pixel_shader.override_name : "";
     ++aggregate.total_samples;
@@ -1645,8 +1740,11 @@ std::string ShaderOverrideRegistry::make_d3d12_pair_key(const D3D12PipelinePairI
        << info.original_pipeline_state << ':'
        << info.bound_pipeline_state << ':'
        << info.vertex_shader.hash << ':'
-       << info.pixel_shader.hash << ':'
-       << info.tracking_note;
+       << info.pixel_shader.hash;
+    for (const auto& shader : info.additional_shaders) {
+        ss << ':' << stage_to_string(shader.stage) << '=' << shader.hash;
+    }
+    ss << ':' << info.tracking_note;
     return ss.str();
 }
 
@@ -1655,8 +1753,11 @@ std::string ShaderOverrideRegistry::make_d3d12_pso_key(const D3D12PipelinePairIn
     ss << std::hex << std::uppercase
        << info.original_pipeline_state << ':'
        << info.vertex_shader.hash << ':'
-       << info.pixel_shader.hash << ':'
-       << static_cast<uint32_t>(info.pipeline_stream) << ':'
+       << info.pixel_shader.hash;
+    for (const auto& shader : info.additional_shaders) {
+        ss << ':' << stage_to_string(shader.stage) << '=' << shader.hash;
+    }
+    ss << ':' << static_cast<uint32_t>(info.pipeline_stream) << ':'
        << info.tracking_note;
     return ss.str();
 }

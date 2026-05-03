@@ -10,6 +10,8 @@ namespace {
 constexpr size_t MAX_RECENT_BINDINGS = 96;
 constexpr size_t MAX_RECENT_BARRIERS = 128;
 constexpr size_t MAX_RECENT_WARNINGS = 64;
+constexpr size_t MAX_RECENT_COPY_EVENTS = 128;
+constexpr size_t MAX_RECENT_EYE_MISMATCHES = 32;
 
 template <typename T>
 void push_ring(std::vector<T>& values, T value, size_t max_entries) {
@@ -202,6 +204,14 @@ uint64_t approximate_resource_size(const D3D12_RESOURCE_DESC& desc) {
     return static_cast<uint64_t>(desc.Width) * static_cast<uint64_t>(std::max<UINT>(1, desc.Height)) * bpp * samples * array_size;
 }
 
+void append_note(std::string& note, std::string_view addition) {
+    if (!note.empty()) {
+        note += "; ";
+    }
+
+    note += addition;
+}
+
 std::string resource_name_or_pointer(ID3D12Object* object, uintptr_t pointer) {
     if (object != nullptr) {
         UINT chars = 0;
@@ -262,6 +272,10 @@ void D3D12Diagnostics::begin_frame(
     }
 
     std::scoped_lock _{m_mutex};
+    if (m_eye_health_frame != 0) {
+        finalize_eye_frame_locked(m_eye_health_frame);
+    }
+
     ++m_frame;
     m_device = reinterpret_cast<uintptr_t>(device);
     m_swapchain = reinterpret_cast<uintptr_t>(swapchain);
@@ -657,6 +671,79 @@ void D3D12Diagnostics::record_rtv_bind(
     push_ring(m_recent_bindings, BindingEvent{m_frame, std::string{source}, "OMSetRenderTargets", detail.str()}, MAX_RECENT_BINDINGS);
 }
 
+void D3D12Diagnostics::record_texture_copy(
+    std::string_view source,
+    uint32_t swapchain_index,
+    std::string_view swapchain_name,
+    ID3D12Resource* src,
+    ID3D12Resource* dst,
+    D3D12_RESOURCE_STATES src_state,
+    D3D12_RESOURCE_STATES dst_state,
+    const D3D12_BOX* src_box,
+    bool scene,
+    bool ui,
+    bool depth
+) {
+    if (!is_enabled()) {
+        return;
+    }
+
+    TextureCopyEvent event{};
+    event.source = std::string{source};
+    event.swapchain_name = std::string{swapchain_name};
+    event.swapchain_index = swapchain_index;
+    event.src_resource = reinterpret_cast<uintptr_t>(src);
+    event.dst_resource = reinterpret_cast<uintptr_t>(dst);
+    event.src_state = resource_state_to_string(src_state);
+    event.dst_state = resource_state_to_string(dst_state);
+    event.scene = scene;
+    event.ui = ui;
+    event.depth = depth;
+
+    if (src != nullptr) {
+        const auto desc = src->GetDesc();
+        event.src_width = static_cast<uint32_t>(desc.Width);
+        event.src_height = desc.Height;
+        event.src_format = static_cast<uint32_t>(desc.Format);
+    } else {
+        append_note(event.note, "null source");
+    }
+
+    if (dst != nullptr) {
+        const auto desc = dst->GetDesc();
+        event.dst_width = static_cast<uint32_t>(desc.Width);
+        event.dst_height = desc.Height;
+        event.dst_format = static_cast<uint32_t>(desc.Format);
+    } else {
+        append_note(event.note, "null destination");
+    }
+
+    if (src_box != nullptr) {
+        event.has_src_box = true;
+        event.box_left = src_box->left;
+        event.box_top = src_box->top;
+        event.box_right = src_box->right;
+        event.box_bottom = src_box->bottom;
+
+        if (src_box->right <= src_box->left || src_box->bottom <= src_box->top) {
+            append_note(event.note, "empty source box");
+        }
+
+        if (event.src_width != 0 && src_box->right > event.src_width) {
+            append_note(event.note, "source box exceeds width");
+        }
+
+        if (event.src_height != 0 && src_box->bottom > event.src_height) {
+            append_note(event.note, "source box exceeds height");
+        }
+    }
+
+    std::scoped_lock _{m_mutex};
+    event.frame = m_frame;
+    push_ring(m_recent_copy_events, event, MAX_RECENT_COPY_EVENTS);
+    update_eye_health_locked(event);
+}
+
 D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
     if (!is_enabled()) {
         return {};
@@ -705,6 +792,8 @@ D3D12Diagnostics::Snapshot D3D12Diagnostics::snapshot() const {
     out.recent_bindings = m_recent_bindings;
     out.recent_barriers = m_recent_barriers;
     out.recent_warnings = m_recent_warnings;
+    out.recent_copy_events = m_recent_copy_events;
+    out.recent_eye_mismatches = m_recent_eye_mismatches;
 
     for (const auto& [_, resource] : m_resources) {
         out.tracked_resource_bytes_total += resource.approx_bytes;
@@ -730,6 +819,88 @@ void D3D12Diagnostics::reset() {
     clear_state_locked();
 }
 
+void D3D12Diagnostics::update_eye_health_locked(const TextureCopyEvent& event) {
+    if (!event.scene || event.depth) {
+        return;
+    }
+
+    if (m_eye_health_frame != 0 && event.frame != m_eye_health_frame) {
+        finalize_eye_frame_locked(m_eye_health_frame);
+    }
+
+    m_eye_health_frame = event.frame;
+
+    if (event.swapchain_name == "AFR_LEFT_EYE") {
+        m_current_left_eye_copy = event;
+    } else if (event.swapchain_name == "AFR_RIGHT_EYE") {
+        m_current_right_eye_copy = event;
+    } else if (event.swapchain_name == "DOUBLE_WIDE") {
+        m_current_double_wide_copy = event;
+    }
+
+    if (m_current_left_eye_copy.has_value() && m_current_right_eye_copy.has_value()) {
+        finalize_eye_frame_locked(event.frame);
+    }
+}
+
+void D3D12Diagnostics::finalize_eye_frame_locked(uint64_t frame) {
+    auto push_mismatch = [this, frame](std::string kind, std::string message) {
+        EyeMismatchEvent mismatch{};
+        mismatch.frame = frame;
+        mismatch.kind = std::move(kind);
+        mismatch.message = std::move(message);
+        if (m_current_left_eye_copy.has_value()) {
+            mismatch.left = *m_current_left_eye_copy;
+        }
+        if (m_current_right_eye_copy.has_value()) {
+            mismatch.right = *m_current_right_eye_copy;
+        }
+        if (m_current_double_wide_copy.has_value()) {
+            mismatch.double_wide = *m_current_double_wide_copy;
+        }
+        push_ring(m_recent_eye_mismatches, std::move(mismatch), MAX_RECENT_EYE_MISMATCHES);
+    };
+
+    if (m_current_left_eye_copy.has_value() && m_current_right_eye_copy.has_value()) {
+        const auto& left = *m_current_left_eye_copy;
+        const auto& right = *m_current_right_eye_copy;
+
+        if ((left.src_resource == 0) != (right.src_resource == 0)) {
+            push_mismatch("scene_eye_source_null_mismatch", "one AFR eye copied from a null scene source");
+        } else if ((left.note.empty()) != (right.note.empty())) {
+            push_mismatch("scene_eye_note_mismatch", "one AFR eye copy reported a validation note");
+        } else if (left.has_src_box != right.has_src_box) {
+            push_mismatch("scene_eye_box_mode_mismatch", "one AFR eye used a source box and the other did not");
+        } else if (left.has_src_box && right.has_src_box) {
+            const auto left_width = left.box_right > left.box_left ? left.box_right - left.box_left : 0;
+            const auto right_width = right.box_right > right.box_left ? right.box_right - right.box_left : 0;
+            const auto left_height = left.box_bottom > left.box_top ? left.box_bottom - left.box_top : 0;
+            const auto right_height = right.box_bottom > right.box_top ? right.box_bottom - right.box_top : 0;
+
+            if (left_width != right_width || left_height != right_height) {
+                push_mismatch("scene_eye_box_size_mismatch", "AFR eye source boxes have different dimensions");
+            }
+        } else if (left.src_format != 0 && right.src_format != 0 && left.src_format != right.src_format) {
+            push_mismatch("scene_eye_format_mismatch", "AFR eyes copied from different source formats");
+        }
+    } else if ((m_current_left_eye_copy.has_value() || m_current_right_eye_copy.has_value()) &&
+               !m_current_double_wide_copy.has_value()) {
+        push_mismatch("incomplete_scene_eye_pair", "only one AFR scene eye copy was observed for this frame");
+    }
+
+    if (m_current_double_wide_copy.has_value()) {
+        const auto& double_wide = *m_current_double_wide_copy;
+        if (double_wide.src_resource == 0 || !double_wide.note.empty()) {
+            push_mismatch("double_wide_copy_validation", "double-wide scene copy has a null source or validation note");
+        }
+    }
+
+    m_current_left_eye_copy.reset();
+    m_current_right_eye_copy.reset();
+    m_current_double_wide_copy.reset();
+    m_eye_health_frame = 0;
+}
+
 void D3D12Diagnostics::clear_state_locked() {
     m_heaps.clear();
     m_resources.clear();
@@ -738,8 +909,14 @@ void D3D12Diagnostics::clear_state_locked() {
     m_recent_bindings.clear();
     m_recent_barriers.clear();
     m_recent_warnings.clear();
+    m_recent_copy_events.clear();
+    m_recent_eye_mismatches.clear();
     m_current_bind_context.reset();
+    m_current_left_eye_copy.reset();
+    m_current_right_eye_copy.reset();
+    m_current_double_wide_copy.reset();
     m_frame = 0;
+    m_eye_health_frame = 0;
     m_device = 0;
     m_swapchain = 0;
     m_command_queue = 0;

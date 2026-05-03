@@ -139,11 +139,13 @@ protected:
     std::vector<std::unique_ptr<PointerHook>> m_create_render_target_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_create_depth_stencil_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_set_pipeline_state_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_om_set_render_targets_hooks{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_graphics_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_render_target_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_depth_stencil_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_set_pipeline_state_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_om_set_render_targets_hook_lookup{};
     std::unique_ptr<VtableHook> m_swapchain_hook{};
     //std::unique_ptr<FunctionHook> m_create_swap_chain_hook{};
 
@@ -162,6 +164,13 @@ protected:
     static void WINAPI create_render_target_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI create_depth_stencil_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state);
+    static void WINAPI om_set_render_targets(
+        ID3D12GraphicsCommandList* command_list,
+        UINT num_render_target_descriptors,
+        const D3D12_CPU_DESCRIPTOR_HANDLE* render_target_descriptors,
+        BOOL rts_single_handle_to_descriptor_range,
+        const D3D12_CPU_DESCRIPTOR_HANDLE* depth_stencil_descriptor
+    );
     static HRESULT WINAPI resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static HRESULT WINAPI resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters);
     //static HRESULT WINAPI create_swap_chain(IDXGIFactory4* factory, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* p_fullscreen_desc, IDXGIOutput* p_restrict_to_output, IDXGISwapChain** swap_chain);
@@ -171,5 +180,6 @@ protected:
     PointerHook* find_create_render_target_view_hook(void* slot) const;
     PointerHook* find_create_depth_stencil_view_hook(void* slot) const;
     PointerHook* find_set_pipeline_state_hook(void* slot) const;
+    PointerHook* find_om_set_render_targets_hook(void* slot) const;
 };
 

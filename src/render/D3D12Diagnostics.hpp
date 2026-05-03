@@ -53,6 +53,41 @@ public:
         std::string message{};
     };
 
+    struct TextureCopyEvent {
+        uint64_t frame{};
+        std::string source{};
+        std::string swapchain_name{};
+        uint32_t swapchain_index{};
+        uintptr_t src_resource{};
+        uintptr_t dst_resource{};
+        uint32_t src_width{};
+        uint32_t src_height{};
+        uint32_t dst_width{};
+        uint32_t dst_height{};
+        uint32_t src_format{};
+        uint32_t dst_format{};
+        std::string src_state{};
+        std::string dst_state{};
+        bool has_src_box{};
+        uint32_t box_left{};
+        uint32_t box_top{};
+        uint32_t box_right{};
+        uint32_t box_bottom{};
+        bool scene{};
+        bool ui{};
+        bool depth{};
+        std::string note{};
+    };
+
+    struct EyeMismatchEvent {
+        uint64_t frame{};
+        std::string kind{};
+        std::string message{};
+        TextureCopyEvent left{};
+        TextureCopyEvent right{};
+        TextureCopyEvent double_wide{};
+    };
+
     struct BoundTargetInfo {
         uintptr_t handle{};
         uintptr_t resource{};
@@ -96,6 +131,8 @@ public:
         std::vector<BindingEvent> recent_bindings{};
         std::vector<BarrierEvent> recent_barriers{};
         std::vector<WarningEvent> recent_warnings{};
+        std::vector<TextureCopyEvent> recent_copy_events{};
+        std::vector<EyeMismatchEvent> recent_eye_mismatches{};
     };
 
     static D3D12Diagnostics& get();
@@ -163,6 +200,20 @@ public:
         const D3D12_CPU_DESCRIPTOR_HANDLE* dsv
     );
 
+    void record_texture_copy(
+        std::string_view source,
+        uint32_t swapchain_index,
+        std::string_view swapchain_name,
+        ID3D12Resource* src,
+        ID3D12Resource* dst,
+        D3D12_RESOURCE_STATES src_state,
+        D3D12_RESOURCE_STATES dst_state,
+        const D3D12_BOX* src_box,
+        bool scene,
+        bool ui,
+        bool depth
+    );
+
     Snapshot snapshot() const;
     std::optional<CurrentBindContext> current_bind_context() const;
     void reset();
@@ -194,6 +245,8 @@ private:
     void push_warning(std::string_view source, std::string message);
     void note_frame_warning_if_needed();
     void clear_state_locked();
+    void update_eye_health_locked(const TextureCopyEvent& event);
+    void finalize_eye_frame_locked(uint64_t frame);
 
     std::atomic_bool m_enabled{false};
     mutable std::recursive_mutex m_mutex{};
@@ -204,9 +257,15 @@ private:
     std::vector<BindingEvent> m_recent_bindings{};
     std::vector<BarrierEvent> m_recent_barriers{};
     std::vector<WarningEvent> m_recent_warnings{};
+    std::vector<TextureCopyEvent> m_recent_copy_events{};
+    std::vector<EyeMismatchEvent> m_recent_eye_mismatches{};
     std::optional<CurrentBindContext> m_current_bind_context{};
+    std::optional<TextureCopyEvent> m_current_left_eye_copy{};
+    std::optional<TextureCopyEvent> m_current_right_eye_copy{};
+    std::optional<TextureCopyEvent> m_current_double_wide_copy{};
 
     uint64_t m_frame{};
+    uint64_t m_eye_health_frame{};
     uintptr_t m_device{};
     uintptr_t m_swapchain{};
     uintptr_t m_command_queue{};
