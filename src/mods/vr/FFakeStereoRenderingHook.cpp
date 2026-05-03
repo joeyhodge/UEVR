@@ -560,6 +560,21 @@ bool is_ue_5_1_dx12_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
+bool is_ue_4_27_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("4.27");
+    }
+
+    return disk_version.dwFileVersionMS == 0x0004001B;
+}
+
 bool is_ue_5_5_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -1170,6 +1185,35 @@ void shf_log_texture_probe_candidate(
     }
 }
 
+bool shf_is_valid_scene_viewport_desc_for_version(sdk::FViewport* viewport, const D3D12_RESOURCE_DESC& desc) {
+    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0 ||
+        desc.Width > 16384 || desc.Height > 16384)
+    {
+        return false;
+    }
+
+    if (!is_ue_4_27_dx12_backend() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return true;
+    }
+
+    const auto size = viewport->get_viewport_size_xy();
+
+    if (size.x <= 0 || size.y <= 0) {
+        return true;
+    }
+
+    const auto width = static_cast<uint64_t>(size.x);
+    const auto height = static_cast<uint64_t>(size.y);
+
+    // UE4.27 has both regular and case-preserving builds with the same FViewport method
+    // family. Keep this diagnostic path fail-closed: only trust scene-viewport candidates
+    // that match the reported viewport extent, or a conservative double-wide equivalent.
+    const auto exact = desc.Width == width && desc.Height == height;
+    const auto double_wide = desc.Width == width * 2 && desc.Height == height;
+
+    return exact || double_wide;
+}
+
 void shf_probe_scene_viewport_memory(sdk::FViewport* viewport, const char* source, FRHITexture2D* known_texture) {
     if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
         return;
@@ -1219,6 +1263,10 @@ void shf_probe_scene_viewport_memory(sdk::FViewport* viewport, const char* sourc
 
             if (shf_is_valid_texture_with_vtable(texture, required_vtable)) {
                 if (const auto desc = shf_try_get_d3d12_desc(texture)) {
+                    if (!shf_is_valid_scene_viewport_desc_for_version(viewport, *desc)) {
+                        continue;
+                    }
+
                     shf_log_texture_probe_candidate(source, base_name, base, offset, -1, texture, *desc);
                 }
             }
@@ -1245,6 +1293,10 @@ void shf_probe_scene_viewport_memory(sdk::FViewport* viewport, const char* sourc
                 }
 
                 if (const auto desc = shf_try_get_d3d12_desc(array_texture)) {
+                    if (!shf_is_valid_scene_viewport_desc_for_version(viewport, *desc)) {
+                        continue;
+                    }
+
                     shf_log_texture_probe_candidate(source, base_name, base, offset, i, array_texture, *desc);
                 }
             }
@@ -4296,6 +4348,14 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         SPDLOG_WARNING_EVERY_N_SEC(2,
             "[SHf] Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
             source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+        return;
+    }
+
+    if (!shf_is_valid_scene_viewport_desc_for_version(viewport, desc)) {
+        const auto size = viewport->get_viewport_size_xy();
+        SPDLOG_WARNING_EVERY_N_SEC(2,
+            "[SHf] Rejected FSceneViewport render target from {} because UE4.27 viewport validation failed: desc={}x{} viewport={}x{} fmt={}",
+            source, desc.Width, desc.Height, size.x, size.y, (uint32_t)desc.Format);
         return;
     }
 
@@ -10251,6 +10311,15 @@ void VRRenderTargetManager_Base::destroy_scene_capture() try {
     SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in destroy_scene_capture!");
 }
 
+void VRRenderTargetManager_Base::note_scene_capture_target_destroyed(const char* context) {
+    const auto count = scene_capture_destroyed_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    SPDLOG_WARNING_EVERY_N_SEC(
+        2,
+        "[VRRenderTargetManager] Scene capture target was destroyed between threads during {}; count={}",
+        context != nullptr ? context : "unknown",
+        count);
+}
+
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
         auto rooted_texture = dedicated_ui_texture;
@@ -10874,7 +10943,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task = [this, tgt]() -> bool {
             try {
                 if (!tgt.valid()) {
-                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                    note_scene_capture_target_destroyed("render-resource offset lookup");
                     GameThreadWorker::get().enqueue([this]() -> void {
                         this->in_flight_target = nullptr;
                         destroy_scene_capture();
@@ -10901,7 +10970,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     
                             RHIThreadWorker::get().enqueue([this, tgt]() -> void {
                                 if (!tgt.valid()) {
-                                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                                    note_scene_capture_target_destroyed("RHI scene-capture publish");
                                     this->scene_capture_target_rhi_thread = nullptr;
                                     return;
                                 }
@@ -10911,7 +10980,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                             
                             GameThreadWorker::get().enqueue([this, tgt]() -> void {
                                 if (!tgt.valid()) {
-                                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                                    note_scene_capture_target_destroyed("game-thread scene-capture publish");
                                     this->in_flight_target = nullptr;
                                     destroy_scene_capture();
                                     return;
@@ -10971,7 +11040,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task = [this, tgt]() -> bool {
             try {
                 if (!tgt.valid()) {
-                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                    note_scene_capture_target_destroyed("render-target validation");
                     GameThreadWorker::get().enqueue([this]() -> void {
                         this->in_flight_target = nullptr;
                         destroy_scene_capture();
@@ -10994,7 +11063,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     
                 RHIThreadWorker::get().enqueue([this, tgt]() -> void {
                     if (!tgt.valid()) {
-                        SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                        note_scene_capture_target_destroyed("RHI scene-capture republish");
                         this->scene_capture_target_rhi_thread = nullptr;
                         return;
                     }
@@ -11004,7 +11073,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     
                 GameThreadWorker::get().enqueue([this, tgt]() -> void {
                     if (!tgt.valid()) {
-                        SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                        note_scene_capture_target_destroyed("game-thread scene-capture republish");
                         this->in_flight_target = nullptr;
                         destroy_scene_capture();
                         return;

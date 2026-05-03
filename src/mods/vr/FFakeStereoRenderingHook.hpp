@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <array>
+#include <atomic>
 #include <chrono>
 
 #include <SafetyHook.hpp>
@@ -133,6 +134,10 @@ public:
     void destroy_scene_capture();
 
     sdk::UTexture* get_scene_capture_utexture();
+    void note_scene_capture_target_destroyed(const char* context);
+    uint64_t get_scene_capture_destroyed_count() const {
+        return scene_capture_destroyed_count.load(std::memory_order_relaxed);
+    }
     
     sdk::FViewport* get_viewport() const {
         return last_viewport;
@@ -232,6 +237,7 @@ protected:
     sdk::UObjectReference<sdk::USceneCaptureComponent2D> scene_capture_component{nullptr};
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
+    std::atomic<uint64_t> scene_capture_destroyed_count{};
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};

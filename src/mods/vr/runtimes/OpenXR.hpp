@@ -392,7 +392,9 @@ public:
     uint64_t pose_update_call_count{};
     uint64_t pose_update_view_extension_count{};
     uint64_t pose_update_non_view_extension_count{};
+    uint64_t stale_pose_older_frame_skip_count{};
     uint64_t stale_pose_skip_suppressed_count{};
+    uint64_t stale_pose_skip_suppressed_total{};
     uint64_t stale_pose_refresh_attempt_count{};
     uint64_t stale_pose_refresh_success_count{};
     uint64_t stale_pose_refresh_failed_count{};

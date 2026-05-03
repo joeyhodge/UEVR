@@ -7,6 +7,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <mutex>
 #include <unordered_map>
 
@@ -690,6 +691,8 @@ private:
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall);
+    void prune_hitch_snapshots(const std::filesystem::path& dir) const;
+    void draw_hitch_diagnostics_ui();
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -885,17 +888,39 @@ private:
         bool got_first_poses{};
         bool got_first_valid_poses{};
         bool accepted_relaxed_startup_poses{};
+        uint64_t stale_pose_older_frame_skip_count{};
+        uint64_t stale_pose_older_frame_skip_suppressed_count{};
+        uint64_t stale_pose_refresh_attempt_count{};
+        uint64_t stale_pose_refresh_success_count{};
+        uint64_t stale_pose_refresh_failed_count{};
+        uint32_t focused_frame_loop_recovery_count{};
+        uint32_t forced_frame_recovery_count{};
+        uint32_t last_pose_update_frame_count{};
+        uint64_t scene_capture_destroyed_count{};
         CVarManager::ChangeSnapshot cvar_change{};
         vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
     };
 
+    struct HitchSnapshotSummary {
+        bool valid{};
+        std::filesystem::path path{};
+        std::chrono::steady_clock::time_point timestamp{};
+        int64_t tick_gap_ms{};
+        std::string suspected_stall{};
+        size_t sample_count{};
+        HitchSnapshotSample last_sample{};
+    };
+
     static constexpr size_t HITCH_SNAPSHOT_RING_SIZE = 600;
+    static constexpr size_t HITCH_SNAPSHOT_MAX_FILES = 40;
     std::array<HitchSnapshotSample, HITCH_SNAPSHOT_RING_SIZE> m_hitch_snapshot_samples{};
     size_t m_hitch_snapshot_cursor{};
     bool m_hitch_snapshot_wrapped{};
     uint64_t m_hitch_snapshot_sequence{};
     uint32_t m_hitch_snapshot_dump_count{};
     std::chrono::steady_clock::time_point m_last_hitch_snapshot_dump{};
+    std::chrono::steady_clock::time_point m_last_openxr_recovery_candidate_log{};
+    HitchSnapshotSummary m_last_hitch_snapshot_summary{};
 
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
     bool m_shf_auto_2d_active{false};

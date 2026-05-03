@@ -2741,6 +2741,20 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
             sample.got_first_poses = openxr->got_first_poses;
             sample.got_first_valid_poses = openxr->got_first_valid_poses;
             sample.accepted_relaxed_startup_poses = openxr->accepted_relaxed_startup_poses;
+            sample.stale_pose_older_frame_skip_count = openxr->stale_pose_older_frame_skip_count;
+            sample.stale_pose_older_frame_skip_suppressed_count = openxr->stale_pose_skip_suppressed_total;
+            sample.stale_pose_refresh_attempt_count = openxr->stale_pose_refresh_attempt_count;
+            sample.stale_pose_refresh_success_count = openxr->stale_pose_refresh_success_count;
+            sample.stale_pose_refresh_failed_count = openxr->stale_pose_refresh_failed_count;
+            sample.focused_frame_loop_recovery_count = openxr->focused_frame_loop_recovery_count;
+            sample.forced_frame_recovery_count = openxr->forced_frame_recovery_count;
+            sample.last_pose_update_frame_count = openxr->last_pose_update_frame_count;
+        }
+    }
+
+    if (m_fake_stereo_hook != nullptr) {
+        if (const auto rtm = m_fake_stereo_hook->get_render_target_manager(); rtm != nullptr) {
+            sample.scene_capture_destroyed_count = rtm->get_scene_capture_destroyed_count();
         }
     }
 
@@ -2769,6 +2783,8 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
     json samples = json::array();
     const auto count = m_hitch_snapshot_wrapped ? HITCH_SNAPSHOT_RING_SIZE : m_hitch_snapshot_cursor;
     const auto start = m_hitch_snapshot_wrapped ? m_hitch_snapshot_cursor : 0;
+    HitchSnapshotSample last_valid_sample{};
+    bool has_last_valid_sample = false;
 
     for (size_t i = 0; i < count; ++i) {
         const auto& sample = m_hitch_snapshot_samples[(start + i) % HITCH_SNAPSHOT_RING_SIZE];
@@ -2777,6 +2793,8 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
             continue;
         }
 
+        last_valid_sample = sample;
+        has_last_valid_sample = true;
         const auto& d3d12 = sample.d3d12;
         samples.push_back({
             {"age_ms", hitch_age_ms(now, sample.timestamp)},
@@ -2805,6 +2823,15 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
             {"got_first_poses", sample.got_first_poses},
             {"got_first_valid_poses", sample.got_first_valid_poses},
             {"accepted_relaxed_startup_poses", sample.accepted_relaxed_startup_poses},
+            {"stale_pose_older_frame_skip_count", sample.stale_pose_older_frame_skip_count},
+            {"stale_pose_older_frame_skip_suppressed_count", sample.stale_pose_older_frame_skip_suppressed_count},
+            {"stale_pose_refresh_attempt_count", sample.stale_pose_refresh_attempt_count},
+            {"stale_pose_refresh_success_count", sample.stale_pose_refresh_success_count},
+            {"stale_pose_refresh_failed_count", sample.stale_pose_refresh_failed_count},
+            {"focused_frame_loop_recovery_count", sample.focused_frame_loop_recovery_count},
+            {"forced_frame_recovery_count", sample.forced_frame_recovery_count},
+            {"last_pose_update_frame_count", sample.last_pose_update_frame_count},
+            {"scene_capture_destroyed_count", sample.scene_capture_destroyed_count},
             {"last_cvar_change", {
                 {"counter", sample.cvar_change.counter},
                 {"name", sample.cvar_change.name},
@@ -2860,11 +2887,109 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
 
     std::ofstream file{path};
     file << root.dump(2);
+
+    if (has_last_valid_sample) {
+        m_last_hitch_snapshot_summary = HitchSnapshotSummary{
+            .valid = true,
+            .path = path,
+            .timestamp = now,
+            .tick_gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count(),
+            .suspected_stall = suspected_stall != nullptr ? suspected_stall : "unknown",
+            .sample_count = root["sample_count"].get<size_t>(),
+            .last_sample = last_valid_sample,
+        };
+
+        const auto& sample = m_last_hitch_snapshot_summary.last_sample;
+        const auto& d3d12 = sample.d3d12;
+        json summary{
+            {"type", "uevr_hitch_snapshot_summary"},
+            {"source", path.filename().string()},
+            {"tick_gap_ms", m_last_hitch_snapshot_summary.tick_gap_ms},
+            {"suspected_stall", m_last_hitch_snapshot_summary.suspected_stall},
+            {"sample_count", m_last_hitch_snapshot_summary.sample_count},
+            {"last_sample", {
+                {"frame_count", sample.frame_count},
+                {"render_frame_count", sample.render_frame_count},
+                {"runtime_ready", sample.runtime_ready},
+                {"using_controllers", sample.using_controllers},
+                {"xr_wait_age_ms", sample.xr_wait_age_ms},
+                {"xr_begin_age_ms", sample.xr_begin_age_ms},
+                {"xr_end_age_ms", sample.xr_end_age_ms},
+                {"pose_update_age_ms", sample.pose_update_age_ms},
+                {"frame_synced", sample.frame_synced},
+                {"frame_began", sample.frame_began},
+                {"stale_pose_older_frame_skip_count", sample.stale_pose_older_frame_skip_count},
+                {"stale_pose_refresh_attempt_count", sample.stale_pose_refresh_attempt_count},
+                {"stale_pose_refresh_success_count", sample.stale_pose_refresh_success_count},
+                {"stale_pose_refresh_failed_count", sample.stale_pose_refresh_failed_count},
+                {"focused_frame_loop_recovery_count", sample.focused_frame_loop_recovery_count},
+                {"forced_frame_recovery_count", sample.forced_frame_recovery_count},
+                {"scene_capture_destroyed_count", sample.scene_capture_destroyed_count},
+            }},
+            {"d3d12", {
+                {"has_game_tex", d3d12.has_game_tex},
+                {"has_ui_tex", d3d12.has_ui_tex},
+                {"has_scene_capture_tex", d3d12.has_scene_capture_tex},
+                {"swapchain_recreate_count", d3d12.swapchain_recreate_count},
+                {"last_swapchain_recreate_reasons", d3d12.last_swapchain_recreate_reasons},
+                {"perf_on_frame_avg_ms", d3d12.perf_on_frame_avg_ms},
+                {"perf_on_frame_max_ms", d3d12.perf_on_frame_max_ms},
+                {"perf_openxr_submit_avg_ms", d3d12.perf_openxr_submit_avg_ms},
+                {"perf_openxr_submit_max_ms", d3d12.perf_openxr_submit_max_ms},
+            }},
+        };
+
+        std::ofstream summary_file{dir / "hitch_snapshot_latest_summary.json"};
+        summary_file << summary.dump(2);
+    }
+
+    prune_hitch_snapshots(dir);
     SPDLOG_INFO("[VR][hitch-snapshot] Wrote {}", path.string());
 } catch (const std::exception& e) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot: {}", e.what());
 } catch (...) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot");
+}
+
+void VR::prune_hitch_snapshots(const std::filesystem::path& dir) const {
+    try {
+        if (!std::filesystem::exists(dir)) {
+            return;
+        }
+
+        std::vector<std::filesystem::directory_entry> snapshots{};
+
+        for (const auto& entry : std::filesystem::directory_iterator{dir}) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+
+            const auto filename = entry.path().filename().string();
+            if (filename.starts_with("hitch_snapshot_") && filename.ends_with(".json") &&
+                filename != "hitch_snapshot_latest_summary.json")
+            {
+                snapshots.push_back(entry);
+            }
+        }
+
+        if (snapshots.size() <= HITCH_SNAPSHOT_MAX_FILES) {
+            return;
+        }
+
+        std::sort(snapshots.begin(), snapshots.end(), [](const auto& a, const auto& b) {
+            return a.last_write_time() < b.last_write_time();
+        });
+
+        const auto remove_count = snapshots.size() - HITCH_SNAPSHOT_MAX_FILES;
+        for (size_t i = 0; i < remove_count; ++i) {
+            std::error_code ec{};
+            std::filesystem::remove(snapshots[i].path(), ec);
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_WARN("[VR][hitch-snapshot] Failed to prune old snapshots: {}", e.what());
+    } catch (...) {
+        SPDLOG_WARN("[VR][hitch-snapshot] Failed to prune old snapshots");
+    }
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -2963,6 +3088,36 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
                             openxr->accepted_relaxed_startup_poses,
                             suspected_stall
                         );
+
+                        const auto openxr_frame_loop_candidate =
+                            openxr->session_ready &&
+                            openxr->frame_synced &&
+                            !openxr->frame_began &&
+                            openxr->got_first_poses &&
+                            openxr->got_first_valid_poses &&
+                            m_d3d12.has_game_and_ui_textures() &&
+                            xr_wait_gap_ms > 1000 &&
+                            xr_begin_gap_ms > 1000 &&
+                            xr_end_gap_ms > 1000;
+
+                        if (openxr_frame_loop_candidate &&
+                            (m_last_openxr_recovery_candidate_log.time_since_epoch().count() == 0 ||
+                                now - m_last_openxr_recovery_candidate_log >= std::chrono::seconds(10)))
+                        {
+                            m_last_openxr_recovery_candidate_log = now;
+                            spdlog::warn(
+                                "[VR][recovery-candidate] Focused OpenXR frame loop is stale with frame_synced=true and frame_began=false; D3D12 textures are present. wait={}ms begin={}ms end={}ms pose={}ms stale_skips={} stale_refresh={}/{}/{} recoveries={}/{}",
+                                xr_wait_gap_ms,
+                                xr_begin_gap_ms,
+                                xr_end_gap_ms,
+                                pose_update_gap_ms,
+                                openxr->stale_pose_older_frame_skip_count,
+                                openxr->stale_pose_refresh_attempt_count,
+                                openxr->stale_pose_refresh_success_count,
+                                openxr->stale_pose_refresh_failed_count,
+                                openxr->focused_frame_loop_recovery_count,
+                                openxr->forced_frame_recovery_count);
+                        }
 
                         if (tick_gap > std::chrono::seconds(1)) {
                             dump_hitch_snapshot(tick_gap, suspected_stall);
@@ -5383,6 +5538,69 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
     //ImGui::EndTable();
 }
 
+void VR::draw_hitch_diagnostics_ui() {
+    if (!ImGui::TreeNode("Hitch Diagnostics")) {
+        return;
+    }
+
+    if (!m_last_hitch_snapshot_summary.valid) {
+        ImGui::TextWrapped("No hitch snapshot has been written this session.");
+        ImGui::Text("Ring: sequence=%llu cursor=%zu wrapped=%s",
+            (unsigned long long)m_hitch_snapshot_sequence,
+            m_hitch_snapshot_cursor,
+            m_hitch_snapshot_wrapped ? "yes" : "no");
+        ImGui::TreePop();
+        return;
+    }
+
+    const auto& summary = m_last_hitch_snapshot_summary;
+    const auto& sample = summary.last_sample;
+    const auto& d3d12 = sample.d3d12;
+
+    ImGui::Text("Last snapshot: %s", summary.path.filename().string().c_str());
+    ImGui::Text("Tick gap: %lld ms | suspected: %s | samples: %zu",
+        (long long)summary.tick_gap_ms,
+        summary.suspected_stall.c_str(),
+        summary.sample_count);
+    ImGui::Text("OpenXR ages: wait=%lldms begin=%lldms end=%lldms pose=%lldms",
+        (long long)sample.xr_wait_age_ms,
+        (long long)sample.xr_begin_age_ms,
+        (long long)sample.xr_end_age_ms,
+        (long long)sample.pose_update_age_ms);
+    ImGui::Text("Frame state: synced=%s began=%s ready=%s submitted=%s controllers=%s",
+        sample.frame_synced ? "yes" : "no",
+        sample.frame_began ? "yes" : "no",
+        sample.runtime_ready ? "yes" : "no",
+        sample.submitted ? "yes" : "no",
+        sample.using_controllers ? "yes" : "no");
+    ImGui::Text("Stale pose: skips=%llu suppressed=%llu refresh=%llu/%llu/%llu last_pose_frame=%u",
+        (unsigned long long)sample.stale_pose_older_frame_skip_count,
+        (unsigned long long)sample.stale_pose_older_frame_skip_suppressed_count,
+        (unsigned long long)sample.stale_pose_refresh_attempt_count,
+        (unsigned long long)sample.stale_pose_refresh_success_count,
+        (unsigned long long)sample.stale_pose_refresh_failed_count,
+        sample.last_pose_update_frame_count);
+    ImGui::Text("Recoveries: focused=%u forced=%u scene_capture_destroyed=%llu",
+        sample.focused_frame_loop_recovery_count,
+        sample.forced_frame_recovery_count,
+        (unsigned long long)sample.scene_capture_destroyed_count);
+    ImGui::Text("D3D12: game=%s ui=%s scene_capture=%s recreates=%llu reason=0x%x",
+        d3d12.has_game_tex ? "yes" : "no",
+        d3d12.has_ui_tex ? "yes" : "no",
+        d3d12.has_scene_capture_tex ? "yes" : "no",
+        (unsigned long long)d3d12.swapchain_recreate_count,
+        d3d12.last_swapchain_recreate_reasons);
+    ImGui::Text("D3D12 perf: on_frame avg=%.2f max=%.2f | ui_copy avg=%.2f max=%.2f | submit avg=%.2f max=%.2f",
+        d3d12.perf_on_frame_avg_ms,
+        d3d12.perf_on_frame_max_ms,
+        d3d12.perf_ui_copy_avg_ms,
+        d3d12.perf_ui_copy_max_ms,
+        d3d12.perf_openxr_submit_avg_ms,
+        d3d12.perf_openxr_submit_max_ms);
+    ImGui::TextWrapped("Summary file: hitch_snapshots\\hitch_snapshot_latest_summary.json");
+    ImGui::TreePop();
+}
+
 void VR::on_draw_ui() {
     ZoneScopedN(__FUNCTION__);
 
@@ -5464,6 +5682,8 @@ void VR::on_draw_ui() {
     if (ImGui::Button("Reinitialize Runtime")) {
         get_runtime()->wants_reinitialize = true;
     }
+
+    draw_hitch_diagnostics_ui();
 }
 
 Vector4f VR::get_position(uint32_t index, bool grip) const {
