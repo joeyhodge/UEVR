@@ -69,6 +69,10 @@ bool is_direct_aim_compatibility_active() {
         return false;
     }
 
+    if (vr->is_controller_camera_conflict_guard_active()) {
+        return false;
+    }
+
     if (vr->is_headlocked_aim_enabled()) {
         return true;
     }
@@ -633,6 +637,10 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (VR::get()->is_controller_camera_conflict_guard_active()) {
+        return;
+    }
+
     if (!is_direct_aim_compatibility_active()) {
         return;
     }
@@ -1024,6 +1032,10 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
 }
 
 void IXRTrackingSystemHook::manual_update_control_rotation() {
+    if (VR::get()->is_controller_camera_conflict_guard_active()) {
+        return;
+    }
+
     const auto world = sdk::UEngine::get()->get_world();
 
     if (world == nullptr) {
@@ -2116,6 +2128,12 @@ void IXRTrackingSystemHook::process_view_rotation(
         return;
     }
 
+    if (vr->is_controller_camera_conflict_guard_active()) {
+        SPDLOG_INFO_ONCE("[ControllerCameraGuard] Bypassing ProcessViewRotation mutation");
+        call_orig();
+        return;
+    }
+
     if (is_direct_aim_compatibility_active()) {
         // Some games crash or misbehave in camera-manager XR paths when we mutate the
         // PCM rotation directly. Keep the game path intact and drive control
@@ -2180,6 +2198,10 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
     m_process_view_rotation_data.was_called = true;
 
     if (!vr->is_hmd_active() || !vr->is_any_aim_method_active()) {
+        return;
+    }
+
+    if (vr->is_controller_camera_conflict_guard_active()) {
         return;
     }
 

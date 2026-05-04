@@ -810,7 +810,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
 }
 
 bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::UObjectBase* child, std::string_view context) {
-    if (parent == nullptr || child == nullptr) {
+    if (child == nullptr) {
         return false;
     }
 
@@ -818,11 +818,49 @@ bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::U
         return true;
     }
 
-    if (!exists(parent)) {
+    if (parent != nullptr && !exists(parent)) {
         return false;
     }
 
-    if (!is_safe_uobject_candidate(*this, child, true)) {
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::unique_lock _{m_mutex};
+
+        if (m_last_ui_nested_resolve_refusal_prune.time_since_epoch().count() == 0 ||
+            now - m_last_ui_nested_resolve_refusal_prune >= std::chrono::seconds(10))
+        {
+            for (auto it = m_ui_nested_resolve_refusals.begin(); it != m_ui_nested_resolve_refusals.end();) {
+                if (now - it->second >= std::chrono::seconds(30)) {
+                    it = m_ui_nested_resolve_refusals.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+
+            m_last_ui_nested_resolve_refusal_prune = now;
+        }
+
+        if (const auto refused = m_ui_nested_resolve_refusals.find(child); refused != m_ui_nested_resolve_refusals.end() &&
+            now - refused->second < std::chrono::seconds(2))
+        {
+            ++m_ui_nested_resolve_stats.cached_refusals;
+            return false;
+        }
+
+        ++m_ui_nested_resolve_stats.attempts;
+    }
+
+    const auto child_index_serial = get_uobject_index_serial(child);
+    const auto safe_child = child_index_serial.has_value() && is_safe_uobject_candidate(*this, child, true);
+
+    if (!safe_child) {
+        {
+            std::unique_lock _{m_mutex};
+            m_ui_nested_resolve_refusals[child] = now;
+            ++m_ui_nested_resolve_stats.refused;
+        }
+
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[UObjectHook] Refusing to adopt reachable UI UObject from {}: parent={:x} child={:x}",
@@ -839,12 +877,24 @@ bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::U
     const auto tracked = exists(child);
 
     if (tracked) {
+        {
+            std::unique_lock _{m_mutex};
+            m_ui_nested_resolve_refusals.erase(child);
+            ++m_ui_nested_resolve_stats.adopted;
+        }
+
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[UObjectHook] Adopted reachable UI UObject from {}: parent={:x} child={:x}",
+            "[UObjectHook] Adopted reachable UI UObject from {}: parent={:x} child={:x} index={} serial={}",
             context,
             (uintptr_t)parent,
-            (uintptr_t)child);
+            (uintptr_t)child,
+            child_index_serial->first,
+            child_index_serial->second);
+    } else {
+        std::unique_lock _{m_mutex};
+        m_ui_nested_resolve_refusals[child] = now;
+        ++m_ui_nested_resolve_stats.refused;
     }
 
     return tracked;
@@ -3099,6 +3149,12 @@ void UObjectHook::draw_main() {
             "Persistent misses: %llu tombstones=%zu",
             m_uobject_array_scan_stats.persistent_tracking_misses,
             m_destroyed_object_tombstones.size());
+        ImGui::Text(
+            "UI nested resolver: attempts=%llu adopted=%llu refused=%llu cached_refusals=%llu",
+            m_ui_nested_resolve_stats.attempts,
+            m_ui_nested_resolve_stats.adopted,
+            m_ui_nested_resolve_stats.refused,
+            m_ui_nested_resolve_stats.cached_refusals);
         ImGui::TreePop();
     }
 
@@ -3425,6 +3481,10 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
     if (object == nullptr) {
         ImGui::Text("nullptr");
         return;
+    }
+
+    if (!this->exists_unsafe(object)) {
+        try_track_reachable_ui_object(nullptr, object, "ui direct object");
     }
 
     if (!this->exists_unsafe(object)) {

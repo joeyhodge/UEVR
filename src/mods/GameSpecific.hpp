@@ -21,4 +21,19 @@ inline bool is_avowed_executable_path(std::wstring_view path) {
            lowered.find(L"avowed-wingdk-shipping") != std::wstring::npos;
 }
 
+inline bool is_stalker2_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.find(L"stalker2-win64-shipping") != std::wstring::npos;
+}
+
+inline bool is_mechwarrior_clans_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.find(L"mechwarrior-win64-shipping") != std::wstring::npos ||
+           lowered.find(L"mw5clans") != std::wstring::npos;
+}
+
+inline bool is_controller_camera_guard_candidate_path(std::wstring_view path) {
+    return is_stalker2_executable_path(path) || is_mechwarrior_clans_executable_path(path);
+}
+
 }
