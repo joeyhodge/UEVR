@@ -2725,7 +2725,7 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
     sample.framework_frame_age_ms = g_framework == nullptr ? -1 : hitch_age_ms(now, g_framework->get_last_framework_on_frame_time());
     sample.mod_frame_age_ms = hitch_age_ms(now, m_last_mod_frame);
     sample.d3d12_frame_age_ms = hitch_age_ms(now, m_d3d12.get_last_on_frame_time());
-    sample.cvar_change = m_cvar_manager != nullptr ? m_cvar_manager->get_change_snapshot() : CVarManager::ChangeSnapshot{};
+    sample.cvar_change_counter = m_cvar_manager != nullptr ? m_cvar_manager->get_change_counter() : 0;
     sample.d3d12 = m_is_d3d12 ? m_d3d12.get_hitch_frame_snapshot(this) : vrmod::D3D12Component::HitchFrameSnapshot{};
 
     if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
@@ -2767,6 +2767,7 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
         ++m_hitch_snapshot_dump_count);
 
     json samples = json::array();
+    const auto latest_cvar_change = m_cvar_manager != nullptr ? m_cvar_manager->get_change_snapshot() : CVarManager::ChangeSnapshot{};
     const auto count = m_hitch_snapshot_wrapped ? HITCH_SNAPSHOT_RING_SIZE : m_hitch_snapshot_cursor;
     const auto start = m_hitch_snapshot_wrapped ? m_hitch_snapshot_cursor : 0;
 
@@ -2805,12 +2806,7 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
             {"got_first_poses", sample.got_first_poses},
             {"got_first_valid_poses", sample.got_first_valid_poses},
             {"accepted_relaxed_startup_poses", sample.accepted_relaxed_startup_poses},
-            {"last_cvar_change", {
-                {"counter", sample.cvar_change.counter},
-                {"name", sample.cvar_change.name},
-                {"value", sample.cvar_change.value},
-                {"source", sample.cvar_change.source},
-            }},
+            {"cvar_change_counter", sample.cvar_change_counter},
             {"d3d12", {
                 {"initialized", d3d12.initialized},
                 {"force_reset", d3d12.force_reset},
@@ -2855,6 +2851,12 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
         {"tick_gap_ms", std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count()},
         {"suspected_stall", suspected_stall != nullptr ? suspected_stall : "unknown"},
         {"sample_count", samples.size()},
+        {"latest_cvar_change", {
+            {"counter", latest_cvar_change.counter},
+            {"name", latest_cvar_change.name},
+            {"value", latest_cvar_change.value},
+            {"source", latest_cvar_change.source},
+        }},
         {"samples", std::move(samples)},
     };
 
@@ -2874,7 +2876,12 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     const auto previous_engine_tick = m_last_engine_tick;
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
-    record_hitch_snapshot_sample(now);
+    if (m_last_hitch_snapshot_sample.time_since_epoch().count() == 0 ||
+        now - m_last_hitch_snapshot_sample >= HITCH_SNAPSHOT_SAMPLE_INTERVAL)
+    {
+        record_hitch_snapshot_sample(now);
+        m_last_hitch_snapshot_sample = now;
+    }
     m_last_engine_tick = now;
 
     if (previous_engine_tick.time_since_epoch().count() != 0) {

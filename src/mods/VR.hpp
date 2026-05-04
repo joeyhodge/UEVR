@@ -885,16 +885,18 @@ private:
         bool got_first_poses{};
         bool got_first_valid_poses{};
         bool accepted_relaxed_startup_poses{};
-        CVarManager::ChangeSnapshot cvar_change{};
+        uint64_t cvar_change_counter{};
         vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
     };
 
     static constexpr size_t HITCH_SNAPSHOT_RING_SIZE = 600;
+    static constexpr auto HITCH_SNAPSHOT_SAMPLE_INTERVAL = std::chrono::microseconds{16667}; // ~60 Hz.
     std::array<HitchSnapshotSample, HITCH_SNAPSHOT_RING_SIZE> m_hitch_snapshot_samples{};
     size_t m_hitch_snapshot_cursor{};
     bool m_hitch_snapshot_wrapped{};
     uint64_t m_hitch_snapshot_sequence{};
     uint32_t m_hitch_snapshot_dump_count{};
+    std::chrono::steady_clock::time_point m_last_hitch_snapshot_sample{};
     std::chrono::steady_clock::time_point m_last_hitch_snapshot_dump{};
 
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
