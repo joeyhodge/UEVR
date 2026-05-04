@@ -298,7 +298,15 @@ private:
         uint32_t last_budget{};
     } m_uobject_array_scan_stats{};
 
+    struct UiNestedResolveStats {
+        uint64_t attempts{};
+        uint64_t adopted{};
+        uint64_t refused{};
+        uint64_t cached_refusals{};
+    } m_ui_nested_resolve_stats{};
+
     std::unordered_map<sdk::UObjectBase*, DestroyedObjectTombstone> m_destroyed_object_tombstones{};
+    std::unordered_map<sdk::UObjectBase*, std::chrono::steady_clock::time_point> m_ui_nested_resolve_refusals{};
     int32_t m_uobject_array_last_object_count{0};
     bool m_uobject_array_full_sweep_active{false};
     std::chrono::steady_clock::time_point m_uobject_array_startup_scan_until{};
@@ -306,6 +314,7 @@ private:
     std::chrono::steady_clock::time_point m_last_persistent_tracking_miss{};
     std::chrono::steady_clock::time_point m_last_untracked_pawn_seen{};
     std::chrono::steady_clock::time_point m_last_tombstone_prune{};
+    std::chrono::steady_clock::time_point m_last_ui_nested_resolve_refusal_prune{};
 
     std::unordered_map<sdk::USceneComponent*, std::shared_ptr<MotionControllerState>> m_motion_controller_attached_components{};
     sdk::AActor* m_overlap_detection_actor{nullptr};
