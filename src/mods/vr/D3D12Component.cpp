@@ -1786,27 +1786,14 @@ D3D12Component::HitchFrameSnapshot D3D12Component::get_hitch_frame_snapshot(VR* 
     snapshot.perf_openxr_submit_max_ms = m_perf_openxr_submit.max_ms;
 
     if (vr != nullptr && vr->m_openxr != nullptr) {
-        std::scoped_lock _{vr->m_openxr->swapchain_mtx};
-        snapshot.openxr_swapchain_count = (uint32_t)vr->m_openxr->swapchains.size();
-
-        const auto read_swapchain = [&](runtimes::OpenXR::SwapchainIndex index, uint32_t& width, uint32_t& height) {
-            const auto it = vr->m_openxr->swapchains.find((uint32_t)index);
-
-            if (it != vr->m_openxr->swapchains.end()) {
-                width = (uint32_t)std::max(0, it->second.width);
-                height = (uint32_t)std::max(0, it->second.height);
-            }
-        };
-
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
-        if (snapshot.eye_swapchain_width == 0 || snapshot.eye_swapchain_height == 0) {
-            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, snapshot.eye_swapchain_width, snapshot.eye_swapchain_height);
-        }
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::UI, snapshot.ui_swapchain_width, snapshot.ui_swapchain_height);
-        read_swapchain(runtimes::OpenXR::SwapchainIndex::DEPTH, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
-        if (snapshot.depth_swapchain_width == 0 || snapshot.depth_swapchain_height == 0) {
-            read_swapchain(runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, snapshot.depth_swapchain_width, snapshot.depth_swapchain_height);
-        }
+        const auto cached = vr->m_openxr->get_cached_swapchain_dimensions();
+        snapshot.openxr_swapchain_count = cached.count;
+        snapshot.ui_swapchain_width = cached.ui_width;
+        snapshot.ui_swapchain_height = cached.ui_height;
+        snapshot.eye_swapchain_width = cached.eye_width;
+        snapshot.eye_swapchain_height = cached.eye_height;
+        snapshot.depth_swapchain_width = cached.depth_width;
+        snapshot.depth_swapchain_height = cached.depth_height;
     }
 
     return snapshot;
@@ -2609,6 +2596,7 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         }
 
         vr->m_openxr->swapchains[i] = swapchain;
+        vr->m_openxr->cache_swapchain_dimensions(i, swapchain.width, swapchain.height);
 
         uint32_t image_count{};
         auto result = xrEnumerateSwapchainImages(swapchain.handle, 0, &image_count, nullptr);
@@ -2854,12 +2842,20 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
 void D3D12Component::OpenXR::destroy_swapchains() {
     std::scoped_lock _{this->mtx};
+    auto vr = VR::get();
+
+    if (vr != nullptr && vr->m_openxr != nullptr) {
+        vr->m_openxr->clear_cached_swapchain_dimensions();
+    }
 
     if (this->contexts.empty()) {
         return;
     }
+
+    if (vr == nullptr || vr->m_openxr == nullptr) {
+        return;
+    }
     
-    auto& vr = VR::get();
     std::scoped_lock __{vr->m_openxr->swapchain_mtx};
 
     spdlog::info("[VR] Destroying swapchains.");
