@@ -7,8 +7,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <filesystem>
 #include <mutex>
+#include <stop_token>
+#include <thread>
 #include <unordered_map>
+#include <vector>
 
 #include <sdk/Math.hpp>
 
@@ -30,6 +36,8 @@
 
 class VR : public Mod {
 public:
+    ~VR() override;
+
     enum RenderingMethod {
         NATIVE_STEREO = 0,
         SYNCHRONIZED = 1,
@@ -688,8 +696,13 @@ private:
     bool is_any_action_down();
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown = false);
+    void enqueue_hitch_snapshot_dump(HitchSnapshotDumpRequest&& request);
+    void hitch_snapshot_writer_loop(std::stop_token stop_token);
+    void stop_hitch_snapshot_writer();
+    static void write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request);
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -889,13 +902,27 @@ private:
         vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
     };
 
+    struct HitchSnapshotDumpRequest {
+        std::filesystem::path path{};
+        std::chrono::steady_clock::time_point dump_time{};
+        int64_t tick_gap_ms{};
+        std::string suspected_stall{};
+        CVarManager::ChangeSnapshot latest_cvar_change{};
+        std::vector<HitchSnapshotSample> samples{};
+    };
+
     static constexpr size_t HITCH_SNAPSHOT_RING_SIZE = 600;
+    static constexpr size_t HITCH_SNAPSHOT_MAX_PENDING_DUMPS = 1;
     std::array<HitchSnapshotSample, HITCH_SNAPSHOT_RING_SIZE> m_hitch_snapshot_samples{};
     size_t m_hitch_snapshot_cursor{};
     bool m_hitch_snapshot_wrapped{};
     uint64_t m_hitch_snapshot_sequence{};
     uint32_t m_hitch_snapshot_dump_count{};
     std::chrono::steady_clock::time_point m_last_hitch_snapshot_dump{};
+    std::jthread m_hitch_snapshot_writer_thread{};
+    std::mutex m_hitch_snapshot_writer_mutex{};
+    std::condition_variable m_hitch_snapshot_writer_cv{};
+    std::deque<HitchSnapshotDumpRequest> m_hitch_snapshot_dump_queue{};
 
     std::chrono::steady_clock::time_point m_shf_auto_2d_last_sample{};
     bool m_shf_auto_2d_active{false};
@@ -987,6 +1014,7 @@ private:
     const ModCombo::Ptr m_desktop_mirror_mode{ ModCombo::create(generate_name("DesktopSpectatorViewMode"), s_desktop_mirror_mode_names, DESKTOP_MIRROR_FULL) };
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
+    const ModToggle::Ptr m_enable_hitch_diagnostics{ ModToggle::create(generate_name("EnableHitchDiagnostics"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
     const ModToggle::Ptr m_decoupled_pitch_ui_adjust{ ModToggle::create(generate_name("DecoupledPitchUIAdjust"), true) };
     const ModToggle::Ptr m_load_blueprint_code{ ModToggle::create(generate_name("LoadBlueprintCode"), false, true) };
@@ -1230,6 +1258,7 @@ public:
             *m_desktop_mirror_mode,
             *m_enable_gui,
             *m_enable_depth,
+            *m_enable_hitch_diagnostics,
             *m_decoupled_pitch,
             *m_decoupled_pitch_ui_adjust,
             *m_load_blueprint_code,
@@ -1433,6 +1462,7 @@ private:
     bool m_first_config_load{true};
     bool m_first_submit{true};
     bool m_is_d3d12{false};
+    bool m_hitch_diagnostics_enabled_last_frame{false};
     bool m_backbuffer_inconsistency{false};
     bool m_init_finished{false};
     bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling

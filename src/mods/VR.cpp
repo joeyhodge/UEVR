@@ -47,6 +47,10 @@ std::shared_ptr<VR>& VR::get() {
     return g_framework->vr();
 }
 
+VR::~VR() {
+    stop_hitch_snapshot_writer();
+}
+
 namespace {
 using json = nlohmann::json;
 
@@ -2804,39 +2808,74 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
     }
 }
 
-void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown) try {
-    const auto now = std::chrono::steady_clock::now();
-
-    if (!bypass_cooldown &&
-        m_last_hitch_snapshot_dump.time_since_epoch().count() != 0 &&
-        now - m_last_hitch_snapshot_dump < std::chrono::seconds(30))
+void VR::enqueue_hitch_snapshot_dump(HitchSnapshotDumpRequest&& request) {
     {
+        std::scoped_lock lock{m_hitch_snapshot_writer_mutex};
+
+        if (!m_hitch_snapshot_writer_thread.joinable()) {
+            m_hitch_snapshot_writer_thread = std::jthread([this](std::stop_token stop_token) {
+                hitch_snapshot_writer_loop(stop_token);
+            });
+        }
+
+        while (m_hitch_snapshot_dump_queue.size() >= HITCH_SNAPSHOT_MAX_PENDING_DUMPS) {
+            m_hitch_snapshot_dump_queue.pop_front();
+        }
+
+        m_hitch_snapshot_dump_queue.emplace_back(std::move(request));
+    }
+
+    m_hitch_snapshot_writer_cv.notify_one();
+}
+
+void VR::hitch_snapshot_writer_loop(std::stop_token stop_token) {
+    while (true) {
+        HitchSnapshotDumpRequest request{};
+
+        {
+            std::unique_lock lock{m_hitch_snapshot_writer_mutex};
+            m_hitch_snapshot_writer_cv.wait(lock, [this, &stop_token]() {
+                return stop_token.stop_requested() || !m_hitch_snapshot_dump_queue.empty();
+            });
+
+            if (stop_token.stop_requested()) {
+                m_hitch_snapshot_dump_queue.clear();
+                return;
+            }
+
+            request = std::move(m_hitch_snapshot_dump_queue.front());
+            m_hitch_snapshot_dump_queue.pop_front();
+        }
+
+        write_hitch_snapshot_request(std::move(request));
+    }
+}
+
+void VR::stop_hitch_snapshot_writer() {
+    if (!m_hitch_snapshot_writer_thread.joinable()) {
         return;
     }
 
-    m_last_hitch_snapshot_dump = now;
-    const auto dir = Framework::get_persistent_dir("hitch_snapshots");
-    std::filesystem::create_directories(dir);
+    m_hitch_snapshot_writer_thread.request_stop();
+    m_hitch_snapshot_writer_cv.notify_all();
+    m_hitch_snapshot_writer_thread.join();
 
-    const auto path = dir / std::format(
-        "hitch_snapshot_{}_{}.json",
-        hitch_timestamp_suffix(),
-        ++m_hitch_snapshot_dump_count);
+    std::scoped_lock lock{m_hitch_snapshot_writer_mutex};
+    m_hitch_snapshot_dump_queue.clear();
+}
+void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
+    std::filesystem::create_directories(request.path.parent_path());
 
     json samples = json::array();
-    const auto count = m_hitch_snapshot_wrapped ? HITCH_SNAPSHOT_RING_SIZE : m_hitch_snapshot_cursor;
-    const auto start = m_hitch_snapshot_wrapped ? m_hitch_snapshot_cursor : 0;
 
-    for (size_t i = 0; i < count; ++i) {
-        const auto& sample = m_hitch_snapshot_samples[(start + i) % HITCH_SNAPSHOT_RING_SIZE];
-
+    for (const auto& sample : request.samples) {
         if (sample.timestamp.time_since_epoch().count() == 0) {
             continue;
         }
 
         const auto& d3d12 = sample.d3d12;
         samples.push_back({
-            {"age_ms", hitch_age_ms(now, sample.timestamp)},
+            {"age_ms", hitch_age_ms(request.dump_time, sample.timestamp)},
             {"sequence", sample.sequence},
             {"frame_count", sample.frame_count},
             {"render_frame_count", sample.render_frame_count},
@@ -2907,21 +2946,76 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
         });
     }
 
+    const auto& latest_cvar_change = request.latest_cvar_change;
     json root{
         {"type", "uevr_hitch_snapshot"},
-        {"tick_gap_ms", std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count()},
-        {"suspected_stall", suspected_stall != nullptr ? suspected_stall : "unknown"},
+        {"tick_gap_ms", request.tick_gap_ms},
+        {"suspected_stall", request.suspected_stall},
         {"sample_count", samples.size()},
+        {"latest_cvar_change", {
+            {"counter", latest_cvar_change.counter},
+            {"name", latest_cvar_change.name},
+            {"value", latest_cvar_change.value},
+            {"source", latest_cvar_change.source},
+        }},
         {"samples", std::move(samples)},
     };
 
-    std::ofstream file{path};
+    std::ofstream file{request.path};
     file << root.dump(2);
-    SPDLOG_INFO("[VR][hitch-snapshot] Wrote {}", path.string());
+    SPDLOG_INFO("[VR][hitch-snapshot] Wrote {}", request.path.string());
 } catch (const std::exception& e) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot: {}", e.what());
 } catch (...) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to write snapshot");
+}
+
+void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown) try {
+    if (!m_enable_hitch_diagnostics->value()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (!bypass_cooldown &&
+        m_last_hitch_snapshot_dump.time_since_epoch().count() != 0 &&
+        now - m_last_hitch_snapshot_dump < std::chrono::seconds(30))
+    {
+        return;
+    }
+
+    m_last_hitch_snapshot_dump = now;
+    const auto dir = Framework::get_persistent_dir("hitch_snapshots");
+    const auto path = dir / std::format(
+        "hitch_snapshot_{}_{}.json",
+        hitch_timestamp_suffix(),
+        ++m_hitch_snapshot_dump_count);
+
+    const auto count = m_hitch_snapshot_wrapped ? HITCH_SNAPSHOT_RING_SIZE : m_hitch_snapshot_cursor;
+    const auto start = m_hitch_snapshot_wrapped ? m_hitch_snapshot_cursor : 0;
+    HitchSnapshotDumpRequest request{};
+    request.path = path;
+    request.dump_time = now;
+    request.tick_gap_ms = std::chrono::duration_cast<std::chrono::milliseconds>(tick_gap).count();
+    request.suspected_stall = suspected_stall != nullptr ? suspected_stall : "unknown";
+    request.latest_cvar_change = m_cvar_manager != nullptr ? m_cvar_manager->get_change_snapshot() : CVarManager::ChangeSnapshot{};
+    request.samples.reserve(count);
+
+    for (size_t i = 0; i < count; ++i) {
+        const auto& sample = m_hitch_snapshot_samples[(start + i) % HITCH_SNAPSHOT_RING_SIZE];
+
+        if (sample.timestamp.time_since_epoch().count() == 0) {
+            continue;
+        }
+
+        request.samples.push_back(sample);
+    }
+
+    enqueue_hitch_snapshot_dump(std::move(request));
+} catch (const std::exception& e) {
+    SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot: {}", e.what());
+} catch (...) {
+    SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot");
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -2929,12 +3023,24 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 
     const auto now = std::chrono::steady_clock::now();
     const auto previous_engine_tick = m_last_engine_tick;
+    const bool hitch_diagnostics_enabled = m_enable_hitch_diagnostics->value();
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
-    record_hitch_snapshot_sample(now);
+    if (!hitch_diagnostics_enabled) {
+        if (m_hitch_diagnostics_enabled_last_frame) {
+            stop_hitch_snapshot_writer();
+            m_hitch_snapshot_cursor = 0;
+            m_hitch_snapshot_wrapped = false;
+        }
+
+        m_hitch_diagnostics_enabled_last_frame = false;
+    } else {
+        m_hitch_diagnostics_enabled_last_frame = true;
+        record_hitch_snapshot_sample(now);
+    }
     m_last_engine_tick = now;
 
-    if (previous_engine_tick.time_since_epoch().count() != 0) {
+    if (hitch_diagnostics_enabled && previous_engine_tick.time_since_epoch().count() != 0) {
         const auto tick_gap = now - previous_engine_tick;
 
         if (tick_gap > std::chrono::milliseconds(250) &&
@@ -5521,6 +5627,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::Checkbox("Controller test mode", &m_controller_test_mode);
         m_show_fps->draw("Show FPS");
         m_show_statistics->draw("Show Engine Statistics");
+        m_enable_hitch_diagnostics->draw("Enable Hitch Diagnostics");
+        if (m_enable_hitch_diagnostics->value()) {
+            ImGui::TextWrapped("Records recent OpenXR/D3D12 state and writes hitch_snapshot JSON files after large tick gaps.");
+        } else {
+            ImGui::TextWrapped("Hitch diagnostics are disabled. No hitch ring sampling, JSON dumps, or snapshot writer thread will run.");
+        }
 
         const double min_ = 0.0;
         const double max_ = 25.0;
