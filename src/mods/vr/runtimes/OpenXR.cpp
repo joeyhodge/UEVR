@@ -692,6 +692,78 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
     return result;
 }
 
+bool OpenXR::close_synced_frame_without_layers(const char* reason) {
+    std::scoped_lock _{sync_mtx};
+
+    if (this->session == XR_NULL_HANDLE || !this->session_ready || !this->frame_synced) {
+        return false;
+    }
+
+    const auto safe_reason = reason != nullptr ? reason : "unknown";
+
+    if (!this->got_first_poses || !this->can_run_frame_loop()) {
+        this->clear_frame_synced(safe_reason);
+        SPDLOG_WARNING_EVERY_N_SEC(
+            1,
+            "[OpenXR] Cleared synchronized frame without xrBeginFrame because runtime is not ready for layer submission ({})",
+            safe_reason);
+        return true;
+    }
+
+    if (!this->frame_began) {
+        this->last_begin_frame_caller = safe_reason;
+        XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
+
+        this->begin_profile();
+        const auto begin_frame_start = std::chrono::steady_clock::now();
+        const auto begin_result = xrBeginFrame(this->session, &frame_begin_info);
+        this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
+        this->end_profile("xrBeginFrame");
+
+        if (begin_result != XR_SUCCESS && begin_result != XR_FRAME_DISCARDED) {
+            spdlog::warn(
+                "[OpenXR] Failed to open empty recovery frame ({}): {}",
+                safe_reason,
+                this->get_result_string(begin_result));
+            this->clear_frame_synced(safe_reason);
+            return true;
+        }
+
+        this->frame_began = true;
+        this->last_successful_begin_frame = std::chrono::steady_clock::now();
+    }
+
+    XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+    frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+    frame_end_info.environmentBlendMode = this->blend_mode;
+    frame_end_info.layerCount = 0;
+    frame_end_info.layers = nullptr;
+
+    const auto end_frame_start = std::chrono::steady_clock::now();
+    const auto result = xrEndFrame(this->session, &frame_end_info);
+    this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
+
+    if (result != XR_SUCCESS) {
+        spdlog::warn(
+            "[OpenXR] Empty recovery xrEndFrame failed ({}): {}",
+            safe_reason,
+            this->get_result_string(result));
+    } else {
+        this->ever_submitted = true;
+        this->last_successful_end_frame = std::chrono::steady_clock::now();
+        SPDLOG_WARNING_EVERY_N_SEC(
+            1,
+            "[OpenXR] Closed synchronized frame without layers ({})",
+            safe_reason);
+    }
+
+    this->frame_began = false;
+    this->clear_frame_synced(safe_reason);
+    ++this->forced_frame_recovery_count;
+
+    return true;
+}
+
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
 
