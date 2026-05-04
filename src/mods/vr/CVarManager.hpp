@@ -1,7 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <memory>
@@ -197,6 +199,10 @@ public:
 
 private:
     void refresh_frozen_cvar_state();
+    void begin_cvar_refresh();
+    void process_cvar_refresh_budget();
+    void process_frozen_cvar_budget(bool budgeted);
+    void process_pending_console_script(sdk::UGameEngine* engine);
 
     std::vector<std::shared_ptr<CVar>> m_displayed_cvars{};
     std::vector<std::shared_ptr<CVar>> m_all_cvars{}; // ones the user can manually add to cvars.txt'
@@ -227,6 +233,12 @@ private:
     bool m_has_frozen_cvars{false};
     bool m_needs_full_refresh{true};
     bool m_cvar_ui_open_this_frame{false};
+    bool m_cvar_ui_open_last_tick{false};
+    bool m_cvar_refresh_in_progress{false};
+    size_t m_cvar_refresh_cursor{0};
+    size_t m_cvar_freeze_cursor{0};
+    std::deque<std::string> m_pending_console_script_commands{};
+    std::chrono::steady_clock::time_point m_next_console_script_command_time{};
     bool m_ue51_fsr3_runtime_cvars_done{false};
     int m_ue51_fsr3_runtime_cvar_attempts{0};
     bool m_aphelion_framegen_runtime_cvars_done{false};

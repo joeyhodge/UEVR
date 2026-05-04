@@ -1459,6 +1459,12 @@ private:
     bool m_prospi_telephoto_perf_pending_valid{false};
     bool m_prospi_telephoto_perf_pending_state{false};
     std::chrono::steady_clock::time_point m_prospi_telephoto_perf_pending_since{};
+    bool m_prospi_telephoto_perf_target_valid{false};
+    float m_prospi_telephoto_perf_target_view_distance_scale{1.0f};
+    float m_prospi_telephoto_perf_target_static_mesh_lod_distance_scale{1.0f};
+    int m_prospi_telephoto_perf_target_skeletal_mesh_lod_bias{0};
+    bool m_prospi_telephoto_perf_line_mode{false};
+    std::chrono::steady_clock::time_point m_prospi_line_telephoto_perf_hold_until{};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{ false };

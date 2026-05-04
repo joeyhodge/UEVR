@@ -332,6 +332,87 @@ void CVarManager::refresh_frozen_cvar_state() {
     });
 }
 
+void CVarManager::begin_cvar_refresh() {
+    m_cvar_refresh_in_progress = true;
+    m_cvar_refresh_cursor = 0;
+}
+
+void CVarManager::process_cvar_refresh_budget() {
+    if (!m_cvar_refresh_in_progress || m_all_cvars.empty()) {
+        m_cvar_refresh_in_progress = false;
+        return;
+    }
+
+    constexpr size_t cvar_update_budget = 2;
+    size_t processed = 0;
+
+    while (m_cvar_refresh_cursor < m_all_cvars.size() && processed < cvar_update_budget) {
+        m_all_cvars[m_cvar_refresh_cursor++]->update();
+        ++processed;
+    }
+
+    if (m_cvar_refresh_cursor >= m_all_cvars.size()) {
+        m_cvar_refresh_in_progress = false;
+        m_cvar_refresh_cursor = 0;
+    }
+}
+
+void CVarManager::process_frozen_cvar_budget(bool budgeted) {
+    if (!m_has_frozen_cvars || m_all_cvars.empty()) {
+        return;
+    }
+
+    const size_t budget = budgeted ? 2 : m_all_cvars.size();
+    size_t visited = 0;
+    size_t frozen_processed = 0;
+
+    while (visited < m_all_cvars.size() && frozen_processed < budget) {
+        if (m_cvar_freeze_cursor >= m_all_cvars.size()) {
+            m_cvar_freeze_cursor = 0;
+        }
+
+        auto& cvar = m_all_cvars[m_cvar_freeze_cursor++];
+        ++visited;
+
+        if (!cvar->is_frozen()) {
+            continue;
+        }
+
+        cvar->update();
+        cvar->freeze();
+        ++frozen_processed;
+    }
+}
+
+void CVarManager::process_pending_console_script(sdk::UGameEngine* engine) {
+    if (engine == nullptr || m_pending_console_script_commands.empty()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_next_console_script_command_time.time_since_epoch().count() != 0 && now < m_next_console_script_command_time) {
+        return;
+    }
+
+    auto line = std::move(m_pending_console_script_commands.front());
+    m_pending_console_script_commands.pop_front();
+
+    const auto start = std::chrono::steady_clock::now();
+    {
+        ZoneScopedN("CVarManager console exec");
+        CVarManager::record_global_command(line, "console_script");
+        engine->exec(utility::widen(line));
+    }
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+    if (elapsed_ms > 100) {
+        SPDLOG_WARN("[execute_console_script] Console command \"{}\" took {}ms; spacing remaining commands", line, elapsed_ms);
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+    } else {
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    }
+}
+
 void CVarManager::spawn_console() {
     if (m_native_console_spawned) {
         return;
@@ -358,29 +439,26 @@ void CVarManager::spawn_console() {
 void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
-    const bool process_all_cvars = m_needs_full_refresh || m_cvar_ui_open_this_frame;
-
-    if (process_all_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            cvar->update();
-        }
-    } else if (m_has_frozen_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            if (cvar->is_frozen()) {
-                cvar->update();
-            }
-        }
+    const bool opened_cvar_ui = m_cvar_ui_open_this_frame && !m_cvar_ui_open_last_tick;
+    if (m_needs_full_refresh || opened_cvar_ui) {
+        begin_cvar_refresh();
+        m_needs_full_refresh = false;
     }
 
-    if (m_has_frozen_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            if (process_all_cvars || cvar->is_frozen()) {
-                cvar->freeze();
-            }
-        }
-    }
+    process_cvar_refresh_budget();
 
-    m_needs_full_refresh = false;
+    const auto now = std::chrono::steady_clock::now();
+    const auto console_script_spacing =
+        m_next_console_script_command_time.time_since_epoch().count() != 0 &&
+        now < m_next_console_script_command_time;
+    process_frozen_cvar_budget(
+        m_cvar_ui_open_this_frame ||
+        m_cvar_refresh_in_progress ||
+        !m_pending_console_script_commands.empty() ||
+        console_script_spacing
+    );
+
+    m_cvar_ui_open_last_tick = m_cvar_ui_open_this_frame;
 
     if (m_should_execute_console_script) {
         execute_console_script(engine, user_script_txt_name.data());
@@ -390,6 +468,8 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_aphelion_framegen_runtime_cvars_done = false;
         m_aphelion_framegen_runtime_cvar_attempts = 0;
     }
+
+    process_pending_console_script(engine);
 
     if (!m_ue51_fsr3_runtime_cvars_done) {
         ++m_ue51_fsr3_runtime_cvar_attempts;
@@ -958,30 +1038,38 @@ void CVarManager::CVarStandard::freeze() {
         SPDLOG_INFO("[CVarManager] (Standard) First time freezing \"{}\"...", utility::narrow(m_name));
     }
 
+    const auto set_frozen_value = [&](const std::wstring& value) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto ok = (*m_cvar)->Set(value.c_str());
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+        if (!ok) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            return;
+        }
+
+        if (elapsed_ms > 250) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" after slow Set took {}ms", utility::narrow(m_name), elapsed_ms);
+        }
+    };
+
     switch(m_type) {
     case Type::BOOL:
         // Limiting the amount of times Set gets called with string conversions.
         if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::INT:
         if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::FLOAT:
         if ((*m_cvar)->GetFloat() != m_frozen_float_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_float_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+            set_frozen_value(std::to_wstring(m_frozen_float_value));
         }
         break;
     default:
@@ -1273,6 +1361,8 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
         return;
     }
 
+    m_pending_console_script_commands.clear();
+
     for (std::string line{}; getline(cscript_file, line); ) {
         trim(line);
 
@@ -1295,10 +1385,11 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
             continue;
         }
 
-        spdlog::debug("[execute_console_script] Attempting to execute \"{}\"", line);
-        CVarManager::record_global_command(line, "console_script");
-        engine->exec(utility::widen(line));
+        m_pending_console_script_commands.emplace_back(std::move(line));
     }
 
-    spdlog::debug("[execute_console_script] done");
+    if (!m_pending_console_script_commands.empty()) {
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+        spdlog::info("[execute_console_script] Queued {} commands from {}; first command deferred", m_pending_console_script_commands.size(), filename);
+    }
 }
