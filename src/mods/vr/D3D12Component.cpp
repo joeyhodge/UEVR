@@ -615,9 +615,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     m_last_on_frame = std::chrono::steady_clock::now();
 
+    auto close_openxr_setup_failure_frame = [&]() {
+        if (vr->m_openxr == nullptr || !vr->get_runtime()->is_openxr()) {
+            return;
+        }
+
+        if (vr->m_openxr->close_synced_frame_without_layers("d3d12_setup_failed")) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                1,
+                "[D3D12 VR] Closed pending OpenXR frame after D3D12 setup failure so the runtime can keep advancing");
+        }
+    };
+
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Could not set up, trying again next frame");
+            close_openxr_setup_failure_frame();
             m_force_reset = true;
             return vr::VRCompositorError_None;
         }
