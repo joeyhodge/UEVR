@@ -28,6 +28,7 @@ struct FRHICommandListImmediate;
 struct FRDGBuilder;
 struct FRDGTexture;
 struct VRRenderTargetManager_418;
+struct VRRenderTargetManager_58;
 struct UCanvas;
 struct IStereoLayers;
 
@@ -335,6 +336,29 @@ struct VRRenderTargetManager_Special : IStereoRenderTargetManager_Special, VRRen
         FTexture2DRHIRef& OutShaderResourceTexture, uint32_t NumSamples = 1) override;
 };
 
+struct VRRenderTargetManager_58 : IStereoRenderTargetManager_58, VRRenderTargetManager_Base {
+public:
+    bool ShouldUseSeparateRenderTarget() const override { return VRRenderTargetManager_Base::should_use_separate_render_target(); }
+    void CalculateRenderTargetSize(const sdk::FViewport& Viewport, uint32_t& InOutSizeX, uint32_t& InOutSizeY) override;
+    bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
+        return VRRenderTargetManager_Base::need_reallocate_view_target(Viewport);
+    }
+    bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override;
+    bool AllocateRenderTargetTextures(sdk::FRHICommandListBase& RHICmdList, uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumLayers,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32_t NumSamples = 1) override;
+    bool AllocateRenderTargetTextures(uint32_t SizeX, uint32_t SizeY, uint8_t Format, uint32_t NumLayers,
+        ETextureCreateFlags Flags, ETextureCreateFlags TargetableTextureFlags, TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures, uint32_t NumSamples = 1) override;
+    uint8_t GetActualColorSwapchainFormat() const override { return 0; }
+    int32_t AcquireColorTexture() override { return -1; }
+    int32_t AcquireDepthTexture() override { return -1; }
+
+public:
+    uintptr_t m_last_calculate_render_size_return_address{0};
+    uintptr_t m_last_allocate_render_targets_return_address{0};
+};
+
 class FFakeStereoRenderingHook : public ModComponent {
 public:
     FFakeStereoRenderingHook();
@@ -342,6 +366,10 @@ public:
     VRRenderTargetManager_Base* get_render_target_manager() {
         if (m_uses_old_rendertarget_manager) {
             return static_cast<VRRenderTargetManager_Base*>(&m_rtm_418);
+        }
+
+        if (m_uses_ue58_rendertarget_manager) {
+            return static_cast<VRRenderTargetManager_Base*>(&m_rtm_58);
         }
 
         if (m_special_detected) {
@@ -364,6 +392,7 @@ public:
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
     void attempt_hook_ue57_slate_elements_pass();
     void attempt_hook_ue55_slate_output_texture_register();
+    void attempt_hook_ue58_slate_output_texture_register();
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_fsceneview_constructor();
     
@@ -562,7 +591,9 @@ private:
     static void* slate_draw_window_render_thread(void* renderer, void* command_list, void* viewport_info, 
                                                  void* elements, void* params, void* unk1, void* unk2);
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
+    static void slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
+    static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -603,6 +634,7 @@ private:
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -637,6 +669,7 @@ private:
     VRRenderTargetManager m_rtm{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};
+    VRRenderTargetManager_58 m_rtm_58{};
 
     Rotator<float> m_last_afr_rotation{};
     Rotator<double> m_last_afr_rotation_double{};
@@ -657,6 +690,7 @@ private:
     bool m_hooked_slate_thread{false};
     bool m_hooked_ue57_slate_elements_pass{false};
     bool m_hooked_ue55_slate_output_texture_register{false};
+    bool m_hooked_ue58_slate_output_texture_register{false};
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
     bool m_has_seen_prerender_viewfamily{false};
@@ -668,9 +702,11 @@ private:
     bool m_attempted_hook_slate_thread_alternate{false};
     bool m_attempted_hook_ue57_slate_elements_pass{false};
     bool m_attempted_hook_ue55_slate_output_texture_register{false};
+    bool m_attempted_hook_ue58_slate_output_texture_register{false};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
+    bool m_uses_ue58_rendertarget_manager{false};
     bool m_rendertarget_manager_embedded_in_stereo_device{false}; // 4.17 and below...?
     bool m_special_detected{false};
     bool m_special_detected_4_18{false};

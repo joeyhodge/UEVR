@@ -545,6 +545,19 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
+bool is_ue_5_8_or_newer() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        if (str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
+            return true;
+        }
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50008;
+}
+
 bool is_ue_5_1_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -2330,7 +2343,11 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
 
     if (is_ue_5_7_or_newer() && g_framework->is_dx12()) {
-        attempt_hook_ue57_slate_elements_pass();
+        if (is_ue_5_8_or_newer()) {
+            attempt_hook_ue58_slate_output_texture_register();
+        } else {
+            attempt_hook_ue57_slate_elements_pass();
+        }
     }
 }
 
@@ -2513,6 +2530,142 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
     m_hooked_ue55_slate_output_texture_register = true;
 
     SPDLOG_WARN("[UE5.5][SlateUI] Hooked SlateOutputTexture RegisterExternalTexture callsite {:x} -> {:x}", register_callsite, register_target);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register() {
+    if (!is_ue_5_8_or_newer() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+        return;
+    }
+
+    if (m_attempted_hook_ue58_slate_output_texture_register) {
+        return;
+    }
+
+    m_attempted_hook_ue58_slate_output_texture_register = true;
+
+    const auto draw_window = g_hook != nullptr ? g_hook->m_slate_thread_hook.target_address() : 0;
+
+    if (draw_window == 0) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the Slate hook has no target address");
+        return;
+    }
+
+    const auto module_within = utility::get_module_within(draw_window);
+
+    if (!module_within.has_value()) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the DrawWindow module was not resolved");
+        return;
+    }
+
+    std::vector<uintptr_t> slate_output_strings{};
+
+    try {
+        const auto base_strings = utility::scan_strings(*module_within, L"SlateOutputTexture", true);
+        const auto layered_strings = utility::scan_strings(*module_within, L"SlateOutputTexture-%d", true);
+
+        slate_output_strings.insert(slate_output_strings.end(), base_strings.begin(), base_strings.end());
+        slate_output_strings.insert(slate_output_strings.end(), layered_strings.begin(), layered_strings.end());
+    } catch (...) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Exception while scanning SlateRHIRenderer for SlateOutputTexture strings");
+        return;
+    }
+
+    if (slate_output_strings.empty()) {
+        SPDLOG_WARN("[UE5.8][SlateUI] Could not find SlateOutputTexture strings in SlateRHIRenderer");
+        return;
+    }
+
+    std::unordered_map<uintptr_t, uintptr_t> latest_ref_by_function{};
+
+    for (const auto string_addr : slate_output_strings) {
+        const auto refs = utility::scan_displacement_references(*module_within, string_addr);
+
+        for (const auto ref : refs) {
+            const auto func = utility::find_function_start_with_call(ref);
+
+            if (!func.has_value()) {
+                continue;
+            }
+
+            auto& latest_ref = latest_ref_by_function[*func];
+            latest_ref = std::max(latest_ref, ref);
+        }
+    }
+
+    if (latest_ref_by_function.empty()) {
+        SPDLOG_WARN("[UE5.8][SlateUI] Could not find SlateOutputTexture references in SlateRHIRenderer");
+        return;
+    }
+
+    struct RegisterCallsite {
+        uintptr_t callsite{};
+        uintptr_t target{};
+    };
+
+    std::vector<RegisterCallsite> candidates{};
+    std::unordered_set<uintptr_t> seen_callsites{};
+
+    for (const auto& [function_start, last_ref] : latest_ref_by_function) {
+        for (auto* ip = reinterpret_cast<uint8_t*>(last_ref); (uintptr_t)ip < function_start + 0x1800;) {
+            const auto decoded = utility::decode_one(ip);
+
+            if (!decoded) {
+                break;
+            }
+
+            const auto mnemonic = std::string_view{decoded->Mnemonic};
+
+            if (mnemonic.starts_with("CALL")) {
+                const auto target = utility::resolve_displacement((uintptr_t)ip);
+
+                if (target.has_value()) {
+                    const auto target_module = utility::get_module_within((void*)*target);
+
+                    if (target_module.has_value() && *target_module == *module_within && !seen_callsites.contains((uintptr_t)ip)) {
+                        seen_callsites.insert((uintptr_t)ip);
+                        candidates.push_back({(uintptr_t)ip, *target});
+                        break;
+                    }
+                }
+            }
+
+            if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
+                break;
+            }
+
+            ip += decoded->Length;
+        }
+    }
+
+    if (candidates.empty()) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Failed to find SlateOutputTexture RegisterExternalTexture callsites");
+        return;
+    }
+
+    size_t hooked_count{};
+
+    for (const auto& candidate : candidates) {
+        auto hook_result = safetyhook::create_mid(
+            reinterpret_cast<void*>(candidate.callsite),
+            &FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook);
+
+        if (!hook_result) {
+            SPDLOG_WARN("[UE5.8][SlateUI] Failed to hook SlateOutputTexture callsite {:x} -> {:x}", candidate.callsite, candidate.target);
+            continue;
+        }
+
+        m_ue58_slate_output_texture_register_hooks.emplace_back(std::move(hook_result));
+        ++hooked_count;
+        SPDLOG_INFO("[UE5.8][SlateUI] Hooked SlateOutputTexture callsite {:x} -> {:x}", candidate.callsite, candidate.target);
+    }
+
+    if (hooked_count == 0) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Failed to hook any SlateOutputTexture RegisterExternalTexture callsites");
+        return;
+    }
+
+    m_hooked_ue58_slate_output_texture_register = true;
+    SPDLOG_WARN("[UE5.8][SlateUI] Hooked {} SlateOutputTexture RegisterExternalTexture callsite(s)", hooked_count);
 }
 
 namespace detail{
@@ -3369,6 +3522,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     // Actually implement the ones we care about now.
     auto idx = 0;
+    const auto ue58_stereo_layout = is_ue_5_8_or_newer();
     //m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo) -> void { SPDLOG_INFO("Destructor called?");  }; // destructor.
     m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo) -> bool { 
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
@@ -3422,11 +3576,21 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
         return g_hook->calculate_stereo_projection_matrix(stereo, out, view_index);
     }; // CalculateStereoProjectionMatrix
 
-    m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, void* a2) {
-        // do nothing
-    }; // not sure what this one is. think it sets the FOV. Not present in newer UE4 versions.
+    if (ue58_stereo_layout) {
+        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, int32_t view_index) -> bool {
+            return false;
+        }; // HasExternalViewState
 
-    idx++; // just leave this one as a placeholder for now. Returns false.
+        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, int32_t view_index) -> void* {
+            return nullptr;
+        }; // GetExternalViewState
+    } else {
+        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, void* a2) {
+            // do nothing
+        }; // not sure what this one is. think it sets the FOV. Not present in newer UE4 versions.
+
+        idx++; // just leave this one as a placeholder for now. Returns false.
+    }
 
     m_fallback_vtable[idx++] = 
     +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
@@ -3447,6 +3611,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     //m_418_detected = true;
     m_special_detected = true;
+    m_uses_ue58_rendertarget_manager = ue58_stereo_layout;
     m_manually_constructed = true;
     m_fallback_device.vtable = m_fallback_vtable.data();
 
@@ -7708,6 +7873,11 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
+        if (is_ue_5_8_or_newer()) {
+            g_hook->m_uses_ue58_rendertarget_manager = true;
+            return reinterpret_cast<IStereoRenderTargetManager*>(&g_hook->m_rtm_58);
+        }
+
         if (g_hook->m_uses_old_rendertarget_manager) {
             return (IStereoRenderTargetManager*)&g_hook->m_rtm_418;
         }
@@ -8480,8 +8650,18 @@ void ue55_promote_slate_outputs(
 }
 }
 
-void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
-    if (g_hook == nullptr || !supports_ue55_dedicated_ui_target_for_current_game()) {
+void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58) {
+    const char* tag = ue58 ? "[UE5.8][SlateUI]" : "[UE5.5][SlateUI]";
+
+    if (g_hook == nullptr) {
+        return;
+    }
+
+    if (ue58) {
+        if (!is_ue_5_8_or_newer() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+            return;
+        }
+    } else if (!supports_ue55_dedicated_ui_target_for_current_game()) {
         return;
     }
 
@@ -8500,13 +8680,13 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     auto* ui_target = rtm != nullptr ? rtm->get_dedicated_ui_target() : nullptr;
 
     if (rtm == nullptr || ui_target == nullptr || ui_target == rtm->get_render_target()) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] SlateOutputTexture call reached before a valid dedicated UI target exists");
+        SPDLOG_INFO_EVERY_N_SEC(1, "{} SlateOutputTexture call reached before a valid dedicated UI target exists", tag);
         return;
     }
 
     const auto desc = ue55_try_get_d3d12_desc(ui_target, "dedicated UI target at SlateOutputTexture");
     if (!desc) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] dedicated UI target is not a valid D3D12 texture yet: {:x}", (uintptr_t)ui_target);
+        SPDLOG_INFO_EVERY_N_SEC(1, "{} dedicated UI target is not a valid D3D12 texture yet: {:x}", tag, (uintptr_t)ui_target);
         return;
     }
 
@@ -8517,7 +8697,8 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
         (desc->Width != expected_width || desc->Height != expected_height))
     {
         SPDLOG_INFO_EVERY_N_SEC(1,
-            "[UE5.5][SlateUI] refusing SlateOutputTexture replacement because dedicated UI target extent [{}x{}] != requested [{}x{}]",
+            "{} refusing SlateOutputTexture replacement because dedicated UI target extent [{}x{}] != requested [{}x{}]",
+            tag,
             desc->Width,
             desc->Height,
             expected_width,
@@ -8529,7 +8710,8 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     const auto original_desc = ue55_try_get_d3d12_desc(original, "original SlateOutputTexture");
 
     SPDLOG_INFO_EVERY_N_SEC(1,
-        "[UE5.5][SlateUI] routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+        "{} routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+        tag,
         (uintptr_t)original,
         original_desc ? original_desc->Width : 0,
         original_desc ? original_desc->Height : 0,
@@ -8539,6 +8721,14 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
         (uint32_t)desc->Format);
 
     ctx.rdx = (uintptr_t)ui_target;
+}
+
+void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
+    slate_output_texture_register_hook_impl(ctx, false);
+}
+
+void FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook(safetyhook::Context& ctx) {
+    slate_output_texture_register_hook_impl(ctx, true);
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
@@ -8861,6 +9051,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (slate_resource == nullptr) {
+        if (is_ue_5_8_or_newer()) {
+            if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
+                g_hook->attempt_hook_ue58_slate_output_texture_register();
+            }
+
+            if (rtm != nullptr) {
+                rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+            }
+        }
+
         SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
         return call_orig();
     }
@@ -8902,7 +9102,11 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue_5_7_or_newer()) {
-        if (!g_hook->m_hooked_ue57_slate_elements_pass) {
+        if (is_ue_5_8_or_newer()) {
+            if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
+                g_hook->attempt_hook_ue58_slate_output_texture_register();
+            }
+        } else if (!g_hook->m_hooked_ue57_slate_elements_pass) {
             g_hook->attempt_hook_ue57_slate_elements_pass();
         }
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
@@ -11808,6 +12012,71 @@ bool VRRenderTargetManager::AllocateRenderTargetTextures(uint32_t SizeX, uint32_
     // Keep the engine on the deprecated single-texture allocation path for now.
     // UEVR's 5.7 UI separation still depends on analyzing and midhooking the real
     // texture creation sequence that happens after this returns false.
+    return false;
+}
+
+__declspec(noinline) void VRRenderTargetManager_58::CalculateRenderTargetSize(const sdk::FViewport& Viewport, uint32_t& InOutSizeX, uint32_t& InOutSizeY) {
+    SPDLOG_INFO_ONCE("[UE5.8][RTM] VRRenderTargetManager_58::CalculateRenderTargetSize called");
+
+    m_last_calculate_render_size_return_address = (uintptr_t)_ReturnAddress();
+
+    VRRenderTargetManager_Base::calculate_render_target_size(Viewport, InOutSizeX, InOutSizeY);
+}
+
+__declspec(noinline) bool VRRenderTargetManager_58::NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) {
+    SPDLOG_INFO_ONCE("[UE5.8][RTM] VRRenderTargetManager_58::NeedReAllocateShadingRateTexture called");
+
+    return false;
+}
+
+__declspec(noinline) bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
+    sdk::FRHICommandListBase& RHICmdList,
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    m_last_allocate_render_targets_return_address = (uintptr_t)_ReturnAddress();
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.8][RTM] AllocateRenderTargetTextures(RHICmdList) reached; returning false for default engine allocation size={}x{} fmt={} layers={} samples={} caller={:x}",
+        SizeX,
+        SizeY,
+        (uint32_t)Format,
+        NumLayers,
+        NumSamples,
+        m_last_allocate_render_targets_return_address);
+
+    return false;
+}
+
+__declspec(noinline) bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    m_last_allocate_render_targets_return_address = (uintptr_t)_ReturnAddress();
+
+    SPDLOG_INFO_EVERY_N_SEC(2,
+        "[UE5.8][RTM] deprecated AllocateRenderTargetTextures reached; returning false for default engine allocation size={}x{} fmt={} layers={} samples={} caller={:x}",
+        SizeX,
+        SizeY,
+        (uint32_t)Format,
+        NumLayers,
+        NumSamples,
+        m_last_allocate_render_targets_return_address);
+
     return false;
 }
 
