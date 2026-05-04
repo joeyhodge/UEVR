@@ -582,6 +582,17 @@ public:
         return m_compatibility_direct_aim->value();
     }
 
+    bool is_controller_camera_conflict_guard_enabled() const {
+        return m_compatibility_controller_camera_guard->value();
+    }
+
+    bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
+        return m_last_xinput_update.time_since_epoch().count() != 0 &&
+            (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
+    }
+
+    bool is_controller_camera_conflict_guard_active() const;
+
     bool is_ghosting_fix_enabled() const {
         return m_ghosting_fix->value();
     }
@@ -1166,6 +1177,7 @@ private:
 
     const ModToggle::Ptr m_compatibility_ahud{ ModToggle::create(generate_name("Compatibility_AHUD"), false, true) };
     const ModToggle::Ptr m_compatibility_direct_aim{ ModToggle::create(generate_name("Compatibility_DirectAimFallback"), false, true) };
+    const ModToggle::Ptr m_compatibility_controller_camera_guard{ ModToggle::create(generate_name("Compatibility_ControllerCameraGuard"), false, true) };
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1374,6 +1386,7 @@ public:
             *m_compatibility_skip_uobjectarray_init,
             *m_compatibility_ahud,
             *m_compatibility_direct_aim,
+            *m_compatibility_controller_camera_guard,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
