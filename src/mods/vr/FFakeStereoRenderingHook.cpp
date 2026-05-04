@@ -7283,14 +7283,17 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
 
         // Modify Player Control Rotation
+        const auto controller_camera_guard_active = vr->is_controller_camera_conflict_guard_active();
         const auto direct_aim_compatibility_fallback =
             vr->is_hmd_active() &&
+            !controller_camera_guard_active &&
             (is_deadzone_ue56_executable() || vr->is_direct_aim_compatibility_enabled()) &&
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
         if (true_index == 1 &&
             vr->is_any_aim_method_active() &&
+            !controller_camera_guard_active &&
             (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
         {
             if (g_hook->m_tracking_system_hook != nullptr) {
