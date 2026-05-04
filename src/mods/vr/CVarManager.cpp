@@ -304,17 +304,23 @@ CVarManager::ChangeSnapshot CVarManager::get_change_snapshot() const {
     return s_change_snapshot;
 }
 
+uint64_t CVarManager::get_change_counter() const {
+    return s_change_counter.load(std::memory_order_relaxed);
+}
+
 void CVarManager::record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source) {
+    const auto counter = s_change_counter.fetch_add(1, std::memory_order_relaxed) + 1;
     std::scoped_lock _{s_change_mutex};
-    ++s_change_snapshot.counter;
+    s_change_snapshot.counter = counter;
     s_change_snapshot.name = utility::narrow(std::wstring{name});
     s_change_snapshot.value = utility::narrow(std::wstring{value});
     s_change_snapshot.source = std::string{source};
 }
 
 void CVarManager::record_global_command(std::string_view command, std::string_view source) {
+    const auto counter = s_change_counter.fetch_add(1, std::memory_order_relaxed) + 1;
     std::scoped_lock _{s_change_mutex};
-    ++s_change_snapshot.counter;
+    s_change_snapshot.counter = counter;
     s_change_snapshot.name = "<console_command>";
     s_change_snapshot.value = std::string{command};
     s_change_snapshot.source = std::string{source};

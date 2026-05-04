@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -37,6 +38,7 @@ public:
     };
 
     ChangeSnapshot get_change_snapshot() const;
+    uint64_t get_change_counter() const;
     static void record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source);
     static void record_global_command(std::string_view command, std::string_view source);
 
@@ -231,6 +233,7 @@ private:
     int m_aphelion_framegen_runtime_cvar_attempts{0};
 
     static inline std::mutex s_change_mutex{};
+    static inline std::atomic_uint64_t s_change_counter{};
     static inline ChangeSnapshot s_change_snapshot{};
 
     static inline std::vector<std::shared_ptr<CVarStandard>> s_default_standard_cvars {
