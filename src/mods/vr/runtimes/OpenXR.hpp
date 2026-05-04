@@ -158,6 +158,7 @@ public:
     XrResult begin_frame(const char* caller = "unknown");
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
+    bool close_synced_frame_without_layers(const char* reason);
     bool recover_focused_stale_frame_loop(const char* caller);
     void log_frame_lifecycle_state(const char* prefix) const;
     void trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite);
