@@ -311,6 +311,38 @@ bool is_prospi_nontelephoto_preset(ProSpiCameraPreset preset) {
     }
 }
 
+bool is_prospi_line_telephoto_perf_preset(ProSpiCameraPreset preset) {
+    switch (preset) {
+    case ProSpiCameraPreset::ThirdBaseTelephoto:
+    case ProSpiCameraPreset::ThirdBaseRelayLow:
+    case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+    case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
+    case ProSpiCameraPreset::ThirdBaseCornerLow:
+    case ProSpiCameraPreset::ThirdBaseWideTelephoto:
+    case ProSpiCameraPreset::FirstBaseTelephoto:
+    case ProSpiCameraPreset::FirstBaseWideTelephoto:
+    case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
+    case ProSpiCameraPreset::FirstBaseCornerLow:
+    case ProSpiCameraPreset::FirstBaseInfieldLow:
+    case ProSpiCameraPreset::RightFieldLineTelephoto:
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool is_prospi_line_telephoto_perf_location(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (raw_fov > 32.0f || std::abs(location.z) > 900.0f) {
+        return false;
+    }
+
+    const auto near_first_or_third_line = std::abs(location.x) >= 1800.0f && std::abs(location.y) <= 2600.0f;
+    const auto low_outfield_line = std::abs(location.x) <= 1200.0f && std::abs(location.y) >= 3000.0f;
+    const auto looking_along_line = std::abs(rotation.y) >= 35.0f || std::abs(rotation.y) <= 15.0f;
+
+    return (near_first_or_third_line || low_outfield_line) && looking_along_line;
+}
+
 bool is_prospi_executable() {
     static const bool is_prospi = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -3319,9 +3351,18 @@ void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
 }
 
 void VR::update_game_fov() {
-    const auto update_prospi_telephoto_perf_override = [&](bool should_apply, bool force = false) {
+    struct ProSpiTelephotoPerfTarget {
+        float view_distance_scale{1.0f};
+        float static_mesh_lod_distance_scale{1.0f};
+        int skeletal_mesh_lod_bias{0};
+        bool line_mode{false};
+    };
+
+    const auto update_prospi_telephoto_perf_override = [&](bool should_apply, const ProSpiTelephotoPerfTarget& target, bool force = false) {
         const auto restore = [&]() {
             m_prospi_telephoto_perf_pending_valid = false;
+            m_prospi_telephoto_perf_target_valid = false;
+            m_prospi_telephoto_perf_line_mode = false;
 
             if (!m_prospi_telephoto_perf_override_applied) {
                 m_match_game_fov_prospi_telephoto_perf_active.store(false, std::memory_order_relaxed);
@@ -3377,21 +3418,34 @@ void VR::update_game_fov() {
             m_prospi_telephoto_perf_baselines_valid = true;
         }
 
-        const auto target_view_distance_scale = std::clamp(m_match_game_fov_prospi_telephoto_perf_view_distance_scale->value(), 0.10f, 2.0f);
-        const auto target_static_mesh_lod_distance_scale = std::clamp(m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale->value(), 0.10f, 4.0f);
-        const auto target_skeletal_mesh_lod_bias = std::clamp((int)std::lround(m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias->value()), 0, 4);
+        const auto target_view_distance_scale = std::clamp(target.view_distance_scale, 0.10f, 2.0f);
+        const auto target_static_mesh_lod_distance_scale = std::clamp(target.static_mesh_lod_distance_scale, 0.10f, 4.0f);
+        const auto target_skeletal_mesh_lod_bias = std::clamp(target.skeletal_mesh_lod_bias, 0, 4);
+        const auto target_changed =
+            !m_prospi_telephoto_perf_target_valid ||
+            std::abs(m_prospi_telephoto_perf_target_view_distance_scale - target_view_distance_scale) > 0.001f ||
+            std::abs(m_prospi_telephoto_perf_target_static_mesh_lod_distance_scale - target_static_mesh_lod_distance_scale) > 0.001f ||
+            m_prospi_telephoto_perf_target_skeletal_mesh_lod_bias != target_skeletal_mesh_lod_bias ||
+            m_prospi_telephoto_perf_line_mode != target.line_mode;
 
-        set_runtime_cvar_float(L"r.ViewDistanceScale", target_view_distance_scale);
-        set_runtime_cvar_float(L"r.StaticMeshLODDistanceScale", target_static_mesh_lod_distance_scale);
-        set_runtime_cvar_int(L"r.SkeletalMeshLODBias", target_skeletal_mesh_lod_bias);
+        if (!m_prospi_telephoto_perf_override_applied || target_changed || force) {
+            set_runtime_cvar_float(L"r.ViewDistanceScale", target_view_distance_scale);
+            set_runtime_cvar_float(L"r.StaticMeshLODDistanceScale", target_static_mesh_lod_distance_scale);
+            set_runtime_cvar_int(L"r.SkeletalMeshLODBias", target_skeletal_mesh_lod_bias);
 
-        if (!m_prospi_telephoto_perf_override_applied) {
             spdlog::info(
-                "[PROSPI_TELEPHOTO_PERF] active=true view_distance={:.2f} static_mesh_lod_scale={:.2f} skeletal_lod_bias={}",
+                "[PROSPI_TELEPHOTO_PERF] active=true mode={} view_distance={:.2f} static_mesh_lod_scale={:.2f} skeletal_lod_bias={}",
+                target.line_mode ? "line" : "telephoto",
                 target_view_distance_scale,
                 target_static_mesh_lod_distance_scale,
                 target_skeletal_mesh_lod_bias
             );
+
+            m_prospi_telephoto_perf_target_valid = true;
+            m_prospi_telephoto_perf_target_view_distance_scale = target_view_distance_scale;
+            m_prospi_telephoto_perf_target_static_mesh_lod_distance_scale = target_static_mesh_lod_distance_scale;
+            m_prospi_telephoto_perf_target_skeletal_mesh_lod_bias = target_skeletal_mesh_lod_bias;
+            m_prospi_telephoto_perf_line_mode = target.line_mode;
         }
 
         m_prospi_telephoto_perf_override_applied = true;
@@ -3399,7 +3453,7 @@ void VR::update_game_fov() {
     };
 
     const auto reset_prospi_state = [&]() {
-        update_prospi_telephoto_perf_override(false, true);
+        update_prospi_telephoto_perf_override(false, {}, true);
         m_match_game_fov_prospi_preset.store((int32_t)ProSpiCameraPreset::None, std::memory_order_relaxed);
         m_match_game_fov_prospi_actual_min_active.store(0.0f, std::memory_order_relaxed);
         m_match_game_fov_prospi_calibration_applied.store(false, std::memory_order_relaxed);
@@ -3419,6 +3473,7 @@ void VR::update_game_fov() {
         m_prospi_sticky_raw_fov = 0.0f;
         m_prospi_sticky_calibration_valid = false;
         m_prospi_sticky_camera_id.clear();
+        m_prospi_line_telephoto_perf_hold_until = {};
     };
 
     if (!m_match_game_fov->value()) {
@@ -3786,13 +3841,45 @@ void VR::update_game_fov() {
     effective_fov = game_fov_for_matching * active_fov_multiplier;
     effective_fov = std::clamp(effective_fov, projection_min_fov, 175.0f);
 
+    auto telephoto_perf_target = ProSpiTelephotoPerfTarget{
+        std::clamp(m_match_game_fov_prospi_telephoto_perf_view_distance_scale->value(), 0.10f, 2.0f),
+        std::clamp(m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale->value(), 0.10f, 4.0f),
+        std::clamp((int)std::lround(m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias->value()), 0, 4),
+        false
+    };
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto line_telephoto_perf_candidate =
+        is_prospi &&
+        (is_prospi_line_telephoto_perf_preset(prospi_preset) ||
+         (prospi_preset == ProSpiCameraPreset::GenericTelephoto &&
+          location.has_value() &&
+          rotation.has_value() &&
+          is_prospi_line_telephoto_perf_location(*location, *rotation, raw_fov)));
+
+    if (line_telephoto_perf_candidate) {
+        m_prospi_line_telephoto_perf_hold_until = now + std::chrono::seconds{12};
+    }
+
+    const auto line_telephoto_perf_active =
+        m_prospi_line_telephoto_perf_hold_until.time_since_epoch().count() != 0 &&
+        now < m_prospi_line_telephoto_perf_hold_until;
+
+    if (line_telephoto_perf_active) {
+        telephoto_perf_target.view_distance_scale = std::min(telephoto_perf_target.view_distance_scale, 0.35f);
+        telephoto_perf_target.static_mesh_lod_distance_scale = std::max(telephoto_perf_target.static_mesh_lod_distance_scale, 3.0f);
+        telephoto_perf_target.skeletal_mesh_lod_bias = std::max(telephoto_perf_target.skeletal_mesh_lod_bias, 2);
+        telephoto_perf_target.line_mode = true;
+    }
+
     const auto telephoto_perf_trigger_fov = std::clamp(m_match_game_fov_prospi_telephoto_perf_trigger_fov->value(), 10.0f, 40.0f);
     const auto telephoto_perf_should_apply =
         is_prospi &&
         m_match_game_fov_prospi_telephoto_perf_override->value() &&
-        !is_prospi_nontelephoto_preset(prospi_preset) &&
-        (raw_fov <= telephoto_perf_trigger_fov || game_fov_for_matching <= telephoto_perf_trigger_fov);
-    update_prospi_telephoto_perf_override(telephoto_perf_should_apply);
+        (line_telephoto_perf_active ||
+         (!is_prospi_nontelephoto_preset(prospi_preset) &&
+          (raw_fov <= telephoto_perf_trigger_fov || game_fov_for_matching <= telephoto_perf_trigger_fov)));
+    update_prospi_telephoto_perf_override(telephoto_perf_should_apply, telephoto_perf_target);
 
     m_match_game_fov_prospi_preset.store((int32_t)prospi_preset, std::memory_order_relaxed);
     m_match_game_fov_prospi_actual_min_active.store(active_prospi_actual_min_fov, std::memory_order_relaxed);
