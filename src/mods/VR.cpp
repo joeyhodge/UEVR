@@ -1320,6 +1320,40 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
     return true;
 }
 
+bool VR::is_controller_camera_conflict_guard_active() const {
+    if (!is_controller_camera_conflict_guard_enabled() || !is_hmd_active()) {
+        return false;
+    }
+
+    static const bool is_supported_title = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_controller_camera_guard_candidate_path(*exe_path);
+    }();
+
+    if (!is_supported_title || !is_xinput_gamepad_active_within(std::chrono::seconds(2))) {
+        return false;
+    }
+
+    // Keep the guard out of menus/loading screens. It is intended for gameplay
+    // controller/camera conflicts after a pawn is actually possessed.
+    try {
+        const auto engine = sdk::UGameEngine::get();
+        const auto world = engine != nullptr ? engine->get_world() : nullptr;
+        const auto player_controller = world != nullptr && sdk::UGameplayStatics::get() != nullptr
+            ? sdk::UGameplayStatics::get()->get_player_controller(world, 0)
+            : nullptr;
+
+        if (player_controller == nullptr || player_controller->get_acknowledged_pawn() == nullptr) {
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    SPDLOG_INFO_ONCE("[ControllerCameraGuard] Active: preserving game camera/control rotation while gamepad is active");
+    return true;
+}
+
 // Called when the mod is initialized
 std::optional<std::string> VR::clean_initialize() try {
     ZoneScopedN(__FUNCTION__);
@@ -5426,6 +5460,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_skip_uobjectarray_init->draw("Skip UObjectArray Init");
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
             m_compatibility_direct_aim->draw("Direct Aim Fallback");
+            m_compatibility_controller_camera_guard->draw("Controller-Camera Conflict Guard");
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 
