@@ -2030,6 +2030,7 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
         }
 
         vr->m_openxr->swapchains[i] = swapchain;
+        vr->m_openxr->cache_swapchain_dimensions(i, swapchain.width, swapchain.height);
 
         uint32_t image_count{};
         auto result = xrEnumerateSwapchainImages(swapchain.handle, 0, &image_count, nullptr);
@@ -2239,8 +2240,17 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
 
 void D3D11Component::OpenXR::destroy_swapchains() {
     std::scoped_lock _{this->mtx};
+    auto vr = VR::get();
+
+    if (vr != nullptr && vr->m_openxr != nullptr) {
+        vr->m_openxr->clear_cached_swapchain_dimensions();
+    }
 
 	if (this->contexts.empty()) {
+        return;
+    }
+
+    if (vr == nullptr || vr->m_openxr == nullptr) {
         return;
     }
 
@@ -2259,8 +2269,8 @@ void D3D11Component::OpenXR::destroy_swapchains() {
             }
         }
 
-        if (VR::get()->m_openxr->swapchains.contains(i)) {
-            auto result = xrDestroySwapchain(VR::get()->m_openxr->swapchains[i].handle);
+        if (vr->m_openxr->swapchains.contains(i)) {
+            auto result = xrDestroySwapchain(vr->m_openxr->swapchains[i].handle);
 
             if (result != XR_SUCCESS) {
                 spdlog::error("[VR] Failed to destroy swapchain {}.", i);
@@ -2283,7 +2293,7 @@ void D3D11Component::OpenXR::destroy_swapchains() {
     }
 
     this->contexts.clear();
-    VR::get()->m_openxr->swapchains.clear();
+    vr->m_openxr->swapchains.clear();
 }
 
 void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box, std::function<void(ID3D11Texture2D*)> pre_commands) {
