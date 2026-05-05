@@ -701,15 +701,8 @@ bool OpenXR::close_synced_frame_without_layers(const char* reason) {
 
     const auto safe_reason = reason != nullptr ? reason : "unknown";
 
-    if (!this->got_first_poses || !this->can_run_frame_loop()) {
-        this->clear_frame_synced(safe_reason);
-        SPDLOG_WARNING_EVERY_N_SEC(
-            1,
-            "[OpenXR] Cleared synchronized frame without xrBeginFrame because runtime is not ready for layer submission ({})",
-            safe_reason);
-        return true;
-    }
-
+    // If xrWaitFrame succeeded, keep OpenXR call order intact: open an empty
+    // frame and end it instead of locally clearing frame_synced.
     if (!this->frame_began) {
         this->last_begin_frame_caller = safe_reason;
         XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
@@ -725,8 +718,7 @@ bool OpenXR::close_synced_frame_without_layers(const char* reason) {
                 "[OpenXR] Failed to open empty recovery frame ({}): {}",
                 safe_reason,
                 this->get_result_string(begin_result));
-            this->clear_frame_synced(safe_reason);
-            return true;
+            return false;
         }
 
         this->frame_began = true;
