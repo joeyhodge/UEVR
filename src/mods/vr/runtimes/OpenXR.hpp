@@ -147,6 +147,8 @@ public:
     XrResult begin_frame(const char* caller = "unknown");
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
+    bool close_synced_frame_without_layers(const char* reason);
+    void prepare_resolution_scale_reconfigure(const char* reason);
     bool recover_focused_stale_frame_loop(const char* caller);
     void log_frame_lifecycle_state(const char* prefix) const;
     void trace_wait_frame_success(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite);
@@ -353,6 +355,9 @@ public:
     const ModToggle::Ptr debug_disable_depth_submit{ ModToggle::create("OpenXR_DebugDisableDepthSubmit", false) };
     const ModToggle::Ptr refresh_stale_pose_before_submit_enabled{ ModToggle::create("OpenXR_RefreshStalePoseBeforeSubmit", true) };
     bool resolution_scale_reconfigure_pending{false};
+    float last_applied_resolution_scale{1.0f};
+    uint32_t last_applied_resolution_width{};
+    uint32_t last_applied_resolution_height{};
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
     bool has_valid_projection_data{false};

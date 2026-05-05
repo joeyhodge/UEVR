@@ -51,6 +51,25 @@ VR::~VR() {
     stop_hitch_snapshot_writer();
 }
 
+void VR::on_openxr_resolution_scale_changed(
+    uint32_t old_width,
+    uint32_t old_height,
+    uint32_t new_width,
+    uint32_t new_height) {
+    bool ue57_invalidated = false;
+
+    if (m_fake_stereo_hook != nullptr) {
+        m_fake_stereo_hook->set_should_recreate_textures(true);
+        ue57_invalidated = m_fake_stereo_hook->invalidate_ue57_resolution_dependent_state(old_width, old_height, new_width, new_height);
+    }
+
+    if (ue57_invalidated && m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
+        m_openxr->prepare_resolution_scale_reconfigure("ue57_resolution_scale_reconfigure");
+    }
+
+    reinitialize_renderer();
+}
+
 namespace {
 using json = nlohmann::json;
 
