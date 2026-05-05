@@ -9,6 +9,7 @@
 #include <deque>
 #include <future>
 #include <optional>
+#include <atomic>
 
 #include <nlohmann/json.hpp>
 
@@ -241,7 +242,8 @@ private:
     bool m_fully_hooked{false};
     bool m_wants_activate{false};
     bool m_add_object_hooked{false};
-    bool m_force_uobject_array_creation_scan{false};
+    std::atomic_bool m_force_uobject_array_creation_scan{false};
+    std::atomic_bool m_add_object_guard_unreliable{false};
     float m_last_delta_time{1000.0f / 60.0f};
 
     struct DebugInfo {
@@ -297,6 +299,12 @@ private:
         uint64_t persistent_tracking_misses{};
         uint32_t last_budget{};
     } m_uobject_array_scan_stats{};
+
+    struct AddObjectGuardStats {
+        std::atomic<uint64_t> valid_candidate_calls{};
+        std::atomic<uint64_t> no_candidate_calls{};
+        std::atomic<uint64_t> unreliable_transitions{};
+    } m_add_object_guard_stats{};
 
     struct UiNestedResolveStats {
         uint64_t attempts{};
