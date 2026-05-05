@@ -431,19 +431,32 @@ void UObjectHook::hook() {
     auto uobjectarray = sdk::FUObjectArray::get();
     const auto object_count = uobjectarray != nullptr ? uobjectarray->get_object_count() : 0;
 
-    for (auto i = 0; i < object_count; ++i) {
-        auto object = uobjectarray->get_object(i);
+    if (is_stalker2_uobjecthook_guard_enabled() && object_count > 100000) {
+        // Stalker2 has a very large live object array. Synchronously adopting it
+        // when the UObject UI is first opened causes a visible multi-second hitch,
+        // so let the normal bounded scanner populate it over subsequent ticks.
+        m_uobject_array_scan_cursor = 0;
+        m_uobject_array_last_object_count = object_count;
+        m_uobject_array_startup_scan_until = std::chrono::steady_clock::now();
+        m_force_uobject_array_creation_scan.store(true, std::memory_order_relaxed);
+        SPDLOG_WARN(
+            "[Stalker2][UObjectHook] Deferring initial adoption of {} existing UObjects to incremental scan",
+            object_count);
+    } else {
+        for (auto i = 0; i < object_count; ++i) {
+            auto object = uobjectarray->get_object(i);
 
-        if (object == nullptr || object->get_object() == nullptr) {
-            continue;
+            if (object == nullptr || object->get_object() == nullptr) {
+                continue;
+            }
+
+            add_new_object(object->get_object());
         }
 
-        add_new_object(object->get_object());
+        m_uobject_array_scan_cursor = object_count;
+        m_uobject_array_last_object_count = object_count;
+        m_uobject_array_startup_scan_until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
     }
-
-    m_uobject_array_scan_cursor = object_count;
-    m_uobject_array_last_object_count = object_count;
-    m_uobject_array_startup_scan_until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 
     SPDLOG_INFO("[UObjectHook] Added {} existing objects", m_objects.size());
 
@@ -1030,15 +1043,9 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
     const bool recent_tracking_miss =
         m_last_persistent_tracking_miss.time_since_epoch().count() != 0 &&
         now - m_last_persistent_tracking_miss < std::chrono::seconds(10);
-    const bool recent_untracked_pawn =
-        m_last_untracked_pawn_seen.time_since_epoch().count() != 0 &&
-        now - m_last_untracked_pawn_seen < std::chrono::seconds(10);
     const bool high_priority =
         startup_window ||
-        force_scan ||
-        add_object_guard_unreliable ||
         recent_tracking_miss ||
-        recent_untracked_pawn ||
         pawn_tracking_unhealthy;
 
     uint32_t budget = 0;
@@ -1050,7 +1057,9 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
             ++m_uobject_array_scan_stats.full_sweeps;
         }
 
-        budget = 8192;
+        // When AddObject is unreliable, scan fast enough to catch newly possessed pawns
+        // without doing a permanent full-speed sweep every frame after gameplay starts.
+        budget = add_object_guard_unreliable ? 4096 : 8192;
     } else if (m_uobject_array_scan_cursor < object_count) {
         budget = 1024;
     } else if (!m_uobject_array_full_sweep_active && now - m_last_uobject_array_full_sweep >= std::chrono::seconds(5)) {
