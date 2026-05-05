@@ -728,9 +728,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_stalker2_ue51_external_backbuffer =
+        is_stalker2_current_game() &&
+        is_ue_5_1_dx12_backend() &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
+    const auto use_stable_external_backbuffer_copy =
+        is_shf_external_backbuffer || is_stalker2_ue51_external_backbuffer;
+    const auto volatile_external_source_state =
+        is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    const char* stable_external_copy_label =
+        is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
+    const wchar_t* stable_external_copy_name =
+        is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
     const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
-    auto scene_source_state = is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     const auto ui_invert_alpha = vr->get_overlay_component().get_ui_invert_alpha();
 
@@ -811,18 +825,18 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 commands.setup(L"Game Texture Commands");
             }
         }
-    } else if (backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
+    } else if (backbuffer.Get() != real_backbuffer.Get() && (use_stable_external_backbuffer_copy || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
-        if (is_shf_external_backbuffer) {
+        if (use_stable_external_backbuffer_copy) {
             const auto source_desc = backbuffer->GetDesc();
             const auto needs_copy_texture =
                 m_game_tex.texture.Get() == nullptr ||
                 !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc);
 
             if (needs_copy_texture) {
-                SPDLOG_WARN("[SHf][D3D12] Creating owned stable scene copy for volatile external RT [{}x{} fmt={} flags=0x{:x}]",
-                    source_desc.Width, source_desc.Height, (uint32_t)source_desc.Format, (uint32_t)source_desc.Flags);
+                SPDLOG_WARN("[{}][D3D12] Creating owned stable scene copy for volatile external RT [{}x{} fmt={} flags=0x{:x}]",
+                    stable_external_copy_label, source_desc.Width, source_desc.Height, (uint32_t)source_desc.Format, (uint32_t)source_desc.Flags);
 
                 D3D12_HEAP_PROPERTIES heap_props{};
                 heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
@@ -837,11 +851,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &copy_desc, ENGINE_SRC_COLOR, nullptr, IID_PPV_ARGS(&stable_copy)))) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
-                        "[SHf][D3D12] Failed to create owned stable scene copy [{}x{} fmt={} flags=0x{:x}]; keeping volatile RT path disabled for mirror/2D",
-                        copy_desc.Width, copy_desc.Height, (uint32_t)copy_desc.Format, (uint32_t)copy_desc.Flags);
+                        "[{}][D3D12] Failed to create owned stable scene copy [{}x{} fmt={} flags=0x{:x}]; falling back to volatile RT path",
+                        stable_external_copy_label, copy_desc.Width, copy_desc.Height, (uint32_t)copy_desc.Format, (uint32_t)copy_desc.Flags);
                     m_game_tex.reset();
-                } else if (!m_game_tex.setup(device, stable_copy.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"SHf Stable Scene Copy")) {
-                    spdlog::error("[SHf][D3D12] Failed to setup owned stable scene copy.");
+                } else if (!m_game_tex.setup(device, stable_copy.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, stable_external_copy_name)) {
+                    spdlog::error("[{}][D3D12] Failed to setup owned stable scene copy.", stable_external_copy_label);
                     m_game_tex.reset();
                 } else {
                     for (auto& commands : m_game_tex_commands) {
@@ -862,15 +876,29 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (command_ctx.ready()) {
                     command_ctx.wait(INFINITE);
-                    command_ctx.copy(backbuffer.Get(), m_game_tex.texture.Get(), ENGINE_SRC_COLOR, ENGINE_SRC_COLOR);
+                    command_ctx.copy(backbuffer.Get(), m_game_tex.texture.Get(), volatile_external_source_state, ENGINE_SRC_COLOR);
                     command_ctx.execute();
 
                     SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[SHf][D3D12] Copied volatile external RT into owned stable scene texture for HMD/mirror/2D");
+                        "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD/mirror/2D",
+                        stable_external_copy_label);
 
                     m_skip_spectator_view_for_volatile_external_rt = false;
                     backbuffer = m_game_tex.texture;
                     scene_source_state = ENGINE_SRC_COLOR;
+                }
+            }
+
+            if (m_game_tex.texture.Get() == nullptr) {
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    1,
+                    "[{}][D3D12] Stable scene copy unavailable; falling back to volatile external RT reference",
+                    stable_external_copy_label);
+                scene_source_state = volatile_external_source_state;
+
+                if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+                    spdlog::error("[VR] Failed to fully setup fallback game texture reference.");
+                    m_game_tex.reset();
                 }
             }
         } else {
