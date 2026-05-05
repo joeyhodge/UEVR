@@ -263,6 +263,12 @@ void emit_openxr_state_probes(OpenXR* openxr, const char* context) {
 void OpenXR::on_draw_ui() {
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode("OpenXR Options")) {
+        if (this->last_applied_resolution_width == 0 || this->last_applied_resolution_height == 0) {
+            this->last_applied_resolution_scale = this->resolution_scale->value();
+            this->last_applied_resolution_width = this->get_width();
+            this->last_applied_resolution_height = this->get_height();
+        }
+
         if (this->resolution_scale->draw("Resolution Scale")) {
             this->resolution_scale_reconfigure_pending = true;
         }
@@ -271,16 +277,27 @@ void OpenXR::on_draw_ui() {
             this->resolution_scale_reconfigure_pending = false;
 
             if (auto vr = VR::get(); vr != nullptr) {
+                const auto old_scale = this->last_applied_resolution_scale;
+                const auto old_width = this->last_applied_resolution_width != 0 ? this->last_applied_resolution_width : this->get_width();
+                const auto old_height = this->last_applied_resolution_height != 0 ? this->last_applied_resolution_height : this->get_height();
+                const auto new_width = this->get_width();
+                const auto new_height = this->get_height();
+
                 spdlog::info(
-                    "[OpenXR] Resolution scale changed to {:.3f}; recreating renderer textures and swapchains",
-                    this->resolution_scale->value()
+                    "[OpenXR] Resolution scale changed {:.3f}->{:.3f} [{}x{}]->[{}x{}]; recreating renderer textures and swapchains",
+                    old_scale,
+                    this->resolution_scale->value(),
+                    old_width,
+                    old_height,
+                    new_width,
+                    new_height
                 );
 
-                if (auto& fake_stereo_hook = vr->get_fake_stereo_hook(); fake_stereo_hook != nullptr) {
-                    fake_stereo_hook->set_should_recreate_textures(true);
-                }
+                vr->on_openxr_resolution_scale_changed(old_width, old_height, new_width, new_height);
 
-                vr->reinitialize_renderer();
+                this->last_applied_resolution_scale = this->resolution_scale->value();
+                this->last_applied_resolution_width = new_width;
+                this->last_applied_resolution_height = new_height;
             }
         }
 
@@ -815,6 +832,48 @@ bool OpenXR::close_synced_frame_without_layers(const char* reason) {
     return true;
 }
 
+void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
+    const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
+    const auto had_synced = this->frame_synced;
+    const auto had_began = this->frame_began;
+    bool closed_pending_frame = false;
+
+    // A resolution/swapchain rebuild while xrWaitFrame has already returned can
+    // leave the runtime pacing the next frames badly. Preserve OpenXR call order
+    // by closing that pending frame before the renderer destroys/recreates targets.
+    if (had_began) {
+        closed_pending_frame = this->recover_wedged_frame(safe_reason) == XR_SUCCESS;
+    } else if (had_synced) {
+        closed_pending_frame = this->close_synced_frame_without_layers(safe_reason);
+    }
+
+    {
+        std::scoped_lock _{sync_mtx};
+        this->frame_synced_skip_streak = 0;
+        this->frame_began_skip_streak = 0;
+        this->frame_began_skip_suppressed_count = 0;
+        this->long_wait_suppressed_count = 0;
+        this->long_wait_max_suppressed_ms = 0.0;
+        this->last_long_wait_log = {};
+        this->last_frame_timing_log = {};
+        this->wait_frame_timing.reset();
+        this->begin_frame_timing.reset();
+        this->end_frame_timing.reset();
+        for (auto& timing : this->wait_frame_callsite_timing) {
+            timing.reset();
+        }
+    }
+
+    spdlog::info(
+        "[OpenXR] Prepared frame loop for resolution-scale reconfigure reason={} had_synced={} had_began={} closed_pending={} session={} ready={}",
+        safe_reason,
+        had_synced,
+        had_began,
+        closed_pending_frame,
+        this->get_session_state_string(this->session_state),
+        this->session_ready);
+}
+
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
     std::scoped_lock _{sync_mtx};
 
@@ -1269,14 +1328,24 @@ uint32_t OpenXR::get_width() const {
     if (this->view_configs.empty()) {
         return 0;
     }
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * this->resolution_scale->value() * eye_width_adjustment);
+
+    const auto scale = this->resolution_scale_reconfigure_pending && this->last_applied_resolution_width != 0
+        ? this->last_applied_resolution_scale
+        : this->resolution_scale->value();
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * scale * eye_width_adjustment);
 }
 
 uint32_t OpenXR::get_height() const {
     if (this->view_configs.empty()) {
         return 0;
     }
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * this->resolution_scale->value() * eye_height_adjustment);
+
+    const auto scale = this->resolution_scale_reconfigure_pending && this->last_applied_resolution_height != 0
+        ? this->last_applied_resolution_scale
+        : this->resolution_scale->value();
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * scale * eye_height_adjustment);
 }
 
 VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {

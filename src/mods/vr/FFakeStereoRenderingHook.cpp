@@ -2016,6 +2016,39 @@ void FFakeStereoRenderingHook::on_draw_ui() {
     ImGui::Separator();
 }
 
+bool FFakeStereoRenderingHook::invalidate_ue57_resolution_dependent_state(
+    uint32_t old_width,
+    uint32_t old_height,
+    uint32_t new_width,
+    uint32_t new_height) {
+    if (!is_ue_5_7_or_newer()) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[UE5.7][OpenXR] Resolution changed [{}x{}]->[{}x{}]; invalidating Slate/UI render targets",
+        old_width,
+        old_height,
+        new_width,
+        new_height);
+
+    m_wants_texture_recreation = true;
+    m_skip_next_adjust_view_rect = true;
+
+    // Force the UE5.7 Slate/UI path to observe fresh post-resize DrawWindow and
+    // PreRenderViewFamily traffic instead of reusing candidates captured at the
+    // previous OpenXR scale.
+    m_has_seen_stable_slate_draw = false;
+    m_has_seen_prerender_viewfamily = false;
+    m_first_stable_slate_draw_at = {};
+
+    m_rtm.invalidate_resolution_dependent_targets();
+    m_rtm_418.invalidate_resolution_dependent_targets();
+    m_rtm_special.invalidate_resolution_dependent_targets();
+
+    return true;
+}
+
 void FFakeStereoRenderingHook::attempt_hooking() {
     if (m_finished_hooking || m_tried_hooking) {
         return;
@@ -10352,6 +10385,22 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
     reset_dedicated_ui_creation_state();
+}
+
+void VRRenderTargetManager_Base::invalidate_resolution_dependent_targets() {
+    texture_hook_ref = nullptr;
+    shader_resource_hook_ref = nullptr;
+    allocate_texture_called = false;
+    last_texture_index = 0;
+    last_width = 0;
+    last_height = 0;
+    wants_depth_reallocate = true;
+
+    ui_target = nullptr;
+    destroy_dedicated_ui_target();
+    dedicated_ui_width = 0;
+    dedicated_ui_height = 0;
+    dedicated_ui_last_attempt = {};
 }
 
 void VRRenderTargetManager_Base::reset_dedicated_ui_creation_state() {
