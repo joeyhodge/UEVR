@@ -419,7 +419,7 @@ void UObjectHook::hook() {
         }
     }
 
-    m_force_uobject_array_creation_scan = !m_add_object_hooked;
+    m_force_uobject_array_creation_scan.store(!m_add_object_hooked, std::memory_order_relaxed);
 
     if (m_add_object_hooked) {
         SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
@@ -971,7 +971,10 @@ void UObjectHook::prune_destroyed_object_tombstones(std::chrono::steady_clock::t
 }
 
 uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
-    if (!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) {
+    const bool force_scan = m_force_uobject_array_creation_scan.load(std::memory_order_relaxed);
+    const bool add_object_guard_unreliable = m_add_object_guard_unreliable.load(std::memory_order_relaxed);
+
+    if (!should_incrementally_refresh_uobject_array() && !force_scan && !add_object_guard_unreliable) {
         m_uobject_array_scan_stats.last_budget = 0;
         return 0;
     }
@@ -1032,7 +1035,8 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
         now - m_last_untracked_pawn_seen < std::chrono::seconds(10);
     const bool high_priority =
         startup_window ||
-        m_force_uobject_array_creation_scan ||
+        force_scan ||
+        add_object_guard_unreliable ||
         recent_tracking_miss ||
         recent_untracked_pawn ||
         pawn_tracking_unhealthy;
@@ -1064,7 +1068,10 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
 }
 
 void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
-    if ((!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) || max_objects == 0) {
+    const bool force_scan = m_force_uobject_array_creation_scan.load(std::memory_order_relaxed);
+    const bool add_object_guard_unreliable = m_add_object_guard_unreliable.load(std::memory_order_relaxed);
+
+    if ((!should_incrementally_refresh_uobject_array() && !force_scan && !add_object_guard_unreliable) || max_objects == 0) {
         return;
     }
 
@@ -3129,14 +3136,27 @@ void UObjectHook::draw_main() {
     ImGui::Text("Objects: %zu (%zu actual)", m_objects.size(), actual_object_count);
 
     if (ImGui::TreeNode("UObjectHook Health")) {
-        ImGui::Text("AddObject hook: %s", m_add_object_hooked ? "hooked" : "fallback scan");
+        const bool add_object_guard_unreliable = m_add_object_guard_unreliable.load(std::memory_order_relaxed);
+        const bool force_scan = m_force_uobject_array_creation_scan.load(std::memory_order_relaxed);
+        const auto add_object_valid_candidates = m_add_object_guard_stats.valid_candidate_calls.load(std::memory_order_relaxed);
+        const auto add_object_no_candidates = m_add_object_guard_stats.no_candidate_calls.load(std::memory_order_relaxed);
+        const auto add_object_unreliable_transitions = m_add_object_guard_stats.unreliable_transitions.load(std::memory_order_relaxed);
+
+        ImGui::Text(
+            "AddObject hook: %s",
+            add_object_guard_unreliable ? "hooked but unreliable; fallback scan" : (m_add_object_hooked ? "hooked" : "fallback scan"));
+        ImGui::Text(
+            "AddObject guard: valid=%llu no_candidate=%llu unreliable_transitions=%llu",
+            add_object_valid_candidates,
+            add_object_no_candidates,
+            add_object_unreliable_transitions);
         ImGui::Text(
             "Scan: cursor=%d/%d budget=%u full_sweep=%s force_scan=%s",
             m_uobject_array_scan_cursor,
             actual_object_count,
             m_uobject_array_scan_stats.last_budget,
             m_uobject_array_full_sweep_active ? "yes" : "no",
-            m_force_uobject_array_creation_scan ? "yes" : "no");
+            force_scan ? "yes" : "no");
         ImGui::Text(
             "Scan totals: ticks=%llu scanned=%llu added=%llu rejected=%llu tombstone_skips=%llu full_sweeps=%llu",
             m_uobject_array_scan_stats.ticks,
@@ -4838,6 +4858,10 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
         sdk::UObjectBase* obj = nullptr;
 
         if (use_dynamic_uobjecthook_candidate_guard()) {
+            if (hook->m_add_object_guard_unreliable.load(std::memory_order_relaxed)) {
+                return result;
+            }
+
             struct Candidate {
                 const char* name;
                 sdk::UObjectBase* object;
@@ -4884,6 +4908,7 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
             }
 
             if (selected_candidate != 0) {
+                hook->m_add_object_guard_stats.valid_candidate_calls.fetch_add(1, std::memory_order_relaxed);
                 preferred_candidate.store(selected_candidate, std::memory_order_relaxed);
                 obj = candidates[selected_candidate - 1].object;
 
@@ -4893,13 +4918,37 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
                     SPDLOG_INFO("[UObjectHook] Guarded AddObject selected {} as UObjectBase*", candidates[selected_candidate - 1].name);
                 }
             } else {
-                SPDLOG_WARNING_EVERY_N_SEC(
-                    2,
-                    "[UObjectHook] Skipping AddObject call with no safe UObject candidate (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
-                    (uintptr_t)rcx,
-                    (uintptr_t)rdx,
-                    (uintptr_t)r8,
-                    (uintptr_t)r9);
+                constexpr uint64_t unreliable_threshold = 32;
+                const auto no_candidate_count =
+                    hook->m_add_object_guard_stats.no_candidate_calls.fetch_add(1, std::memory_order_relaxed) + 1;
+                const auto valid_candidate_count =
+                    hook->m_add_object_guard_stats.valid_candidate_calls.load(std::memory_order_relaxed);
+
+                if (valid_candidate_count == 0 && no_candidate_count >= unreliable_threshold) {
+                    const auto was_unreliable =
+                        hook->m_add_object_guard_unreliable.exchange(true, std::memory_order_relaxed);
+
+                    if (!was_unreliable) {
+                        hook->m_force_uobject_array_creation_scan.store(true, std::memory_order_relaxed);
+                        hook->m_add_object_guard_stats.unreliable_transitions.fetch_add(1, std::memory_order_relaxed);
+                        SPDLOG_WARN(
+                            "[UObjectHook] Guarded AddObject produced {} calls with no safe UObject candidate; treating AddObject hook as unreliable and relying on FUObjectArray scan (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
+                            no_candidate_count,
+                            (uintptr_t)rcx,
+                            (uintptr_t)rdx,
+                            (uintptr_t)r8,
+                            (uintptr_t)r9);
+                    }
+                } else {
+                    SPDLOG_WARNING_EVERY_N_SEC(
+                        2,
+                        "[UObjectHook] Skipping AddObject call with no safe UObject candidate (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
+                        (uintptr_t)rcx,
+                        (uintptr_t)rdx,
+                        (uintptr_t)r8,
+                        (uintptr_t)r9);
+                }
+
                 return result;
             }
         } else {
@@ -4942,7 +4991,10 @@ void* UObjectHook::destructor(sdk::UObjectBase* object, void* rdx, void* r8, voi
 #ifdef VERBOSE_UOBJECTHOOK
             SPDLOG_INFO("Removing object {:x} {:s}", (uintptr_t)object, utility::narrow(it->second->full_name));
 #endif
-            if (should_incrementally_refresh_uobject_array() || hook->m_force_uobject_array_creation_scan) {
+            if (should_incrementally_refresh_uobject_array() ||
+                hook->m_force_uobject_array_creation_scan.load(std::memory_order_relaxed) ||
+                hook->m_add_object_guard_unreliable.load(std::memory_order_relaxed))
+            {
                 if (const auto index_serial = get_uobject_index_serial(object); index_serial.has_value()) {
                     hook->m_destroyed_object_tombstones[object] = UObjectHook::DestroyedObjectTombstone{
                         index_serial->first,
