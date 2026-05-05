@@ -91,6 +91,10 @@ bool should_incrementally_refresh_uobject_array() {
     return is_ue_5_1_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
 }
 
+bool should_use_stalker2_on_demand_uobject_tracking(int32_t object_count) {
+    return is_stalker2_uobjecthook_guard_enabled() && object_count > 100000;
+}
+
 bool is_readable_process_range(uintptr_t address, size_t size) {
     if (address == 0 || size == 0) {
         return false;
@@ -431,16 +435,18 @@ void UObjectHook::hook() {
     auto uobjectarray = sdk::FUObjectArray::get();
     const auto object_count = uobjectarray != nullptr ? uobjectarray->get_object_count() : 0;
 
-    if (is_stalker2_uobjecthook_guard_enabled() && object_count > 100000) {
+    if (should_use_stalker2_on_demand_uobject_tracking(object_count)) {
         // Stalker2 has a very large live object array. Synchronously adopting it
-        // when the UObject UI is first opened causes a visible multi-second hitch,
-        // so let the normal bounded scanner populate it over subsequent ticks.
-        m_uobject_array_scan_cursor = 0;
+        // when the UObject UI is first opened causes a visible multi-second hitch.
+        // Start at the current end and adopt gameplay roots directly/on demand instead
+        // of backfilling hundreds of thousands of old entries on the game thread.
+        m_uobject_array_scan_cursor = object_count;
         m_uobject_array_last_object_count = object_count;
         m_uobject_array_startup_scan_until = std::chrono::steady_clock::now();
-        m_force_uobject_array_creation_scan.store(true, std::memory_order_relaxed);
+        m_uobject_array_full_sweep_active = false;
+        m_force_uobject_array_creation_scan.store(false, std::memory_order_relaxed);
         SPDLOG_WARN(
-            "[Stalker2][UObjectHook] Deferring initial adoption of {} existing UObjects to incremental scan",
+            "[Stalker2][UObjectHook] Deferring initial adoption of {} existing UObjects; using on-demand common-root tracking",
             object_count);
     } else {
         for (auto i = 0; i < object_count; ++i) {
@@ -921,36 +927,53 @@ void UObjectHook::ui_handle_reachable_object(sdk::UObject* parent, sdk::UObject*
     ui_handle_object(child);
 }
 
-bool UObjectHook::try_track_object(sdk::UObjectBase* object, std::string_view context, bool require_array_member) {
+bool UObjectHook::try_track_object(
+    sdk::UObjectBase* object,
+    std::string_view context,
+    bool require_array_member,
+    bool run_creation_jobs) {
     if (object == nullptr) {
         return false;
     }
 
-    if (exists(object)) {
-        return true;
-    }
+    const auto already_tracked = exists(object);
 
-    if (!is_safe_uobject_candidate(*this, object, require_array_member)) {
-        SPDLOG_WARNING_EVERY_N_SEC(
-            2,
-            "[UObjectHook] Refusing to adopt untracked UObject from {}: {:x}",
-            context,
-            (uintptr_t)object);
-        return false;
-    }
+    if (!already_tracked) {
+        if (!is_safe_uobject_candidate(*this, object, require_array_member)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[UObjectHook] Refusing to adopt untracked UObject from {}: {:x}",
+                context,
+                (uintptr_t)object);
+            return false;
+        }
 
-    add_new_object(object);
+        add_new_object(object, run_creation_jobs);
+    }
 
     const auto tracked = exists(object);
 
-    if (tracked) {
+    if (tracked && !already_tracked) {
         SPDLOG_INFO("[UObjectHook] Adopted untracked UObject from {}: {:x}", context, (uintptr_t)object);
-    } else {
+    } else if (!tracked) {
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[UObjectHook] Failed to adopt untracked UObject from {} after validation: {:x}",
             context,
             (uintptr_t)object);
+    }
+
+    if (tracked) {
+        const auto object_class = object->get_class();
+
+        if (object_class != nullptr &&
+            (sdk::UObjectBase*)object_class != object &&
+            !exists((sdk::UObjectBase*)object_class) &&
+            is_probably_uobject_layout((sdk::UObjectBase*)object_class)) {
+            // On-demand tracking skips the old bulk FUObjectArray backfill, so also
+            // adopt the class metadata needed by the explorer to display the object.
+            try_track_object((sdk::UObjectBase*)object_class, "tracked object class", false, false);
+        }
     }
 
     return tracked;
@@ -1007,11 +1030,17 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
     }
 
     const auto now = std::chrono::steady_clock::now();
+    const bool stalker2_on_demand_tracking = should_use_stalker2_on_demand_uobject_tracking(object_count);
 
     if (m_uobject_array_scan_cursor < 0 || m_uobject_array_scan_cursor > object_count || object_count < m_uobject_array_last_object_count) {
-        m_uobject_array_scan_cursor = 0;
-        m_uobject_array_full_sweep_active = true;
-        ++m_uobject_array_scan_stats.full_sweeps;
+        if (stalker2_on_demand_tracking) {
+            m_uobject_array_scan_cursor = object_count;
+            m_uobject_array_full_sweep_active = false;
+        } else {
+            m_uobject_array_scan_cursor = 0;
+            m_uobject_array_full_sweep_active = true;
+            ++m_uobject_array_scan_stats.full_sweeps;
+        }
     }
 
     if (object_count > m_uobject_array_last_object_count && m_uobject_array_scan_cursor >= m_uobject_array_last_object_count) {
@@ -1027,16 +1056,74 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
     if (engine != nullptr) {
         if (const auto world = engine->get_world(); world != nullptr) {
             if (const auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0); player_controller != nullptr) {
+                if (stalker2_on_demand_tracking && !exists((sdk::UObjectBase*)player_controller)) {
+                    try_track_object(
+                        (sdk::UObjectBase*)player_controller,
+                        "Stalker2 common root/PlayerController",
+                        false,
+                        false);
+                }
+
                 if (const auto pawn = player_controller->get_acknowledged_pawn(); pawn != nullptr && !exists(pawn)) {
-                    pawn_tracking_unhealthy = true;
-                    m_last_untracked_pawn_seen = now;
-                    SPDLOG_WARNING_EVERY_N_SEC(
-                        5,
-                        "[UObjectHook] Local pawn is valid but not tracked; raising FUObjectArray scan budget pawn={:x}",
-                        (uintptr_t)pawn);
+                    if (stalker2_on_demand_tracking) {
+                        if (try_track_object(
+                                (sdk::UObjectBase*)pawn,
+                                "Stalker2 common root/Acknowledged Pawn",
+                                false,
+                                false)) {
+                            SPDLOG_INFO_EVERY_N_SEC(
+                                5,
+                                "[Stalker2][UObjectHook] Adopted acknowledged pawn directly without FUObjectArray backscan pawn={:x}",
+                                (uintptr_t)pawn);
+                        } else {
+                            SPDLOG_WARNING_EVERY_N_SEC(
+                                5,
+                                "[Stalker2][UObjectHook] Acknowledged pawn is valid but direct tracking failed; not sweeping full FUObjectArray pawn={:x}",
+                                (uintptr_t)pawn);
+                        }
+                    } else {
+                        pawn_tracking_unhealthy = true;
+                        m_last_untracked_pawn_seen = now;
+                        SPDLOG_WARNING_EVERY_N_SEC(
+                            5,
+                            "[UObjectHook] Local pawn is valid but not tracked; raising FUObjectArray scan budget pawn={:x}",
+                            (uintptr_t)pawn);
+                    }
+                }
+
+                if (stalker2_on_demand_tracking) {
+                    if (const auto camera_manager = player_controller->get_player_camera_manager();
+                        camera_manager != nullptr && !exists((sdk::UObjectBase*)camera_manager)) {
+                        try_track_object(
+                            (sdk::UObjectBase*)camera_manager,
+                            "Stalker2 common root/Camera Manager",
+                            false,
+                            false);
+                    }
                 }
             }
+
+            if (stalker2_on_demand_tracking && !exists((sdk::UObjectBase*)world)) {
+                try_track_object((sdk::UObjectBase*)world, "Stalker2 common root/World", false, false);
+            }
         }
+    }
+
+    if (stalker2_on_demand_tracking) {
+        // The Stalker2 object array is large enough that periodic full sweeps are visible
+        // as VR hitches. Keep the common roots above tracked and only sample new indices
+        // that appeared after activation.
+        m_force_uobject_array_creation_scan.store(false, std::memory_order_relaxed);
+        m_uobject_array_full_sweep_active = false;
+
+        uint32_t budget = 0;
+
+        if (m_uobject_array_scan_cursor < object_count) {
+            budget = 256;
+        }
+
+        m_uobject_array_scan_stats.last_budget = budget;
+        return budget;
     }
 
     const bool startup_window = now < m_uobject_array_startup_scan_until;
@@ -3208,11 +3295,19 @@ void UObjectHook::draw_main() {
         auto world = engine != nullptr ? engine->get_world() : nullptr;
 
         if (world != nullptr) {
+            const bool stalker2_common_root = is_stalker2_uobjecthook_guard_enabled();
+            const bool require_common_root_array_member = !stalker2_common_root;
+
             if (ImGui::TreeNode("PlayerController")) {
                 auto scope = m_path.enter_clean("Player Controller");
                 auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
 
                 if (player_controller != nullptr) {
+                    try_track_object(
+                        (sdk::UObjectBase*)player_controller,
+                        "Common Objects/PlayerController",
+                        require_common_root_array_member,
+                        false);
                     ui_handle_object(player_controller);
                 } else {
                     ImGui::Text("No player controller");
@@ -3229,7 +3324,11 @@ void UObjectHook::draw_main() {
                     auto pawn = player_controller->get_acknowledged_pawn();
 
                     if (pawn != nullptr) {
-                        try_track_object((sdk::UObjectBase*)pawn, "Common Objects/Acknowledged Pawn", true);
+                        try_track_object(
+                            (sdk::UObjectBase*)pawn,
+                            "Common Objects/Acknowledged Pawn",
+                            require_common_root_array_member,
+                            false);
                         ui_handle_object(pawn);
                     } else {
                         ImGui::Text("No pawn");
@@ -3249,6 +3348,11 @@ void UObjectHook::draw_main() {
                     auto camera_manager = player_controller->get_player_camera_manager();
 
                     if (camera_manager != nullptr) {
+                        try_track_object(
+                            (sdk::UObjectBase*)camera_manager,
+                            "Common Objects/Camera Manager",
+                            require_common_root_array_member,
+                            false);
                         ui_handle_object((sdk::UObject*)camera_manager);
                     } else {
                         ImGui::Text("No camera manager");
@@ -3262,6 +3366,7 @@ void UObjectHook::draw_main() {
 
             if (ImGui::TreeNode("World")) {
                 auto scope = m_path.enter_clean("World");
+                try_track_object((sdk::UObjectBase*)world, "Common Objects/World", require_common_root_array_member, false);
                 ui_handle_object(world);
                 ImGui::TreePop();
             }
@@ -3530,6 +3635,9 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
         return;
     }
 
+    if (!this->exists_unsafe(uclass)) {
+        try_track_object((sdk::UObjectBase*)uclass, "ui object class", false, false);
+    }
 
     if (!this->exists_unsafe(uclass)) {
         ImGui::Text("Invalid class");
@@ -4938,15 +5046,38 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
                         hook->m_add_object_guard_unreliable.exchange(true, std::memory_order_relaxed);
 
                     if (!was_unreliable) {
-                        hook->m_force_uobject_array_creation_scan.store(true, std::memory_order_relaxed);
+                        const auto object_array = sdk::FUObjectArray::get();
+                        const auto object_count = object_array != nullptr ? object_array->get_object_count() : 0;
+                        const bool stalker2_on_demand_tracking = should_use_stalker2_on_demand_uobject_tracking(object_count);
+
+                        if (stalker2_on_demand_tracking) {
+                            hook->m_uobject_array_scan_cursor = object_count;
+                            hook->m_uobject_array_last_object_count = object_count;
+                            hook->m_uobject_array_full_sweep_active = false;
+                            hook->m_force_uobject_array_creation_scan.store(false, std::memory_order_relaxed);
+                        } else {
+                            hook->m_force_uobject_array_creation_scan.store(true, std::memory_order_relaxed);
+                        }
+
                         hook->m_add_object_guard_stats.unreliable_transitions.fetch_add(1, std::memory_order_relaxed);
-                        SPDLOG_WARN(
-                            "[UObjectHook] Guarded AddObject produced {} calls with no safe UObject candidate; treating AddObject hook as unreliable and relying on FUObjectArray scan (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
-                            no_candidate_count,
-                            (uintptr_t)rcx,
-                            (uintptr_t)rdx,
-                            (uintptr_t)r8,
-                            (uintptr_t)r9);
+
+                        if (stalker2_on_demand_tracking) {
+                            SPDLOG_WARN(
+                                "[Stalker2][UObjectHook] Guarded AddObject produced {} calls with no safe UObject candidate; AddObject is unreliable, using on-demand roots instead of FUObjectArray backscan (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
+                                no_candidate_count,
+                                (uintptr_t)rcx,
+                                (uintptr_t)rdx,
+                                (uintptr_t)r8,
+                                (uintptr_t)r9);
+                        } else {
+                            SPDLOG_WARN(
+                                "[UObjectHook] Guarded AddObject produced {} calls with no safe UObject candidate; treating AddObject hook as unreliable and relying on FUObjectArray scan (rcx={:x}, rdx={:x}, r8={:x}, r9={:x})",
+                                no_candidate_count,
+                                (uintptr_t)rcx,
+                                (uintptr_t)rdx,
+                                (uintptr_t)r8,
+                                (uintptr_t)r9);
+                        }
                     }
                 } else {
                     SPDLOG_WARNING_EVERY_N_SEC(
