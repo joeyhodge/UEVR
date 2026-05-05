@@ -189,6 +189,12 @@ public:
         }
     }
 
+    void on_openxr_resolution_scale_changed(
+        uint32_t old_width,
+        uint32_t old_height,
+        uint32_t new_width,
+        uint32_t new_height);
+
 
     Vector4f get_position(uint32_t index, bool grip = true)  const;
     Vector4f get_velocity(uint32_t index)  const;

@@ -111,6 +111,7 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
+    void invalidate_resolution_dependent_targets();
     void ensure_dedicated_ui_target(uintptr_t command_list);
     bool create_dedicated_ui_texture();
     bool try_schedule_dedicated_ui_creation();
@@ -441,6 +442,12 @@ public:
             m_wants_texture_recreation = true;
         }
     }
+
+    bool invalidate_ue57_resolution_dependent_state(
+        uint32_t old_width,
+        uint32_t old_height,
+        uint32_t new_width,
+        uint32_t new_height);
 
     void on_config_load(const utility::Config& cfg, bool set_defaults) {
         for (IModValue& option : m_options) {
