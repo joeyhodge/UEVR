@@ -64,7 +64,11 @@ public:
         return m_fully_hooked;
     }
 
-    bool try_track_object(sdk::UObjectBase* object, std::string_view context, bool require_array_member = true);
+    bool try_track_object(
+        sdk::UObjectBase* object,
+        std::string_view context,
+        bool require_array_member = true,
+        bool run_creation_jobs = true);
 
 protected:
     std::string_view get_name() const override { return "UObjectHook"; };
