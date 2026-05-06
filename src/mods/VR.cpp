@@ -3184,12 +3184,21 @@ bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
 
     constexpr auto MAX_BURST_DEFER_MS = 700LL;
     constexpr auto MIN_DEFER_SPACING_MS = 16LL;
-    constexpr auto MAX_DEFERRED_FRAMES_PER_BURST = 3u;
+    constexpr auto MAX_DEFERRED_FRAMES_PER_BURST = 1u;
+    constexpr auto MAX_LAST_END_AGE_MS = 250LL;
 
     const auto now_ms = steady_clock_ms();
     const auto until_ms = m_stalker2_transition_stress_until_ms.load();
+    const auto now = std::chrono::steady_clock::now();
 
     if (until_ms == 0 || now_ms > until_ms) {
+        return false;
+    }
+
+    if (!m_openxr->ever_submitted ||
+        m_openxr->last_successful_end_frame.time_since_epoch().count() == 0 ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_openxr->last_successful_end_frame).count() > MAX_LAST_END_AGE_MS)
+    {
         return false;
     }
 
