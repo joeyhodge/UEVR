@@ -1303,6 +1303,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             return true;
         }
 
+        if (defer_stalker2_transition_openxr && !vr->m_openxr->frame_synced) {
+            return false;
+        }
+
         const auto begin_result = vr->m_openxr->begin_frame(caller);
 
         if (!vr->m_openxr->frame_began) {
