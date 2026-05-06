@@ -81,6 +81,10 @@ int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::ste
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
 }
 
+int64_t steady_clock_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+}
+
 std::string hitch_timestamp_suffix() {
     const auto now = std::chrono::system_clock::now();
     const auto time = std::chrono::system_clock::to_time_t(now);
@@ -3029,6 +3033,100 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot: {}", e.what());
 } catch (...) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot");
+}
+
+void VR::note_stalker2_transition_stress(const char* reason) {
+    if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
+        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !m_openxr->got_first_valid_poses)
+    {
+        return;
+    }
+
+    constexpr auto STRESS_HOLD = std::chrono::milliseconds{350};
+    constexpr auto NEW_BURST_GAP_MS = 1000LL;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = steady_clock_ms(now);
+    const auto previous_stress_ms = m_stalker2_transition_last_stress_ms.exchange(now_ms);
+
+    if (previous_stress_ms == 0 || now_ms - previous_stress_ms > NEW_BURST_GAP_MS) {
+        m_stalker2_transition_first_stress_ms.store(now_ms);
+        m_stalker2_transition_last_defer_ms.store(0);
+        m_stalker2_transition_deferred_frames.store(0);
+    }
+
+    const auto until_ms = steady_clock_ms(now + STRESS_HOLD);
+    auto current_until_ms = m_stalker2_transition_stress_until_ms.load();
+
+    while (until_ms > current_until_ms &&
+        !m_stalker2_transition_stress_until_ms.compare_exchange_weak(current_until_ms, until_ms))
+    {
+    }
+
+    const auto events = m_stalker2_transition_stress_events.fetch_add(1) + 1;
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[Stalker2][OpenXR] Transition stress noted reason={} events={} hold_until_ms={}",
+        reason != nullptr ? reason : "unknown",
+        events,
+        m_stalker2_transition_stress_until_ms.load());
+}
+
+bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
+    if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
+        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !m_openxr->can_run_frame_loop() || !m_openxr->got_first_valid_poses)
+    {
+        return false;
+    }
+
+    // Never interfere with an already-open or already-waited frame. The guard is
+    // only for avoiding a new blocking xrWaitFrame while UE5.1 is in a known
+    // Stalker2 cutscene/gameplay render-target transition.
+    if (m_openxr->frame_began || m_openxr->frame_synced) {
+        return false;
+    }
+
+    constexpr auto MAX_BURST_DEFER_MS = 700LL;
+    constexpr auto MIN_DEFER_SPACING_MS = 16LL;
+    constexpr auto MAX_DEFERRED_FRAMES_PER_BURST = 3u;
+
+    const auto now_ms = steady_clock_ms();
+    const auto until_ms = m_stalker2_transition_stress_until_ms.load();
+
+    if (until_ms == 0 || now_ms > until_ms) {
+        return false;
+    }
+
+    const auto first_stress_ms = m_stalker2_transition_first_stress_ms.load();
+
+    if (first_stress_ms == 0 || now_ms - first_stress_ms > MAX_BURST_DEFER_MS) {
+        return false;
+    }
+
+    if (m_stalker2_transition_deferred_frames.load() >= MAX_DEFERRED_FRAMES_PER_BURST) {
+        return false;
+    }
+
+    const auto previous_defer_ms = m_stalker2_transition_last_defer_ms.exchange(now_ms);
+
+    if (previous_defer_ms != 0 && now_ms - previous_defer_ms < MIN_DEFER_SPACING_MS) {
+        return false;
+    }
+
+    const auto deferred = m_stalker2_transition_deferred_frames.fetch_add(1) + 1;
+
+    SPDLOG_WARNING_EVERY_N_SEC(
+        1,
+        "[Stalker2][OpenXR] Deferring one D3D12 OpenXR submit during transition stress reason={} deferred={} until_ms={} first_stress_age_ms={}",
+        reason != nullptr ? reason : "unknown",
+        deferred,
+        until_ms,
+        now_ms - first_stress_ms);
+
+    return true;
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
