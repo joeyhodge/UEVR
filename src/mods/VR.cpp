@@ -92,6 +92,27 @@ std::string hitch_timestamp_suffix() {
     return out.str();
 }
 
+bool is_stalker2_executable_cached() {
+    static const bool is_stalker2 = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+    }();
+
+    return is_stalker2;
+}
+
+bool should_defer_stalker2_very_late_openxr_wait(const VRRuntime* runtime, bool is_d3d12) {
+    if (runtime == nullptr || !is_d3d12 || !runtime->is_openxr() || !is_stalker2_executable_cached()) {
+        return false;
+    }
+
+    // Stalker2 can stall for seconds if a VERY_LATE xrWaitFrame is held across
+    // the UE5.1 gameplay-load/render handoff. After initial valid poses, let
+    // the D3D12 submit path own wait/begin/end so the frame loop stays local to
+    // the copy/submit that actually presents to the HMD.
+    return runtime->got_first_sync && runtime->got_first_valid_poses;
+}
+
 struct GameFovResolver {
     int32_t read_camera_cache_offset{-1};
     int32_t camera_cache_offset{-1};
@@ -5158,7 +5179,11 @@ void VR::on_post_present() {
     const auto is_left_eye_frame = is_using_afr() ? (is_same_frame || (m_render_frame_count % 2 == m_left_eye_interval)) : true;
 
     if (is_left_eye_frame) {
-        if (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
+        const auto should_defer_very_late_wait =
+            get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE &&
+            should_defer_stalker2_very_late_openxr_wait(runtime, m_is_d3d12);
+
+        if (!should_defer_very_late_wait && (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync)) {
             const auto had_sync = runtime->got_first_sync;
             const auto callsite = get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE
                 ? VRRuntime::SyncFrameCallsite::VRVeryLatePostPresent
@@ -5168,6 +5193,8 @@ void VR::on_post_present() {
             if (!runtime->got_first_poses || !had_sync) {
                 update_hmd_state();
             }
+        } else if (should_defer_very_late_wait) {
+            SPDLOG_INFO_ONCE("[Stalker2][OpenXR] Deferring VERY_LATE xrWaitFrame to the D3D12 submit path after initial valid poses");
         }
 
         if (runtime->is_openxr() && m_openxr->can_run_frame_loop() && get_synchronize_stage() > VR::SynchronizeStage::EARLY) {

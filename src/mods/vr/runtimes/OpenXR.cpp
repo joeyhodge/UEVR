@@ -1755,6 +1755,18 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
 
     if (this->has_render_frame_count) {
         last_submit_state = this->pipeline_states[this->internal_render_frame_count % QUEUE_SIZE];
+
+        if (last_submit_state.stage_views.empty() && !this->stage_views.empty()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[OpenXR] Submit state for render frame {} had no stage views; falling back to the latest located views frame_count={}",
+                this->internal_render_frame_count,
+                this->internal_frame_count);
+            last_submit_state.stage_views = this->stage_views;
+            last_submit_state.view_space_location = this->view_space_location;
+            last_submit_state.frame_state = this->frame_state;
+            last_submit_state.frame_count = this->internal_frame_count;
+        }
     } else {
         last_submit_state.stage_views = get_current_stage_view();
         last_submit_state.view_space_location = this->view_space_location;
