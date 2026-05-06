@@ -662,6 +662,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }};
 
     m_last_on_frame = std::chrono::steady_clock::now();
+    bool defer_stalker2_transition_openxr = false;
 
     auto close_openxr_setup_failure_frame = [&]() {
         if (vr->m_openxr == nullptr || !vr->get_runtime()->is_openxr()) {
@@ -746,6 +747,19 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
     auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
+    if (is_stalker2_ue51_external_backbuffer) {
+        static auto s_stalker2_last_d3d12_frame = std::chrono::steady_clock::time_point{};
+        const auto now = std::chrono::steady_clock::now();
+
+        if (s_stalker2_last_d3d12_frame.time_since_epoch().count() != 0 &&
+            now - s_stalker2_last_d3d12_frame > std::chrono::milliseconds{100})
+        {
+            vr->note_stalker2_transition_stress("d3d12_frame_gap");
+        }
+
+        s_stalker2_last_d3d12_frame = now;
+    }
+
     const auto ui_invert_alpha = vr->get_overlay_component().get_ui_invert_alpha();
 
     // Update the UI overlay.
@@ -772,7 +786,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         if (runtime->is_openxr()) {
             // Keep xrWaitFrame ownership where it already is, but do not let the D3D12
             // path begin the frame here. We open it at the first OpenXR copy/acquire.
-            runtime->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::RuntimeFixFrame);
+            defer_stalker2_transition_openxr =
+                vr->should_defer_stalker2_openxr_frame_for_transition("d3d12_pre_wait");
+
+            if (!defer_stalker2_transition_openxr) {
+                runtime->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::RuntimeFixFrame);
+            }
         } else {
             runtime->fix_frame();
         }
@@ -1649,6 +1668,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             utility::ScopeGuard openxr_submit_timing_guard{[&]() {
                 m_perf_openxr_submit.add(std::chrono::steady_clock::now() - openxr_submit_start);
             }};
+
+            if (defer_stalker2_transition_openxr && !vr->m_openxr->frame_synced && !vr->m_openxr->frame_began) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    "[Stalker2][OpenXR] Skipping D3D12 OpenXR submit for transition guard because no frame was synchronized");
+                return e;
+            }
 
             if (!vr->m_openxr->frame_began) {
                 const auto begin_result = vr->m_openxr->begin_frame("d3d12_submit");

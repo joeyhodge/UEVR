@@ -4965,6 +4965,10 @@ struct SceneViewExtensionAnalyzer {
                 last_log_time = now;
             }
 
+            if (auto vr = VR::get(); vr != nullptr) {
+                vr->note_stalker2_transition_stress("duplicate_rhi_command");
+            }
+
             return;
         }
 
@@ -4996,6 +5000,10 @@ struct SceneViewExtensionAnalyzer {
                     suppressed_count);
                 suppressed_count = 0;
                 last_log_time = now;
+            }
+
+            if (auto vr = VR::get(); vr != nullptr) {
+                vr->note_stalker2_transition_stress("duplicate_old_rhi_command");
             }
 
             return;

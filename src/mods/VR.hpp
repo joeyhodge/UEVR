@@ -598,6 +598,8 @@ public:
     }
 
     bool is_controller_camera_conflict_guard_active() const;
+    void note_stalker2_transition_stress(const char* reason);
+    bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
 
     bool is_ghosting_fix_enabled() const {
         return m_ghosting_fix->value();
@@ -980,6 +982,13 @@ private:
     size_t m_prospi_rolling_hitch_gap_cursor{};
     bool m_prospi_rolling_hitch_gap_wrapped{};
     std::chrono::steady_clock::time_point m_last_prospi_rolling_hitch_snapshot{};
+
+    std::atomic<int64_t> m_stalker2_transition_stress_until_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_first_stress_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_last_stress_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_last_defer_ms{0};
+    std::atomic<uint32_t> m_stalker2_transition_stress_events{0};
+    std::atomic<uint32_t> m_stalker2_transition_deferred_frames{0};
 
     uint32_t m_lowest_xinput_user_index{};
 
