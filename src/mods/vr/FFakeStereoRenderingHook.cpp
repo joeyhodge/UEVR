@@ -8521,6 +8521,9 @@ void ue55_promote_slate_outputs(
         if (rtm->get_dedicated_ui_target() != outputs.viewport_texture_rhi) {
             rtm->set_dedicated_ui_target(outputs.viewport_texture_rhi, expected_extent->width, expected_extent->height);
             rtm->get_fallback_ui_target_ref() = nullptr;
+            if (mechwarrior_clans_is_current_game()) {
+                rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior DrawWindow viewport texture");
+            }
             SPDLOG_WARN("[UE5.5][SlateUI] promoted DrawWindow viewport texture output as dedicated UI target");
         }
         return;
@@ -8857,6 +8860,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 } else if (ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture")) {
                     rtm->set_dedicated_ui_target(direct_texture, expected_extent->width, expected_extent->height);
                     rtm->get_fallback_ui_target_ref() = nullptr;
+                    if (mechwarrior_clans_is_current_game()) {
+                        rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior ISlateViewport direct texture");
+                    }
                     SPDLOG_WARN_ONCE("[UE5.5][SlateUI] promoted ISlateViewport direct texture as dedicated UI target");
                 }
             }
@@ -10336,6 +10342,50 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
     reset_dedicated_ui_creation_state();
+}
+
+void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(const char* reason) {
+    const bool had_pending_creation =
+        dedicated_ui_creation_pending ||
+        dedicated_ui_object_created ||
+        in_flight_dedicated_ui_generation != 0 ||
+        in_flight_dedicated_ui_texture != nullptr ||
+        dedicated_ui_texture != nullptr;
+
+    if (!had_pending_creation) {
+        return;
+    }
+
+    auto rooted_texture = dedicated_ui_texture;
+    auto* in_flight_texture = in_flight_dedicated_ui_texture;
+    auto* rooted_raw = rooted_texture.get();
+
+    if (rooted_texture != nullptr && rooted_texture.valid()) {
+        GameThreadWorker::get().enqueue([rooted_texture]() mutable {
+            if (rooted_texture != nullptr && rooted_texture.valid()) {
+                rooted_texture->remove_from_root();
+            }
+        });
+    }
+
+    if (in_flight_texture != nullptr && in_flight_texture != rooted_raw) {
+        GameThreadWorker::get().enqueue([in_flight_texture]() {
+            if (in_flight_texture != nullptr && !IsBadReadPtr(in_flight_texture, sizeof(void*))) {
+                try {
+                    in_flight_texture->remove_from_root();
+                } catch (...) {
+                }
+            }
+        });
+    }
+
+    dedicated_ui_texture = nullptr;
+    in_flight_dedicated_ui_texture = nullptr;
+    reset_dedicated_ui_creation_state();
+
+    SPDLOG_INFO(
+        "[VRRenderTargetManager] Cancelled in-flight dedicated UI UObject creation after {} promotion; preserving current FRHITexture target",
+        reason != nullptr ? reason : "external UI target");
 }
 
 void VRRenderTargetManager_Base::invalidate_resolution_dependent_targets() {
