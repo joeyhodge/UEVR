@@ -189,7 +189,7 @@ public:
         }
     }
 
-    void on_openxr_resolution_scale_changed(
+    bool on_openxr_resolution_scale_changed(
         uint32_t old_width,
         uint32_t old_height,
         uint32_t new_width,
@@ -441,6 +441,7 @@ public:
     }
 
     bool should_ignore_native_stereo_fix_for_avowed_sync() const;
+    bool should_force_native_stereo_fix_same_pass() const;
 
     SynchronizeStage get_synchronize_stage() {
         return (SynchronizeStage) m_sync_mode->value();
@@ -577,6 +578,10 @@ public:
     }
 
     bool is_native_stereo_fix_same_pass_enabled() const {
+        if (should_force_native_stereo_fix_same_pass()) {
+            return true;
+        }
+
         return m_native_stereo_fix_same_pass->value();
     }
 
