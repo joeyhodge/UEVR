@@ -111,6 +111,7 @@ public:
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
+    void cancel_dedicated_ui_creation_preserving_target(const char* reason = nullptr);
     void invalidate_resolution_dependent_targets();
     void ensure_dedicated_ui_target(uintptr_t command_list);
     bool create_dedicated_ui_texture();
