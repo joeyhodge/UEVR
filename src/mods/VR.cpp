@@ -51,7 +51,7 @@ VR::~VR() {
     stop_hitch_snapshot_writer();
 }
 
-void VR::on_openxr_resolution_scale_changed(
+bool VR::on_openxr_resolution_scale_changed(
     uint32_t old_width,
     uint32_t old_height,
     uint32_t new_width,
@@ -59,8 +59,21 @@ void VR::on_openxr_resolution_scale_changed(
     bool ue57_invalidated = false;
 
     if (m_fake_stereo_hook != nullptr) {
-        m_fake_stereo_hook->set_should_recreate_textures(true);
         ue57_invalidated = m_fake_stereo_hook->invalidate_ue57_resolution_dependent_state(old_width, old_height, new_width, new_height);
+    }
+
+    if (!ue57_invalidated) {
+        SPDLOG_WARN(
+            "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+            old_width,
+            old_height,
+            new_width,
+            new_height);
+        return false;
+    }
+
+    if (m_fake_stereo_hook != nullptr) {
+        m_fake_stereo_hook->set_should_recreate_textures(true);
     }
 
     if (ue57_invalidated && m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
@@ -68,6 +81,7 @@ void VR::on_openxr_resolution_scale_changed(
     }
 
     reinitialize_renderer();
+    return true;
 }
 
 namespace {
@@ -1449,6 +1463,18 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
     }
 
     SPDLOG_INFO_ONCE("[Avowed][NativeStereoFix] Ignoring Native Stereo Fix while Synced Sequential rendering is active");
+    return true;
+}
+
+bool VR::should_force_native_stereo_fix_same_pass() const {
+    if (!m_native_stereo_fix->value() || is_using_afr() || !is_stalker2_executable_cached()) {
+        return false;
+    }
+
+    // Stalker2's UE5.1 render-target handoff is only stable with the native
+    // stereo fix using the original same-pass path. Letting this flip live can
+    // invalidate active render state and crash during cutscene/gameplay RT work.
+    SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass while Native Stereo Fix is enabled");
     return true;
 }
 
@@ -5442,7 +5468,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Native Stereo Fix")) {
             m_native_stereo_fix->draw("Enabled");
-            m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+            if (should_force_native_stereo_fix_same_pass()) {
+                m_native_stereo_fix_same_pass->value() = true;
+                ImGui::BeginDisabled();
+                m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("Forced for Stalker2 stability while Native Stereo Fix is enabled.");
+            } else {
+                m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+            }
             ImGui::TreePop();
         }
 
