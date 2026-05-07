@@ -305,11 +305,16 @@ void OpenXR::on_draw_ui() {
                     new_height
                 );
 
-                vr->on_openxr_resolution_scale_changed(old_width, old_height, new_width, new_height);
+                const auto applied_live = vr->on_openxr_resolution_scale_changed(old_width, old_height, new_width, new_height);
 
-                this->last_applied_resolution_scale = this->resolution_scale->value();
-                this->last_applied_resolution_width = new_width;
-                this->last_applied_resolution_height = new_height;
+                if (applied_live) {
+                    this->resolution_scale_live_apply_deferred = false;
+                    this->last_applied_resolution_scale = this->resolution_scale->value();
+                    this->last_applied_resolution_width = new_width;
+                    this->last_applied_resolution_height = new_height;
+                } else {
+                    this->resolution_scale_live_apply_deferred = true;
+                }
             }
         }
 
@@ -1356,7 +1361,10 @@ uint32_t OpenXR::get_width() const {
         return 0;
     }
 
-    const auto scale = this->resolution_scale_reconfigure_pending && this->last_applied_resolution_width != 0
+    const auto use_last_applied =
+        (this->resolution_scale_reconfigure_pending || this->resolution_scale_live_apply_deferred) &&
+        this->last_applied_resolution_width != 0;
+    const auto scale = use_last_applied
         ? this->last_applied_resolution_scale
         : this->resolution_scale->value();
 
@@ -1368,7 +1376,10 @@ uint32_t OpenXR::get_height() const {
         return 0;
     }
 
-    const auto scale = this->resolution_scale_reconfigure_pending && this->last_applied_resolution_height != 0
+    const auto use_last_applied =
+        (this->resolution_scale_reconfigure_pending || this->resolution_scale_live_apply_deferred) &&
+        this->last_applied_resolution_height != 0;
+    const auto scale = use_last_applied
         ? this->last_applied_resolution_scale
         : this->resolution_scale->value();
 
