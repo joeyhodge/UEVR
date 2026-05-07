@@ -77,6 +77,28 @@ std::string format_swapchain_recreate_reasons(uint32_t reasons) {
     return out;
 }
 
+void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
+    const auto cadence_sensitive_recreate =
+        (reasons & (SWAPCHAIN_RECREATE_AFR_STATE | SWAPCHAIN_RECREATE_DEPTH_EXTENT | SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS)) != 0;
+
+    if (!cadence_sensitive_recreate) {
+        return;
+    }
+
+    if (vr == nullptr || vr->get_runtime() == nullptr || !vr->get_runtime()->is_openxr()) {
+        return;
+    }
+
+    const auto openxr = vr->get_openxr_runtime();
+
+    if (openxr == nullptr) {
+        return;
+    }
+
+    const auto reason_text = "d3d12_swapchain_recreate:" + format_swapchain_recreate_reasons(reasons);
+    openxr->prepare_resolution_scale_reconfigure(reason_text.c_str());
+}
+
 std::pair<uint32_t, uint32_t> get_ui_extent() {
     const auto fallback = std::pair<uint32_t, uint32_t>{
         (uint32_t)g_framework->get_d3d12_rt_size().x,
@@ -1313,6 +1335,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         reasons |= SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS;
                     }
                     log_openxr_swapchain_recreate(vr, reasons, (uint32_t)desc.Width, (uint32_t)desc.Height);
+                    prepare_openxr_swapchain_recreate(vr, reasons);
                     m_openxr.create_swapchains(); // recreate swapchains to match the new depth size
                 }
             }
@@ -2383,6 +2406,7 @@ void D3D12Component::on_reset(VR* vr) {
             }
 
             log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
+            prepare_openxr_swapchain_recreate(vr, reasons);
             m_openxr.create_swapchains();
             m_last_afr_state = vr->is_using_afr();
         }
