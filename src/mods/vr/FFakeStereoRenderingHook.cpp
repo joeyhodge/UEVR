@@ -560,11 +560,7 @@ bool is_ue_5_1_dx12_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
-bool is_ue_5_5_dx12_backend() {
-    if (g_framework == nullptr || !g_framework->is_dx12()) {
-        return false;
-    }
-
+bool is_ue_5_5_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
@@ -573,6 +569,22 @@ bool is_ue_5_5_dx12_backend() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50005 && disk_version.dwFileVersionMS < 0x50006;
+}
+
+bool is_ue_5_5_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    return is_ue_5_5_runtime();
+}
+
+bool is_ue_5_5_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    return is_ue_5_5_runtime();
 }
 
 bool is_ue_5_6_dx12_backend() {
@@ -1556,7 +1568,7 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
     // for shipped game layouts:
     // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
     // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
-    if (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+    if (is_ue_5_5_dx_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
         constexpr uint32_t UE55_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
@@ -8062,7 +8074,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx12_backend() || stalker2_ue51_post_init;
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || stalker2_ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
@@ -8112,7 +8124,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     if (!idx) {
         if (needs_source_informed_post_init) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
