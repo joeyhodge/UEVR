@@ -73,6 +73,8 @@ void VR::on_openxr_resolution_scale_changed(
 namespace {
 using json = nlohmann::json;
 
+constexpr bool STALKER2_TRANSITION_OPENXR_DEFERS_ENABLED = false;
+
 int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point then) {
     if (then.time_since_epoch().count() == 0) {
         return -1;
@@ -3172,6 +3174,12 @@ bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
         !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
         !m_openxr->can_run_frame_loop() || !m_openxr->got_first_valid_poses)
     {
+        return false;
+    }
+
+    if (!STALKER2_TRANSITION_OPENXR_DEFERS_ENABLED) {
+        SPDLOG_INFO_ONCE(
+            "[Stalker2][OpenXR] Transition defer guard disabled for A/B; leaving stable RT copy and stress diagnostics active");
         return false;
     }
 
