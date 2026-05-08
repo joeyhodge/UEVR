@@ -62,7 +62,26 @@ bool VR::on_openxr_resolution_scale_changed(
         ue57_invalidated = m_fake_stereo_hook->invalidate_ue57_resolution_dependent_state(old_width, old_height, new_width, new_height);
     }
 
-    if (!ue57_invalidated) {
+    const auto can_use_legacy_live_reconfigure = []() {
+        static const auto result = []() {
+            const auto disk_version = sdk::get_file_version_info();
+            const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+            if (str_version != "0.00") {
+                return str_version.starts_with("5.5") ||
+                    str_version.starts_with("5.6") ||
+                    str_version.starts_with("5.7") ||
+                    str_version.starts_with("5.8") ||
+                    str_version.starts_with("5.9");
+            }
+
+            return disk_version.dwFileVersionMS >= 0x50005;
+        }();
+
+        return result;
+    }();
+
+    if (!ue57_invalidated && !can_use_legacy_live_reconfigure) {
         SPDLOG_WARN(
             "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
             old_width,
@@ -76,8 +95,9 @@ bool VR::on_openxr_resolution_scale_changed(
         m_fake_stereo_hook->set_should_recreate_textures(true);
     }
 
-    if (ue57_invalidated && m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
-        m_openxr->prepare_resolution_scale_reconfigure("ue57_resolution_scale_reconfigure");
+    if (m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
+        m_openxr->prepare_resolution_scale_reconfigure(
+            ue57_invalidated ? "ue57_resolution_scale_reconfigure" : "legacy_resolution_scale_reconfigure");
     }
 
     reinitialize_renderer();
