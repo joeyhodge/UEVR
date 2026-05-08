@@ -5299,6 +5299,80 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::TreePop();
         }
 
+        if (ImGui::TreeNode("Motion Controller Aim Offsets")) {
+            ImGui::TextWrapped("Default zero values preserve the raw controller pose.");
+
+            float left_controller_rotation_offset[] = {
+                m_left_controller_rotation_offset_x->value(),
+                m_left_controller_rotation_offset_y->value(),
+                m_left_controller_rotation_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Left Rotation", left_controller_rotation_offset, -180.0f, 180.0f)) {
+                m_left_controller_rotation_offset_x->value() = left_controller_rotation_offset[0];
+                m_left_controller_rotation_offset_y->value() = left_controller_rotation_offset[1];
+                m_left_controller_rotation_offset_z->value() = left_controller_rotation_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##LeftControllerRotationOffset")) {
+                m_left_controller_rotation_offset_x->value() = 0.0f;
+                m_left_controller_rotation_offset_y->value() = 0.0f;
+                m_left_controller_rotation_offset_z->value() = 0.0f;
+            }
+
+            float right_controller_rotation_offset[] = {
+                m_right_controller_rotation_offset_x->value(),
+                m_right_controller_rotation_offset_y->value(),
+                m_right_controller_rotation_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Right Rotation", right_controller_rotation_offset, -180.0f, 180.0f)) {
+                m_right_controller_rotation_offset_x->value() = right_controller_rotation_offset[0];
+                m_right_controller_rotation_offset_y->value() = right_controller_rotation_offset[1];
+                m_right_controller_rotation_offset_z->value() = right_controller_rotation_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##RightControllerRotationOffset")) {
+                m_right_controller_rotation_offset_x->value() = 0.0f;
+                m_right_controller_rotation_offset_y->value() = 0.0f;
+                m_right_controller_rotation_offset_z->value() = 0.0f;
+            }
+
+            float left_controller_position_offset[] = {
+                m_left_controller_position_offset_x->value(),
+                m_left_controller_position_offset_y->value(),
+                m_left_controller_position_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Left Position", left_controller_position_offset, -1.0f, 1.0f)) {
+                m_left_controller_position_offset_x->value() = left_controller_position_offset[0];
+                m_left_controller_position_offset_y->value() = left_controller_position_offset[1];
+                m_left_controller_position_offset_z->value() = left_controller_position_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##LeftControllerPositionOffset")) {
+                m_left_controller_position_offset_x->value() = 0.0f;
+                m_left_controller_position_offset_y->value() = 0.0f;
+                m_left_controller_position_offset_z->value() = 0.0f;
+            }
+
+            float right_controller_position_offset[] = {
+                m_right_controller_position_offset_x->value(),
+                m_right_controller_position_offset_y->value(),
+                m_right_controller_position_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Right Position", right_controller_position_offset, -1.0f, 1.0f)) {
+                m_right_controller_position_offset_x->value() = right_controller_position_offset[0];
+                m_right_controller_position_offset_y->value() = right_controller_position_offset[1];
+                m_right_controller_position_offset_z->value() = right_controller_position_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##RightControllerPositionOffset")) {
+                m_right_controller_position_offset_x->value() = 0.0f;
+                m_right_controller_position_offset_y->value() = 0.0f;
+                m_right_controller_position_offset_z->value() = 0.0f;
+            }
+
+            ImGui::TreePop();
+        }
+
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Snap Turn")) {
             m_snapturn->draw("Enabled");
