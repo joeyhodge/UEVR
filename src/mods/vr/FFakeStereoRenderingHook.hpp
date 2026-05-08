@@ -742,13 +742,16 @@ private:
     const ModToggle::Ptr m_asynchronous_scan{ ModToggle::create("VR_AsynchronousScan", true) };
     // Off by default because it can cause issues with some games
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
+    // Off by default: restores safetyhook's trampoline lock path for games that dislike the faster original-call path.
+    const ModToggle::Ptr m_safe_tick_hook{ ModToggle::create("VR_SafeTickHook", false) };
 
     void setup_options() {
         m_options = {
             *m_recreate_textures_on_reset,
             *m_frame_delay_compensation,
             *m_asynchronous_scan,
-            *m_use_fmalloc_scene_view_extensions
+            *m_use_fmalloc_scene_view_extensions,
+            *m_safe_tick_hook
         };
     }
 

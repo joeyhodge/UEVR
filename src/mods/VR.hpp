@@ -221,6 +221,42 @@ public:
         return get_rotation(index, false);
     }
 
+    glm::vec3 get_controller_position_with_offset(VRRuntime::Hand hand, bool grip = false) const {
+        const auto controller_index = hand == VRRuntime::Hand::LEFT ? get_left_controller_index() : get_right_controller_index();
+        const auto position = glm::vec3{get_position(controller_index, grip)};
+        const auto x_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_x() : get_right_controller_position_offset_x();
+        const auto y_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_y() : get_right_controller_position_offset_y();
+        const auto z_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_z() : get_right_controller_position_offset_z();
+
+        if (x_offset == 0.0f && y_offset == 0.0f && z_offset == 0.0f) {
+            return position;
+        }
+
+        // Offsets are relative to the controller's adjusted aim rotation, so attached-controller props
+        // behave like they are mounted on a rigid object held by the controller.
+        const auto rotated_offset = glm::vec3{
+            glm::mat4{get_controller_rotation_with_offset(hand)} * glm::vec4{-x_offset, -y_offset, z_offset, 0.0f}
+        };
+
+        return position - rotated_offset;
+    }
+
+    Matrix4x4f get_controller_rotation_with_offset(VRRuntime::Hand hand) const {
+        const auto controller_index = hand == VRRuntime::Hand::LEFT ? get_left_controller_index() : get_right_controller_index();
+        const auto rotation = get_rotation(controller_index, false);
+        const auto x_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_x() : get_right_controller_rotation_offset_x();
+        const auto y_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_y() : get_right_controller_rotation_offset_y();
+        const auto z_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_z() : get_right_controller_rotation_offset_z();
+
+        if (x_offset_degrees == 0.0f && y_offset_degrees == 0.0f && z_offset_degrees == 0.0f) {
+            return rotation;
+        }
+
+        const auto requested_rotation_offset =
+            utility::math::ue_rotation_matrix(glm::vec3{y_offset_degrees, z_offset_degrees, -x_offset_degrees});
+        return rotation * requested_rotation_offset;
+    }
+
     Matrix4x4f get_grip_transform(uint32_t hand_index) const;
     Matrix4x4f get_aim_transform(uint32_t hand_index) const;
 
@@ -664,6 +700,54 @@ public:
         return m_controller_pitch_offset->value();
     }
 
+    float get_left_controller_rotation_offset_x() const {
+        return m_left_controller_rotation_offset_x->value();
+    }
+
+    float get_left_controller_rotation_offset_y() const {
+        return m_left_controller_rotation_offset_y->value();
+    }
+
+    float get_left_controller_rotation_offset_z() const {
+        return m_left_controller_rotation_offset_z->value();
+    }
+
+    float get_right_controller_rotation_offset_x() const {
+        return m_right_controller_rotation_offset_x->value();
+    }
+
+    float get_right_controller_rotation_offset_y() const {
+        return m_right_controller_rotation_offset_y->value();
+    }
+
+    float get_right_controller_rotation_offset_z() const {
+        return m_right_controller_rotation_offset_z->value();
+    }
+
+    float get_left_controller_position_offset_x() const {
+        return m_left_controller_position_offset_x->value();
+    }
+
+    float get_left_controller_position_offset_y() const {
+        return m_left_controller_position_offset_y->value();
+    }
+
+    float get_left_controller_position_offset_z() const {
+        return m_left_controller_position_offset_z->value();
+    }
+
+    float get_right_controller_position_offset_x() const {
+        return m_right_controller_position_offset_x->value();
+    }
+
+    float get_right_controller_position_offset_y() const {
+        return m_right_controller_position_offset_y->value();
+    }
+
+    float get_right_controller_position_offset_z() const {
+        return m_right_controller_position_offset_z->value();
+    }
+
     bool should_skip_post_init_properties() const {
         return m_compatibility_skip_pip->value();
     }
@@ -1067,6 +1151,18 @@ private:
     bool m_was_snapturn_run_on_input{false};
 
     const ModSlider::Ptr m_controller_pitch_offset{ ModSlider::create(generate_name("ControllerPitchOffset"), -90.0f, 90.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_x{ ModSlider::create(generate_name("LeftControllerRotationOffsetX"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_y{ ModSlider::create(generate_name("LeftControllerRotationOffsetY"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_z{ ModSlider::create(generate_name("LeftControllerRotationOffsetZ"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_x{ ModSlider::create(generate_name("RightControllerRotationOffsetX"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_y{ ModSlider::create(generate_name("RightControllerRotationOffsetY"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_z{ ModSlider::create(generate_name("RightControllerRotationOffsetZ"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_x{ ModSlider::create(generate_name("LeftControllerPositionOffsetX"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_y{ ModSlider::create(generate_name("LeftControllerPositionOffsetY"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_z{ ModSlider::create(generate_name("LeftControllerPositionOffsetZ"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_x{ ModSlider::create(generate_name("RightControllerPositionOffsetX"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_y{ ModSlider::create(generate_name("RightControllerPositionOffsetY"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_z{ ModSlider::create(generate_name("RightControllerPositionOffsetZ"), -1.0f, 1.0f, 0.0f) };
 
     // Aim method and movement orientation are not the same thing, but they can both have the same options
     const ModCombo::Ptr m_aim_method{ ModCombo::create(generate_name("AimMethod"), s_aim_method_names, AimMethod::GAME) };
@@ -1294,6 +1390,18 @@ public:
             *m_snapturn_joystick_deadzone,
             *m_snapturn_angle,
             *m_controller_pitch_offset,
+            *m_left_controller_rotation_offset_x,
+            *m_left_controller_rotation_offset_y,
+            *m_left_controller_rotation_offset_z,
+            *m_right_controller_rotation_offset_x,
+            *m_right_controller_rotation_offset_y,
+            *m_right_controller_rotation_offset_z,
+            *m_left_controller_position_offset_x,
+            *m_left_controller_position_offset_y,
+            *m_left_controller_position_offset_z,
+            *m_right_controller_position_offset_x,
+            *m_right_controller_position_offset_y,
+            *m_right_controller_position_offset_z,
             *m_aim_method,
             *m_movement_orientation,
             *m_aim_use_pawn_control_rotation,
