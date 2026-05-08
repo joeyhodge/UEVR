@@ -62,34 +62,72 @@ bool VR::on_openxr_resolution_scale_changed(
         ue57_invalidated = m_fake_stereo_hook->invalidate_ue57_resolution_dependent_state(old_width, old_height, new_width, new_height);
     }
 
-    const auto can_use_legacy_live_reconfigure = []() {
+    struct OpenXRResolutionReconfigurePolicy {
+        bool live_allowed{false};
+        std::string version{"0.00"};
+        const char* reason{"unknown_version"};
+    };
+
+    const auto legacy_live_policy = []() {
         static const auto result = []() {
             const auto disk_version = sdk::get_file_version_info();
             const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
             if (str_version != "0.00") {
-                return str_version.starts_with("5.5") ||
+                const auto live_allowed =
+                    str_version.starts_with("4.27") ||
+                    str_version.starts_with("5.3") ||
+                    str_version.starts_with("5.4") ||
+                    str_version.starts_with("5.5") ||
                     str_version.starts_with("5.6") ||
                     str_version.starts_with("5.7") ||
                     str_version.starts_with("5.8") ||
                     str_version.starts_with("5.9");
+
+                return OpenXRResolutionReconfigurePolicy{
+                    .live_allowed = live_allowed,
+                    .version = str_version,
+                    .reason = live_allowed ? "legacy_safe_band" : "blocked_ue50_52_or_unknown"
+                };
             }
 
-            return disk_version.dwFileVersionMS >= 0x50005;
+            const auto major = (disk_version.dwFileVersionMS >> 16) & 0xFFFF;
+            const auto minor = disk_version.dwFileVersionMS & 0xFFFF;
+            const auto live_allowed = (major == 4 && minor == 27) || (major == 5 && minor >= 3);
+            std::ostringstream version{};
+            version << "file_version_" << major << "." << minor;
+
+            return OpenXRResolutionReconfigurePolicy{
+                .live_allowed = live_allowed,
+                .version = version.str(),
+                .reason = live_allowed ? "legacy_safe_file_version_band" : "blocked_file_version"
+            };
         }();
 
         return result;
     }();
 
-    if (!ue57_invalidated && !can_use_legacy_live_reconfigure) {
+    if (!ue57_invalidated && !legacy_live_policy.live_allowed) {
         SPDLOG_WARN(
-            "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+            "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; version={} reason={} saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+            legacy_live_policy.version,
+            legacy_live_policy.reason,
             old_width,
             old_height,
             new_width,
             new_height);
         return false;
     }
+
+    SPDLOG_INFO(
+        "[OpenXR] Live resolution-scale reconfigure is allowed; version={} reason={} ue57_invalidated={} [{}x{}]->[{}x{}]",
+        legacy_live_policy.version,
+        ue57_invalidated ? "ue57_resolution_state_invalidated" : legacy_live_policy.reason,
+        ue57_invalidated,
+        old_width,
+        old_height,
+        new_width,
+        new_height);
 
     if (m_fake_stereo_hook != nullptr) {
         m_fake_stereo_hook->set_should_recreate_textures(true);
