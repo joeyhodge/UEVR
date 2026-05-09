@@ -560,6 +560,21 @@ bool is_ue_5_1_dx12_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
+bool is_ue_5_1_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.1");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
+}
+
 bool is_ue_5_5_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -1479,7 +1494,8 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     uintptr_t* localplayer_vtable,
     uint32_t slot,
     const char* source_note,
-    bool require_inherited_uobject_slot)
+    bool require_inherited_uobject_slot,
+    bool allow_localplayer_callable_thunk = false)
 {
     if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
         IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
@@ -1491,8 +1507,11 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     const auto object_fn = object_vtable[slot];
     const auto localplayer_fn = localplayer_vtable[slot];
 
-    if (!looks_like_post_init_properties_virtual(object_fn) ||
-        !looks_like_post_init_properties_virtual(localplayer_fn))
+    const auto localplayer_looks_valid = allow_localplayer_callable_thunk
+        ? looks_like_callable_virtual(localplayer_fn)
+        : looks_like_post_init_properties_virtual(localplayer_fn);
+
+    if (!looks_like_post_init_properties_virtual(object_fn) || !localplayer_looks_valid)
     {
         SPDLOG_WARN("[PostInitProperties] {} slot {} did not look callable object_fn={:x} localplayer_fn={:x}",
             source_note,
@@ -1544,23 +1563,25 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
-    // UE5.1 source and the Stalker2 PDB/IDA view place UObject::PostInitProperties
-    // at slot 10 for the shipped UObject layout. Stalker2 inherits the UObject slot;
-    // only accept the exact slot when both UObject CDO and LocalPlayer agree.
-    if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
+    // UE5.1 source plus Stalker2/SOE PDBs place UObject::PostInitProperties at
+    // slot 10 for shipped game layouts. Some UE5.1 games put a LocalPlayer
+    // override/thunk at the same slot, so validate UObject strictly and only
+    // require the LocalPlayer target to be callable.
+    if (is_ue_5_1_dx_backend()) {
         constexpr uint32_t UE51_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
                 object_vtable,
                 localplayer_vtable,
                 UE51_POST_INIT_PROPERTIES_SLOT,
-                "UE5.1/Stalker2 UObject::PostInitProperties",
+                "UE5.1 UObject::PostInitProperties",
+                false,
                 true))
         {
             return UE51_POST_INIT_PROPERTIES_SLOT;
         }
 
-        SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate; skipping LocalPlayer bootstrap");
+        SPDLOG_WARN("[PostInitProperties] UE5.1 slot 10 did not validate; skipping LocalPlayer bootstrap");
         return std::nullopt;
     }
 
@@ -8073,14 +8094,14 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || stalker2_ue51_post_init;
+    const auto ue51_post_init = is_ue_5_1_dx_backend();
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if (stalker2_ue51_post_init && !idx) {
+    if (ue51_post_init && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
