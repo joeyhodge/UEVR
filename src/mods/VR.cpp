@@ -6,6 +6,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <vector>
@@ -499,8 +500,34 @@ std::string build_camera_calibration_id(const glm::vec3& location, const glm::ve
     );
 }
 
+std::string build_generic_camera_preset_id(const glm::vec3& location, const glm::vec3& rotation, float fov) {
+    return std::format(
+        "L({},{},{})_R({},{},{})_F({})",
+        quantize_camera_value(location.x, 500.0f),
+        quantize_camera_value(location.y, 500.0f),
+        quantize_camera_value(location.z, 500.0f),
+        quantize_camera_value(rotation.x, 5.0f),
+        quantize_camera_value(rotation.y, 5.0f),
+        quantize_camera_value(rotation.z, 5.0f),
+        quantize_camera_value(fov, 2.0f)
+    );
+}
+
 std::filesystem::path get_camera_calibration_path() {
     return Framework::get_persistent_dir("camera_calibration.json");
+}
+
+std::filesystem::path get_generic_camera_presets_path() {
+    return Framework::get_persistent_dir("camera_presets.json");
+}
+
+float smoothstep01(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float lerp_float(float a, float b, float t) {
+    return a + (b - a) * t;
 }
 
 std::optional<float> get_runtime_cvar_float(std::wstring_view name) {
@@ -3702,6 +3729,12 @@ void VR::update_game_fov() {
         m_match_game_fov_prospi_tv_override_active.store(false, std::memory_order_relaxed);
         m_match_game_fov_prospi_auto_dolly_distance_active.store(0.0f, std::memory_order_relaxed);
         m_match_game_fov_prospi_telephoto_perf_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_read_only_camera_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_would_write_game_camera.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+        m_match_game_fov_generic_camera_preset_applied.store(false, std::memory_order_relaxed);
+        m_match_game_fov_generic_camera_tracking_active.store(false, std::memory_order_relaxed);
 
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         m_prospi_current_camera_id.clear();
@@ -3713,6 +3746,14 @@ void VR::update_game_fov() {
         m_prospi_sticky_calibration_valid = false;
         m_prospi_sticky_camera_id.clear();
         m_prospi_line_telephoto_perf_hold_until = {};
+
+        {
+            std::scoped_lock generic_lock{m_generic_camera_preset_mtx};
+            m_current_game_camera_id.clear();
+            m_active_generic_camera_preset = {};
+        }
+
+        m_camera_cut_state = {};
     };
 
     if (!m_match_game_fov->value()) {
@@ -3783,14 +3824,45 @@ void VR::update_game_fov() {
     auto prospi_preset = ProSpiCameraPreset::None;
     auto active_prospi_actual_min_fov = 0.0f;
     auto wrote_prospi_fov = false;
+    auto wants_game_fov_write = false;
+    auto deferred_game_fov_write = raw_fov;
     auto prospi_calibration_applied = false;
     auto prospi_tv_override_applied = false;
+    auto generic_camera_preset_applied = false;
+    auto read_only_camera_for_frame = m_match_game_fov_read_only_camera->value();
+    const auto camera_cut_stabilizer_enabled = m_match_game_fov_camera_cut_stabilizer->value();
+    const auto generic_camera_presets_tracking_enabled =
+        m_match_game_fov_dolly->value() &&
+        m_match_game_fov_generic_camera_presets->value();
+    const auto generic_camera_presets_apply_enabled =
+        generic_camera_presets_tracking_enabled &&
+        m_match_game_fov_generic_camera_presets_auto_apply->value();
+    const auto should_track_generic_camera = camera_cut_stabilizer_enabled || generic_camera_presets_tracking_enabled;
     const char* prospi_dolly_source = "Base";
     std::string prospi_camera_id{};
 
     const auto is_prospi = is_prospi_executable();
     const auto location = read_game_camera_location(pcm);
     const auto rotation = read_game_camera_rotation(pcm);
+    GameCameraSample camera_sample{};
+    if (should_track_generic_camera && location.has_value() && rotation.has_value()) {
+        camera_sample.valid = true;
+        camera_sample.player_camera_manager = reinterpret_cast<uintptr_t>(pcm);
+        camera_sample.raw_fov = raw_fov;
+        camera_sample.timestamp = std::chrono::steady_clock::now();
+        camera_sample.location = *location;
+        camera_sample.rotation = *rotation;
+        camera_sample.camera_id = build_generic_camera_preset_id(*location, *rotation, raw_fov);
+        {
+            std::scoped_lock _{m_generic_camera_preset_mtx};
+            m_current_game_camera_id = camera_sample.camera_id;
+        }
+
+        m_match_game_fov_generic_camera_tracking_active.store(true, std::memory_order_relaxed);
+    } else if (m_match_game_fov_generic_camera_tracking_active.exchange(false, std::memory_order_relaxed)) {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_current_game_camera_id.clear();
+    }
 
     if (location.has_value() && rotation.has_value()) {
         prospi_camera_id = build_camera_calibration_id(*location, *rotation);
@@ -4072,9 +4144,35 @@ void VR::update_game_fov() {
 
             game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
             if (std::abs(game_fov_for_matching - raw_fov) > 0.01f) {
-                wrote_prospi_fov = write_game_fov(pcm, game_fov_for_matching);
+                wants_game_fov_write = true;
+                deferred_game_fov_write = game_fov_for_matching;
             }
         }
+    }
+
+    if (generic_camera_presets_apply_enabled && camera_sample.valid) {
+        std::optional<GenericCameraPreset> preset{};
+        {
+            std::scoped_lock _{m_generic_camera_preset_mtx};
+            if (const auto it = m_generic_camera_presets.find(camera_sample.camera_id); it != m_generic_camera_presets.end()) {
+                preset = it->second;
+                m_active_generic_camera_preset = it->second;
+            } else {
+                m_active_generic_camera_preset = {};
+            }
+        }
+
+        if (preset.has_value()) {
+            generic_camera_preset_applied = true;
+            active_fov_multiplier = std::clamp(preset->projection_multiplier, 0.1f, 3.0f);
+            active_dolly_distance = std::clamp(preset->dolly_distance, 10.0f, 50000.0f);
+            projection_min_fov = std::max(projection_min_fov, std::clamp(preset->min_fov, 5.0f, 175.0f));
+            game_fov_for_matching = std::clamp(game_fov_for_matching, projection_min_fov, 175.0f);
+            read_only_camera_for_frame = read_only_camera_for_frame || preset->read_only_camera;
+        }
+    } else {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_active_generic_camera_preset = {};
     }
 
     effective_fov = game_fov_for_matching * active_fov_multiplier;
@@ -4110,6 +4208,140 @@ void VR::update_game_fov() {
         telephoto_perf_target.skeletal_mesh_lod_bias = std::max(telephoto_perf_target.skeletal_mesh_lod_bias, 2);
         telephoto_perf_target.line_mode = true;
     }
+
+    bool camera_cut_stabilizer_blocked_write = false;
+    if (!camera_cut_stabilizer_enabled) {
+        if (m_camera_cut_state.stabilizing) {
+            spdlog::info("[CAMERA_STABILIZER] active=false reason=disabled");
+        }
+
+        m_camera_cut_state = {};
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+    } else if (camera_sample.valid) {
+        auto output = GameCameraProjectionState{
+            .valid = true,
+            .game_fov_for_matching = game_fov_for_matching,
+            .effective_fov = effective_fov,
+            .active_dolly_distance = active_dolly_distance,
+            .active_fov_multiplier = active_fov_multiplier
+        };
+
+        const auto now = camera_sample.timestamp;
+        const auto duration_ms = std::clamp(m_match_game_fov_camera_cut_stabilizer_duration_ms->value(), 100.0f, 1500.0f);
+        const auto fov_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_fov_delta->value(), 1.0f, 45.0f);
+        const auto rotation_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_rotation_delta->value(), 1.0f, 90.0f);
+        const auto location_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_location_delta->value(), 25.0f, 10000.0f);
+
+        bool detected_cut = false;
+        float location_delta = 0.0f;
+        float rotation_delta = 0.0f;
+        float fov_delta = 0.0f;
+        bool camera_id_changed = false;
+        bool pcm_changed = false;
+
+        if (m_camera_cut_state.has_previous_sample) {
+            const auto& previous = m_camera_cut_state.previous_sample;
+            location_delta = glm::distance(camera_sample.location, previous.location);
+            const auto pitch_delta = normalize_angle_delta(camera_sample.rotation.x, previous.rotation.x);
+            const auto yaw_delta = normalize_angle_delta(camera_sample.rotation.y, previous.rotation.y);
+            const auto roll_delta = normalize_angle_delta(camera_sample.rotation.z, previous.rotation.z);
+            rotation_delta = (std::max)(pitch_delta, (std::max)(yaw_delta, roll_delta));
+            fov_delta = std::abs(camera_sample.raw_fov - previous.raw_fov);
+            camera_id_changed = camera_sample.camera_id != previous.camera_id;
+            pcm_changed = camera_sample.player_camera_manager != previous.player_camera_manager;
+
+            detected_cut =
+                camera_id_changed ||
+                pcm_changed ||
+                fov_delta >= fov_threshold ||
+                rotation_delta >= rotation_threshold ||
+                location_delta >= location_threshold;
+        }
+
+        if (detected_cut && m_camera_cut_state.has_last_output) {
+            m_camera_cut_state.stabilizing = true;
+            m_camera_cut_state.cut_time = now;
+            m_camera_cut_state.stabilize_until = now + std::chrono::milliseconds((int64_t)std::lround(duration_ms));
+            m_camera_cut_state.blend_from = m_camera_cut_state.last_output;
+            m_camera_cut_state.blend_to = output;
+            m_camera_cut_state.last_cut_from = m_camera_cut_state.previous_sample;
+            m_camera_cut_state.last_cut_to = camera_sample;
+
+            spdlog::info(
+                "[CAMERA_CUT] from={} to={} id_changed={} pcm_changed={} loc_delta={:.1f} rot_delta={:.1f} fov_delta={:.1f} stabilize_ms={:.0f}",
+                m_camera_cut_state.last_cut_from.camera_id.empty() ? "None" : m_camera_cut_state.last_cut_from.camera_id,
+                camera_sample.camera_id.empty() ? "None" : camera_sample.camera_id,
+                camera_id_changed,
+                pcm_changed,
+                location_delta,
+                rotation_delta,
+                fov_delta,
+                duration_ms);
+        }
+
+        if (m_camera_cut_state.stabilizing) {
+            m_camera_cut_state.blend_to = output;
+
+            if (now < m_camera_cut_state.stabilize_until) {
+                const auto elapsed_ms = (float)std::chrono::duration_cast<std::chrono::milliseconds>(now - m_camera_cut_state.cut_time).count();
+                const auto freeze_ms = duration_ms * 0.4f;
+                const auto blend_ms = (std::max)(1.0f, duration_ms - freeze_ms);
+                const auto t = elapsed_ms <= freeze_ms ? 0.0f : smoothstep01((elapsed_ms - freeze_ms) / blend_ms);
+                const auto& from = m_camera_cut_state.blend_from;
+                const auto& to = m_camera_cut_state.blend_to;
+
+                game_fov_for_matching = lerp_float(from.game_fov_for_matching, to.game_fov_for_matching, t);
+                effective_fov = std::clamp(lerp_float(from.effective_fov, to.effective_fov, t), projection_min_fov, 175.0f);
+                active_dolly_distance = lerp_float(from.active_dolly_distance, to.active_dolly_distance, t);
+                active_fov_multiplier = lerp_float(from.active_fov_multiplier, to.active_fov_multiplier, t);
+                camera_cut_stabilizer_blocked_write = true;
+
+                const auto remaining_ms =
+                    (int32_t)std::chrono::duration_cast<std::chrono::milliseconds>(m_camera_cut_state.stabilize_until - now).count();
+                m_match_game_fov_camera_cut_stabilizer_active.store(true, std::memory_order_relaxed);
+                m_match_game_fov_camera_cut_stabilizer_remaining_ms.store((std::max)(0, remaining_ms), std::memory_order_relaxed);
+            } else {
+                m_camera_cut_state.stabilizing = false;
+                m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+                m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+                spdlog::info("[CAMERA_STABILIZER] active=false reason=complete");
+            }
+        } else {
+            m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+            m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+        }
+
+        m_camera_cut_state.previous_sample = camera_sample;
+        m_camera_cut_state.has_previous_sample = true;
+        m_camera_cut_state.last_output = GameCameraProjectionState{
+            .valid = true,
+            .game_fov_for_matching = game_fov_for_matching,
+            .effective_fov = effective_fov,
+            .active_dolly_distance = active_dolly_distance,
+            .active_fov_multiplier = active_fov_multiplier
+        };
+        m_camera_cut_state.has_last_output = true;
+    } else {
+        m_camera_cut_state = {};
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+    }
+
+    const auto block_game_fov_write = read_only_camera_for_frame || camera_cut_stabilizer_blocked_write;
+    if (wants_game_fov_write) {
+        if (block_game_fov_write) {
+            m_match_game_fov_would_write_game_camera.store(true, std::memory_order_relaxed);
+        } else {
+            wrote_prospi_fov = write_game_fov(pcm, deferred_game_fov_write);
+            m_match_game_fov_would_write_game_camera.store(!wrote_prospi_fov, std::memory_order_relaxed);
+        }
+    } else {
+        m_match_game_fov_would_write_game_camera.store(false, std::memory_order_relaxed);
+    }
+
+    m_match_game_fov_read_only_camera_active.store(block_game_fov_write, std::memory_order_relaxed);
+    m_match_game_fov_generic_camera_preset_applied.store(generic_camera_preset_applied, std::memory_order_relaxed);
 
     const auto telephoto_perf_trigger_fov = std::clamp(m_match_game_fov_prospi_telephoto_perf_trigger_fov->value(), 10.0f, 40.0f);
     const auto telephoto_perf_should_apply =
@@ -4661,6 +4893,7 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
     // Load camera offsets
     load_cameras();
     load_prospi_camera_calibrations();
+    load_generic_camera_presets();
 }
 
 void VR::on_config_save(utility::Config& cfg) {
@@ -4980,6 +5213,162 @@ void VR::clear_current_prospi_preset_calibrations() {
 std::string VR::get_current_prospi_camera_id() {
     std::scoped_lock _{m_prospi_camera_calibration_mtx};
     return m_prospi_current_camera_id;
+}
+
+void VR::save_generic_camera_presets() try {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto preset_path = get_generic_camera_presets_path();
+    std::filesystem::create_directories(preset_path.parent_path());
+
+    size_t preset_count{};
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        preset_count = m_generic_camera_presets.size();
+    }
+
+    if (preset_count == 0) {
+        std::error_code exists_ec{};
+        const auto preset_file_exists = std::filesystem::exists(preset_path, exists_ec);
+        if (!exists_ec && preset_file_exists) {
+            std::error_code remove_ec{};
+            std::filesystem::remove(preset_path, remove_ec);
+            if (!remove_ec) {
+                spdlog::info("[VR] Cleared generic camera preset file {}", preset_path.string());
+            }
+        }
+
+        return;
+    }
+
+    json data{};
+    data["version"] = 1;
+    data["cameras"] = json::object();
+
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        for (const auto& [camera_id, preset] : m_generic_camera_presets) {
+            data["cameras"][camera_id] = {
+                {"camera_id", preset.camera_id},
+                {"min_fov", preset.min_fov},
+                {"dolly_distance", preset.dolly_distance},
+                {"projection_multiplier", preset.projection_multiplier},
+                {"read_only_camera", preset.read_only_camera}
+            };
+        }
+    }
+
+    std::ofstream file{preset_path};
+    file << data.dump(4);
+
+    spdlog::info("[VR] Saved {} generic camera presets to {}", preset_count, preset_path.string());
+} catch (const std::exception& e) {
+    spdlog::error("[VR] Failed to save generic camera presets: {}", e.what());
+} catch (...) {
+    spdlog::error("[VR] Failed to save generic camera presets");
+}
+
+void VR::load_generic_camera_presets() try {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto preset_path = get_generic_camera_presets_path();
+    std::unordered_map<std::string, GenericCameraPreset> presets{};
+
+    if (std::filesystem::exists(preset_path)) {
+        std::ifstream file{preset_path};
+        json data{};
+        file >> data;
+
+        if (data.contains("cameras") && data["cameras"].is_object()) {
+            for (const auto& [camera_id, value] : data["cameras"].items()) {
+                if (!value.is_object()) {
+                    continue;
+                }
+
+                GenericCameraPreset preset{};
+                preset.camera_id = value.value("camera_id", camera_id);
+                preset.min_fov = std::clamp(value.value("min_fov", 5.0f), 5.0f, 175.0f);
+                preset.dolly_distance = std::clamp(value.value("dolly_distance", 3000.0f), 10.0f, 50000.0f);
+                preset.projection_multiplier = std::clamp(value.value("projection_multiplier", 1.0f), 0.1f, 3.0f);
+                preset.read_only_camera = value.value("read_only_camera", true);
+                presets[preset.camera_id] = preset;
+            }
+        }
+    }
+
+    size_t preset_count{};
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_generic_camera_presets = std::move(presets);
+        preset_count = m_generic_camera_presets.size();
+    }
+
+    spdlog::info("[VR] Loaded {} generic camera presets from {}", preset_count, preset_path.string());
+} catch (const std::exception& e) {
+    spdlog::error("[VR] Failed to load generic camera presets: {}", e.what());
+} catch (...) {
+    spdlog::error("[VR] Failed to load generic camera presets");
+}
+
+void VR::save_current_generic_camera_preset() {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto camera_id = get_current_game_camera_id();
+    if (camera_id.empty()) {
+        spdlog::warn("[VR] Refusing to save generic camera preset without an active camera ID");
+        return;
+    }
+
+    GenericCameraPreset preset{};
+    preset.camera_id = camera_id;
+    preset.min_fov = std::clamp(
+        m_match_game_fov_min_enabled->value() ? m_match_game_fov_min->value() : m_game_fov_raw.load(std::memory_order_relaxed),
+        5.0f,
+        175.0f);
+    preset.dolly_distance = std::clamp(m_match_game_fov_dolly_distance->value(), 10.0f, 50000.0f);
+    preset.projection_multiplier = std::clamp(m_match_game_fov_multiplier->value(), 0.1f, 3.0f);
+    preset.read_only_camera = m_match_game_fov_read_only_camera->value();
+
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_generic_camera_presets[camera_id] = preset;
+    }
+
+    save_generic_camera_presets();
+
+    spdlog::info(
+        "[VR] Saved generic camera preset camera={} min={:.2f} mult={:.2f} dolly={:.2f} read_only={}",
+        preset.camera_id,
+        preset.min_fov,
+        preset.projection_multiplier,
+        preset.dolly_distance,
+        preset.read_only_camera);
+}
+
+void VR::clear_current_generic_camera_preset() {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto camera_id = get_current_game_camera_id();
+    if (camera_id.empty()) {
+        spdlog::warn("[VR] Refusing to clear generic camera preset without an active camera ID");
+        return;
+    }
+
+    bool removed = false;
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        removed = m_generic_camera_presets.erase(camera_id) > 0;
+    }
+
+    if (removed) {
+        save_generic_camera_presets();
+        spdlog::info("[VR] Cleared generic camera preset for camera={}", camera_id);
+    }
+}
+
+std::string VR::get_current_game_camera_id() {
+    std::scoped_lock _{m_generic_camera_preset_mtx};
+    return m_current_game_camera_id;
 }
 
 
@@ -5680,10 +6069,39 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     if (m_match_game_fov_min_enabled->value()) {
                         m_match_game_fov_min->draw("Minimum FOV");
                     }
+                    m_match_game_fov_read_only_camera->draw("Read Game Camera Only (No FOV Writes)");
 
                     if (m_match_game_fov_dolly->value()) {
                         m_match_game_fov_dolly_distance->draw_drag("Dolly Focus Distance", 10.0f, "%.0f");
                         ImGui::Text("Dolly Offset: %.2f", get_game_fov_dolly_offset());
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Camera Cut Stabilizer")) {
+                    m_match_game_fov_camera_cut_stabilizer->draw("Enable Camera Cut Stabilizer");
+                    if (m_match_game_fov_camera_cut_stabilizer->value()) {
+                        m_match_game_fov_camera_cut_stabilizer_duration_ms->draw("Stabilizer Duration (ms)");
+                        m_match_game_fov_camera_cut_stabilizer_fov_delta->draw("Cut FOV Delta Threshold");
+                        m_match_game_fov_camera_cut_stabilizer_rotation_delta->draw("Cut Rotation Delta Threshold");
+                        m_match_game_fov_camera_cut_stabilizer_location_delta->draw("Cut Location Delta Threshold");
+                    }
+                }
+
+                if (m_match_game_fov_dolly->value() &&
+                    ImGui::CollapsingHeader("Generic Camera Presets")) {
+                    m_match_game_fov_generic_camera_presets->draw("Enable Generic Camera Presets");
+                    if (m_match_game_fov_generic_camera_presets->value()) {
+                        m_match_game_fov_generic_camera_presets_auto_apply->draw("Auto Apply Saved Camera Presets");
+
+                        if (ImGui::Button("Save Current Generic Camera Preset")) {
+                            save_current_generic_camera_preset();
+                        }
+
+                        ImGui::SameLine();
+
+                        if (ImGui::Button("Clear Current Generic Camera Preset")) {
+                            clear_current_generic_camera_preset();
+                        }
                     }
                 }
 
@@ -5852,13 +6270,22 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     const auto fov = get_game_fov();
                     const auto raw_fov = m_game_fov_raw.load(std::memory_order_relaxed);
                     const bool fov_valid = m_game_fov_valid.load(std::memory_order_relaxed);
-                    const auto current_camera_id = get_current_prospi_camera_id();
+                    const auto current_camera_id = get_current_game_camera_id();
                     const auto calibration_applied = m_match_game_fov_prospi_calibration_applied.load(std::memory_order_relaxed);
                     const auto calibration_multiplier = m_match_game_fov_prospi_calibration_multiplier_active.load(std::memory_order_relaxed);
                     const auto calibration_dolly_distance = m_match_game_fov_prospi_calibration_dolly_distance_active.load(std::memory_order_relaxed);
+                    const auto read_only_active = m_match_game_fov_read_only_camera_active.load(std::memory_order_relaxed);
+                    const auto would_write = m_match_game_fov_would_write_game_camera.load(std::memory_order_relaxed);
+                    const auto stabilizer_active = m_match_game_fov_camera_cut_stabilizer_active.load(std::memory_order_relaxed);
+                    const auto stabilizer_remaining_ms = m_match_game_fov_camera_cut_stabilizer_remaining_ms.load(std::memory_order_relaxed);
+                    const auto generic_preset_applied = m_match_game_fov_generic_camera_preset_applied.load(std::memory_order_relaxed);
                     ImGui::Text("Current Game FOV: %.2f (%s)", fov, fov_valid ? "valid" : "invalid");
                     ImGui::Text("Raw Game FOV: %.2f", raw_fov);
                     ImGui::Text("Current Camera ID: %s", current_camera_id.empty() ? "None" : current_camera_id.c_str());
+                    ImGui::Text("Read-Only Camera Active: %s", read_only_active ? "yes" : "no");
+                    ImGui::Text("Blocked Game FOV Write Pending: %s", would_write ? "yes" : "no");
+                    ImGui::Text("Camera Cut Stabilizer: %s (%dms)", stabilizer_active ? "active" : "inactive", stabilizer_remaining_ms);
+                    ImGui::Text("Generic Camera Preset Applied: %s", generic_preset_applied ? "yes" : "no");
                     ImGui::Text("Camera Calibration Applied: %s", calibration_applied ? "yes" : "no");
                     if (calibration_applied) {
                         ImGui::Text("Calibration Multiplier: %.2f", calibration_multiplier);
