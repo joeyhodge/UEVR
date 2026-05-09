@@ -690,9 +690,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_stalker2_ue51_external_backbuffer =
+        is_stalker2_current_game() &&
+        is_ue_5_1_dx12_backend() &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
+    const auto use_stable_external_backbuffer_copy =
+        is_shf_external_backbuffer || is_stalker2_ue51_external_backbuffer;
     const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
-    auto scene_source_state = is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
+    auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     if (is_stalker2_ue51_external_backbuffer) {
         static auto s_stalker2_last_d3d12_frame = std::chrono::steady_clock::time_point{};
