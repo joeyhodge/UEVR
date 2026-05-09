@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 #include <unordered_map>
@@ -1134,6 +1135,14 @@ private:
     const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModToggle::Ptr m_match_game_fov_min_enabled{ ModToggle::create(generate_name("MatchGameFOVMinEnabled"), false) };
     const ModSlider::Ptr m_match_game_fov_min{ ModSlider::create(generate_name("MatchGameFOVMin"), 5.0f, 120.0f, 40.0f) };
+    const ModToggle::Ptr m_match_game_fov_read_only_camera{ ModToggle::create(generate_name("MatchGameFOVReadOnlyCamera"), false) };
+    const ModToggle::Ptr m_match_game_fov_camera_cut_stabilizer{ ModToggle::create(generate_name("MatchGameFOVCameraCutStabilizer"), false) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_duration_ms{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerDurationMs"), 100.0f, 1500.0f, 500.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_fov_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerFOVDelta"), 1.0f, 45.0f, 10.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_rotation_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerRotationDelta"), 1.0f, 90.0f, 25.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_location_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerLocationDelta"), 25.0f, 10000.0f, 750.0f) };
+    const ModToggle::Ptr m_match_game_fov_generic_camera_presets{ ModToggle::create(generate_name("MatchGameFOVGenericCameraPresets"), false) };
+    const ModToggle::Ptr m_match_game_fov_generic_camera_presets_auto_apply{ ModToggle::create(generate_name("MatchGameFOVGenericCameraPresetsAutoApply"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_actual_clamp{ ModToggle::create(generate_name("MatchGameFOVProSpiActualClamp"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiActualMin"), 10.0f, 60.0f, 20.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_center_field_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCenterFieldActualMin"), 10.0f, 60.0f, 20.0f) };
@@ -1276,6 +1285,46 @@ private:
         float projection_multiplier{1.0f};
     };
 
+    struct GenericCameraPreset {
+        std::string camera_id{};
+        float min_fov{5.0f};
+        float dolly_distance{3000.0f};
+        float projection_multiplier{1.0f};
+        bool read_only_camera{true};
+    };
+
+    struct GameCameraSample {
+        bool valid{false};
+        uintptr_t player_camera_manager{};
+        glm::vec3 location{};
+        glm::vec3 rotation{};
+        float raw_fov{};
+        std::string camera_id{};
+        std::chrono::steady_clock::time_point timestamp{};
+    };
+
+    struct GameCameraProjectionState {
+        bool valid{false};
+        float game_fov_for_matching{};
+        float effective_fov{};
+        float active_dolly_distance{};
+        float active_fov_multiplier{1.0f};
+    };
+
+    struct CameraCutState {
+        bool has_previous_sample{false};
+        bool has_last_output{false};
+        bool stabilizing{false};
+        GameCameraSample previous_sample{};
+        GameCameraSample last_cut_from{};
+        GameCameraSample last_cut_to{};
+        GameCameraProjectionState last_output{};
+        GameCameraProjectionState blend_from{};
+        GameCameraProjectionState blend_to{};
+        std::chrono::steady_clock::time_point cut_time{};
+        std::chrono::steady_clock::time_point stabilize_until{};
+    };
+
     std::array<CameraData, 3> m_camera_datas{};
     void save_cameras();
     void load_cameras();
@@ -1287,6 +1336,11 @@ private:
     void clear_current_prospi_camera_calibration();
     void clear_current_prospi_preset_calibrations();
     std::string get_current_prospi_camera_id();
+    void save_generic_camera_presets();
+    void load_generic_camera_presets();
+    void save_current_generic_camera_preset();
+    void clear_current_generic_camera_preset();
+    std::string get_current_game_camera_id();
 
     void update_game_fov();
     float get_game_fov() const;
@@ -1343,6 +1397,14 @@ public:
             *m_match_game_fov_dolly_distance,
             *m_match_game_fov_min_enabled,
             *m_match_game_fov_min,
+            *m_match_game_fov_read_only_camera,
+            *m_match_game_fov_camera_cut_stabilizer,
+            *m_match_game_fov_camera_cut_stabilizer_duration_ms,
+            *m_match_game_fov_camera_cut_stabilizer_fov_delta,
+            *m_match_game_fov_camera_cut_stabilizer_rotation_delta,
+            *m_match_game_fov_camera_cut_stabilizer_location_delta,
+            *m_match_game_fov_generic_camera_presets,
+            *m_match_game_fov_generic_camera_presets_auto_apply,
             *m_match_game_fov_prospi_actual_clamp,
             *m_match_game_fov_prospi_actual_min,
             *m_match_game_fov_prospi_center_field_actual_min,
@@ -1460,6 +1522,12 @@ private:
     std::atomic<bool> m_match_game_fov_prospi_tv_override_active{false};
     std::atomic<float> m_match_game_fov_prospi_auto_dolly_distance_active{0.0f};
     std::atomic<bool> m_match_game_fov_prospi_telephoto_perf_active{false};
+    std::atomic<bool> m_match_game_fov_read_only_camera_active{false};
+    std::atomic<bool> m_match_game_fov_would_write_game_camera{false};
+    std::atomic<bool> m_match_game_fov_camera_cut_stabilizer_active{false};
+    std::atomic<int32_t> m_match_game_fov_camera_cut_stabilizer_remaining_ms{0};
+    std::atomic<bool> m_match_game_fov_generic_camera_preset_applied{false};
+    std::atomic<bool> m_match_game_fov_generic_camera_tracking_active{false};
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
     std::string m_prospi_current_camera_id{};
@@ -1485,6 +1553,11 @@ private:
     int m_prospi_telephoto_perf_target_skeletal_mesh_lod_bias{0};
     bool m_prospi_telephoto_perf_line_mode{false};
     std::chrono::steady_clock::time_point m_prospi_line_telephoto_perf_hold_until{};
+    std::mutex m_generic_camera_preset_mtx{};
+    std::unordered_map<std::string, GenericCameraPreset> m_generic_camera_presets{};
+    std::string m_current_game_camera_id{};
+    GenericCameraPreset m_active_generic_camera_preset{};
+    CameraCutState m_camera_cut_state{};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{ false };
