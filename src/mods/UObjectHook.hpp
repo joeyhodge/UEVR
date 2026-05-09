@@ -234,6 +234,10 @@ private:
     uint32_t get_uobject_array_scan_budget(sdk::UGameEngine* engine);
     void mark_persistent_tracking_miss();
     void prune_destroyed_object_tombstones(std::chrono::steady_clock::time_point now);
+    void request_stalker2_uobject_full_scan();
+    size_t get_stalker2_bulk_scene_attachment_count() const;
+    size_t detach_non_persistent_motion_controller_states();
+    size_t detach_stalker2_bulk_scene_component_states();
     void update_motion_controller_components(
         const glm::vec3& hmd_location, const glm::vec3& hmd_euler,
         const glm::vec3& left_hand_location, const glm::vec3& left_hand_euler,
@@ -248,6 +252,7 @@ private:
     bool m_add_object_hooked{false};
     std::atomic_bool m_force_uobject_array_creation_scan{false};
     std::atomic_bool m_add_object_guard_unreliable{false};
+    std::atomic_bool m_stalker2_uobject_full_scan_requested{false};
     float m_last_delta_time{1000.0f / 60.0f};
 
     struct DebugInfo {
@@ -316,6 +321,12 @@ private:
         uint64_t refused{};
         uint64_t cached_refusals{};
     } m_ui_nested_resolve_stats{};
+
+    struct Stalker2LazyStats {
+        std::atomic<uint64_t> addobject_skips{};
+        std::atomic<uint64_t> persistent_bulk_skips{};
+        std::atomic<uint64_t> tick_bulk_skips{};
+    } m_stalker2_lazy_stats{};
 
     std::unordered_map<sdk::UObjectBase*, DestroyedObjectTombstone> m_destroyed_object_tombstones{};
     std::unordered_map<sdk::UObjectBase*, std::chrono::steady_clock::time_point> m_ui_nested_resolve_refusals{};
