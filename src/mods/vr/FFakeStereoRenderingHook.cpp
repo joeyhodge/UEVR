@@ -1378,6 +1378,32 @@ struct UE57SlateDrawElementsPassInputsHead {
     UE57RenderTargetLoadAction elements_load_action;
 };
 
+bool looks_like_ue57_slate_draw_elements_inputs(const UE57SlateDrawElementsPassInputsHead* inputs) {
+    if (inputs == nullptr || !is_readable_process_range((uintptr_t)inputs, sizeof(UE57SlateDrawElementsPassInputsHead))) {
+        return false;
+    }
+
+    const auto action = static_cast<uint32_t>(inputs->elements_load_action);
+
+    if (action > static_cast<uint32_t>(UE57RenderTargetLoadAction::Clear)) {
+        return false;
+    }
+
+    const auto scene_viewport_texture = inputs->scene_viewport_texture;
+    const auto elements_texture = inputs->elements_texture;
+
+    if (scene_viewport_texture == nullptr || elements_texture == nullptr) {
+        return false;
+    }
+
+    if (!is_readable_process_range((uintptr_t)scene_viewport_texture, sizeof(void*)) ||
+        !is_readable_process_range((uintptr_t)elements_texture, sizeof(void*))) {
+        return false;
+    }
+
+    return true;
+}
+
 using RegisterExternalTextureFromRHIFn = FRDGTexture* (*)(FRDGBuilder&, FRHITexture*, const wchar_t*);
 
 bool looks_like_nontrivial_virtual(uintptr_t fn) {
@@ -2404,9 +2430,8 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
 
-    if (is_ue_5_7_or_newer() && g_framework->is_dx12()) {
-        attempt_hook_ue57_slate_elements_pass();
-    }
+    // UE5.7 elements-pass inspection is a fallback only. Let the DrawWindow path
+    // try the dedicated UI target first before probing extra callsites.
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
@@ -2418,14 +2443,50 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
         return;
     }
 
+    if (const auto rtm = get_render_target_manager(); rtm != nullptr && rtm->has_dedicated_ui_target()) {
+        SPDLOG_INFO_ONCE("Skipping UE 5.7 Slate elements-pass fallback because the dedicated UI target is active");
+        return;
+    }
+
     m_attempted_hook_ue57_slate_elements_pass = true;
 
     const auto draw_window = g_hook->m_slate_thread_hook.target_address();
+
+    if (draw_window == 0) {
+        SPDLOG_ERROR("Cannot scan UE 5.7 DrawWindow_RenderThread for Slate callsites because the Slate hook has no target address");
+        return;
+    }
+
     const auto module_within = utility::get_module_within(draw_window);
 
     if (!module_within.has_value()) {
         SPDLOG_ERROR("Cannot scan UE 5.7 DrawWindow_RenderThread for Slate callsites because the module was not resolved");
         return;
+    }
+
+    const auto& slate_symbols = vrmod::get_ue57_slate_symbols();
+
+    if (slate_symbols.add_slate_draw_elements_pass != 0 &&
+        is_executable_process_range(slate_symbols.add_slate_draw_elements_pass, 1)) {
+        const auto symbol_module = utility::get_module_within(reinterpret_cast<void*>(slate_symbols.add_slate_draw_elements_pass));
+
+        if (symbol_module.has_value()) {
+            auto hook_result = safetyhook::create_mid(
+                reinterpret_cast<void*>(slate_symbols.add_slate_draw_elements_pass),
+                &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
+
+            if (hook_result) {
+                m_ue57_slate_elements_hooks.emplace_back(std::move(hook_result));
+                m_hooked_ue57_slate_elements_pass = true;
+                SPDLOG_INFO("Hooked UE 5.7 AddSlateDrawElementsPass by symbol at {:x}", slate_symbols.add_slate_draw_elements_pass);
+                return;
+            }
+
+            SPDLOG_WARN("Failed to hook UE 5.7 AddSlateDrawElementsPass symbol at {:x}", slate_symbols.add_slate_draw_elements_pass);
+        } else {
+            SPDLOG_INFO("Ignoring UE 5.7 AddSlateDrawElementsPass symbol {:x} because its module could not be resolved",
+                slate_symbols.add_slate_draw_elements_pass);
+        }
     }
 
     struct DirectCall {
@@ -2466,21 +2527,46 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
     }
 
     std::vector<DirectCall> candidate_calls{};
+    std::unordered_set<uintptr_t> candidate_calls_seen{};
 
     for (const auto& [target, calls] : grouped_calls) {
         if (calls.size() >= 2) {
-            candidate_calls.insert(candidate_calls.end(), calls.begin(), calls.end());
+            for (const auto& call : calls) {
+                if (candidate_calls_seen.insert(call.callsite).second) {
+                    candidate_calls.push_back(call);
+                }
+            }
+        }
+    }
+
+    // UE5.7.3 may only emit one direct call to AddSlateDrawElementsPass in optimized shipping builds.
+    // Hook a capped set of single-call candidates and let the hook validate the r8 input shape at runtime.
+    for (const auto& call : direct_calls) {
+        if (candidate_calls_seen.insert(call.callsite).second) {
+            candidate_calls.push_back(call);
         }
     }
 
     if (candidate_calls.empty()) {
-        SPDLOG_WARN("Could not find repeated direct-call candidates inside UE 5.7 DrawWindow_RenderThread");
+        const auto rtm = get_render_target_manager();
+
+        if (rtm != nullptr && rtm->has_dedicated_ui_target()) {
+            SPDLOG_INFO("No direct-call candidates inside UE 5.7 DrawWindow_RenderThread; dedicated UI target is already active");
+        } else {
+            SPDLOG_WARN("Could not find direct-call candidates inside UE 5.7 DrawWindow_RenderThread for ElementsTexture inspection");
+        }
+
         return;
     }
 
     size_t hooked_count{};
+    constexpr size_t max_ue57_slate_callsite_hooks = 32;
 
     for (const auto& call : candidate_calls) {
+        if (hooked_count >= max_ue57_slate_callsite_hooks) {
+            break;
+        }
+
         auto hook_result = safetyhook::create_mid(
             reinterpret_cast<void*>(call.callsite),
             &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
@@ -2495,12 +2581,15 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
     }
 
     if (hooked_count == 0) {
-        SPDLOG_ERROR("Failed to hook any UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection");
+        SPDLOG_WARN("Failed to hook any UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection");
         return;
     }
 
     m_hooked_ue57_slate_elements_pass = true;
-    SPDLOG_INFO("Hooked {} UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection", hooked_count);
+    SPDLOG_INFO(
+        "Hooked {} UE 5.7 DrawWindow_RenderThread callsites for validated ElementsTexture inspection ({} same-module calls found)",
+        hooked_count,
+        direct_calls.size());
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register() {
@@ -8310,25 +8399,33 @@ void FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook(safetyhook
 
     auto* inputs = reinterpret_cast<UE57SlateDrawElementsPassInputsHead*>(ctx.r8);
 
-    if (inputs == nullptr || IsBadReadPtr(inputs, sizeof(UE57SlateDrawElementsPassInputsHead))) {
+    if (!looks_like_ue57_slate_draw_elements_inputs(inputs)) {
         return;
     }
 
     const auto scene_viewport_texture = inputs->scene_viewport_texture;
     const auto elements_texture = inputs->elements_texture;
 
-    if (scene_viewport_texture == nullptr || elements_texture == nullptr) {
-        return;
-    }
+    static bool logged_valid_path{false};
 
     if (elements_texture != scene_viewport_texture) {
         static bool logged_separate_path{false};
+
+        if (!logged_valid_path) {
+            logged_valid_path = true;
+            SPDLOG_INFO("[UE 5.7 Slate] Validated AddSlateDrawElementsPass inputs");
+        }
 
         if (!logged_separate_path) {
             logged_separate_path = true;
             SPDLOG_INFO("[UE 5.7 Slate] DrawElements pass already has a separate ElementsTexture");
         }
     } else {
+        if (!logged_valid_path) {
+            logged_valid_path = true;
+            SPDLOG_INFO("[UE 5.7 Slate] Validated AddSlateDrawElementsPass inputs");
+        }
+
         SPDLOG_INFO_EVERY_N_SEC(5, "[UE 5.7 Slate] DrawElements pass is still aliasing ElementsTexture to SceneViewportTexture");
     }
 }
@@ -8991,10 +9088,27 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue_5_7_or_newer()) {
-        if (!g_hook->m_hooked_ue57_slate_elements_pass) {
-            g_hook->attempt_hook_ue57_slate_elements_pass();
-        }
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+
+        if (!rtm->has_dedicated_ui_target() && !g_hook->m_hooked_ue57_slate_elements_pass) {
+            const auto now = std::chrono::steady_clock::now();
+
+            if (g_hook->m_ue57_dedicated_ui_missing_since.time_since_epoch().count() == 0) {
+                g_hook->m_ue57_dedicated_ui_missing_since = now;
+                g_hook->m_ue57_dedicated_ui_missing_frames = 0;
+            }
+
+            ++g_hook->m_ue57_dedicated_ui_missing_frames;
+
+            if (g_hook->m_ue57_dedicated_ui_missing_frames > 180 &&
+                now - g_hook->m_ue57_dedicated_ui_missing_since > std::chrono::seconds(3))
+            {
+                g_hook->attempt_hook_ue57_slate_elements_pass();
+            }
+        } else if (rtm->has_dedicated_ui_target()) {
+            g_hook->m_ue57_dedicated_ui_missing_since = {};
+            g_hook->m_ue57_dedicated_ui_missing_frames = 0;
+        }
     }
 
     auto ui_target = rtm->get_ui_target();
