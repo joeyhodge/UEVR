@@ -171,6 +171,26 @@ std::string hitch_timestamp_suffix() {
     return out.str();
 }
 
+bool is_ue_5_7_or_newer_for_ui_layer_pose() {
+    static const auto result = []() {
+        const auto disk_version = sdk::get_file_version_info();
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+        if (str_version != "0.00") {
+            return str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9");
+        }
+
+        return disk_version.dwFileVersionMS >= 0x50007;
+    }();
+
+    return result;
+}
+
+double quat_delta_degrees(const glm::quat& a, const glm::quat& b) {
+    const auto dot = std::clamp(std::abs(glm::dot(glm::normalize(a), glm::normalize(b))), 0.0f, 1.0f);
+    return (double)glm::degrees(2.0f * std::acos(dot));
+}
+
 bool is_stalker2_executable_cached() {
     static const bool is_stalker2 = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2930,6 +2950,152 @@ void VR::update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_co
     ZeroMemory(&state.Gamepad, sizeof(XINPUT_GAMEPAD));
 }
 
+vrmod::UILayerPoseBasis VR::build_ui_layer_pose_basis(uint32_t render_frame_count) {
+    vrmod::UILayerPoseBasis basis{};
+    basis.render_frame_count = render_frame_count;
+    basis.capture_time = std::chrono::steady_clock::now();
+    basis.rotation_offset = get_rotation_offset();
+    basis.pre_flattened_rotation = get_pre_flattened_rotation();
+    basis.standing_origin = get_standing_origin();
+
+    if (m_openxr == nullptr || get_runtime() == nullptr || !get_runtime()->is_openxr()) {
+        return basis;
+    }
+
+    {
+        std::scoped_lock lock{m_openxr->sync_assignment_mtx};
+        basis.openxr_internal_frame_count = m_openxr->internal_frame_count;
+        basis.openxr_internal_render_frame_count = m_openxr->internal_render_frame_count;
+
+        const auto& state = m_openxr->pipeline_states[render_frame_count % runtimes::OpenXR::QUEUE_SIZE];
+        basis.predicted_display_time = state.frame_state.predictedDisplayTime != 0
+            ? state.frame_state.predictedDisplayTime
+            : m_openxr->frame_state.predictedDisplayTime;
+    }
+
+    basis.pose_update_frame_count = m_openxr->last_pose_update_frame_count;
+    basis.pose_update_time = m_openxr->last_successful_pose_update;
+    basis.valid = m_openxr->got_first_poses && m_openxr->got_first_valid_poses;
+    basis.stabilizer_allowed =
+        basis.valid &&
+        is_ui_layer_pose_stabilizer_enabled() &&
+        is_ue_5_7_or_newer_for_ui_layer_pose() &&
+        m_openxr->stage_space != XR_NULL_HANDLE &&
+        m_openxr->view_space != XR_NULL_HANDLE;
+
+    return basis;
+}
+
+VR::UILayerPoseTelemetrySnapshot VR::get_ui_layer_pose_telemetry_snapshot() {
+    std::scoped_lock lock{m_ui_layer_pose_telemetry_mtx};
+    return m_ui_layer_pose_snapshot;
+}
+
+void VR::record_ui_layer_pose_sample(
+    const vrmod::UILayerPoseBasis* basis,
+    runtimes::OpenXR::SwapchainIndex swapchain,
+    XrEyeVisibility eye,
+    bool follow_view,
+    bool stabilizer_used,
+    const glm::quat& hmd_rotation,
+    const glm::quat& live_ui_rotation,
+    const glm::quat& applied_rotation,
+    const char* refusal_reason)
+{
+    if (!is_ui_layer_pose_telemetry_enabled() && !is_ui_layer_pose_stabilizer_enabled()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto basis_valid = basis != nullptr && basis->valid;
+    const auto swapchain_index = (uint32_t)swapchain;
+    const auto last_ui_frame = m_is_d3d12 ? m_d3d12.openxr().get_last_acquired_frame(swapchain_index) : 0;
+    const auto ui_image_age_frames = last_ui_frame == 0 ? -1 : std::max<int>(0, m_frame_count - (int)last_ui_frame);
+    const auto pose_age_ms = basis != nullptr ? hitch_age_ms(now, basis->pose_update_time) : -1;
+    const auto orientation_delta_deg = quat_delta_degrees(live_ui_rotation, applied_rotation);
+    double hmd_angular_velocity_deg_s = 0.0;
+
+    std::scoped_lock lock{m_ui_layer_pose_telemetry_mtx};
+
+    if (m_ui_layer_pose_last_rotation_time.time_since_epoch().count() != 0) {
+        const auto elapsed = std::chrono::duration<double>{now - m_ui_layer_pose_last_rotation_time}.count();
+        if (elapsed > 0.0001) {
+            hmd_angular_velocity_deg_s = quat_delta_degrees(m_ui_layer_pose_last_live_rotation, hmd_rotation) / elapsed;
+        }
+    }
+
+    m_ui_layer_pose_last_live_rotation = hmd_rotation;
+    m_ui_layer_pose_last_rotation_time = now;
+
+    auto& sample = m_ui_layer_pose_samples[m_ui_layer_pose_cursor];
+    sample = {};
+    sample.timestamp = now;
+    sample.sequence = ++m_ui_layer_pose_sequence;
+    sample.render_frame_count = basis != nullptr ? basis->render_frame_count : (uint32_t)m_render_frame_count;
+    sample.openxr_internal_frame_count = basis != nullptr ? basis->openxr_internal_frame_count : 0;
+    sample.openxr_internal_render_frame_count = basis != nullptr ? basis->openxr_internal_render_frame_count : 0;
+    sample.pose_update_frame_count = basis != nullptr ? basis->pose_update_frame_count : 0;
+    sample.swapchain_index = swapchain_index;
+    sample.eye = (int)eye;
+    sample.basis_valid = basis_valid;
+    sample.stabilizer_allowed = basis != nullptr && basis->stabilizer_allowed;
+    sample.stabilizer_used = stabilizer_used;
+    sample.follow_view = follow_view;
+    sample.ui_image_age_frames = ui_image_age_frames;
+    sample.pose_age_ms = pose_age_ms;
+    sample.orientation_delta_deg = orientation_delta_deg;
+    sample.hmd_angular_velocity_deg_s = hmd_angular_velocity_deg_s;
+    sample.refusal_reason = refusal_reason != nullptr ? refusal_reason : "none";
+    m_ui_layer_pose_cursor = (m_ui_layer_pose_cursor + 1) % UI_LAYER_POSE_TELEMETRY_RING_SIZE;
+
+    auto& snapshot = m_ui_layer_pose_snapshot;
+    ++snapshot.sample_count;
+    if (stabilizer_used) {
+        ++snapshot.stabilizer_used_count;
+    }
+    if (!basis_valid) {
+        ++snapshot.invalid_basis_count;
+    }
+    if (follow_view) {
+        ++snapshot.follow_view_count;
+    }
+
+    snapshot.last_render_frame_count = sample.render_frame_count;
+    snapshot.last_openxr_internal_frame_count = sample.openxr_internal_frame_count;
+    snapshot.last_openxr_internal_render_frame_count = sample.openxr_internal_render_frame_count;
+    snapshot.last_pose_update_frame_count = sample.pose_update_frame_count;
+    snapshot.last_swapchain_index = sample.swapchain_index;
+    snapshot.last_eye = sample.eye;
+    snapshot.last_basis_valid = sample.basis_valid;
+    snapshot.last_stabilizer_used = sample.stabilizer_used;
+    snapshot.last_follow_view = sample.follow_view;
+    snapshot.last_ui_image_age_frames = sample.ui_image_age_frames;
+    snapshot.last_pose_age_ms = sample.pose_age_ms;
+    snapshot.last_orientation_delta_deg = sample.orientation_delta_deg;
+    snapshot.last_hmd_angular_velocity_deg_s = sample.hmd_angular_velocity_deg_s;
+    snapshot.max_orientation_delta_deg = std::max(snapshot.max_orientation_delta_deg, sample.orientation_delta_deg);
+    snapshot.max_hmd_angular_velocity_deg_s = std::max(snapshot.max_hmd_angular_velocity_deg_s, sample.hmd_angular_velocity_deg_s);
+
+    if (is_ui_layer_pose_telemetry_enabled() &&
+        (m_ui_layer_pose_last_log.time_since_epoch().count() == 0 || now - m_ui_layer_pose_last_log >= std::chrono::seconds(5)))
+    {
+        SPDLOG_INFO(
+            "[OpenXR][ui-layer-pose] samples={} stabilizer_used={} invalid_basis={} follow_view={} last_frame={} pose_age_ms={} ui_image_age_frames={} orient_delta_deg={:.2f} hmd_ang_vel_deg_s={:.2f} max_delta_deg={:.2f} max_hmd_ang_vel_deg_s={:.2f}",
+            snapshot.sample_count,
+            snapshot.stabilizer_used_count,
+            snapshot.invalid_basis_count,
+            snapshot.follow_view_count,
+            snapshot.last_render_frame_count,
+            snapshot.last_pose_age_ms,
+            snapshot.last_ui_image_age_frames,
+            snapshot.last_orientation_delta_deg,
+            snapshot.last_hmd_angular_velocity_deg_s,
+            snapshot.max_orientation_delta_deg,
+            snapshot.max_hmd_angular_velocity_deg_s);
+        m_ui_layer_pose_last_log = now;
+    }
+}
+
 void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now) {
     auto& sample = m_hitch_snapshot_samples[m_hitch_snapshot_cursor];
     sample = {};
@@ -2950,6 +3116,7 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
     sample.d3d12_frame_age_ms = hitch_age_ms(now, m_d3d12.get_last_on_frame_time());
     sample.cvar_change_counter = m_cvar_manager != nullptr ? m_cvar_manager->get_change_counter() : 0;
     sample.d3d12 = m_is_d3d12 ? m_d3d12.get_hitch_frame_snapshot(this) : vrmod::D3D12Component::HitchFrameSnapshot{};
+    sample.ui_layer_pose = get_ui_layer_pose_telemetry_snapshot();
 
     if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
         if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
@@ -3058,6 +3225,7 @@ void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
         last_valid_sample = sample;
         has_last_valid_sample = true;
         const auto& d3d12 = sample.d3d12;
+        const auto& ui_layer_pose = sample.ui_layer_pose;
         samples.push_back({
             {"age_ms", hitch_age_ms(request.dump_time, sample.timestamp)},
             {"sequence", sample.sequence},
@@ -3130,6 +3298,27 @@ void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
                 {"perf_openxr_submit_count", d3d12.perf_openxr_submit_count},
                 {"perf_openxr_submit_avg_ms", d3d12.perf_openxr_submit_avg_ms},
                 {"perf_openxr_submit_max_ms", d3d12.perf_openxr_submit_max_ms},
+            }},
+            {"ui_layer_pose", {
+                {"sample_count", ui_layer_pose.sample_count},
+                {"stabilizer_used_count", ui_layer_pose.stabilizer_used_count},
+                {"invalid_basis_count", ui_layer_pose.invalid_basis_count},
+                {"follow_view_count", ui_layer_pose.follow_view_count},
+                {"last_render_frame_count", ui_layer_pose.last_render_frame_count},
+                {"last_openxr_internal_frame_count", ui_layer_pose.last_openxr_internal_frame_count},
+                {"last_openxr_internal_render_frame_count", ui_layer_pose.last_openxr_internal_render_frame_count},
+                {"last_pose_update_frame_count", ui_layer_pose.last_pose_update_frame_count},
+                {"last_swapchain_index", ui_layer_pose.last_swapchain_index},
+                {"last_eye", ui_layer_pose.last_eye},
+                {"last_basis_valid", ui_layer_pose.last_basis_valid},
+                {"last_stabilizer_used", ui_layer_pose.last_stabilizer_used},
+                {"last_follow_view", ui_layer_pose.last_follow_view},
+                {"last_ui_image_age_frames", ui_layer_pose.last_ui_image_age_frames},
+                {"last_pose_age_ms", ui_layer_pose.last_pose_age_ms},
+                {"last_orientation_delta_deg", ui_layer_pose.last_orientation_delta_deg},
+                {"max_orientation_delta_deg", ui_layer_pose.max_orientation_delta_deg},
+                {"last_hmd_angular_velocity_deg_s", ui_layer_pose.last_hmd_angular_velocity_deg_s},
+                {"max_hmd_angular_velocity_deg_s", ui_layer_pose.max_hmd_angular_velocity_deg_s},
             }},
         });
     }
@@ -6570,6 +6759,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_direct_aim->draw("Direct Aim Fallback");
             m_compatibility_controller_camera_guard->draw("Controller-Camera Conflict Guard");
             m_compatibility_head_turn_camera_stabilizer->draw("Head-Turn Camera Stabilizer");
+            m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
+            m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
+            if (m_compatibility_ui_layer_pose_stabilizer->value()) {
+                ImGui::TextWrapped("OpenXR UE5.7+: latches game UI layer pose to the same frame basis used for scene submit.");
+            }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 
