@@ -811,9 +811,45 @@ void OverlayComponent::update_overlay_openvr() {
     }
 }
 
+namespace {
+glm::quat make_slate_stage_rotation(VR* vr, const glm::quat& rotation_offset, const glm::quat& pre_flattened_rotation) {
+    if (vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()) {
+        const auto pre_flat_pitch = utility::math::pitch_only(pre_flattened_rotation);
+        return glm::normalize(glm::inverse(pre_flat_pitch * rotation_offset));
+    }
+
+    return glm::normalize(glm::inverse(rotation_offset));
+}
+
+const char* get_ui_layer_pose_refusal_reason(const UILayerPoseBasis* pose_basis, bool follows_view, bool stabilizer_enabled) {
+    if (follows_view) {
+        return "view_space";
+    }
+
+    if (!stabilizer_enabled) {
+        return "disabled";
+    }
+
+    if (pose_basis == nullptr) {
+        return "no_basis";
+    }
+
+    if (!pose_basis->valid) {
+        return "invalid_basis";
+    }
+
+    if (!pose_basis->stabilizer_allowed) {
+        return "not_allowed";
+    }
+
+    return "none";
+}
+}
+
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_slate_quad(
     runtimes::OpenXR::SwapchainIndex swapchain, 
-    XrEyeVisibility eye) 
+    XrEyeVisibility eye,
+    const UILayerPoseBasis* pose_basis)
 {
     auto& vr = VR::get();
 
@@ -841,22 +877,29 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     layer.eyeVisibility = eye;
 
     auto glm_matrix = glm::identity<glm::mat4>();
+    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
+    const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
+        ? vr->get_pre_flattened_rotation()
+        : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    const auto live_ui_rotation = make_slate_stage_rotation(vr.get(), vr->get_rotation_offset(), live_pre_flattened_rotation);
+    auto applied_ui_rotation = live_ui_rotation;
+    auto standing_origin = vr->get_standing_origin();
+    bool stabilizer_used = false;
+    const auto refusal_reason = get_ui_layer_pose_refusal_reason(pose_basis, follows_view, vr->is_ui_layer_pose_stabilizer_enabled());
 
-    if (vr->m_overlay_component.m_ui_follows_view->value()) {
+    if (follows_view) {
         layer.space = vr->m_openxr->view_space;
     } else {
-        auto rotation_offset = glm::inverse(vr->get_rotation_offset());
-
-        if (vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()) {
-            const auto pre_flat_rotation = vr->get_pre_flattened_rotation();
-            const auto pre_flat_pitch = utility::math::pitch_only(pre_flat_rotation);
-
-            // Add the inverse of the pitch rotation to the rotation offset
-            rotation_offset = glm::normalize(glm::inverse(pre_flat_pitch * vr->get_rotation_offset()));
+        if (pose_basis != nullptr && pose_basis->stabilizer_allowed) {
+            applied_ui_rotation = make_slate_stage_rotation(vr.get(), pose_basis->rotation_offset, pose_basis->pre_flattened_rotation);
+            standing_origin = pose_basis->standing_origin;
+            stabilizer_used = true;
         }
 
-        glm_matrix = Matrix4x4f{rotation_offset};   
-        glm_matrix[3] += vr->get_standing_origin();
+        glm_matrix = Matrix4x4f{applied_ui_rotation};
+        glm_matrix[3] += standing_origin;
         layer.space = vr->m_openxr->stage_space;
     }
 
@@ -872,6 +915,17 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
 
     layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::quat_cast(glm_matrix));
     layer.pose.position = runtimes::OpenXR::to_openxr(glm_matrix[3]);
+
+    vr->record_ui_layer_pose_sample(
+        pose_basis,
+        swapchain,
+        eye,
+        follows_view,
+        stabilizer_used,
+        hmd_rotation,
+        live_ui_rotation,
+        applied_ui_rotation,
+        refusal_reason);
 
     // Check if the controller pointer intersects with the quad, and we can use this to emulate the mouse
     if (vr->is_using_controllers()) {
@@ -921,7 +975,8 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
 
 std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComponent::OpenXR::generate_slate_cylinder(
     runtimes::OpenXR::SwapchainIndex swapchain, 
-    XrEyeVisibility eye) 
+    XrEyeVisibility eye,
+    const UILayerPoseBasis* pose_basis)
 {
     auto& vr = VR::get();
 
@@ -948,22 +1003,29 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     layer.eyeVisibility = eye;
     
     auto glm_matrix = glm::identity<glm::mat4>();
+    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
+    const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
+        ? vr->get_pre_flattened_rotation()
+        : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    const auto live_ui_rotation = make_slate_stage_rotation(vr.get(), vr->get_rotation_offset(), live_pre_flattened_rotation);
+    auto applied_ui_rotation = live_ui_rotation;
+    auto standing_origin = vr->get_standing_origin();
+    bool stabilizer_used = false;
+    const auto refusal_reason = get_ui_layer_pose_refusal_reason(pose_basis, follows_view, vr->is_ui_layer_pose_stabilizer_enabled());
 
-    if (vr->m_overlay_component.m_ui_follows_view->value()) {
+    if (follows_view) {
         layer.space = vr->m_openxr->view_space;
     } else {
-        auto rotation_offset = glm::inverse(vr->get_rotation_offset());
-
-        if (vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()) {
-            const auto pre_flat_rotation = vr->get_pre_flattened_rotation();
-            const auto pre_flat_pitch = utility::math::pitch_only(pre_flat_rotation);
-
-            // Add the inverse of the pitch rotation to the rotation offset
-            rotation_offset = glm::normalize(glm::inverse(pre_flat_pitch * vr->get_rotation_offset()));
+        if (pose_basis != nullptr && pose_basis->stabilizer_allowed) {
+            applied_ui_rotation = make_slate_stage_rotation(vr.get(), pose_basis->rotation_offset, pose_basis->pre_flattened_rotation);
+            standing_origin = pose_basis->standing_origin;
+            stabilizer_used = true;
         }
 
-        glm_matrix = Matrix4x4f{rotation_offset};   
-        glm_matrix[3] += vr->get_standing_origin();
+        glm_matrix = Matrix4x4f{applied_ui_rotation};
+        glm_matrix[3] += standing_origin;
         layer.space = vr->m_openxr->stage_space;
     }
 
@@ -988,31 +1050,43 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     layer.pose.orientation = runtimes::OpenXR::to_openxr(glm::quat_cast(glm_matrix));
     layer.pose.position = runtimes::OpenXR::to_openxr(glm_matrix[3]);
 
+    vr->record_ui_layer_pose_sample(
+        pose_basis,
+        swapchain,
+        eye,
+        follows_view,
+        stabilizer_used,
+        hmd_rotation,
+        live_ui_rotation,
+        applied_ui_rotation,
+        refusal_reason);
+
     return layer;
 }
 
 std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> OverlayComponent::OpenXR::generate_slate_layer(
     runtimes::OpenXR::SwapchainIndex swapchain, 
-    XrEyeVisibility eye)
+    XrEyeVisibility eye,
+    const UILayerPoseBasis* pose_basis)
 {
     switch ((OverlayComponent::OverlayType)m_parent->m_slate_overlay_type->value()) {
     default:
     case OverlayComponent::OverlayType::QUAD:
-        if (auto result = generate_slate_quad(swapchain, eye); result.has_value()) {
+        if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 
         return std::nullopt;
     case OverlayComponent::OverlayType::CYLINDER:
         if (!VR::get()->get_runtime()->is_cylinder_layer_allowed()) {
-            if (auto result = generate_slate_quad(swapchain, eye); result.has_value()) {
+            if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
                 return *(XrCompositionLayerBaseHeader*)&result.value().get();
             }
 
             return std::nullopt;
         }
 
-        if (auto result = generate_slate_cylinder(swapchain, eye); result.has_value()) {
+        if (auto result = generate_slate_cylinder(swapchain, eye, pose_basis); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 

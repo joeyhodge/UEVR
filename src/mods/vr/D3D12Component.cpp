@@ -1673,6 +1673,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             std::vector<XrCompositionLayerBaseHeader*> quad_layers{};
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
+            const auto ui_pose_diagnostics_enabled = vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
+            const auto ui_pose_basis = ui_pose_diagnostics_enabled ? vr->build_ui_layer_pose_basis(frame_count) : vrmod::UILayerPoseBasis{};
+            const auto* ui_pose_basis_ptr = ui_pose_diagnostics_enabled ? &ui_pose_basis : nullptr;
 
             if (!suppress_ui_copy && use_2d_screen) {
                 if (shf_auto_2d_screen) {
@@ -1681,8 +1684,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         "[SHf][D3D12] Submitting auto 2D screen as eye-specific OpenXR slate layers");
                 }
 
-                const auto left_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_LEFT);
-                const auto right_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI_RIGHT, XrEyeVisibility::XR_EYE_VISIBILITY_RIGHT);
+                const auto left_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_LEFT, ui_pose_basis_ptr);
+                const auto right_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI_RIGHT, XrEyeVisibility::XR_EYE_VISIBILITY_RIGHT, ui_pose_basis_ptr);
 
                 if (left_layer && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&left_layer->get());
@@ -1692,7 +1695,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&right_layer->get());
                 }
             } else if (!suppress_ui_copy && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
-                const auto slate_layer = openxr_overlay.generate_slate_layer();
+                const auto slate_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_BOTH, ui_pose_basis_ptr);
 
                 if (slate_layer) {
                     quad_layers.push_back(&slate_layer->get());
@@ -3140,6 +3143,7 @@ void D3D12Component::OpenXR::copy(
             }
 
             ctx.num_textures_acquired--;
+            ctx.last_acquired_frame = vr->get_frame_count();
             ctx.ever_acquired = true;
         }
     }
