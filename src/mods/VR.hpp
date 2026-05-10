@@ -309,6 +309,18 @@ public:
         return m_overlay_component;
     }
 
+    vrmod::UILayerPoseBasis build_ui_layer_pose_basis(uint32_t render_frame_count);
+    void record_ui_layer_pose_sample(
+        const vrmod::UILayerPoseBasis* basis,
+        runtimes::OpenXR::SwapchainIndex swapchain,
+        XrEyeVisibility eye,
+        bool follow_view,
+        bool stabilizer_used,
+        const glm::quat& hmd_rotation,
+        const glm::quat& live_ui_rotation,
+        const glm::quat& applied_rotation,
+        const char* refusal_reason);
+
     uint32_t get_hmd_width() const;
     uint32_t get_hmd_height() const;
 
@@ -602,6 +614,14 @@ public:
         return m_compatibility_head_turn_camera_stabilizer->value();
     }
 
+    bool is_ui_layer_pose_telemetry_enabled() const {
+        return m_compatibility_ui_layer_pose_telemetry->value();
+    }
+
+    bool is_ui_layer_pose_stabilizer_enabled() const {
+        return m_compatibility_ui_layer_pose_stabilizer->value();
+    }
+
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
         return m_last_xinput_update.time_since_epoch().count() != 0 &&
             (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
@@ -732,6 +752,8 @@ private:
     void hitch_snapshot_writer_loop(std::stop_token stop_token);
     void stop_hitch_snapshot_writer();
     static void write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request);
+    struct UILayerPoseTelemetrySnapshot;
+    UILayerPoseTelemetrySnapshot get_ui_layer_pose_telemetry_snapshot();
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -900,6 +922,28 @@ private:
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
 
+    struct UILayerPoseTelemetrySnapshot {
+        uint64_t sample_count{};
+        uint64_t stabilizer_used_count{};
+        uint64_t invalid_basis_count{};
+        uint64_t follow_view_count{};
+        uint32_t last_render_frame_count{};
+        uint32_t last_openxr_internal_frame_count{};
+        uint32_t last_openxr_internal_render_frame_count{};
+        uint32_t last_pose_update_frame_count{};
+        uint32_t last_swapchain_index{};
+        int last_eye{};
+        bool last_basis_valid{};
+        bool last_stabilizer_used{};
+        bool last_follow_view{};
+        int last_ui_image_age_frames{-1};
+        int64_t last_pose_age_ms{-1};
+        double last_orientation_delta_deg{};
+        double max_orientation_delta_deg{};
+        double last_hmd_angular_velocity_deg_s{};
+        double max_hmd_angular_velocity_deg_s{};
+    };
+
     struct HitchSnapshotSample {
         std::chrono::steady_clock::time_point timestamp{};
         uint64_t sequence{};
@@ -929,6 +973,7 @@ private:
         bool accepted_relaxed_startup_poses{};
         CVarManager::ChangeSnapshot cvar_change{};
         vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
+        UILayerPoseTelemetrySnapshot ui_layer_pose{};
     };
 
     struct HitchSnapshotDumpRequest {
@@ -966,6 +1011,36 @@ private:
     size_t m_prospi_rolling_hitch_gap_cursor{};
     bool m_prospi_rolling_hitch_gap_wrapped{};
     std::chrono::steady_clock::time_point m_last_prospi_rolling_hitch_snapshot{};
+
+    struct UILayerPoseSample {
+        std::chrono::steady_clock::time_point timestamp{};
+        uint64_t sequence{};
+        uint32_t render_frame_count{};
+        uint32_t openxr_internal_frame_count{};
+        uint32_t openxr_internal_render_frame_count{};
+        uint32_t pose_update_frame_count{};
+        uint32_t swapchain_index{};
+        int eye{};
+        bool basis_valid{};
+        bool stabilizer_allowed{};
+        bool stabilizer_used{};
+        bool follow_view{};
+        int ui_image_age_frames{-1};
+        int64_t pose_age_ms{-1};
+        double orientation_delta_deg{};
+        double hmd_angular_velocity_deg_s{};
+        const char* refusal_reason{"none"};
+    };
+
+    static constexpr size_t UI_LAYER_POSE_TELEMETRY_RING_SIZE = 512;
+    std::array<UILayerPoseSample, UI_LAYER_POSE_TELEMETRY_RING_SIZE> m_ui_layer_pose_samples{};
+    size_t m_ui_layer_pose_cursor{};
+    uint64_t m_ui_layer_pose_sequence{};
+    UILayerPoseTelemetrySnapshot m_ui_layer_pose_snapshot{};
+    std::chrono::steady_clock::time_point m_ui_layer_pose_last_log{};
+    std::chrono::steady_clock::time_point m_ui_layer_pose_last_rotation_time{};
+    glm::quat m_ui_layer_pose_last_live_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    std::mutex m_ui_layer_pose_telemetry_mtx{};
 
     std::atomic<int64_t> m_stalker2_transition_stress_until_ms{0};
     std::atomic<int64_t> m_stalker2_transition_first_stress_ms{0};
@@ -1212,6 +1287,8 @@ private:
     const ModToggle::Ptr m_compatibility_direct_aim{ ModToggle::create(generate_name("Compatibility_DirectAimFallback"), false, true) };
     const ModToggle::Ptr m_compatibility_controller_camera_guard{ ModToggle::create(generate_name("Compatibility_ControllerCameraGuard"), false, true) };
     const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
+    const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1487,6 +1564,8 @@ public:
             *m_compatibility_direct_aim,
             *m_compatibility_controller_camera_guard,
             *m_compatibility_head_turn_camera_stabilizer,
+            *m_compatibility_ui_layer_pose_telemetry,
+            *m_compatibility_ui_layer_pose_stabilizer,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
