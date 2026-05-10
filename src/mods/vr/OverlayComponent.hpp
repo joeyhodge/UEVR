@@ -4,6 +4,7 @@
 #include <optional>
 #include <cstdint>
 #include <algorithm>
+#include <chrono>
 
 #include "Mod.hpp"
 
@@ -12,6 +13,21 @@
 namespace vrmod{
 class D3D11Component;
 class D3D12Component;
+
+struct UILayerPoseBasis {
+    bool valid{false};
+    bool stabilizer_allowed{false};
+    uint32_t render_frame_count{};
+    uint32_t openxr_internal_frame_count{};
+    uint32_t openxr_internal_render_frame_count{};
+    uint32_t pose_update_frame_count{};
+    XrTime predicted_display_time{};
+    glm::quat rotation_offset{1.0f, 0.0f, 0.0f, 0.0f};
+    glm::quat pre_flattened_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    Vector4f standing_origin{};
+    std::chrono::steady_clock::time_point capture_time{};
+    std::chrono::steady_clock::time_point pose_update_time{};
+};
 
 class OverlayComponent : public ModComponent {
 public:
@@ -148,15 +164,18 @@ private:
 
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_slate_quad(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
-            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH
+            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
+            const UILayerPoseBasis* pose_basis = nullptr
         );
         std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> generate_slate_cylinder(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
-            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH
+            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
+            const UILayerPoseBasis* pose_basis = nullptr
         );
         std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_slate_layer(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
-            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH
+            XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
+            const UILayerPoseBasis* pose_basis = nullptr
         );
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_framework_ui_quad();
         

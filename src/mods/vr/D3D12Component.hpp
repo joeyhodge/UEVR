@@ -304,6 +304,17 @@ private:
             return it->second.ever_acquired;
         }
 
+        uint32_t get_last_acquired_frame(uint32_t swapchain_idx) {
+            std::scoped_lock _{this->mtx};
+
+            auto it = this->contexts.find(swapchain_idx);
+            if (it == this->contexts.end()) {
+                return 0;
+            }
+
+            return it->second.last_acquired_frame;
+        }
+
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
 
         struct SwapchainContext {
@@ -311,6 +322,7 @@ private:
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};
             uint32_t last_acquired_texture{0};
+            uint32_t last_acquired_frame{0};
             bool ever_acquired{false};
         };
 
