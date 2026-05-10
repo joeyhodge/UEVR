@@ -598,6 +598,10 @@ public:
         return m_compatibility_controller_camera_guard->value();
     }
 
+    bool is_head_turn_camera_stabilizer_enabled() const {
+        return m_compatibility_head_turn_camera_stabilizer->value();
+    }
+
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
         return m_last_xinput_update.time_since_epoch().count() != 0 &&
             (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
@@ -1207,6 +1211,7 @@ private:
     const ModToggle::Ptr m_compatibility_ahud{ ModToggle::create(generate_name("Compatibility_AHUD"), false, true) };
     const ModToggle::Ptr m_compatibility_direct_aim{ ModToggle::create(generate_name("Compatibility_DirectAimFallback"), false, true) };
     const ModToggle::Ptr m_compatibility_controller_camera_guard{ ModToggle::create(generate_name("Compatibility_ControllerCameraGuard"), false, true) };
+    const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1251,6 +1256,18 @@ private:
         glm::vec3 last_position{};
         glm::vec3 last_rotation{};
     } m_camera_lerp{};
+
+    struct HeadTurnCameraStabilizer {
+        bool has_camera_sample{false};
+        bool has_hmd_sample{false};
+        bool active{false};
+        uint32_t stable_frames{0};
+        glm::vec3 last_stable_position{};
+        glm::vec3 last_stable_rotation{};
+        glm::quat last_hmd_rotation{};
+        std::chrono::steady_clock::time_point last_hmd_time{};
+        std::chrono::steady_clock::time_point stabilize_until{};
+    } m_head_turn_camera_stabilizer{};
 
     struct CameraData {
         glm::vec3 offset{};
@@ -1469,6 +1486,7 @@ public:
             *m_compatibility_ahud,
             *m_compatibility_direct_aim,
             *m_compatibility_controller_camera_guard,
+            *m_compatibility_head_turn_camera_stabilizer,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,

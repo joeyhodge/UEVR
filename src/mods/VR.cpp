@@ -4517,6 +4517,128 @@ void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t 
     Vector3d* view_location_double = (Vector3d*)view_location;
 
     glm::vec3 target_rotation = is_double ? glm::vec3{*(glm::vec<3, double>*)view_rotation_double} : *(glm::vec<3, float>*)view_rotation;
+    glm::vec3 target_position = is_double
+        ? glm::vec3{(float)view_location_double->x, (float)view_location_double->y, (float)view_location_double->z}
+        : glm::vec3{view_location->x, view_location->y, view_location->z};
+
+    const auto reset_head_turn_stabilizer = [&]() {
+        if (m_head_turn_camera_stabilizer.active) {
+            SPDLOG_INFO("[HeadTurnCameraStabilizer] active=false reason=reset");
+        }
+
+        m_head_turn_camera_stabilizer = {};
+    };
+
+    const auto apply_head_turn_camera_sample = [&](const glm::vec3& position, const glm::vec3& rotation) {
+        if (is_double) {
+            view_location_double->x = position.x;
+            view_location_double->y = position.y;
+            view_location_double->z = position.z;
+            view_rotation_double->pitch = rotation.x;
+            view_rotation_double->yaw = rotation.y;
+            view_rotation_double->roll = rotation.z;
+        } else {
+            view_location->x = position.x;
+            view_location->y = position.y;
+            view_location->z = position.z;
+            view_rotation->pitch = rotation.x;
+            view_rotation->yaw = rotation.y;
+            view_rotation->roll = rotation.z;
+        }
+
+        target_position = position;
+        target_rotation = rotation;
+    };
+
+    if (!is_head_turn_camera_stabilizer_enabled() || is_headlocked_aim_enabled() || is_using_2d_screen()) {
+        reset_head_turn_stabilizer();
+    } else {
+        auto& stabilizer = m_head_turn_camera_stabilizer;
+        const auto steady_now = std::chrono::steady_clock::now();
+        auto hmd_rotation = glm::normalize(glm::quat{get_rotation(0)});
+        const bool hmd_rotation_valid =
+            std::isfinite(hmd_rotation.x) &&
+            std::isfinite(hmd_rotation.y) &&
+            std::isfinite(hmd_rotation.z) &&
+            std::isfinite(hmd_rotation.w);
+        float hmd_angular_speed_deg = 0.0f;
+        bool fast_head_turn = false;
+
+        if (!hmd_rotation_valid) {
+            reset_head_turn_stabilizer();
+        } else {
+            if (stabilizer.has_hmd_sample) {
+                const auto dt = std::chrono::duration<float>(steady_now - stabilizer.last_hmd_time).count();
+
+                if (dt > 0.001f && dt < 0.25f) {
+                    const auto dot = std::clamp(std::abs(glm::dot(stabilizer.last_hmd_rotation, hmd_rotation)), 0.0f, 1.0f);
+                    const auto angle_deg = glm::degrees(2.0f * std::acos(dot));
+                    hmd_angular_speed_deg = angle_deg / dt;
+                    fast_head_turn = hmd_angular_speed_deg >= 160.0f;
+                }
+            }
+
+            stabilizer.last_hmd_rotation = hmd_rotation;
+            stabilizer.last_hmd_time = steady_now;
+            stabilizer.has_hmd_sample = true;
+
+            if (!stabilizer.has_camera_sample) {
+                stabilizer.last_stable_position = target_position;
+                stabilizer.last_stable_rotation = target_rotation;
+                stabilizer.has_camera_sample = true;
+                stabilizer.stable_frames = 1;
+            } else {
+                const auto position_delta = glm::distance(target_position, stabilizer.last_stable_position);
+                const auto pitch_delta = normalize_angle_delta(target_rotation.x, stabilizer.last_stable_rotation.x);
+                const auto yaw_delta = normalize_angle_delta(target_rotation.y, stabilizer.last_stable_rotation.y);
+                const auto roll_delta = normalize_angle_delta(target_rotation.z, stabilizer.last_stable_rotation.z);
+                const auto rotation_delta = (std::max)(pitch_delta, (std::max)(yaw_delta, roll_delta));
+
+                constexpr auto stable_position_delta = 2.0f;
+                constexpr auto stable_rotation_delta = 0.25f;
+                constexpr auto rejectable_position_delta = 35.0f;
+                constexpr auto rejectable_rotation_delta = 8.0f;
+                constexpr auto hard_cut_position_delta = 150.0f;
+                constexpr auto hard_cut_rotation_delta = 25.0f;
+
+                const bool camera_still_stable = position_delta <= stable_position_delta && rotation_delta <= stable_rotation_delta;
+                const bool rejectable_camera_spike = position_delta <= rejectable_position_delta && rotation_delta <= rejectable_rotation_delta;
+                const bool likely_real_cut_or_motion = position_delta >= hard_cut_position_delta || rotation_delta >= hard_cut_rotation_delta;
+                const bool can_hold_stable_camera =
+                    fast_head_turn &&
+                    stabilizer.stable_frames >= 3 &&
+                    !camera_still_stable &&
+                    rejectable_camera_spike &&
+                    !likely_real_cut_or_motion;
+
+                if (can_hold_stable_camera) {
+                    stabilizer.active = true;
+                    stabilizer.stabilize_until = steady_now + std::chrono::milliseconds(175);
+                    SPDLOG_INFO(
+                        "[HeadTurnCameraStabilizer] active=true hmd_speed={:.1f} pos_delta={:.2f} rot_delta={:.2f}",
+                        hmd_angular_speed_deg,
+                        position_delta,
+                        rotation_delta);
+                }
+
+                if (stabilizer.active && steady_now <= stabilizer.stabilize_until && !likely_real_cut_or_motion) {
+                    apply_head_turn_camera_sample(stabilizer.last_stable_position, stabilizer.last_stable_rotation);
+                } else {
+                    if (stabilizer.active) {
+                        SPDLOG_INFO("[HeadTurnCameraStabilizer] active=false reason={}", likely_real_cut_or_motion ? "camera_motion" : "timeout");
+                    }
+
+                    stabilizer.active = false;
+
+                    if (!fast_head_turn || camera_still_stable || likely_real_cut_or_motion) {
+                        stabilizer.last_stable_position = target_position;
+                        stabilizer.last_stable_rotation = target_rotation;
+                        stabilizer.stable_frames = camera_still_stable ? (std::min)(stabilizer.stable_frames + 1, 120u) : 1u;
+                    }
+                }
+            }
+        }
+    }
 
     const auto should_lerp_pitch = m_lerp_camera_pitch->value();
     const auto should_lerp_yaw = m_lerp_camera_yaw->value();
@@ -6387,6 +6509,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
             m_compatibility_direct_aim->draw("Direct Aim Fallback");
             m_compatibility_controller_camera_guard->draw("Controller-Camera Conflict Guard");
+            m_compatibility_head_turn_camera_stabilizer->draw("Head-Turn Camera Stabilizer");
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 
