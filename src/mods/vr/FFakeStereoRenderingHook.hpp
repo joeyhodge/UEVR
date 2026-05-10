@@ -681,6 +681,8 @@ private:
     bool m_attempted_hook_slate_thread{false};
     bool m_attempted_hook_slate_thread_alternate{false};
     bool m_attempted_hook_ue57_slate_elements_pass{false};
+    std::chrono::steady_clock::time_point m_ue57_dedicated_ui_missing_since{};
+    uint32_t m_ue57_dedicated_ui_missing_frames{0};
     bool m_attempted_hook_ue55_slate_output_texture_register{false};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
