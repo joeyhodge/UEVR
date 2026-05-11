@@ -221,6 +221,15 @@ bool mechwarrior_clans_is_current_game() {
     return result;
 }
 
+bool directive8020_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Directive8020") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool stalker2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -721,7 +730,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     // These UE5.5 titles expose a valid Slate UI texture but route Slate to the
     // wrong target, leaving the HUD clipped in the upper-left/left-eye path.
     // Keep this allowlisted and DX12-only until more UE5.5 games validate it.
-    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game()) &&
+    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game() || directive8020_is_current_game()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
         !is_ue_5_7_or_newer();
