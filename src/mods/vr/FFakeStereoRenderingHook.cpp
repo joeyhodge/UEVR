@@ -590,6 +590,25 @@ bool is_ue_5_1_dx_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
+bool is_ue_5_4_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.4");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50004 && disk_version.dwFileVersionMS < 0x50005;
+}
+
+bool is_ue_5_4_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    return is_ue_5_4_runtime();
+}
+
 bool is_ue_5_5_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -1663,21 +1682,22 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
-    // UE 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
+    // UE 5.4.4, 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
     // for shipped game layouts:
     // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
     // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
-    if (is_ue_5_5_dx_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
-        constexpr uint32_t UE55_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
+    if (is_ue_5_4_dx_backend() || is_ue_5_5_dx_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+        constexpr uint32_t UE54_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
                 object_vtable,
                 localplayer_vtable,
-                UE55_PLUS_POST_INIT_PROPERTIES_SLOT,
-                "UE5.5+ UObject::PostInitProperties",
-                false))
+                UE54_PLUS_POST_INIT_PROPERTIES_SLOT,
+                "UE5.4+ UObject::PostInitProperties",
+                false,
+                is_ue_5_4_dx_backend()))
         {
-            return UE55_PLUS_POST_INIT_PROPERTIES_SLOT;
+            return UE54_PLUS_POST_INIT_PROPERTIES_SLOT;
         }
     }
 
@@ -8244,7 +8264,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     const auto ue51_post_init = is_ue_5_1_dx_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || ue51_post_init;
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || is_ue_5_4_dx_backend() || ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
@@ -8294,7 +8314,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     if (!idx) {
         if (needs_source_informed_post_init) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/modern path; skipping LocalPlayer bootstrap for safety");
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.4+/modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
