@@ -667,25 +667,44 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
     
                     auto& bak_arr = *(GenericArray*)((uintptr_t)bak.data() + prop_desc->get_offset());
                     auto new_arr = sdk::TArray<void*>{};
+                    auto fmalloc = sdk::FMalloc::get();
 
                     if (bak_arr.data != nullptr) {
                         new_arr = std::move(bak_arr);
     
                         if (arr.capacity > new_arr.capacity) {
-                            new_arr.data = (void**)sdk::FMalloc::get()->realloc(new_arr.data, arr.capacity * inner_size, sizeof(void*));
-                            new_arr.capacity = arr.capacity;
+                            if (fmalloc != nullptr) {
+                                new_arr.data = (void**)fmalloc->realloc(new_arr.data, arr.capacity * inner_size, sizeof(void*));
+                                new_arr.capacity = arr.capacity;
+                            } else {
+                                static bool logged_missing_fmalloc = false;
+
+                                if (!logged_missing_fmalloc) {
+                                    logged_missing_fmalloc = true;
+                                    SPDLOG_WARN("[UObjectHook] FMalloc is unavailable; capping ProcessEvent array parameter copies to existing storage");
+                                }
+                            }
                         }
     
-                        new_arr.count = arr.count;
+                        new_arr.count = std::min(arr.count, new_arr.capacity);
                     } else if (arr.capacity > 0) {
-                        new_arr.data = (void**)sdk::FMalloc::get()->malloc(arr.capacity * inner_size, sizeof(void*));
-                        std::memset(new_arr.data, 0, arr.capacity * inner_size);
-                        new_arr.count = arr.count;
-                        new_arr.capacity = arr.capacity;
+                        if (fmalloc != nullptr) {
+                            new_arr.data = (void**)fmalloc->malloc(arr.capacity * inner_size, sizeof(void*));
+                            std::memset(new_arr.data, 0, arr.capacity * inner_size);
+                            new_arr.count = arr.count;
+                            new_arr.capacity = arr.capacity;
+                        } else {
+                            static bool logged_missing_fmalloc = false;
+
+                            if (!logged_missing_fmalloc) {
+                                logged_missing_fmalloc = true;
+                                SPDLOG_WARN("[UObjectHook] FMalloc is unavailable; skipping ProcessEvent array parameter allocation");
+                            }
+                        }
                     }
     
-                    if (arr.data != nullptr && arr.count > 0 && arr.capacity >= arr.count && new_arr.data != nullptr && !IsBadReadPtr((void*)arr.data, arr.capacity * inner_size)) {
-                        memcpy(new_arr.data, arr.data, arr.count * inner_size);
+                    if (arr.data != nullptr && new_arr.count > 0 && arr.capacity >= new_arr.count && new_arr.data != nullptr && !IsBadReadPtr((void*)arr.data, new_arr.count * inner_size)) {
+                        memcpy(new_arr.data, arr.data, new_arr.count * inner_size);
                         arr.data = nullptr;
                         arr.count = 0;
                         arr.capacity = 0;
@@ -709,26 +728,45 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
                     auto& bak_str = *(FString*)((uintptr_t)bak.data() + prop_desc->get_offset());
     
                     auto new_str = FString{};
+                    auto fmalloc = sdk::FMalloc::get();
     
                     // Same thing but much simpler because we know it's wchar_t
                     if (bak_str.data != nullptr) {
                         new_str = std::move(bak_str);
     
                         if (str.capacity > new_str.capacity) {
-                            new_str.data = (wchar_t*)sdk::FMalloc::get()->realloc(new_str.data, str.capacity * sizeof(wchar_t), sizeof(wchar_t));
-                            new_str.capacity = str.capacity;
+                            if (fmalloc != nullptr) {
+                                new_str.data = (wchar_t*)fmalloc->realloc(new_str.data, str.capacity * sizeof(wchar_t), sizeof(wchar_t));
+                                new_str.capacity = str.capacity;
+                            } else {
+                                static bool logged_missing_fmalloc = false;
+
+                                if (!logged_missing_fmalloc) {
+                                    logged_missing_fmalloc = true;
+                                    SPDLOG_WARN("[UObjectHook] FMalloc is unavailable; capping ProcessEvent string parameter copies to existing storage");
+                                }
+                            }
                         }
     
-                        new_str.count = str.count;
+                        new_str.count = std::min(str.count, new_str.capacity);
                     } else if (str.capacity > 0) {
-                        new_str.data = (wchar_t*)sdk::FMalloc::get()->malloc(str.capacity * sizeof(wchar_t), sizeof(wchar_t));
-                        std::memset(new_str.data, 0, str.capacity * sizeof(wchar_t));
-                        new_str.count = str.count;
-                        new_str.capacity = str.capacity;
+                        if (fmalloc != nullptr) {
+                            new_str.data = (wchar_t*)fmalloc->malloc(str.capacity * sizeof(wchar_t), sizeof(wchar_t));
+                            std::memset(new_str.data, 0, str.capacity * sizeof(wchar_t));
+                            new_str.count = str.count;
+                            new_str.capacity = str.capacity;
+                        } else {
+                            static bool logged_missing_fmalloc = false;
+
+                            if (!logged_missing_fmalloc) {
+                                logged_missing_fmalloc = true;
+                                SPDLOG_WARN("[UObjectHook] FMalloc is unavailable; skipping ProcessEvent string parameter allocation");
+                            }
+                        }
                     }
     
-                    if (str.data != nullptr && str.count > 0 && str.capacity >= str.count && new_str.data != nullptr && !IsBadReadPtr((void*)str.data, str.capacity * sizeof(wchar_t))) {
-                        memcpy(new_str.data, str.data, str.count * sizeof(wchar_t));
+                    if (str.data != nullptr && new_str.count > 0 && str.capacity >= new_str.count && new_str.data != nullptr && !IsBadReadPtr((void*)str.data, new_str.count * sizeof(wchar_t))) {
+                        memcpy(new_str.data, str.data, new_str.count * sizeof(wchar_t));
                         str.data = nullptr;
                         str.count = 0;
                         str.capacity = 0;
