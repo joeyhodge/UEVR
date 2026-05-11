@@ -1379,58 +1379,6 @@ bool write_object_float_property(sdk::UObject* object, std::wstring_view name, f
     return false;
 }
 
-bool write_object_byte_or_enum_property(sdk::UObject* object, std::wstring_view name, uint8_t value) try {
-    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
-        return false;
-    }
-
-    const auto klass = object->get_class();
-    if (klass == nullptr) {
-        return false;
-    }
-
-    const auto prop = klass->find_property(name);
-    if (prop == nullptr || prop->get_class() == nullptr) {
-        return false;
-    }
-
-    const auto prop_type = prop->get_class()->get_name().to_string();
-    if (prop_type != L"ByteProperty" && prop_type != L"EnumProperty") {
-        return false;
-    }
-
-    *(uint8_t*)((uint8_t*)object + prop->get_offset()) = value;
-    return true;
-} catch (...) {
-    return false;
-}
-
-bool write_object_object_property(sdk::UObject* object, std::wstring_view name, sdk::UObject* value) try {
-    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
-        return false;
-    }
-
-    const auto klass = object->get_class();
-    if (klass == nullptr) {
-        return false;
-    }
-
-    const auto prop = klass->find_property(name);
-    if (prop == nullptr || prop->get_class() == nullptr) {
-        return false;
-    }
-
-    const auto prop_type = prop->get_class()->get_name().to_string();
-    if (prop_type != L"ObjectProperty") {
-        return false;
-    }
-
-    *(sdk::UObject**)((uint8_t*)object + prop->get_offset()) = value;
-    return true;
-} catch (...) {
-    return false;
-}
-
 bool write_struct_float_property(sdk::UObject* object, std::wstring_view struct_property, std::wstring_view field_name, float value) try {
     if (object == nullptr || IsBadReadPtr(object, sizeof(void*)) || !std::isfinite(value)) {
         return false;
@@ -1457,42 +1405,6 @@ bool write_struct_float_property(sdk::UObject* object, std::wstring_view struct_
     }
 
     *(float*)((uint8_t*)object + prop->get_offset() + field->get_offset()) = value;
-    return true;
-} catch (...) {
-    return false;
-}
-
-bool write_struct_byte_or_enum_property(sdk::UObject* object, std::wstring_view struct_property, std::wstring_view field_name, uint8_t value) try {
-    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
-        return false;
-    }
-
-    const auto klass = object->get_class();
-    if (klass == nullptr) {
-        return false;
-    }
-
-    const auto prop = (sdk::FStructProperty*)klass->find_property(struct_property);
-    if (prop == nullptr || prop->get_class() == nullptr || prop->get_class()->get_name().to_string() != L"StructProperty") {
-        return false;
-    }
-
-    const auto structure = prop->get_struct();
-    if (structure == nullptr) {
-        return false;
-    }
-
-    const auto field = structure->find_property(field_name);
-    if (field == nullptr || field->get_class() == nullptr) {
-        return false;
-    }
-
-    const auto field_type = field->get_class()->get_name().to_string();
-    if (field_type != L"ByteProperty" && field_type != L"EnumProperty") {
-        return false;
-    }
-
-    *(uint8_t*)((uint8_t*)object + prop->get_offset() + field->get_offset()) = value;
     return true;
 } catch (...) {
     return false;
@@ -1596,22 +1508,6 @@ std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& cl
     return result;
 }
 
-std::vector<sdk::UObject*> get_live_objects_and_cdo_by_class_name(const std::wstring& class_name) {
-    std::vector<sdk::UObject*> result = get_live_objects_by_class_name(class_name);
-
-    const auto klass = sdk::find_uobject<sdk::UClass>(class_name);
-    if (klass == nullptr) {
-        return result;
-    }
-
-    const auto cdo = (sdk::UObject*)klass->get_class_default_object();
-    if (cdo != nullptr && !IsBadReadPtr(cdo, sizeof(void*))) {
-        result.push_back(cdo);
-    }
-
-    return result;
-}
-
 bool write_camera_component_fullscreen_aspect(sdk::UObject* camera_component, float aspect_ratio) {
     if (camera_component == nullptr || !std::isfinite(aspect_ratio) || aspect_ratio <= 0.1f) {
         return false;
@@ -1627,68 +1523,6 @@ bool write_camera_component_fullscreen_aspect(sdk::UObject* camera_component, fl
     wrote |= write_struct_float_property(camera_component, L"CropSettings", L"AspectRatio", aspect_ratio);
     return wrote;
 }
-
-struct Directive8020AspectCompatStats {
-    uint32_t settings{0};
-    uint32_t cameras{0};
-    uint32_t camera_components{0};
-    uint32_t media_plates{0};
-};
-
-Directive8020AspectCompatStats write_directive8020_fullscreen_aspect_compatibility(float aspect_ratio) {
-    Directive8020AspectCompatStats stats{};
-
-    if (!std::isfinite(aspect_ratio) || aspect_ratio <= 0.1f) {
-        return stats;
-    }
-
-    constexpr uint8_t smg_aspect_ratio_other = 4;
-
-    for (auto* settings : get_live_objects_and_cdo_by_class_name(L"Class /Script/SMGRuntime.GamePCSettings")) {
-        bool wrote = false;
-        wrote |= write_object_byte_or_enum_property(settings, L"DesiredAspectRatio", smg_aspect_ratio_other);
-        wrote |= write_struct_byte_or_enum_property(settings, L"Defaults", L"Default_AspectRatio", smg_aspect_ratio_other);
-        stats.settings += wrote ? 1 : 0;
-    }
-
-    for (auto* runtime_settings : get_live_objects_and_cdo_by_class_name(L"Class /Script/SMGRuntime.SMGRuntimeSettings")) {
-        const bool wrote = write_object_byte_or_enum_property(runtime_settings, L"AspectRatioSettingOther", smg_aspect_ratio_other);
-        stats.settings += wrote ? 1 : 0;
-    }
-
-    for (auto* camera : get_live_objects_by_class_name(L"Class /Script/SMGRuntime.CineCameraSMG")) {
-        bool wrote = false;
-        wrote |= write_object_bool_property(camera, L"bEnableCameraViewportRemapPPMI", false);
-        // Directive8020/SMG applies its black-bar remap through these MID slots.
-        // Clearing is opt-in and executable-gated, so keep it narrow rather than global.
-        wrote |= write_object_object_property(camera, L"CameraViewportRemapPPMI", nullptr);
-        wrote |= write_object_object_property(camera, L"CameraViewportRemapPPMIReference", nullptr);
-
-        if (auto camera_component = read_object_property(camera, L"CameraComponent"); camera_component.has_value()) {
-            const bool component_wrote = write_camera_component_fullscreen_aspect(*camera_component, aspect_ratio);
-            stats.camera_components += component_wrote ? 1 : 0;
-            wrote |= component_wrote;
-        }
-
-        stats.cameras += wrote ? 1 : 0;
-    }
-
-    for (auto* camera_component : get_live_objects_by_class_name(L"Class /Script/CinematicCamera.CineCameraComponent")) {
-        const bool wrote = write_camera_component_fullscreen_aspect(camera_component, aspect_ratio);
-        stats.camera_components += wrote ? 1 : 0;
-    }
-
-    for (auto* media_plate : get_live_objects_by_class_name(L"Class /Script/MediaPlate.MediaPlateComponent")) {
-        // Do not feed the HMD aspect into MediaPlate letterboxing: wider values
-        // visibly increase bars. Leave source aspect automatic and only
-        // neutralize forced camera/crop paths above.
-        const bool wrote = write_object_bool_property(media_plate, L"bIsAspectRatioAuto", true);
-        stats.media_plates += wrote ? 1 : 0;
-    }
-
-    return stats;
-}
-
 
 sdk::UObject* get_first_live_object_by_class_name(const std::wstring& class_name) {
     const auto objects = get_live_objects_by_class_name(class_name);
@@ -4339,8 +4173,14 @@ void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
 
 void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {
     if (!m_compatibility_fullscreen_16x9_cameras->value()) {
+        m_fullscreen_16x9_camera_compat = {};
         return;
     }
+
+    constexpr auto camera_poll_interval = std::chrono::milliseconds(100);
+    constexpr auto transition_burst_duration = std::chrono::milliseconds(500);
+    constexpr auto keepalive_interval = std::chrono::milliseconds(1000);
+    const auto now = std::chrono::steady_clock::now();
 
     auto world = engine != nullptr ? engine->get_world() : nullptr;
     auto gameplay = sdk::UGameplayStatics::get();
@@ -4371,27 +4211,101 @@ void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {
 
     aspect_ratio = std::clamp(aspect_ratio, 0.5f, 4.0f);
 
+    auto& state = m_fullscreen_16x9_camera_compat;
+    const bool just_enabled = !state.was_enabled;
+    const bool pcm_changed = state.last_pcm != pcm;
+    const bool aspect_changed = std::abs(state.last_aspect - aspect_ratio) > 0.001f;
+    const bool should_poll_camera =
+        just_enabled ||
+        pcm_changed ||
+        aspect_changed ||
+        state.last_camera_poll.time_since_epoch().count() == 0 ||
+        now - state.last_camera_poll >= camera_poll_interval ||
+        now < state.burst_until;
+
+    sdk::UObject* current_camera = (sdk::UObject*)state.last_camera;
+    sdk::UObject* camera_component = (sdk::UObject*)state.last_camera_component;
+
+    if (should_poll_camera) {
+        state.last_camera_poll = now;
+
+        if (auto camera = call_object_object_function((sdk::UObject*)pcm, L"GetCurrentCamera"); camera.has_value()) {
+            current_camera = *camera;
+        } else {
+            current_camera = nullptr;
+        }
+
+        if (current_camera != nullptr) {
+            if (auto component = read_object_property(current_camera, L"CameraComponent"); component.has_value()) {
+                camera_component = *component;
+            } else {
+                camera_component = nullptr;
+            }
+        } else {
+            camera_component = nullptr;
+        }
+    }
+
+    const bool camera_changed = state.last_camera != current_camera;
+    const bool component_changed = state.last_camera_component != camera_component;
+    const bool keepalive_due =
+        state.last_apply.time_since_epoch().count() == 0 ||
+        now - state.last_apply >= keepalive_interval;
+    const bool in_transition_burst = now < state.burst_until;
+
+    if (just_enabled || pcm_changed || camera_changed || component_changed || aspect_changed) {
+        state.burst_until = now + transition_burst_duration;
+    }
+
+    const bool should_apply =
+        just_enabled ||
+        pcm_changed ||
+        camera_changed ||
+        component_changed ||
+        aspect_changed ||
+        in_transition_burst ||
+        keepalive_due;
+
+    state.was_enabled = true;
+    state.last_pcm = pcm;
+    state.last_camera = current_camera;
+    state.last_camera_component = camera_component;
+    state.last_aspect = aspect_ratio;
+
+    if (!should_apply) {
+        return;
+    }
+
     bool wrote_any = false;
     wrote_any |= write_object_bool_property((sdk::UObject*)pcm, L"bUse16_9CamerasAsFullscreen", true);
     wrote_any |= write_object_bool_property((sdk::UObject*)pcm, L"bForceOutputToConstraintXFov", false);
     wrote_any |= write_game_camera_aspect_constraints(pcm, aspect_ratio);
 
-    if (auto current_camera = call_object_object_function((sdk::UObject*)pcm, L"GetCurrentCamera"); current_camera.has_value()) {
-        wrote_any |= write_object_bool_property(*current_camera, L"bEnableCameraViewportRemapPPMI", false);
+    if (current_camera != nullptr) {
+        wrote_any |= write_object_bool_property(current_camera, L"bEnableCameraViewportRemapPPMI", false);
 
-        if (auto camera_component = read_object_property(*current_camera, L"CameraComponent"); camera_component.has_value()) {
-            wrote_any |= write_camera_component_fullscreen_aspect(*camera_component, aspect_ratio);
+        if (camera_component != nullptr) {
+            wrote_any |= write_camera_component_fullscreen_aspect(camera_component, aspect_ratio);
         }
     }
 
-    if (is_directive8020_executable_cached()) {
-        static auto last_log = std::chrono::steady_clock::time_point{};
-        const auto now = std::chrono::steady_clock::now();
+    state.last_apply = now;
 
+    if (is_directive8020_executable_cached()) {
         if (wrote_any &&
-            (last_log.time_since_epoch().count() == 0 || now - last_log >= std::chrono::seconds(5))) {
-            last_log = now;
-            SPDLOG_INFO("[Directive8020][AspectCompat] aspect={:.3f} active_camera_only=true", aspect_ratio);
+            (state.last_log.time_since_epoch().count() == 0 || now - state.last_log >= std::chrono::seconds(5))) {
+            state.last_log = now;
+            SPDLOG_INFO(
+                "[Directive8020][AspectCompat] aspect={:.3f} reason={}{}{}{}{}{} current_camera={} component={}",
+                aspect_ratio,
+                just_enabled ? "enabled " : "",
+                pcm_changed ? "pcm " : "",
+                camera_changed ? "camera " : "",
+                component_changed ? "component " : "",
+                aspect_changed ? "aspect " : "",
+                keepalive_due ? "keepalive" : (in_transition_burst ? "burst" : "apply"),
+                current_camera != nullptr,
+                camera_component != nullptr);
         }
     }
 
