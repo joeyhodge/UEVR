@@ -1378,6 +1378,18 @@ private:
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
 
+    struct Fullscreen16x9CameraCompatState {
+        bool was_enabled{false};
+        void* last_pcm{nullptr};
+        void* last_camera{nullptr};
+        void* last_camera_component{nullptr};
+        float last_aspect{0.0f};
+        std::chrono::steady_clock::time_point last_camera_poll{};
+        std::chrono::steady_clock::time_point last_apply{};
+        std::chrono::steady_clock::time_point last_log{};
+        std::chrono::steady_clock::time_point burst_until{};
+    } m_fullscreen_16x9_camera_compat{};
+
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
     const ModKey::Ptr m_keybind_recenter_horizon{ ModKey::create(generate_name("RecenterHorizonKey")) };
