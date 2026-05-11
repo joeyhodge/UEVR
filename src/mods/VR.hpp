@@ -174,6 +174,7 @@ public:
     void update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_controller);
 
     void on_pre_engine_tick(sdk::UGameEngine* engine, float delta) override;
+    void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
     void on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
                                              const float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas) override;
@@ -1289,6 +1290,8 @@ private:
     const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
+    const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1418,6 +1421,7 @@ private:
     void clear_current_generic_camera_preset();
     std::string get_current_game_camera_id();
 
+    void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
@@ -1566,6 +1570,8 @@ public:
             *m_compatibility_head_turn_camera_stabilizer,
             *m_compatibility_ui_layer_pose_telemetry,
             *m_compatibility_ui_layer_pose_stabilizer,
+            *m_compatibility_fullscreen_16x9_cameras,
+            *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
