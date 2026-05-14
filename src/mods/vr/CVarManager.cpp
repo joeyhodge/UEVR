@@ -69,6 +69,30 @@ bool is_aphelion_current_game_for_cvars() {
     return result;
 }
 
+bool is_windrose_ue56_dx12_current_game_for_cvars() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path || exe_path->find(L"Windrose-Win64-Shipping") == std::wstring::npos) {
+            return false;
+        }
+
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.6" || version.starts_with("5.6.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050006;
+    }();
+
+    return result;
+}
+
 bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
         int major{};
@@ -255,6 +279,91 @@ bool force_aphelion_framegen_runtime_cvars_once(int attempt) {
 
     SPDLOG_INFO(
         "[Aphelion][DX12] frame-generation cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
+        attempt,
+        found,
+        missing,
+        set_ok,
+        set_failed);
+
+    return true;
+}
+
+bool force_windrose_shadow_runtime_cvars_once(int attempt) {
+    if (!is_windrose_ue56_dx12_current_game_for_cvars()) {
+        return true;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+
+    if (console_manager == nullptr) {
+        return false;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        const wchar_t* value;
+    };
+
+    // Windrose/R5 crashes in UE5.6 distance-field/heightfield shadow RDG work
+    // when UEVR is active. This is deliberately scoped to crash avoidance only;
+    // it does not try to fix the separate HUD-only black-scene renderer issue.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.DistanceFieldShadowing", L"0"},
+        ForcedCVar{L"r.HeightFieldShadowing", L"0"},
+        ForcedCVar{L"r.DFShadowQuality", L"0"},
+        ForcedCVar{L"r.HFShadowQuality", L"0"},
+        ForcedCVar{L"r.DFShadowAsyncCompute", L"0"},
+    };
+
+    int found{};
+    int set_ok{};
+    int set_failed{};
+    int missing{};
+
+    for (const auto& forced : forced_cvars) {
+        auto object = console_manager->find(forced.name);
+
+        if (object == nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto variable = (sdk::IConsoleVariable*)object;
+
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            ok = variable->Set(forced.value);
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++set_ok;
+        } else {
+            ++set_failed;
+        }
+
+        SPDLOG_INFO(
+            "[Windrose][UE5.6][ShadowCrash] forced {}: before={} requested={} after={} ok={}",
+            utility::narrow(forced.name),
+            before,
+            utility::narrow(forced.value),
+            after,
+            ok);
+    }
+
+    if (found == 0) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Windrose][UE5.6][ShadowCrash] cvar pass complete attempt={} found={} missing={} set_ok={} set_failed={}",
         attempt,
         found,
         missing,
@@ -467,6 +576,8 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_ue51_fsr3_runtime_cvar_attempts = 0;
         m_aphelion_framegen_runtime_cvars_done = false;
         m_aphelion_framegen_runtime_cvar_attempts = 0;
+        m_windrose_shadow_runtime_cvars_done = false;
+        m_windrose_shadow_runtime_cvar_attempts = 0;
     }
 
     process_pending_console_script(engine);
@@ -490,6 +601,17 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         } else if (m_aphelion_framegen_runtime_cvar_attempts >= 600) {
             SPDLOG_WARN("[Aphelion][DX12] frame-generation cvars were not found after {} attempts; giving up", m_aphelion_framegen_runtime_cvar_attempts);
             m_aphelion_framegen_runtime_cvars_done = true;
+        }
+    }
+
+    if (!m_windrose_shadow_runtime_cvars_done) {
+        ++m_windrose_shadow_runtime_cvar_attempts;
+
+        if (force_windrose_shadow_runtime_cvars_once(m_windrose_shadow_runtime_cvar_attempts)) {
+            m_windrose_shadow_runtime_cvars_done = true;
+        } else if (m_windrose_shadow_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN("[Windrose][UE5.6][ShadowCrash] cvars were not found after {} attempts; giving up", m_windrose_shadow_runtime_cvar_attempts);
+            m_windrose_shadow_runtime_cvars_done = true;
         }
     }
 }
