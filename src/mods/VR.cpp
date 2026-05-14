@@ -31,6 +31,7 @@
 #include <sdk/FBoolProperty.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/TArray.hpp>
+#include <sdk/UObjectArray.hpp>
 #include <sdk/Utility.hpp>
 
 #include <tracy/Tracy.hpp>
@@ -1267,6 +1268,25 @@ bool is_dispatch_executable() {
     return is_dispatch;
 }
 
+bool is_subnautica2_executable() {
+    static const bool is_subnautica2 = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"subnautica2-win64-shipping") != std::wstring::npos ||
+               lowered.find(L"subnautica2-wingdk-shipping") != std::wstring::npos;
+    }();
+
+    return is_subnautica2;
+}
+
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
     auto value_lower = std::wstring{value};
     auto needle_lower = std::wstring{needle};
@@ -1538,6 +1558,74 @@ std::string get_log_object_name(sdk::UObject* object) {
     } catch (...) {
         return "unresolved";
     }
+}
+
+bool has_property_named(sdk::UClass* klass, std::wstring_view name) try {
+    return klass != nullptr && klass->find_property(name) != nullptr;
+} catch (...) {
+    return false;
+}
+
+sdk::FBoolProperty* get_bool_property_descriptor(sdk::UClass* klass, std::wstring_view name) try {
+    if (klass == nullptr || IsBadReadPtr(klass, sizeof(void*))) {
+        return nullptr;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return nullptr;
+    }
+
+    if (prop->get_class()->get_name().to_string() != L"BoolProperty") {
+        return nullptr;
+    }
+
+    return (sdk::FBoolProperty*)prop;
+} catch (...) {
+    return nullptr;
+}
+
+bool is_subnautica2_save_thumbnail_settings_class(sdk::UClass* klass) try {
+    const auto thumbnails_enabled = get_bool_property_descriptor(klass, L"ThumbnailsEnabled");
+    if (thumbnails_enabled == nullptr) {
+        return false;
+    }
+
+    // Keep the guard narrow to the UWE save-thumbnail settings shape instead
+    // of mutating any random class that happens to expose ThumbnailsEnabled.
+    return has_property_named(klass, L"ThumbnailWidth") ||
+           has_property_named(klass, L"ThumbnailHeight") ||
+           has_property_named(klass, L"ScreenShotTimeout") ||
+           has_property_named(klass, L"AutoSaveThumbnailFrequency");
+} catch (...) {
+    return false;
+}
+
+bool disable_subnautica2_save_thumbnails_on_object(sdk::UObject* object) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    if (!is_subnautica2_save_thumbnail_settings_class(klass)) {
+        return false;
+    }
+
+    const auto thumbnails_enabled = get_bool_property_descriptor(klass, L"ThumbnailsEnabled");
+    if (thumbnails_enabled == nullptr) {
+        return false;
+    }
+
+    if (thumbnails_enabled->get_value_from_object(object)) {
+        thumbnails_enabled->set_value_in_object(object, false);
+    }
+
+    SPDLOG_INFO(
+        "[Subnautica2][SaveThumbnailGuard] Disabled save thumbnails on {}",
+        get_log_object_name(object));
+    return true;
+} catch (...) {
+    return false;
 }
 
 std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& class_name) {
@@ -3952,6 +4040,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     SPDLOG_INFO_ONCE("VR: Pre-engine tick");
 
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
+    update_subnautica2_save_thumbnail_guard(engine);
 
     update_statistics_overlay(engine);
     update_game_fov();
@@ -3962,6 +4051,114 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->is_ignoring_next_viewport_draw()) {
         update_action_states();
+    }
+}
+
+void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
+    if (!is_subnautica2_executable() || m_subnautica2_save_thumbnail_guard_done) {
+        return;
+    }
+
+    if (engine == nullptr) {
+        return;
+    }
+
+    const auto object_array = sdk::FUObjectArray::get();
+    if (object_array == nullptr || IsBadReadPtr(object_array, sizeof(void*))) {
+        return;
+    }
+
+    const auto object_count = object_array->get_object_count();
+    if (object_count <= 0) {
+        return;
+    }
+
+    if (m_subnautica2_save_thumbnail_guard_cursor < 0 || m_subnautica2_save_thumbnail_guard_cursor >= object_count) {
+        m_subnautica2_save_thumbnail_guard_cursor = 0;
+    }
+
+    // Subnautica 2 save thumbnails use a UWE screenshot readback path that can
+    // overrun its thumbnail crop allocation in VR. Scan incrementally and only
+    // touch the narrow UWE settings shape to avoid a startup hitch.
+    constexpr int32_t SCAN_BUDGET_PER_TICK = 2048;
+    constexpr uint32_t MAX_FULL_SWEEPS = 3;
+
+    int32_t scanned = 0;
+    while (scanned < SCAN_BUDGET_PER_TICK && m_subnautica2_save_thumbnail_guard_full_sweeps < MAX_FULL_SWEEPS) {
+        auto* item = object_array->get_object(m_subnautica2_save_thumbnail_guard_cursor);
+        ++scanned;
+
+        m_subnautica2_save_thumbnail_guard_cursor++;
+        if (m_subnautica2_save_thumbnail_guard_cursor >= object_count) {
+            m_subnautica2_save_thumbnail_guard_cursor = 0;
+            ++m_subnautica2_save_thumbnail_guard_full_sweeps;
+        }
+
+        if (item == nullptr || IsBadReadPtr(item, sizeof(void*))) {
+            continue;
+        }
+
+        auto* object = (sdk::UObject*)item->get_object();
+        if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+            continue;
+        }
+
+        sdk::UClass* klass = nullptr;
+        try {
+            klass = object->get_class();
+        } catch (...) {
+            klass = nullptr;
+        }
+
+        if (klass == nullptr || IsBadReadPtr(klass, sizeof(void*))) {
+            continue;
+        }
+
+        const auto key = (uintptr_t)klass;
+        auto it = m_subnautica2_save_thumbnail_guard_class_cache.find(key);
+        const bool candidate = it != m_subnautica2_save_thumbnail_guard_class_cache.end()
+            ? it->second
+            : is_subnautica2_save_thumbnail_settings_class(klass);
+
+        if (it == m_subnautica2_save_thumbnail_guard_class_cache.end()) {
+            m_subnautica2_save_thumbnail_guard_class_cache.emplace(key, candidate);
+        }
+
+        if (!candidate) {
+            continue;
+        }
+
+        bool patched = false;
+        if (disable_subnautica2_save_thumbnails_on_object(object)) {
+            ++m_subnautica2_save_thumbnail_guard_patched_objects;
+            patched = true;
+        }
+
+        if (auto* cdo = klass->get_class_default_object(); cdo != nullptr && cdo != object && !IsBadReadPtr(cdo, sizeof(void*))) {
+            if (disable_subnautica2_save_thumbnails_on_object(cdo)) {
+                ++m_subnautica2_save_thumbnail_guard_patched_objects;
+                patched = true;
+            }
+        }
+
+        if (patched) {
+            m_subnautica2_save_thumbnail_guard_done = true;
+            m_subnautica2_save_thumbnail_guard_found_candidate = true;
+            SPDLOG_INFO(
+                "[Subnautica2][SaveThumbnailGuard] Applied after scanning {} objects over {} full sweeps; patched_objects={}",
+                scanned,
+                m_subnautica2_save_thumbnail_guard_full_sweeps,
+                m_subnautica2_save_thumbnail_guard_patched_objects);
+            return;
+        }
+    }
+
+    if (m_subnautica2_save_thumbnail_guard_full_sweeps >= MAX_FULL_SWEEPS && !m_subnautica2_save_thumbnail_guard_warned_exhausted) {
+        m_subnautica2_save_thumbnail_guard_warned_exhausted = true;
+        m_subnautica2_save_thumbnail_guard_done = true;
+        SPDLOG_WARN(
+            "[Subnautica2][SaveThumbnailGuard] Did not find a UWE save-thumbnail settings object after {} FUObjectArray sweeps; save-thumbnail readback remains enabled",
+            m_subnautica2_save_thumbnail_guard_full_sweeps);
     }
 }
 

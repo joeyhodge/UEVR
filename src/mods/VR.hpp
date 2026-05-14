@@ -746,6 +746,7 @@ private:
     bool is_any_action_down();
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown = false);
@@ -1695,6 +1696,13 @@ private:
     bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling
     bool m_spoofed_gamepad_connection{false};
     bool m_aim_temp_disabled{false};
+    bool m_subnautica2_save_thumbnail_guard_done{false};
+    bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
+    bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
+    uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
+    uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
+    int32_t m_subnautica2_save_thumbnail_guard_cursor{0};
+    std::unordered_map<uintptr_t, bool> m_subnautica2_save_thumbnail_guard_class_cache{};
 
     struct {
         bool draw{false};
