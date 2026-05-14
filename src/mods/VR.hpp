@@ -1707,7 +1707,7 @@ private:
     bool m_spoofed_gamepad_connection{false};
     bool m_aim_temp_disabled{false};
     bool m_subnautica2_save_thumbnail_guard_done{false};
-    bool m_subnautica2_save_thumbnail_code_patch_attempted{false};
+    bool m_subnautica2_save_thumbnail_fallback_logged{false};
     bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
     bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
     uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
