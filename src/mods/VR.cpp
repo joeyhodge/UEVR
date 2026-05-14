@@ -3,6 +3,8 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <array>
+#include <cstring>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
@@ -1568,6 +1570,157 @@ bool disable_subnautica2_save_thumbnails_on_object(sdk::UObject* object) try {
     return true;
 } catch (...) {
     return false;
+}
+
+enum class Subnautica2SaveThumbnailPatchResult {
+    Applied,
+    AlreadyApplied,
+    Skipped
+};
+
+bool patch_subnautica2_bytes(uintptr_t address, const uint8_t* expected, const uint8_t* replacement, size_t size, const char* name) {
+    auto* target = (uint8_t*)address;
+
+    if (target == nullptr || IsBadReadPtr(target, size)) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] {} skipped; target is not readable at {:x}", name, address);
+        return false;
+    }
+
+    if (std::memcmp(target, replacement, size) == 0) {
+        SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] {} already applied at {:x}", name, address);
+        return true;
+    }
+
+    if (std::memcmp(target, expected, size) != 0) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] {} skipped; byte signature mismatch at {:x}", name, address);
+        return false;
+    }
+
+    DWORD old_protect{};
+    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &old_protect)) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] {} skipped; VirtualProtect failed at {:x}", name, address);
+        return false;
+    }
+
+    std::memcpy(target, replacement, size);
+    FlushInstructionCache(GetCurrentProcess(), target, size);
+
+    DWORD restored{};
+    VirtualProtect(target, size, old_protect, &restored);
+
+    SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] {} applied at {:x}", name, address);
+    return true;
+}
+
+Subnautica2SaveThumbnailPatchResult try_apply_subnautica2_save_thumbnail_code_patch() {
+    constexpr uintptr_t KNOWN_RVA = 0x5A77F32;
+    constexpr std::array<uint8_t, 27> EXPECTED = {
+        0x8B, 0x43, 0x04,             // mov eax, [rbx+04h] ; TargetWidth
+        0x89, 0x45, 0x07,             // mov [rbp+07h], eax
+        0x8B, 0x43, 0x08,             // mov eax, [rbx+08h] ; TargetHeight
+        0x89, 0x45, 0x0B,             // mov [rbp+0Bh], eax
+        0x8B, 0x4B, 0x14,             // mov ecx, [rbx+14h] ; CropMaxX
+        0x2B, 0x4B, 0x0C,             // sub ecx, [rbx+0Ch] ; CropWidth
+        0x8B, 0x43, 0x18,             // mov eax, [rbx+18h] ; CropMaxY
+        0x2B, 0x43, 0x10,             // sub eax, [rbx+10h] ; CropHeight
+        0x0F, 0xAF, 0xC8,             // imul ecx, eax
+    };
+    constexpr std::array<uint8_t, 27> PATCH = {
+        0x8B, 0x4B, 0x14,             // mov ecx, [rbx+14h] ; CropMaxX
+        0x2B, 0x4B, 0x0C,             // sub ecx, [rbx+0Ch] ; CropWidth
+        0x89, 0x4D, 0x07,             // mov [rbp+07h], ecx ; ExpectedWidth = CropWidth
+        0x8B, 0x43, 0x18,             // mov eax, [rbx+18h] ; CropMaxY
+        0x2B, 0x43, 0x10,             // sub eax, [rbx+10h] ; CropHeight
+        0x89, 0x45, 0x0B,             // mov [rbp+0Bh], eax ; ExpectedHeight = CropHeight
+        0x0F, 0xAF, 0xC8,             // imul ecx, eax
+        0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
+    };
+
+    auto* module = (uint8_t*)utility::get_executable();
+    if (module == nullptr) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch skipped; main module unavailable");
+        return Subnautica2SaveThumbnailPatchResult::Skipped;
+    }
+
+    const auto module_size = utility::get_module_size((HMODULE)module).value_or(0);
+    if (module_size < EXPECTED.size()) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch skipped; invalid module size {}", module_size);
+        return Subnautica2SaveThumbnailPatchResult::Skipped;
+    }
+
+    const auto try_patch_at = [&](uintptr_t address, const char* source) -> std::optional<Subnautica2SaveThumbnailPatchResult> {
+        auto* target = (uint8_t*)address;
+
+        if (target == nullptr || IsBadReadPtr(target, EXPECTED.size())) {
+            return std::nullopt;
+        }
+
+        if (std::memcmp(target, PATCH.data(), PATCH.size()) == 0) {
+            SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] Code patch already present via {} at {:x}", source, address);
+            return Subnautica2SaveThumbnailPatchResult::AlreadyApplied;
+        }
+
+        if (std::memcmp(target, EXPECTED.data(), EXPECTED.size()) != 0) {
+            return std::nullopt;
+        }
+
+        return patch_subnautica2_bytes(
+            address,
+            EXPECTED.data(),
+            PATCH.data(),
+            PATCH.size(),
+            "Save thumbnail VR crop-dimension code patch")
+            ? Subnautica2SaveThumbnailPatchResult::Applied
+            : Subnautica2SaveThumbnailPatchResult::Skipped;
+    };
+
+    if (KNOWN_RVA + EXPECTED.size() <= module_size) {
+        const auto known_address = (uintptr_t)module + KNOWN_RVA;
+        if (const auto result = try_patch_at(known_address, "known RVA")) {
+            return *result;
+        }
+
+        SPDLOG_WARN(
+            "[Subnautica2][SaveThumbnailGuard] Known RVA {:x} did not match expected thumbnail code; scanning module for a moved signature",
+            KNOWN_RVA);
+    } else {
+        SPDLOG_WARN(
+            "[Subnautica2][SaveThumbnailGuard] Known RVA {:x} is outside module size {}; scanning module for thumbnail code",
+            KNOWN_RVA,
+            module_size);
+    }
+
+    uintptr_t match_address = 0;
+    uint32_t matches = 0;
+
+    for (size_t offset = 0; offset + EXPECTED.size() <= module_size; ++offset) {
+        auto* candidate = module + offset;
+
+        if (std::memcmp(candidate, EXPECTED.data(), EXPECTED.size()) == 0 ||
+            std::memcmp(candidate, PATCH.data(), PATCH.size()) == 0)
+        {
+            match_address = (uintptr_t)candidate;
+            ++matches;
+
+            if (matches > 1) {
+                break;
+            }
+        }
+    }
+
+    if (matches == 1) {
+        if (const auto result = try_patch_at(match_address, "pattern scan")) {
+            return *result;
+        }
+    }
+
+    if (matches > 1) {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch skipped; thumbnail signature had {} matches", matches);
+    } else {
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch skipped; thumbnail signature was not found");
+    }
+
+    return Subnautica2SaveThumbnailPatchResult::Skipped;
 }
 
 std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& class_name) {
@@ -4161,6 +4314,22 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
     if (!is_subnautica2_executable() || m_subnautica2_save_thumbnail_guard_done) {
         return;
+    }
+
+    if (!m_subnautica2_save_thumbnail_code_patch_attempted) {
+        m_subnautica2_save_thumbnail_code_patch_attempted = true;
+
+        const auto code_patch_result = try_apply_subnautica2_save_thumbnail_code_patch();
+        if (code_patch_result == Subnautica2SaveThumbnailPatchResult::Applied ||
+            code_patch_result == Subnautica2SaveThumbnailPatchResult::AlreadyApplied)
+        {
+            m_subnautica2_save_thumbnail_guard_done = true;
+            m_subnautica2_save_thumbnail_guard_found_candidate = true;
+            SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] Using code patch; UObject thumbnail-disable fallback is not needed");
+            return;
+        }
+
+        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch was not applied; falling back to disabling UWE save thumbnails through UObject settings");
     }
 
     if (engine == nullptr) {
