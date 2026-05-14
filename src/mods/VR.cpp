@@ -4214,18 +4214,7 @@ void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
 
     if (!m_subnautica2_save_thumbnail_code_patch_attempted) {
         m_subnautica2_save_thumbnail_code_patch_attempted = true;
-
-        const auto code_patch_result = try_apply_subnautica2_save_thumbnail_code_patch();
-        if (code_patch_result == Subnautica2SaveThumbnailPatchResult::Applied ||
-            code_patch_result == Subnautica2SaveThumbnailPatchResult::AlreadyApplied)
-        {
-            m_subnautica2_save_thumbnail_guard_done = true;
-            m_subnautica2_save_thumbnail_guard_found_candidate = true;
-            SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] Using code patch; UObject thumbnail-disable fallback is not needed");
-            return;
-        }
-
-        SPDLOG_WARN("[Subnautica2][SaveThumbnailGuard] Code patch was not applied; falling back to disabling UWE save thumbnails through UObject settings");
+        SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] Skipping save-thumbnail byte patch path and forcing UObject thumbnail-disable fallback");
     }
 
     if (engine == nullptr) {
