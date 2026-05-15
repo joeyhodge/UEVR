@@ -248,6 +248,17 @@ bool avowed_is_current_game() {
     return result;
 }
 
+bool subnautica2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"Subnautica2-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"Subnautica2-WinGDK-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
 void avowed_native_fix_gate_reset(const char* reason) {
     if (!avowed_is_current_game()) {
         return;
@@ -7526,22 +7537,83 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
-                SPDLOG_INFO("Inserting midhook after CalculateStereoProjectionMatrix... @ {:x}", return_address);
 
-                constexpr auto max_stack_depth = 100;
-                uintptr_t stack[max_stack_depth]{};
+                if (subnautica2_is_current_game() && !g_hook->m_hooked_alternative_localplayer_scan) {
+                    // Subnautica 2 can wedge if we patch the immediate return address
+                    // during first startup projection. Use the safer GetProjectionData
+                    // pre-hook path and let the next frame provide the LocalPlayer.
+                    constexpr auto max_stack_depth = 100;
+                    uintptr_t stack[max_stack_depth]{};
 
-                const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+                    const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+                    g_hook->m_projection_matrix_stack.clear();
 
-                for (int i = 0; i < depth; i++) {
-                    g_hook->m_projection_matrix_stack.push_back(stack[i]);
-                    SPDLOG_INFO(" {:x}", (uintptr_t)stack[i]);
+                    for (int i = 0; i < depth; i++) {
+                        g_hook->m_projection_matrix_stack.push_back(stack[i]);
+                    }
+
+                    if (g_hook->m_projection_matrix_stack.size() >= 3) {
+                        const auto post_get_projection_data = g_hook->m_projection_matrix_stack[2];
+                        const auto get_projection_data_candidate_1 = utility::find_function_start_with_call(post_get_projection_data);
+                        const auto get_projection_data_candidate_2 = utility::find_virtual_function_start(post_get_projection_data);
+                        std::optional<uintptr_t> get_projection_data{};
+
+                        if (get_projection_data_candidate_1 && get_projection_data_candidate_2) {
+                            const auto candidate_1_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_1);
+                            const auto candidate_2_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_2);
+                            get_projection_data = candidate_1_distance < candidate_2_distance ? get_projection_data_candidate_1 : get_projection_data_candidate_2;
+                        } else if (get_projection_data_candidate_1) {
+                            get_projection_data = get_projection_data_candidate_1;
+                        } else if (get_projection_data_candidate_2) {
+                            get_projection_data = get_projection_data_candidate_2;
+                        } else {
+                            get_projection_data = utility::find_function_start(post_get_projection_data);
+                        }
+
+                        if (get_projection_data) {
+                            SPDLOG_INFO("[Subnautica2] Hooking GetProjectionData at {:x} instead of CalculateStereoProjectionMatrix return address", *get_projection_data);
+                            auto hook = safetyhook::create_mid((void*)*get_projection_data, &FFakeStereoRenderingHook::pre_get_projection_data);
+
+                            if (hook) {
+                                g_hook->m_get_projection_data_pre_hook = std::move(hook);
+                                g_hook->m_hooked_alternative_localplayer_scan = true;
+                            } else {
+                                SPDLOG_WARN("[Subnautica2] Failed to hook GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                                g_hook->m_fixed_localplayer_view_count = true;
+                            }
+                        } else {
+                            SPDLOG_WARN("[Subnautica2] Failed to locate GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                            g_hook->m_fixed_localplayer_view_count = true;
+                        }
+                    } else {
+                        SPDLOG_WARN("[Subnautica2] Projection stack was too shallow for GetProjectionData hook; disabling LocalPlayer bootstrap for this session");
+                        g_hook->m_fixed_localplayer_view_count = true;
+                    }
+
+                    g_hook->m_projection_matrix_stack.clear();
                 }
 
-                g_hook->m_calculate_stereo_projection_matrix_post_hook = safetyhook::create_mid((void*)return_address, &FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix);
+                if (g_hook->m_hooked_alternative_localplayer_scan || g_hook->m_fixed_localplayer_view_count) {
+                    // The alternative LocalPlayer bootstrap path is installed or this
+                    // session has failed closed; do not patch the return address.
+                } else {
+                    SPDLOG_INFO("Inserting midhook after CalculateStereoProjectionMatrix... @ {:x}", return_address);
 
-                if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
-                    SPDLOG_ERROR("Failed to insert midhook after CalculateStereoProjectionMatrix!");
+                    constexpr auto max_stack_depth = 100;
+                    uintptr_t stack[max_stack_depth]{};
+
+                    const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+
+                    for (int i = 0; i < depth; i++) {
+                        g_hook->m_projection_matrix_stack.push_back(stack[i]);
+                        SPDLOG_INFO(" {:x}", (uintptr_t)stack[i]);
+                    }
+
+                    g_hook->m_calculate_stereo_projection_matrix_post_hook = safetyhook::create_mid((void*)return_address, &FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix);
+
+                    if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
+                        SPDLOG_ERROR("Failed to insert midhook after CalculateStereoProjectionMatrix!");
+                    }
                 }
             }
         } else if (g_hook->m_calculate_stereo_projection_matrix_post_hook) {
