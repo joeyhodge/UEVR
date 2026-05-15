@@ -22,6 +22,7 @@
 
 #include <sdk/Globals.hpp>
 #include <sdk/CVar.hpp>
+#include <sdk/ConsoleManager.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
@@ -4041,6 +4042,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
     update_subnautica2_save_thumbnail_guard(engine);
+    update_subnautica2_native_water_compatibility(engine);
 
     update_statistics_overlay(engine);
     update_game_fov();
@@ -4165,6 +4167,179 @@ void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
             "[Subnautica2][SaveThumbnailGuard] Did not find a UWE save-thumbnail settings object after {} FUObjectArray sweeps; save-thumbnail readback remains enabled",
             m_subnautica2_save_thumbnail_guard_full_sweeps);
     }
+}
+
+void VR::restore_subnautica2_native_water_cvars() {
+    if (!m_subnautica2_native_water_cvars_applied || m_subnautica2_native_water_previous_ints.empty()) {
+        m_subnautica2_native_water_cvars_applied = false;
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        return;
+    }
+
+    uint32_t restored{};
+    uint32_t missing{};
+    uint32_t failed{};
+
+    for (const auto& [name, value] : m_subnautica2_native_water_previous_ints) {
+        auto* object = console_manager->find(name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        auto* variable = (sdk::IConsoleVariable*)object;
+        bool ok{};
+
+        try {
+            ok = variable->Set(std::to_wstring(value).c_str());
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++restored;
+        } else {
+            ++failed;
+        }
+    }
+
+    SPDLOG_INFO(
+        "[Subnautica2][NativeWaterCompat] Restored water cvars restored={} missing={} failed={}",
+        restored,
+        missing,
+        failed);
+
+    m_subnautica2_native_water_previous_ints.clear();
+    m_subnautica2_native_water_cvars_applied = false;
+    m_subnautica2_native_water_cvars_logged = false;
+    m_subnautica2_native_water_next_apply = {};
+}
+
+void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    const bool active =
+        is_subnautica2_executable() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        is_hmd_active() &&
+        m_compatibility_subnautica2_native_water->value() &&
+        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        !m_native_stereo_fix->value();
+
+    if (!active) {
+        restore_subnautica2_native_water_cvars();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_subnautica2_native_water_next_apply != std::chrono::steady_clock::time_point{} &&
+        now < m_subnautica2_native_water_next_apply) {
+        return;
+    }
+
+    m_subnautica2_native_water_next_apply = now + std::chrono::seconds(2);
+    ++m_subnautica2_native_water_cvar_attempts;
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        if (m_subnautica2_native_water_cvar_attempts == 1 || (m_subnautica2_native_water_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[Subnautica2][NativeWaterCompat] FConsoleManager unavailable; cannot apply water cvars yet");
+        }
+        return;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        const wchar_t* value;
+    };
+
+    // Dump comparison shows the native path has a real right-eye SingleLayerWater
+    // workload while synced mostly avoids it. Disable the water pass itself first,
+    // then its expensive subpaths, instead of touching final eye copy/projection.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.Water.SingleLayer", L"0"},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.ShadersSupportVSMFiltering", L"0"},
+        ForcedCVar{L"r.Water.SingleLayer.VSMFiltering", L"0"},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", L"0"},
+    };
+
+    uint32_t found{};
+    uint32_t set_ok{};
+    uint32_t set_failed{};
+    uint32_t missing{};
+
+    for (const auto& forced : forced_cvars) {
+        auto* object = console_manager->find(forced.name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto* variable = (sdk::IConsoleVariable*)object;
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            if (!m_subnautica2_native_water_previous_ints.contains(forced.name)) {
+                m_subnautica2_native_water_previous_ints.emplace(forced.name, before);
+            }
+            ok = variable->Set(forced.value);
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++set_ok;
+        } else {
+            ++set_failed;
+        }
+
+        if (!m_subnautica2_native_water_cvars_logged) {
+            SPDLOG_INFO(
+                "[Subnautica2][NativeWaterCompat] forced {}: before={} requested={} after={} ok={}",
+                utility::narrow(forced.name),
+                before,
+                utility::narrow(forced.value),
+                after,
+                ok);
+        }
+    }
+
+    if (found == 0) {
+        if (!m_subnautica2_native_water_cvars_logged || (m_subnautica2_native_water_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN(
+                "[Subnautica2][NativeWaterCompat] No SingleLayerWater cvars found attempt={} missing={}",
+                m_subnautica2_native_water_cvar_attempts,
+                missing);
+        }
+        return;
+    }
+
+    if (!m_subnautica2_native_water_cvars_logged) {
+        SPDLOG_INFO(
+            "[Subnautica2][NativeWaterCompat] Applied native water cvar guard found={} missing={} set_ok={} set_failed={}",
+            found,
+            missing,
+            set_ok,
+            set_failed);
+        m_subnautica2_native_water_cvars_logged = true;
+    }
+
+    m_subnautica2_native_water_cvars_applied = true;
 }
 
 void VR::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -5786,6 +5961,12 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
         option.config_load(cfg, set_defaults);
     }
 
+    if (set_defaults && is_subnautica2_executable()) {
+        // Subnautica 2's UE5.6 native path can render SingleLayerWater black in the right eye.
+        // Keep this game-specific guard enabled for fresh profiles, but let existing profiles override it.
+        m_compatibility_subnautica2_native_water->value() = true;
+    }
+
     if (get_runtime() != nullptr && get_runtime()->loaded) {
         get_runtime()->on_config_load(cfg, set_defaults);
 
@@ -7317,6 +7498,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             if (m_compatibility_fullscreen_16x9_cameras->value()) {
                 m_compatibility_fullscreen_16x9_camera_aspect->draw("Fullscreen Camera Aspect Override");
                 ImGui::TextWrapped("For SMG/Supermassive camera managers: 0 uses the current per-eye HMD aspect; otherwise this writes the selected aspect and disables camera aspect constraints/remap.");
+            }
+            m_compatibility_subnautica2_native_water->draw("Subnautica 2 Native Water Compatibility");
+            if (m_compatibility_subnautica2_native_water->value()) {
+                ImGui::TextWrapped("Subnautica 2 only: disables UE5.6 SingleLayerWater native-stereo subpasses while in Native Stereo with Native Stereo Fix off. Synced/AFR restores the previous values.");
             }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");

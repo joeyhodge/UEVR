@@ -747,6 +747,8 @@ private:
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
+    void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
+    void restore_subnautica2_native_water_cvars();
     struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown = false);
@@ -1293,6 +1295,7 @@ private:
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
+    const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1585,6 +1588,7 @@ public:
             *m_compatibility_ui_layer_pose_stabilizer,
             *m_compatibility_fullscreen_16x9_cameras,
             *m_compatibility_fullscreen_16x9_camera_aspect,
+            *m_compatibility_subnautica2_native_water,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
@@ -1704,6 +1708,11 @@ private:
     uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
     int32_t m_subnautica2_save_thumbnail_guard_cursor{0};
     std::unordered_map<uintptr_t, bool> m_subnautica2_save_thumbnail_guard_class_cache{};
+    bool m_subnautica2_native_water_cvars_applied{false};
+    bool m_subnautica2_native_water_cvars_logged{false};
+    uint32_t m_subnautica2_native_water_cvar_attempts{0};
+    std::chrono::steady_clock::time_point m_subnautica2_native_water_next_apply{};
+    std::unordered_map<std::wstring, int> m_subnautica2_native_water_previous_ints{};
 
     struct {
         bool draw{false};
