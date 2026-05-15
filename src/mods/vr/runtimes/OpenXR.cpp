@@ -36,6 +36,7 @@ constexpr auto FOCUSED_SYNCED_NO_BEGIN_RECOVERY_AGE = std::chrono::milliseconds(
 constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(1);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
+constexpr auto RELAXED_STARTUP_POSE_POST_SUBMIT_WINDOW = std::chrono::seconds(30);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 constexpr auto LONG_WAIT_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto STALE_POSE_SUBMIT_LOG_INTERVAL = std::chrono::seconds(2);
@@ -191,16 +192,31 @@ bool has_any_view_tracking(XrViewStateFlags flags) {
 }
 
 bool should_accept_startup_poses(OpenXR* openxr) {
-    if (openxr->ever_submitted) {
+    const auto pose_flags_acceptable =
+        has_required_location_validity(openxr->view_space_location.locationFlags) &&
+        has_any_location_tracking(openxr->view_space_location.locationFlags) &&
+        has_required_view_validity(openxr->view_state.viewStateFlags) &&
+        has_any_view_tracking(openxr->view_state.viewStateFlags) &&
+        has_required_view_validity(openxr->stage_view_state.viewStateFlags) &&
+        has_any_view_tracking(openxr->stage_view_state.viewStateFlags);
+
+    if (!pose_flags_acceptable) {
         return false;
     }
 
-    return has_required_location_validity(openxr->view_space_location.locationFlags) &&
-           has_any_location_tracking(openxr->view_space_location.locationFlags) &&
-           has_required_view_validity(openxr->view_state.viewStateFlags) &&
-           has_any_view_tracking(openxr->view_state.viewStateFlags) &&
-           has_required_view_validity(openxr->stage_view_state.viewStateFlags) &&
-           has_any_view_tracking(openxr->stage_view_state.viewStateFlags);
+    if (!openxr->ever_submitted) {
+        return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto post_submit_age = elapsed_ms_since(now, openxr->last_successful_end_frame);
+    const auto in_startup_recovery_window =
+        !openxr->got_first_valid_poses &&
+        (openxr->session_state == XR_SESSION_STATE_VISIBLE || openxr->session_state == XR_SESSION_STATE_FOCUSED) &&
+        post_submit_age >= 0 &&
+        std::chrono::milliseconds{post_submit_age} <= RELAXED_STARTUP_POSE_POST_SUBMIT_WINDOW;
+
+    return in_startup_recovery_window;
 }
 
 void log_pose_validation_failure(OpenXR* openxr, const char* reason, uint32_t frame_count, XrTime display_time) {
