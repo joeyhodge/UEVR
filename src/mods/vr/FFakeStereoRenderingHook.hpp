@@ -372,6 +372,7 @@ public:
     void attempt_hook_slate_thread(uintptr_t return_address = 0, bool alternate = false);
     void attempt_hook_ue57_slate_elements_pass();
     void attempt_hook_ue55_slate_output_texture_register();
+    void attempt_hook_daysgone_slate_intermediate_buffer();
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_fsceneview_constructor();
     
@@ -577,6 +578,7 @@ private:
                                                  void* elements, void* params, void* unk1, void* unk2);
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
+    static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -617,6 +619,7 @@ private:
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -684,6 +687,8 @@ private:
     std::chrono::steady_clock::time_point m_ue57_dedicated_ui_missing_since{};
     uint32_t m_ue57_dedicated_ui_missing_frames{0};
     bool m_attempted_hook_ue55_slate_output_texture_register{false};
+    bool m_attempted_hook_daysgone_slate_intermediate_buffer{false};
+    std::atomic<uintptr_t> m_daysgone_slate_intermediate_last_target{0};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
