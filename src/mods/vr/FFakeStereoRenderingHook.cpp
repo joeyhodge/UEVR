@@ -1,6 +1,7 @@
 #define NOMINMAX
 
 #include <windows.h>
+#include <d3d11.h>
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
@@ -9,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -254,6 +256,17 @@ bool subnautica2_is_current_game() {
         return exe_path &&
             (exe_path->find(L"Subnautica2-Win64-Shipping") != std::wstring::npos ||
              exe_path->find(L"Subnautica2-WinGDK-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+bool daysgone_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"DaysGone.exe") != std::wstring::npos ||
+             exe_path->find(L"BendGame") != std::wstring::npos);
     }();
 
     return result;
@@ -1944,6 +1957,7 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
+    attempt_hook_daysgone_slate_intermediate_buffer();
 
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
@@ -6343,11 +6357,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
 
+            const auto daysgone_current = daysgone_is_current_game();
+
             if (ignored_addresses.contains(exception_address)) {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
-
-            ignored_addresses.insert(exception_address);
 
             if (exception_address == 0) {
                 SPDLOG_INFO("[Exception Handler] Exception address is null");
@@ -6376,6 +6390,276 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
+
+            const auto fault_target = exception->ExceptionRecord->NumberParameters > 1
+                ? static_cast<uintptr_t>(exception->ExceptionRecord->ExceptionInformation[1])
+                : std::numeric_limits<uintptr_t>::max();
+
+            const auto is_rax_base = [](auto reg) {
+                return reg == NDR_RAX || reg == NDR_EAX;
+            };
+
+            const auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
+                if (reg == NDR_RAX || reg == NDR_EAX) return 0;
+                if (reg == NDR_RCX || reg == NDR_ECX) return 1;
+                if (reg == NDR_RDX || reg == NDR_EDX) return 2;
+                if (reg == NDR_RBX || reg == NDR_EBX) return 3;
+                if (reg == NDR_RSP || reg == NDR_ESP) return 4;
+                if (reg == NDR_RBP || reg == NDR_EBP) return 5;
+                if (reg == NDR_RSI || reg == NDR_ESI) return 6;
+                if (reg == NDR_RDI || reg == NDR_EDI) return 7;
+                if (reg == NDR_R8 || reg == NDR_R8D) return 8;
+                if (reg == NDR_R9 || reg == NDR_R9D) return 9;
+                if (reg == NDR_R10 || reg == NDR_R10D) return 10;
+                if (reg == NDR_R11 || reg == NDR_R11D) return 11;
+                if (reg == NDR_R12 || reg == NDR_R12D) return 12;
+                if (reg == NDR_R13 || reg == NDR_R13D) return 13;
+                if (reg == NDR_R14 || reg == NDR_R14D) return 14;
+                if (reg == NDR_R15 || reg == NDR_R15D) return 15;
+                return std::nullopt;
+            };
+
+            auto make_zero_register_patch = [&reg_to_index](auto reg) -> std::vector<int16_t> {
+                const auto index = reg_to_index(reg);
+
+                if (!index) {
+                    return {};
+                }
+
+                const auto dest = *index;
+                std::vector<int16_t> patch{};
+
+                if (dest < 8) {
+                    patch.push_back(0x31);
+                    patch.push_back(static_cast<int16_t>(0xC0 | (dest << 3) | dest));
+                } else {
+                    patch.push_back(0x45);
+                    patch.push_back(0x31);
+                    const auto r = static_cast<uint8_t>(dest - 8);
+                    patch.push_back(static_cast<int16_t>(0xC0 | (r << 3) | r));
+                }
+
+                return patch;
+            };
+
+            auto set_context_register = [&reg_to_index](CONTEXT* context, auto reg, DWORD64 value) -> bool {
+                const auto index = reg_to_index(reg);
+
+                if (!index) {
+                    return false;
+                }
+
+                switch (*index) {
+                case 0: context->Rax = value; return true;
+                case 1: context->Rcx = value; return true;
+                case 2: context->Rdx = value; return true;
+                case 3: context->Rbx = value; return true;
+                case 4: context->Rsp = value; return true;
+                case 5: context->Rbp = value; return true;
+                case 6: context->Rsi = value; return true;
+                case 7: context->Rdi = value; return true;
+                case 8: context->R8 = value; return true;
+                case 9: context->R9 = value; return true;
+                case 10: context->R10 = value; return true;
+                case 11: context->R11 = value; return true;
+                case 12: context->R12 = value; return true;
+                case 13: context->R13 = value; return true;
+                case 14: context->R14 = value; return true;
+                case 15: context->R15 = value; return true;
+                default: return false;
+                }
+            };
+
+            const auto exception_module = utility::get_module_within(exception_address).value_or(nullptr);
+            const auto is_daysgone_view_extension_null_chain =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target <= 0x20 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                std::string_view{decoded->Mnemonic}.starts_with("MOV") &&
+                op2.Info.Memory.HasDisp &&
+                is_rax_base(op2.Info.Memory.Base) &&
+                (op2.Info.Memory.Disp == 0x8 || op2.Info.Memory.Disp == 0x10);
+
+            if (is_daysgone_view_extension_null_chain) {
+                auto patch_bytes = make_zero_register_patch(decoded->Operands[0].Info.Register.Reg);
+
+                if (!patch_bytes.empty() && patch_bytes.size() <= decoded->Length) {
+                    for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
+                        patch_bytes.push_back(0x90);
+                    }
+
+                    SPDLOG_WARN(
+                        "[DaysGone] Patching UE4.10/4.11 SceneViewExtension null chain at {:x}: fault={:x} disp={:x}",
+                        exception_address,
+                        fault_target,
+                        op2.Info.Memory.Disp);
+
+                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Failed to create safe zero-register patch at {:x}; patch_len={} instr_len={}",
+                    exception_address,
+                    patch_bytes.size(),
+                        decoded->Length);
+            }
+
+            const auto is_rcx_base = [](auto reg) {
+                return reg == NDR_RCX || reg == NDR_ECX;
+            };
+
+            const auto is_rbx_base = [](auto reg) {
+                return reg == NDR_RBX || reg == NDR_EBX;
+            };
+
+            const auto is_daysgone_null_projection_source =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                decoded->Operands[0].Info.Register.Reg == NDR_RAX &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rcx_base(op2.Info.Memory.Base) &&
+                (!op2.Info.Memory.HasDisp || op2.Info.Memory.Disp == 0);
+
+            if (is_daysgone_null_projection_source) {
+                const auto next_instruction_addr = exception_address + decoded->Length;
+                const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+                const auto is_expected_vcall =
+                    next_instruction &&
+                    std::string_view{next_instruction->Mnemonic}.starts_with("CALL") &&
+                    next_instruction->OperandsCount >= 1 &&
+                    next_instruction->Operands[0].Type == ND_OP_MEM &&
+                    next_instruction->Operands[0].Info.Memory.HasBase &&
+                    next_instruction->Operands[0].Info.Memory.Base == NDR_RAX &&
+                    next_instruction->Operands[0].Info.Memory.HasDisp &&
+                    next_instruction->Operands[0].Info.Memory.Disp == 0x20;
+
+                if (is_expected_vcall) {
+                    alignas(16) static const std::array<float, 20> daysgone_fallback_matrix{
+                        1.0f, 0.0f, 0.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 1.0f, 0.0f,
+                        0.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 0.0f, 0.0f,
+                    };
+
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null projection-source call at {:x}; using fallback matrix and skipping vcall {:x}",
+                        exception_address,
+                        next_instruction_addr);
+
+                    exception->ContextRecord->Rax = reinterpret_cast<DWORD64>(daysgone_fallback_matrix.data());
+                    exception->ContextRecord->Rip = next_instruction_addr + next_instruction->Length;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null projection-source pattern at {:x} did not match expected vcall",
+                    exception_address);
+            }
+
+            const auto is_daysgone_null_texture_output_ref =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0x10 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rbx_base(op2.Info.Memory.Base) &&
+                op2.Info.Memory.HasDisp &&
+                op2.Info.Memory.Disp == 0x10;
+
+            if (is_daysgone_null_texture_output_ref) {
+                const auto next_instruction_addr = exception_address + decoded->Length;
+                const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+                const auto next_base_is_expected = [&]() {
+                    if (!next_instruction ||
+                        next_instruction->OperandsCount < 2 ||
+                        next_instruction->Operands[1].Type != ND_OP_MEM ||
+                        !next_instruction->Operands[1].Info.Memory.HasBase)
+                    {
+                        return false;
+                    }
+
+                    const auto base = next_instruction->Operands[1].Info.Memory.Base;
+                    return base == NDR_R12 || base == NDR_R13 || base == NDR_R14 || base == NDR_R15 || base == NDR_RBP;
+                }();
+                const auto is_expected_followup =
+                    next_instruction &&
+                    std::string_view{next_instruction->Mnemonic}.starts_with("MOV") &&
+                    next_instruction->OperandsCount >= 2 &&
+                    next_instruction->Operands[0].Type == ND_OP_REG &&
+                    next_instruction->Operands[1].Type == ND_OP_MEM &&
+                    next_instruction->Operands[1].Info.Memory.HasBase &&
+                    next_base_is_expected &&
+                    next_instruction->Operands[1].Info.Memory.HasDisp &&
+                    next_instruction->Operands[1].Info.Memory.Disp == 0x28;
+
+                if (is_expected_followup &&
+                    set_context_register(exception->ContextRecord, decoded->Operands[0].Info.Register.Reg, 0))
+                {
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null post-process texture output ref at {:x}; dest_reg={} next_base={} using null resource ref",
+                        exception_address,
+                        (int)decoded->Operands[0].Info.Register.Reg,
+                        (int)next_instruction->Operands[1].Info.Memory.Base);
+
+                    exception->ContextRecord->Rip = next_instruction_addr;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null texture-output-ref pattern at {:x} did not match expected followup",
+                    exception_address);
+            }
+
+            const auto is_daysgone_null_scene_render_target_output_ref =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0x10 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rcx_base(op2.Info.Memory.Base) &&
+                op2.Info.Memory.HasDisp &&
+                op2.Info.Memory.Disp == 0x10;
+
+            if (is_daysgone_null_scene_render_target_output_ref) {
+                const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+                const auto previous_is_expected_scene_target_load =
+                    previous_instruction &&
+                    std::string_view{previous_instruction->instrux.Mnemonic}.starts_with("MOV") &&
+                    previous_instruction->instrux.OperandsCount >= 2 &&
+                    previous_instruction->instrux.Operands[0].Type == ND_OP_REG &&
+                    previous_instruction->instrux.Operands[0].Info.Register.Reg == NDR_RCX &&
+                    previous_instruction->instrux.Operands[1].Type == ND_OP_MEM &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.HasBase &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.Base == NDR_RAX &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.HasDisp &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.Disp == 0x188;
+
+                if (previous_is_expected_scene_target_load &&
+                    set_context_register(exception->ContextRecord, decoded->Operands[0].Info.Register.Reg, 0))
+                {
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null scene-render-target output ref at {:x}; dest_reg={} from FSceneRenderTargets slot 0x188",
+                        exception_address,
+                        (int)decoded->Operands[0].Info.Register.Reg);
+
+                    exception->ContextRecord->Rip = exception_address + decoded->Length;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null scene-render-target output-ref pattern at {:x} did not match expected FSceneRenderTargets load",
+                    exception_address);
+            }
+
+            ignored_addresses.insert(exception_address);
 
             // Get the start of the previous instruction
             auto previous_instruction = utility::resolve_instruction(exception_address - 1);
@@ -8816,6 +9100,129 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     ctx.rdx = (uintptr_t)ui_target;
 }
 
+namespace {
+bool daysgone_try_get_d3d11_texture_desc(FRHITexture2D* texture, D3D11_TEXTURE2D_DESC& out_desc) {
+    if (texture == nullptr || !is_readable_process_range((uintptr_t)texture, sizeof(void*))) {
+        return false;
+    }
+
+    try {
+        FRHITexture2D::set_vtable(*(void**)texture);
+
+        auto* native = (ID3D11Texture2D*)texture->get_native_resource();
+        if (native == nullptr || !is_readable_process_range((uintptr_t)native, sizeof(void*))) {
+            return false;
+        }
+
+        native->GetDesc(&out_desc);
+        return out_desc.Width >= 640 && out_desc.Height >= 360 &&
+            out_desc.Width <= 8192 && out_desc.Height <= 8192;
+    } catch (...) {
+        return false;
+    }
+}
+}
+
+void FFakeStereoRenderingHook::attempt_hook_daysgone_slate_intermediate_buffer() {
+    if (m_attempted_hook_daysgone_slate_intermediate_buffer) {
+        return;
+    }
+
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    m_attempted_hook_daysgone_slate_intermediate_buffer = true;
+
+    // Days Gone's BendTemporalAA creates a real SlateIntermediateBuffer, then
+    // composites it into the scene. Capturing that texture gives UEVR a true UI
+    // target instead of treating the scene RT as UI.
+    constexpr uintptr_t kBendTemporalAASlateIntermediatePostCallRva = 0x204CD9F;
+    constexpr std::array<uint8_t, 8> kExpectedBytes{
+        0x33, 0xD2,                         // xor edx, edx
+        0xB9, 0x00, 0x01, 0x00, 0x00,       // mov ecx, 100h
+        0xE8                                // call ...
+    };
+
+    const auto module = (uintptr_t)utility::get_executable();
+    if (module == 0) {
+        SPDLOG_WARN("[DaysGone][SlateUI] Cannot hook SlateIntermediateBuffer: executable module unavailable");
+        return;
+    }
+
+    const auto hook_address = module + kBendTemporalAASlateIntermediatePostCallRva;
+    if (!is_executable_process_range(hook_address, kExpectedBytes.size()) ||
+        std::memcmp((void*)hook_address, kExpectedBytes.data(), kExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][SlateUI] Refusing SlateIntermediateBuffer hook at {:x}: byte signature mismatch",
+            hook_address);
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid((void*)hook_address, &FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook);
+    if (!hook_result) {
+        SPDLOG_WARN("[DaysGone][SlateUI] Failed to hook SlateIntermediateBuffer post-call at {:x}", hook_address);
+        return;
+    }
+
+    m_daysgone_slate_intermediate_buffer_hook = std::move(hook_result);
+    SPDLOG_INFO("[DaysGone][SlateUI] Hooked Bend SlateIntermediateBuffer post-call at {:x}", hook_address);
+}
+
+void FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto* const rtm = g_hook->get_render_target_manager();
+    if (rtm == nullptr) {
+        return;
+    }
+
+    constexpr uintptr_t kSlateIntermediateLocalRspOffset = 0x60;
+    const auto local_address = ctx.rsp + kSlateIntermediateLocalRspOffset;
+    if (!is_readable_process_range(local_address, sizeof(FRHITexture2D*))) {
+        return;
+    }
+
+    auto* slate_texture = *(FRHITexture2D**)local_address;
+    if (slate_texture == nullptr || !is_readable_process_range((uintptr_t)slate_texture, sizeof(void*))) {
+        return;
+    }
+
+    if (slate_texture == rtm->get_render_target()) {
+        SPDLOG_WARN_ONCE("[DaysGone][SlateUI] Ignoring SlateIntermediateBuffer candidate because it matches the scene RT");
+        return;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    if (!daysgone_try_get_d3d11_texture_desc(slate_texture, desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][SlateUI] SlateIntermediateBuffer candidate {:x} is not a readable D3D11 texture yet",
+            (uintptr_t)slate_texture);
+        return;
+    }
+
+    const auto last_target = g_hook->m_daysgone_slate_intermediate_last_target.load();
+    if (last_target == (uintptr_t)slate_texture && rtm->get_dedicated_ui_target() == slate_texture) {
+        return;
+    }
+
+    rtm->set_dedicated_ui_target(slate_texture, desc.Width, desc.Height);
+    rtm->get_fallback_ui_target_ref() = nullptr;
+    g_hook->m_daysgone_slate_intermediate_last_target.store((uintptr_t)slate_texture);
+
+    SPDLOG_WARN(
+        "[DaysGone][SlateUI] Captured Bend SlateIntermediateBuffer as dedicated UI target: {:x} [{}x{} fmt={} bind=0x{:X}]",
+        (uintptr_t)slate_texture,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        desc.BindFlags);
+}
+
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
                                                                 void* a4, void* params, void* unk1, void* unk2) 
 {
@@ -9205,6 +9612,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     auto ui_target = rtm->get_ui_target();
     const auto render_target_fallback = rtm->get_render_target();
+    const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
 
     if (is_ue_5_7_or_newer()) {
         if (rtm->has_dedicated_ui_target()) {
@@ -9219,6 +9627,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         ui_target = rtm->get_ui_target();
     } else {
+        if (daysgone_dx11_no_scene_as_ui && ui_target == render_target_fallback) {
+            SPDLOG_WARN_ONCE("[DaysGone] Clearing scene render target UI fallback before Slate DrawWindow");
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            ui_target = nullptr;
+        }
+
         if (ui_target == nullptr && provider_texture_native_ok && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
             ui_target = provider_texture;
@@ -9231,10 +9645,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             rtm->get_fallback_ui_target_ref() = engine_texture;
         }
 
-        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider) {
+        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider && !daysgone_dx11_no_scene_as_ui) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
             ui_target = render_target_fallback;
             rtm->get_fallback_ui_target_ref() = render_target_fallback;
+        } else if (ui_target == nullptr && render_target_fallback != nullptr && daysgone_dx11_no_scene_as_ui) {
+            SPDLOG_WARN_ONCE("[DaysGone] Not replacing Slate viewport with the scene RT; using Bend's in-scene Slate composite");
         }
     }
 
@@ -9604,6 +10020,15 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
             return;
         }
+    }
+
+    if (g_framework->is_dx11() && daysgone_is_current_game()) {
+        // Days Gone is UE4.11/D3D11 and its Slate/RT path can fatal if UEVR
+        // replays the texture-create call with a forced UI format while keeping
+        // UAV-capable flags. Let the original engine allocation run and adopt
+        // the resulting refs in the post hook instead.
+        SPDLOG_WARN_ONCE("[DaysGone] Skipping D3D11 pre-texture duplicate creation; using engine-created RT refs");
+        return;
     }
 
     // maybe do some work later to bruteforce the registers/offsets for these
@@ -10470,13 +10895,17 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         dedicated_ui_promoted = try_promote_dedicated_ui_candidate(rtm->shader_resource_hook_ref->texture, "shader_resource_hook_ref");
     }
 
+    const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
+
     if (!dedicated_ui_promoted && !is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && rtm->shader_resource_hook_ref != nullptr) {
         const auto shader_texture = rtm->shader_resource_hook_ref->texture;
 
-        if (shader_texture != nullptr) {
+        if (shader_texture != nullptr && !(daysgone_dx11_no_scene_as_ui && shader_texture == rtm->get_render_target())) {
             SPDLOG_INFO(" Falling back to original shader resource texture as UI target: {:x}", (uintptr_t)shader_texture);
             FRHITexture2D::set_vtable(*(void**)shader_texture);
             rtm->get_fallback_ui_target_ref() = shader_texture;
+        } else if (shader_texture != nullptr) {
+            SPDLOG_WARN_ONCE("[DaysGone] Refusing to use scene render target shader resource as a VR UI layer");
         }
     }
 
@@ -10499,6 +10928,11 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
                 }
 
                 if (!is_ue_5_7_or_newer()) {
+                    if (daysgone_dx11_no_scene_as_ui && recovered == rtm->get_render_target()) {
+                        SPDLOG_WARN_ONCE("[DaysGone] Refusing recovered scene render target as a VR UI layer");
+                        continue;
+                    }
+
                     rtm->get_fallback_ui_target_ref() = recovered;
                 }
                 break;
@@ -10507,8 +10941,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     }
 
     if (!is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
-        SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
-        rtm->get_fallback_ui_target_ref() = texture;
+        if (daysgone_dx11_no_scene_as_ui) {
+            // Days Gone composites Slate through BendTemporalAA into the scene RT.
+            // Treating that scene RT as a separate VR UI layer duplicates/crops the
+            // full scene in the overlay and pushes the menu/HUD to the wrong place.
+            SPDLOG_WARN_ONCE("[DaysGone] Skipping render-target-as-UI fallback; leaving Bend Slate composite in the scene");
+        } else {
+            SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
+            rtm->get_fallback_ui_target_ref() = texture;
+        }
     } else if (is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
         SPDLOG_WARN_ONCE("Skipping render-target-as-UI fallback on UE 5.7+; waiting for a dedicated UI target");
     }

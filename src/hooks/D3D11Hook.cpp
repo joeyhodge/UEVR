@@ -1,5 +1,9 @@
 #include <algorithm>
+#include <mutex>
+#include <optional>
 #include <spdlog/spdlog.h>
+#include <string>
+#include <unordered_map>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
 
@@ -12,6 +16,109 @@
 using namespace std;
 
 static D3D11Hook* g_d3d11_hook = nullptr;
+
+static bool daysgone_d3d11_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"DaysGone.exe") != std::wstring::npos ||
+             exe_path->find(L"BendGame") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+static const char* to_resource_dim_name(D3D11_RESOURCE_DIMENSION dim) {
+    switch (dim) {
+    case D3D11_RESOURCE_DIMENSION_BUFFER: return "BUFFER";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE1D: return "TEX1D";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE2D: return "TEX2D";
+    case D3D11_RESOURCE_DIMENSION_TEXTURE3D: return "TEX3D";
+    default: return "UNKNOWN";
+    }
+}
+
+static bool is_depth_or_stencil_format(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_D16_UNORM:
+    case DXGI_FORMAT_D24_UNORM_S8_UINT:
+    case DXGI_FORMAT_D32_FLOAT:
+    case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
+    case DXGI_FORMAT_R24G8_TYPELESS:
+    case DXGI_FORMAT_R32G8X24_TYPELESS:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static std::optional<DXGI_FORMAT> choose_uav_format(DXGI_FORMAT format) {
+    if (is_depth_or_stencil_format(format)) {
+        return std::nullopt;
+    }
+
+    switch (format) {
+    case DXGI_FORMAT_R8_TYPELESS:
+        return DXGI_FORMAT_R8_UNORM;
+    case DXGI_FORMAT_R16_TYPELESS:
+        return DXGI_FORMAT_R16_UNORM;
+    case DXGI_FORMAT_R32_TYPELESS:
+        return DXGI_FORMAT_R32_FLOAT;
+    case DXGI_FORMAT_R8G8_TYPELESS:
+        return DXGI_FORMAT_R8G8_UNORM;
+    case DXGI_FORMAT_R16G16_TYPELESS:
+        return DXGI_FORMAT_R16G16_FLOAT;
+    case DXGI_FORMAT_R32G32_TYPELESS:
+        return DXGI_FORMAT_R32G32_FLOAT;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    case DXGI_FORMAT_R32G32B32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32_FLOAT;
+    case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+        return DXGI_FORMAT_R32G32B32A32_FLOAT;
+    default:
+        return std::nullopt;
+    }
+}
+
+static bool is_daysgone_scene_uav_candidate(const D3D11_TEXTURE2D_DESC& desc) {
+    if (!daysgone_d3d11_guard_enabled()) {
+        return false;
+    }
+
+    if (desc.Width < 1280 || desc.Height < 720 || desc.MipLevels != 1 || desc.ArraySize != 1) {
+        return false;
+    }
+
+    if (desc.Usage != D3D11_USAGE_DEFAULT || desc.CPUAccessFlags != 0 || desc.SampleDesc.Count != 1) {
+        return false;
+    }
+
+    const auto required_bind = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    if ((desc.BindFlags & required_bind) != required_bind || (desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) != 0) {
+        return false;
+    }
+
+    if (is_depth_or_stencil_format(desc.Format)) {
+        return false;
+    }
+
+    switch (desc.Format) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return true;
+    default:
+        return false;
+    }
+}
 
 D3D11Hook::~D3D11Hook() {
     unhook();
@@ -97,6 +204,11 @@ bool D3D11Hook::hook() {
         m_ps_set_shader_hook = std::make_unique<PointerHook>(&ps_set_shader_fn, (void*)&D3D11Hook::ps_set_shader);
         m_vs_set_shader_hook = std::make_unique<PointerHook>(&vs_set_shader_fn, (void*)&D3D11Hook::vs_set_shader);
 
+        if (daysgone_d3d11_guard_enabled()) {
+            hook_create_texture2d(device);
+            hook_create_uav(device);
+        }
+
         render::ShaderOverrideRegistry::get().set_d3d11_create_callbacks(
             m_create_vertex_shader_hook->get_original<render::ShaderOverrideRegistry::CreateVertexShaderFn>(),
             m_create_pixel_shader_hook->get_original<render::ShaderOverrideRegistry::CreatePixelShaderFn>()
@@ -121,7 +233,17 @@ bool D3D11Hook::unhook() {
 
     spdlog::info("Unhooking D3D11");
 
-    if (m_present_hook->remove() &&
+    const auto uav_unhooked = m_create_uav_hook == nullptr || m_create_uav_hook->remove();
+    m_create_uav_hook.reset();
+    m_create_uav_hook_device = nullptr;
+
+    const auto tex2d_unhooked = m_create_texture2d_hook == nullptr || m_create_texture2d_hook->remove();
+    m_create_texture2d_hook.reset();
+    m_create_texture2d_hook_device = nullptr;
+
+    if (uav_unhooked &&
+        tex2d_unhooked &&
+        m_present_hook->remove() &&
         m_resize_buffers_hook->remove() &&
         m_create_vertex_shader_hook->remove() &&
         m_create_pixel_shader_hook->remove() &&
@@ -168,6 +290,11 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
     }*/
 
     swap_chain->GetDevice(__uuidof(d3d11->m_device), (void**)&d3d11->m_device);
+
+    if (daysgone_d3d11_guard_enabled()) {
+        d3d11->hook_create_texture2d(d3d11->m_device);
+        d3d11->hook_create_uav(d3d11->m_device);
+    }
 
     /*if (d3d11->m_set_render_targets_hook == nullptr) {
         ComPtr<ID3D11DeviceContext> context{};
@@ -288,6 +415,233 @@ HRESULT WINAPI D3D11Hook::resize_buffers(
     g_inside_d3d11_resize_buffers = false;
 
     return last_d3d11_resize_buffers_result;
+}
+
+void D3D11Hook::hook_create_texture2d(ID3D11Device* device) {
+    if (!daysgone_d3d11_guard_enabled() || device == nullptr || device == m_create_texture2d_hook_device) {
+        return;
+    }
+
+    try {
+        if (m_create_texture2d_hook != nullptr) {
+            m_create_texture2d_hook->remove();
+            m_create_texture2d_hook.reset();
+            m_create_texture2d_hook_device = nullptr;
+        }
+
+        auto& create_texture2d_fn = (*(void***)device)[5];
+        if (create_texture2d_fn == nullptr || create_texture2d_fn == (void*)&D3D11Hook::create_texture2d) {
+            m_create_texture2d_hook_device = device;
+            return;
+        }
+
+        m_create_texture2d_hook = std::make_unique<PointerHook>(&create_texture2d_fn, (void*)&D3D11Hook::create_texture2d);
+        m_create_texture2d_hook_device = device;
+        spdlog::warn("[DaysGone][D3D11] Hooked ID3D11Device::CreateTexture2D for UE4.11 scene RT UAV bind guard");
+    } catch (const std::exception& e) {
+        spdlog::error("[DaysGone][D3D11] Failed to hook CreateTexture2D: {}", e.what());
+    } catch (...) {
+        spdlog::error("[DaysGone][D3D11] Failed to hook CreateTexture2D");
+    }
+}
+
+void D3D11Hook::hook_create_uav(ID3D11Device* device) {
+    if (!daysgone_d3d11_guard_enabled() || device == nullptr || device == m_create_uav_hook_device) {
+        return;
+    }
+
+    try {
+        if (m_create_uav_hook != nullptr) {
+            m_create_uav_hook->remove();
+            m_create_uav_hook.reset();
+            m_create_uav_hook_device = nullptr;
+        }
+
+        auto& create_uav_fn = (*(void***)device)[8];
+        if (create_uav_fn == nullptr || create_uav_fn == (void*)&D3D11Hook::create_unordered_access_view) {
+            m_create_uav_hook_device = device;
+            return;
+        }
+
+        m_create_uav_hook = std::make_unique<PointerHook>(&create_uav_fn, (void*)&D3D11Hook::create_unordered_access_view);
+        m_create_uav_hook_device = device;
+        spdlog::warn("[DaysGone][D3D11] Hooked ID3D11Device::CreateUnorderedAccessView for UE4.11 Slate UAV fallback");
+    } catch (const std::exception& e) {
+        spdlog::error("[DaysGone][D3D11] Failed to hook CreateUnorderedAccessView: {}", e.what());
+    } catch (...) {
+        spdlog::error("[DaysGone][D3D11] Failed to hook CreateUnorderedAccessView");
+    }
+}
+
+HRESULT WINAPI D3D11Hook::create_texture2d(
+    ID3D11Device* device,
+    const D3D11_TEXTURE2D_DESC* desc,
+    const D3D11_SUBRESOURCE_DATA* initial_data,
+    ID3D11Texture2D** texture
+) {
+    auto d3d11 = g_d3d11_hook;
+    if (d3d11 == nullptr || d3d11->m_create_texture2d_hook == nullptr) {
+        return E_FAIL;
+    }
+
+    auto original = d3d11->m_create_texture2d_hook->get_original<decltype(D3D11Hook::create_texture2d)*>();
+
+    if (desc == nullptr || !is_daysgone_scene_uav_candidate(*desc)) {
+        return original(device, desc, initial_data, texture);
+    }
+
+    auto patched_desc = *desc;
+    patched_desc.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
+
+    const auto patched_result = original(device, &patched_desc, initial_data, texture);
+    if (SUCCEEDED(patched_result)) {
+        spdlog::warn(
+            "[DaysGone][D3D11] Added UAV bind to large scene RT texture {}x{} format={} bind=0x{:X}->0x{:X}",
+            desc->Width,
+            desc->Height,
+            (uint32_t)desc->Format,
+            desc->BindFlags,
+            patched_desc.BindFlags);
+        return patched_result;
+    }
+
+    // Some drivers reject UAV on B8 formats. If so, fail closed to the original
+    // engine desc; the UAV hook below still prevents the UE4.11 fatal.
+    spdlog::warn(
+        "[DaysGone][D3D11] UAV-bind scene RT create failed 0x{:08X}; retrying original desc {}x{} format={} bind=0x{:X}",
+        (uint32_t)patched_result,
+        desc->Width,
+        desc->Height,
+        (uint32_t)desc->Format,
+        desc->BindFlags);
+
+    return original(device, desc, initial_data, texture);
+}
+
+HRESULT WINAPI D3D11Hook::create_unordered_access_view(
+    ID3D11Device* device,
+    ID3D11Resource* resource,
+    const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc,
+    ID3D11UnorderedAccessView** uav
+) {
+    auto d3d11 = g_d3d11_hook;
+    if (d3d11 == nullptr || d3d11->m_create_uav_hook == nullptr) {
+        return E_FAIL;
+    }
+
+    auto original = d3d11->m_create_uav_hook->get_original<decltype(D3D11Hook::create_unordered_access_view)*>();
+    const auto result = original(device, resource, desc, uav);
+    if (SUCCEEDED(result) || !daysgone_d3d11_guard_enabled()) {
+        return result;
+    }
+
+    D3D11_RESOURCE_DIMENSION dim = D3D11_RESOURCE_DIMENSION_UNKNOWN;
+    if (resource != nullptr) {
+        resource->GetType(&dim);
+    }
+
+    spdlog::warn("[DaysGone][D3D11] CreateUnorderedAccessView failed hr=0x{:08X} dim={}", (uint32_t)result, to_resource_dim_name(dim));
+
+    if (device == nullptr || resource == nullptr || uav == nullptr || dim != D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture{};
+    if (FAILED(resource->QueryInterface(IID_PPV_ARGS(&texture)))) {
+        return result;
+    }
+
+    D3D11_TEXTURE2D_DESC texture_desc{};
+    texture->GetDesc(&texture_desc);
+
+    spdlog::warn(
+        "[DaysGone][D3D11] UAV texture desc: {}x{} mips={} array={} format={} samples={} bind=0x{:X} misc=0x{:X}",
+        texture_desc.Width,
+        texture_desc.Height,
+        texture_desc.MipLevels,
+        texture_desc.ArraySize,
+        (uint32_t)texture_desc.Format,
+        texture_desc.SampleDesc.Count,
+        texture_desc.BindFlags,
+        texture_desc.MiscFlags);
+
+    if (desc != nullptr) {
+        spdlog::warn("[DaysGone][D3D11] UAV desc: format={} view_dim={}", (uint32_t)desc->Format, (uint32_t)desc->ViewDimension);
+    } else {
+        spdlog::warn("[DaysGone][D3D11] UAV desc: <null>");
+    }
+
+    if (texture_desc.SampleDesc.Count > 1 || is_depth_or_stencil_format(texture_desc.Format)) {
+        spdlog::warn("[DaysGone][D3D11] Refusing dummy UAV fallback for MSAA/depth texture");
+        return result;
+    }
+
+    if (desc != nullptr) {
+        const auto source_format = desc->Format != DXGI_FORMAT_UNKNOWN ? desc->Format : texture_desc.Format;
+        if (auto mapped = choose_uav_format(source_format); mapped && *mapped != desc->Format) {
+            auto retry_desc = *desc;
+            retry_desc.Format = *mapped;
+            const auto retry_result = original(device, resource, &retry_desc, uav);
+            spdlog::warn(
+                "[DaysGone][D3D11] UAV typed-format retry {} -> {} returned 0x{:08X}",
+                (uint32_t)source_format,
+                (uint32_t)*mapped,
+                (uint32_t)retry_result);
+
+            if (SUCCEEDED(retry_result)) {
+                return retry_result;
+            }
+        }
+    }
+
+    struct DummyUavEntry {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+        Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> uav;
+    };
+
+    static std::mutex s_dummy_uav_mutex{};
+    static std::unordered_map<ID3D11Resource*, DummyUavEntry> s_dummy_uavs{};
+
+    std::scoped_lock lock{s_dummy_uav_mutex};
+    if (auto it = s_dummy_uavs.find(resource); it != s_dummy_uavs.end()) {
+        *uav = it->second.uav.Get();
+        (*uav)->AddRef();
+        spdlog::warn("[DaysGone][D3D11] Reusing dummy UAV for unsupported texture UAV request");
+        return S_OK;
+    }
+
+    D3D11_TEXTURE2D_DESC dummy_desc = texture_desc;
+    dummy_desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    dummy_desc.BindFlags = D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE;
+    dummy_desc.MiscFlags = 0;
+    dummy_desc.MipLevels = 1;
+    dummy_desc.ArraySize = 1;
+    dummy_desc.SampleDesc.Count = 1;
+    dummy_desc.SampleDesc.Quality = 0;
+
+    DummyUavEntry entry{};
+    const auto dummy_texture_result = device->CreateTexture2D(&dummy_desc, nullptr, &entry.texture);
+    if (FAILED(dummy_texture_result) || entry.texture == nullptr) {
+        spdlog::warn("[DaysGone][D3D11] Failed to create dummy UAV texture: 0x{:08X}", (uint32_t)dummy_texture_result);
+        return result;
+    }
+
+    D3D11_UNORDERED_ACCESS_VIEW_DESC dummy_uav_desc{};
+    dummy_uav_desc.Format = dummy_desc.Format;
+    dummy_uav_desc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE2D;
+    dummy_uav_desc.Texture2D.MipSlice = 0;
+
+    const auto dummy_uav_result = device->CreateUnorderedAccessView(entry.texture.Get(), &dummy_uav_desc, &entry.uav);
+    if (FAILED(dummy_uav_result) || entry.uav == nullptr) {
+        spdlog::warn("[DaysGone][D3D11] Failed to create dummy UAV: 0x{:08X}", (uint32_t)dummy_uav_result);
+        return result;
+    }
+
+    *uav = entry.uav.Get();
+    (*uav)->AddRef();
+    s_dummy_uavs.emplace(resource, std::move(entry));
+    spdlog::warn("[DaysGone][D3D11] Returned dummy UAV for unsupported UE4.11 Slate/RT UAV request");
+    return S_OK;
 }
 
 HRESULT WINAPI D3D11Hook::create_vertex_shader(
