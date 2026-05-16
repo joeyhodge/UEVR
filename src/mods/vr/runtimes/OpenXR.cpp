@@ -61,6 +61,24 @@ int64_t elapsed_ms_since(std::chrono::steady_clock::time_point now, std::chrono:
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
 }
 
+bool is_prospi_executable_cached() {
+    static const bool is_prospi = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_prospi_executable_path(*exe_path);
+    }();
+
+    return is_prospi;
+}
+
+bool is_prospi_cut_cadence_guard_active() {
+    if (!is_prospi_executable_cached()) {
+        return false;
+    }
+
+    const auto& vr = VR::get();
+    return vr != nullptr && vr->is_prospi_cut_cadence_guard_active();
+}
+
 bool is_older_frame_count(uint32_t frame_count, uint32_t current_frame_count) {
     if (frame_count == 0 || current_frame_count == 0) {
         return false;
@@ -719,7 +737,62 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         this->focused_frame_loop_recovery_count
     );
 
-    this->recover_wedged_frame("focused stale frame loop");
+    if (this->frame_began) {
+        this->recover_wedged_frame("focused stale frame loop");
+    } else if (is_prospi_cut_cadence_guard_active()) {
+        // ProSpi camera cuts can poison cadence when an old synchronized frame is
+        // opened and closed empty. During the cut guard, fail closed by dropping
+        // the local synchronized state and letting the next frame wait fresh.
+        this->discard_synced_frame_without_layers("prospi_focused_stale_synced_no_begin");
+    } else {
+        // xrWaitFrame succeeded but no render submit reached xrBeginFrame for too long.
+        // Preserve OpenXR call order by opening and ending an empty frame instead of
+        // locally clearing frame_synced and risking the next xrWaitFrame being invalid.
+        XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
+        this->last_begin_frame_caller = "focused_stale_synced_no_begin";
+
+        this->begin_profile();
+        const auto begin_frame_start = std::chrono::steady_clock::now();
+        const auto begin_result = xrBeginFrame(this->session, &frame_begin_info);
+        this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
+        this->end_profile("xrBeginFrame");
+
+        if (begin_result != XR_SUCCESS && begin_result != XR_FRAME_DISCARDED) {
+            spdlog::warn(
+                "[OpenXR] Failed to open focused stale empty recovery frame caller={} result={}",
+                caller != nullptr ? caller : "unknown",
+                this->get_result_string(begin_result));
+            return false;
+        }
+
+        this->frame_began = true;
+        this->last_successful_begin_frame = std::chrono::steady_clock::now();
+
+        XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+        frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+        frame_end_info.environmentBlendMode = this->blend_mode;
+        frame_end_info.layerCount = 0;
+        frame_end_info.layers = nullptr;
+
+        const auto end_frame_start = std::chrono::steady_clock::now();
+        const auto end_result = xrEndFrame(this->session, &frame_end_info);
+        this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
+
+        if (end_result != XR_SUCCESS) {
+            spdlog::warn(
+                "[OpenXR] Focused stale empty recovery xrEndFrame failed caller={} result={}",
+                caller != nullptr ? caller : "unknown",
+                this->get_result_string(end_result));
+        } else {
+            this->ever_submitted = true;
+            this->last_successful_end_frame = std::chrono::steady_clock::now();
+            spdlog::warn("[OpenXR] Closed focused stale synchronized frame without layers");
+        }
+
+        this->frame_began = false;
+        this->clear_frame_synced("focused_stale_synced_no_begin");
+        ++this->forced_frame_recovery_count;
+    }
 
     this->last_focused_frame_loop_recovery = now;
     ++this->focused_frame_loop_recovery_count;
@@ -821,6 +894,30 @@ bool OpenXR::close_synced_frame_without_layers(const char* reason) {
     return true;
 }
 
+bool OpenXR::discard_synced_frame_without_layers(const char* reason) {
+    std::scoped_lock _{sync_mtx};
+
+    if (this->session == XR_NULL_HANDLE || !this->frame_synced || this->frame_began) {
+        return false;
+    }
+
+    const auto safe_reason = reason != nullptr ? reason : "discard_synced_frame";
+    spdlog::warn(
+        "[OpenXR] Discarding synchronized frame without xrBeginFrame reason={} session={} ready={} last_begin_caller={} recoveries={}",
+        safe_reason,
+        this->get_session_state_string(this->session_state),
+        this->session_ready,
+        this->last_begin_frame_caller,
+        this->forced_frame_recovery_count);
+
+    this->clear_frame_synced(safe_reason);
+    this->frame_synced_skip_streak = 0;
+    this->frame_began_skip_streak = 0;
+    this->frame_began_skip_suppressed_count = 0;
+    ++this->forced_frame_recovery_count;
+    return true;
+}
+
 void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
     const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
     const auto had_synced = this->frame_synced;
@@ -901,8 +998,13 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
                 }
             }
 
-            if (this->frame_began_skip_streak >= FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD) {
-                this->recover_wedged_frame("synchronize_frame stuck with frame_began");
+            const auto prospi_cut_guard = is_prospi_cut_cadence_guard_active();
+            const auto stuck_recovery_threshold = prospi_cut_guard ? 30u : FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD;
+
+            if (this->frame_began_skip_streak >= stuck_recovery_threshold) {
+                this->recover_wedged_frame(prospi_cut_guard
+                    ? "prospi synchronize_frame stuck with frame_began during cut guard"
+                    : "synchronize_frame stuck with frame_began");
                 this->frame_began_skip_streak = 0;
             }
         }

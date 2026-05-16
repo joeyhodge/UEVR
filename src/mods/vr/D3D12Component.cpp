@@ -77,6 +77,15 @@ std::string format_swapchain_recreate_reasons(uint32_t reasons) {
     return out;
 }
 
+bool is_prospi_executable_cached() {
+    static const bool is_prospi = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_prospi_executable_path(*exe_path);
+    }();
+
+    return is_prospi;
+}
+
 void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
     const auto cadence_sensitive_recreate =
         (reasons & (SWAPCHAIN_RECREATE_AFR_STATE | SWAPCHAIN_RECREATE_DEPTH_EXTENT | SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS)) != 0;
@@ -92,6 +101,13 @@ void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
     const auto openxr = vr->get_openxr_runtime();
 
     if (openxr == nullptr) {
+        return;
+    }
+
+    if (is_prospi_executable_cached() && reasons == SWAPCHAIN_RECREATE_AFR_STATE) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[PROSPI_CUT_CADENCE] Leaving OpenXR frame loop untouched before AFR-only swapchain recreate");
         return;
     }
 
@@ -1251,6 +1267,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         const auto begin_result = vr->m_openxr->begin_frame(caller);
 
         if (!vr->m_openxr->frame_began) {
+            if (is_prospi_executable_cached() &&
+                vr->is_prospi_cut_cadence_guard_active() &&
+                vr->m_openxr->frame_synced)
+            {
+                vr->m_openxr->discard_synced_frame_without_layers("prospi_d3d12_begin_failed_cut_guard");
+            }
+
             SPDLOG_INFO_EVERY_N_SEC(
                 1,
                 "[OpenXR] Skipping D3D12 OpenXR copy because begin_frame did not leave a frame open: {}",
@@ -2416,10 +2439,22 @@ void D3D12Component::on_reset(VR* vr) {
                 new_depth_height = (uint32_t)desc.Height;
             }
 
-            log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
-            prepare_openxr_swapchain_recreate(vr, reasons);
-            m_openxr.create_swapchains();
-            m_last_afr_state = vr->is_using_afr();
+            const auto defer_prospi_afr_recreate =
+                is_prospi_executable_cached() &&
+                reasons == SWAPCHAIN_RECREATE_AFR_STATE &&
+                vr->is_prospi_cut_cadence_guard_active();
+
+            if (defer_prospi_afr_recreate) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    "[PROSPI_CUT_CADENCE] Deferring AFR-only OpenXR swapchain recreate during camera-cut guard generation={}",
+                    vr->get_prospi_cut_cadence_guard_generation());
+            } else {
+                log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
+                prepare_openxr_swapchain_recreate(vr, reasons);
+                m_openxr.create_swapchains();
+                m_last_afr_state = vr->is_using_afr();
+            }
         }
 
         // end the frame before something terrible happens

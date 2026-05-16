@@ -148,6 +148,7 @@ public:
     XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
+    bool discard_synced_frame_without_layers(const char* reason);
     void prepare_resolution_scale_reconfigure(const char* reason);
     bool recover_focused_stale_frame_loop(const char* caller);
     void log_frame_lifecycle_state(const char* prefix) const;

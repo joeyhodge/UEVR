@@ -284,6 +284,11 @@ public:
         return m_openvr.get();
     }
 
+    bool is_prospi_cut_cadence_guard_active() const;
+    uint64_t get_prospi_cut_cadence_guard_generation() const {
+        return m_prospi_cut_cadence_guard_generation.load(std::memory_order_relaxed);
+    }
+
     bool is_hmd_active() const {
         if (m_disable_vr) {
             return false;
@@ -1211,12 +1216,18 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfViewDistanceScale"), 0.10f, 2.0f, 0.50f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfStaticMeshLODDistanceScale"), 0.10f, 4.0f, 2.00f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfSkeletalMeshLODBias"), 0.0f, 4.0f, 1.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_gameplay_behind_plate_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiGameplayBehindPlateDollyOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_gameplay_behind_plate_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiGameplayBehindPlateDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_home_plate_waist_high_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiHomePlateWaistHighDollyOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_home_plate_waist_high_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiHomePlateWaistHighDollyDistance"), 10.0f, 50000.0f, 530.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_tv_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiTVDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_tv_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiTVDollyDistance"), 10.0f, 50000.0f, 10000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_opening_aerial_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiOpeningAerialDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_opening_aerial_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiOpeningAerialDollyDistance"), 10.0f, 50000.0f, 4000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_behind_plate_wide_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiBehindPlateWideDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_behind_plate_wide_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiBehindPlateWideDollyDistance"), 10.0f, 50000.0f, 2000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_behind_plate_elevated_sweep_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiBehindPlateElevatedSweepDollyOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_behind_plate_elevated_sweep_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiBehindPlateElevatedSweepDollyDistance"), 10.0f, 50000.0f, 2000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_home_plate_waist_high_reverse_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiHomePlateWaistHighReverseDollyOverride"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_home_plate_waist_high_reverse_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiHomePlateWaistHighReverseDollyDistance"), 10.0f, 50000.0f, 530.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_low_plate_corner_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiLowPlateCornerDollyOverride"), false) };
@@ -1227,6 +1238,8 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_left_field_corner_wide_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiLeftFieldCornerWideDollyDistance"), 10.0f, 50000.0f, 3500.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_first_base_corner_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiFirstBaseCornerLowDollyOverride"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_first_base_corner_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiFirstBaseCornerLowDollyDistance"), 10.0f, 50000.0f, 750.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_first_base_infield_low_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiFirstBaseInfieldLowDollyOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_first_base_infield_low_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiFirstBaseInfieldLowDollyDistance"), 10.0f, 50000.0f, 750.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_center_field_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiCenterFieldDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_center_field_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiCenterFieldDollyDistance"), 10.0f, 50000.0f, 10000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_center_field_high_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiCenterFieldHighDollyOverride"), true) };
@@ -1267,6 +1280,8 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_plate_high_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiPlateHighDollyDistance"), 10.0f, 50000.0f, 1500.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_home_plate_overhead_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiHomePlateOverheadDollyOverride"), true) };
     const ModSlider::Ptr m_match_game_fov_prospi_home_plate_overhead_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiHomePlateOverheadDollyDistance"), 10.0f, 50000.0f, 2500.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_generic_telephoto_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiGenericTelephotoDollyOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_generic_telephoto_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiGenericTelephotoDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_calibration_auto{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraCalibrationAuto"), false) };
     const ModSlider::Ptr m_camera_fov_distance_multiplier{ ModSlider::create(generate_name("CameraFOVDistanceMultiplier"), 0.00f, 1000.0f, 0.0f) };
     const ModSlider::Ptr m_world_scale{ ModSlider::create(generate_name("WorldScale"), 0.01f, 10.0f, 1.0f) };
@@ -1380,6 +1395,23 @@ private:
         float projection_multiplier{1.0f};
     };
 
+    struct ProSpiFieldMapSample {
+        bool valid{false};
+        uint64_t sequence{};
+        std::string camera_id{};
+        std::string preset_name{};
+        int32_t preset{};
+        glm::vec3 location{};
+        glm::vec3 rotation{};
+        float raw_fov{};
+        float dolly_distance{3000.0f};
+        float actual_min_fov{20.0f};
+        float projection_multiplier{1.0f};
+        bool calibration_applied{false};
+        bool auto_dolly_applied{false};
+        int64_t timestamp_ms{};
+    };
+
     struct GenericCameraPreset {
         std::string camera_id{};
         float min_fov{5.0f};
@@ -1431,6 +1463,24 @@ private:
     void clear_current_prospi_camera_calibration();
     void clear_current_prospi_preset_calibrations();
     std::string get_current_prospi_camera_id();
+    void record_prospi_field_map_sample(
+        const std::string& camera_id,
+        int32_t preset,
+        std::string_view preset_name,
+        const glm::vec3& location,
+        const glm::vec3& rotation,
+        float raw_fov,
+        float dolly_distance,
+        float actual_min_fov,
+        float projection_multiplier,
+        bool calibration_applied,
+        bool auto_dolly_applied);
+    std::vector<ProSpiFieldMapSample> get_prospi_field_map_samples_snapshot();
+    ProSpiFieldMapSample get_last_detected_prospi_camera_sample();
+    ProSpiFieldMapSample get_selected_prospi_field_map_sample();
+    void select_prospi_field_map_sample(const ProSpiFieldMapSample& sample);
+    bool apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float dolly_distance);
+    void draw_prospi_field_map_visualizer();
     void save_generic_camera_presets();
     void load_generic_camera_presets();
     void save_current_generic_camera_preset();
@@ -1512,12 +1562,18 @@ public:
             *m_match_game_fov_prospi_telephoto_perf_view_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias,
+            *m_match_game_fov_prospi_gameplay_behind_plate_dolly_override,
+            *m_match_game_fov_prospi_gameplay_behind_plate_dolly_distance,
+            *m_match_game_fov_prospi_home_plate_waist_high_dolly_override,
+            *m_match_game_fov_prospi_home_plate_waist_high_dolly_distance,
             *m_match_game_fov_prospi_tv_dolly_override,
             *m_match_game_fov_prospi_tv_dolly_distance,
             *m_match_game_fov_prospi_opening_aerial_dolly_override,
             *m_match_game_fov_prospi_opening_aerial_dolly_distance,
             *m_match_game_fov_prospi_behind_plate_wide_dolly_override,
             *m_match_game_fov_prospi_behind_plate_wide_dolly_distance,
+            *m_match_game_fov_prospi_behind_plate_elevated_sweep_dolly_override,
+            *m_match_game_fov_prospi_behind_plate_elevated_sweep_dolly_distance,
             *m_match_game_fov_prospi_home_plate_waist_high_reverse_dolly_override,
             *m_match_game_fov_prospi_home_plate_waist_high_reverse_dolly_distance,
             *m_match_game_fov_prospi_low_plate_corner_dolly_override,
@@ -1528,6 +1584,8 @@ public:
             *m_match_game_fov_prospi_left_field_corner_wide_dolly_distance,
             *m_match_game_fov_prospi_first_base_corner_low_dolly_override,
             *m_match_game_fov_prospi_first_base_corner_low_dolly_distance,
+            *m_match_game_fov_prospi_first_base_infield_low_dolly_override,
+            *m_match_game_fov_prospi_first_base_infield_low_dolly_distance,
             *m_match_game_fov_prospi_center_field_dolly_override,
             *m_match_game_fov_prospi_center_field_dolly_distance,
             *m_match_game_fov_prospi_center_field_high_dolly_override,
@@ -1568,6 +1626,8 @@ public:
             *m_match_game_fov_prospi_plate_high_dolly_distance,
             *m_match_game_fov_prospi_home_plate_overhead_dolly_override,
             *m_match_game_fov_prospi_home_plate_overhead_dolly_distance,
+            *m_match_game_fov_prospi_generic_telephoto_dolly_override,
+            *m_match_game_fov_prospi_generic_telephoto_dolly_distance,
             *m_match_game_fov_prospi_camera_calibration_auto,
             *m_world_scale,
             *m_depth_scale,
@@ -1638,6 +1698,8 @@ private:
     std::atomic<int32_t> m_match_game_fov_camera_cut_stabilizer_remaining_ms{0};
     std::atomic<bool> m_match_game_fov_generic_camera_preset_applied{false};
     std::atomic<bool> m_match_game_fov_generic_camera_tracking_active{false};
+    std::atomic<int64_t> m_prospi_cut_cadence_guard_until_ms{0};
+    std::atomic<uint64_t> m_prospi_cut_cadence_guard_generation{0};
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
     std::string m_prospi_current_camera_id{};
@@ -1649,6 +1711,14 @@ private:
     bool m_prospi_sticky_calibration_valid{false};
     ProSpiCameraCalibration m_prospi_sticky_calibration{};
     std::string m_prospi_sticky_camera_id{};
+    std::mutex m_prospi_field_map_mtx{};
+    std::array<ProSpiFieldMapSample, 64> m_prospi_field_map_samples{};
+    size_t m_prospi_field_map_next{};
+    size_t m_prospi_field_map_count{};
+    uint64_t m_prospi_field_map_sequence{};
+    ProSpiFieldMapSample m_prospi_last_detected_camera{};
+    ProSpiFieldMapSample m_prospi_selected_field_map_camera{};
+    float m_prospi_tune_camera_dolly_distance{3000.0f};
     bool m_prospi_telephoto_perf_baselines_valid{false};
     float m_prospi_telephoto_perf_baseline_view_distance_scale{1.0f};
     float m_prospi_telephoto_perf_baseline_static_mesh_lod_distance_scale{1.0f};
