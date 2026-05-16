@@ -61,6 +61,10 @@ protected:
     std::unique_ptr<PointerHook> m_present_hook{};
     std::unique_ptr<PointerHook> m_resize_buffers_hook{};
     std::unique_ptr<PointerHook> m_set_render_targets_hook{};
+    std::unique_ptr<PointerHook> m_create_texture2d_hook{};
+    ID3D11Device* m_create_texture2d_hook_device{};
+    std::unique_ptr<PointerHook> m_create_uav_hook{};
+    ID3D11Device* m_create_uav_hook_device{};
     std::unique_ptr<PointerHook> m_create_vertex_shader_hook{};
     std::unique_ptr<PointerHook> m_create_pixel_shader_hook{};
     std::unique_ptr<PointerHook> m_vs_set_shader_hook{};
@@ -74,8 +78,13 @@ protected:
     static HRESULT WINAPI resize_buffers(IDXGISwapChain* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static HRESULT WINAPI create_vertex_shader(ID3D11Device* device, const void* bytecode, SIZE_T bytecode_size, ID3D11ClassLinkage* linkage, ID3D11VertexShader** shader);
     static HRESULT WINAPI create_pixel_shader(ID3D11Device* device, const void* bytecode, SIZE_T bytecode_size, ID3D11ClassLinkage* linkage, ID3D11PixelShader** shader);
+    static HRESULT WINAPI create_texture2d(ID3D11Device* device, const D3D11_TEXTURE2D_DESC* desc, const D3D11_SUBRESOURCE_DATA* initial_data, ID3D11Texture2D** texture);
+    static HRESULT WINAPI create_unordered_access_view(ID3D11Device* device, ID3D11Resource* resource, const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc, ID3D11UnorderedAccessView** uav);
     static void WINAPI vs_set_shader(ID3D11DeviceContext* context, ID3D11VertexShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI ps_set_shader(ID3D11DeviceContext* context, ID3D11PixelShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
+
+    void hook_create_uav(ID3D11Device* device);
+    void hook_create_texture2d(ID3D11Device* device);
 };
