@@ -9,11 +9,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <limits>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -2010,6 +2013,9 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
     attempt_hook_daysgone_slate_intermediate_buffer();
+    attempt_hook_daysgone_bend_taa_composite();
+    update_daysgone_ui_telemetry();
+    update_daysgone_bend_ui_placement_fix();
 
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
@@ -2126,7 +2132,170 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         ImGui::TreePop();
     }
 
+    if (daysgone_is_current_game()) {
+        draw_daysgone_bend_ui_controls();
+    }
+
     ImGui::Separator();
+}
+
+void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
+    if (!daysgone_is_current_game()) {
+        ImGui::TextWrapped("Days Gone UI tuning is only available in DaysGone.exe.");
+        return;
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!ImGui::TreeNode("Days Gone Bend UI Placement")) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool active = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    ImGui::TextWrapped("Status: %s | menu=%llx widget=%llx applies=%llu restores=%llu",
+        active ? "enabled" : "disabled",
+        (unsigned long long)m_daysgone_bend_ui_last_menu3d.load(),
+        (unsigned long long)m_daysgone_bend_ui_last_widget_main.load(),
+        (unsigned long long)m_daysgone_bend_ui_apply_count.load(),
+        (unsigned long long)m_daysgone_bend_ui_restore_count.load());
+    ImGui::TextWrapped("Use Root Viewport Slot controls for the visible MainMenu/HUD/subtitle roots.");
+    ImGui::TextWrapped("Composite seen=%llu crop_suppressed=%llu extent_overrides=%llu shader_overrides=%llu",
+        (unsigned long long)m_daysgone_bend_taa_composite_seen.load(),
+        (unsigned long long)m_daysgone_bend_taa_composite_crop_suppressed.load(),
+        (unsigned long long)m_daysgone_bend_taa_composite_extent_overrides.load(),
+        (unsigned long long)m_daysgone_bend_taa_shader_param_overrides.load());
+    ImGui::TextWrapped("Captured Slate UI native=%llx size=%ux%u",
+        (unsigned long long)m_daysgone_slate_native_ui_target.load(),
+        m_daysgone_slate_native_ui_width.load(),
+        m_daysgone_slate_native_ui_height.load());
+
+    ImGui::SeparatorText("Active SlateHUD / UMG Root Viewport Slot");
+    m_daysgone_bend_ui_viewport_slot_fix->draw("Root UUserWidget Viewport Slot Fix");
+    m_daysgone_bend_ui_viewport_slot_offset_x->draw_drag("Root Slot Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_viewport_slot_offset_y->draw_drag("Root Slot Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_viewport_slot_scale->draw_drag("Root Render Scale", 0.01f, "%.3f");
+    ImGui::TextWrapped("Targets UI_MainMenuWidget, OptionsMenuWidget, OptionsTopMenuWidget, UI_HudWidget, UI_SubtitleWidget, and UI_MegaMenu roots. The slot stays 1920x1080; scale is applied as a render transform to avoid clipping/cropping.");
+    m_daysgone_bend_ui_disable_taa_crop->draw("Disable Bend TAA Slate Crop");
+    ImGui::TextWrapped("Only the root viewport-slot path and Bend TAA crop suppression are active. Earlier Slate overlay, composite extent, and shader-param experiments are not exposed because live testing showed they either did nothing useful or changed only tint/clear boxes.");
+
+    if (ImGui::TreeNode("Advanced legacy BP_Menu3D/widget controls")) {
+        int mode = std::clamp(m_daysgone_bend_ui_mode->value(), 0, 2);
+        constexpr const char* kModeItems = "Player-camera fields only\0Widget transform only\0Player-camera + widget transform\0";
+        if (ImGui::Combo("Placement Mode", &mode, kModeItems)) {
+            m_daysgone_bend_ui_mode->value() = mode;
+        }
+
+        m_daysgone_bend_ui_force_player_camera->draw("Force BP_Menu3D UsePlayerCamera");
+        m_daysgone_bend_ui_distance_from_camera->draw_drag("Distance From Camera", 5.0f, "%.1f");
+        m_daysgone_bend_ui_camera_fov->draw_drag("Camera FOV", 0.25f, "%.2f");
+
+        ImGui::SeparatorText("BendWidgetMain");
+        m_daysgone_bend_ui_override_widget_transform->draw("Override Widget Transform");
+        m_daysgone_bend_ui_widget_loc_x->draw_drag("Widget Loc X", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_loc_y->draw_drag("Widget Loc Y", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_loc_z->draw_drag("Widget Loc Z", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_rot_pitch->draw_drag("Widget Rot Pitch", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_rot_yaw->draw_drag("Widget Rot Yaw", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_rot_roll->draw_drag("Widget Rot Roll", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_scale->draw_drag("Widget Uniform Scale", 0.01f, "%.3f");
+
+        ImGui::SeparatorText("Child Render Transform");
+        m_daysgone_bend_ui_apply_child_render_transform->draw("Experimental Child Render Transform");
+        m_daysgone_bend_ui_screen_offset_x->draw_drag("Child Render Offset X", 1.0f, "%.1f");
+        m_daysgone_bend_ui_screen_offset_y->draw_drag("Child Render Offset Y", 1.0f, "%.1f");
+        m_daysgone_bend_ui_screen_scale->draw_drag("Child Render Scale", 0.01f, "%.3f");
+        m_daysgone_bend_ui_draw_scale->draw_drag("Child Draw Scale", 0.01f, "%.3f");
+        m_daysgone_bend_ui_force_widget_refresh->draw("Force Redraw / Offscreen Safe Flags");
+
+        ImGui::SeparatorText("DefaultSceneRoot1");
+        m_daysgone_bend_ui_override_root_transform->draw("Override Root Location");
+        m_daysgone_bend_ui_root_loc_x->draw_drag("Root Loc X", 5.0f, "%.1f");
+        m_daysgone_bend_ui_root_loc_y->draw_drag("Root Loc Y", 5.0f, "%.1f");
+        m_daysgone_bend_ui_root_loc_z->draw_drag("Root Loc Z", 5.0f, "%.1f");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::Button("Observed Defaults")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = false;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_override_root_transform->value() = false;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1371.022f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1371.022f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_override_composite_extent->value() = false;
+        m_daysgone_bend_ui_composite_width->value() = 1920.0f;
+        m_daysgone_bend_ui_composite_height->value() = 1080.0f;
+        m_daysgone_bend_ui_override_shader_params->value() = false;
+        m_daysgone_bend_ui_shader_param_target->value() = 3;
+        m_daysgone_bend_ui_shader_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_shader_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_shader_scale_x->value() = 1.0f;
+        m_daysgone_bend_ui_shader_scale_y->value() = 1.0f;
+        m_daysgone_bend_ui_root_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_root_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_root_loc_z->value() = -1200.0f;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Recenter Test Preset")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = true;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1200.0f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1200.0f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_override_composite_extent->value() = false;
+        m_daysgone_bend_ui_composite_width->value() = 1920.0f;
+        m_daysgone_bend_ui_composite_height->value() = 1080.0f;
+        m_daysgone_bend_ui_override_shader_params->value() = false;
+        m_daysgone_bend_ui_shader_param_target->value() = 3;
+        m_daysgone_bend_ui_shader_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_shader_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_shader_scale_x->value() = 1.0f;
+        m_daysgone_bend_ui_shader_scale_y->value() = 1.0f;
+    }
+
+    ImGui::TreePop();
 }
 
 bool FFakeStereoRenderingHook::invalidate_ue57_resolution_dependent_state(
@@ -9161,25 +9330,1439 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
 }
 
 namespace {
-bool daysgone_try_get_d3d11_texture_desc(FRHITexture2D* texture, D3D11_TEXTURE2D_DESC& out_desc) {
+struct DaysGoneRawTArray {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t max{};
+};
+
+struct DaysGoneVec2 {
+    float x{};
+    float y{};
+};
+
+struct DaysGoneVec3 {
+    float x{};
+    float y{};
+    float z{};
+};
+
+struct DaysGoneVec4 {
+    float x{};
+    float y{};
+    float z{};
+    float w{};
+};
+
+struct DaysGoneWidgetTransform {
+    DaysGoneVec2 translation{};
+    DaysGoneVec2 scale{1.0f, 1.0f};
+    DaysGoneVec2 shear{};
+    float angle{};
+};
+
+struct DaysGoneSlateWidgetOriginalState {
+    uintptr_t widget{};
+    bool captured{};
+    DaysGoneWidgetTransform transform{};
+    DaysGoneVec2 pivot{};
+};
+
+struct DaysGoneIntPoint {
+    int32_t x{};
+    int32_t y{};
+};
+
+std::array<DaysGoneSlateWidgetOriginalState, 16> g_daysgone_slate_widget_originals{};
+uint64_t g_daysgone_slate_widget_apply_count{};
+uint64_t g_daysgone_slate_widget_restore_count{};
+struct DaysGoneSlateCompositeCVarState {
+    sdk::IConsoleVariable* cvar{};
+    bool looked_up{};
+    bool has_original{};
+    int32_t original_value{};
+    bool forced{};
+    bool logged_missing{};
+} g_daysgone_slate_composite_cvar{};
+
+bool daysgone_object_pointer_is_readable(sdk::UObjectBase* object);
+std::string daysgone_describe_uobject(sdk::UObjectBase* object);
+
+struct DaysGoneD3D11TextureCandidate {
+    ID3D11Texture2D* native{};
+    D3D11_TEXTURE2D_DESC desc{};
+    uintptr_t outer_offset{std::numeric_limits<uintptr_t>::max()};
+    uintptr_t inner_offset{std::numeric_limits<uintptr_t>::max()};
+};
+
+bool daysgone_is_valid_d3d11_desc(const D3D11_TEXTURE2D_DESC& desc) {
+    return desc.Width >= 640 && desc.Height >= 360 && desc.Width <= 8192 && desc.Height <= 8192;
+}
+
+bool daysgone_is_plausible_slate_ui_desc(const D3D11_TEXTURE2D_DESC& desc) {
+    if (!daysgone_is_valid_d3d11_desc(desc)) {
+        return false;
+    }
+
+    if ((desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 || (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
+        return false;
+    }
+
+    switch (desc.Format) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        break;
+    default:
+        return false;
+    }
+
+    // Days Gone exposes the Bend SlateIntermediateBuffer as an HMD-sized target
+    // in VR. Accept both a normal 16:9 UI texture and the HMD-shaped buffer; the
+    // D3D11 path keys black out before submitting it as a UEVR UI layer.
+    const auto aspect = static_cast<float>(desc.Width) / static_cast<float>(desc.Height);
+    const auto looks_like_flat_ui = desc.Width >= 1280 && desc.Height >= 720 && desc.Width > desc.Height && aspect >= 1.45f && aspect <= 2.25f;
+    const auto looks_like_hmd_ui = desc.Width >= 1280 && desc.Height >= 720 && aspect >= 0.75f && aspect <= 1.35f;
+    return looks_like_flat_ui || looks_like_hmd_ui;
+}
+
+bool daysgone_is_d3d11_or_dxgi_com_object(IUnknown* object) {
+    if (object == nullptr || !is_readable_process_range((uintptr_t)object, sizeof(void*))) {
+        return false;
+    }
+
+    auto* const vtable = *(void**)object;
+    if (vtable == nullptr || !is_readable_process_range((uintptr_t)vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within(vtable);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path) {
+        return false;
+    }
+
+    auto lower = std::string{*module_path};
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower.find("d3d11") != std::string::npos || lower.find("dxgi") != std::string::npos;
+}
+
+bool daysgone_try_query_d3d11_texture(IUnknown* object, ID3D11Texture2D*& out_native, D3D11_TEXTURE2D_DESC& out_desc) {
+    out_native = nullptr;
+    out_desc = {};
+
+    if (!daysgone_is_d3d11_or_dxgi_com_object(object)) {
+        return false;
+    }
+
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        texture->Release();
+
+        if (daysgone_is_valid_d3d11_desc(desc)) {
+            out_native = texture;
+            out_desc = desc;
+            return true;
+        }
+    }
+
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv))) && srv != nullptr) {
+        ID3D11Resource* resource = nullptr;
+        srv->GetResource(&resource);
+        srv->Release();
+
+        if (resource != nullptr) {
+            texture = nullptr;
+            if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+                D3D11_TEXTURE2D_DESC desc{};
+                texture->GetDesc(&desc);
+                texture->Release();
+                resource->Release();
+
+                if (daysgone_is_valid_d3d11_desc(desc)) {
+                    out_native = texture;
+                    out_desc = desc;
+                    return true;
+                }
+
+                return false;
+            }
+
+            resource->Release();
+        }
+    }
+
+    return false;
+}
+
+bool daysgone_try_read_pointer(uintptr_t address, uintptr_t& out) {
+    out = 0;
+    if (address == 0 || !is_readable_process_range(address, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    out = *reinterpret_cast<const uintptr_t*>(address);
+    return out >= 0x10000;
+}
+
+bool daysgone_try_get_d3d11_texture_candidate(FRHITexture2D* texture, DaysGoneD3D11TextureCandidate& out_candidate) {
+    out_candidate = {};
+
     if (texture == nullptr || !is_readable_process_range((uintptr_t)texture, sizeof(void*))) {
         return false;
     }
 
-    try {
-        FRHITexture2D::set_vtable(*(void**)texture);
-
-        auto* native = (ID3D11Texture2D*)texture->get_native_resource();
-        if (native == nullptr || !is_readable_process_range((uintptr_t)native, sizeof(void*))) {
+    auto try_native_texture_pointer = [&](uintptr_t raw_native, uintptr_t outer_offset, uintptr_t inner_offset) {
+        auto* native = reinterpret_cast<ID3D11Texture2D*>(raw_native);
+        if (!daysgone_is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(native))) {
             return false;
         }
 
-        native->GetDesc(&out_desc);
-        return out_desc.Width >= 640 && out_desc.Height >= 360 &&
-            out_desc.Width <= 8192 && out_desc.Height <= 8192;
-    } catch (...) {
+        D3D11_TEXTURE2D_DESC desc{};
+        native->GetDesc(&desc);
+        if (!daysgone_is_valid_d3d11_desc(desc)) {
+            return false;
+        }
+
+        out_candidate.native = native;
+        out_candidate.desc = desc;
+        out_candidate.outer_offset = outer_offset;
+        out_candidate.inner_offset = inner_offset;
+        return true;
+    };
+
+    // Live Days Gone evidence shows BendTemporalAA's SlateIntermediateBuffer
+    // local is an UE4.11 wrapper: wrapper lives at +0x8/+0x10, and its native
+    // ID3D11Texture2D lives at +0xA0. Keep this fixed and fail-closed; broad
+    // COM probing here can destabilize injection.
+    constexpr std::array<uintptr_t, 2> kWrapperOffsets{0x8, 0x10};
+    constexpr uintptr_t kNativeTextureOffset = 0xA0;
+
+    const auto base = reinterpret_cast<uintptr_t>(texture);
+    for (const auto outer_offset : kWrapperOffsets) {
+        uintptr_t wrapper{};
+        if (!daysgone_try_read_pointer(base + outer_offset, wrapper)) {
+            continue;
+        }
+
+        uintptr_t native{};
+        if (daysgone_try_read_pointer(wrapper + kNativeTextureOffset, native) &&
+            try_native_texture_pointer(native, outer_offset, kNativeTextureOffset))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool daysgone_try_get_d3d11_texture_desc(FRHITexture2D* texture, D3D11_TEXTURE2D_DESC& out_desc) {
+    DaysGoneD3D11TextureCandidate candidate{};
+    if (!daysgone_try_get_d3d11_texture_candidate(texture, candidate)) {
         return false;
     }
+
+    out_desc = candidate.desc;
+    return true;
+}
+template <typename T>
+bool daysgone_read_value(uintptr_t address, T& out) {
+    if (address == 0 || !is_readable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    out = *reinterpret_cast<const T*>(address);
+    return true;
+}
+
+template <typename T>
+bool daysgone_write_value(uintptr_t address, const T& value) {
+    if (address == 0 || !is_writable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    *reinterpret_cast<T*>(address) = value;
+    return true;
+}
+
+bool daysgone_write_bool_bit(uintptr_t address, bool value) {
+    uint8_t current{};
+    if (!daysgone_read_value(address, current)) {
+        return false;
+    }
+
+    current = static_cast<uint8_t>((current & ~uint8_t{1}) | (value ? uint8_t{1} : uint8_t{0}));
+    return daysgone_write_value(address, current);
+}
+
+void daysgone_set_disable_slate_composite(bool enabled) {
+    try {
+        auto& state = g_daysgone_slate_composite_cvar;
+
+        if (!state.looked_up) {
+            state.looked_up = true;
+            const auto console_manager = sdk::FConsoleManager::get();
+            if (console_manager != nullptr) {
+                auto* object = console_manager->find(L"r.Bend.TemporalAA.DisableSlateComposite");
+                if (object != nullptr && object->AsCommand() == nullptr) {
+                    state.cvar = static_cast<sdk::IConsoleVariable*>(object);
+                }
+            }
+        }
+
+        if (state.cvar == nullptr) {
+            if (!state.logged_missing) {
+                state.logged_missing = true;
+                SPDLOG_WARN("[DaysGone][SlateOverlay] r.Bend.TemporalAA.DisableSlateComposite unavailable");
+            }
+            return;
+        }
+
+        if (enabled) {
+            if (!state.has_original) {
+                state.original_value = state.cvar->GetInt();
+                state.has_original = true;
+            }
+
+            if (state.cvar->GetInt() != 1) {
+                state.cvar->Set(L"1");
+            }
+
+            if (!state.forced) {
+                SPDLOG_INFO("[DaysGone][SlateOverlay] Disabled Bend in-scene Slate composite; using extracted UEVR UI layer");
+                state.forced = true;
+            }
+            return;
+        }
+
+        if (state.forced || state.has_original) {
+            const auto restore_value = state.has_original ? state.original_value : 0;
+            if (state.cvar->GetInt() != restore_value) {
+                state.cvar->Set(std::to_wstring(restore_value).c_str());
+            }
+
+            if (state.forced) {
+                SPDLOG_INFO("[DaysGone][SlateOverlay] Restored Bend in-scene Slate composite to {}", restore_value);
+            }
+        }
+
+        state.forced = false;
+        state.has_original = false;
+        state.original_value = 0;
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][SlateOverlay] Failed to update r.Bend.TemporalAA.DisableSlateComposite");
+    }
+}
+
+bool daysgone_capture_slate_widget_original(sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return false;
+    }
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (state.captured && state.widget == widget_address) {
+            return true;
+        }
+    }
+
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (state.captured) {
+            continue;
+        }
+
+        state.widget = widget_address;
+        state.captured = true;
+        daysgone_read_value(widget_address + 0xB0, state.transform);
+        daysgone_read_value(widget_address + 0xCC, state.pivot);
+        SPDLOG_INFO(
+            "[DaysGone][SlateWidgetFix] Captured widget original {} transform=({:.1f},{:.1f}) scale=({:.3f},{:.3f}) pivot=({:.2f},{:.2f})",
+            daysgone_describe_uobject(widget),
+            state.transform.translation.x,
+            state.transform.translation.y,
+            state.transform.scale.x,
+            state.transform.scale.y,
+            state.pivot.x,
+            state.pivot.y);
+        return true;
+    }
+
+    SPDLOG_WARN_ONCE("[DaysGone][SlateWidgetFix] Original state cache is full; cannot capture more Slate widgets");
+    return false;
+}
+
+void daysgone_call_widget_vec2_function(sdk::UObjectBase* widget, const wchar_t* function_name, DaysGoneVec2 value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec2 value;
+    } params{value};
+
+    widget->call_function(function_name, &params);
+}
+
+void daysgone_call_widget_transform_function(sdk::UObjectBase* widget, DaysGoneWidgetTransform value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneWidgetTransform value;
+    } params{value};
+
+    widget->call_function(L"SetRenderTransform", &params);
+}
+
+void daysgone_call_widget_position_in_viewport(sdk::UObjectBase* widget, DaysGoneVec2 position, bool remove_dpi_scale) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec2 position;
+        bool remove_dpi_scale;
+    } params{position, remove_dpi_scale};
+
+    widget->call_function(L"SetPositionInViewport", &params);
+}
+
+void daysgone_call_widget_no_param_function(sdk::UObjectBase* widget, const wchar_t* function_name) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    uint8_t unused_params{};
+    widget->call_function(function_name, &unused_params);
+}
+
+bool daysgone_widget_is_viewport_root_candidate(sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return false;
+    }
+
+    const auto desc = daysgone_describe_uobject(widget);
+    return desc.find("UI_MainMenuWidget_C") != std::string::npos ||
+        desc.find("UI_HudWidget_C") != std::string::npos ||
+        desc.find("UI_SubtitleWidget_C") != std::string::npos ||
+        desc.find("UI_MegaMenu_C") != std::string::npos ||
+        desc.find("OptionsMenuWidget_C") != std::string::npos ||
+        desc.find("OptionsTopMenuWidget_C") != std::string::npos;
+}
+
+bool daysgone_apply_user_widget_viewport_slot(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    const auto clamped_scale = std::clamp(scale, 0.05f, 8.0f);
+    const DaysGoneVec2 alignment{0.5f, 0.5f};
+    const DaysGoneVec2 desired_size{1920.0f, 1080.0f};
+    const DaysGoneVec2 viewport_position{960.0f + translation.x, 540.0f + translation.y};
+    const DaysGoneVec2 pivot{0.5f, 0.5f};
+    const DaysGoneVec2 render_scale{clamped_scale, clamped_scale};
+
+    daysgone_call_widget_vec2_function(widget, L"SetAlignmentInViewport", alignment);
+    daysgone_call_widget_vec2_function(widget, L"SetDesiredSizeInViewport", desired_size);
+    daysgone_call_widget_position_in_viewport(widget, viewport_position, false);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", pivot);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", render_scale);
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[DaysGone][ViewportSlotFix] applied {} pos=({:.1f},{:.1f}) size=({:.1f},{:.1f}) render_scale={:.3f}",
+        daysgone_describe_uobject(widget),
+        viewport_position.x,
+        viewport_position.y,
+        desired_size.x,
+        desired_size.y,
+        clamped_scale);
+
+    return true;
+}
+
+void daysgone_restore_user_widget_viewport_slot(sdk::UObjectBase* widget) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return;
+    }
+
+    daysgone_call_widget_vec2_function(widget, L"SetAlignmentInViewport", {0.0f, 0.0f});
+    daysgone_call_widget_vec2_function(widget, L"SetDesiredSizeInViewport", {1920.0f, 1080.0f});
+    daysgone_call_widget_position_in_viewport(widget, {0.0f, 0.0f}, false);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", {0.0f, 0.0f});
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", {1.0f, 1.0f});
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+}
+
+void daysgone_apply_slate_widget_transform(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale) {
+    if (!daysgone_object_pointer_is_readable(widget) || !daysgone_capture_slate_widget_original(widget)) {
+        return;
+    }
+
+    const auto clamped_scale = std::clamp(scale, 0.05f, 8.0f);
+    DaysGoneWidgetTransform transform{};
+    transform.translation = translation;
+    transform.scale = {clamped_scale, clamped_scale};
+    transform.shear = {};
+    transform.angle = 0.0f;
+    const DaysGoneVec2 pivot{0.5f, 0.5f};
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    daysgone_write_value(widget_address + 0xB0, transform);
+    daysgone_write_value(widget_address + 0xCC, pivot);
+
+    // Also go through UMG's own invalidation path; direct memory writes alone
+    // are not enough for Days Gone's SlateHUD widgets.
+    daysgone_call_widget_transform_function(widget, transform);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTranslation", translation);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", {clamped_scale, clamped_scale});
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", pivot);
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+
+    ++g_daysgone_slate_widget_apply_count;
+}
+
+void daysgone_restore_slate_widget_originals() {
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (!state.captured) {
+            continue;
+        }
+
+        auto* widget = reinterpret_cast<sdk::UObjectBase*>(state.widget);
+        if (daysgone_object_pointer_is_readable(widget)) {
+            daysgone_write_value(state.widget + 0xB0, state.transform);
+            daysgone_write_value(state.widget + 0xCC, state.pivot);
+            daysgone_call_widget_transform_function(widget, state.transform);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderTranslation", state.transform.translation);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderScale", state.transform.scale);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", state.pivot);
+            daysgone_restore_user_widget_viewport_slot(widget);
+            daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+            daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+            ++g_daysgone_slate_widget_restore_count;
+        }
+
+        state = {};
+    }
+}
+
+bool daysgone_has_slate_widget_originals() {
+    return std::any_of(
+        g_daysgone_slate_widget_originals.begin(),
+        g_daysgone_slate_widget_originals.end(),
+        [](const auto& state) { return state.captured; });
+}
+
+bool daysgone_object_pointer_is_readable(sdk::UObjectBase* object) {
+    if (object == nullptr || (uintptr_t)object < 0x10000) {
+        return false;
+    }
+
+    if (!is_readable_process_range((uintptr_t)object, std::max<size_t>(sizeof(void*), sdk::UObjectBase::get_class_size()))) {
+        return false;
+    }
+
+    sdk::UClass* klass{};
+    if (!daysgone_read_value((uintptr_t)object + sdk::UObjectBase::get_class_private_offset(), klass)) {
+        return false;
+    }
+
+    return klass != nullptr && is_readable_process_range((uintptr_t)klass, sizeof(void*));
+}
+
+std::string daysgone_trim_log_string(std::string value, size_t max_len = 96) {
+    if (value.size() <= max_len) {
+        return value;
+    }
+
+    value.resize(max_len);
+    value += "...";
+    return value;
+}
+
+std::string daysgone_describe_uobject(sdk::UObjectBase* object) {
+    if (object == nullptr) {
+        return "0";
+    }
+
+    if (!daysgone_object_pointer_is_readable(object)) {
+        return fmt::format("{:x}:unreadable", (uintptr_t)object);
+    }
+
+    auto* klass = object->get_class();
+    std::string class_name = klass != nullptr && is_readable_process_range((uintptr_t)klass, sizeof(void*))
+        ? utility::narrow(klass->get_name_safe())
+        : "<bad-class>";
+    std::string object_name = utility::narrow(object->get_name_safe());
+
+    if (class_name.empty()) {
+        class_name = "<empty-class>";
+    }
+
+    if (object_name.empty()) {
+        object_name = "<empty-name>";
+    }
+
+    return fmt::format(
+        "{:x} {}:{}",
+        (uintptr_t)object,
+        daysgone_trim_log_string(class_name, 48),
+        daysgone_trim_log_string(object_name, 72));
+}
+
+bool daysgone_is_default_object_name(const std::wstring& name) {
+    return name.rfind(L"Default__", 0) == 0 || name.find(L"ClassDefaultObject") != std::wstring::npos;
+}
+
+sdk::UObjectBase* daysgone_find_first_tracked_object(const wchar_t* class_full_name) {
+    auto* klass = sdk::find_uobject<sdk::UClass>(class_full_name, true);
+    if (klass == nullptr || !daysgone_object_pointer_is_readable((sdk::UObjectBase*)klass)) {
+        return nullptr;
+    }
+
+    auto hook = UObjectHook::get();
+    if (hook == nullptr) {
+        return nullptr;
+    }
+
+    auto objects = hook->get_objects_by_class(klass);
+    for (auto* object : objects) {
+        if (object == nullptr || !daysgone_object_pointer_is_readable(object)) {
+            continue;
+        }
+
+        const auto name = object->get_name_safe();
+        if (name.empty() || daysgone_is_default_object_name(name)) {
+            continue;
+        }
+
+        return object;
+    }
+
+    return nullptr;
+}
+
+sdk::UObjectBase* daysgone_find_menu3d_object() {
+    sdk::UObjectBase* menu3d{};
+    if (auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+        daysgone_object_pointer_is_readable(ui_manager))
+    {
+        daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d);
+    }
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        return menu3d;
+    }
+
+    return daysgone_find_first_tracked_object(L"Class /Script/BendGame.Menu3D");
+}
+
+bool daysgone_read_bend_widget_main(sdk::UObjectBase* menu3d, sdk::UObjectBase*& out_widget) {
+    out_widget = nullptr;
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return false;
+    }
+
+    return daysgone_read_value((uintptr_t)menu3d + 0x408, out_widget) &&
+        daysgone_object_pointer_is_readable(out_widget);
+}
+
+void daysgone_push_unique_widget(std::vector<sdk::UObjectBase*>& widgets, sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    if (std::find(widgets.begin(), widgets.end(), widget) != widgets.end()) {
+        return;
+    }
+
+    widgets.push_back(widget);
+}
+
+void daysgone_collect_known_daysgone_widget_children(sdk::UObjectBase* widget, std::vector<sdk::UObjectBase*>& widgets);
+
+void daysgone_collect_tracked_widget_class(
+    const wchar_t* class_full_name,
+    std::vector<sdk::UObjectBase*>& widgets,
+    bool collect_known_children)
+{
+    auto* klass = sdk::find_uobject<sdk::UClass>(class_full_name, true);
+    if (klass == nullptr || !daysgone_object_pointer_is_readable((sdk::UObjectBase*)klass)) {
+        return;
+    }
+
+    auto hook = UObjectHook::get();
+    if (hook == nullptr) {
+        return;
+    }
+
+    const auto objects = hook->get_objects_by_class(klass);
+    for (auto* object : objects) {
+        if (!daysgone_object_pointer_is_readable(object)) {
+            continue;
+        }
+
+        const auto name = object->get_name_safe();
+        if (name.empty() || daysgone_is_default_object_name(name)) {
+            continue;
+        }
+
+        daysgone_push_unique_widget(widgets, object);
+        if (collect_known_children) {
+            daysgone_collect_known_daysgone_widget_children(object, widgets);
+        }
+    }
+}
+
+void daysgone_collect_widgets_from_slate_menu(sdk::UObjectBase* menu, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(menu)) {
+        return;
+    }
+
+    sdk::UObjectBase* widget{};
+    if (daysgone_read_value((uintptr_t)menu + 0x80, widget)) {
+        daysgone_push_unique_widget(widgets, widget);
+        daysgone_collect_known_daysgone_widget_children(widget, widgets);
+    }
+
+    // SlateHUD has a second strongly-typed HudWidget pointer at +0xB0. The
+    // visible main/menu/options UI lives here in Days Gone; BP_Menu3D's
+    // BendWidgetMain can exist but have widget=0/rt=0 and not affect output.
+    sdk::UObjectBase* hud_widget{};
+    if (daysgone_read_value((uintptr_t)menu + 0xB0, hud_widget)) {
+        daysgone_push_unique_widget(widgets, hud_widget);
+        daysgone_collect_known_daysgone_widget_children(hud_widget, widgets);
+    }
+}
+
+void daysgone_collect_widget_field_at(sdk::UObjectBase* owner, uintptr_t offset, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return;
+    }
+
+    sdk::UObjectBase* child{};
+    if (daysgone_read_value((uintptr_t)owner + offset, child)) {
+        daysgone_push_unique_widget(widgets, child);
+    }
+}
+
+void daysgone_collect_known_daysgone_widget_children(sdk::UObjectBase* widget, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    const auto desc = daysgone_describe_uobject(widget);
+
+    if (desc.find("UI_HudWidget_C") != std::string::npos) {
+        // The root UI_HudWidget did not move in live testing. These are the
+        // real UMG subtrees Days Gone paints for HUD/menu/tutorial/subtitle
+        // content, so include them in the same opt-in placement transform.
+        constexpr std::array<uintptr_t, 16> kHudChildWidgetOffsets{
+            0x450, // AccessibilityWrapper
+            0x458, // AspectBars
+            0x470, // CanvasWrapper
+            0x478, // CoreElements
+            0x480, // EdgeMarkers
+            0x488, // HCM_BGBlack
+            0x490, // HCM_BGBlack_0
+            0x4A0, // HealthOverlay
+            0x4A8, // HitEffects
+            0x4B0, // HUDContents
+            0x4B8, // HudWrapper
+            0x4C0, // Loading
+            0x4C8, // MissionPopup
+            0x4F8, // SimpleTutorialOverlay
+            0x548, // SurvivalWheel
+            0x570  // Weapon
+        };
+
+        for (const auto offset : kHudChildWidgetOffsets) {
+            daysgone_collect_widget_field_at(widget, offset, widgets);
+        }
+    }
+
+    if (desc.find("UI_MegaMenu_C") != std::string::npos) {
+        constexpr std::array<uintptr_t, 8> kMegaMenuChildWidgetOffsets{
+            0x250, // 3D_Select_Left
+            0x258, // Bars
+            0x260, // Inventory_Menu
+            0x268, // Map_Menu
+            0x270, // OverlayContent
+            0x278, // Skills_Menu
+            0x280, // Storylines_Menu
+            0x288  // UI_ModifiersMenu
+        };
+
+        for (const auto offset : kMegaMenuChildWidgetOffsets) {
+            daysgone_collect_widget_field_at(widget, offset, widgets);
+        }
+    }
+}
+
+void daysgone_collect_menu3d_user_widgets(sdk::UObjectBase* menu3d, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return;
+    }
+
+    constexpr std::array<uintptr_t, 9> kMenu3DWidgetOffsets{
+        0x5D8, // MapWidgetRef
+        0x5F8, // Menu_Base_Skills
+        0x600, // Menu_Base_Modifiers
+        0x608, // Menu_Base_Inventory
+        0x610, // Menu_Base_Storylines
+        0x618, // Menu_Base_Map
+        0x640, // Menu_Base_MegaMenu
+        0x648, // Menu_Base_Start
+        0x8C8  // Menu_Base_Selector
+    };
+
+    for (const auto offset : kMenu3DWidgetOffsets) {
+        sdk::UObjectBase* widget{};
+        if (daysgone_read_value((uintptr_t)menu3d + offset, widget)) {
+            daysgone_push_unique_widget(widgets, widget);
+            daysgone_collect_known_daysgone_widget_children(widget, widgets);
+        }
+    }
+}
+
+void daysgone_collect_widgets_from_menu_array(sdk::UObjectBase* owner, uintptr_t offset, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return;
+    }
+
+    DaysGoneRawTArray array{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, array) ||
+        array.count < 0 || array.max < 0 || array.count > array.max ||
+        array.count > 128 || array.data == 0)
+    {
+        return;
+    }
+
+    const auto bytes = static_cast<size_t>(array.count) * sizeof(uintptr_t);
+    if (!is_readable_process_range(array.data, bytes)) {
+        return;
+    }
+
+    for (int32_t i = 0; i < array.count; ++i) {
+        sdk::UObjectBase* menu{};
+        if (daysgone_read_value(array.data + (static_cast<uintptr_t>(i) * sizeof(uintptr_t)), menu)) {
+            daysgone_collect_widgets_from_slate_menu(menu, widgets);
+        }
+    }
+}
+
+std::vector<sdk::UObjectBase*> daysgone_collect_active_slate_widgets() {
+    std::vector<sdk::UObjectBase*> widgets{};
+    widgets.reserve(8);
+
+    auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+    if (daysgone_object_pointer_is_readable(ui_manager)) {
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x470, widgets); // HudMenus
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x480, widgets); // Menus
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x490, widgets); // MenusCreatedThisFrame
+
+        sdk::UObjectBase* menu3d{};
+        if (daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d)) {
+            daysgone_collect_widgets_from_slate_menu(menu3d, widgets);
+            daysgone_collect_menu3d_user_widgets(menu3d, widgets);
+        }
+
+        sdk::UObjectBase* subtitle_widget{};
+        if (daysgone_read_value((uintptr_t)ui_manager + 0x518, subtitle_widget)) {
+            daysgone_push_unique_widget(widgets, subtitle_widget);
+        }
+    }
+
+    if (auto* slate_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.SlateHUD");
+        daysgone_object_pointer_is_readable(slate_hud))
+    {
+        daysgone_collect_widgets_from_slate_menu(slate_hud, widgets);
+    }
+
+    if (auto* bend_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.BendHUD");
+        daysgone_object_pointer_is_readable(bend_hud))
+    {
+        sdk::UObjectBase* slate_hud{};
+        if (daysgone_read_value((uintptr_t)bend_hud + 0x480, slate_hud)) {
+            daysgone_collect_widgets_from_slate_menu(slate_hud, widgets);
+        }
+    }
+
+    // The visible Days Gone menu/HUD is often a normal viewport UUserWidget
+    // owned by BendGameInstance rather than a child of BP_Menu3D/SlateHUD.
+    // Collect those roots explicitly so viewport-slot placement can affect the
+    // actual MainMenu/HUD/subtitle widgets instead of only their child panels.
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/MainMenu/UI_MainMenuWidget.UI_MainMenuWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/_New_Menus/UI_MegaMenu.UI_MegaMenu_C",
+        widgets,
+        true);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/HUD/UI_HudWidget.UI_HudWidget_C",
+        widgets,
+        true);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/HUD/UI_SubtitleWidget.UI_SubtitleWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/Options/OptionsMenuWidget.OptionsMenuWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/Options/OptionsTopMenuWidget.OptionsTopMenuWidget_C",
+        widgets,
+        false);
+
+    return widgets;
+}
+
+void daysgone_restore_viewport_root_slots() {
+    const auto widgets = daysgone_collect_active_slate_widgets();
+    size_t restored{};
+    for (auto* widget : widgets) {
+        if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+            continue;
+        }
+
+        daysgone_restore_user_widget_viewport_slot(widget);
+        ++restored;
+    }
+
+    if (restored != 0) {
+        SPDLOG_INFO("[DaysGone][ViewportSlotFix] restored {} root viewport widget slots", restored);
+    }
+}
+
+std::string daysgone_describe_uobject_array(sdk::UObjectBase* owner, uintptr_t offset, const char* label, size_t max_entries = 6) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return fmt::format("{}=<owner-missing>", label);
+    }
+
+    DaysGoneRawTArray array{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, array)) {
+        return fmt::format("{}=<unreadable-array>", label);
+    }
+
+    if (array.count < 0 || array.max < 0 || array.count > array.max || array.count > 512) {
+        return fmt::format("{}=<bad-array data={:x} count={} max={}>", label, array.data, array.count, array.max);
+    }
+
+    std::string result = fmt::format("{}=count:{} max:{} data:{:x}", label, array.count, array.max, array.data);
+    if (array.count == 0) {
+        return result;
+    }
+
+    const auto shown = std::min<size_t>((size_t)array.count, max_entries);
+    if (array.data == 0 || !is_readable_process_range(array.data, shown * sizeof(uintptr_t))) {
+        return result + " entries:<unreadable>";
+    }
+
+    result += " entries:[";
+    for (size_t i = 0; i < shown; ++i) {
+        uintptr_t raw_object{};
+        if (!daysgone_read_value(array.data + (i * sizeof(uintptr_t)), raw_object)) {
+            result += fmt::format("{}:<bad-read>", i);
+            continue;
+        }
+
+        if (i != 0) {
+            result += "; ";
+        }
+
+        result += fmt::format("{}:{}", i, daysgone_describe_uobject((sdk::UObjectBase*)raw_object));
+    }
+
+    if ((size_t)array.count > shown) {
+        result += fmt::format("; +{}", (size_t)array.count - shown);
+    }
+
+    result += "]";
+    return result;
+}
+
+std::string daysgone_array_count_string(sdk::UObjectBase* owner, uintptr_t offset) {
+    DaysGoneRawTArray array{};
+    if (!daysgone_object_pointer_is_readable(owner) || !daysgone_read_value((uintptr_t)owner + offset, array)) {
+        return "?";
+    }
+
+    if (array.count < 0 || array.max < 0 || array.count > array.max || array.count > 512) {
+        return "bad";
+    }
+
+    return std::to_string(array.count);
+}
+
+std::string daysgone_describe_raw_pointer_field(sdk::UObjectBase* owner, uintptr_t offset, const char* label) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return fmt::format("{}=<owner-missing>", label);
+    }
+
+    sdk::UObjectBase* object{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, object)) {
+        return fmt::format("{}=<unreadable-field>", label);
+    }
+
+    return fmt::format("{}={}", label, daysgone_describe_uobject(object));
+}
+
+std::string daysgone_format_vec2(const DaysGoneVec2& value) {
+    return fmt::format("{:.3f},{:.3f}", value.x, value.y);
+}
+
+std::string daysgone_format_vec3(const DaysGoneVec3& value) {
+    return fmt::format("{:.3f},{:.3f},{:.3f}", value.x, value.y, value.z);
+}
+
+bool daysgone_float_is_sane(float value, float abs_limit = 100000.0f) {
+    return std::isfinite(value) && std::abs(value) <= abs_limit;
+}
+
+std::string daysgone_describe_suspect_uobject_pointer(uintptr_t raw) {
+    if (raw == 0) {
+        return "0";
+    }
+
+    auto* object = (sdk::UObjectBase*)raw;
+    if (daysgone_object_pointer_is_readable(object)) {
+        return daysgone_describe_uobject(object);
+    }
+
+    return fmt::format("{:x}:raw", raw);
+}
+
+std::string daysgone_describe_texture_render_target_2d(sdk::UObjectBase* render_target, const char* label) {
+    if (!daysgone_object_pointer_is_readable(render_target)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(render_target));
+    }
+
+    int32_t size_x{};
+    int32_t size_y{};
+    uint8_t flags{};
+    uint8_t override_format{};
+
+    daysgone_read_value((uintptr_t)render_target + 0xB0, size_x);
+    daysgone_read_value((uintptr_t)render_target + 0xB4, size_y);
+    daysgone_read_value((uintptr_t)render_target + 0xCC, flags);
+    daysgone_read_value((uintptr_t)render_target + 0xD0, override_format);
+
+    return fmt::format(
+        "{}={} size={}x{} rt_flags=0x{:02X} override_fmt={}",
+        label,
+        daysgone_describe_uobject(render_target),
+        size_x,
+        size_y,
+        flags,
+        override_format);
+}
+
+std::string daysgone_describe_scene_component_transform(sdk::UObjectBase* component, const char* label) {
+    if (!daysgone_object_pointer_is_readable(component)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(component));
+    }
+
+    sdk::UObjectBase* attach_parent{};
+    DaysGoneRawTArray attach_children{};
+    uint8_t scene_flags0{};
+    uint8_t scene_flags1{};
+    DaysGoneVec3 relative_location{};
+    DaysGoneVec3 relative_rotation{};
+    DaysGoneVec3 relative_scale{};
+    DaysGoneVec3 component_velocity{};
+
+    daysgone_read_value((uintptr_t)component + 0xD0, attach_parent);
+    daysgone_read_value((uintptr_t)component + 0xD8, attach_children);
+    daysgone_read_value((uintptr_t)component + 0xF0, scene_flags0);
+    daysgone_read_value((uintptr_t)component + 0xF1, scene_flags1);
+    daysgone_read_value((uintptr_t)component + 0x170, relative_location);
+    daysgone_read_value((uintptr_t)component + 0x17C, relative_rotation);
+    daysgone_read_value((uintptr_t)component + 0x1B0, relative_scale);
+    daysgone_read_value((uintptr_t)component + 0x1E0, component_velocity);
+
+    return fmt::format(
+        "{}={} rel_loc=({}) rel_rot=({}) rel_scale=({}) vel=({}) scene_flags=0x{:02X}/0x{:02X} attach_parent={} attach_children={}/{}",
+        label,
+        daysgone_describe_uobject(component),
+        daysgone_format_vec3(relative_location),
+        daysgone_format_vec3(relative_rotation),
+        daysgone_format_vec3(relative_scale),
+        daysgone_format_vec3(component_velocity),
+        scene_flags0,
+        scene_flags1,
+        daysgone_describe_uobject(attach_parent),
+        attach_children.count,
+        attach_children.max);
+}
+
+std::string daysgone_describe_bend_widget_component(sdk::UObjectBase* component, const char* label) {
+    if (!daysgone_object_pointer_is_readable(component)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(component));
+    }
+
+    uint8_t flags600{};
+    uint8_t pooled_widget_type{};
+    uint8_t space{};
+    uint8_t timing_policy{};
+    uint8_t world_orientation{};
+    uint8_t use_image_texture{};
+    uint8_t size_screen{};
+    uint8_t size_from_widget{};
+    uint8_t far_fade{};
+    uint8_t stick_to_edge{};
+    uint8_t disable_occlusion{};
+    uint8_t manually_redraw{};
+    uint8_t redraw_requested{};
+    uint8_t force_redraw_requested{};
+    uint8_t is_opaque{};
+    uint8_t is_two_sided{};
+    uint8_t tick_when_offscreen{};
+    uint8_t blend_mode{};
+    uint8_t use_custom_material{};
+    uint8_t use_legacy_rotation{};
+    uint8_t override_tick{};
+    uint8_t tick_enabled{};
+    uint8_t added_to_screen{};
+
+    uintptr_t widget_class{};
+    sdk::UObjectBase* image_texture{};
+    sdk::UObjectBase* owner_player{};
+    sdk::UObjectBase* widget{};
+    sdk::UObjectBase* translucent_material{};
+    sdk::UObjectBase* translucent_material_post_aa{};
+    sdk::UObjectBase* custom_material{};
+    sdk::UObjectBase* render_target{};
+    sdk::UObjectBase* material_instance{};
+
+    float screen_scale{};
+    float draw_scale{};
+    float far_fade_start{};
+    float far_fade_end{};
+    float opacity{};
+    float redraw_time{};
+    float max_interaction_distance{};
+    DaysGoneVec2 screen_pixel_offset{};
+    DaysGoneVec2 draw_size_f{};
+    DaysGoneIntPoint draw_size_i{};
+    DaysGoneVec2 pivot{};
+    DaysGoneVec3 relative_location{};
+    DaysGoneVec3 relative_rotation{};
+    DaysGoneVec3 relative_scale{};
+
+    const auto base = (uintptr_t)component;
+    daysgone_read_value(base + 0x600, flags600);
+    daysgone_read_value(base + 0x601, pooled_widget_type);
+    daysgone_read_value(base + 0x602, space);
+    daysgone_read_value(base + 0x604, timing_policy);
+    daysgone_read_value(base + 0x605, world_orientation);
+    daysgone_read_value(base + 0x608, use_image_texture);
+    daysgone_read_value(base + 0x618, widget_class);
+    daysgone_read_value(base + 0x620, size_screen);
+    daysgone_read_value(base + 0x624, screen_scale);
+    daysgone_read_value(base + 0x628, screen_pixel_offset);
+    daysgone_read_value(base + 0x630, size_from_widget);
+    daysgone_read_value(base + 0x634, draw_size_i);
+    daysgone_read_value(base + 0x634, draw_size_f);
+    daysgone_read_value(base + 0x63C, draw_scale);
+    daysgone_read_value(base + 0x640, far_fade);
+    daysgone_read_value(base + 0x644, far_fade_start);
+    daysgone_read_value(base + 0x648, far_fade_end);
+    daysgone_read_value(base + 0x64C, opacity);
+    daysgone_read_value(base + 0x650, stick_to_edge);
+    daysgone_read_value(base + 0x651, disable_occlusion);
+    daysgone_read_value(base + 0x652, manually_redraw);
+    daysgone_read_value(base + 0x653, redraw_requested);
+    daysgone_read_value(base + 0x654, force_redraw_requested);
+    daysgone_read_value(base + 0x658, redraw_time);
+    daysgone_read_value(base + 0x668, pivot);
+    daysgone_read_value(base + 0x670, max_interaction_distance);
+    daysgone_read_value(base + 0x678, owner_player);
+    daysgone_read_value(base + 0x690, blend_mode);
+    daysgone_read_value(base + 0x691, is_opaque);
+    daysgone_read_value(base + 0x692, is_two_sided);
+    daysgone_read_value(base + 0x693, tick_when_offscreen);
+    daysgone_read_value(base + 0x610, image_texture);
+    daysgone_read_value(base + 0x6C0, widget);
+    daysgone_read_value(base + 0x6C8, translucent_material);
+    daysgone_read_value(base + 0x6D8, translucent_material_post_aa);
+    daysgone_read_value(base + 0x718, use_custom_material);
+    daysgone_read_value(base + 0x720, custom_material);
+    daysgone_read_value(base + 0x728, render_target);
+    daysgone_read_value(base + 0x730, material_instance);
+    daysgone_read_value(base + 0x738, use_legacy_rotation);
+    daysgone_read_value(base + 0x739, override_tick);
+    daysgone_read_value(base + 0x73A, tick_enabled);
+    daysgone_read_value(base + 0x73C, added_to_screen);
+    daysgone_read_value(base + 0x170, relative_location);
+    daysgone_read_value(base + 0x17C, relative_rotation);
+    daysgone_read_value(base + 0x1B0, relative_scale);
+
+    const auto draw_size_f_is_sane =
+        daysgone_float_is_sane(draw_size_f.x, 32768.0f) &&
+        daysgone_float_is_sane(draw_size_f.y, 32768.0f) &&
+        draw_size_f.x >= 0.0f &&
+        draw_size_f.y >= 0.0f;
+
+    return fmt::format(
+        "{}={} rel_loc=({}) rel_rot=({}) rel_scale=({}) enums pooled={} space={} timing={} orient={} blend={} "
+        "screen_scale={:.3f} screen_offset=({}) draw_size_i={}x{} draw_size_f={} draw_scale={:.3f} pivot=({}) "
+        "flags delay={} use_img={} size_screen={} size_widget={} far={} edge={} no_occ={} manual={} redraw={} force={} opaque={} two_sided={} offscreen={} custom_mat={} legacy_rot={} tick_override={} tick_enabled={} added={} "
+        "fade={:.3f}/{:.3f} opacity={:.3f} redraw_time={:.3f} max_dist={:.3f} widget_class={} image={} owner={} widget={} trans_mat={} postaa_mat={} custom={} {} mid={}",
+        label,
+        daysgone_describe_uobject(component),
+        daysgone_format_vec3(relative_location),
+        daysgone_format_vec3(relative_rotation),
+        daysgone_format_vec3(relative_scale),
+        pooled_widget_type,
+        space,
+        timing_policy,
+        world_orientation,
+        blend_mode,
+        screen_scale,
+        daysgone_format_vec2(screen_pixel_offset),
+        draw_size_i.x,
+        draw_size_i.y,
+        draw_size_f_is_sane ? fmt::format("({})", daysgone_format_vec2(draw_size_f)) : "<not-float>",
+        draw_scale,
+        daysgone_format_vec2(pivot),
+        (flags600 & 1) != 0,
+        (use_image_texture & 1) != 0,
+        (size_screen & 1) != 0,
+        (size_from_widget & 1) != 0,
+        (far_fade & 1) != 0,
+        (stick_to_edge & 1) != 0,
+        (disable_occlusion & 1) != 0,
+        (manually_redraw & 1) != 0,
+        (redraw_requested & 1) != 0,
+        (force_redraw_requested & 1) != 0,
+        (is_opaque & 1) != 0,
+        (is_two_sided & 1) != 0,
+        (tick_when_offscreen & 1) != 0,
+        (use_custom_material & 1) != 0,
+        (use_legacy_rotation & 1) != 0,
+        (override_tick & 1) != 0,
+        (tick_enabled & 1) != 0,
+        (added_to_screen & 1) != 0,
+        far_fade_start,
+        far_fade_end,
+        opacity,
+        redraw_time,
+        max_interaction_distance,
+        daysgone_describe_suspect_uobject_pointer(widget_class),
+        daysgone_describe_uobject(image_texture),
+        daysgone_describe_uobject(owner_player),
+        daysgone_describe_uobject(widget),
+        daysgone_describe_uobject(translucent_material),
+        daysgone_describe_uobject(translucent_material_post_aa),
+        daysgone_describe_uobject(custom_material),
+        daysgone_describe_texture_render_target_2d(render_target, "rt"),
+        daysgone_describe_uobject(material_instance));
+}
+
+std::string daysgone_describe_bp_menu3d_state(sdk::UObjectBase* menu3d) {
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return fmt::format("bpMenu3D={}", daysgone_describe_uobject(menu3d));
+    }
+
+    sdk::UObjectBase* bend_widget_main{};
+    sdk::UObjectBase* bend_widget_bike_info{};
+    sdk::UObjectBase* default_scene_root{};
+    sdk::UObjectBase* root1{};
+    sdk::UObjectBase* main{};
+    sdk::UObjectBase* storylines{};
+    sdk::UObjectBase* skills{};
+    sdk::UObjectBase* inventory{};
+    sdk::UObjectBase* map{};
+    sdk::UObjectBase* menus{};
+    sdk::UObjectBase* current_tween{};
+    sdk::UObjectBase* current_drift{};
+    sdk::UObjectBase* gray_background{};
+    sdk::UObjectBase* white_background{};
+    sdk::UObjectBase* world_map{};
+    sdk::UObjectBase* duplicate_camera{};
+    sdk::UObjectBase* map_widget{};
+    sdk::UObjectBase* skill_menu{};
+    sdk::UObjectBase* modifiers_menu{};
+    sdk::UObjectBase* inventory_menu{};
+    sdk::UObjectBase* storylines_menu{};
+    sdk::UObjectBase* map_menu{};
+    sdk::UObjectBase* mega_menu{};
+    sdk::UObjectBase* start_menu{};
+    sdk::UObjectBase* selector_menu{};
+
+    uint8_t touch_flags{};
+    uint8_t current_menu{};
+    uint8_t next_menu{};
+    uint8_t use_player_camera{};
+    uint8_t tearing_down{};
+    uint8_t tutorial_active{};
+    uint8_t has_run_once{};
+    uint8_t selected_menu{};
+    uint8_t last_menu{};
+    uint8_t previous_menu{};
+    uint8_t override_menu{};
+    uint8_t exit_transition{};
+    int32_t tearing_down_frames{};
+    float distance_from_camera{};
+    float camera_fov{};
+    float timeline_fade{};
+    float timeline_main{};
+    float map_drift_scale{};
+    float drag_threshold_sq{};
+    DaysGoneRawTArray allowed_menus{};
+    DaysGoneVec3 menu_start_location{};
+    DaysGoneVec3 touch_start{};
+    DaysGoneVec3 touch_end{};
+    DaysGoneVec3 default_map_location{};
+
+    const auto base = (uintptr_t)menu3d;
+    daysgone_read_value(base + 0x408, bend_widget_main);
+    daysgone_read_value(base + 0x500, bend_widget_bike_info);
+    daysgone_read_value(base + 0x4F0, default_scene_root);
+    daysgone_read_value(base + 0x4F8, root1);
+    daysgone_read_value(base + 0x508, main);
+    daysgone_read_value(base + 0x510, storylines);
+    daysgone_read_value(base + 0x518, skills);
+    daysgone_read_value(base + 0x520, inventory);
+    daysgone_read_value(base + 0x530, map);
+    daysgone_read_value(base + 0x568, menus);
+    daysgone_read_value(base + 0x570, current_tween);
+    daysgone_read_value(base + 0x578, current_drift);
+    daysgone_read_value(base + 0x580, gray_background);
+    daysgone_read_value(base + 0x588, white_background);
+    daysgone_read_value(base + 0x5A0, touch_flags);
+    daysgone_read_value(base + 0x5A1, current_menu);
+    daysgone_read_value(base + 0x5A2, next_menu);
+    daysgone_read_value(base + 0x5A8, world_map);
+    daysgone_read_value(base + 0x5B0, distance_from_camera);
+    daysgone_read_value(base + 0x5B4, use_player_camera);
+    daysgone_read_value(base + 0x5B8, default_map_location);
+    daysgone_read_value(base + 0x5C8, duplicate_camera);
+    daysgone_read_value(base + 0x5D8, map_widget);
+    daysgone_read_value(base + 0x5E0, camera_fov);
+    daysgone_read_value(base + 0x5E4, tearing_down);
+    daysgone_read_value(base + 0x5E8, tearing_down_frames);
+    daysgone_read_value(base + 0x5F8, skill_menu);
+    daysgone_read_value(base + 0x600, modifiers_menu);
+    daysgone_read_value(base + 0x608, inventory_menu);
+    daysgone_read_value(base + 0x610, storylines_menu);
+    daysgone_read_value(base + 0x618, map_menu);
+    daysgone_read_value(base + 0x620, map_drift_scale);
+    daysgone_read_value(base + 0x640, mega_menu);
+    daysgone_read_value(base + 0x648, start_menu);
+    daysgone_read_value(base + 0x660, tutorial_active);
+    daysgone_read_value(base + 0x668, allowed_menus);
+    daysgone_read_value(base + 0x678, has_run_once);
+    daysgone_read_value(base + 0x688, last_menu);
+    daysgone_read_value(base + 0x68C, drag_threshold_sq);
+    daysgone_read_value(base + 0x690, selected_menu);
+    daysgone_read_value(base + 0x6B8, previous_menu);
+    daysgone_read_value(base + 0x8B0, override_menu);
+    daysgone_read_value(base + 0x8C8, selector_menu);
+    daysgone_read_value(base + 0x8F0, exit_transition);
+    daysgone_read_value(base + 0x538, timeline_fade);
+    daysgone_read_value(base + 0x548, timeline_main);
+    daysgone_read_value(base + 0x558, menu_start_location);
+    daysgone_read_value(base + 0x590, touch_start);
+    daysgone_read_value(base + 0x598, touch_end);
+
+    return fmt::format(
+        "bpMenu3D={} menus cur={} next={} last={} prev={} selected={} override={} touch_blocked={} use_player_cam={} tearing={} tear_frames={} tutorial={} run_once={} exit={} dist={:.3f} fov={:.3f} fade={:.3f} main_tl={:.3f} map_drift={:.3f} drag_sq={:.3f} allowed={}/{} menu_start=({}) default_map=({}) touch_start=({}) touch_end=({}) "
+        "main={} story={} skills={} inv={} map={} menusRoot={} tween={} drift={} gray={} white={} worldMap={} dupCam={} mapWidget={} baseSkills={} baseModifiers={} baseInventory={} baseStory={} baseMap={} mega={} start={} selector={} {} {} {} {}",
+        daysgone_describe_uobject(menu3d),
+        current_menu,
+        next_menu,
+        last_menu,
+        previous_menu,
+        selected_menu,
+        override_menu,
+        (touch_flags & 1) != 0,
+        (use_player_camera & 1) != 0,
+        (tearing_down & 1) != 0,
+        tearing_down_frames,
+        (tutorial_active & 1) != 0,
+        (has_run_once & 1) != 0,
+        (exit_transition & 1) != 0,
+        distance_from_camera,
+        camera_fov,
+        timeline_fade,
+        timeline_main,
+        map_drift_scale,
+        drag_threshold_sq,
+        allowed_menus.count,
+        allowed_menus.max,
+        daysgone_format_vec3(menu_start_location),
+        daysgone_format_vec3(default_map_location),
+        daysgone_format_vec3(touch_start),
+        daysgone_format_vec3(touch_end),
+        daysgone_describe_uobject(main),
+        daysgone_describe_uobject(storylines),
+        daysgone_describe_uobject(skills),
+        daysgone_describe_uobject(inventory),
+        daysgone_describe_uobject(map),
+        daysgone_describe_uobject(menus),
+        daysgone_describe_uobject(current_tween),
+        daysgone_describe_uobject(current_drift),
+        daysgone_describe_uobject(gray_background),
+        daysgone_describe_uobject(white_background),
+        daysgone_describe_uobject(world_map),
+        daysgone_describe_uobject(duplicate_camera),
+        daysgone_describe_uobject(map_widget),
+        daysgone_describe_uobject(skill_menu),
+        daysgone_describe_uobject(modifiers_menu),
+        daysgone_describe_uobject(inventory_menu),
+        daysgone_describe_uobject(storylines_menu),
+        daysgone_describe_uobject(map_menu),
+        daysgone_describe_uobject(mega_menu),
+        daysgone_describe_uobject(start_menu),
+        daysgone_describe_uobject(selector_menu),
+        daysgone_describe_scene_component_transform(default_scene_root, "defaultRoot"),
+        daysgone_describe_scene_component_transform(root1, "root1"),
+        daysgone_describe_bend_widget_component(bend_widget_main, "bendWidgetMain"),
+        daysgone_describe_bend_widget_component(bend_widget_bike_info, "bendWidgetBike"));
+}
+
+std::string daysgone_describe_base_menu_widget(sdk::UObjectBase* widget, const char* label) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(widget));
+    }
+
+    uint8_t flags{};
+    int32_t z_order{};
+    sdk::UObjectBase* popup{};
+    sdk::UObjectBase* owning_menu{};
+
+    daysgone_read_value((uintptr_t)widget + 0x330, flags);
+    daysgone_read_value((uintptr_t)widget + 0x338, popup);
+    daysgone_read_value((uintptr_t)widget + 0x340, owning_menu);
+    daysgone_read_value((uintptr_t)widget + 0x348, z_order);
+
+    return fmt::format(
+        "{}={} flags=0x{:02X} z={} popup={} owning={}",
+        label,
+        daysgone_describe_uobject(widget),
+        flags,
+        z_order,
+        daysgone_describe_uobject(popup),
+        daysgone_describe_uobject(owning_menu));
 }
 }
 
@@ -9197,7 +10780,7 @@ void FFakeStereoRenderingHook::attempt_hook_daysgone_slate_intermediate_buffer()
     // Days Gone's BendTemporalAA creates a real SlateIntermediateBuffer, then
     // composites it into the scene. Capturing that texture gives UEVR a true UI
     // target instead of treating the scene RT as UI.
-    constexpr uintptr_t kBendTemporalAASlateIntermediatePostCallRva = 0x204CD9F;
+    constexpr uintptr_t kBendTemporalAASlateIntermediatePostCallRva = 0x200CD9F;
     constexpr std::array<uint8_t, 8> kExpectedBytes{
         0x33, 0xD2,                         // xor edx, edx
         0xB9, 0x00, 0x01, 0x00, 0x00,       // mov ecx, 100h
@@ -9256,35 +10839,629 @@ void FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook(safetyhoo
         return;
     }
 
-    D3D11_TEXTURE2D_DESC desc{};
-    if (!daysgone_try_get_d3d11_texture_desc(slate_texture, desc)) {
+    DaysGoneD3D11TextureCandidate candidate{};
+    if (!daysgone_try_get_d3d11_texture_candidate(slate_texture, candidate)) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[DaysGone][SlateUI] SlateIntermediateBuffer candidate {:x} is not a readable D3D11 texture yet",
+            "[DaysGone][SlateUI] SlateIntermediateBuffer candidate {:x} is not a readable nested D3D11 texture yet",
             (uintptr_t)slate_texture);
         return;
     }
 
-    const auto last_target = g_hook->m_daysgone_slate_intermediate_last_target.load();
-    if (last_target == (uintptr_t)slate_texture && rtm->get_dedicated_ui_target() == slate_texture) {
+    if (!daysgone_is_plausible_slate_ui_desc(candidate.desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][SlateUI] Rejected non-UI SlateIntermediateBuffer candidate: wrapper={:x} native={:x} [{}x{} fmt={} bind=0x{:X}]",
+            (uintptr_t)slate_texture,
+            (uintptr_t)candidate.native,
+            candidate.desc.Width,
+            candidate.desc.Height,
+            (uint32_t)candidate.desc.Format,
+            candidate.desc.BindFlags);
         return;
     }
 
-    rtm->set_dedicated_ui_target(slate_texture, desc.Width, desc.Height);
-    rtm->get_fallback_ui_target_ref() = nullptr;
+    const auto last_target = g_hook->m_daysgone_slate_intermediate_last_target.load();
+    const auto last_native = g_hook->m_daysgone_slate_native_ui_target.load();
+    if (last_target == (uintptr_t)slate_texture && last_native == (uintptr_t)candidate.native) {
+        return;
+    }
+
+    // Days Gone's menu is already composited through Bend's in-scene UMG path.
+    // Do not promote this to UEVR's overlay path: the texture has no useful
+    // alpha for OpenXR and becomes a black plane over the scene.
+    (void)rtm;
     g_hook->m_daysgone_slate_intermediate_last_target.store((uintptr_t)slate_texture);
+    g_hook->m_daysgone_slate_native_ui_target.store((uintptr_t)candidate.native);
+    g_hook->m_daysgone_slate_native_ui_width.store(candidate.desc.Width);
+    g_hook->m_daysgone_slate_native_ui_height.store(candidate.desc.Height);
 
     SPDLOG_WARN(
-        "[DaysGone][SlateUI] Captured Bend SlateIntermediateBuffer as dedicated UI target: {:x} [{}x{} fmt={} bind=0x{:X}]",
+        "[DaysGone][SlateUI] Captured Bend SlateIntermediateBuffer native UI target: wrapper={:x} native={:x} path=+0x{:X}/+0x{:X} [{}x{} fmt={} bind=0x{:X}]",
         (uintptr_t)slate_texture,
-        desc.Width,
-        desc.Height,
-        (uint32_t)desc.Format,
-        desc.BindFlags);
+        (uintptr_t)candidate.native,
+        candidate.outer_offset == std::numeric_limits<uintptr_t>::max() ? 0 : candidate.outer_offset,
+        candidate.inner_offset == std::numeric_limits<uintptr_t>::max() ? 0 : candidate.inner_offset,
+        candidate.desc.Width,
+        candidate.desc.Height,
+        (uint32_t)candidate.desc.Format,
+        candidate.desc.BindFlags);
 }
 
-void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
-                                                                void* a4, void* params, void* unk1, void* unk2) 
+void FFakeStereoRenderingHook::attempt_hook_daysgone_bend_taa_composite() {
+    if (m_attempted_hook_daysgone_bend_taa_composite) {
+        return;
+    }
+
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    m_attempted_hook_daysgone_bend_taa_composite = true;
+
+    // Days Gone's visible UI is not a normal Slate overlay. BendTemporalAA
+    // composites SlateIntermediateBuffer into the scene in this execute
+    // routine; the crop flag at pass+0x76 is what pushes the menu/HUD toward
+    // a bad HMD-sized quadrant in VR.
+    constexpr uintptr_t kBendTemporalAACompositeExecuteRva = 0x2008550;
+    constexpr std::array<uint8_t, 10> kExpectedBytes{
+        0x4C, 0x89, 0x4C, 0x24, 0x20, // mov [rsp+20h], r9
+        0x48, 0x89, 0x4C, 0x24, 0x08  // mov [rsp+08h], rcx
+    };
+
+    const auto module = (uintptr_t)utility::get_executable();
+    if (module == 0) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Cannot hook BendTemporalAA composite: executable module unavailable");
+        return;
+    }
+
+    const auto hook_address = module + kBendTemporalAACompositeExecuteRva;
+    if (!is_executable_process_range(hook_address, kExpectedBytes.size()) ||
+        std::memcmp((void*)hook_address, kExpectedBytes.data(), kExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing composite hook at {:x}: byte signature mismatch",
+            hook_address);
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid((void*)hook_address, &FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook);
+    if (!hook_result) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA composite at {:x}", hook_address);
+        return;
+    }
+
+    m_daysgone_bend_taa_composite_hook = std::move(hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA Slate composite at {:x}", hook_address);
+}
+
+void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    const auto pass = (uintptr_t)ctx.rcx;
+    if (!is_readable_process_range(pass, 0xD8)) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool compatibility_enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    if (!compatibility_enabled || !g_hook->m_daysgone_bend_ui_disable_taa_crop->value()) {
+        return;
+    }
+
+    uint8_t crop_flag{};
+    if (!daysgone_read_value(pass + 0x76, crop_flag)) {
+        return;
+    }
+
+    const bool had_crop = (crop_flag & 1) != 0;
+    g_hook->m_daysgone_bend_taa_composite_seen.fetch_add(1);
+
+    if (had_crop && daysgone_write_value<uint8_t>(pass + 0x76, 0)) {
+        g_hook->m_daysgone_bend_taa_composite_crop_suppressed.fetch_add(1);
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][BendTAA] crop suppression active pass={:x} had_crop={} seen={} suppressed={}",
+        pass,
+        had_crop,
+        (unsigned long long)g_hook->m_daysgone_bend_taa_composite_seen.load(),
+        (unsigned long long)g_hook->m_daysgone_bend_taa_composite_crop_suppressed.load());
+}
+
+void FFakeStereoRenderingHook::update_daysgone_ui_telemetry() {
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto vr = VR::get();
+    if (vr == nullptr || !vr->is_daysgone_bend_ui_placement_fix_enabled()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_daysgone_ui_telemetry_last_queue.time_since_epoch().count() != 0 &&
+        now - m_daysgone_ui_telemetry_last_queue < std::chrono::seconds(5))
+    {
+        return;
+    }
+
+    if (m_daysgone_ui_telemetry_queued.exchange(true)) {
+        return;
+    }
+
+    m_daysgone_ui_telemetry_last_queue = now;
+
+    auto log_telemetry = [this]() {
+        utility::ScopeGuard reset{[this]() {
+            m_daysgone_ui_telemetry_queued.store(false);
+        }};
+
+        if (g_hook != this || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+            return;
+        }
+
+        log_daysgone_ui_telemetry_game_thread();
+    };
+
+    if (GameThreadWorker::get().is_same_thread()) {
+        log_telemetry();
+        return;
+    }
+
+    GameThreadWorker::get().enqueue(std::move(log_telemetry));
+}
+
+void FFakeStereoRenderingHook::log_daysgone_ui_telemetry_game_thread() {
+    auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+    auto* bend_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.BendHUD");
+    auto* slate_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.SlateHUD");
+    auto* menu3d_class_instance = daysgone_find_first_tracked_object(L"Class /Script/BendGame.Menu3D");
+
+    int32_t frame_count = -1;
+    uint8_t options_menu_flags = 0;
+    uint8_t menu3d_actor_flags = 0;
+    float menu3d_flick_angle = 0.0f;
+    sdk::UObjectBase* menu3d{};
+    sdk::UObjectBase* map3d{};
+    sdk::UObjectBase* subtitle_widget{};
+    sdk::UObjectBase* devinfo_widget{};
+    sdk::UObjectBase* bend_slate_hud{};
+    sdk::UObjectBase* slate_widget{};
+    sdk::UObjectBase* slate_hud_widget{};
+
+    if (daysgone_object_pointer_is_readable(ui_manager)) {
+        daysgone_read_value((uintptr_t)ui_manager + 0x46C, frame_count);
+        daysgone_read_value((uintptr_t)ui_manager + 0x528, options_menu_flags);
+        daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d);
+        daysgone_read_value((uintptr_t)ui_manager + 0x538, map3d);
+        daysgone_read_value((uintptr_t)ui_manager + 0x518, subtitle_widget);
+        daysgone_read_value((uintptr_t)ui_manager + 0x520, devinfo_widget);
+    }
+
+    if (daysgone_object_pointer_is_readable(bend_hud)) {
+        daysgone_read_value((uintptr_t)bend_hud + 0x480, bend_slate_hud);
+    }
+
+    if (!daysgone_object_pointer_is_readable(slate_hud) && daysgone_object_pointer_is_readable(bend_slate_hud)) {
+        slate_hud = bend_slate_hud;
+    }
+
+    if (daysgone_object_pointer_is_readable(slate_hud)) {
+        daysgone_read_value((uintptr_t)slate_hud + 0x80, slate_widget);
+        daysgone_read_value((uintptr_t)slate_hud + 0xB0, slate_hud_widget);
+    }
+
+    if (!daysgone_object_pointer_is_readable(menu3d) && daysgone_object_pointer_is_readable(menu3d_class_instance)) {
+        menu3d = menu3d_class_instance;
+    }
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_read_value((uintptr_t)menu3d + 0x8, menu3d_actor_flags);
+        daysgone_read_value((uintptr_t)menu3d + 0x358, menu3d_flick_angle);
+    }
+
+    auto* const rtm = get_render_target_manager();
+    const auto scene_rt = rtm != nullptr ? (uintptr_t)rtm->get_render_target() : 0;
+    const auto fallback_ui = rtm != nullptr ? (uintptr_t)rtm->get_fallback_ui_target_ref() : 0;
+    const auto dedicated_ui = rtm != nullptr ? (uintptr_t)rtm->get_dedicated_ui_target() : 0;
+    const auto dedicated_ui_w = rtm != nullptr ? rtm->get_dedicated_ui_width() : 0;
+    const auto dedicated_ui_h = rtm != nullptr ? rtm->get_dedicated_ui_height() : 0;
+    const auto last_slate_intermediate = m_daysgone_slate_intermediate_last_target.load();
+
+    uint8_t current_menu_sig{};
+    uint8_t next_menu_sig{};
+    uint8_t last_menu_sig{};
+    uint8_t selected_menu_sig{};
+    sdk::UObjectBase* bend_widget_main_sig{};
+    sdk::UObjectBase* bend_widget_bike_sig{};
+    sdk::UObjectBase* bend_widget_main_rt_sig{};
+    DaysGoneIntPoint bend_widget_main_draw_size_sig{};
+    float bend_widget_main_draw_scale_sig{};
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_read_value((uintptr_t)menu3d + 0x5A1, current_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x5A2, next_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x688, last_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x690, selected_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x408, bend_widget_main_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x500, bend_widget_bike_sig);
+    }
+
+    if (daysgone_object_pointer_is_readable(bend_widget_main_sig)) {
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x634, bend_widget_main_draw_size_sig);
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x63C, bend_widget_main_draw_scale_sig);
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x728, bend_widget_main_rt_sig);
+    }
+
+    const auto hmd_width = VR::get() != nullptr ? VR::get()->get_hmd_width() : 0;
+    const auto hmd_height = VR::get() != nullptr ? VR::get()->get_hmd_height() : 0;
+    const auto bp_menu3d_state = daysgone_describe_bp_menu3d_state(menu3d);
+
+    const auto signature = fmt::format(
+        "ui={:x}|frame={}|opt=0x{:02X}|hud={:x}|slate={:x}|widget={:x}|hudwidget={:x}|menu3d={:x}|map3d={:x}|menus={}|hudmenus={}|created={}|m={}/{}/{}/{}|bw={:x}/{:x}/{:x}/{}x{}/{:.3f}|rt={:x}/{:x}/{:x}/{}x{}|hmd={}x{}",
+        (uintptr_t)ui_manager,
+        frame_count,
+        options_menu_flags,
+        (uintptr_t)bend_hud,
+        (uintptr_t)slate_hud,
+        (uintptr_t)slate_widget,
+        (uintptr_t)slate_hud_widget,
+        (uintptr_t)menu3d,
+        (uintptr_t)map3d,
+        daysgone_array_count_string(ui_manager, 0x480),
+        daysgone_array_count_string(ui_manager, 0x470),
+        daysgone_array_count_string(ui_manager, 0x490),
+        current_menu_sig,
+        next_menu_sig,
+        last_menu_sig,
+        selected_menu_sig,
+        (uintptr_t)bend_widget_main_sig,
+        (uintptr_t)bend_widget_bike_sig,
+        (uintptr_t)bend_widget_main_rt_sig,
+        bend_widget_main_draw_size_sig.x,
+        bend_widget_main_draw_size_sig.y,
+        bend_widget_main_draw_scale_sig,
+        scene_rt,
+        fallback_ui,
+        dedicated_ui,
+        dedicated_ui_w,
+        dedicated_ui_h,
+        hmd_width,
+        hmd_height);
+
+    ++m_daysgone_ui_telemetry_log_counter;
+    if (signature == m_daysgone_ui_telemetry_last_signature && (m_daysgone_ui_telemetry_log_counter % 6) != 0) {
+        return;
+    }
+
+    m_daysgone_ui_telemetry_last_signature = signature;
+
+    SPDLOG_INFO(
+        "[DaysGone][UITelemetry] ui={} frame={} opt_flags=0x{:02X} hmd={}x{} postprocess_raw=[{:016x},{:016x}] {} {} {} menu3d={} actor_flags=0x{:02X} flick={} map3d={} subtitle={} devinfo={} bend_hud={} bend_slate_hud={} slate_hud={} slate_widget={} slate_hud_widget={} {} {} {} scene_rt={:x} fallback_ui={:x} dedicated_ui={:x} dedicated_ui_size={}x{} slate_intermediate_last={:x}",
+        daysgone_describe_uobject(ui_manager),
+        frame_count,
+        options_menu_flags,
+        hmd_width,
+        hmd_height,
+        daysgone_object_pointer_is_readable(ui_manager) && is_readable_process_range((uintptr_t)ui_manager + 0x4C0, sizeof(uintptr_t))
+            ? *(uintptr_t*)((uintptr_t)ui_manager + 0x4C0)
+            : 0,
+        daysgone_object_pointer_is_readable(ui_manager) && is_readable_process_range((uintptr_t)ui_manager + 0x4C8, sizeof(uintptr_t))
+            ? *(uintptr_t*)((uintptr_t)ui_manager + 0x4C8)
+            : 0,
+        daysgone_describe_uobject_array(ui_manager, 0x470, "hudMenus"),
+        daysgone_describe_uobject_array(ui_manager, 0x480, "menus"),
+        daysgone_describe_uobject_array(ui_manager, 0x490, "createdThisFrame"),
+        daysgone_describe_uobject(menu3d),
+        menu3d_actor_flags,
+        menu3d_flick_angle,
+        daysgone_describe_uobject(map3d),
+        daysgone_describe_uobject(subtitle_widget),
+        daysgone_describe_uobject(devinfo_widget),
+        daysgone_describe_uobject(bend_hud),
+        daysgone_describe_uobject(bend_slate_hud),
+        daysgone_describe_uobject(slate_hud),
+        daysgone_describe_base_menu_widget(slate_widget, "slateWidget"),
+        daysgone_describe_base_menu_widget(slate_hud_widget, "slateHudWidget"),
+        daysgone_describe_raw_pointer_field(slate_widget, 0x340, "widgetOwningMenu"),
+        daysgone_describe_raw_pointer_field(slate_hud_widget, 0x340, "hudWidgetOwningMenu"),
+        bp_menu3d_state,
+        scene_rt,
+        fallback_ui,
+        dedicated_ui,
+        dedicated_ui_w,
+        dedicated_ui_h,
+        last_slate_intermediate);
+}
+
+void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    if (!enabled && !m_daysgone_bend_ui_originals.captured && !daysgone_has_slate_widget_originals() &&
+        !g_daysgone_slate_composite_cvar.forced)
+    {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (enabled) {
+        if (m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
+            now - m_daysgone_bend_ui_last_apply < std::chrono::milliseconds(50))
+        {
+            return;
+        }
+
+        m_daysgone_bend_ui_last_apply = now;
+    } else {
+        m_daysgone_bend_ui_last_apply = {};
+    }
+
+    if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
+        return;
+    }
+
+    auto apply_or_restore = [this]() {
+        utility::ScopeGuard reset{[this]() {
+            m_daysgone_bend_ui_fix_queued.store(false);
+        }};
+
+        if (g_hook != this || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+            return;
+        }
+
+        auto vr = VR::get();
+        if (vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled()) {
+            apply_daysgone_bend_ui_placement_fix_game_thread();
+        } else {
+            restore_daysgone_bend_ui_placement_fix_game_thread();
+        }
+    };
+
+    if (GameThreadWorker::get().is_same_thread()) {
+        apply_or_restore();
+        return;
+    }
+
+    GameThreadWorker::get().enqueue(std::move(apply_or_restore));
+}
+
+void FFakeStereoRenderingHook::restore_daysgone_bend_ui_placement_fix_game_thread() {
+    daysgone_set_disable_slate_composite(false);
+    daysgone_restore_slate_widget_originals();
+    daysgone_restore_viewport_root_slots();
+
+    auto& original = m_daysgone_bend_ui_originals;
+    if (!original.captured) {
+        return;
+    }
+
+    auto* menu3d = reinterpret_cast<sdk::UObjectBase*>(original.menu3d);
+    auto* widget = reinterpret_cast<sdk::UObjectBase*>(original.widget_main);
+    auto* root = reinterpret_cast<sdk::UObjectBase*>(original.default_root);
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_write_value((uintptr_t)menu3d + 0x5B0, original.distance_from_camera);
+        daysgone_write_bool_bit((uintptr_t)menu3d + 0x5B4, (original.use_player_camera & 1) != 0);
+        daysgone_write_value((uintptr_t)menu3d + 0x5E0, original.camera_fov);
+    }
+
+    if (daysgone_object_pointer_is_readable(widget)) {
+        daysgone_write_value((uintptr_t)widget + 0x170, DaysGoneVec3{original.widget_location.x, original.widget_location.y, original.widget_location.z});
+        daysgone_write_value((uintptr_t)widget + 0x17C, DaysGoneVec3{original.widget_rotation.x, original.widget_rotation.y, original.widget_rotation.z});
+        daysgone_write_value((uintptr_t)widget + 0x1B0, DaysGoneVec3{original.widget_scale.x, original.widget_scale.y, original.widget_scale.z});
+        daysgone_write_value((uintptr_t)widget + 0x624, original.screen_scale);
+        daysgone_write_value((uintptr_t)widget + 0x628, DaysGoneVec2{original.screen_offset.x, original.screen_offset.y});
+        daysgone_write_value((uintptr_t)widget + 0x63C, original.draw_scale);
+        daysgone_write_value((uintptr_t)widget + 0x668, DaysGoneVec2{original.pivot.x, original.pivot.y});
+        daysgone_write_bool_bit((uintptr_t)widget + 0x651, (original.disable_occlusion & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x693, (original.tick_when_offscreen & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x739, (original.tick_override & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x73A, (original.tick_enabled & 1) != 0);
+    }
+
+    if (daysgone_object_pointer_is_readable(root)) {
+        daysgone_write_value((uintptr_t)root + 0x170, DaysGoneVec3{original.root_location.x, original.root_location.y, original.root_location.z});
+        daysgone_write_value((uintptr_t)root + 0x17C, DaysGoneVec3{original.root_rotation.x, original.root_rotation.y, original.root_rotation.z});
+        daysgone_write_value((uintptr_t)root + 0x1B0, DaysGoneVec3{original.root_scale.x, original.root_scale.y, original.root_scale.z});
+    }
+
+    SPDLOG_INFO(
+        "[DaysGone][BendUIFix] Restored original placement menu={:x} widget={:x} root={:x}",
+        original.menu3d,
+        original.widget_main,
+        original.default_root);
+
+    m_daysgone_bend_ui_restore_count.fetch_add(1);
+    m_daysgone_bend_ui_last_menu3d.store(0);
+    m_daysgone_bend_ui_last_widget_main.store(0);
+    original = {};
+}
+
+void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread() {
+    const bool use_extracted_overlay =
+        should_use_daysgone_slate_ui_overlay() &&
+        m_daysgone_slate_native_ui_target.load() != 0;
+    daysgone_set_disable_slate_composite(use_extracted_overlay);
+
+    const auto slate_widgets = daysgone_collect_active_slate_widgets();
+    auto apply_slate_widgets = [this, &slate_widgets]() {
+        const DaysGoneVec2 child_translation{
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value()};
+        const auto child_scale = std::max(0.01f, m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+        const DaysGoneVec2 viewport_translation{
+            m_daysgone_bend_ui_viewport_slot_offset_x->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_y->value()};
+        const auto viewport_scale = std::max(0.01f, m_daysgone_bend_ui_viewport_slot_scale->value());
+
+        size_t viewport_roots_applied{};
+        size_t child_transforms_applied{};
+        for (auto* widget : slate_widgets) {
+            if (m_daysgone_bend_ui_viewport_slot_fix->value() &&
+                daysgone_apply_user_widget_viewport_slot(widget, viewport_translation, viewport_scale))
+            {
+                ++viewport_roots_applied;
+                continue;
+            }
+
+            if (m_daysgone_bend_ui_apply_child_render_transform->value()) {
+                daysgone_apply_slate_widget_transform(widget, child_translation, child_scale);
+                ++child_transforms_applied;
+            }
+        }
+
+        if (!slate_widgets.empty()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                5,
+                "[DaysGone][SlateWidgetFix] candidates={} viewport_roots={} child_transforms={} viewport_offset=({:.1f},{:.1f}) viewport_scale={:.3f} child_offset=({:.1f},{:.1f}) child_scale={:.3f} total_apply={} total_restore={}",
+                slate_widgets.size(),
+                viewport_roots_applied,
+                child_transforms_applied,
+                viewport_translation.x,
+                viewport_translation.y,
+                viewport_scale,
+                child_translation.x,
+                child_translation.y,
+                child_scale,
+                g_daysgone_slate_widget_apply_count,
+                g_daysgone_slate_widget_restore_count);
+        }
+    };
+
+    auto* menu3d = daysgone_find_menu3d_object();
+    sdk::UObjectBase* widget{};
+    if (!daysgone_read_bend_widget_main(menu3d, widget)) {
+        apply_slate_widgets();
+        return;
+    }
+
+    sdk::UObjectBase* default_root{};
+    daysgone_read_value((uintptr_t)menu3d + 0x4F0, default_root);
+
+    auto& original = m_daysgone_bend_ui_originals;
+    if (original.captured &&
+        (original.menu3d != (uintptr_t)menu3d || original.widget_main != (uintptr_t)widget))
+    {
+        restore_daysgone_bend_ui_placement_fix_game_thread();
+    }
+
+    if (!original.captured) {
+        DaysGoneVec3 v3{};
+        DaysGoneVec2 v2{};
+
+        original.menu3d = (uintptr_t)menu3d;
+        original.widget_main = (uintptr_t)widget;
+        original.default_root = (uintptr_t)default_root;
+        daysgone_read_value((uintptr_t)menu3d + 0x5B0, original.distance_from_camera);
+        daysgone_read_value((uintptr_t)menu3d + 0x5B4, original.use_player_camera);
+        daysgone_read_value((uintptr_t)menu3d + 0x5E0, original.camera_fov);
+
+        if (daysgone_read_value((uintptr_t)widget + 0x170, v3)) { original.widget_location = {v3.x, v3.y, v3.z}; }
+        if (daysgone_read_value((uintptr_t)widget + 0x17C, v3)) { original.widget_rotation = {v3.x, v3.y, v3.z}; }
+        if (daysgone_read_value((uintptr_t)widget + 0x1B0, v3)) { original.widget_scale = {v3.x, v3.y, v3.z}; }
+        daysgone_read_value((uintptr_t)widget + 0x624, original.screen_scale);
+        if (daysgone_read_value((uintptr_t)widget + 0x628, v2)) { original.screen_offset = {v2.x, v2.y}; }
+        daysgone_read_value((uintptr_t)widget + 0x63C, original.draw_scale);
+        if (daysgone_read_value((uintptr_t)widget + 0x668, v2)) { original.pivot = {v2.x, v2.y}; }
+        daysgone_read_value((uintptr_t)widget + 0x651, original.disable_occlusion);
+        daysgone_read_value((uintptr_t)widget + 0x693, original.tick_when_offscreen);
+        daysgone_read_value((uintptr_t)widget + 0x739, original.tick_override);
+        daysgone_read_value((uintptr_t)widget + 0x73A, original.tick_enabled);
+
+        if (daysgone_object_pointer_is_readable(default_root)) {
+            if (daysgone_read_value((uintptr_t)default_root + 0x170, v3)) { original.root_location = {v3.x, v3.y, v3.z}; }
+            if (daysgone_read_value((uintptr_t)default_root + 0x17C, v3)) { original.root_rotation = {v3.x, v3.y, v3.z}; }
+            if (daysgone_read_value((uintptr_t)default_root + 0x1B0, v3)) { original.root_scale = {v3.x, v3.y, v3.z}; }
+        }
+
+        original.captured = true;
+
+        SPDLOG_INFO(
+            "[DaysGone][BendUIFix] Captured original placement menu={:x} widget={:x} root={:x}",
+            original.menu3d,
+            original.widget_main,
+            original.default_root);
+    }
+
+    const int mode = std::clamp(m_daysgone_bend_ui_mode->value(), 0, 2);
+    const bool apply_player_camera = mode == 0 || mode == 2;
+    const bool apply_widget = (mode == 1 || mode == 2) && m_daysgone_bend_ui_override_widget_transform->value();
+
+    if (apply_player_camera) {
+        daysgone_write_bool_bit((uintptr_t)menu3d + 0x5B4, m_daysgone_bend_ui_force_player_camera->value());
+        daysgone_write_value((uintptr_t)menu3d + 0x5B0, m_daysgone_bend_ui_distance_from_camera->value());
+        daysgone_write_value((uintptr_t)menu3d + 0x5E0, m_daysgone_bend_ui_camera_fov->value());
+    }
+
+    if (apply_widget) {
+        const auto scale = std::max(0.01f, m_daysgone_bend_ui_widget_scale->value());
+        daysgone_write_value((uintptr_t)widget + 0x170, DaysGoneVec3{
+            m_daysgone_bend_ui_widget_loc_x->value(),
+            m_daysgone_bend_ui_widget_loc_y->value(),
+            m_daysgone_bend_ui_widget_loc_z->value()});
+        daysgone_write_value((uintptr_t)widget + 0x17C, DaysGoneVec3{
+            m_daysgone_bend_ui_widget_rot_pitch->value(),
+            m_daysgone_bend_ui_widget_rot_yaw->value(),
+            m_daysgone_bend_ui_widget_rot_roll->value()});
+        daysgone_write_value((uintptr_t)widget + 0x1B0, DaysGoneVec3{scale, scale, scale});
+        daysgone_write_value((uintptr_t)widget + 0x624, std::max(0.01f, m_daysgone_bend_ui_screen_scale->value()));
+        daysgone_write_value((uintptr_t)widget + 0x628, DaysGoneVec2{
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value()});
+        daysgone_write_value((uintptr_t)widget + 0x63C, std::max(0.01f, m_daysgone_bend_ui_draw_scale->value()));
+        daysgone_write_value((uintptr_t)widget + 0x668, DaysGoneVec2{0.5f, 0.5f});
+    }
+
+    if (m_daysgone_bend_ui_override_root_transform->value() && daysgone_object_pointer_is_readable(default_root)) {
+        daysgone_write_value((uintptr_t)default_root + 0x170, DaysGoneVec3{
+            m_daysgone_bend_ui_root_loc_x->value(),
+            m_daysgone_bend_ui_root_loc_y->value(),
+            m_daysgone_bend_ui_root_loc_z->value()});
+    }
+
+    if (m_daysgone_bend_ui_force_widget_refresh->value()) {
+        daysgone_write_bool_bit((uintptr_t)widget + 0x651, true); // bDisableOcclusion
+        daysgone_write_bool_bit((uintptr_t)widget + 0x653, true); // bRedrawRequested
+        daysgone_write_bool_bit((uintptr_t)widget + 0x654, true); // bForceRedrawRequested
+        daysgone_write_bool_bit((uintptr_t)widget + 0x693, true); // TickWhenOffscreen
+        daysgone_write_bool_bit((uintptr_t)widget + 0x739, true); // bShouldOverrideComponentTick
+    }
+
+    m_daysgone_bend_ui_last_menu3d.store((uintptr_t)menu3d);
+    m_daysgone_bend_ui_last_widget_main.store((uintptr_t)widget);
+    m_daysgone_bend_ui_apply_count.fetch_add(1);
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][BendUIFix] applied mode={} player={} widget={} menu={:x} widget={:x} loc=({:.1f},{:.1f},{:.1f}) rot=({:.1f},{:.1f},{:.1f}) scale={:.3f} screen_offset=({:.1f},{:.1f})",
+        mode,
+        apply_player_camera,
+        apply_widget,
+        (uintptr_t)menu3d,
+        (uintptr_t)widget,
+        m_daysgone_bend_ui_widget_loc_x->value(),
+        m_daysgone_bend_ui_widget_loc_y->value(),
+        m_daysgone_bend_ui_widget_loc_z->value(),
+        m_daysgone_bend_ui_widget_rot_pitch->value(),
+        m_daysgone_bend_ui_widget_rot_yaw->value(),
+        m_daysgone_bend_ui_widget_rot_roll->value(),
+        m_daysgone_bend_ui_widget_scale->value(),
+        m_daysgone_bend_ui_screen_offset_x->value(),
+        m_daysgone_bend_ui_screen_offset_y->value());
+
+    apply_slate_widgets();
+}
+
+void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,
+                                                                void* a4, void* params, void* unk1, void* unk2)
 {
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("SlateRHIRenderer::DrawWindow_RenderThread called!");

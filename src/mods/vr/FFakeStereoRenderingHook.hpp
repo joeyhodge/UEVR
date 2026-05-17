@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <string>
 
 #include <SafetyHook.hpp>
 
@@ -373,6 +374,7 @@ public:
     void attempt_hook_ue57_slate_elements_pass();
     void attempt_hook_ue55_slate_output_texture_register();
     void attempt_hook_daysgone_slate_intermediate_buffer();
+    void attempt_hook_daysgone_bend_taa_composite();
     void attempt_hook_update_viewport_rhi(uintptr_t return_address);
     void attempt_hook_fsceneview_constructor();
     
@@ -436,6 +438,49 @@ public:
         m_has_successful_command_list_hijack = true;
     }
 
+    uintptr_t get_daysgone_slate_native_ui_target() const {
+        return m_daysgone_slate_native_ui_target.load();
+    }
+
+    uint32_t get_daysgone_slate_native_ui_width() const {
+        return m_daysgone_slate_native_ui_width.load();
+    }
+
+    uint32_t get_daysgone_slate_native_ui_height() const {
+        return m_daysgone_slate_native_ui_height.load();
+    }
+
+    bool should_use_daysgone_slate_ui_overlay() const {
+        // Live Days Gone testing showed this captures an HMD-sized Bend composite,
+        // not a safe standalone UI target. Keep it hard-disabled until a better
+        // extraction point is found.
+        return false;
+    }
+
+    float get_daysgone_slate_ui_key_threshold() const {
+        return m_daysgone_bend_ui_key_threshold->value();
+    }
+
+    float get_daysgone_slate_ui_key_softness() const {
+        return m_daysgone_bend_ui_key_softness->value();
+    }
+
+    float get_daysgone_slate_ui_key_opacity() const {
+        return m_daysgone_bend_ui_key_opacity->value();
+    }
+
+    float get_daysgone_slate_ui_offset_x() const {
+        return m_daysgone_bend_ui_screen_offset_x->value();
+    }
+
+    float get_daysgone_slate_ui_offset_y() const {
+        return m_daysgone_bend_ui_screen_offset_y->value();
+    }
+
+    float get_daysgone_slate_ui_scale() const {
+        return m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value();
+    }
+
     bool should_recreate_textures() const {
         return m_wants_texture_recreation;
     }
@@ -471,6 +516,7 @@ public:
 
     void on_frame() override;
     void on_draw_ui() override;
+    void draw_daysgone_bend_ui_controls();
 
     auto get_frame_delay_compensation() const {
         return m_frame_delay_compensation->value();
@@ -545,6 +591,11 @@ private:
     bool hook_ue418_oculus_pixel_density_sink();
     void post_init_properties(uintptr_t localplayer);
     void try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source);
+    void update_daysgone_ui_telemetry();
+    void log_daysgone_ui_telemetry_game_thread();
+    void update_daysgone_bend_ui_placement_fix();
+    void apply_daysgone_bend_ui_placement_fix_game_thread();
+    void restore_daysgone_bend_ui_placement_fix_game_thread();
 
     // Hooks
     // UGameEngine
@@ -579,6 +630,7 @@ private:
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -620,6 +672,7 @@ private:
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -688,7 +741,49 @@ private:
     uint32_t m_ue57_dedicated_ui_missing_frames{0};
     bool m_attempted_hook_ue55_slate_output_texture_register{false};
     bool m_attempted_hook_daysgone_slate_intermediate_buffer{false};
+    bool m_attempted_hook_daysgone_bend_taa_composite{false};
     std::atomic<uintptr_t> m_daysgone_slate_intermediate_last_target{0};
+    std::atomic<uintptr_t> m_daysgone_slate_native_ui_target{0};
+    std::atomic<uint32_t> m_daysgone_slate_native_ui_width{0};
+    std::atomic<uint32_t> m_daysgone_slate_native_ui_height{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_composite_seen{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_composite_crop_suppressed{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_composite_extent_overrides{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_shader_param_overrides{0};
+    std::chrono::steady_clock::time_point m_daysgone_ui_telemetry_last_queue{};
+    std::atomic_bool m_daysgone_ui_telemetry_queued{false};
+    std::string m_daysgone_ui_telemetry_last_signature{};
+    uint64_t m_daysgone_ui_telemetry_log_counter{0};
+    std::atomic_bool m_daysgone_bend_ui_fix_queued{false};
+    std::chrono::steady_clock::time_point m_daysgone_bend_ui_last_apply{};
+    struct DaysGoneBendUIOriginalState {
+        uintptr_t menu3d{};
+        uintptr_t widget_main{};
+        uintptr_t default_root{};
+        bool captured{false};
+        float distance_from_camera{};
+        float camera_fov{};
+        uint8_t use_player_camera{};
+        struct {
+            float x{};
+            float y{};
+            float z{};
+        } widget_location{}, widget_rotation{}, widget_scale{}, root_location{}, root_rotation{}, root_scale{};
+        struct {
+            float x{};
+            float y{};
+        } screen_offset{}, pivot{};
+        float screen_scale{};
+        float draw_scale{};
+        uint8_t disable_occlusion{};
+        uint8_t tick_when_offscreen{};
+        uint8_t tick_override{};
+        uint8_t tick_enabled{};
+    } m_daysgone_bend_ui_originals{};
+    std::atomic<uintptr_t> m_daysgone_bend_ui_last_menu3d{0};
+    std::atomic<uintptr_t> m_daysgone_bend_ui_last_widget_main{0};
+    std::atomic<uint64_t> m_daysgone_bend_ui_apply_count{0};
+    std::atomic<uint64_t> m_daysgone_bend_ui_restore_count{0};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
@@ -755,13 +850,98 @@ private:
     const ModToggle::Ptr m_asynchronous_scan{ ModToggle::create("VR_AsynchronousScan", true) };
     // Off by default because it can cause issues with some games
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
+    // Off by default: restores safetyhook's trampoline lock path for games that dislike the faster original-call path.
+    const ModToggle::Ptr m_safe_tick_hook{ ModToggle::create("VR_SafeTickHook", false) };
+    const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_force_player_camera{ ModToggle::create("VR_DaysGoneBendUI_ForcePlayerCamera", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_override_widget_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideWidgetTransform", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_override_root_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideRootTransform", false, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_force_widget_refresh{ ModToggle::create("VR_DaysGoneBendUI_ForceWidgetRefresh", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_viewport_slot_fix{ ModToggle::create("VR_DaysGoneBendUI_ViewportSlotFix", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_apply_child_render_transform{ ModToggle::create("VR_DaysGoneBendUI_ApplyChildRenderTransform", false, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_offset_x{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOffsetX", -1920.0f, 1920.0f, -240.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_offset_y{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOffsetY", -1080.0f, 1080.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_scale{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotScale", 0.1f, 4.0f, 0.85f, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_use_slate_overlay{ ModToggle::create("VR_DaysGoneBendUI_UseSlateOverlay", false, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_key_threshold{ ModSlider::create("VR_DaysGoneBendUI_KeyThreshold", 0.0f, 0.5f, 0.025f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_key_softness{ ModSlider::create("VR_DaysGoneBendUI_KeySoftness", 0.001f, 0.5f, 0.045f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_key_opacity{ ModSlider::create("VR_DaysGoneBendUI_KeyOpacity", 0.0f, 2.0f, 1.0f, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_disable_taa_crop{ ModToggle::create("VR_DaysGoneBendUI_DisableBendTAACrop", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_override_composite_extent{ ModToggle::create("VR_DaysGoneBendUI_OverrideCompositeExtent", false, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_composite_width{ ModSlider::create("VR_DaysGoneBendUI_CompositeWidth", 320.0f, 8192.0f, 1920.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_composite_height{ ModSlider::create("VR_DaysGoneBendUI_CompositeHeight", 180.0f, 8192.0f, 1080.0f, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_override_shader_params{ ModToggle::create("VR_DaysGoneBendUI_OverrideShaderParams", false, true) };
+    const ModInt32::Ptr m_daysgone_bend_ui_shader_param_target{ ModInt32::create("VR_DaysGoneBendUI_ShaderParamTarget", 3, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_shader_offset_x{ ModSlider::create("VR_DaysGoneBendUI_ShaderOffsetX", -4.0f, 4.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_shader_offset_y{ ModSlider::create("VR_DaysGoneBendUI_ShaderOffsetY", -4.0f, 4.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_shader_scale_x{ ModSlider::create("VR_DaysGoneBendUI_ShaderScaleX", 0.05f, 8.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_shader_scale_y{ ModSlider::create("VR_DaysGoneBendUI_ShaderScaleY", 0.05f, 8.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_distance_from_camera{ ModSlider::create("VR_DaysGoneBendUI_DistanceFromCamera", -6000.0f, 6000.0f, -1371.022f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_camera_fov{ ModSlider::create("VR_DaysGoneBendUI_CameraFOV", 10.0f, 140.0f, 70.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_loc_x{ ModSlider::create("VR_DaysGoneBendUI_WidgetLocX", -4000.0f, 4000.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_loc_y{ ModSlider::create("VR_DaysGoneBendUI_WidgetLocY", -4000.0f, 4000.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_loc_z{ ModSlider::create("VR_DaysGoneBendUI_WidgetLocZ", -6000.0f, 2000.0f, -1371.022f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_rot_pitch{ ModSlider::create("VR_DaysGoneBendUI_WidgetRotPitch", -180.0f, 180.0f, 90.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_rot_yaw{ ModSlider::create("VR_DaysGoneBendUI_WidgetRotYaw", -180.0f, 180.0f, 90.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_rot_roll{ ModSlider::create("VR_DaysGoneBendUI_WidgetRotRoll", -180.0f, 180.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_widget_scale{ ModSlider::create("VR_DaysGoneBendUI_WidgetScale", 0.05f, 8.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_screen_offset_x{ ModSlider::create("VR_DaysGoneBendUI_ScreenOffsetX", -1920.0f, 1920.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_screen_offset_y{ ModSlider::create("VR_DaysGoneBendUI_ScreenOffsetY", -1080.0f, 1080.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_screen_scale{ ModSlider::create("VR_DaysGoneBendUI_ScreenScale", 0.1f, 4.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_draw_scale{ ModSlider::create("VR_DaysGoneBendUI_DrawScale", 0.1f, 4.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_root_loc_x{ ModSlider::create("VR_DaysGoneBendUI_RootLocX", -4000.0f, 4000.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_root_loc_y{ ModSlider::create("VR_DaysGoneBendUI_RootLocY", -4000.0f, 4000.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_root_loc_z{ ModSlider::create("VR_DaysGoneBendUI_RootLocZ", -6000.0f, 2000.0f, -1200.0f, true) };
+
 
     void setup_options() {
         m_options = {
             *m_recreate_textures_on_reset,
             *m_frame_delay_compensation,
             *m_asynchronous_scan,
-            *m_use_fmalloc_scene_view_extensions
+            *m_use_fmalloc_scene_view_extensions,
+            *m_safe_tick_hook,
+            *m_daysgone_bend_ui_mode,
+            *m_daysgone_bend_ui_force_player_camera,
+            *m_daysgone_bend_ui_override_widget_transform,
+            *m_daysgone_bend_ui_override_root_transform,
+            *m_daysgone_bend_ui_force_widget_refresh,
+            *m_daysgone_bend_ui_viewport_slot_fix,
+            *m_daysgone_bend_ui_apply_child_render_transform,
+            *m_daysgone_bend_ui_viewport_slot_offset_x,
+            *m_daysgone_bend_ui_viewport_slot_offset_y,
+            *m_daysgone_bend_ui_viewport_slot_scale,
+            *m_daysgone_bend_ui_use_slate_overlay,
+            *m_daysgone_bend_ui_key_threshold,
+            *m_daysgone_bend_ui_key_softness,
+            *m_daysgone_bend_ui_key_opacity,
+            *m_daysgone_bend_ui_disable_taa_crop,
+            *m_daysgone_bend_ui_override_composite_extent,
+            *m_daysgone_bend_ui_composite_width,
+            *m_daysgone_bend_ui_composite_height,
+            *m_daysgone_bend_ui_override_shader_params,
+            *m_daysgone_bend_ui_shader_param_target,
+            *m_daysgone_bend_ui_shader_offset_x,
+            *m_daysgone_bend_ui_shader_offset_y,
+            *m_daysgone_bend_ui_shader_scale_x,
+            *m_daysgone_bend_ui_shader_scale_y,
+            *m_daysgone_bend_ui_distance_from_camera,
+            *m_daysgone_bend_ui_camera_fov,
+            *m_daysgone_bend_ui_widget_loc_x,
+            *m_daysgone_bend_ui_widget_loc_y,
+            *m_daysgone_bend_ui_widget_loc_z,
+            *m_daysgone_bend_ui_widget_rot_pitch,
+            *m_daysgone_bend_ui_widget_rot_yaw,
+            *m_daysgone_bend_ui_widget_rot_roll,
+            *m_daysgone_bend_ui_widget_scale,
+            *m_daysgone_bend_ui_screen_offset_x,
+            *m_daysgone_bend_ui_screen_offset_y,
+            *m_daysgone_bend_ui_screen_scale,
+            *m_daysgone_bend_ui_draw_scale,
+            *m_daysgone_bend_ui_root_loc_x,
+            *m_daysgone_bend_ui_root_loc_y,
+            *m_daysgone_bend_ui_root_loc_z
+
         };
     }
 
