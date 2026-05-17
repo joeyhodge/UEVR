@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <string>
 
@@ -599,7 +600,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             srv_format = formats.srv;
 
             SPDLOG_INFO_EVERY_N_SEC(
-                1,
+                5,
                 "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
                 (uintptr_t)native_ui_target,
                 daysgone_native_ui_desc.Width,
@@ -766,7 +767,17 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_key_opacity(),
                                     ffsr->get_daysgone_slate_ui_offset_x(),
                                     ffsr->get_daysgone_slate_ui_offset_y(),
-                                    ffsr->get_daysgone_slate_ui_scale());
+                                    ffsr->get_daysgone_slate_ui_scale(),
+                                    ffsr->should_split_daysgone_slate_ui_overlay(),
+                                    ffsr->get_daysgone_slate_ui_menu_src_x(),
+                                    ffsr->get_daysgone_slate_ui_menu_src_y(),
+                                    ffsr->get_daysgone_slate_ui_menu_src_w(),
+                                    ffsr->get_daysgone_slate_ui_menu_src_h(),
+                                    ffsr->get_daysgone_slate_ui_menu_offset_x(),
+                                    ffsr->get_daysgone_slate_ui_menu_offset_y(),
+                                    ffsr->get_daysgone_slate_ui_menu_scale(),
+                                    ffsr->get_daysgone_slate_ui_footer_src_y(),
+                                    ffsr->get_daysgone_slate_ui_footer_src_h());
                             });
                     } else if (ui_invert_alpha > 0.0f && ensure_ui_invert_resources()) {
                         m_openxr.copy(
@@ -1759,7 +1770,17 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
     float opacity,
     float offset_x,
     float offset_y,
-    float scale)
+    float scale,
+    bool split_overlay,
+    float menu_src_x,
+    float menu_src_y,
+    float menu_src_w,
+    float menu_src_h,
+    float menu_offset_x,
+    float menu_offset_y,
+    float menu_scale,
+    float footer_src_y,
+    float footer_src_h)
 {
     if (render_target == nullptr || !srv.has_srv()) {
         return;
@@ -1784,6 +1805,10 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
 
     D3D11_TEXTURE2D_DESC dest_desc{};
     render_target->GetDesc(&dest_desc);
+    D3D11_TEXTURE2D_DESC src_desc{};
+    if (srv.tex != nullptr) {
+        static_cast<ID3D11Texture2D*>(srv.tex.Get())->GetDesc(&src_desc);
+    }
 
     float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
     context->ClearRenderTargetView(rtv, clear_color);
@@ -1837,7 +1862,63 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
         nullptr,
         set_custom_shaders);
 
-    m_game_batch->Draw(srv, dest_rect, tint);
+    if (split_overlay && src_desc.Width != 0 && src_desc.Height != 0) {
+        const auto clamp01 = [](float value) {
+            return std::clamp(value, 0.0f, 1.0f);
+        };
+        const auto make_src_rect = [&](float nx, float ny, float nw, float nh) {
+            nx = clamp01(nx);
+            ny = clamp01(ny);
+            nw = std::clamp(nw, 0.01f, 1.0f - nx);
+            nh = std::clamp(nh, 0.01f, 1.0f - ny);
+
+            RECT rect{};
+            rect.left = static_cast<LONG>(std::round(nx * static_cast<float>(src_desc.Width)));
+            rect.top = static_cast<LONG>(std::round(ny * static_cast<float>(src_desc.Height)));
+            rect.right = static_cast<LONG>(std::round((nx + nw) * static_cast<float>(src_desc.Width)));
+            rect.bottom = static_cast<LONG>(std::round((ny + nh) * static_cast<float>(src_desc.Height)));
+            rect.right = std::max(rect.left + 1L, std::min<LONG>(rect.right, static_cast<LONG>(src_desc.Width)));
+            rect.bottom = std::max(rect.top + 1L, std::min<LONG>(rect.bottom, static_cast<LONG>(src_desc.Height)));
+            return rect;
+        };
+        const auto make_centered_dest_rect = [&](const RECT& src_rect, float extra_offset_x, float extra_offset_y, float extra_scale) {
+            const auto src_w = static_cast<float>(std::max<LONG>(1, src_rect.right - src_rect.left));
+            const auto src_h = static_cast<float>(std::max<LONG>(1, src_rect.bottom - src_rect.top));
+            const auto draw_scale = std::clamp(safe_scale * extra_scale, 0.05f, 8.0f);
+            const auto draw_w = src_w * draw_scale;
+            const auto draw_h = src_h * draw_scale;
+
+            RECT rect{};
+            rect.left = static_cast<LONG>((static_cast<float>(dest_desc.Width) - draw_w) * 0.5f + offset_x + extra_offset_x);
+            rect.top = static_cast<LONG>((static_cast<float>(dest_desc.Height) - draw_h) * 0.5f + offset_y + extra_offset_y);
+            rect.right = static_cast<LONG>((static_cast<float>(dest_desc.Width) + draw_w) * 0.5f + offset_x + extra_offset_x);
+            rect.bottom = static_cast<LONG>((static_cast<float>(dest_desc.Height) + draw_h) * 0.5f + offset_y + extra_offset_y);
+            return rect;
+        };
+        const auto make_footer_dest_rect = [&](const RECT& src_rect) {
+            const auto src_w = static_cast<float>(std::max<LONG>(1, src_rect.right - src_rect.left));
+            const auto src_h = static_cast<float>(std::max<LONG>(1, src_rect.bottom - src_rect.top));
+            const auto draw_w = src_w * safe_scale;
+            const auto draw_h = src_h * safe_scale;
+
+            RECT rect{};
+            rect.left = static_cast<LONG>((static_cast<float>(dest_desc.Width) - draw_w) * 0.5f + offset_x);
+            rect.top = static_cast<LONG>(static_cast<float>(dest_desc.Height) - draw_h + offset_y);
+            rect.right = static_cast<LONG>((static_cast<float>(dest_desc.Width) + draw_w) * 0.5f + offset_x);
+            rect.bottom = static_cast<LONG>(static_cast<float>(dest_desc.Height) + offset_y);
+            return rect;
+        };
+
+        const auto footer_src = make_src_rect(0.0f, footer_src_y, 1.0f, footer_src_h);
+        const auto footer_dest = make_footer_dest_rect(footer_src);
+        m_game_batch->Draw(srv, footer_dest, &footer_src, tint);
+
+        const auto menu_src = make_src_rect(menu_src_x, menu_src_y, menu_src_w, menu_src_h);
+        const auto menu_dest = make_centered_dest_rect(menu_src, menu_offset_x, menu_offset_y, menu_scale);
+        m_game_batch->Draw(srv, menu_dest, &menu_src, tint);
+    } else {
+        m_game_batch->Draw(srv, dest_rect, tint);
+    }
     m_game_batch->End();
 }
 
