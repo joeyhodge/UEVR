@@ -2,7 +2,10 @@
 #include <imgui_internal.h>
 #include <openvr.h>
 #include <d3dcompiler.h>
+#include <algorithm>
+#include <array>
 #include <cstring>
+#include <string>
 
 namespace vertex_shader1 {
 #include "shaders/vs.hpp"
@@ -14,6 +17,7 @@ namespace pixel_shader1 {
 
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
+#include <utility/Module.hpp>
 
 #include "Framework.hpp"
 #include "../VR.hpp"
@@ -46,6 +50,195 @@ float4 SpritePixelShader(float4 color : COLOR0, float2 texCoord : TEXCOORD0) : S
     return float4(blendedColor, blendedAlpha);
 }
 )";
+
+constexpr const char* k_daysgone_ui_key_ps_hlsl = R"(
+Texture2D Texture : register(t0);
+SamplerState TextureSampler : register(s0);
+
+float4 SpritePixelShader(float4 color : COLOR0, float2 texCoord : TEXCOORD0) : SV_Target
+{
+    float4 tex = Texture.Sample(TextureSampler, texCoord);
+    float threshold = saturate(color.r);
+    float softness = max(color.g, 0.001);
+    float opacity = saturate(color.a);
+    float luma = max(max(tex.r, tex.g), tex.b);
+    float alpha = smoothstep(threshold, threshold + softness, luma) * opacity;
+    return float4(tex.rgb, alpha);
+}
+)";
+
+bool is_daysgone_executable() {
+    static const auto is_daysgone = []() {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        if (!path) {
+            return false;
+        }
+
+        auto lower = std::wstring{*path};
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        return lower.ends_with(L"\\daysgone.exe") || lower.ends_with(L"/daysgone.exe") || lower == L"daysgone.exe";
+    }();
+
+    return is_daysgone;
+}
+
+bool is_d3d11_or_dxgi_com_object(IUnknown* object) {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+    auto* const vtable = *(void**)object;
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within(vtable);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path) {
+        return false;
+    }
+
+    auto lower = std::string{*module_path};
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower.find("d3d11") != std::string::npos || lower.find("dxgi") != std::string::npos;
+}
+
+bool is_valid_daysgone_d3d11_desc(const D3D11_TEXTURE2D_DESC& desc) {
+    return desc.Width >= 640 && desc.Height >= 360 && desc.Width <= 8192 && desc.Height <= 8192;
+}
+
+struct DaysGoneViewFormats {
+    DXGI_FORMAT rtv{DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+    DXGI_FORMAT srv{DXGI_FORMAT_B8G8R8A8_UNORM};
+};
+
+DaysGoneViewFormats get_daysgone_ui_view_formats(const D3D11_TEXTURE2D_DESC& desc) {
+    switch (desc.Format) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM};
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM};
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+    default:
+        return {};
+    }
+}
+
+bool try_query_daysgone_texture(IUnknown* object, ID3D11Texture2D*& out_native, D3D11_TEXTURE2D_DESC& out_desc) {
+    out_native = nullptr;
+    out_desc = {};
+
+    if (!is_d3d11_or_dxgi_com_object(object)) {
+        return false;
+    }
+
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        texture->Release();
+
+        if (is_valid_daysgone_d3d11_desc(desc)) {
+            out_native = texture;
+            out_desc = desc;
+            return true;
+        }
+    }
+
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv))) && srv != nullptr) {
+        ID3D11Resource* resource = nullptr;
+        srv->GetResource(&resource);
+        srv->Release();
+
+        if (resource != nullptr) {
+            texture = nullptr;
+            if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+                D3D11_TEXTURE2D_DESC desc{};
+                texture->GetDesc(&desc);
+                texture->Release();
+                resource->Release();
+
+                if (is_valid_daysgone_d3d11_desc(desc)) {
+                    out_native = texture;
+                    out_desc = desc;
+                    return true;
+                }
+
+                return false;
+            }
+
+            resource->Release();
+        }
+    }
+
+    return false;
+}
+
+bool read_daysgone_ptr(uintptr_t address, uintptr_t& out) {
+    out = 0;
+    if (address == 0 || IsBadReadPtr((void*)address, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    out = *reinterpret_cast<const uintptr_t*>(address);
+    return out >= 0x10000;
+}
+
+ID3D11Texture2D* try_get_daysgone_native_texture(FRHITexture2D* texture, D3D11_TEXTURE2D_DESC* out_desc = nullptr) {
+    if (!is_daysgone_executable() || texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return nullptr;
+    }
+
+    // Days Gone's Bend Slate path hands UEVR a UE4.11 wrapper, not the native
+    // resource itself. Live evidence shows wrapper +0xA0 is the native
+    // ID3D11Texture2D. Avoid broad COM probing on injection.
+    constexpr std::array<uintptr_t, 2> kWrapperOffsets{0x8, 0x10};
+    constexpr uintptr_t kNativeTextureOffset = 0xA0;
+
+    const auto base = reinterpret_cast<uintptr_t>(texture);
+    for (const auto outer_offset : kWrapperOffsets) {
+        uintptr_t wrapper{};
+        if (!read_daysgone_ptr(base + outer_offset, wrapper)) {
+            continue;
+        }
+
+        uintptr_t raw_native{};
+        if (!read_daysgone_ptr(wrapper + kNativeTextureOffset, raw_native)) {
+            continue;
+        }
+
+        auto* const native = reinterpret_cast<ID3D11Texture2D*>(raw_native);
+        if (!is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(native))) {
+            continue;
+        }
+
+        D3D11_TEXTURE2D_DESC desc{};
+        native->GetDesc(&desc);
+        if (!is_valid_daysgone_d3d11_desc(desc)) {
+            continue;
+        }
+
+        if (out_desc != nullptr) {
+            *out_desc = desc;
+        }
+
+        return native;
+    }
+
+    return nullptr;
+}
 } // namespace
 
 class DX11StateBackup {
@@ -358,16 +551,75 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         m_scene_capture_tex_ref.reset();
     }
 
-    // Update the UI overlay.
-    const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
+    // Update the UI overlay. Days Gone normally composites Slate through BendTemporalAA
+    // into the scene. When the game-specific overlay path is enabled, use the captured
+    // SlateIntermediateBuffer and key black out into a real OpenXR UI layer.
+    const auto daysgone_menu_is_in_scene = is_daysgone_executable();
+    auto* daysgone_native_ui_target = static_cast<ID3D11Texture2D*>(nullptr);
+    D3D11_TEXTURE2D_DESC daysgone_native_ui_desc{};
+    auto daysgone_native_ui_valid = false;
 
-    if (ui_target != nullptr) {
+    const bool daysgone_bend_fix_active =
+        daysgone_menu_is_in_scene &&
+        vr != nullptr &&
+        vr->is_daysgone_bend_ui_placement_fix_enabled();
+
+    if (daysgone_bend_fix_active && ffsr != nullptr && ffsr->should_use_daysgone_slate_ui_overlay()) {
+        daysgone_native_ui_target = reinterpret_cast<ID3D11Texture2D*>(ffsr->get_daysgone_slate_native_ui_target());
+        if (daysgone_native_ui_target != nullptr &&
+            is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(daysgone_native_ui_target)))
+        {
+            daysgone_native_ui_target->GetDesc(&daysgone_native_ui_desc);
+            daysgone_native_ui_valid = is_valid_daysgone_d3d11_desc(daysgone_native_ui_desc);
+        }
+    }
+
+    if (!daysgone_native_ui_valid) {
+        daysgone_native_ui_target = nullptr;
+        daysgone_native_ui_desc = {};
+    }
+
+    const auto using_daysgone_native_ui_target = daysgone_native_ui_target != nullptr;
+    const auto ui_target = (!using_daysgone_native_ui_target && !daysgone_menu_is_in_scene)
+        ? ffsr->get_render_target_manager()->get_ui_target()
+        : nullptr;
+
+    if (ui_target != nullptr || daysgone_native_ui_target != nullptr) {
+        auto* const native_ui_target = daysgone_native_ui_target != nullptr
+            ? daysgone_native_ui_target
+            : is_daysgone_executable()
+            ? try_get_daysgone_native_texture(ui_target)
+            : (ID3D11Texture2D*)ui_target->get_native_resource();
+
+        auto rtv_format = DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        auto srv_format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        if (using_daysgone_native_ui_target && native_ui_target != nullptr) {
+            const auto formats = get_daysgone_ui_view_formats(daysgone_native_ui_desc);
+            rtv_format = formats.rtv;
+            srv_format = formats.srv;
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
+                (uintptr_t)native_ui_target,
+                daysgone_native_ui_desc.Width,
+                daysgone_native_ui_desc.Height,
+                (uint32_t)daysgone_native_ui_desc.Format,
+                daysgone_native_ui_desc.BindFlags,
+                ffsr->get_daysgone_slate_ui_key_threshold(),
+                ffsr->get_daysgone_slate_ui_key_softness(),
+                ffsr->get_daysgone_slate_ui_key_opacity(),
+                ffsr->get_daysgone_slate_ui_offset_x(),
+                ffsr->get_daysgone_slate_ui_offset_y(),
+                ffsr->get_daysgone_slate_ui_scale());
+        }
+
         // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
-        m_engine_ui_ref.set((ID3D11Texture2D*)ui_target->get_native_resource(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
+        m_engine_ui_ref.set(native_ui_target, rtv_format, srv_format);
 
         // Recreate UI texture if needed
         if (!vr->is_extreme_compatibility_mode_enabled()) {
-            const auto native = (ID3D11Texture2D*)ui_target->get_native_resource();
+            const auto native = native_ui_target;
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
 
@@ -500,7 +752,23 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             } else {
                 if (m_engine_ui_ref.has_texture() && m_engine_ui_ref.has_srv()) {
-                    if (ui_invert_alpha > 0.0f && ensure_ui_invert_resources()) {
+                    if (using_daysgone_native_ui_target && ensure_daysgone_ui_key_resources()) {
+                        m_openxr.copy(
+                            (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
+                            nullptr,
+                            nullptr,
+                            [&](ID3D11Texture2D* render_target) {
+                                render_daysgone_ui_key_to_rt(
+                                    render_target,
+                                    m_engine_ui_ref,
+                                    ffsr->get_daysgone_slate_ui_key_threshold(),
+                                    ffsr->get_daysgone_slate_ui_key_softness(),
+                                    ffsr->get_daysgone_slate_ui_key_opacity(),
+                                    ffsr->get_daysgone_slate_ui_offset_x(),
+                                    ffsr->get_daysgone_slate_ui_offset_y(),
+                                    ffsr->get_daysgone_slate_ui_scale());
+                            });
+                    } else if (ui_invert_alpha > 0.0f && ensure_ui_invert_resources()) {
                         m_openxr.copy(
                             (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
                             nullptr,
@@ -525,6 +793,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     utility::ScopeGuard engine_ui_guard([&]() {
+        if (using_daysgone_native_ui_target) {
+            return;
+        }
+
         // clear the game's UI texture
         float clear_color[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         m_engine_ui_ref.clear_rtv(clear_color);
@@ -1078,6 +1350,9 @@ void D3D11Component::on_reset(VR* vr) {
     m_ui_invert_ps.Reset();
     m_ui_invert_blend.Reset();
     m_ui_invert_ready = false;
+    m_daysgone_ui_key_ps.Reset();
+    m_daysgone_ui_key_blend.Reset();
+    m_daysgone_ui_key_ready = false;
     m_is_shader_setup = false;
 
     for (auto& tex : m_2d_screen_tex) {
@@ -1400,6 +1675,163 @@ void D3D11Component::render_ui_invert_to_rt(ID3D11Texture2D* render_target, Text
     m_game_batch->Begin(
         DirectX::DX11::SpriteSortMode_Immediate,
         m_ui_invert_blend.Get(),
+        nullptr,
+        nullptr,
+        nullptr,
+        set_custom_shaders);
+
+    m_game_batch->Draw(srv, dest_rect, tint);
+    m_game_batch->End();
+}
+
+bool D3D11Component::ensure_daysgone_ui_key_resources() {
+    if (m_daysgone_ui_key_ready) {
+        return m_daysgone_ui_key_ps != nullptr && m_daysgone_ui_key_blend != nullptr;
+    }
+
+    m_daysgone_ui_key_ready = true;
+
+    auto& hook = g_framework->get_d3d11_hook();
+    auto device = hook->get_device();
+
+    if (device == nullptr) {
+        spdlog::error("[DaysGone][SlateOverlay] D3D11 device is null");
+        return false;
+    }
+
+    D3D11_BLEND_DESC blend_desc{};
+    blend_desc.RenderTarget[0].BlendEnable = FALSE;
+    blend_desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+
+    if (FAILED(device->CreateBlendState(&blend_desc, &m_daysgone_ui_key_blend))) {
+        spdlog::error("[DaysGone][SlateOverlay] failed to create key blend state");
+        m_daysgone_ui_key_blend.Reset();
+        return false;
+    }
+
+    ComPtr<ID3DBlob> ps_blob{};
+    ComPtr<ID3DBlob> error_blob{};
+
+    const UINT flags =
+#if defined(_DEBUG)
+        D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION | D3DCOMPILE_ENABLE_STRICTNESS;
+#else
+        D3DCOMPILE_OPTIMIZATION_LEVEL3 | D3DCOMPILE_ENABLE_STRICTNESS;
+#endif
+
+    const auto hr = D3DCompile(
+        k_daysgone_ui_key_ps_hlsl,
+        strlen(k_daysgone_ui_key_ps_hlsl),
+        "UEVR_DaysGoneUIKey",
+        nullptr,
+        nullptr,
+        "SpritePixelShader",
+        "ps_4_0",
+        flags,
+        0,
+        &ps_blob,
+        &error_blob);
+
+    if (FAILED(hr)) {
+        if (error_blob != nullptr) {
+            spdlog::error("[DaysGone][SlateOverlay] key shader compile failed: {}", (const char*)error_blob->GetBufferPointer());
+        } else {
+            spdlog::error("[DaysGone][SlateOverlay] key shader compile failed (hr=0x{:08x})", (uint32_t)hr);
+        }
+        return false;
+    }
+
+    if (FAILED(device->CreatePixelShader(ps_blob->GetBufferPointer(), ps_blob->GetBufferSize(), nullptr, &m_daysgone_ui_key_ps))) {
+        spdlog::error("[DaysGone][SlateOverlay] failed to create key pixel shader");
+        m_daysgone_ui_key_ps.Reset();
+        return false;
+    }
+
+    spdlog::info("[DaysGone][SlateOverlay] key shader ready");
+    return true;
+}
+
+void D3D11Component::render_daysgone_ui_key_to_rt(
+    ID3D11Texture2D* render_target,
+    TextureContext& srv,
+    float threshold,
+    float softness,
+    float opacity,
+    float offset_x,
+    float offset_y,
+    float scale)
+{
+    if (render_target == nullptr || !srv.has_srv()) {
+        return;
+    }
+
+    if (!ensure_daysgone_ui_key_resources()) {
+        return;
+    }
+
+    auto& hook = g_framework->get_d3d11_hook();
+    auto device = hook->get_device();
+
+    ComPtr<ID3D11DeviceContext> context{};
+    device->GetImmediateContext(&context);
+
+    DX11StateBackup backup{context.Get()};
+
+    TextureContext rtv{render_target};
+    if (!rtv.has_rtv()) {
+        return;
+    }
+
+    D3D11_TEXTURE2D_DESC dest_desc{};
+    render_target->GetDesc(&dest_desc);
+
+    float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    context->ClearRenderTargetView(rtv, clear_color);
+
+    ID3D11RenderTargetView* views[] = { rtv };
+    context->OMSetRenderTargets(1, views, nullptr);
+
+    D3D11_VIEWPORT viewport{};
+    viewport.Width = (float)dest_desc.Width;
+    viewport.Height = (float)dest_desc.Height;
+    viewport.MinDepth = 0.0f;
+    viewport.MaxDepth = 1.0f;
+    viewport.TopLeftX = 0.0f;
+    viewport.TopLeftY = 0.0f;
+
+    m_game_batch->SetViewport(viewport);
+    context->RSSetViewports(1, &viewport);
+
+    D3D11_RECT scissor_rect{};
+    scissor_rect.left = 0;
+    scissor_rect.top = 0;
+    scissor_rect.right = (LONG)dest_desc.Width;
+    scissor_rect.bottom = (LONG)dest_desc.Height;
+    context->RSSetScissorRects(1, &scissor_rect);
+
+    const auto safe_scale = std::clamp(scale, 0.05f, 8.0f);
+    const auto scaled_w = static_cast<float>(dest_desc.Width) * safe_scale;
+    const auto scaled_h = static_cast<float>(dest_desc.Height) * safe_scale;
+
+    RECT dest_rect{};
+    dest_rect.left = (LONG)(((float)dest_desc.Width - scaled_w) * 0.5f + offset_x);
+    dest_rect.top = (LONG)(((float)dest_desc.Height - scaled_h) * 0.5f + offset_y);
+    dest_rect.right = (LONG)(((float)dest_desc.Width + scaled_w) * 0.5f + offset_x);
+    dest_rect.bottom = (LONG)(((float)dest_desc.Height + scaled_h) * 0.5f + offset_y);
+
+    const auto tint = DirectX::XMVectorSet(
+        std::clamp(threshold, 0.0f, 0.5f),
+        std::clamp(softness, 0.001f, 0.5f),
+        1.0f,
+        std::clamp(opacity, 0.0f, 2.0f));
+
+    auto set_custom_shaders = [&]() {
+        context->PSSetShader(m_daysgone_ui_key_ps.Get(), nullptr, 0);
+    };
+
+    m_game_batch->Begin(
+        DirectX::DX11::SpriteSortMode_Immediate,
+        m_daysgone_ui_key_blend.Get(),
         nullptr,
         nullptr,
         nullptr,
