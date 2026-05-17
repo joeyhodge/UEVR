@@ -67,6 +67,16 @@ private:
 
     bool ensure_ui_invert_resources();
     void render_ui_invert_to_rt(ID3D11Texture2D* render_target, TextureContext& srv, float invert_amount);
+    bool ensure_daysgone_ui_key_resources();
+    void render_daysgone_ui_key_to_rt(
+        ID3D11Texture2D* render_target,
+        TextureContext& srv,
+        float threshold,
+        float softness,
+        float opacity,
+        float offset_x,
+        float offset_y,
+        float scale);
 
     struct ShaderGlobals {
         DirectX::XMMATRIX mvp{};
@@ -166,6 +176,9 @@ private:
     ComPtr<ID3D11PixelShader> m_ui_invert_ps{};
     ComPtr<ID3D11BlendState> m_ui_invert_blend{};
     bool m_ui_invert_ready{false};
+    ComPtr<ID3D11PixelShader> m_daysgone_ui_key_ps{};
+    ComPtr<ID3D11BlendState> m_daysgone_ui_key_blend{};
+    bool m_daysgone_ui_key_ready{false};
 
     vr::HmdMatrix44_t m_left_eye_proj{};
     vr::HmdMatrix44_t m_right_eye_proj{};
