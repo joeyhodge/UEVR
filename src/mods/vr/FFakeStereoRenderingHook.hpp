@@ -40,6 +40,7 @@ class FCanvas;
 class UGameViewportClient;
 class AActor;
 class UObject;
+class UFunction;
 class USceneCaptureComponent2D;
 class UTexture;
 class FSceneViewFamily;
@@ -455,6 +456,13 @@ public:
             m_daysgone_slate_native_ui_target.load() != 0;
     }
 
+    bool should_suppress_daysgone_in_scene_slate_composite() const {
+        return should_use_daysgone_slate_ui_overlay() &&
+            m_daysgone_bend_ui_suppress_in_scene_composite->value();
+    }
+
+    bool should_block_daysgone_glued_ui_process_event(sdk::UObject* obj, sdk::UFunction* func);
+
     float get_daysgone_slate_ui_key_threshold() const {
         return m_daysgone_bend_ui_key_threshold->value();
     }
@@ -669,6 +677,7 @@ private:
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
     static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_scene_composite_hook(safetyhook::Context& ctx);
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -711,6 +720,8 @@ private:
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_scene_composite_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_scene_composite_uncropped_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -786,8 +797,11 @@ private:
     std::atomic<uint32_t> m_daysgone_slate_native_ui_height{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_seen{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_crop_suppressed{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_scene_composite_skipped{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_extent_overrides{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_shader_param_overrides{0};
+    std::atomic<uint64_t> m_daysgone_bend_ui_process_event_hud_blocks{0};
+    std::atomic<uint64_t> m_daysgone_bend_ui_process_event_paint_blocks{0};
     std::chrono::steady_clock::time_point m_daysgone_ui_telemetry_last_queue{};
     std::atomic_bool m_daysgone_ui_telemetry_queued{false};
     std::string m_daysgone_ui_telemetry_last_signature{};
@@ -906,6 +920,7 @@ private:
     const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_opacity{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOpacity", 0.0f, 2.0f, 1.0f, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_use_slate_overlay{ ModToggle::create("VR_DaysGoneBendUI_UseSlateOverlay", false, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_suppress_in_scene_composite{ ModToggle::create("VR_DaysGoneBendUI_SuppressInSceneComposite", false, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_suppress_umg_paint{ ModToggle::create("VR_DaysGoneBendUI_SuppressUMGOnPaint", false, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_split_overlay{ ModToggle::create("VR_DaysGoneBendUI_SplitOverlay", true, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_menu_src_x{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcX", 0.0f, 1.0f, 0.52f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_menu_src_y{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcY", 0.0f, 1.0f, 0.0f, true) };

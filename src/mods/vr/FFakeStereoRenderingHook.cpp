@@ -39,6 +39,7 @@
 #include <sdk/UGameViewportClient.hpp>
 #include <sdk/Globals.hpp>
 #include <sdk/FName.hpp>
+#include <sdk/UFunction.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/FBoolProperty.hpp>
 #include <sdk/FViewport.hpp>
@@ -2159,11 +2160,15 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         (unsigned long long)m_daysgone_bend_ui_apply_count.load(),
         (unsigned long long)m_daysgone_bend_ui_restore_count.load());
     ImGui::TextWrapped("Use Root Viewport Slot controls for the visible MainMenu/HUD/subtitle roots.");
-    ImGui::TextWrapped("Composite seen=%llu crop_suppressed=%llu extent_overrides=%llu shader_overrides=%llu",
+    ImGui::TextWrapped("Composite seen=%llu crop_suppressed=%llu scene_skipped=%llu extent_overrides=%llu shader_overrides=%llu",
         (unsigned long long)m_daysgone_bend_taa_composite_seen.load(),
         (unsigned long long)m_daysgone_bend_taa_composite_crop_suppressed.load(),
+        (unsigned long long)m_daysgone_bend_taa_scene_composite_skipped.load(),
         (unsigned long long)m_daysgone_bend_taa_composite_extent_overrides.load(),
         (unsigned long long)m_daysgone_bend_taa_shader_param_overrides.load());
+    ImGui::TextWrapped("Live UI ProcessEvent suppression: HUD=%llu UMG_OnPaint=%llu",
+        (unsigned long long)m_daysgone_bend_ui_process_event_hud_blocks.load(),
+        (unsigned long long)m_daysgone_bend_ui_process_event_paint_blocks.load());
     ImGui::TextWrapped("Captured Slate UI native=%llx size=%ux%u",
         (unsigned long long)m_daysgone_slate_native_ui_target.load(),
         m_daysgone_slate_native_ui_width.load(),
@@ -2205,7 +2210,8 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
     ImGui::SameLine();
     if (ImGui::Button("Extracted Overlay Diagnostic Mode")) {
         m_daysgone_bend_ui_use_slate_overlay->value() = true;
-        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = true;
+        m_daysgone_bend_ui_suppress_umg_paint->value() = false;
         m_daysgone_bend_ui_split_overlay->value() = true;
         m_daysgone_bend_ui_key_threshold->value() = 0.025f;
         m_daysgone_bend_ui_key_softness->value() = 0.045f;
@@ -2220,8 +2226,10 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
     ImGui::SeparatorText("Extracted Slate UI Overlay");
     m_daysgone_bend_ui_use_slate_overlay->draw("Use Extracted Slate UI Overlay");
     ImGui::TextWrapped("Copies the captured Bend SlateIntermediateBuffer into UEVR's OpenXR UI layer. This keeps the scene in the normal synced/native path and does not force global 2D mode.");
-    m_daysgone_bend_ui_suppress_in_scene_composite->draw("Suppress Bend In-Scene Slate Composite");
-    ImGui::TextWrapped("Leave suppression off first. Enable it only if the extracted overlay works but the original glued/duplicated game UI still remains visible.");
+    m_daysgone_bend_ui_suppress_in_scene_composite->draw("Suppress Glued Live UI Duplicate");
+    ImGui::TextWrapped("When the extracted overlay is available, skips Bend's scene composite and blocks the live HUD draw path so the copied overlay is not doubled over the scene. This does not mask or clear scene pixels.");
+    m_daysgone_bend_ui_suppress_umg_paint->draw("Also Suppress UMG OnPaint Duplicate");
+    ImGui::TextWrapped("Experimental fallback if the HUD block is not enough. It can make the extracted overlay stale/blank in some menus, so leave it off unless the duplicate still remains.");
     m_daysgone_bend_ui_split_overlay->draw("Split Menu/Footer Extracted Overlay");
     ImGui::TextWrapped("Draws the footer/bottom band and the upper-right menu as separate crops. This lets the main menu move/scale independently from the footer.");
     m_daysgone_bend_ui_key_threshold->draw_drag("Overlay Key Threshold", 0.001f, "%.3f");
@@ -9529,6 +9537,15 @@ struct DaysGoneSlateCompositeCVarState {
     bool logged_missing{};
 } g_daysgone_slate_composite_cvar{};
 
+enum class DaysGoneProcessEventTarget : uint8_t {
+    None,
+    ReceiveDrawHUD,
+    UserWidgetOnPaint,
+};
+
+std::mutex g_daysgone_process_event_cache_mtx{};
+std::unordered_map<sdk::UFunction*, DaysGoneProcessEventTarget> g_daysgone_process_event_cache{};
+
 bool daysgone_object_pointer_is_readable(sdk::UObjectBase* object);
 std::string daysgone_describe_uobject(sdk::UObjectBase* object);
 
@@ -10147,6 +10164,49 @@ std::string daysgone_describe_uobject(sdk::UObjectBase* object) {
         (uintptr_t)object,
         daysgone_trim_log_string(class_name, 48),
         daysgone_trim_log_string(object_name, 72));
+}
+
+DaysGoneProcessEventTarget daysgone_classify_process_event_func(sdk::UFunction* func) {
+    if (!daysgone_object_pointer_is_readable(reinterpret_cast<sdk::UObjectBase*>(func))) {
+        return DaysGoneProcessEventTarget::None;
+    }
+
+    {
+        std::scoped_lock _{g_daysgone_process_event_cache_mtx};
+        if (auto it = g_daysgone_process_event_cache.find(func); it != g_daysgone_process_event_cache.end()) {
+            return it->second;
+        }
+    }
+
+    auto target = DaysGoneProcessEventTarget::None;
+    const auto fname = func->get_fname().to_string_no_numbers();
+    if (fname == L"ReceiveDrawHUD") {
+        target = DaysGoneProcessEventTarget::ReceiveDrawHUD;
+    } else if (fname == L"OnPaint") {
+        target = DaysGoneProcessEventTarget::UserWidgetOnPaint;
+    }
+
+    {
+        std::scoped_lock _{g_daysgone_process_event_cache_mtx};
+        g_daysgone_process_event_cache.emplace(func, target);
+    }
+
+    return target;
+}
+
+bool daysgone_is_known_live_ui_widget(sdk::UObjectBase* object) {
+    if (!daysgone_object_pointer_is_readable(object)) {
+        return false;
+    }
+
+    const auto desc = daysgone_describe_uobject(object);
+    return desc.find("UI_MainMenuWidget_C") != std::string::npos ||
+        desc.find("UI_HudWidget_C") != std::string::npos ||
+        desc.find("UI_SubtitleWidget_C") != std::string::npos ||
+        desc.find("UI_HudWeapon") != std::string::npos ||
+        desc.find("UI_MegaMenu_C") != std::string::npos ||
+        desc.find("OptionsMenuWidget_C") != std::string::npos ||
+        desc.find("OptionsTopMenuWidget_C") != std::string::npos;
 }
 
 bool daysgone_is_default_object_name(const std::wstring& name) {
@@ -11128,9 +11188,20 @@ void FFakeStereoRenderingHook::attempt_hook_daysgone_bend_taa_composite() {
     // routine; the crop flag at pass+0x76 is what pushes the menu/HUD toward
     // a bad HMD-sized quadrant in VR.
     constexpr uintptr_t kBendTemporalAACompositeExecuteRva = 0x2008550;
+    constexpr uintptr_t kBendTemporalAASceneCompositeRva = 0x2008E03;
+    constexpr uintptr_t kBendTemporalAAUncroppedSceneCompositeRva = 0x200978C;
     constexpr std::array<uint8_t, 10> kExpectedBytes{
         0x4C, 0x89, 0x4C, 0x24, 0x20, // mov [rsp+20h], r9
         0x48, 0x89, 0x4C, 0x24, 0x08  // mov [rsp+08h], rcx
+    };
+    constexpr std::array<uint8_t, 8> kSceneCompositeExpectedBytes{
+        0x33, 0xDB,                   // xor ebx, ebx
+        0x44, 0x8B, 0xE3,             // mov r12d, ebx
+        0x88, 0x5D, 0x67              // mov [rbp+67h], bl
+    };
+    constexpr std::array<uint8_t, 8> kUncroppedSceneCompositeExpectedBytes{
+        0x49, 0x8B, 0x5E, 0x58,       // mov rbx, [r14+58h]
+        0x49, 0x63, 0x57, 0x28        // movsxd rdx, dword ptr [r15+28h]
     };
 
     const auto module = (uintptr_t)utility::get_executable();
@@ -11157,6 +11228,49 @@ void FFakeStereoRenderingHook::attempt_hook_daysgone_bend_taa_composite() {
 
     m_daysgone_bend_taa_composite_hook = std::move(hook_result);
     SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA Slate composite at {:x}", hook_address);
+
+    // This point is reached only when BendTemporalAA is about to draw the
+    // captured Slate UI back into the scene. The extracted-overlay mode needs
+    // the earlier SlateIntermediateBuffer capture to stay alive, so do not use
+    // r.Bend.TemporalAA.DisableSlateComposite here; redirect this final branch
+    // to the function's normal cleanup path instead.
+    const auto scene_composite_address = module + kBendTemporalAASceneCompositeRva;
+    if (!is_executable_process_range(scene_composite_address, kSceneCompositeExpectedBytes.size()) ||
+        std::memcmp((void*)scene_composite_address, kSceneCompositeExpectedBytes.data(), kSceneCompositeExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing scene-composite skip hook at {:x}: byte signature mismatch",
+            scene_composite_address);
+        return;
+    }
+
+    auto scene_hook_result = safetyhook::create_mid((void*)scene_composite_address, &FFakeStereoRenderingHook::daysgone_bend_taa_scene_composite_hook);
+    if (!scene_hook_result) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA scene composite at {:x}", scene_composite_address);
+        return;
+    }
+
+    m_daysgone_bend_taa_scene_composite_hook = std::move(scene_hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA cropped scene-composite skip point at {:x}", scene_composite_address);
+
+    const auto uncropped_scene_composite_address = module + kBendTemporalAAUncroppedSceneCompositeRva;
+    if (!is_executable_process_range(uncropped_scene_composite_address, kUncroppedSceneCompositeExpectedBytes.size()) ||
+        std::memcmp((void*)uncropped_scene_composite_address, kUncroppedSceneCompositeExpectedBytes.data(), kUncroppedSceneCompositeExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing uncropped scene-composite skip hook at {:x}: byte signature mismatch",
+            uncropped_scene_composite_address);
+        return;
+    }
+
+    auto uncropped_scene_hook_result = safetyhook::create_mid((void*)uncropped_scene_composite_address, &FFakeStereoRenderingHook::daysgone_bend_taa_scene_composite_hook);
+    if (!uncropped_scene_hook_result) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA uncropped scene composite at {:x}", uncropped_scene_composite_address);
+        return;
+    }
+
+    m_daysgone_bend_taa_scene_composite_uncropped_hook = std::move(uncropped_scene_hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA uncropped scene-composite skip point at {:x}", uncropped_scene_composite_address);
 }
 
 void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Context& ctx) {
@@ -11194,6 +11308,87 @@ void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Cont
         had_crop,
         (unsigned long long)g_hook->m_daysgone_bend_taa_composite_seen.load(),
         (unsigned long long)g_hook->m_daysgone_bend_taa_composite_crop_suppressed.load());
+}
+
+void FFakeStereoRenderingHook::daysgone_bend_taa_scene_composite_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto vr = VR::get();
+    if (vr == nullptr || !vr->is_daysgone_bend_ui_placement_fix_enabled() ||
+        !g_hook->should_suppress_daysgone_in_scene_slate_composite())
+    {
+        return;
+    }
+
+    const auto module = (uintptr_t)utility::get_executable();
+    if (module == 0) {
+        return;
+    }
+
+    constexpr uintptr_t kBendTemporalAASceneCompositeCleanupRva = 0x20098CB;
+    ctx.r13 = 0;
+    ctx.rdi = 0xFFFFFFFFu;
+    ctx.rip = module + kBendTemporalAASceneCompositeCleanupRva;
+
+    const auto skipped = g_hook->m_daysgone_bend_taa_scene_composite_skipped.fetch_add(1) + 1;
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][BendTAA] skipped final in-scene Slate composite; extracted overlay source preserved skipped={}",
+        (unsigned long long)skipped);
+}
+
+bool FFakeStereoRenderingHook::should_block_daysgone_glued_ui_process_event(sdk::UObject* obj, sdk::UFunction* func) {
+    if (obj == nullptr || func == nullptr ||
+        !daysgone_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx11())
+    {
+        return false;
+    }
+
+    auto vr = VR::get();
+    if (vr == nullptr ||
+        !vr->is_daysgone_bend_ui_placement_fix_enabled() ||
+        !should_suppress_daysgone_in_scene_slate_composite())
+    {
+        return false;
+    }
+
+    // Never suppress the game's live draw until the extracted Slate buffer is
+    // available; otherwise the user can temporarily lose both UI paths.
+    if (m_daysgone_slate_native_ui_target.load() == 0 ||
+        m_daysgone_slate_native_ui_width.load() == 0 ||
+        m_daysgone_slate_native_ui_height.load() == 0)
+    {
+        return false;
+    }
+
+    const auto target = daysgone_classify_process_event_func(func);
+    if (target == DaysGoneProcessEventTarget::ReceiveDrawHUD) {
+        const auto blocked = m_daysgone_bend_ui_process_event_hud_blocks.fetch_add(1) + 1;
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[DaysGone][SlateOverlay] blocked live HUD ReceiveDrawHUD while using extracted overlay blocks={}",
+            (unsigned long long)blocked);
+        return true;
+    }
+
+    if (target == DaysGoneProcessEventTarget::UserWidgetOnPaint &&
+        m_daysgone_bend_ui_suppress_umg_paint->value() &&
+        daysgone_is_known_live_ui_widget(reinterpret_cast<sdk::UObjectBase*>(obj)))
+    {
+        const auto blocked = m_daysgone_bend_ui_process_event_paint_blocks.fetch_add(1) + 1;
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[DaysGone][SlateOverlay] blocked live UMG OnPaint duplicate for {} blocks={}",
+            daysgone_describe_uobject(reinterpret_cast<sdk::UObjectBase*>(obj)),
+            (unsigned long long)blocked);
+        return true;
+    }
+
+    return false;
 }
 
 void FFakeStereoRenderingHook::update_daysgone_ui_telemetry() {
@@ -11409,6 +11604,15 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
 
     auto vr = VR::get();
     const bool enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    if (enabled &&
+        m_daysgone_bend_ui_use_slate_overlay->value() &&
+        m_daysgone_bend_ui_suppress_in_scene_composite->value())
+    {
+        if (auto uobject_hook = UObjectHook::get(); uobject_hook != nullptr) {
+            uobject_hook->ensure_process_event_hook();
+        }
+    }
+
     if (!enabled && !m_daysgone_bend_ui_originals.captured && !daysgone_has_slate_widget_originals() &&
         !g_daysgone_slate_composite_cvar.forced)
     {
@@ -11561,38 +11765,15 @@ void FFakeStereoRenderingHook::restore_daysgone_bend_ui_placement_fix_game_threa
 void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread() {
     const bool overlay_requested = m_daysgone_bend_ui_use_slate_overlay->value();
     const bool use_extracted_overlay = should_use_daysgone_slate_ui_overlay();
-    const bool suppress_in_scene =
-        use_extracted_overlay &&
-        m_daysgone_bend_ui_suppress_in_scene_composite->value();
-    if (overlay_requested && suppress_in_scene) {
-        if (m_daysgone_bend_ui_originals.captured || daysgone_has_slate_widget_originals()) {
-            restore_daysgone_bend_ui_placement_fix_game_thread();
-        }
-
-        daysgone_set_disable_slate_composite(true);
-
-        m_daysgone_bend_ui_last_menu3d.store(0);
-        m_daysgone_bend_ui_last_widget_main.store(0);
-
-        SPDLOG_INFO_EVERY_N_SEC(
-            10,
-            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=true key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; using extracted overlay only",
-            use_extracted_overlay,
-            m_daysgone_bend_ui_key_threshold->value(),
-            m_daysgone_bend_ui_key_softness->value(),
-            m_daysgone_bend_ui_key_opacity->value(),
-            m_daysgone_bend_ui_screen_offset_x->value(),
-            m_daysgone_bend_ui_screen_offset_y->value(),
-            m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
-        return;
-    }
+    const bool suppress_in_scene = should_suppress_daysgone_in_scene_slate_composite();
 
     if (overlay_requested) {
         daysgone_set_disable_slate_composite(false);
         SPDLOG_INFO_EVERY_N_SEC(
             10,
-            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=false key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; keeping live UMG root tuning active",
+            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene={} key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; Bend CVar kept off so source remains capturable",
             use_extracted_overlay,
+            suppress_in_scene,
             m_daysgone_bend_ui_key_threshold->value(),
             m_daysgone_bend_ui_key_softness->value(),
             m_daysgone_bend_ui_key_opacity->value(),

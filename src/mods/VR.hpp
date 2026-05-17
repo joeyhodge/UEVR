@@ -1147,6 +1147,18 @@ private:
         "Scene Only",
     };
 
+    enum Subnautica2NativeWaterMode : int32_t {
+        SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS = 0,
+        SUBNAUTICA2_NATIVE_WATER_NO_REFLECTIONS = 1,
+        SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER = 2,
+    };
+
+    static const inline std::vector<std::string> s_subnautica2_native_water_mode_names{
+        "Native Water Safe Reflections",
+        "Native Water No Reflections",
+        "Disable SingleLayerWater Fallback",
+    };
+
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
@@ -1318,6 +1330,7 @@ private:
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
+    const ModCombo::Ptr m_subnautica2_native_water_mode{ ModCombo::create(generate_name("Subnautica2NativeWaterMode"), s_subnautica2_native_water_mode_names, SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS) };
     const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
@@ -1604,6 +1617,7 @@ public:
             *m_compatibility_fullscreen_16x9_cameras,
             *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_compatibility_subnautica2_native_water,
+            *m_subnautica2_native_water_mode,
             *m_compatibility_daysgone_bend_ui_placement_fix,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
@@ -1727,6 +1741,7 @@ private:
     bool m_subnautica2_native_water_cvars_applied{false};
     bool m_subnautica2_native_water_cvars_logged{false};
     uint32_t m_subnautica2_native_water_cvar_attempts{0};
+    int32_t m_subnautica2_native_water_last_mode{-1};
     std::chrono::steady_clock::time_point m_subnautica2_native_water_next_apply{};
     std::unordered_map<std::wstring, int> m_subnautica2_native_water_previous_ints{};
 
