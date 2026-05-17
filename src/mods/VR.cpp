@@ -7331,6 +7331,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             if (m_compatibility_subnautica2_native_water->value()) {
                 ImGui::TextWrapped("Subnautica 2 only: disables UE5.6 SingleLayerWater native-stereo subpasses while in Native Stereo with Native Stereo Fix off. Synced/AFR restores the previous values.");
             }
+            m_compatibility_daysgone_bend_ui_placement_fix->draw("Days Gone Bend UI Placement Fix");
+            if (m_compatibility_daysgone_bend_ui_placement_fix->value()) {
+                ImGui::TextWrapped("Days Gone only: keeps Bend's in-scene 3D menu path and applies controlled BP_Menu3D/BendWidgetMain placement overrides. Tuning controls are shown below.");
+                if (m_fake_stereo_hook != nullptr) {
+                    m_fake_stereo_hook->draw_daysgone_bend_ui_controls();
+                }
+            }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 
