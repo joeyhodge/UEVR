@@ -4046,6 +4046,10 @@ void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
 void VR::restore_subnautica2_native_water_cvars() {
     if (!m_subnautica2_native_water_cvars_applied || m_subnautica2_native_water_previous_ints.empty()) {
         m_subnautica2_native_water_cvars_applied = false;
+        m_subnautica2_native_water_cvars_logged = false;
+        m_subnautica2_native_water_cvar_attempts = 0;
+        m_subnautica2_native_water_last_mode = -1;
+        m_subnautica2_native_water_next_apply = {};
         return;
     }
 
@@ -4090,6 +4094,8 @@ void VR::restore_subnautica2_native_water_cvars() {
     m_subnautica2_native_water_previous_ints.clear();
     m_subnautica2_native_water_cvars_applied = false;
     m_subnautica2_native_water_cvars_logged = false;
+    m_subnautica2_native_water_cvar_attempts = 0;
+    m_subnautica2_native_water_last_mode = -1;
     m_subnautica2_native_water_next_apply = {};
 }
 
@@ -4110,13 +4116,27 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
         return;
     }
 
+    auto selected_mode = static_cast<int32_t>(m_subnautica2_native_water_mode->value());
+    if (selected_mode < SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS ||
+        selected_mode > SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER) {
+        selected_mode = SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS;
+    }
+
+    const bool mode_changed = selected_mode != m_subnautica2_native_water_last_mode;
+    if (mode_changed) {
+        m_subnautica2_native_water_cvars_logged = false;
+    }
+
     const auto now = std::chrono::steady_clock::now();
     if (m_subnautica2_native_water_next_apply != std::chrono::steady_clock::time_point{} &&
-        now < m_subnautica2_native_water_next_apply) {
+        now < m_subnautica2_native_water_next_apply &&
+        !mode_changed) {
         return;
     }
 
-    m_subnautica2_native_water_next_apply = now + std::chrono::seconds(2);
+    // This is not a per-frame hammer path. It only corrects drift occasionally,
+    // with immediate reapply when the user changes modes.
+    m_subnautica2_native_water_next_apply = now + std::chrono::seconds(5);
     ++m_subnautica2_native_water_cvar_attempts;
 
     const auto console_manager = sdk::FConsoleManager::get();
@@ -4129,31 +4149,78 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
 
     struct ForcedCVar {
         const wchar_t* name;
-        const wchar_t* value;
+        int value;
     };
 
-    // Dump comparison shows the native path has a real right-eye SingleLayerWater
-    // workload while synced mostly avoids it. Disable the water pass itself first,
-    // then its expensive subpaths, instead of touching final eye copy/projection.
-    static constexpr std::array forced_cvars{
-        ForcedCVar{L"r.Water.SingleLayer", L"0"},
-        ForcedCVar{L"r.ParallelSingleLayerWaterPass", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.Reflection", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.ShadersSupportVSMFiltering", L"0"},
-        ForcedCVar{L"r.Water.SingleLayer.VSMFiltering", L"0"},
-        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", L"0"},
+    // UE5.6 SingleLayerWater uses per-view scene-color/reflection inputs that can
+    // diverge in Subnautica 2 native stereo. Keep the water system enabled and
+    // disable the native-stereo-sensitive subpaths first; fall back to disabling
+    // SingleLayerWater only when the user explicitly chooses that mode.
+    static constexpr std::array<ForcedCVar, 9> safe_reflections_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 1},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 2},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    static constexpr std::array<ForcedCVar, 9> no_reflections_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 1},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 0},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    static constexpr std::array<ForcedCVar, 9> disable_single_layer_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 0},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 0},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    const char* mode_name = "Native Water Safe Reflections";
+    const ForcedCVar* forced_cvars = safe_reflections_cvars.data();
+    size_t forced_cvar_count = safe_reflections_cvars.size();
+
+    switch (selected_mode) {
+    case SUBNAUTICA2_NATIVE_WATER_NO_REFLECTIONS:
+        mode_name = "Native Water No Reflections";
+        forced_cvars = no_reflections_cvars.data();
+        forced_cvar_count = no_reflections_cvars.size();
+        break;
+    case SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER:
+        mode_name = "Disable SingleLayerWater Fallback";
+        forced_cvars = disable_single_layer_cvars.data();
+        forced_cvar_count = disable_single_layer_cvars.size();
+        break;
+    default:
+        break;
     };
 
     uint32_t found{};
     uint32_t set_ok{};
     uint32_t set_failed{};
+    uint32_t already_ok{};
     uint32_t missing{};
 
-    for (const auto& forced : forced_cvars) {
-        auto* object = console_manager->find(forced.name);
+    for (size_t i = 0; i < forced_cvar_count; ++i) {
+        const auto& forced = forced_cvars[i];
+        const std::wstring cvar_name{forced.name};
+        auto* object = console_manager->find(cvar_name);
         if (object == nullptr || object->AsCommand() != nullptr) {
             ++missing;
             continue;
@@ -4167,19 +4234,26 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
 
         try {
             before = variable->GetInt();
-            if (!m_subnautica2_native_water_previous_ints.contains(forced.name)) {
-                m_subnautica2_native_water_previous_ints.emplace(forced.name, before);
+            if (!m_subnautica2_native_water_previous_ints.contains(cvar_name)) {
+                m_subnautica2_native_water_previous_ints.emplace(cvar_name, before);
             }
-            ok = variable->Set(forced.value);
+
+            if (before == forced.value) {
+                ok = true;
+                ++already_ok;
+            } else {
+                ok = variable->Set(std::to_wstring(forced.value).c_str());
+            }
+
             after = variable->GetInt();
         } catch (...) {
             ok = false;
         }
 
-        if (ok) {
-            ++set_ok;
-        } else {
+        if (!ok) {
             ++set_failed;
+        } else if (before != forced.value) {
+            ++set_ok;
         }
 
         if (!m_subnautica2_native_water_cvars_logged) {
@@ -4187,7 +4261,7 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
                 "[Subnautica2][NativeWaterCompat] forced {}: before={} requested={} after={} ok={}",
                 utility::narrow(forced.name),
                 before,
-                utility::narrow(forced.value),
+                forced.value,
                 after,
                 ok);
         }
@@ -4205,15 +4279,18 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
 
     if (!m_subnautica2_native_water_cvars_logged) {
         SPDLOG_INFO(
-            "[Subnautica2][NativeWaterCompat] Applied native water cvar guard found={} missing={} set_ok={} set_failed={}",
+            "[Subnautica2][NativeWaterCompat] Applied native water cvar guard mode=\"{}\" found={} missing={} already_ok={} set_ok={} set_failed={}",
+            mode_name,
             found,
             missing,
+            already_ok,
             set_ok,
             set_failed);
         m_subnautica2_native_water_cvars_logged = true;
     }
 
     m_subnautica2_native_water_cvars_applied = true;
+    m_subnautica2_native_water_last_mode = selected_mode;
 }
 
 void VR::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -5735,6 +5812,7 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
         // Subnautica 2's UE5.6 native path can render SingleLayerWater black in the right eye.
         // Keep this game-specific guard enabled for fresh profiles, but let existing profiles override it.
         m_compatibility_subnautica2_native_water->value() = true;
+        m_subnautica2_native_water_mode->value() = SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS;
     }
 
     if (get_runtime() != nullptr && get_runtime()->loaded) {
@@ -7329,7 +7407,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             }
             m_compatibility_subnautica2_native_water->draw("Subnautica 2 Native Water Compatibility");
             if (m_compatibility_subnautica2_native_water->value()) {
-                ImGui::TextWrapped("Subnautica 2 only: disables UE5.6 SingleLayerWater native-stereo subpasses while in Native Stereo with Native Stereo Fix off. Synced/AFR restores the previous values.");
+                m_subnautica2_native_water_mode->draw("Subnautica 2 Native Water Mode");
+                ImGui::TextWrapped("Subnautica 2 only: applies in DX12 Native Stereo with Native Stereo Fix off. Safe Reflections keeps SingleLayerWater enabled and disables native-stereo-sensitive tiled/reflection history paths. Synced/AFR restores previous values.");
             }
             m_compatibility_daysgone_bend_ui_placement_fix->draw("Days Gone Bend UI Placement Fix");
             if (m_compatibility_daysgone_bend_ui_placement_fix->value()) {
