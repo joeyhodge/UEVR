@@ -2169,14 +2169,96 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         m_daysgone_slate_native_ui_width.load(),
         m_daysgone_slate_native_ui_height.load());
 
+    if (ImGui::Button("Recommended Stable UMG Mode")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = false;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_override_root_transform->value() = false;
+        m_daysgone_bend_ui_force_widget_refresh->value() = true;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = false;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1371.022f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1371.022f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_key_opacity->value() = 0.0f;
+        m_daysgone_bend_ui_manual_apply_generation.fetch_add(1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Extracted Overlay Diagnostic Mode")) {
+        m_daysgone_bend_ui_use_slate_overlay->value() = true;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+    }
+    ImGui::TextWrapped("Stable UMG mode is the current useful path. The extracted overlay is diagnostic; only enable suppression if you want to hide the live game UI and use the copied overlay only.");
+
+    ImGui::SeparatorText("Extracted Slate UI Overlay");
+    m_daysgone_bend_ui_use_slate_overlay->draw("Use Extracted Slate UI Overlay");
+    ImGui::TextWrapped("Copies the captured Bend SlateIntermediateBuffer into UEVR's OpenXR UI layer. This keeps the scene in the normal synced/native path and does not force global 2D mode.");
+    m_daysgone_bend_ui_suppress_in_scene_composite->draw("Suppress Bend In-Scene Slate Composite");
+    ImGui::TextWrapped("Leave suppression off first. Enable it only if the extracted overlay works but the original glued/duplicated game UI still remains visible.");
+    m_daysgone_bend_ui_split_overlay->draw("Split Menu/Footer Extracted Overlay");
+    ImGui::TextWrapped("Draws the footer/bottom band and the upper-right menu as separate crops. This lets the main menu move/scale independently from the footer.");
+    m_daysgone_bend_ui_key_threshold->draw_drag("Overlay Key Threshold", 0.001f, "%.3f");
+    m_daysgone_bend_ui_key_softness->draw_drag("Overlay Key Softness", 0.001f, "%.3f");
+    m_daysgone_bend_ui_key_opacity->draw_drag("Overlay Opacity", 0.01f, "%.3f");
+    m_daysgone_bend_ui_screen_offset_x->draw_drag("Overlay Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_screen_offset_y->draw_drag("Overlay Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_screen_scale->draw_drag("Overlay Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_draw_scale->draw_drag("Overlay Fine Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_menu_offset_x->draw_drag("Upper Menu Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_menu_offset_y->draw_drag("Upper Menu Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_menu_scale->draw_drag("Upper Menu Scale", 0.01f, "%.3f");
+
+    if (ImGui::TreeNode("Extracted overlay crop tuning")) {
+        m_daysgone_bend_ui_menu_src_x->draw_drag("Upper Menu Source X", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_y->draw_drag("Upper Menu Source Y", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_w->draw_drag("Upper Menu Source W", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_h->draw_drag("Upper Menu Source H", 0.001f, "%.3f");
+        m_daysgone_bend_ui_footer_src_y->draw_drag("Footer Source Y", 0.001f, "%.3f");
+        m_daysgone_bend_ui_footer_src_h->draw_drag("Footer Source H", 0.001f, "%.3f");
+        ImGui::TreePop();
+    }
+
     ImGui::SeparatorText("Active SlateHUD / UMG Root Viewport Slot");
     m_daysgone_bend_ui_viewport_slot_fix->draw("Root UUserWidget Viewport Slot Fix");
     m_daysgone_bend_ui_viewport_slot_offset_x->draw_drag("Root Slot Offset X", 1.0f, "%.1f");
     m_daysgone_bend_ui_viewport_slot_offset_y->draw_drag("Root Slot Offset Y", 1.0f, "%.1f");
     m_daysgone_bend_ui_viewport_slot_scale->draw_drag("Root Render Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_viewport_slot_opacity->draw_drag("Root Opacity", 0.01f, "%.3f");
+    if (ImGui::Button("Apply Current UI Tuning Once")) {
+        m_daysgone_bend_ui_manual_apply_generation.fetch_add(1);
+    }
+    ImGui::SameLine();
+    m_daysgone_bend_ui_live_watchdog->draw("Live Reapply Watchdog");
     ImGui::TextWrapped("Targets UI_MainMenuWidget, OptionsMenuWidget, OptionsTopMenuWidget, UI_HudWidget, UI_SubtitleWidget, and UI_MegaMenu roots. The slot stays 1920x1080; scale is applied as a render transform to avoid clipping/cropping.");
     m_daysgone_bend_ui_disable_taa_crop->draw("Disable Bend TAA Slate Crop");
-    ImGui::TextWrapped("Only the root viewport-slot path and Bend TAA crop suppression are active. Earlier Slate overlay, composite extent, and shader-param experiments are not exposed because live testing showed they either did nothing useful or changed only tint/clear boxes.");
+    ImGui::TextWrapped("This now applies only when settings change or when Apply Current UI Tuning Once is pressed. The watchdog is off by default; only enable it if the game recreates the menu widgets and you need periodic reapplication.");
 
     if (ImGui::TreeNode("Advanced legacy BP_Menu3D/widget controls")) {
         int mode = std::clamp(m_daysgone_bend_ui_mode->value(), 0, 2);
@@ -2221,6 +2303,17 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         m_daysgone_bend_ui_override_widget_transform->value() = true;
         m_daysgone_bend_ui_override_root_transform->value() = false;
         m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_menu_src_x->value() = 0.52f;
+        m_daysgone_bend_ui_menu_src_y->value() = 0.0f;
+        m_daysgone_bend_ui_menu_src_w->value() = 0.48f;
+        m_daysgone_bend_ui_menu_src_h->value() = 0.48f;
+        m_daysgone_bend_ui_menu_offset_x->value() = -450.0f;
+        m_daysgone_bend_ui_menu_offset_y->value() = -650.0f;
+        m_daysgone_bend_ui_menu_scale->value() = 1.0f;
+        m_daysgone_bend_ui_footer_src_y->value() = 0.68f;
+        m_daysgone_bend_ui_footer_src_h->value() = 0.32f;
         m_daysgone_bend_ui_key_threshold->value() = 0.025f;
         m_daysgone_bend_ui_key_softness->value() = 0.045f;
         m_daysgone_bend_ui_key_opacity->value() = 1.0f;
@@ -2235,10 +2328,12 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
         m_daysgone_bend_ui_widget_scale->value() = 1.0f;
         m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
         m_daysgone_bend_ui_apply_child_render_transform->value() = false;
         m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
         m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
         m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
         m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
         m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
         m_daysgone_bend_ui_screen_scale->value() = 1.0f;
@@ -2262,6 +2357,17 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         m_daysgone_bend_ui_force_player_camera->value() = true;
         m_daysgone_bend_ui_override_widget_transform->value() = true;
         m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_menu_src_x->value() = 0.52f;
+        m_daysgone_bend_ui_menu_src_y->value() = 0.0f;
+        m_daysgone_bend_ui_menu_src_w->value() = 0.48f;
+        m_daysgone_bend_ui_menu_src_h->value() = 0.48f;
+        m_daysgone_bend_ui_menu_offset_x->value() = -450.0f;
+        m_daysgone_bend_ui_menu_offset_y->value() = -650.0f;
+        m_daysgone_bend_ui_menu_scale->value() = 1.0f;
+        m_daysgone_bend_ui_footer_src_y->value() = 0.68f;
+        m_daysgone_bend_ui_footer_src_h->value() = 0.32f;
         m_daysgone_bend_ui_key_threshold->value() = 0.025f;
         m_daysgone_bend_ui_key_softness->value() = 0.045f;
         m_daysgone_bend_ui_key_opacity->value() = 1.0f;
@@ -2276,10 +2382,12 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
         m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
         m_daysgone_bend_ui_widget_scale->value() = 1.0f;
         m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
         m_daysgone_bend_ui_apply_child_render_transform->value() = false;
         m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
         m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
         m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
         m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
         m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
         m_daysgone_bend_ui_screen_scale->value() = 1.0f;
@@ -6700,6 +6808,35 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             };
 
             const auto exception_module = utility::get_module_within(exception_address).value_or(nullptr);
+            const auto executable_base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            const auto exception_rva =
+                exception_module == utility::get_executable() && executable_base != 0 && exception_address >= executable_base
+                    ? exception_address - executable_base
+                    : 0;
+
+            const auto is_daysgone_fname_block_lookup =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                exception_rva == 0x19fd30a &&
+                exception->ContextRecord->Rax == 0 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                decoded->Operands[0].Info.Register.Reg == NDR_RDX &&
+                std::string_view{decoded->Mnemonic}.starts_with("MOV") &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rax_base(op2.Info.Memory.Base);
+
+            if (is_daysgone_fname_block_lookup) {
+                constexpr uintptr_t daysgone_fname_to_string_return_rva = 0x19fd370;
+
+                SPDLOG_WARN_ONCE(
+                    "[DaysGone] Recovering invalid UE4 FName block lookup at RVA 0x19fd30a; returning empty name string");
+
+                exception->ContextRecord->Rax = exception->ContextRecord->Rbx;
+                exception->ContextRecord->Rip = executable_base + daysgone_fname_to_string_return_rva;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+
             const auto is_daysgone_view_extension_null_chain =
                 daysgone_current &&
                 exception_module == utility::get_executable() &&
@@ -9368,12 +9505,19 @@ struct DaysGoneSlateWidgetOriginalState {
     DaysGoneVec2 pivot{};
 };
 
+struct DaysGoneViewportRootOriginalState {
+    uintptr_t widget{};
+    bool captured{};
+    DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 struct DaysGoneIntPoint {
     int32_t x{};
     int32_t y{};
 };
 
 std::array<DaysGoneSlateWidgetOriginalState, 16> g_daysgone_slate_widget_originals{};
+std::array<DaysGoneViewportRootOriginalState, 16> g_daysgone_viewport_root_originals{};
 uint64_t g_daysgone_slate_widget_apply_count{};
 uint64_t g_daysgone_slate_widget_restore_count{};
 struct DaysGoneSlateCompositeCVarState {
@@ -9738,6 +9882,18 @@ void daysgone_call_widget_position_in_viewport(sdk::UObjectBase* widget, DaysGon
     widget->call_function(L"SetPositionInViewport", &params);
 }
 
+void daysgone_call_user_widget_color_and_opacity(sdk::UObjectBase* widget, DaysGoneVec4 value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec4 value;
+    } params{value};
+
+    widget->call_function(L"SetColorAndOpacity", &params);
+}
+
 void daysgone_call_widget_no_param_function(sdk::UObjectBase* widget, const wchar_t* function_name) {
     if (!daysgone_object_pointer_is_readable(widget)) {
         return;
@@ -9761,35 +9917,98 @@ bool daysgone_widget_is_viewport_root_candidate(sdk::UObjectBase* widget) {
         desc.find("OptionsTopMenuWidget_C") != std::string::npos;
 }
 
-bool daysgone_apply_user_widget_viewport_slot(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale) {
+bool daysgone_capture_viewport_root_original(sdk::UObjectBase* widget) {
     if (!daysgone_widget_is_viewport_root_candidate(widget)) {
         return false;
     }
 
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (state.captured && state.widget == widget_address) {
+            return true;
+        }
+    }
+
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (state.captured) {
+            continue;
+        }
+
+        state.widget = widget_address;
+        state.captured = true;
+        daysgone_read_value(widget_address + 0x120, state.color_and_opacity);
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][ViewportSlotFix] captured root opacity {} rgba=({:.3f},{:.3f},{:.3f},{:.3f})",
+            daysgone_describe_uobject(widget),
+            state.color_and_opacity.x,
+            state.color_and_opacity.y,
+            state.color_and_opacity.z,
+            state.color_and_opacity.w);
+        return true;
+    }
+
+    SPDLOG_WARN_ONCE("[DaysGone][ViewportSlotFix] Root original-state cache is full; opacity restore may be incomplete");
+    return false;
+}
+
+bool daysgone_restore_viewport_root_original_opacity(sdk::UObjectBase* widget) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (!state.captured || state.widget != widget_address) {
+            continue;
+        }
+
+        daysgone_write_value(widget_address + 0x120, state.color_and_opacity);
+        daysgone_call_user_widget_color_and_opacity(widget, state.color_and_opacity);
+        state = {};
+        return true;
+    }
+
+    return false;
+}
+
+bool daysgone_apply_user_widget_viewport_slot(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale, float opacity) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    daysgone_capture_viewport_root_original(widget);
+
     const auto clamped_scale = std::clamp(scale, 0.05f, 8.0f);
+    const auto clamped_opacity = std::clamp(opacity, 0.0f, 2.0f);
     const DaysGoneVec2 alignment{0.5f, 0.5f};
     const DaysGoneVec2 desired_size{1920.0f, 1080.0f};
     const DaysGoneVec2 viewport_position{960.0f + translation.x, 540.0f + translation.y};
     const DaysGoneVec2 pivot{0.5f, 0.5f};
     const DaysGoneVec2 render_scale{clamped_scale, clamped_scale};
+    const DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, clamped_opacity};
 
     daysgone_call_widget_vec2_function(widget, L"SetAlignmentInViewport", alignment);
     daysgone_call_widget_vec2_function(widget, L"SetDesiredSizeInViewport", desired_size);
     daysgone_call_widget_position_in_viewport(widget, viewport_position, false);
     daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", pivot);
     daysgone_call_widget_vec2_function(widget, L"SetRenderScale", render_scale);
+    daysgone_write_value((uintptr_t)widget + 0x120, color_and_opacity);
+    daysgone_call_user_widget_color_and_opacity(widget, color_and_opacity);
     daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
     daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
 
     SPDLOG_INFO_EVERY_N_SEC(
         2,
-        "[DaysGone][ViewportSlotFix] applied {} pos=({:.1f},{:.1f}) size=({:.1f},{:.1f}) render_scale={:.3f}",
+        "[DaysGone][ViewportSlotFix] applied {} pos=({:.1f},{:.1f}) size=({:.1f},{:.1f}) render_scale={:.3f} opacity={:.3f}",
         daysgone_describe_uobject(widget),
         viewport_position.x,
         viewport_position.y,
         desired_size.x,
         desired_size.y,
-        clamped_scale);
+        clamped_scale,
+        clamped_opacity);
 
     return true;
 }
@@ -9804,6 +10023,11 @@ void daysgone_restore_user_widget_viewport_slot(sdk::UObjectBase* widget) {
     daysgone_call_widget_position_in_viewport(widget, {0.0f, 0.0f}, false);
     daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", {0.0f, 0.0f});
     daysgone_call_widget_vec2_function(widget, L"SetRenderScale", {1.0f, 1.0f});
+    if (!daysgone_restore_viewport_root_original_opacity(widget)) {
+        const DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, 1.0f};
+        daysgone_write_value((uintptr_t)widget + 0x120, color_and_opacity);
+        daysgone_call_user_widget_color_and_opacity(widget, color_and_opacity);
+    }
     daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
     daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
 }
@@ -10867,16 +11091,16 @@ void FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook(safetyhoo
         return;
     }
 
-    // Days Gone's menu is already composited through Bend's in-scene UMG path.
-    // Do not promote this to UEVR's overlay path: the texture has no useful
-    // alpha for OpenXR and becomes a black plane over the scene.
+    // Store the captured texture so the opt-in D3D11 overlay path can draw it
+    // into UEVR's UI layer without forcing global 2D screen mode.
     (void)rtm;
     g_hook->m_daysgone_slate_intermediate_last_target.store((uintptr_t)slate_texture);
     g_hook->m_daysgone_slate_native_ui_target.store((uintptr_t)candidate.native);
     g_hook->m_daysgone_slate_native_ui_width.store(candidate.desc.Width);
     g_hook->m_daysgone_slate_native_ui_height.store(candidate.desc.Height);
 
-    SPDLOG_WARN(
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
         "[DaysGone][SlateUI] Captured Bend SlateIntermediateBuffer native UI target: wrapper={:x} native={:x} path=+0x{:X}/+0x{:X} [{}x{} fmt={} bind=0x{:X}]",
         (uintptr_t)slate_texture,
         (uintptr_t)candidate.native,
@@ -11193,19 +11417,68 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
 
     const auto now = std::chrono::steady_clock::now();
     if (enabled) {
+        const auto apply_signature = fmt::format(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}",
+            m_daysgone_bend_ui_manual_apply_generation.load(),
+            m_daysgone_bend_ui_mode->value(),
+            m_daysgone_bend_ui_force_player_camera->value(),
+            m_daysgone_bend_ui_override_widget_transform->value(),
+            m_daysgone_bend_ui_override_root_transform->value(),
+            m_daysgone_bend_ui_force_widget_refresh->value(),
+            m_daysgone_bend_ui_viewport_slot_fix->value(),
+            m_daysgone_bend_ui_apply_child_render_transform->value(),
+            m_daysgone_bend_ui_use_slate_overlay->value(),
+            m_daysgone_bend_ui_suppress_in_scene_composite->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_x->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_y->value(),
+            m_daysgone_bend_ui_viewport_slot_scale->value(),
+            m_daysgone_bend_ui_viewport_slot_opacity->value(),
+            m_daysgone_bend_ui_distance_from_camera->value(),
+            m_daysgone_bend_ui_camera_fov->value(),
+            m_daysgone_bend_ui_widget_loc_x->value(),
+            m_daysgone_bend_ui_widget_loc_y->value(),
+            m_daysgone_bend_ui_widget_loc_z->value(),
+            m_daysgone_bend_ui_widget_rot_pitch->value(),
+            m_daysgone_bend_ui_widget_rot_yaw->value(),
+            m_daysgone_bend_ui_widget_rot_roll->value(),
+            m_daysgone_bend_ui_widget_scale->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value(),
+            m_daysgone_bend_ui_draw_scale->value(),
+            m_daysgone_bend_ui_root_loc_x->value(),
+            m_daysgone_bend_ui_root_loc_y->value(),
+            m_daysgone_bend_ui_root_loc_z->value(),
+            m_daysgone_bend_ui_key_opacity->value());
+        const bool settings_changed = apply_signature != m_daysgone_bend_ui_last_apply_signature;
+        const bool watchdog_due =
+            m_daysgone_bend_ui_live_watchdog->value() &&
+            m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
+            now - m_daysgone_bend_ui_last_apply >= std::chrono::seconds(5);
+
+        if (!settings_changed && !watchdog_due) {
+            return;
+        }
+
+        constexpr auto apply_interval = std::chrono::milliseconds(75);
         if (m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
-            now - m_daysgone_bend_ui_last_apply < std::chrono::milliseconds(50))
+            now - m_daysgone_bend_ui_last_apply < apply_interval)
         {
             return;
         }
 
+        if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
+            return;
+        }
+
         m_daysgone_bend_ui_last_apply = now;
+        m_daysgone_bend_ui_last_apply_signature = apply_signature;
     } else {
         m_daysgone_bend_ui_last_apply = {};
-    }
-
-    if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
-        return;
+        m_daysgone_bend_ui_last_apply_signature.clear();
+        if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
+            return;
+        }
     }
 
     auto apply_or_restore = [this]() {
@@ -11286,10 +11559,49 @@ void FFakeStereoRenderingHook::restore_daysgone_bend_ui_placement_fix_game_threa
 }
 
 void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread() {
-    const bool use_extracted_overlay =
-        should_use_daysgone_slate_ui_overlay() &&
-        m_daysgone_slate_native_ui_target.load() != 0;
-    daysgone_set_disable_slate_composite(use_extracted_overlay);
+    const bool overlay_requested = m_daysgone_bend_ui_use_slate_overlay->value();
+    const bool use_extracted_overlay = should_use_daysgone_slate_ui_overlay();
+    const bool suppress_in_scene =
+        use_extracted_overlay &&
+        m_daysgone_bend_ui_suppress_in_scene_composite->value();
+    if (overlay_requested && suppress_in_scene) {
+        if (m_daysgone_bend_ui_originals.captured || daysgone_has_slate_widget_originals()) {
+            restore_daysgone_bend_ui_placement_fix_game_thread();
+        }
+
+        daysgone_set_disable_slate_composite(true);
+
+        m_daysgone_bend_ui_last_menu3d.store(0);
+        m_daysgone_bend_ui_last_widget_main.store(0);
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            10,
+            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=true key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; using extracted overlay only",
+            use_extracted_overlay,
+            m_daysgone_bend_ui_key_threshold->value(),
+            m_daysgone_bend_ui_key_softness->value(),
+            m_daysgone_bend_ui_key_opacity->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+        return;
+    }
+
+    if (overlay_requested) {
+        daysgone_set_disable_slate_composite(false);
+        SPDLOG_INFO_EVERY_N_SEC(
+            10,
+            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=false key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; keeping live UMG root tuning active",
+            use_extracted_overlay,
+            m_daysgone_bend_ui_key_threshold->value(),
+            m_daysgone_bend_ui_key_softness->value(),
+            m_daysgone_bend_ui_key_opacity->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+    }
+
+    daysgone_set_disable_slate_composite(false);
 
     const auto slate_widgets = daysgone_collect_active_slate_widgets();
     auto apply_slate_widgets = [this, &slate_widgets]() {
@@ -11301,12 +11613,13 @@ void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread(
             m_daysgone_bend_ui_viewport_slot_offset_x->value(),
             m_daysgone_bend_ui_viewport_slot_offset_y->value()};
         const auto viewport_scale = std::max(0.01f, m_daysgone_bend_ui_viewport_slot_scale->value());
+        const auto viewport_opacity = std::clamp(m_daysgone_bend_ui_viewport_slot_opacity->value(), 0.0f, 2.0f);
 
         size_t viewport_roots_applied{};
         size_t child_transforms_applied{};
         for (auto* widget : slate_widgets) {
             if (m_daysgone_bend_ui_viewport_slot_fix->value() &&
-                daysgone_apply_user_widget_viewport_slot(widget, viewport_translation, viewport_scale))
+                daysgone_apply_user_widget_viewport_slot(widget, viewport_translation, viewport_scale, viewport_opacity))
             {
                 ++viewport_roots_applied;
                 continue;
@@ -11321,13 +11634,14 @@ void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread(
         if (!slate_widgets.empty()) {
             SPDLOG_INFO_EVERY_N_SEC(
                 5,
-                "[DaysGone][SlateWidgetFix] candidates={} viewport_roots={} child_transforms={} viewport_offset=({:.1f},{:.1f}) viewport_scale={:.3f} child_offset=({:.1f},{:.1f}) child_scale={:.3f} total_apply={} total_restore={}",
+                "[DaysGone][SlateWidgetFix] candidates={} viewport_roots={} child_transforms={} viewport_offset=({:.1f},{:.1f}) viewport_scale={:.3f} viewport_opacity={:.3f} child_offset=({:.1f},{:.1f}) child_scale={:.3f} total_apply={} total_restore={}",
                 slate_widgets.size(),
                 viewport_roots_applied,
                 child_transforms_applied,
                 viewport_translation.x,
                 viewport_translation.y,
                 viewport_scale,
+                viewport_opacity,
                 child_translation.x,
                 child_translation.y,
                 child_scale,
