@@ -76,7 +76,17 @@ private:
         float opacity,
         float offset_x,
         float offset_y,
-        float scale);
+        float scale,
+        bool split_overlay = false,
+        float menu_src_x = 0.52f,
+        float menu_src_y = 0.0f,
+        float menu_src_w = 0.48f,
+        float menu_src_h = 0.48f,
+        float menu_offset_x = -450.0f,
+        float menu_offset_y = -650.0f,
+        float menu_scale = 1.0f,
+        float footer_src_y = 0.68f,
+        float footer_src_h = 0.32f);
 
     struct ShaderGlobals {
         DirectX::XMMATRIX mvp{};

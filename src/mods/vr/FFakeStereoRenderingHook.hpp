@@ -446,10 +446,8 @@ public:
     }
 
     bool should_use_daysgone_slate_ui_overlay() const {
-        // Live Days Gone testing showed this captures an HMD-sized Bend composite,
-        // not a safe standalone UI target. Keep it hard-disabled until a better
-        // extraction point is found.
-        return false;
+        return m_daysgone_bend_ui_use_slate_overlay->value() &&
+            m_daysgone_slate_native_ui_target.load() != 0;
     }
 
     float get_daysgone_slate_ui_key_threshold() const {
@@ -474,6 +472,46 @@ public:
 
     float get_daysgone_slate_ui_scale() const {
         return m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value();
+    }
+
+    bool should_split_daysgone_slate_ui_overlay() const {
+        return m_daysgone_bend_ui_split_overlay->value();
+    }
+
+    float get_daysgone_slate_ui_menu_src_x() const {
+        return m_daysgone_bend_ui_menu_src_x->value();
+    }
+
+    float get_daysgone_slate_ui_menu_src_y() const {
+        return m_daysgone_bend_ui_menu_src_y->value();
+    }
+
+    float get_daysgone_slate_ui_menu_src_w() const {
+        return m_daysgone_bend_ui_menu_src_w->value();
+    }
+
+    float get_daysgone_slate_ui_menu_src_h() const {
+        return m_daysgone_bend_ui_menu_src_h->value();
+    }
+
+    float get_daysgone_slate_ui_menu_offset_x() const {
+        return m_daysgone_bend_ui_menu_offset_x->value();
+    }
+
+    float get_daysgone_slate_ui_menu_offset_y() const {
+        return m_daysgone_bend_ui_menu_offset_y->value();
+    }
+
+    float get_daysgone_slate_ui_menu_scale() const {
+        return m_daysgone_bend_ui_menu_scale->value();
+    }
+
+    float get_daysgone_slate_ui_footer_src_y() const {
+        return m_daysgone_bend_ui_footer_src_y->value();
+    }
+
+    float get_daysgone_slate_ui_footer_src_h() const {
+        return m_daysgone_bend_ui_footer_src_h->value();
     }
 
     bool should_recreate_textures() const {
@@ -751,6 +789,8 @@ private:
     uint64_t m_daysgone_ui_telemetry_log_counter{0};
     std::atomic_bool m_daysgone_bend_ui_fix_queued{false};
     std::chrono::steady_clock::time_point m_daysgone_bend_ui_last_apply{};
+    std::string m_daysgone_bend_ui_last_apply_signature{};
+    std::atomic<uint64_t> m_daysgone_bend_ui_manual_apply_generation{0};
     struct DaysGoneBendUIOriginalState {
         uintptr_t menu3d{};
         uintptr_t widget_main{};
@@ -853,11 +893,24 @@ private:
     const ModToggle::Ptr m_daysgone_bend_ui_override_root_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideRootTransform", false, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_force_widget_refresh{ ModToggle::create("VR_DaysGoneBendUI_ForceWidgetRefresh", true, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_viewport_slot_fix{ ModToggle::create("VR_DaysGoneBendUI_ViewportSlotFix", true, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_live_watchdog{ ModToggle::create("VR_DaysGoneBendUI_LiveWatchdog", false, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_apply_child_render_transform{ ModToggle::create("VR_DaysGoneBendUI_ApplyChildRenderTransform", false, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_offset_x{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOffsetX", -1920.0f, 1920.0f, -240.0f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_offset_y{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOffsetY", -1080.0f, 1080.0f, 0.0f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_scale{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotScale", 0.1f, 4.0f, 0.85f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_viewport_slot_opacity{ ModSlider::create("VR_DaysGoneBendUI_ViewportSlotOpacity", 0.0f, 2.0f, 1.0f, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_use_slate_overlay{ ModToggle::create("VR_DaysGoneBendUI_UseSlateOverlay", false, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_suppress_in_scene_composite{ ModToggle::create("VR_DaysGoneBendUI_SuppressInSceneComposite", false, true) };
+    const ModToggle::Ptr m_daysgone_bend_ui_split_overlay{ ModToggle::create("VR_DaysGoneBendUI_SplitOverlay", true, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_src_x{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcX", 0.0f, 1.0f, 0.52f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_src_y{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcY", 0.0f, 1.0f, 0.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_src_w{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcW", 0.05f, 1.0f, 0.48f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_src_h{ ModSlider::create("VR_DaysGoneBendUI_MenuSrcH", 0.05f, 1.0f, 0.48f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_offset_x{ ModSlider::create("VR_DaysGoneBendUI_MenuOffsetX", -2400.0f, 2400.0f, -450.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_offset_y{ ModSlider::create("VR_DaysGoneBendUI_MenuOffsetY", -2400.0f, 2400.0f, -650.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_menu_scale{ ModSlider::create("VR_DaysGoneBendUI_MenuScale", 0.1f, 4.0f, 1.0f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_footer_src_y{ ModSlider::create("VR_DaysGoneBendUI_FooterSrcY", 0.0f, 1.0f, 0.68f, true) };
+    const ModSlider::Ptr m_daysgone_bend_ui_footer_src_h{ ModSlider::create("VR_DaysGoneBendUI_FooterSrcH", 0.05f, 1.0f, 0.32f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_key_threshold{ ModSlider::create("VR_DaysGoneBendUI_KeyThreshold", 0.0f, 0.5f, 0.025f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_key_softness{ ModSlider::create("VR_DaysGoneBendUI_KeySoftness", 0.001f, 0.5f, 0.045f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_key_opacity{ ModSlider::create("VR_DaysGoneBendUI_KeyOpacity", 0.0f, 2.0f, 1.0f, true) };
@@ -902,11 +955,24 @@ private:
             *m_daysgone_bend_ui_override_root_transform,
             *m_daysgone_bend_ui_force_widget_refresh,
             *m_daysgone_bend_ui_viewport_slot_fix,
+            *m_daysgone_bend_ui_live_watchdog,
             *m_daysgone_bend_ui_apply_child_render_transform,
             *m_daysgone_bend_ui_viewport_slot_offset_x,
             *m_daysgone_bend_ui_viewport_slot_offset_y,
             *m_daysgone_bend_ui_viewport_slot_scale,
+            *m_daysgone_bend_ui_viewport_slot_opacity,
             *m_daysgone_bend_ui_use_slate_overlay,
+            *m_daysgone_bend_ui_suppress_in_scene_composite,
+            *m_daysgone_bend_ui_split_overlay,
+            *m_daysgone_bend_ui_menu_src_x,
+            *m_daysgone_bend_ui_menu_src_y,
+            *m_daysgone_bend_ui_menu_src_w,
+            *m_daysgone_bend_ui_menu_src_h,
+            *m_daysgone_bend_ui_menu_offset_x,
+            *m_daysgone_bend_ui_menu_offset_y,
+            *m_daysgone_bend_ui_menu_scale,
+            *m_daysgone_bend_ui_footer_src_y,
+            *m_daysgone_bend_ui_footer_src_h,
             *m_daysgone_bend_ui_key_threshold,
             *m_daysgone_bend_ui_key_softness,
             *m_daysgone_bend_ui_key_opacity,
