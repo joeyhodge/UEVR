@@ -659,6 +659,10 @@ public:
         return m_compatibility_ui_layer_pose_stabilizer->value();
     }
 
+    bool is_daysgone_bend_ui_placement_fix_enabled() const {
+        return m_compatibility_daysgone_bend_ui_placement_fix->value();
+    }
+
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
         return m_last_xinput_update.time_since_epoch().count() != 0 &&
             (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
@@ -1381,6 +1385,7 @@ private:
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
+    const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1678,6 +1683,7 @@ public:
             *m_compatibility_fullscreen_16x9_cameras,
             *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_compatibility_subnautica2_native_water,
+            *m_compatibility_daysgone_bend_ui_placement_fix,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
