@@ -69,10 +69,6 @@ public:
         bool require_array_member = true,
         bool run_creation_jobs = true);
 
-    void ensure_process_event_hook() {
-        hook_process_event();
-    }
-
 protected:
     std::string_view get_name() const override { return "UObjectHook"; };
     bool is_advanced_mod() const override { return true; }
