@@ -570,13 +570,6 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
         }
     }
 
-    if (auto vr = VR::get(); vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled()) {
-        auto& fake_stereo = vr->get_fake_stereo_hook();
-        if (fake_stereo != nullptr && fake_stereo->should_block_daysgone_glued_ui_process_event(obj, func)) {
-            return nullptr;
-        }
-    }
-
     auto result = hook->m_process_event_hook.unsafe_call<void*>(obj, func, params, r9);
 
     if (hook->m_process_event_listening) {
