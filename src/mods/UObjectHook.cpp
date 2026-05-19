@@ -52,6 +52,11 @@ std::shared_ptr<UObjectHook>& UObjectHook::get() {
 
 namespace {
 constexpr size_t STALKER2_BULK_SCENE_ATTACHMENT_CAP = 32;
+constexpr uint32_t STALKER2_FULL_SCAN_BUDGET = 128;
+constexpr size_t STALKER2_PERSISTENT_STATE_RESOLVE_BUDGET = 8;
+constexpr size_t STALKER2_PERSISTENT_PROPERTY_RESOLVE_BUDGET = 4;
+constexpr size_t STALKER2_CLASS_BROWSER_CLASS_CAP = 256;
+constexpr size_t STALKER2_CLASS_BROWSER_OBJECT_CAP = 128;
 
 bool is_ue_5_1_uobjecthook_guard_enabled() {
     static const bool is_ue_5_1 = []() {
@@ -1046,11 +1051,40 @@ void UObjectHook::prune_destroyed_object_tombstones(std::chrono::steady_clock::t
     }
 }
 
+bool UObjectHook::is_stalker2_bulk_scene_path(const StatePath& path) const {
+    if (!is_stalker2_uobjecthook_guard_enabled()) {
+        return false;
+    }
+
+    const auto& parts = path.path();
+
+    for (auto it = parts.begin(); it != parts.end(); ++it) {
+        if (*it != "Components") {
+            continue;
+        }
+
+        const auto next = it + 1;
+
+        if (next == parts.end()) {
+            return false;
+        }
+
+        if (next->starts_with("SceneComponent ") ||
+            next->starts_with("SceneComponent_") ||
+            *next == "SceneComponent") {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void UObjectHook::request_stalker2_uobject_full_scan() {
     if (!is_stalker2_uobjecthook_guard_enabled()) {
         return;
     }
 
+    m_stalker2_class_browser_enabled = true;
     m_stalker2_uobject_full_scan_requested.store(true, std::memory_order_relaxed);
     m_uobject_array_scan_cursor = 0;
     m_uobject_array_full_sweep_active = true;
@@ -1249,7 +1283,7 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
 
         if (m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed)) {
             if (m_uobject_array_scan_cursor < object_count) {
-                budget = 512;
+                budget = STALKER2_FULL_SCAN_BUDGET;
                 m_uobject_array_full_sweep_active = true;
             } else {
                 m_stalker2_uobject_full_scan_requested.store(false, std::memory_order_relaxed);
@@ -1629,31 +1663,14 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
             return m_motion_controller_attached_components;
         }
 
-        size_t bulk_scene_components = 0;
-
-        for (const auto& [component, state] : m_motion_controller_attached_components) {
-            if (component != nullptr && state != nullptr && is_stalker2_bulk_scene_component(component)) {
-                ++bulk_scene_components;
-            }
-        }
-
-        if (bulk_scene_components <= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
+        if (m_motion_controller_attached_components.size() <= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
             return m_motion_controller_attached_components;
         }
 
-        decltype(m_motion_controller_attached_components) filtered{};
-        filtered.reserve(m_motion_controller_attached_components.size() - bulk_scene_components);
-
-        for (const auto& [component, state] : m_motion_controller_attached_components) {
-            if (component == nullptr || state == nullptr || is_stalker2_bulk_scene_component(component)) {
-                m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(1, std::memory_order_relaxed);
-                continue;
-            }
-
-            filtered.emplace(component, state);
-        }
-
-        return filtered;
+        m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(
+            m_motion_controller_attached_components.size(),
+            std::memory_order_relaxed);
+        return {};
     });
 
     const auto is_using_controllers = vr->is_using_controllers();
@@ -2476,27 +2493,33 @@ void UObjectHook::update_persistent_states() {
 
     // Motion controller states
     if (!m_persistent_states.empty()) {
-        size_t stalker2_bulk_scene_attachments = is_stalker2_uobjecthook_guard_enabled() ?
-            get_stalker2_bulk_scene_attachment_count() :
+        const bool stalker2_lazy = is_stalker2_uobjecthook_guard_enabled();
+        size_t stalker2_bulk_scene_attachments = stalker2_lazy ?
+            STALKER2_BULK_SCENE_ATTACHMENT_CAP :
             0;
 
-        for (const auto& state : m_persistent_states) {
+        auto handle_persistent_state = [&](const std::shared_ptr<PersistentState>& state) {
             if (state == nullptr) {
-                continue;
+                return;
+            }
+
+            if (stalker2_lazy && is_stalker2_bulk_scene_path(state->path)) {
+                m_stalker2_lazy_stats.persistent_path_skips.fetch_add(1, std::memory_order_relaxed);
+                return;
             }
 
             auto obj = state->path.resolve(true);
 
             if (obj == nullptr) {
                 had_tracking_miss = true;
-                continue;
+                return;
             }
 
             static const auto scene_component_t = sdk::USceneComponent::static_class();
 
             // TODO? will need some reworking to support properties from arbitrary objects
             if (!obj.definition->is_a(scene_component_t)) {
-                continue;
+                return;
             }
 
             const auto scene_component = obj.as<sdk::USceneComponent*>();
@@ -2507,7 +2530,7 @@ void UObjectHook::update_persistent_states() {
                 !existing_motion_state.has_value() &&
                 stalker2_bulk_scene_attachments >= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
                 m_stalker2_lazy_stats.persistent_bulk_skips.fetch_add(1, std::memory_order_relaxed);
-                continue;
+                return;
             }
 
             // Destroy the existing mc state if it exists
@@ -2520,7 +2543,7 @@ void UObjectHook::update_persistent_states() {
             auto mc_state = get_or_add_motion_controller_state(scene_component);
 
             if (mc_state == nullptr) {
-                continue;
+                return;
             }
 
             if (is_stalker2_bulk_scene_attachment && !existing_motion_state.has_value()) {
@@ -2534,23 +2557,55 @@ void UObjectHook::update_persistent_states() {
             }
 
             state->last_object = scene_component;
+        };
+
+        if (stalker2_lazy) {
+            if (m_stalker2_persistent_state_cursor >= m_persistent_states.size()) {
+                m_stalker2_persistent_state_cursor = 0;
+            }
+
+            const auto end = std::min(
+                m_persistent_states.size(),
+                m_stalker2_persistent_state_cursor + STALKER2_PERSISTENT_STATE_RESOLVE_BUDGET);
+
+            for (auto i = m_stalker2_persistent_state_cursor; i < end; ++i) {
+                handle_persistent_state(m_persistent_states[i]);
+            }
+
+            if (end < m_persistent_states.size()) {
+                m_stalker2_lazy_stats.persistent_budget_skips.fetch_add(
+                    m_persistent_states.size() - end,
+                    std::memory_order_relaxed);
+            }
+
+            m_stalker2_persistent_state_cursor = end >= m_persistent_states.size() ? 0 : end;
+        } else {
+            for (const auto& state : m_persistent_states) {
+                handle_persistent_state(state);
+            }
         }
     }
 
     // Persistent properties
     if (!m_persistent_properties.empty()) {
+        const bool stalker2_lazy = is_stalker2_uobjecthook_guard_enabled();
         const auto scene_comp_t = sdk::USceneComponent::static_class();
         const auto primitive_comp_t = sdk::UPrimitiveComponent::static_class();
-        for (const auto& prop_base : m_persistent_properties) {
+        auto handle_persistent_properties = [&](const std::shared_ptr<PersistentProperties>& prop_base) {
             if (prop_base == nullptr) {
-                continue;
+                return;
+            }
+
+            if (stalker2_lazy && is_stalker2_bulk_scene_path(prop_base->path)) {
+                m_stalker2_lazy_stats.persistent_path_skips.fetch_add(1, std::memory_order_relaxed);
+                return;
             }
 
             auto obj = prop_base->path.resolve(true);
 
             if (obj == nullptr) {
                 had_tracking_miss = true;
-                continue;
+                return;
             }
 
             if (prop_base->hide) {
@@ -2630,6 +2685,32 @@ void UObjectHook::update_persistent_states() {
                     // OH NO!!!!! anyways
                     break;
                 };
+            }
+        };
+
+        if (stalker2_lazy) {
+            if (m_stalker2_persistent_property_cursor >= m_persistent_properties.size()) {
+                m_stalker2_persistent_property_cursor = 0;
+            }
+
+            const auto end = std::min(
+                m_persistent_properties.size(),
+                m_stalker2_persistent_property_cursor + STALKER2_PERSISTENT_PROPERTY_RESOLVE_BUDGET);
+
+            for (auto i = m_stalker2_persistent_property_cursor; i < end; ++i) {
+                handle_persistent_properties(m_persistent_properties[i]);
+            }
+
+            if (end < m_persistent_properties.size()) {
+                m_stalker2_lazy_stats.persistent_budget_skips.fetch_add(
+                    m_persistent_properties.size() - end,
+                    std::memory_order_relaxed);
+            }
+
+            m_stalker2_persistent_property_cursor = end >= m_persistent_properties.size() ? 0 : end;
+        } else {
+            for (const auto& prop_base : m_persistent_properties) {
+                handle_persistent_properties(prop_base);
             }
         }
     }
@@ -3326,7 +3407,34 @@ void UObjectHook::draw_main() {
             }
 
             // make a copy because the user could press the detach button while iterating
-            auto attached = m_motion_controller_attached_components;
+            auto attached = decltype(m_motion_controller_attached_components){};
+
+            if (is_stalker2_uobjecthook_guard_enabled() &&
+                m_motion_controller_attached_components.size() > STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
+                m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(
+                    m_motion_controller_attached_components.size(),
+                    std::memory_order_relaxed);
+                ImGui::TextWrapped(
+                    "Stalker2 lazy mode suppressed %zu attached-component entries. Use Detach bulk SceneComponents in UObjectHook Health if this came from an old profile.",
+                    m_motion_controller_attached_components.size());
+            } else if (is_stalker2_uobjecthook_guard_enabled()) {
+                attached.reserve(std::min<size_t>(m_motion_controller_attached_components.size(), STALKER2_CLASS_BROWSER_OBJECT_CAP));
+
+                for (const auto& [component, state] : m_motion_controller_attached_components) {
+                    if (component == nullptr || state == nullptr || is_stalker2_bulk_scene_component(component)) {
+                        m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(1, std::memory_order_relaxed);
+                        continue;
+                    }
+
+                    attached.emplace(component, state);
+
+                    if (attached.size() >= STALKER2_CLASS_BROWSER_OBJECT_CAP) {
+                        break;
+                    }
+                }
+            } else {
+                attached = m_motion_controller_attached_components;
+            }
 
             for (auto& it : attached) {
                 if (!this->exists_unsafe(it.first) || it.second == nullptr) {
@@ -3457,15 +3565,24 @@ void UObjectHook::draw_main() {
             const auto addobject_skips = m_stalker2_lazy_stats.addobject_skips.load(std::memory_order_relaxed);
             const auto persistent_bulk_skips = m_stalker2_lazy_stats.persistent_bulk_skips.load(std::memory_order_relaxed);
             const auto tick_bulk_skips = m_stalker2_lazy_stats.tick_bulk_skips.load(std::memory_order_relaxed);
+            const auto persistent_path_skips = m_stalker2_lazy_stats.persistent_path_skips.load(std::memory_order_relaxed);
+            const auto persistent_budget_skips = m_stalker2_lazy_stats.persistent_budget_skips.load(std::memory_order_relaxed);
+            const auto class_browser_suppressed = m_stalker2_lazy_stats.class_browser_suppressed.load(std::memory_order_relaxed);
             const bool full_scan_requested = m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed);
 
             ImGui::Separator();
-            ImGui::Text("Stalker2 Lazy Mode: on%s", full_scan_requested ? " (full scan requested)" : "");
             ImGui::Text(
-                "Stalker2 lazy skips: addobject=%llu persistent_bulk=%llu tick_bulk=%llu",
+                "Stalker2 Lazy Mode: on%s class_browser=%s",
+                full_scan_requested ? " (full scan requested)" : "",
+                m_stalker2_class_browser_enabled ? "on" : "off");
+            ImGui::Text(
+                "Stalker2 lazy skips: addobject=%llu persistent_bulk=%llu tick_bulk=%llu path=%llu budget=%llu class_ui=%llu",
                 addobject_skips,
                 persistent_bulk_skips,
-                tick_bulk_skips);
+                tick_bulk_skips,
+                persistent_path_skips,
+                persistent_budget_skips,
+                class_browser_suppressed);
 
             if (bulk_scene_attachments > STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
                 ImGui::TextColored(
@@ -3584,7 +3701,7 @@ void UObjectHook::draw_main() {
         if (is_stalker2_uobjecthook_guard_enabled()) {
             const bool full_scan_requested = m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed);
             ImGui::TextWrapped(
-                "Stalker2 lazy mode is active. Old FUObjectArray entries are not backfilled unless you explicitly start a full scan.");
+                "Stalker2 lazy mode is active. Class browsing is off by default because sorting/backfilling the gameplay object set can hitch badly after level load.");
 
             if (full_scan_requested) {
                 ImGui::Text("Full scan is running with a low per-frame budget.");
@@ -3592,7 +3709,20 @@ void UObjectHook::draw_main() {
                 request_stalker2_uobject_full_scan();
             }
 
+            ImGui::SameLine();
+
+            if (!m_stalker2_class_browser_enabled && ImGui::Button("Enable class browser")) {
+                m_stalker2_class_browser_enabled = true;
+            }
+
             ImGui::Separator();
+
+            if (!m_stalker2_class_browser_enabled) {
+                m_stalker2_lazy_stats.class_browser_suppressed.fetch_add(1, std::memory_order_relaxed);
+                ImGui::TextWrapped("Open Common Objects for PlayerController, Acknowledged Pawn, Camera Manager, and World. Use class browsing only when you need a full object search.");
+                ImGui::TreePop();
+                return;
+            }
         }
 
         ImGui::Checkbox("Hide Default Classes", &m_hide_default_classes);
@@ -3654,7 +3784,17 @@ void UObjectHook::draw_main() {
             //}
         }};
 
+        size_t stalker2_displayed_classes = 0;
+
         for (auto uclass : m_sorted_classes) {
+            if (is_stalker2_uobjecthook_guard_enabled() &&
+                stalker2_displayed_classes >= STALKER2_CLASS_BROWSER_CLASS_CAP) {
+                ImGui::TextWrapped(
+                    "Stalker2 class browser capped at %zu classes this frame. Use the filter or Full scan only if you need more.",
+                    STALKER2_CLASS_BROWSER_CLASS_CAP);
+                break;
+            }
+
             const auto& objects_ref = m_objects_by_class[uclass];
 
             if (objects_ref.empty()) {
@@ -3697,6 +3837,10 @@ void UObjectHook::draw_main() {
                 continue;
             }
 
+            if (is_stalker2_uobjecthook_guard_enabled()) {
+                ++stalker2_displayed_classes;
+            }
+
             if (ImGui::TreeNode(uclass_name.data())) {
                 ui_standard_object_context_menu(uclass);
 
@@ -3715,6 +3859,15 @@ void UObjectHook::draw_main() {
                 std::sort(objects.begin(), objects.end(), [this](sdk::UObjectBase* a, sdk::UObjectBase* b) {
                     return m_meta_objects[a]->full_name < m_meta_objects[b]->full_name;
                 });
+
+                if (is_stalker2_uobjecthook_guard_enabled() &&
+                    objects.size() > STALKER2_CLASS_BROWSER_OBJECT_CAP) {
+                    ImGui::TextWrapped(
+                        "Showing first %zu/%zu objects for this Stalker2 class. Use filters or a direct address lookup for more.",
+                        STALKER2_CLASS_BROWSER_OBJECT_CAP,
+                        objects.size());
+                    objects.resize(STALKER2_CLASS_BROWSER_OBJECT_CAP);
+                }
 
                 if (uclass->is_a(sdk::AActor::static_class())) {
                     static char component_add_name[256]{};
@@ -5185,6 +5338,15 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
     auto& hook = UObjectHook::get();
     auto result = hook->m_add_object_hook.unsafe_call<void*>(rcx, rdx, r8, r9, stack1, stack2, stack3, stack4);
 
+    if (is_stalker2_uobjecthook_guard_enabled() &&
+        !hook->m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed)) {
+        // Stalker2 can create huge UObject bursts during gameplay loads. In lazy
+        // mode the common roots are tracked separately, so avoid the expensive
+        // per-AddObject candidate validation hotpath entirely.
+        hook->m_stalker2_lazy_stats.addobject_skips.fetch_add(1, std::memory_order_relaxed);
+        return result;
+    }
+
     {
         sdk::UObjectBase* obj = nullptr;
 
@@ -5272,15 +5434,6 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
             } else {
                 obj = (sdk::UObjectBase*)rdx;
             }
-        }
-
-        if (is_stalker2_uobjecthook_guard_enabled() &&
-            !hook->m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed)) {
-            // Stalker2 can create hundreds of thousands of SceneComponent-style objects during
-            // map load. Track common roots and UI-reachable objects on demand instead of filling
-            // UObjectHook from AddObject on the game thread.
-            hook->m_stalker2_lazy_stats.addobject_skips.fetch_add(1, std::memory_order_relaxed);
-            return result;
         }
 
         ++hook->m_debug.constructor_calls;
