@@ -108,6 +108,8 @@ struct OpenXR final : public VRRuntime {
     VRRuntime::Error update_render_target_size() override;
     uint32_t get_width() const override;
     uint32_t get_height() const override;
+    uint32_t get_width_for_scale(float scale) const;
+    uint32_t get_height_for_scale(float scale) const;
 
     VRRuntime::Error consume_events(std::function<void(void*)> callback) override;
 

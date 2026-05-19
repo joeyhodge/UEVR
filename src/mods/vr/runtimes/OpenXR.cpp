@@ -306,15 +306,16 @@ void OpenXR::on_draw_ui() {
 
             if (auto vr = VR::get(); vr != nullptr) {
                 const auto old_scale = this->last_applied_resolution_scale;
-                const auto old_width = this->last_applied_resolution_width != 0 ? this->last_applied_resolution_width : this->get_width();
-                const auto old_height = this->last_applied_resolution_height != 0 ? this->last_applied_resolution_height : this->get_height();
-                const auto new_width = this->get_width();
-                const auto new_height = this->get_height();
+                const auto new_scale = this->resolution_scale->value();
+                const auto old_width = this->last_applied_resolution_width != 0 ? this->last_applied_resolution_width : this->get_width_for_scale(old_scale);
+                const auto old_height = this->last_applied_resolution_height != 0 ? this->last_applied_resolution_height : this->get_height_for_scale(old_scale);
+                const auto new_width = this->get_width_for_scale(new_scale);
+                const auto new_height = this->get_height_for_scale(new_scale);
 
                 spdlog::info(
                     "[OpenXR] Resolution scale changed {:.3f}->{:.3f} [{}x{}]->[{}x{}]; recreating renderer textures and swapchains",
                     old_scale,
-                    this->resolution_scale->value(),
+                    new_scale,
                     old_width,
                     old_height,
                     new_width,
@@ -325,13 +326,18 @@ void OpenXR::on_draw_ui() {
 
                 if (applied_live) {
                     this->resolution_scale_live_apply_deferred = false;
-                    this->last_applied_resolution_scale = this->resolution_scale->value();
+                    this->last_applied_resolution_scale = new_scale;
                     this->last_applied_resolution_width = new_width;
                     this->last_applied_resolution_height = new_height;
                 } else {
                     this->resolution_scale_live_apply_deferred = true;
                 }
             }
+        }
+
+        if (this->resolution_scale_live_apply_deferred) {
+            ImGui::TextWrapped(
+                "Resolution scale is saved, but this engine path cannot safely rebuild OpenXR swapchains live. Reinject/restart to apply it.");
         }
 
         //this->push_dummy_projection->draw("Virtual Desktop Fix");
@@ -1372,6 +1378,14 @@ VRRuntime::Error OpenXR::update_render_target_size() {
     return VRRuntime::Error::SUCCESS;
 }
 
+uint32_t OpenXR::get_width_for_scale(float scale) const {
+    if (this->view_configs.empty()) {
+        return 0;
+    }
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * scale * eye_width_adjustment);
+}
+
 uint32_t OpenXR::get_width() const {
     if (this->view_configs.empty()) {
         return 0;
@@ -1384,7 +1398,15 @@ uint32_t OpenXR::get_width() const {
         ? this->last_applied_resolution_scale
         : this->resolution_scale->value();
 
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * scale * eye_width_adjustment);
+    return this->get_width_for_scale(scale);
+}
+
+uint32_t OpenXR::get_height_for_scale(float scale) const {
+    if (this->view_configs.empty()) {
+        return 0;
+    }
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * scale * eye_height_adjustment);
 }
 
 uint32_t OpenXR::get_height() const {
@@ -1399,7 +1421,7 @@ uint32_t OpenXR::get_height() const {
         ? this->last_applied_resolution_scale
         : this->resolution_scale->value();
 
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * scale * eye_height_adjustment);
+    return this->get_height_for_scale(scale);
 }
 
 VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
