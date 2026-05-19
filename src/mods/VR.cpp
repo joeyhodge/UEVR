@@ -46,6 +46,10 @@
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
 
+namespace {
+bool is_stalker2_executable_cached();
+}
+
 std::shared_ptr<VR>& VR::get() {
     //static std::shared_ptr<VR> instance = std::make_shared<VR>();
     return g_framework->vr();
@@ -112,14 +116,23 @@ bool VR::on_openxr_resolution_scale_changed(
     }();
 
     if (!ue57_invalidated && !legacy_live_policy.live_allowed) {
-        SPDLOG_WARN(
-            "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; version={} reason={} saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
-            legacy_live_policy.version,
-            legacy_live_policy.reason,
-            old_width,
-            old_height,
-            new_width,
-            new_height);
+        if (is_stalker2_executable_cached()) {
+            SPDLOG_WARN(
+                "[Stalker2][OpenXR] Live resolution-scale reconfigure is intentionally disabled for UE5.1/Stalker2; saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+                old_width,
+                old_height,
+                new_width,
+                new_height);
+        } else {
+            SPDLOG_WARN(
+                "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; version={} reason={} saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+                legacy_live_policy.version,
+                legacy_live_policy.reason,
+                old_width,
+                old_height,
+                new_width,
+                new_height);
+        }
         return false;
     }
 
