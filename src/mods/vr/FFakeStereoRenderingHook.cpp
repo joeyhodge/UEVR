@@ -581,6 +581,19 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
+bool is_ue_5_6_or_newer() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        if (str_version.starts_with("5.6") || str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
+            return true;
+        }
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50006;
+}
+
 bool is_ue_5_1_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -5679,7 +5692,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         auto euler_d = glm::vec<3, double>{euler};
         auto euler_pointer = is_ue5 ? (Rotator<float>*)&euler_d : (Rotator<float>*)&euler;
 
-        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, &init_options_view_origin);
+        auto scene_world_to_meters = init_options->get_world_to_meters_scale().value_or(100.0f);
+        if (!std::isfinite(scene_world_to_meters) || scene_world_to_meters <= 0.0f || scene_world_to_meters > 100000.0f) {
+            scene_world_to_meters = 100.0f;
+        }
+
+        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, scene_world_to_meters, &init_options_view_origin);
 
         if (is_ue5) {
             euler = euler_d;
@@ -7805,8 +7823,18 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         return;
     }
 
+    const bool synced_ue56_zero_view_is_eye =
+        vr->is_using_synchronized_afr() &&
+        g_hook->m_has_double_precision &&
+        is_ue_5_6_or_newer() &&
+        view_index == 0;
+
+    if (synced_ue56_zero_view_is_eye) {
+        SPDLOG_INFO_ONCE("[SyncedSequential][UE5.6+] Treating CalculateStereoViewOffset view_index 0 as the alternating AFR eye pass");
+    }
+
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
-    if (index_was_ever_two && view_index == 0) {
+    if (index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
         SPDLOG_INFO_ONCE("calculate stereo view offset called with view index 0 after 2, ignoring.");
         return;
     }
@@ -7820,7 +7848,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         index_starts_from_one = false;
     }
 
-    const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative;
+    const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative && !synced_ue56_zero_view_is_eye;
 
     auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
     const auto has_double_precision = g_hook->m_has_double_precision;
@@ -8234,9 +8262,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         g_hook->m_calculate_stereo_projection_matrix_hook.call<Matrix4x4f*>(stereo, out, view_index);
     } else {
         if (g_hook->m_has_double_precision) {
-            (*out)[3][2] = sdk::globals::get_near_clipping_plane();
-        } else {
             (*(Matrix4x4d*)out)[3][2] = (double)sdk::globals::get_near_clipping_plane();
+        } else {
+            (*out)[3][2] = sdk::globals::get_near_clipping_plane();
         }
     }
 
