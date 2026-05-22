@@ -5692,9 +5692,17 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         auto euler_d = glm::vec<3, double>{euler};
         auto euler_pointer = is_ue5 ? (Rotator<float>*)&euler_d : (Rotator<float>*)&euler;
 
-        auto scene_world_to_meters = init_options->get_world_to_meters_scale().value_or(100.0f);
-        if (!std::isfinite(scene_world_to_meters) || scene_world_to_meters <= 0.0f || scene_world_to_meters > 100000.0f) {
-            scene_world_to_meters = 100.0f;
+        float scene_world_to_meters = 100.0f;
+
+        if (vr->is_sceneview_compatibility_enabled()) {
+            // SceneView compatibility manually rebuilds the eye views here. Keep its legacy
+            // 100uu/m basis so UE5.6+ world-scale changes do not flatten the stereo view.
+            SPDLOG_INFO_ONCE("[SceneViewCompat] Using fixed 100.0 world-to-meters for manual view offset");
+        } else {
+            scene_world_to_meters = init_options->get_world_to_meters_scale().value_or(100.0f);
+            if (!std::isfinite(scene_world_to_meters) || scene_world_to_meters <= 0.0f || scene_world_to_meters > 100000.0f) {
+                scene_world_to_meters = 100.0f;
+            }
         }
 
         g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, scene_world_to_meters, &init_options_view_origin);
@@ -7827,6 +7835,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         vr->is_using_synchronized_afr() &&
         g_hook->m_has_double_precision &&
         is_ue_5_6_or_newer() &&
+        // SceneView compatibility handles eye offsets manually in sceneview_constructor.
+        // Do not let the normal UE callback change legacy SceneView pass handling.
+        !vr->is_sceneview_compatibility_enabled() &&
         view_index == 0;
 
     if (synced_ue56_zero_view_is_eye) {
