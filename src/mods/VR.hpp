@@ -758,6 +758,8 @@ private:
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
     void restore_subnautica2_native_water_cvars();
+    void update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine);
+    void restore_daysgone_gbuffer_cvar();
     struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall, bool bypass_cooldown = false);
@@ -1329,6 +1331,7 @@ private:
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
     const ModCombo::Ptr m_subnautica2_native_water_mode{ ModCombo::create(generate_name("Subnautica2NativeWaterMode"), s_subnautica2_native_water_mode_names, SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS) };
     const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
+    const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1669,6 +1672,7 @@ public:
             *m_compatibility_subnautica2_native_water,
             *m_subnautica2_native_water_mode,
             *m_compatibility_daysgone_bend_ui_placement_fix,
+            *m_compatibility_daysgone_gbuffer_safe_mode,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
@@ -1804,6 +1808,12 @@ private:
     int32_t m_subnautica2_native_water_last_mode{-1};
     std::chrono::steady_clock::time_point m_subnautica2_native_water_next_apply{};
     std::unordered_map<std::wstring, int> m_subnautica2_native_water_previous_ints{};
+    bool m_daysgone_gbuffer_cvar_applied{false};
+    bool m_daysgone_gbuffer_cvar_logged{false};
+    bool m_daysgone_gbuffer_previous_valid{false};
+    int m_daysgone_gbuffer_previous_value{1};
+    uint32_t m_daysgone_gbuffer_cvar_attempts{0};
+    std::chrono::steady_clock::time_point m_daysgone_gbuffer_next_apply{};
 
     struct {
         bool draw{false};
