@@ -32,6 +32,13 @@ inline bool is_mechwarrior_clans_executable_path(std::wstring_view path) {
            lowered.find(L"mw5clans") != std::wstring::npos;
 }
 
+inline bool is_daysgone_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\daysgone.exe") ||
+           lowered.ends_with(L"/daysgone.exe") ||
+           lowered == L"daysgone.exe";
+}
+
 inline bool is_controller_camera_guard_candidate_path(std::wstring_view path) {
     return is_stalker2_executable_path(path) || is_mechwarrior_clans_executable_path(path);
 }

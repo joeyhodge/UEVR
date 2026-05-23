@@ -5,10 +5,12 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 
 #include <spdlog/spdlog.h>
 
 #include <nlohmann/json.hpp>
+#include <utility/Module.hpp>
 #include <utility/String.hpp>
 #include <imgui.h>
 
@@ -17,6 +19,7 @@
 
 #include "Framework.hpp"
 
+#include "../../GameSpecific.hpp"
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
 #include "OpenXR.hpp"
@@ -29,9 +32,11 @@ constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto FRAME_SYNCED_SKIP_LOG_INTERVAL = std::chrono::minutes(1);
 constexpr auto FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE = std::chrono::milliseconds(1000);
-constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(2);
+constexpr auto FOCUSED_SYNCED_NO_BEGIN_RECOVERY_AGE = std::chrono::milliseconds(300);
+constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(1);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
+constexpr auto RELAXED_STARTUP_POSE_POST_SUBMIT_WINDOW = std::chrono::seconds(30);
 constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 constexpr auto LONG_WAIT_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto STALE_POSE_SUBMIT_LOG_INTERVAL = std::chrono::seconds(2);
@@ -103,6 +108,15 @@ bool is_eye_projection_valid(const Vector4f& projection) {
            projection[1] > epsilon &&
            projection[2] > epsilon &&
            projection[3] < -epsilon;
+}
+
+bool is_stalker2_openxr_frame_loop_guarded() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+    }();
+
+    return result;
 }
 
 std::string format_space_location_flags(XrSpaceLocationFlags flags) {
@@ -178,16 +192,31 @@ bool has_any_view_tracking(XrViewStateFlags flags) {
 }
 
 bool should_accept_startup_poses(OpenXR* openxr) {
-    if (openxr->ever_submitted) {
+    const auto pose_flags_acceptable =
+        has_required_location_validity(openxr->view_space_location.locationFlags) &&
+        has_any_location_tracking(openxr->view_space_location.locationFlags) &&
+        has_required_view_validity(openxr->view_state.viewStateFlags) &&
+        has_any_view_tracking(openxr->view_state.viewStateFlags) &&
+        has_required_view_validity(openxr->stage_view_state.viewStateFlags) &&
+        has_any_view_tracking(openxr->stage_view_state.viewStateFlags);
+
+    if (!pose_flags_acceptable) {
         return false;
     }
 
-    return has_required_location_validity(openxr->view_space_location.locationFlags) &&
-           has_any_location_tracking(openxr->view_space_location.locationFlags) &&
-           has_required_view_validity(openxr->view_state.viewStateFlags) &&
-           has_any_view_tracking(openxr->view_state.viewStateFlags) &&
-           has_required_view_validity(openxr->stage_view_state.viewStateFlags) &&
-           has_any_view_tracking(openxr->stage_view_state.viewStateFlags);
+    if (!openxr->ever_submitted) {
+        return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto post_submit_age = elapsed_ms_since(now, openxr->last_successful_end_frame);
+    const auto in_startup_recovery_window =
+        !openxr->got_first_valid_poses &&
+        (openxr->session_state == XR_SESSION_STATE_VISIBLE || openxr->session_state == XR_SESSION_STATE_FOCUSED) &&
+        post_submit_age >= 0 &&
+        std::chrono::milliseconds{post_submit_age} <= RELAXED_STARTUP_POSE_POST_SUBMIT_WINDOW;
+
+    return in_startup_recovery_window;
 }
 
 void log_pose_validation_failure(OpenXR* openxr, const char* reason, uint32_t frame_count, XrTime display_time) {
@@ -262,6 +291,12 @@ void emit_openxr_state_probes(OpenXR* openxr, const char* context) {
 void OpenXR::on_draw_ui() {
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode("OpenXR Options")) {
+        if (this->last_applied_resolution_width == 0 || this->last_applied_resolution_height == 0) {
+            this->last_applied_resolution_scale = this->resolution_scale->value();
+            this->last_applied_resolution_width = this->get_width();
+            this->last_applied_resolution_height = this->get_height();
+        }
+
         if (this->resolution_scale->draw("Resolution Scale")) {
             this->resolution_scale_reconfigure_pending = true;
         }
@@ -270,17 +305,39 @@ void OpenXR::on_draw_ui() {
             this->resolution_scale_reconfigure_pending = false;
 
             if (auto vr = VR::get(); vr != nullptr) {
+                const auto old_scale = this->last_applied_resolution_scale;
+                const auto new_scale = this->resolution_scale->value();
+                const auto old_width = this->last_applied_resolution_width != 0 ? this->last_applied_resolution_width : this->get_width_for_scale(old_scale);
+                const auto old_height = this->last_applied_resolution_height != 0 ? this->last_applied_resolution_height : this->get_height_for_scale(old_scale);
+                const auto new_width = this->get_width_for_scale(new_scale);
+                const auto new_height = this->get_height_for_scale(new_scale);
+
                 spdlog::info(
-                    "[OpenXR] Resolution scale changed to {:.3f}; recreating renderer textures and swapchains",
-                    this->resolution_scale->value()
+                    "[OpenXR] Resolution scale changed {:.3f}->{:.3f} [{}x{}]->[{}x{}]; recreating renderer textures and swapchains",
+                    old_scale,
+                    new_scale,
+                    old_width,
+                    old_height,
+                    new_width,
+                    new_height
                 );
 
-                if (auto& fake_stereo_hook = vr->get_fake_stereo_hook(); fake_stereo_hook != nullptr) {
-                    fake_stereo_hook->set_should_recreate_textures(true);
-                }
+                const auto applied_live = vr->on_openxr_resolution_scale_changed(old_width, old_height, new_width, new_height);
 
-                vr->reinitialize_renderer();
+                if (applied_live) {
+                    this->resolution_scale_live_apply_deferred = false;
+                    this->last_applied_resolution_scale = new_scale;
+                    this->last_applied_resolution_width = new_width;
+                    this->last_applied_resolution_height = new_height;
+                } else {
+                    this->resolution_scale_live_apply_deferred = true;
+                }
             }
+        }
+
+        if (this->resolution_scale_live_apply_deferred) {
+            ImGui::TextWrapped(
+                "Resolution scale is saved, but this engine path cannot safely rebuild OpenXR swapchains live. Reinject/restart to apply it.");
         }
 
         //this->push_dummy_projection->draw("Virtual Desktop Fix");
@@ -614,8 +671,7 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         !this->ever_submitted ||
         !this->got_first_poses ||
         !this->got_first_valid_poses ||
-        !this->frame_synced ||
-        !this->frame_began)
+        !this->frame_synced)
     {
         return false;
     }
@@ -636,10 +692,29 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         return false;
     }
 
-    if (std::chrono::milliseconds{wait_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
-        std::chrono::milliseconds{begin_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
-        std::chrono::milliseconds{end_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE)
+    const auto recovery_age = this->frame_began
+        ? FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE
+        : FOCUSED_SYNCED_NO_BEGIN_RECOVERY_AGE;
+
+    if (std::chrono::milliseconds{wait_age_ms} < recovery_age ||
+        std::chrono::milliseconds{begin_age_ms} < recovery_age ||
+        std::chrono::milliseconds{end_age_ms} < recovery_age)
     {
+        return false;
+    }
+
+    if (!this->frame_began &&
+        is_stalker2_openxr_frame_loop_guarded() &&
+        caller != nullptr &&
+        std::string_view{caller} == "runtime_fix_frame")
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Stalker2][OpenXR] Preserving stale synchronized frame for imminent D3D12 submit wait_age={}ms begin_age={}ms end_age={}ms recoveries={}",
+            wait_age_ms,
+            begin_age_ms,
+            end_age_ms,
+            this->focused_frame_loop_recovery_count);
         return false;
     }
 
@@ -654,7 +729,57 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         this->focused_frame_loop_recovery_count
     );
 
-    this->recover_wedged_frame("focused stale frame loop");
+    if (this->frame_began) {
+        this->recover_wedged_frame("focused stale frame loop");
+    } else {
+        // xrWaitFrame succeeded but no render submit reached xrBeginFrame for too long.
+        // Preserve OpenXR call order by opening and ending an empty frame instead of
+        // locally clearing frame_synced and risking the next xrWaitFrame being invalid.
+        XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
+        this->last_begin_frame_caller = "focused_stale_synced_no_begin";
+
+        this->begin_profile();
+        const auto begin_frame_start = std::chrono::steady_clock::now();
+        const auto begin_result = xrBeginFrame(this->session, &frame_begin_info);
+        this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
+        this->end_profile("xrBeginFrame");
+
+        if (begin_result != XR_SUCCESS && begin_result != XR_FRAME_DISCARDED) {
+            spdlog::warn(
+                "[OpenXR] Failed to open focused stale empty recovery frame caller={} result={}",
+                caller != nullptr ? caller : "unknown",
+                this->get_result_string(begin_result));
+            return false;
+        }
+
+        this->frame_began = true;
+        this->last_successful_begin_frame = std::chrono::steady_clock::now();
+
+        XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+        frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+        frame_end_info.environmentBlendMode = this->blend_mode;
+        frame_end_info.layerCount = 0;
+        frame_end_info.layers = nullptr;
+
+        const auto end_frame_start = std::chrono::steady_clock::now();
+        const auto end_result = xrEndFrame(this->session, &frame_end_info);
+        this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
+
+        if (end_result != XR_SUCCESS) {
+            spdlog::warn(
+                "[OpenXR] Focused stale empty recovery xrEndFrame failed caller={} result={}",
+                caller != nullptr ? caller : "unknown",
+                this->get_result_string(end_result));
+        } else {
+            this->ever_submitted = true;
+            this->last_successful_end_frame = std::chrono::steady_clock::now();
+            spdlog::warn("[OpenXR] Closed focused stale synchronized frame without layers");
+        }
+
+        this->frame_began = false;
+        this->clear_frame_synced("focused_stale_synced_no_begin");
+        ++this->forced_frame_recovery_count;
+    }
 
     this->last_focused_frame_loop_recovery = now;
     ++this->focused_frame_loop_recovery_count;
@@ -690,6 +815,112 @@ XrResult OpenXR::recover_wedged_frame(const char* reason) {
     ++this->forced_frame_recovery_count;
 
     return result;
+}
+
+bool OpenXR::close_synced_frame_without_layers(const char* reason) {
+    std::scoped_lock _{sync_mtx};
+
+    if (this->session == XR_NULL_HANDLE || !this->session_ready || !this->frame_synced) {
+        return false;
+    }
+
+    const auto safe_reason = reason != nullptr ? reason : "unknown";
+
+    // If xrWaitFrame succeeded, keep OpenXR call order intact: open an empty
+    // frame and end it instead of locally clearing frame_synced.
+    if (!this->frame_began) {
+        this->last_begin_frame_caller = safe_reason;
+        XrFrameBeginInfo frame_begin_info{XR_TYPE_FRAME_BEGIN_INFO};
+
+        this->begin_profile();
+        const auto begin_frame_start = std::chrono::steady_clock::now();
+        const auto begin_result = xrBeginFrame(this->session, &frame_begin_info);
+        this->begin_frame_timing.add(std::chrono::steady_clock::now() - begin_frame_start);
+        this->end_profile("xrBeginFrame");
+
+        if (begin_result != XR_SUCCESS && begin_result != XR_FRAME_DISCARDED) {
+            spdlog::warn(
+                "[OpenXR] Failed to open empty recovery frame ({}): {}",
+                safe_reason,
+                this->get_result_string(begin_result));
+            return false;
+        }
+
+        this->frame_began = true;
+        this->last_successful_begin_frame = std::chrono::steady_clock::now();
+    }
+
+    XrFrameEndInfo frame_end_info{XR_TYPE_FRAME_END_INFO};
+    frame_end_info.displayTime = this->frame_state.predictedDisplayTime;
+    frame_end_info.environmentBlendMode = this->blend_mode;
+    frame_end_info.layerCount = 0;
+    frame_end_info.layers = nullptr;
+
+    const auto end_frame_start = std::chrono::steady_clock::now();
+    const auto result = xrEndFrame(this->session, &frame_end_info);
+    this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
+
+    if (result != XR_SUCCESS) {
+        spdlog::warn(
+            "[OpenXR] Empty recovery xrEndFrame failed ({}): {}",
+            safe_reason,
+            this->get_result_string(result));
+    } else {
+        this->ever_submitted = true;
+        this->last_successful_end_frame = std::chrono::steady_clock::now();
+        SPDLOG_WARNING_EVERY_N_SEC(
+            1,
+            "[OpenXR] Closed synchronized frame without layers ({})",
+            safe_reason);
+    }
+
+    this->frame_began = false;
+    this->clear_frame_synced(safe_reason);
+    ++this->forced_frame_recovery_count;
+
+    return true;
+}
+
+void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
+    const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
+    const auto had_synced = this->frame_synced;
+    const auto had_began = this->frame_began;
+    bool closed_pending_frame = false;
+
+    // A resolution/swapchain rebuild while xrWaitFrame has already returned can
+    // leave the runtime pacing the next frames badly. Preserve OpenXR call order
+    // by closing that pending frame before the renderer destroys/recreates targets.
+    if (had_began) {
+        closed_pending_frame = this->recover_wedged_frame(safe_reason) == XR_SUCCESS;
+    } else if (had_synced) {
+        closed_pending_frame = this->close_synced_frame_without_layers(safe_reason);
+    }
+
+    {
+        std::scoped_lock _{sync_mtx};
+        this->frame_synced_skip_streak = 0;
+        this->frame_began_skip_streak = 0;
+        this->frame_began_skip_suppressed_count = 0;
+        this->long_wait_suppressed_count = 0;
+        this->long_wait_max_suppressed_ms = 0.0;
+        this->last_long_wait_log = {};
+        this->last_frame_timing_log = {};
+        this->wait_frame_timing.reset();
+        this->begin_frame_timing.reset();
+        this->end_frame_timing.reset();
+        for (auto& timing : this->wait_frame_callsite_timing) {
+            timing.reset();
+        }
+    }
+
+    spdlog::info(
+        "[OpenXR] Prepared frame loop for resolution-scale reconfigure reason={} had_synced={} had_began={} closed_pending={} session={} ready={}",
+        safe_reason,
+        had_synced,
+        had_began,
+        closed_pending_frame,
+        this->get_session_state_string(this->session_state),
+        this->session_ready);
 }
 
 VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
@@ -1142,18 +1373,50 @@ VRRuntime::Error OpenXR::update_render_target_size() {
     return VRRuntime::Error::SUCCESS;
 }
 
+uint32_t OpenXR::get_width_for_scale(float scale) const {
+    if (this->view_configs.empty()) {
+        return 0;
+    }
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * scale * eye_width_adjustment);
+}
+
 uint32_t OpenXR::get_width() const {
     if (this->view_configs.empty()) {
         return 0;
     }
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectWidth * this->resolution_scale->value() * eye_width_adjustment);
+
+    const auto use_last_applied =
+        (this->resolution_scale_reconfigure_pending || this->resolution_scale_live_apply_deferred) &&
+        this->last_applied_resolution_width != 0;
+    const auto scale = use_last_applied
+        ? this->last_applied_resolution_scale
+        : this->resolution_scale->value();
+
+    return this->get_width_for_scale(scale);
+}
+
+uint32_t OpenXR::get_height_for_scale(float scale) const {
+    if (this->view_configs.empty()) {
+        return 0;
+    }
+
+    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * scale * eye_height_adjustment);
 }
 
 uint32_t OpenXR::get_height() const {
     if (this->view_configs.empty()) {
         return 0;
     }
-    return (uint32_t)((float)this->view_configs[0].recommendedImageRectHeight * this->resolution_scale->value() * eye_height_adjustment);
+
+    const auto use_last_applied =
+        (this->resolution_scale_reconfigure_pending || this->resolution_scale_live_apply_deferred) &&
+        this->last_applied_resolution_height != 0;
+    const auto scale = use_last_applied
+        ? this->last_applied_resolution_scale
+        : this->resolution_scale->value();
+
+    return this->get_height_for_scale(scale);
 }
 
 VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
@@ -1536,6 +1799,18 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
 
     if (this->has_render_frame_count) {
         last_submit_state = this->pipeline_states[this->internal_render_frame_count % QUEUE_SIZE];
+
+        if (last_submit_state.stage_views.empty() && !this->stage_views.empty()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[OpenXR] Submit state for render frame {} had no stage views; falling back to the latest located views frame_count={}",
+                this->internal_render_frame_count,
+                this->internal_frame_count);
+            last_submit_state.stage_views = this->stage_views;
+            last_submit_state.view_space_location = this->view_space_location;
+            last_submit_state.frame_state = this->frame_state;
+            last_submit_state.frame_count = this->internal_frame_count;
+        }
     } else {
         last_submit_state.stage_views = get_current_stage_view();
         last_submit_state.view_space_location = this->view_space_location;

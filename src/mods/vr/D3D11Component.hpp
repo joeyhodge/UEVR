@@ -67,6 +67,26 @@ private:
 
     bool ensure_ui_invert_resources();
     void render_ui_invert_to_rt(ID3D11Texture2D* render_target, TextureContext& srv, float invert_amount);
+    bool ensure_daysgone_ui_key_resources();
+    void render_daysgone_ui_key_to_rt(
+        ID3D11Texture2D* render_target,
+        TextureContext& srv,
+        float threshold,
+        float softness,
+        float opacity,
+        float offset_x,
+        float offset_y,
+        float scale,
+        bool split_overlay = false,
+        float menu_src_x = 0.52f,
+        float menu_src_y = 0.0f,
+        float menu_src_w = 0.48f,
+        float menu_src_h = 0.48f,
+        float menu_offset_x = -450.0f,
+        float menu_offset_y = -650.0f,
+        float menu_scale = 1.0f,
+        float footer_src_y = 0.68f,
+        float footer_src_h = 0.32f);
 
     struct ShaderGlobals {
         DirectX::XMMATRIX mvp{};
@@ -166,6 +186,9 @@ private:
     ComPtr<ID3D11PixelShader> m_ui_invert_ps{};
     ComPtr<ID3D11BlendState> m_ui_invert_blend{};
     bool m_ui_invert_ready{false};
+    ComPtr<ID3D11PixelShader> m_daysgone_ui_key_ps{};
+    ComPtr<ID3D11BlendState> m_daysgone_ui_key_blend{};
+    bool m_daysgone_ui_key_ready{false};
 
     vr::HmdMatrix44_t m_left_eye_proj{};
     vr::HmdMatrix44_t m_right_eye_proj{};

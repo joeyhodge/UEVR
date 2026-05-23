@@ -6,6 +6,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string_view>
 #include <vector>
@@ -21,14 +22,17 @@
 
 #include <sdk/Globals.hpp>
 #include <sdk/CVar.hpp>
+#include <sdk/ConsoleManager.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APlayerController.hpp>
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
+#include <sdk/FBoolProperty.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/TArray.hpp>
+#include <sdk/UObjectArray.hpp>
 #include <sdk/Utility.hpp>
 
 #include <tracy/Tracy.hpp>
@@ -42,17 +46,124 @@
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
 
+namespace {
+bool is_stalker2_executable_cached();
+}
+
 std::shared_ptr<VR>& VR::get() {
     //static std::shared_ptr<VR> instance = std::make_shared<VR>();
     return g_framework->vr();
 }
 
 VR::~VR() {
+    restore_daysgone_gbuffer_cvar();
     stop_hitch_snapshot_writer();
+}
+
+bool VR::on_openxr_resolution_scale_changed(
+    uint32_t old_width,
+    uint32_t old_height,
+    uint32_t new_width,
+    uint32_t new_height) {
+    bool ue57_invalidated = false;
+
+    if (m_fake_stereo_hook != nullptr) {
+        ue57_invalidated = m_fake_stereo_hook->invalidate_ue57_resolution_dependent_state(old_width, old_height, new_width, new_height);
+    }
+
+    struct OpenXRResolutionReconfigurePolicy {
+        bool live_allowed{false};
+        std::string version{"0.00"};
+        const char* reason{"unknown_version"};
+    };
+
+    const auto legacy_live_policy = []() {
+        static const auto result = []() {
+            const auto disk_version = sdk::get_file_version_info();
+            const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+            if (str_version != "0.00") {
+                const auto live_allowed =
+                    str_version.starts_with("4.27") ||
+                    str_version.starts_with("5.3") ||
+                    str_version.starts_with("5.4") ||
+                    str_version.starts_with("5.5") ||
+                    str_version.starts_with("5.6") ||
+                    str_version.starts_with("5.7") ||
+                    str_version.starts_with("5.8") ||
+                    str_version.starts_with("5.9");
+
+                return OpenXRResolutionReconfigurePolicy{
+                    .live_allowed = live_allowed,
+                    .version = str_version,
+                    .reason = live_allowed ? "legacy_safe_band" : "blocked_ue50_52_or_unknown"
+                };
+            }
+
+            const auto major = (disk_version.dwFileVersionMS >> 16) & 0xFFFF;
+            const auto minor = disk_version.dwFileVersionMS & 0xFFFF;
+            const auto live_allowed = (major == 4 && minor == 27) || (major == 5 && minor >= 3);
+            std::ostringstream version{};
+            version << "file_version_" << major << "." << minor;
+
+            return OpenXRResolutionReconfigurePolicy{
+                .live_allowed = live_allowed,
+                .version = version.str(),
+                .reason = live_allowed ? "legacy_safe_file_version_band" : "blocked_file_version"
+            };
+        }();
+
+        return result;
+    }();
+
+    if (!ue57_invalidated && !legacy_live_policy.live_allowed) {
+        if (is_stalker2_executable_cached()) {
+            SPDLOG_WARN(
+                "[Stalker2][OpenXR] Live resolution-scale reconfigure is intentionally disabled for UE5.1/Stalker2; saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+                old_width,
+                old_height,
+                new_width,
+                new_height);
+        } else {
+            SPDLOG_WARN(
+                "[OpenXR] Live resolution-scale reconfigure is disabled for this engine path; version={} reason={} saved value will apply after reinject/restart [{}x{}]->[{}x{}]",
+                legacy_live_policy.version,
+                legacy_live_policy.reason,
+                old_width,
+                old_height,
+                new_width,
+                new_height);
+        }
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[OpenXR] Live resolution-scale reconfigure is allowed; version={} reason={} ue57_invalidated={} [{}x{}]->[{}x{}]",
+        legacy_live_policy.version,
+        ue57_invalidated ? "ue57_resolution_state_invalidated" : legacy_live_policy.reason,
+        ue57_invalidated,
+        old_width,
+        old_height,
+        new_width,
+        new_height);
+
+    if (m_fake_stereo_hook != nullptr) {
+        m_fake_stereo_hook->set_should_recreate_textures(true);
+    }
+
+    if (m_openxr != nullptr && get_runtime() != nullptr && get_runtime()->is_openxr()) {
+        m_openxr->prepare_resolution_scale_reconfigure(
+            ue57_invalidated ? "ue57_resolution_scale_reconfigure" : "legacy_resolution_scale_reconfigure");
+    }
+
+    reinitialize_renderer();
+    return true;
 }
 
 namespace {
 using json = nlohmann::json;
+
+constexpr bool STALKER2_TRANSITION_OPENXR_DEFERS_ENABLED = false;
 
 int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::steady_clock::time_point then) {
     if (then.time_since_epoch().count() == 0) {
@@ -60,6 +171,10 @@ int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::ste
     }
 
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
+}
+
+int64_t steady_clock_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 
 std::string hitch_timestamp_suffix() {
@@ -73,6 +188,65 @@ std::string hitch_timestamp_suffix() {
     return out.str();
 }
 
+bool is_ue_5_7_or_newer_for_ui_layer_pose() {
+    static const auto result = []() {
+        const auto disk_version = sdk::get_file_version_info();
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+        if (str_version != "0.00") {
+            return str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9");
+        }
+
+        return disk_version.dwFileVersionMS >= 0x50007;
+    }();
+
+    return result;
+}
+
+double quat_delta_degrees(const glm::quat& a, const glm::quat& b) {
+    const auto dot = std::clamp(std::abs(glm::dot(glm::normalize(a), glm::normalize(b))), 0.0f, 1.0f);
+    return (double)glm::degrees(2.0f * std::acos(dot));
+}
+
+bool is_stalker2_executable_cached() {
+    static const bool is_stalker2 = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+    }();
+
+    return is_stalker2;
+}
+
+bool is_directive8020_executable_cached() {
+    static const bool is_directive8020 = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t c) {
+            return (wchar_t)std::towlower(c);
+        });
+
+        return lowered.find(L"directive8020") != std::wstring::npos;
+    }();
+
+    return is_directive8020;
+}
+
+bool should_defer_stalker2_very_late_openxr_wait(const VRRuntime* runtime, bool is_d3d12) {
+    if (runtime == nullptr || !is_d3d12 || !runtime->is_openxr() || !is_stalker2_executable_cached()) {
+        return false;
+    }
+
+    // Stalker2 can stall for seconds if a VERY_LATE xrWaitFrame is held across
+    // the UE5.1 gameplay-load/render handoff. After initial valid poses, let
+    // the D3D12 submit path own wait/begin/end so the frame loop stays local to
+    // the copy/submit that actually presents to the HMD.
+    return runtime->got_first_sync && runtime->got_first_valid_poses;
+}
+
 struct GameFovResolver {
     int32_t read_camera_cache_offset{-1};
     int32_t camera_cache_offset{-1};
@@ -84,6 +258,12 @@ struct GameFovResolver {
     int32_t location_offset{-1};
     int32_t rotation_offset{-1};
     int32_t default_fov_offset{-1};
+    int32_t aspect_ratio_offset{-1};
+    int32_t overscan_resolution_fraction_offset{-1};
+    int32_t crop_fraction_offset{-1};
+    int32_t default_aspect_ratio_offset{-1};
+    sdk::FBoolProperty* constrain_aspect_ratio_property{nullptr};
+    sdk::FBoolProperty* default_constrain_aspect_ratio_property{nullptr};
     bool attempted{false};
     bool valid{false};
 };
@@ -331,8 +511,34 @@ std::string build_camera_calibration_id(const glm::vec3& location, const glm::ve
     );
 }
 
+std::string build_generic_camera_preset_id(const glm::vec3& location, const glm::vec3& rotation, float fov) {
+    return std::format(
+        "L({},{},{})_R({},{},{})_F({})",
+        quantize_camera_value(location.x, 500.0f),
+        quantize_camera_value(location.y, 500.0f),
+        quantize_camera_value(location.z, 500.0f),
+        quantize_camera_value(rotation.x, 5.0f),
+        quantize_camera_value(rotation.y, 5.0f),
+        quantize_camera_value(rotation.z, 5.0f),
+        quantize_camera_value(fov, 2.0f)
+    );
+}
+
 std::filesystem::path get_camera_calibration_path() {
     return Framework::get_persistent_dir("camera_calibration.json");
+}
+
+std::filesystem::path get_generic_camera_presets_path() {
+    return Framework::get_persistent_dir("camera_presets.json");
+}
+
+float smoothstep01(float t) {
+    t = std::clamp(t, 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+float lerp_float(float a, float b, float t) {
+    return a + (b - a) * t;
 }
 
 std::optional<float> get_runtime_cvar_float(std::wstring_view name) {
@@ -733,8 +939,44 @@ bool resolve_game_fov_offsets() {
     g_game_fov_resolver.location_offset = location_prop->get_offset();
     g_game_fov_resolver.rotation_offset = rotation_prop->get_offset();
 
+    if (auto aspect_prop = pov_struct->find_property(L"AspectRatio"); aspect_prop != nullptr && aspect_prop->get_class() != nullptr &&
+        aspect_prop->get_class()->get_name().to_string() == L"FloatProperty")
+    {
+        g_game_fov_resolver.aspect_ratio_offset = aspect_prop->get_offset();
+    }
+
+    if (auto overscan_fraction_prop = pov_struct->find_property(L"OverscanResolutionFraction"); overscan_fraction_prop != nullptr && overscan_fraction_prop->get_class() != nullptr &&
+        overscan_fraction_prop->get_class()->get_name().to_string() == L"FloatProperty")
+    {
+        g_game_fov_resolver.overscan_resolution_fraction_offset = overscan_fraction_prop->get_offset();
+    }
+
+    if (auto crop_fraction_prop = pov_struct->find_property(L"CropFraction"); crop_fraction_prop != nullptr && crop_fraction_prop->get_class() != nullptr &&
+        crop_fraction_prop->get_class()->get_name().to_string() == L"FloatProperty")
+    {
+        g_game_fov_resolver.crop_fraction_offset = crop_fraction_prop->get_offset();
+    }
+
+    if (auto constrain_prop = pov_struct->find_property(L"bConstrainAspectRatio"); constrain_prop != nullptr && constrain_prop->get_class() != nullptr &&
+        constrain_prop->get_class()->get_name().to_string() == L"BoolProperty")
+    {
+        g_game_fov_resolver.constrain_aspect_ratio_property = (sdk::FBoolProperty*)constrain_prop;
+    }
+
     if (auto default_prop = pcm_class->find_property(L"DefaultFOV"); default_prop != nullptr) {
         g_game_fov_resolver.default_fov_offset = default_prop->get_offset();
+    }
+
+    if (auto default_aspect_prop = pcm_class->find_property(L"DefaultAspectRatio"); default_aspect_prop != nullptr &&
+        default_aspect_prop->get_class() != nullptr && default_aspect_prop->get_class()->get_name().to_string() == L"FloatProperty")
+    {
+        g_game_fov_resolver.default_aspect_ratio_offset = default_aspect_prop->get_offset();
+    }
+
+    if (auto default_constrain_prop = pcm_class->find_property(L"bDefaultConstrainAspectRatio"); default_constrain_prop != nullptr &&
+        default_constrain_prop->get_class() != nullptr && default_constrain_prop->get_class()->get_name().to_string() == L"BoolProperty")
+    {
+        g_game_fov_resolver.default_constrain_aspect_ratio_property = (sdk::FBoolProperty*)default_constrain_prop;
     }
 
     g_game_fov_resolver.valid = true;
@@ -822,6 +1064,66 @@ bool write_game_fov(sdk::APlayerCameraManager* pcm, float fov) {
     return true;
 }
 
+bool write_game_camera_aspect_constraints(sdk::APlayerCameraManager* pcm, float aspect_ratio) {
+    if (pcm == nullptr || !std::isfinite(aspect_ratio) || aspect_ratio <= 0.1f) {
+        return false;
+    }
+
+    if (!resolve_game_fov_offsets()) {
+        return false;
+    }
+
+    bool wrote = false;
+    const auto base = (uint8_t*)pcm;
+
+    const auto write_cache_aspect = [&](int32_t cache_offset) {
+        if (cache_offset < 0) {
+            return;
+        }
+
+        const auto pov_base = base + cache_offset + g_game_fov_resolver.pov_offset;
+
+        if (g_game_fov_resolver.aspect_ratio_offset >= 0) {
+            *(float*)(pov_base + g_game_fov_resolver.aspect_ratio_offset) = aspect_ratio;
+            wrote = true;
+        }
+
+        if (g_game_fov_resolver.constrain_aspect_ratio_property != nullptr) {
+            const auto prop_base = pov_base + g_game_fov_resolver.constrain_aspect_ratio_property->get_offset();
+            g_game_fov_resolver.constrain_aspect_ratio_property->set_value_in_propbase(prop_base, false);
+            wrote = true;
+        }
+
+        if (g_game_fov_resolver.overscan_resolution_fraction_offset >= 0) {
+            *(float*)(pov_base + g_game_fov_resolver.overscan_resolution_fraction_offset) = 1.0f;
+            wrote = true;
+        }
+
+        if (g_game_fov_resolver.crop_fraction_offset >= 0) {
+            *(float*)(pov_base + g_game_fov_resolver.crop_fraction_offset) = 1.0f;
+            wrote = true;
+        }
+    };
+
+    write_cache_aspect(g_game_fov_resolver.camera_cache_offset);
+    write_cache_aspect(g_game_fov_resolver.last_frame_camera_cache_offset);
+    write_cache_aspect(g_game_fov_resolver.camera_cache_private_offset);
+    write_cache_aspect(g_game_fov_resolver.last_frame_camera_cache_private_offset);
+
+    if (g_game_fov_resolver.default_aspect_ratio_offset >= 0) {
+        *(float*)(base + g_game_fov_resolver.default_aspect_ratio_offset) = aspect_ratio;
+        wrote = true;
+    }
+
+    if (g_game_fov_resolver.default_constrain_aspect_ratio_property != nullptr) {
+        g_game_fov_resolver.default_constrain_aspect_ratio_property->set_value_in_object(pcm, false);
+        wrote = true;
+    }
+
+    return wrote;
+}
+
+
 std::optional<float> read_default_fov(sdk::APlayerCameraManager* pcm) {
     if (pcm == nullptr) {
         return std::nullopt;
@@ -893,6 +1195,38 @@ bool is_dispatch_executable() {
     }();
 
     return is_dispatch;
+}
+
+bool is_subnautica2_executable() {
+    static const bool is_subnautica2 = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"subnautica2-win64-shipping") != std::wstring::npos ||
+               lowered.find(L"subnautica2-wingdk-shipping") != std::wstring::npos;
+    }();
+
+    return is_subnautica2;
+}
+
+bool is_daysgone_executable() {
+    static const bool is_daysgone = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        return uevr::games::is_daysgone_executable_path(*module_path);
+    }();
+
+    return is_daysgone;
 }
 
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
@@ -984,6 +1318,118 @@ std::optional<sdk::UObject*> read_object_property(sdk::UObject* object, std::wst
     return std::nullopt;
 }
 
+std::optional<sdk::UObject*> call_object_object_function(sdk::UObject* object, std::wstring_view function_name) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto fn = klass->find_function(function_name);
+    if (fn == nullptr) {
+        return std::nullopt;
+    }
+
+    struct ObjectReturnParams {
+        sdk::UObject* ret{nullptr};
+    } params{};
+
+    object->process_event(fn, &params);
+    if (params.ret == nullptr || IsBadReadPtr(params.ret, sizeof(void*))) {
+        return std::nullopt;
+    }
+
+    return params.ret;
+} catch (...) {
+    return std::nullopt;
+}
+
+bool write_object_bool_property(sdk::UObject* object, std::wstring_view name, bool value) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return false;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return false;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    if (prop_type != L"BoolProperty") {
+        return false;
+    }
+
+    ((sdk::FBoolProperty*)prop)->set_value_in_object(object, value);
+    return true;
+} catch (...) {
+    return false;
+}
+
+bool write_object_float_property(sdk::UObject* object, std::wstring_view name, float value) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*)) || !std::isfinite(value)) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return false;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return false;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    if (prop_type != L"FloatProperty") {
+        return false;
+    }
+
+    *(float*)((uint8_t*)object + prop->get_offset()) = value;
+    return true;
+} catch (...) {
+    return false;
+}
+
+bool write_struct_float_property(sdk::UObject* object, std::wstring_view struct_property, std::wstring_view field_name, float value) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*)) || !std::isfinite(value)) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return false;
+    }
+
+    const auto prop = (sdk::FStructProperty*)klass->find_property(struct_property);
+    if (prop == nullptr || prop->get_class() == nullptr || prop->get_class()->get_name().to_string() != L"StructProperty") {
+        return false;
+    }
+
+    const auto structure = prop->get_struct();
+    if (structure == nullptr) {
+        return false;
+    }
+
+    const auto field = structure->find_property(field_name);
+    if (field == nullptr || field->get_class() == nullptr || field->get_class()->get_name().to_string() != L"FloatProperty") {
+        return false;
+    }
+
+    *(float*)((uint8_t*)object + prop->get_offset() + field->get_offset()) = value;
+    return true;
+} catch (...) {
+    return false;
+}
+
 std::optional<sdk::UObject*> read_struct_object_field(sdk::UObject* object, std::wstring_view struct_property, size_t field_offset) try {
     if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
         return std::nullopt;
@@ -1056,6 +1502,74 @@ std::string get_log_object_name(sdk::UObject* object) {
     }
 }
 
+bool has_property_named(sdk::UClass* klass, std::wstring_view name) try {
+    return klass != nullptr && klass->find_property(name) != nullptr;
+} catch (...) {
+    return false;
+}
+
+sdk::FBoolProperty* get_bool_property_descriptor(sdk::UClass* klass, std::wstring_view name) try {
+    if (klass == nullptr || IsBadReadPtr(klass, sizeof(void*))) {
+        return nullptr;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return nullptr;
+    }
+
+    if (prop->get_class()->get_name().to_string() != L"BoolProperty") {
+        return nullptr;
+    }
+
+    return (sdk::FBoolProperty*)prop;
+} catch (...) {
+    return nullptr;
+}
+
+bool is_subnautica2_save_thumbnail_settings_class(sdk::UClass* klass) try {
+    const auto thumbnails_enabled = get_bool_property_descriptor(klass, L"ThumbnailsEnabled");
+    if (thumbnails_enabled == nullptr) {
+        return false;
+    }
+
+    // Keep the guard narrow to the UWE save-thumbnail settings shape instead
+    // of mutating any random class that happens to expose ThumbnailsEnabled.
+    return has_property_named(klass, L"ThumbnailWidth") ||
+           has_property_named(klass, L"ThumbnailHeight") ||
+           has_property_named(klass, L"ScreenShotTimeout") ||
+           has_property_named(klass, L"AutoSaveThumbnailFrequency");
+} catch (...) {
+    return false;
+}
+
+bool disable_subnautica2_save_thumbnails_on_object(sdk::UObject* object) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    if (!is_subnautica2_save_thumbnail_settings_class(klass)) {
+        return false;
+    }
+
+    const auto thumbnails_enabled = get_bool_property_descriptor(klass, L"ThumbnailsEnabled");
+    if (thumbnails_enabled == nullptr) {
+        return false;
+    }
+
+    if (thumbnails_enabled->get_value_from_object(object)) {
+        thumbnails_enabled->set_value_in_object(object, false);
+    }
+
+    SPDLOG_INFO(
+        "[Subnautica2][SaveThumbnailGuard] Disabled save thumbnails on {}",
+        get_log_object_name(object));
+    return true;
+} catch (...) {
+    return false;
+}
+
 std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& class_name) {
     std::vector<sdk::UObject*> result{};
 
@@ -1080,6 +1594,22 @@ std::vector<sdk::UObject*> get_live_objects_by_class_name(const std::wstring& cl
     }
 
     return result;
+}
+
+bool write_camera_component_fullscreen_aspect(sdk::UObject* camera_component, float aspect_ratio) {
+    if (camera_component == nullptr || !std::isfinite(aspect_ratio) || aspect_ratio <= 0.1f) {
+        return false;
+    }
+
+    bool wrote = false;
+    wrote |= write_object_bool_property(camera_component, L"bConstrainAspectRatio", false);
+    wrote |= write_object_bool_property(camera_component, L"bOverrideAspectRatioAxisConstraint", false);
+    wrote |= write_object_bool_property(camera_component, L"bScaleResolutionWithOverscan", false);
+    wrote |= write_object_bool_property(camera_component, L"bCropOverscan", false);
+    wrote |= write_object_float_property(camera_component, L"AspectRatio", aspect_ratio);
+    wrote |= write_object_float_property(camera_component, L"Overscan", 0.0f);
+    wrote |= write_struct_float_property(camera_component, L"CropSettings", L"AspectRatio", aspect_ratio);
+    return wrote;
 }
 
 sdk::UObject* get_first_live_object_by_class_name(const std::wstring& class_name) {
@@ -1317,6 +1847,18 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
     }
 
     SPDLOG_INFO_ONCE("[Avowed][NativeStereoFix] Ignoring Native Stereo Fix while Synced Sequential rendering is active");
+    return true;
+}
+
+bool VR::should_force_native_stereo_fix_same_pass() const {
+    if (!m_native_stereo_fix->value() || is_using_afr() || !is_stalker2_executable_cached()) {
+        return false;
+    }
+
+    // Stalker2's UE5.1 render-target handoff is only stable with the native
+    // stereo fix using the original same-pass path. Letting this flip live can
+    // invalidate active render state and crash during cutscene/gameplay RT work.
+    SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass while Native Stereo Fix is enabled");
     return true;
 }
 
@@ -2745,6 +3287,152 @@ void VR::update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_co
     ZeroMemory(&state.Gamepad, sizeof(XINPUT_GAMEPAD));
 }
 
+vrmod::UILayerPoseBasis VR::build_ui_layer_pose_basis(uint32_t render_frame_count) {
+    vrmod::UILayerPoseBasis basis{};
+    basis.render_frame_count = render_frame_count;
+    basis.capture_time = std::chrono::steady_clock::now();
+    basis.rotation_offset = get_rotation_offset();
+    basis.pre_flattened_rotation = get_pre_flattened_rotation();
+    basis.standing_origin = get_standing_origin();
+
+    if (m_openxr == nullptr || get_runtime() == nullptr || !get_runtime()->is_openxr()) {
+        return basis;
+    }
+
+    {
+        std::scoped_lock lock{m_openxr->sync_assignment_mtx};
+        basis.openxr_internal_frame_count = m_openxr->internal_frame_count;
+        basis.openxr_internal_render_frame_count = m_openxr->internal_render_frame_count;
+
+        const auto& state = m_openxr->pipeline_states[render_frame_count % runtimes::OpenXR::QUEUE_SIZE];
+        basis.predicted_display_time = state.frame_state.predictedDisplayTime != 0
+            ? state.frame_state.predictedDisplayTime
+            : m_openxr->frame_state.predictedDisplayTime;
+    }
+
+    basis.pose_update_frame_count = m_openxr->last_pose_update_frame_count;
+    basis.pose_update_time = m_openxr->last_successful_pose_update;
+    basis.valid = m_openxr->got_first_poses && m_openxr->got_first_valid_poses;
+    basis.stabilizer_allowed =
+        basis.valid &&
+        is_ui_layer_pose_stabilizer_enabled() &&
+        is_ue_5_7_or_newer_for_ui_layer_pose() &&
+        m_openxr->stage_space != XR_NULL_HANDLE &&
+        m_openxr->view_space != XR_NULL_HANDLE;
+
+    return basis;
+}
+
+VR::UILayerPoseTelemetrySnapshot VR::get_ui_layer_pose_telemetry_snapshot() {
+    std::scoped_lock lock{m_ui_layer_pose_telemetry_mtx};
+    return m_ui_layer_pose_snapshot;
+}
+
+void VR::record_ui_layer_pose_sample(
+    const vrmod::UILayerPoseBasis* basis,
+    runtimes::OpenXR::SwapchainIndex swapchain,
+    XrEyeVisibility eye,
+    bool follow_view,
+    bool stabilizer_used,
+    const glm::quat& hmd_rotation,
+    const glm::quat& live_ui_rotation,
+    const glm::quat& applied_rotation,
+    const char* refusal_reason)
+{
+    if (!is_ui_layer_pose_telemetry_enabled() && !is_ui_layer_pose_stabilizer_enabled()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto basis_valid = basis != nullptr && basis->valid;
+    const auto swapchain_index = (uint32_t)swapchain;
+    const auto last_ui_frame = m_is_d3d12 ? m_d3d12.openxr().get_last_acquired_frame(swapchain_index) : 0;
+    const auto ui_image_age_frames = last_ui_frame == 0 ? -1 : std::max<int>(0, m_frame_count - (int)last_ui_frame);
+    const auto pose_age_ms = basis != nullptr ? hitch_age_ms(now, basis->pose_update_time) : -1;
+    const auto orientation_delta_deg = quat_delta_degrees(live_ui_rotation, applied_rotation);
+    double hmd_angular_velocity_deg_s = 0.0;
+
+    std::scoped_lock lock{m_ui_layer_pose_telemetry_mtx};
+
+    if (m_ui_layer_pose_last_rotation_time.time_since_epoch().count() != 0) {
+        const auto elapsed = std::chrono::duration<double>{now - m_ui_layer_pose_last_rotation_time}.count();
+        if (elapsed > 0.0001) {
+            hmd_angular_velocity_deg_s = quat_delta_degrees(m_ui_layer_pose_last_live_rotation, hmd_rotation) / elapsed;
+        }
+    }
+
+    m_ui_layer_pose_last_live_rotation = hmd_rotation;
+    m_ui_layer_pose_last_rotation_time = now;
+
+    auto& sample = m_ui_layer_pose_samples[m_ui_layer_pose_cursor];
+    sample = {};
+    sample.timestamp = now;
+    sample.sequence = ++m_ui_layer_pose_sequence;
+    sample.render_frame_count = basis != nullptr ? basis->render_frame_count : (uint32_t)m_render_frame_count;
+    sample.openxr_internal_frame_count = basis != nullptr ? basis->openxr_internal_frame_count : 0;
+    sample.openxr_internal_render_frame_count = basis != nullptr ? basis->openxr_internal_render_frame_count : 0;
+    sample.pose_update_frame_count = basis != nullptr ? basis->pose_update_frame_count : 0;
+    sample.swapchain_index = swapchain_index;
+    sample.eye = (int)eye;
+    sample.basis_valid = basis_valid;
+    sample.stabilizer_allowed = basis != nullptr && basis->stabilizer_allowed;
+    sample.stabilizer_used = stabilizer_used;
+    sample.follow_view = follow_view;
+    sample.ui_image_age_frames = ui_image_age_frames;
+    sample.pose_age_ms = pose_age_ms;
+    sample.orientation_delta_deg = orientation_delta_deg;
+    sample.hmd_angular_velocity_deg_s = hmd_angular_velocity_deg_s;
+    sample.refusal_reason = refusal_reason != nullptr ? refusal_reason : "none";
+    m_ui_layer_pose_cursor = (m_ui_layer_pose_cursor + 1) % UI_LAYER_POSE_TELEMETRY_RING_SIZE;
+
+    auto& snapshot = m_ui_layer_pose_snapshot;
+    ++snapshot.sample_count;
+    if (stabilizer_used) {
+        ++snapshot.stabilizer_used_count;
+    }
+    if (!basis_valid) {
+        ++snapshot.invalid_basis_count;
+    }
+    if (follow_view) {
+        ++snapshot.follow_view_count;
+    }
+
+    snapshot.last_render_frame_count = sample.render_frame_count;
+    snapshot.last_openxr_internal_frame_count = sample.openxr_internal_frame_count;
+    snapshot.last_openxr_internal_render_frame_count = sample.openxr_internal_render_frame_count;
+    snapshot.last_pose_update_frame_count = sample.pose_update_frame_count;
+    snapshot.last_swapchain_index = sample.swapchain_index;
+    snapshot.last_eye = sample.eye;
+    snapshot.last_basis_valid = sample.basis_valid;
+    snapshot.last_stabilizer_used = sample.stabilizer_used;
+    snapshot.last_follow_view = sample.follow_view;
+    snapshot.last_ui_image_age_frames = sample.ui_image_age_frames;
+    snapshot.last_pose_age_ms = sample.pose_age_ms;
+    snapshot.last_orientation_delta_deg = sample.orientation_delta_deg;
+    snapshot.last_hmd_angular_velocity_deg_s = sample.hmd_angular_velocity_deg_s;
+    snapshot.max_orientation_delta_deg = std::max(snapshot.max_orientation_delta_deg, sample.orientation_delta_deg);
+    snapshot.max_hmd_angular_velocity_deg_s = std::max(snapshot.max_hmd_angular_velocity_deg_s, sample.hmd_angular_velocity_deg_s);
+
+    if (is_ui_layer_pose_telemetry_enabled() &&
+        (m_ui_layer_pose_last_log.time_since_epoch().count() == 0 || now - m_ui_layer_pose_last_log >= std::chrono::seconds(5)))
+    {
+        SPDLOG_INFO(
+            "[OpenXR][ui-layer-pose] samples={} stabilizer_used={} invalid_basis={} follow_view={} last_frame={} pose_age_ms={} ui_image_age_frames={} orient_delta_deg={:.2f} hmd_ang_vel_deg_s={:.2f} max_delta_deg={:.2f} max_hmd_ang_vel_deg_s={:.2f}",
+            snapshot.sample_count,
+            snapshot.stabilizer_used_count,
+            snapshot.invalid_basis_count,
+            snapshot.follow_view_count,
+            snapshot.last_render_frame_count,
+            snapshot.last_pose_age_ms,
+            snapshot.last_ui_image_age_frames,
+            snapshot.last_orientation_delta_deg,
+            snapshot.last_hmd_angular_velocity_deg_s,
+            snapshot.max_orientation_delta_deg,
+            snapshot.max_hmd_angular_velocity_deg_s);
+        m_ui_layer_pose_last_log = now;
+    }
+}
+
 void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now) {
     auto& sample = m_hitch_snapshot_samples[m_hitch_snapshot_cursor];
     sample = {};
@@ -2765,6 +3453,7 @@ void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now)
     sample.d3d12_frame_age_ms = hitch_age_ms(now, m_d3d12.get_last_on_frame_time());
     sample.cvar_change_counter = m_cvar_manager != nullptr ? m_cvar_manager->get_change_counter() : 0;
     sample.d3d12 = m_is_d3d12 ? m_d3d12.get_hitch_frame_snapshot(this) : vrmod::D3D12Component::HitchFrameSnapshot{};
+    sample.ui_layer_pose = get_ui_layer_pose_telemetry_snapshot();
 
     if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
         if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
@@ -2855,6 +3544,7 @@ void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
         }
 
         const auto& d3d12 = sample.d3d12;
+        const auto& ui_layer_pose = sample.ui_layer_pose;
         samples.push_back({
             {"age_ms", hitch_age_ms(request.dump_time, sample.timestamp)},
             {"sequence", sample.sequence},
@@ -2918,6 +3608,27 @@ void VR::write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request) try {
                 {"perf_openxr_submit_count", d3d12.perf_openxr_submit_count},
                 {"perf_openxr_submit_avg_ms", d3d12.perf_openxr_submit_avg_ms},
                 {"perf_openxr_submit_max_ms", d3d12.perf_openxr_submit_max_ms},
+            }},
+            {"ui_layer_pose", {
+                {"sample_count", ui_layer_pose.sample_count},
+                {"stabilizer_used_count", ui_layer_pose.stabilizer_used_count},
+                {"invalid_basis_count", ui_layer_pose.invalid_basis_count},
+                {"follow_view_count", ui_layer_pose.follow_view_count},
+                {"last_render_frame_count", ui_layer_pose.last_render_frame_count},
+                {"last_openxr_internal_frame_count", ui_layer_pose.last_openxr_internal_frame_count},
+                {"last_openxr_internal_render_frame_count", ui_layer_pose.last_openxr_internal_render_frame_count},
+                {"last_pose_update_frame_count", ui_layer_pose.last_pose_update_frame_count},
+                {"last_swapchain_index", ui_layer_pose.last_swapchain_index},
+                {"last_eye", ui_layer_pose.last_eye},
+                {"last_basis_valid", ui_layer_pose.last_basis_valid},
+                {"last_stabilizer_used", ui_layer_pose.last_stabilizer_used},
+                {"last_follow_view", ui_layer_pose.last_follow_view},
+                {"last_ui_image_age_frames", ui_layer_pose.last_ui_image_age_frames},
+                {"last_pose_age_ms", ui_layer_pose.last_pose_age_ms},
+                {"last_orientation_delta_deg", ui_layer_pose.last_orientation_delta_deg},
+                {"max_orientation_delta_deg", ui_layer_pose.max_orientation_delta_deg},
+                {"last_hmd_angular_velocity_deg_s", ui_layer_pose.last_hmd_angular_velocity_deg_s},
+                {"max_hmd_angular_velocity_deg_s", ui_layer_pose.max_hmd_angular_velocity_deg_s},
             }},
         });
     }
@@ -2989,6 +3700,115 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot: {}", e.what());
 } catch (...) {
     SPDLOG_WARN("[VR][hitch-snapshot] Failed to queue snapshot");
+}
+
+void VR::note_stalker2_transition_stress(const char* reason) {
+    if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
+        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !m_openxr->got_first_valid_poses)
+    {
+        return;
+    }
+
+    constexpr auto STRESS_HOLD = std::chrono::milliseconds{350};
+    constexpr auto NEW_BURST_GAP_MS = 1000LL;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto now_ms = steady_clock_ms(now);
+    const auto previous_stress_ms = m_stalker2_transition_last_stress_ms.exchange(now_ms);
+
+    if (previous_stress_ms == 0 || now_ms - previous_stress_ms > NEW_BURST_GAP_MS) {
+        m_stalker2_transition_first_stress_ms.store(now_ms);
+        m_stalker2_transition_last_defer_ms.store(0);
+        m_stalker2_transition_deferred_frames.store(0);
+    }
+
+    const auto until_ms = steady_clock_ms(now + STRESS_HOLD);
+    auto current_until_ms = m_stalker2_transition_stress_until_ms.load();
+
+    while (until_ms > current_until_ms &&
+        !m_stalker2_transition_stress_until_ms.compare_exchange_weak(current_until_ms, until_ms))
+    {
+    }
+
+    const auto events = m_stalker2_transition_stress_events.fetch_add(1) + 1;
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[Stalker2][OpenXR] Transition stress noted reason={} events={} hold_until_ms={}",
+        reason != nullptr ? reason : "unknown",
+        events,
+        m_stalker2_transition_stress_until_ms.load());
+}
+
+bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
+    if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
+        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !m_openxr->can_run_frame_loop() || !m_openxr->got_first_valid_poses)
+    {
+        return false;
+    }
+
+    if (!STALKER2_TRANSITION_OPENXR_DEFERS_ENABLED) {
+        SPDLOG_INFO_ONCE(
+            "[Stalker2][OpenXR] Transition defer guard disabled for A/B; leaving stable RT copy and stress diagnostics active");
+        return false;
+    }
+
+    // Never interfere with an already-open or already-waited frame. The guard is
+    // only for avoiding a new blocking xrWaitFrame while UE5.1 is in a known
+    // Stalker2 cutscene/gameplay render-target transition.
+    if (m_openxr->frame_began || m_openxr->frame_synced) {
+        return false;
+    }
+
+    constexpr auto MAX_BURST_DEFER_MS = 700LL;
+    constexpr auto MIN_DEFER_SPACING_MS = 16LL;
+    constexpr auto MAX_DEFERRED_FRAMES_PER_BURST = 1u;
+    constexpr auto MAX_LAST_END_AGE_MS = 250LL;
+
+    const auto now_ms = steady_clock_ms();
+    const auto until_ms = m_stalker2_transition_stress_until_ms.load();
+    const auto now = std::chrono::steady_clock::now();
+
+    if (until_ms == 0 || now_ms > until_ms) {
+        return false;
+    }
+
+    if (!m_openxr->ever_submitted ||
+        m_openxr->last_successful_end_frame.time_since_epoch().count() == 0 ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - m_openxr->last_successful_end_frame).count() > MAX_LAST_END_AGE_MS)
+    {
+        return false;
+    }
+
+    const auto first_stress_ms = m_stalker2_transition_first_stress_ms.load();
+
+    if (first_stress_ms == 0 || now_ms - first_stress_ms > MAX_BURST_DEFER_MS) {
+        return false;
+    }
+
+    if (m_stalker2_transition_deferred_frames.load() >= MAX_DEFERRED_FRAMES_PER_BURST) {
+        return false;
+    }
+
+    const auto previous_defer_ms = m_stalker2_transition_last_defer_ms.exchange(now_ms);
+
+    if (previous_defer_ms != 0 && now_ms - previous_defer_ms < MIN_DEFER_SPACING_MS) {
+        return false;
+    }
+
+    const auto deferred = m_stalker2_transition_deferred_frames.fetch_add(1) + 1;
+
+    SPDLOG_WARNING_EVERY_N_SEC(
+        1,
+        "[Stalker2][OpenXR] Deferring one D3D12 OpenXR submit during transition stress reason={} deferred={} until_ms={} first_stress_age_ms={}",
+        reason != nullptr ? reason : "unknown",
+        deferred,
+        until_ms,
+        now_ms - first_stress_ms);
+
+    return true;
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -3122,6 +3942,9 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     SPDLOG_INFO_ONCE("VR: Pre-engine tick");
 
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
+    update_subnautica2_save_thumbnail_guard(engine);
+    update_subnautica2_native_water_compatibility(engine);
+    update_daysgone_gbuffer_compatibility(engine);
 
     update_statistics_overlay(engine);
     update_game_fov();
@@ -3133,6 +3956,516 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->is_ignoring_next_viewport_draw()) {
         update_action_states();
     }
+}
+
+void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
+    if (!is_subnautica2_executable() || m_subnautica2_save_thumbnail_guard_done) {
+        return;
+    }
+
+    if (!m_subnautica2_save_thumbnail_fallback_logged) {
+        m_subnautica2_save_thumbnail_fallback_logged = true;
+        SPDLOG_INFO("[Subnautica2][SaveThumbnailGuard] Skipping save-thumbnail byte patch path and forcing UObject thumbnail-disable fallback");
+    }
+
+    if (engine == nullptr) {
+        return;
+    }
+
+    const auto object_array = sdk::FUObjectArray::get();
+    if (object_array == nullptr || IsBadReadPtr(object_array, sizeof(void*))) {
+        return;
+    }
+
+    const auto object_count = object_array->get_object_count();
+    if (object_count <= 0) {
+        return;
+    }
+
+    if (m_subnautica2_save_thumbnail_guard_cursor < 0 || m_subnautica2_save_thumbnail_guard_cursor >= object_count) {
+        m_subnautica2_save_thumbnail_guard_cursor = 0;
+    }
+
+    // Subnautica 2 save thumbnails use a UWE screenshot readback path that can
+    // overrun its thumbnail crop allocation in VR. Scan incrementally and only
+    // touch the narrow UWE settings shape to avoid a startup hitch.
+    constexpr int32_t SCAN_BUDGET_PER_TICK = 2048;
+    constexpr uint32_t MAX_FULL_SWEEPS = 3;
+
+    int32_t scanned = 0;
+    while (scanned < SCAN_BUDGET_PER_TICK && m_subnautica2_save_thumbnail_guard_full_sweeps < MAX_FULL_SWEEPS) {
+        auto* item = object_array->get_object(m_subnautica2_save_thumbnail_guard_cursor);
+        ++scanned;
+
+        m_subnautica2_save_thumbnail_guard_cursor++;
+        if (m_subnautica2_save_thumbnail_guard_cursor >= object_count) {
+            m_subnautica2_save_thumbnail_guard_cursor = 0;
+            ++m_subnautica2_save_thumbnail_guard_full_sweeps;
+        }
+
+        if (item == nullptr || IsBadReadPtr(item, sizeof(void*))) {
+            continue;
+        }
+
+        auto* object = (sdk::UObject*)item->get_object();
+        if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+            continue;
+        }
+
+        sdk::UClass* klass = nullptr;
+        try {
+            klass = object->get_class();
+        } catch (...) {
+            klass = nullptr;
+        }
+
+        if (klass == nullptr || IsBadReadPtr(klass, sizeof(void*))) {
+            continue;
+        }
+
+        const auto key = (uintptr_t)klass;
+        auto it = m_subnautica2_save_thumbnail_guard_class_cache.find(key);
+        const bool candidate = it != m_subnautica2_save_thumbnail_guard_class_cache.end()
+            ? it->second
+            : is_subnautica2_save_thumbnail_settings_class(klass);
+
+        if (it == m_subnautica2_save_thumbnail_guard_class_cache.end()) {
+            m_subnautica2_save_thumbnail_guard_class_cache.emplace(key, candidate);
+        }
+
+        if (!candidate) {
+            continue;
+        }
+
+        bool patched = false;
+        if (disable_subnautica2_save_thumbnails_on_object(object)) {
+            ++m_subnautica2_save_thumbnail_guard_patched_objects;
+            patched = true;
+        }
+
+        if (auto* cdo = klass->get_class_default_object(); cdo != nullptr && cdo != object && !IsBadReadPtr(cdo, sizeof(void*))) {
+            if (disable_subnautica2_save_thumbnails_on_object(cdo)) {
+                ++m_subnautica2_save_thumbnail_guard_patched_objects;
+                patched = true;
+            }
+        }
+
+        if (patched) {
+            m_subnautica2_save_thumbnail_guard_done = true;
+            m_subnautica2_save_thumbnail_guard_found_candidate = true;
+            SPDLOG_INFO(
+                "[Subnautica2][SaveThumbnailGuard] Applied after scanning {} objects over {} full sweeps; patched_objects={}",
+                scanned,
+                m_subnautica2_save_thumbnail_guard_full_sweeps,
+                m_subnautica2_save_thumbnail_guard_patched_objects);
+            return;
+        }
+    }
+
+    if (m_subnautica2_save_thumbnail_guard_full_sweeps >= MAX_FULL_SWEEPS && !m_subnautica2_save_thumbnail_guard_warned_exhausted) {
+        m_subnautica2_save_thumbnail_guard_warned_exhausted = true;
+        m_subnautica2_save_thumbnail_guard_done = true;
+        SPDLOG_WARN(
+            "[Subnautica2][SaveThumbnailGuard] Did not find a UWE save-thumbnail settings object after {} FUObjectArray sweeps; save-thumbnail readback remains enabled",
+            m_subnautica2_save_thumbnail_guard_full_sweeps);
+    }
+}
+
+void VR::restore_subnautica2_native_water_cvars() {
+    if (!m_subnautica2_native_water_cvars_applied || m_subnautica2_native_water_previous_ints.empty()) {
+        m_subnautica2_native_water_cvars_applied = false;
+        m_subnautica2_native_water_cvars_logged = false;
+        m_subnautica2_native_water_cvar_attempts = 0;
+        m_subnautica2_native_water_last_mode = -1;
+        m_subnautica2_native_water_next_apply = {};
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        return;
+    }
+
+    uint32_t restored{};
+    uint32_t missing{};
+    uint32_t failed{};
+
+    for (const auto& [name, value] : m_subnautica2_native_water_previous_ints) {
+        auto* object = console_manager->find(name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        auto* variable = (sdk::IConsoleVariable*)object;
+        bool ok{};
+
+        try {
+            ok = variable->Set(std::to_wstring(value).c_str());
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++restored;
+        } else {
+            ++failed;
+        }
+    }
+
+    SPDLOG_INFO(
+        "[Subnautica2][NativeWaterCompat] Restored water cvars restored={} missing={} failed={}",
+        restored,
+        missing,
+        failed);
+
+    m_subnautica2_native_water_previous_ints.clear();
+    m_subnautica2_native_water_cvars_applied = false;
+    m_subnautica2_native_water_cvars_logged = false;
+    m_subnautica2_native_water_cvar_attempts = 0;
+    m_subnautica2_native_water_last_mode = -1;
+    m_subnautica2_native_water_next_apply = {};
+}
+
+void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    const bool active =
+        is_subnautica2_executable() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        is_hmd_active() &&
+        m_compatibility_subnautica2_native_water->value() &&
+        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        !m_native_stereo_fix->value();
+
+    if (!active) {
+        restore_subnautica2_native_water_cvars();
+        return;
+    }
+
+    auto selected_mode = static_cast<int32_t>(m_subnautica2_native_water_mode->value());
+    if (selected_mode < SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS ||
+        selected_mode > SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER) {
+        selected_mode = SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS;
+    }
+
+    const bool mode_changed = selected_mode != m_subnautica2_native_water_last_mode;
+    if (mode_changed) {
+        m_subnautica2_native_water_cvars_logged = false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_subnautica2_native_water_next_apply != std::chrono::steady_clock::time_point{} &&
+        now < m_subnautica2_native_water_next_apply &&
+        !mode_changed) {
+        return;
+    }
+
+    // This is not a per-frame hammer path. It only corrects drift occasionally,
+    // with immediate reapply when the user changes modes.
+    m_subnautica2_native_water_next_apply = now + std::chrono::seconds(5);
+    ++m_subnautica2_native_water_cvar_attempts;
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        if (m_subnautica2_native_water_cvar_attempts == 1 || (m_subnautica2_native_water_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[Subnautica2][NativeWaterCompat] FConsoleManager unavailable; cannot apply water cvars yet");
+        }
+        return;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        int value;
+    };
+
+    // UE5.6 SingleLayerWater uses per-view scene-color/reflection inputs that can
+    // diverge in Subnautica 2 native stereo. Keep the water system enabled and
+    // disable the native-stereo-sensitive subpaths first; fall back to disabling
+    // SingleLayerWater only when the user explicitly chooses that mode.
+    static constexpr std::array<ForcedCVar, 9> safe_reflections_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 1},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 2},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    static constexpr std::array<ForcedCVar, 9> no_reflections_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 1},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 0},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    static constexpr std::array<ForcedCVar, 9> disable_single_layer_cvars{{
+        ForcedCVar{L"r.Water.Enabled", 1},
+        ForcedCVar{L"r.Water.WaterMesh.Enabled", 1},
+        ForcedCVar{L"r.Water.SingleLayer", 0},
+        ForcedCVar{L"r.ParallelSingleLayerWaterPass", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledSceneColorCopy", 0},
+        ForcedCVar{L"r.Water.SingleLayer.TiledComposite", 0},
+        ForcedCVar{L"r.Water.SingleLayer.Reflection", 0},
+        ForcedCVar{L"r.Water.SingleLayer.SSRTAA", 0},
+        ForcedCVar{L"r.NGX.DLSS.WaterReflections.TemporalAA", 0},
+    }};
+
+    const char* mode_name = "Native Water Safe Reflections";
+    const ForcedCVar* forced_cvars = safe_reflections_cvars.data();
+    size_t forced_cvar_count = safe_reflections_cvars.size();
+
+    switch (selected_mode) {
+    case SUBNAUTICA2_NATIVE_WATER_NO_REFLECTIONS:
+        mode_name = "Native Water No Reflections";
+        forced_cvars = no_reflections_cvars.data();
+        forced_cvar_count = no_reflections_cvars.size();
+        break;
+    case SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER:
+        mode_name = "Disable SingleLayerWater Fallback";
+        forced_cvars = disable_single_layer_cvars.data();
+        forced_cvar_count = disable_single_layer_cvars.size();
+        break;
+    default:
+        break;
+    };
+
+    uint32_t found{};
+    uint32_t set_ok{};
+    uint32_t set_failed{};
+    uint32_t already_ok{};
+    uint32_t missing{};
+
+    for (size_t i = 0; i < forced_cvar_count; ++i) {
+        const auto& forced = forced_cvars[i];
+        const std::wstring cvar_name{forced.name};
+        auto* object = console_manager->find(cvar_name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto* variable = (sdk::IConsoleVariable*)object;
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            if (!m_subnautica2_native_water_previous_ints.contains(cvar_name)) {
+                m_subnautica2_native_water_previous_ints.emplace(cvar_name, before);
+            }
+
+            if (before == forced.value) {
+                ok = true;
+                ++already_ok;
+            } else {
+                ok = variable->Set(std::to_wstring(forced.value).c_str());
+            }
+
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (!ok) {
+            ++set_failed;
+        } else if (before != forced.value) {
+            ++set_ok;
+        }
+
+        if (!m_subnautica2_native_water_cvars_logged) {
+            SPDLOG_INFO(
+                "[Subnautica2][NativeWaterCompat] forced {}: before={} requested={} after={} ok={}",
+                utility::narrow(forced.name),
+                before,
+                forced.value,
+                after,
+                ok);
+        }
+    }
+
+    if (found == 0) {
+        if (!m_subnautica2_native_water_cvars_logged || (m_subnautica2_native_water_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN(
+                "[Subnautica2][NativeWaterCompat] No SingleLayerWater cvars found attempt={} missing={}",
+                m_subnautica2_native_water_cvar_attempts,
+                missing);
+        }
+        return;
+    }
+
+    if (!m_subnautica2_native_water_cvars_logged) {
+        SPDLOG_INFO(
+            "[Subnautica2][NativeWaterCompat] Applied native water cvar guard mode=\"{}\" found={} missing={} already_ok={} set_ok={} set_failed={}",
+            mode_name,
+            found,
+            missing,
+            already_ok,
+            set_ok,
+            set_failed);
+        m_subnautica2_native_water_cvars_logged = true;
+    }
+
+    m_subnautica2_native_water_cvars_applied = true;
+    m_subnautica2_native_water_last_mode = selected_mode;
+}
+
+void VR::restore_daysgone_gbuffer_cvar() {
+    if (!m_daysgone_gbuffer_cvar_applied) {
+        m_daysgone_gbuffer_cvar_logged = false;
+        m_daysgone_gbuffer_previous_valid = false;
+        m_daysgone_gbuffer_previous_value = 1;
+        m_daysgone_gbuffer_cvar_attempts = 0;
+        m_daysgone_gbuffer_next_apply = {};
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        return;
+    }
+
+    auto* object = console_manager->find(L"r.GBuffer");
+    bool restored{};
+    bool failed{};
+
+    if (object != nullptr && object->AsCommand() == nullptr && m_daysgone_gbuffer_previous_valid) {
+        auto* variable = (sdk::IConsoleVariable*)object;
+
+        try {
+            restored = variable->Set(std::to_wstring(m_daysgone_gbuffer_previous_value).c_str());
+        } catch (...) {
+            restored = false;
+        }
+
+        failed = !restored;
+    }
+
+    SPDLOG_INFO(
+        "[DaysGone][GBufferSafeMode] Restored r.GBuffer previous={} restored={} failed={} had_previous={}",
+        m_daysgone_gbuffer_previous_value,
+        restored,
+        failed,
+        m_daysgone_gbuffer_previous_valid);
+
+    m_daysgone_gbuffer_cvar_applied = false;
+    m_daysgone_gbuffer_cvar_logged = false;
+    m_daysgone_gbuffer_previous_valid = false;
+    m_daysgone_gbuffer_previous_value = 1;
+    m_daysgone_gbuffer_cvar_attempts = 0;
+    m_daysgone_gbuffer_next_apply = {};
+}
+
+void VR::update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    const bool active =
+        is_daysgone_executable() &&
+        g_framework != nullptr &&
+        g_framework->is_dx11() &&
+        is_hmd_active() &&
+        m_compatibility_daysgone_gbuffer_safe_mode->value();
+
+    if (!active) {
+        restore_daysgone_gbuffer_cvar();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_daysgone_gbuffer_next_apply != std::chrono::steady_clock::time_point{} &&
+        now < m_daysgone_gbuffer_next_apply) {
+        return;
+    }
+
+    // Days Gone's black road/terrain patches were narrowed to the deferred
+    // GBuffer path. Reapply sparingly to correct drift without touching a hot path.
+    m_daysgone_gbuffer_next_apply = now + std::chrono::seconds(5);
+    ++m_daysgone_gbuffer_cvar_attempts;
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        if (m_daysgone_gbuffer_cvar_attempts == 1 || (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[DaysGone][GBufferSafeMode] FConsoleManager unavailable; cannot apply r.GBuffer yet");
+        }
+        return;
+    }
+
+    auto* object = console_manager->find(L"r.GBuffer");
+    if (object == nullptr || object->AsCommand() != nullptr) {
+        if (!m_daysgone_gbuffer_cvar_logged || (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[DaysGone][GBufferSafeMode] r.GBuffer cvar not found");
+        }
+        return;
+    }
+
+    auto* variable = (sdk::IConsoleVariable*)object;
+    int before{};
+    int after{};
+    bool ok{};
+
+    try {
+        before = variable->GetInt();
+
+        if (!m_daysgone_gbuffer_previous_valid) {
+            m_daysgone_gbuffer_previous_valid = true;
+            m_daysgone_gbuffer_previous_value = before;
+        }
+
+        if (before == 0) {
+            ok = true;
+        } else {
+            ok = variable->Set(L"0");
+            CVarManager::record_global_change(L"r.GBuffer", L"0", "daysgone_gbuffer_safe_mode");
+        }
+
+        after = variable->GetInt();
+    } catch (...) {
+        ok = false;
+    }
+
+    if (!m_daysgone_gbuffer_cvar_logged) {
+        SPDLOG_INFO(
+            "[DaysGone][GBufferSafeMode] Applied r.GBuffer=0 before={} after={} ok={} previous={}",
+            before,
+            after,
+            ok,
+            m_daysgone_gbuffer_previous_value);
+        m_daysgone_gbuffer_cvar_logged = true;
+    } else if (!ok && (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+        SPDLOG_WARN(
+            "[DaysGone][GBufferSafeMode] Failed to maintain r.GBuffer=0 attempt={} before={} after={}",
+            m_daysgone_gbuffer_cvar_attempts,
+            before,
+            after);
+    }
+
+    if (ok) {
+        m_daysgone_gbuffer_cvar_applied = true;
+    }
+}
+
+void VR::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    ZoneScopedN(__FUNCTION__);
+
+    if (!get_runtime()->loaded || !is_hmd_active()) {
+        return;
+    }
+
+    // Some Supermassive camera paths rewrite crop/aspect state during engine
+    // tick. Reapply the opt-in compatibility after game tick, but keep it to
+    // the active camera only; broad object sweeps caused cadence/flicker issues.
+    update_fullscreen_16x9_camera_compatibility(engine);
 }
 
 void VR::update_shf_auto_2d_mode(sdk::UGameEngine* engine) {
@@ -3224,6 +4557,151 @@ void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
     }
 }
 
+void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {
+    if (!m_compatibility_fullscreen_16x9_cameras->value()) {
+        m_fullscreen_16x9_camera_compat = {};
+        return;
+    }
+
+    constexpr auto camera_poll_interval = std::chrono::milliseconds(100);
+    constexpr auto transition_burst_duration = std::chrono::milliseconds(500);
+    constexpr auto keepalive_interval = std::chrono::milliseconds(1000);
+    const auto now = std::chrono::steady_clock::now();
+
+    auto world = engine != nullptr ? engine->get_world() : nullptr;
+    auto gameplay = sdk::UGameplayStatics::get();
+
+    if (world == nullptr || gameplay == nullptr) {
+        return;
+    }
+
+    auto pc = gameplay->get_player_controller(world, 0);
+    if (pc == nullptr) {
+        return;
+    }
+
+    auto pcm = pc->get_player_camera_manager();
+    if (pcm == nullptr) {
+        return;
+    }
+
+    auto aspect_ratio = m_compatibility_fullscreen_16x9_camera_aspect->value();
+    if (!std::isfinite(aspect_ratio) || aspect_ratio <= 0.1f) {
+        const auto runtime = get_runtime();
+        if (runtime != nullptr && runtime->get_height() > 0) {
+            aspect_ratio = (float)runtime->get_width() / (float)runtime->get_height();
+        } else {
+            aspect_ratio = 16.0f / 9.0f;
+        }
+    }
+
+    aspect_ratio = std::clamp(aspect_ratio, 0.5f, 4.0f);
+
+    auto& state = m_fullscreen_16x9_camera_compat;
+    const bool just_enabled = !state.was_enabled;
+    const bool pcm_changed = state.last_pcm != pcm;
+    const bool aspect_changed = std::abs(state.last_aspect - aspect_ratio) > 0.001f;
+    const bool should_poll_camera =
+        just_enabled ||
+        pcm_changed ||
+        aspect_changed ||
+        state.last_camera_poll.time_since_epoch().count() == 0 ||
+        now - state.last_camera_poll >= camera_poll_interval ||
+        now < state.burst_until;
+
+    sdk::UObject* current_camera = (sdk::UObject*)state.last_camera;
+    sdk::UObject* camera_component = (sdk::UObject*)state.last_camera_component;
+
+    if (should_poll_camera) {
+        state.last_camera_poll = now;
+
+        if (auto camera = call_object_object_function((sdk::UObject*)pcm, L"GetCurrentCamera"); camera.has_value()) {
+            current_camera = *camera;
+        } else {
+            current_camera = nullptr;
+        }
+
+        if (current_camera != nullptr) {
+            if (auto component = read_object_property(current_camera, L"CameraComponent"); component.has_value()) {
+                camera_component = *component;
+            } else {
+                camera_component = nullptr;
+            }
+        } else {
+            camera_component = nullptr;
+        }
+    }
+
+    const bool camera_changed = state.last_camera != current_camera;
+    const bool component_changed = state.last_camera_component != camera_component;
+    const bool keepalive_due =
+        state.last_apply.time_since_epoch().count() == 0 ||
+        now - state.last_apply >= keepalive_interval;
+    const bool in_transition_burst = now < state.burst_until;
+
+    if (just_enabled || pcm_changed || camera_changed || component_changed || aspect_changed) {
+        state.burst_until = now + transition_burst_duration;
+    }
+
+    const bool should_apply =
+        just_enabled ||
+        pcm_changed ||
+        camera_changed ||
+        component_changed ||
+        aspect_changed ||
+        in_transition_burst ||
+        keepalive_due;
+
+    state.was_enabled = true;
+    state.last_pcm = pcm;
+    state.last_camera = current_camera;
+    state.last_camera_component = camera_component;
+    state.last_aspect = aspect_ratio;
+
+    if (!should_apply) {
+        return;
+    }
+
+    bool wrote_any = false;
+    wrote_any |= write_object_bool_property((sdk::UObject*)pcm, L"bUse16_9CamerasAsFullscreen", true);
+    wrote_any |= write_object_bool_property((sdk::UObject*)pcm, L"bForceOutputToConstraintXFov", false);
+    wrote_any |= write_game_camera_aspect_constraints(pcm, aspect_ratio);
+
+    if (current_camera != nullptr) {
+        wrote_any |= write_object_bool_property(current_camera, L"bEnableCameraViewportRemapPPMI", false);
+
+        if (camera_component != nullptr) {
+            wrote_any |= write_camera_component_fullscreen_aspect(camera_component, aspect_ratio);
+        }
+    }
+
+    state.last_apply = now;
+
+    if (is_directive8020_executable_cached()) {
+        if (wrote_any &&
+            (state.last_log.time_since_epoch().count() == 0 || now - state.last_log >= std::chrono::seconds(5))) {
+            state.last_log = now;
+            SPDLOG_INFO(
+                "[Directive8020][AspectCompat] aspect={:.3f} reason={}{}{}{}{}{} current_camera={} component={}",
+                aspect_ratio,
+                just_enabled ? "enabled " : "",
+                pcm_changed ? "pcm " : "",
+                camera_changed ? "camera " : "",
+                component_changed ? "component " : "",
+                aspect_changed ? "aspect " : "",
+                keepalive_due ? "keepalive" : (in_transition_burst ? "burst" : "apply"),
+                current_camera != nullptr,
+                camera_component != nullptr);
+        }
+    }
+
+    if (wrote_any) {
+        SPDLOG_INFO_ONCE("[Compatibility] Fullscreen 16:9 Cameras active; aspect={:.3f}, camera constraints/remap disabled where available", aspect_ratio);
+    } else {
+        SPDLOG_WARN_ONCE("[Compatibility] Fullscreen 16:9 Cameras is enabled, but no supported camera/aspect fields were found");
+    }
+}
+
 void VR::update_game_fov() {
     const auto update_prospi_telephoto_perf_override = [&](bool should_apply) {
         const auto restore = [&]() {
@@ -3294,6 +4772,12 @@ void VR::update_game_fov() {
         m_match_game_fov_prospi_tv_override_active.store(false, std::memory_order_relaxed);
         m_match_game_fov_prospi_auto_dolly_distance_active.store(0.0f, std::memory_order_relaxed);
         m_match_game_fov_prospi_telephoto_perf_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_read_only_camera_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_would_write_game_camera.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+        m_match_game_fov_generic_camera_preset_applied.store(false, std::memory_order_relaxed);
+        m_match_game_fov_generic_camera_tracking_active.store(false, std::memory_order_relaxed);
 
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         m_prospi_current_camera_id.clear();
@@ -3304,6 +4788,14 @@ void VR::update_game_fov() {
         m_prospi_sticky_raw_fov = 0.0f;
         m_prospi_sticky_calibration_valid = false;
         m_prospi_sticky_camera_id.clear();
+
+        {
+            std::scoped_lock generic_lock{m_generic_camera_preset_mtx};
+            m_current_game_camera_id.clear();
+            m_active_generic_camera_preset = {};
+        }
+
+        m_camera_cut_state = {};
     };
 
     if (!m_match_game_fov->value()) {
@@ -3374,14 +4866,45 @@ void VR::update_game_fov() {
     auto prospi_preset = ProSpiCameraPreset::None;
     auto active_prospi_actual_min_fov = 0.0f;
     auto wrote_prospi_fov = false;
+    auto wants_game_fov_write = false;
+    auto deferred_game_fov_write = raw_fov;
     auto prospi_calibration_applied = false;
     auto prospi_tv_override_applied = false;
+    auto generic_camera_preset_applied = false;
+    auto read_only_camera_for_frame = m_match_game_fov_read_only_camera->value();
+    const auto camera_cut_stabilizer_enabled = m_match_game_fov_camera_cut_stabilizer->value();
+    const auto generic_camera_presets_tracking_enabled =
+        m_match_game_fov_dolly->value() &&
+        m_match_game_fov_generic_camera_presets->value();
+    const auto generic_camera_presets_apply_enabled =
+        generic_camera_presets_tracking_enabled &&
+        m_match_game_fov_generic_camera_presets_auto_apply->value();
+    const auto should_track_generic_camera = camera_cut_stabilizer_enabled || generic_camera_presets_tracking_enabled;
     const char* prospi_dolly_source = "Base";
     std::string prospi_camera_id{};
 
     const auto is_prospi = is_prospi_executable();
     const auto location = read_game_camera_location(pcm);
     const auto rotation = read_game_camera_rotation(pcm);
+    GameCameraSample camera_sample{};
+    if (should_track_generic_camera && location.has_value() && rotation.has_value()) {
+        camera_sample.valid = true;
+        camera_sample.player_camera_manager = reinterpret_cast<uintptr_t>(pcm);
+        camera_sample.raw_fov = raw_fov;
+        camera_sample.timestamp = std::chrono::steady_clock::now();
+        camera_sample.location = *location;
+        camera_sample.rotation = *rotation;
+        camera_sample.camera_id = build_generic_camera_preset_id(*location, *rotation, raw_fov);
+        {
+            std::scoped_lock _{m_generic_camera_preset_mtx};
+            m_current_game_camera_id = camera_sample.camera_id;
+        }
+
+        m_match_game_fov_generic_camera_tracking_active.store(true, std::memory_order_relaxed);
+    } else if (m_match_game_fov_generic_camera_tracking_active.exchange(false, std::memory_order_relaxed)) {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_current_game_camera_id.clear();
+    }
 
     if (location.has_value() && rotation.has_value()) {
         prospi_camera_id = build_camera_calibration_id(*location, *rotation);
@@ -3635,13 +5158,173 @@ void VR::update_game_fov() {
 
             game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
             if (std::abs(game_fov_for_matching - raw_fov) > 0.01f) {
-                wrote_prospi_fov = write_game_fov(pcm, game_fov_for_matching);
+                wants_game_fov_write = true;
+                deferred_game_fov_write = game_fov_for_matching;
             }
         }
     }
 
+    if (generic_camera_presets_apply_enabled && camera_sample.valid) {
+        std::optional<GenericCameraPreset> preset{};
+        {
+            std::scoped_lock _{m_generic_camera_preset_mtx};
+            if (const auto it = m_generic_camera_presets.find(camera_sample.camera_id); it != m_generic_camera_presets.end()) {
+                preset = it->second;
+                m_active_generic_camera_preset = it->second;
+            } else {
+                m_active_generic_camera_preset = {};
+            }
+        }
+
+        if (preset.has_value()) {
+            generic_camera_preset_applied = true;
+            active_fov_multiplier = std::clamp(preset->projection_multiplier, 0.1f, 3.0f);
+            active_dolly_distance = std::clamp(preset->dolly_distance, 10.0f, 50000.0f);
+            projection_min_fov = std::max(projection_min_fov, std::clamp(preset->min_fov, 5.0f, 175.0f));
+            game_fov_for_matching = std::clamp(game_fov_for_matching, projection_min_fov, 175.0f);
+            read_only_camera_for_frame = read_only_camera_for_frame || preset->read_only_camera;
+        }
+    } else {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_active_generic_camera_preset = {};
+    }
+
     effective_fov = game_fov_for_matching * active_fov_multiplier;
     effective_fov = std::clamp(effective_fov, projection_min_fov, 175.0f);
+
+    bool camera_cut_stabilizer_blocked_write = false;
+    if (!camera_cut_stabilizer_enabled) {
+        if (m_camera_cut_state.stabilizing) {
+            spdlog::info("[CAMERA_STABILIZER] active=false reason=disabled");
+        }
+
+        m_camera_cut_state = {};
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+    } else if (camera_sample.valid) {
+        auto output = GameCameraProjectionState{
+            .valid = true,
+            .game_fov_for_matching = game_fov_for_matching,
+            .effective_fov = effective_fov,
+            .active_dolly_distance = active_dolly_distance,
+            .active_fov_multiplier = active_fov_multiplier
+        };
+
+        const auto now = camera_sample.timestamp;
+        const auto duration_ms = std::clamp(m_match_game_fov_camera_cut_stabilizer_duration_ms->value(), 100.0f, 1500.0f);
+        const auto fov_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_fov_delta->value(), 1.0f, 45.0f);
+        const auto rotation_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_rotation_delta->value(), 1.0f, 90.0f);
+        const auto location_threshold = std::clamp(m_match_game_fov_camera_cut_stabilizer_location_delta->value(), 25.0f, 10000.0f);
+
+        bool detected_cut = false;
+        float location_delta = 0.0f;
+        float rotation_delta = 0.0f;
+        float fov_delta = 0.0f;
+        bool camera_id_changed = false;
+        bool pcm_changed = false;
+
+        if (m_camera_cut_state.has_previous_sample) {
+            const auto& previous = m_camera_cut_state.previous_sample;
+            location_delta = glm::distance(camera_sample.location, previous.location);
+            const auto pitch_delta = normalize_angle_delta(camera_sample.rotation.x, previous.rotation.x);
+            const auto yaw_delta = normalize_angle_delta(camera_sample.rotation.y, previous.rotation.y);
+            const auto roll_delta = normalize_angle_delta(camera_sample.rotation.z, previous.rotation.z);
+            rotation_delta = (std::max)(pitch_delta, (std::max)(yaw_delta, roll_delta));
+            fov_delta = std::abs(camera_sample.raw_fov - previous.raw_fov);
+            camera_id_changed = camera_sample.camera_id != previous.camera_id;
+            pcm_changed = camera_sample.player_camera_manager != previous.player_camera_manager;
+
+            detected_cut =
+                camera_id_changed ||
+                pcm_changed ||
+                fov_delta >= fov_threshold ||
+                rotation_delta >= rotation_threshold ||
+                location_delta >= location_threshold;
+        }
+
+        if (detected_cut && m_camera_cut_state.has_last_output) {
+            m_camera_cut_state.stabilizing = true;
+            m_camera_cut_state.cut_time = now;
+            m_camera_cut_state.stabilize_until = now + std::chrono::milliseconds((int64_t)std::lround(duration_ms));
+            m_camera_cut_state.blend_from = m_camera_cut_state.last_output;
+            m_camera_cut_state.blend_to = output;
+            m_camera_cut_state.last_cut_from = m_camera_cut_state.previous_sample;
+            m_camera_cut_state.last_cut_to = camera_sample;
+
+            spdlog::info(
+                "[CAMERA_CUT] from={} to={} id_changed={} pcm_changed={} loc_delta={:.1f} rot_delta={:.1f} fov_delta={:.1f} stabilize_ms={:.0f}",
+                m_camera_cut_state.last_cut_from.camera_id.empty() ? "None" : m_camera_cut_state.last_cut_from.camera_id,
+                camera_sample.camera_id.empty() ? "None" : camera_sample.camera_id,
+                camera_id_changed,
+                pcm_changed,
+                location_delta,
+                rotation_delta,
+                fov_delta,
+                duration_ms);
+        }
+
+        if (m_camera_cut_state.stabilizing) {
+            m_camera_cut_state.blend_to = output;
+
+            if (now < m_camera_cut_state.stabilize_until) {
+                const auto elapsed_ms = (float)std::chrono::duration_cast<std::chrono::milliseconds>(now - m_camera_cut_state.cut_time).count();
+                const auto freeze_ms = duration_ms * 0.4f;
+                const auto blend_ms = (std::max)(1.0f, duration_ms - freeze_ms);
+                const auto t = elapsed_ms <= freeze_ms ? 0.0f : smoothstep01((elapsed_ms - freeze_ms) / blend_ms);
+                const auto& from = m_camera_cut_state.blend_from;
+                const auto& to = m_camera_cut_state.blend_to;
+
+                game_fov_for_matching = lerp_float(from.game_fov_for_matching, to.game_fov_for_matching, t);
+                effective_fov = std::clamp(lerp_float(from.effective_fov, to.effective_fov, t), projection_min_fov, 175.0f);
+                active_dolly_distance = lerp_float(from.active_dolly_distance, to.active_dolly_distance, t);
+                active_fov_multiplier = lerp_float(from.active_fov_multiplier, to.active_fov_multiplier, t);
+                camera_cut_stabilizer_blocked_write = true;
+
+                const auto remaining_ms =
+                    (int32_t)std::chrono::duration_cast<std::chrono::milliseconds>(m_camera_cut_state.stabilize_until - now).count();
+                m_match_game_fov_camera_cut_stabilizer_active.store(true, std::memory_order_relaxed);
+                m_match_game_fov_camera_cut_stabilizer_remaining_ms.store((std::max)(0, remaining_ms), std::memory_order_relaxed);
+            } else {
+                m_camera_cut_state.stabilizing = false;
+                m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+                m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+                spdlog::info("[CAMERA_STABILIZER] active=false reason=complete");
+            }
+        } else {
+            m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+            m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+        }
+
+        m_camera_cut_state.previous_sample = camera_sample;
+        m_camera_cut_state.has_previous_sample = true;
+        m_camera_cut_state.last_output = GameCameraProjectionState{
+            .valid = true,
+            .game_fov_for_matching = game_fov_for_matching,
+            .effective_fov = effective_fov,
+            .active_dolly_distance = active_dolly_distance,
+            .active_fov_multiplier = active_fov_multiplier
+        };
+        m_camera_cut_state.has_last_output = true;
+    } else {
+        m_camera_cut_state = {};
+        m_match_game_fov_camera_cut_stabilizer_active.store(false, std::memory_order_relaxed);
+        m_match_game_fov_camera_cut_stabilizer_remaining_ms.store(0, std::memory_order_relaxed);
+    }
+
+    const auto block_game_fov_write = read_only_camera_for_frame || camera_cut_stabilizer_blocked_write;
+    if (wants_game_fov_write) {
+        if (block_game_fov_write) {
+            m_match_game_fov_would_write_game_camera.store(true, std::memory_order_relaxed);
+        } else {
+            wrote_prospi_fov = write_game_fov(pcm, deferred_game_fov_write);
+            m_match_game_fov_would_write_game_camera.store(!wrote_prospi_fov, std::memory_order_relaxed);
+        }
+    } else {
+        m_match_game_fov_would_write_game_camera.store(false, std::memory_order_relaxed);
+    }
+
+    m_match_game_fov_read_only_camera_active.store(block_game_fov_write, std::memory_order_relaxed);
+    m_match_game_fov_generic_camera_preset_applied.store(generic_camera_preset_applied, std::memory_order_relaxed);
 
     const auto telephoto_perf_trigger_fov = std::clamp(m_match_game_fov_prospi_telephoto_perf_trigger_fov->value(), 10.0f, 40.0f);
     const auto telephoto_perf_should_apply =
@@ -3816,6 +5499,128 @@ void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t 
     Vector3d* view_location_double = (Vector3d*)view_location;
 
     glm::vec3 target_rotation = is_double ? glm::vec3{*(glm::vec<3, double>*)view_rotation_double} : *(glm::vec<3, float>*)view_rotation;
+    glm::vec3 target_position = is_double
+        ? glm::vec3{(float)view_location_double->x, (float)view_location_double->y, (float)view_location_double->z}
+        : glm::vec3{view_location->x, view_location->y, view_location->z};
+
+    const auto reset_head_turn_stabilizer = [&]() {
+        if (m_head_turn_camera_stabilizer.active) {
+            SPDLOG_INFO("[HeadTurnCameraStabilizer] active=false reason=reset");
+        }
+
+        m_head_turn_camera_stabilizer = {};
+    };
+
+    const auto apply_head_turn_camera_sample = [&](const glm::vec3& position, const glm::vec3& rotation) {
+        if (is_double) {
+            view_location_double->x = position.x;
+            view_location_double->y = position.y;
+            view_location_double->z = position.z;
+            view_rotation_double->pitch = rotation.x;
+            view_rotation_double->yaw = rotation.y;
+            view_rotation_double->roll = rotation.z;
+        } else {
+            view_location->x = position.x;
+            view_location->y = position.y;
+            view_location->z = position.z;
+            view_rotation->pitch = rotation.x;
+            view_rotation->yaw = rotation.y;
+            view_rotation->roll = rotation.z;
+        }
+
+        target_position = position;
+        target_rotation = rotation;
+    };
+
+    if (!is_head_turn_camera_stabilizer_enabled() || is_headlocked_aim_enabled() || is_using_2d_screen()) {
+        reset_head_turn_stabilizer();
+    } else {
+        auto& stabilizer = m_head_turn_camera_stabilizer;
+        const auto steady_now = std::chrono::steady_clock::now();
+        auto hmd_rotation = glm::normalize(glm::quat{get_rotation(0)});
+        const bool hmd_rotation_valid =
+            std::isfinite(hmd_rotation.x) &&
+            std::isfinite(hmd_rotation.y) &&
+            std::isfinite(hmd_rotation.z) &&
+            std::isfinite(hmd_rotation.w);
+        float hmd_angular_speed_deg = 0.0f;
+        bool fast_head_turn = false;
+
+        if (!hmd_rotation_valid) {
+            reset_head_turn_stabilizer();
+        } else {
+            if (stabilizer.has_hmd_sample) {
+                const auto dt = std::chrono::duration<float>(steady_now - stabilizer.last_hmd_time).count();
+
+                if (dt > 0.001f && dt < 0.25f) {
+                    const auto dot = std::clamp(std::abs(glm::dot(stabilizer.last_hmd_rotation, hmd_rotation)), 0.0f, 1.0f);
+                    const auto angle_deg = glm::degrees(2.0f * std::acos(dot));
+                    hmd_angular_speed_deg = angle_deg / dt;
+                    fast_head_turn = hmd_angular_speed_deg >= 160.0f;
+                }
+            }
+
+            stabilizer.last_hmd_rotation = hmd_rotation;
+            stabilizer.last_hmd_time = steady_now;
+            stabilizer.has_hmd_sample = true;
+
+            if (!stabilizer.has_camera_sample) {
+                stabilizer.last_stable_position = target_position;
+                stabilizer.last_stable_rotation = target_rotation;
+                stabilizer.has_camera_sample = true;
+                stabilizer.stable_frames = 1;
+            } else {
+                const auto position_delta = glm::distance(target_position, stabilizer.last_stable_position);
+                const auto pitch_delta = normalize_angle_delta(target_rotation.x, stabilizer.last_stable_rotation.x);
+                const auto yaw_delta = normalize_angle_delta(target_rotation.y, stabilizer.last_stable_rotation.y);
+                const auto roll_delta = normalize_angle_delta(target_rotation.z, stabilizer.last_stable_rotation.z);
+                const auto rotation_delta = (std::max)(pitch_delta, (std::max)(yaw_delta, roll_delta));
+
+                constexpr auto stable_position_delta = 2.0f;
+                constexpr auto stable_rotation_delta = 0.25f;
+                constexpr auto rejectable_position_delta = 35.0f;
+                constexpr auto rejectable_rotation_delta = 8.0f;
+                constexpr auto hard_cut_position_delta = 150.0f;
+                constexpr auto hard_cut_rotation_delta = 25.0f;
+
+                const bool camera_still_stable = position_delta <= stable_position_delta && rotation_delta <= stable_rotation_delta;
+                const bool rejectable_camera_spike = position_delta <= rejectable_position_delta && rotation_delta <= rejectable_rotation_delta;
+                const bool likely_real_cut_or_motion = position_delta >= hard_cut_position_delta || rotation_delta >= hard_cut_rotation_delta;
+                const bool can_hold_stable_camera =
+                    fast_head_turn &&
+                    stabilizer.stable_frames >= 3 &&
+                    !camera_still_stable &&
+                    rejectable_camera_spike &&
+                    !likely_real_cut_or_motion;
+
+                if (can_hold_stable_camera) {
+                    stabilizer.active = true;
+                    stabilizer.stabilize_until = steady_now + std::chrono::milliseconds(175);
+                    SPDLOG_INFO(
+                        "[HeadTurnCameraStabilizer] active=true hmd_speed={:.1f} pos_delta={:.2f} rot_delta={:.2f}",
+                        hmd_angular_speed_deg,
+                        position_delta,
+                        rotation_delta);
+                }
+
+                if (stabilizer.active && steady_now <= stabilizer.stabilize_until && !likely_real_cut_or_motion) {
+                    apply_head_turn_camera_sample(stabilizer.last_stable_position, stabilizer.last_stable_rotation);
+                } else {
+                    if (stabilizer.active) {
+                        SPDLOG_INFO("[HeadTurnCameraStabilizer] active=false reason={}", likely_real_cut_or_motion ? "camera_motion" : "timeout");
+                    }
+
+                    stabilizer.active = false;
+
+                    if (!fast_head_turn || camera_still_stable || likely_real_cut_or_motion) {
+                        stabilizer.last_stable_position = target_position;
+                        stabilizer.last_stable_rotation = target_rotation;
+                        stabilizer.stable_frames = camera_still_stable ? (std::min)(stabilizer.stable_frames + 1, 120u) : 1u;
+                    }
+                }
+            }
+        }
+    }
 
     const auto should_lerp_pitch = m_lerp_camera_pitch->value();
     const auto should_lerp_yaw = m_lerp_camera_yaw->value();
@@ -4165,6 +5970,13 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
         option.config_load(cfg, set_defaults);
     }
 
+    if (set_defaults && is_subnautica2_executable()) {
+        // Subnautica 2's UE5.6 native path can render SingleLayerWater black in the right eye.
+        // Keep this game-specific guard enabled for fresh profiles, but let existing profiles override it.
+        m_compatibility_subnautica2_native_water->value() = true;
+        m_subnautica2_native_water_mode->value() = SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS;
+    }
+
     if (get_runtime() != nullptr && get_runtime()->loaded) {
         get_runtime()->on_config_load(cfg, set_defaults);
 
@@ -4192,6 +6004,7 @@ void VR::on_config_load(const utility::Config& cfg, bool set_defaults) {
     // Load camera offsets
     load_cameras();
     load_prospi_camera_calibrations();
+    load_generic_camera_presets();
 }
 
 void VR::on_config_save(utility::Config& cfg) {
@@ -4511,6 +6324,162 @@ void VR::clear_current_prospi_preset_calibrations() {
 std::string VR::get_current_prospi_camera_id() {
     std::scoped_lock _{m_prospi_camera_calibration_mtx};
     return m_prospi_current_camera_id;
+}
+
+void VR::save_generic_camera_presets() try {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto preset_path = get_generic_camera_presets_path();
+    std::filesystem::create_directories(preset_path.parent_path());
+
+    size_t preset_count{};
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        preset_count = m_generic_camera_presets.size();
+    }
+
+    if (preset_count == 0) {
+        std::error_code exists_ec{};
+        const auto preset_file_exists = std::filesystem::exists(preset_path, exists_ec);
+        if (!exists_ec && preset_file_exists) {
+            std::error_code remove_ec{};
+            std::filesystem::remove(preset_path, remove_ec);
+            if (!remove_ec) {
+                spdlog::info("[VR] Cleared generic camera preset file {}", preset_path.string());
+            }
+        }
+
+        return;
+    }
+
+    json data{};
+    data["version"] = 1;
+    data["cameras"] = json::object();
+
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        for (const auto& [camera_id, preset] : m_generic_camera_presets) {
+            data["cameras"][camera_id] = {
+                {"camera_id", preset.camera_id},
+                {"min_fov", preset.min_fov},
+                {"dolly_distance", preset.dolly_distance},
+                {"projection_multiplier", preset.projection_multiplier},
+                {"read_only_camera", preset.read_only_camera}
+            };
+        }
+    }
+
+    std::ofstream file{preset_path};
+    file << data.dump(4);
+
+    spdlog::info("[VR] Saved {} generic camera presets to {}", preset_count, preset_path.string());
+} catch (const std::exception& e) {
+    spdlog::error("[VR] Failed to save generic camera presets: {}", e.what());
+} catch (...) {
+    spdlog::error("[VR] Failed to save generic camera presets");
+}
+
+void VR::load_generic_camera_presets() try {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto preset_path = get_generic_camera_presets_path();
+    std::unordered_map<std::string, GenericCameraPreset> presets{};
+
+    if (std::filesystem::exists(preset_path)) {
+        std::ifstream file{preset_path};
+        json data{};
+        file >> data;
+
+        if (data.contains("cameras") && data["cameras"].is_object()) {
+            for (const auto& [camera_id, value] : data["cameras"].items()) {
+                if (!value.is_object()) {
+                    continue;
+                }
+
+                GenericCameraPreset preset{};
+                preset.camera_id = value.value("camera_id", camera_id);
+                preset.min_fov = std::clamp(value.value("min_fov", 5.0f), 5.0f, 175.0f);
+                preset.dolly_distance = std::clamp(value.value("dolly_distance", 3000.0f), 10.0f, 50000.0f);
+                preset.projection_multiplier = std::clamp(value.value("projection_multiplier", 1.0f), 0.1f, 3.0f);
+                preset.read_only_camera = value.value("read_only_camera", true);
+                presets[preset.camera_id] = preset;
+            }
+        }
+    }
+
+    size_t preset_count{};
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_generic_camera_presets = std::move(presets);
+        preset_count = m_generic_camera_presets.size();
+    }
+
+    spdlog::info("[VR] Loaded {} generic camera presets from {}", preset_count, preset_path.string());
+} catch (const std::exception& e) {
+    spdlog::error("[VR] Failed to load generic camera presets: {}", e.what());
+} catch (...) {
+    spdlog::error("[VR] Failed to load generic camera presets");
+}
+
+void VR::save_current_generic_camera_preset() {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto camera_id = get_current_game_camera_id();
+    if (camera_id.empty()) {
+        spdlog::warn("[VR] Refusing to save generic camera preset without an active camera ID");
+        return;
+    }
+
+    GenericCameraPreset preset{};
+    preset.camera_id = camera_id;
+    preset.min_fov = std::clamp(
+        m_match_game_fov_min_enabled->value() ? m_match_game_fov_min->value() : m_game_fov_raw.load(std::memory_order_relaxed),
+        5.0f,
+        175.0f);
+    preset.dolly_distance = std::clamp(m_match_game_fov_dolly_distance->value(), 10.0f, 50000.0f);
+    preset.projection_multiplier = std::clamp(m_match_game_fov_multiplier->value(), 0.1f, 3.0f);
+    preset.read_only_camera = m_match_game_fov_read_only_camera->value();
+
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        m_generic_camera_presets[camera_id] = preset;
+    }
+
+    save_generic_camera_presets();
+
+    spdlog::info(
+        "[VR] Saved generic camera preset camera={} min={:.2f} mult={:.2f} dolly={:.2f} read_only={}",
+        preset.camera_id,
+        preset.min_fov,
+        preset.projection_multiplier,
+        preset.dolly_distance,
+        preset.read_only_camera);
+}
+
+void VR::clear_current_generic_camera_preset() {
+    ZoneScopedN(__FUNCTION__);
+
+    const auto camera_id = get_current_game_camera_id();
+    if (camera_id.empty()) {
+        spdlog::warn("[VR] Refusing to clear generic camera preset without an active camera ID");
+        return;
+    }
+
+    bool removed = false;
+    {
+        std::scoped_lock _{m_generic_camera_preset_mtx};
+        removed = m_generic_camera_presets.erase(camera_id) > 0;
+    }
+
+    if (removed) {
+        save_generic_camera_presets();
+        spdlog::info("[VR] Cleared generic camera preset for camera={}", camera_id);
+    }
+}
+
+std::string VR::get_current_game_camera_id() {
+    std::scoped_lock _{m_generic_camera_preset_mtx};
+    return m_current_game_camera_id;
 }
 
 
@@ -4834,7 +6803,11 @@ void VR::on_post_present() {
     const auto is_left_eye_frame = is_using_afr() ? (is_same_frame || (m_render_frame_count % 2 == m_left_eye_interval)) : true;
 
     if (is_left_eye_frame) {
-        if (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync) {
+        const auto should_defer_very_late_wait =
+            get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE &&
+            should_defer_stalker2_very_late_openxr_wait(runtime, m_is_d3d12);
+
+        if (!should_defer_very_late_wait && (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync)) {
             const auto had_sync = runtime->got_first_sync;
             const auto callsite = get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE
                 ? VRRuntime::SyncFrameCallsite::VRVeryLatePostPresent
@@ -4844,6 +6817,8 @@ void VR::on_post_present() {
             if (!runtime->got_first_poses || !had_sync) {
                 update_hmd_state();
             }
+        } else if (should_defer_very_late_wait) {
+            SPDLOG_INFO_ONCE("[Stalker2][OpenXR] Deferring VERY_LATE xrWaitFrame to the D3D12 submit path after initial valid poses");
         }
 
         if (runtime->is_openxr() && m_openxr->can_run_frame_loop() && get_synchronize_stage() > VR::SynchronizeStage::EARLY) {
@@ -5051,7 +7026,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Native Stereo Fix")) {
             m_native_stereo_fix->draw("Enabled");
-            m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+            if (should_force_native_stereo_fix_same_pass()) {
+                m_native_stereo_fix_same_pass->value() = true;
+                ImGui::BeginDisabled();
+                m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("Forced for Stalker2 stability while Native Stereo Fix is enabled.");
+            } else {
+                m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
+            }
             ImGui::TreePop();
         }
 
@@ -5100,6 +7083,80 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_aim_use_pawn_control_rotation->draw("Use Pawn Control Rotation");
 
             m_aim_multiplayer_support->draw("Multiplayer Support");
+
+            ImGui::TreePop();
+        }
+
+        if (ImGui::TreeNode("Motion Controller Aim Offsets")) {
+            ImGui::TextWrapped("Default zero values preserve the raw controller pose.");
+
+            float left_controller_rotation_offset[] = {
+                m_left_controller_rotation_offset_x->value(),
+                m_left_controller_rotation_offset_y->value(),
+                m_left_controller_rotation_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Left Rotation", left_controller_rotation_offset, -180.0f, 180.0f)) {
+                m_left_controller_rotation_offset_x->value() = left_controller_rotation_offset[0];
+                m_left_controller_rotation_offset_y->value() = left_controller_rotation_offset[1];
+                m_left_controller_rotation_offset_z->value() = left_controller_rotation_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##LeftControllerRotationOffset")) {
+                m_left_controller_rotation_offset_x->value() = 0.0f;
+                m_left_controller_rotation_offset_y->value() = 0.0f;
+                m_left_controller_rotation_offset_z->value() = 0.0f;
+            }
+
+            float right_controller_rotation_offset[] = {
+                m_right_controller_rotation_offset_x->value(),
+                m_right_controller_rotation_offset_y->value(),
+                m_right_controller_rotation_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Right Rotation", right_controller_rotation_offset, -180.0f, 180.0f)) {
+                m_right_controller_rotation_offset_x->value() = right_controller_rotation_offset[0];
+                m_right_controller_rotation_offset_y->value() = right_controller_rotation_offset[1];
+                m_right_controller_rotation_offset_z->value() = right_controller_rotation_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##RightControllerRotationOffset")) {
+                m_right_controller_rotation_offset_x->value() = 0.0f;
+                m_right_controller_rotation_offset_y->value() = 0.0f;
+                m_right_controller_rotation_offset_z->value() = 0.0f;
+            }
+
+            float left_controller_position_offset[] = {
+                m_left_controller_position_offset_x->value(),
+                m_left_controller_position_offset_y->value(),
+                m_left_controller_position_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Left Position", left_controller_position_offset, -1.0f, 1.0f)) {
+                m_left_controller_position_offset_x->value() = left_controller_position_offset[0];
+                m_left_controller_position_offset_y->value() = left_controller_position_offset[1];
+                m_left_controller_position_offset_z->value() = left_controller_position_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##LeftControllerPositionOffset")) {
+                m_left_controller_position_offset_x->value() = 0.0f;
+                m_left_controller_position_offset_y->value() = 0.0f;
+                m_left_controller_position_offset_z->value() = 0.0f;
+            }
+
+            float right_controller_position_offset[] = {
+                m_right_controller_position_offset_x->value(),
+                m_right_controller_position_offset_y->value(),
+                m_right_controller_position_offset_z->value()
+            };
+            if (ImGui::SliderFloat3("Right Position", right_controller_position_offset, -1.0f, 1.0f)) {
+                m_right_controller_position_offset_x->value() = right_controller_position_offset[0];
+                m_right_controller_position_offset_y->value() = right_controller_position_offset[1];
+                m_right_controller_position_offset_z->value() = right_controller_position_offset[2];
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Reset##RightControllerPositionOffset")) {
+                m_right_controller_position_offset_x->value() = 0.0f;
+                m_right_controller_position_offset_y->value() = 0.0f;
+                m_right_controller_position_offset_z->value() = 0.0f;
+            }
 
             ImGui::TreePop();
         }
@@ -5197,10 +7254,39 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     if (m_match_game_fov_min_enabled->value()) {
                         m_match_game_fov_min->draw("Minimum FOV");
                     }
+                    m_match_game_fov_read_only_camera->draw("Read Game Camera Only (No FOV Writes)");
 
                     if (m_match_game_fov_dolly->value()) {
                         m_match_game_fov_dolly_distance->draw_drag("Dolly Focus Distance", 10.0f, "%.0f");
                         ImGui::Text("Dolly Offset: %.2f", get_game_fov_dolly_offset());
+                    }
+                }
+
+                if (ImGui::CollapsingHeader("Camera Cut Stabilizer")) {
+                    m_match_game_fov_camera_cut_stabilizer->draw("Enable Camera Cut Stabilizer");
+                    if (m_match_game_fov_camera_cut_stabilizer->value()) {
+                        m_match_game_fov_camera_cut_stabilizer_duration_ms->draw("Stabilizer Duration (ms)");
+                        m_match_game_fov_camera_cut_stabilizer_fov_delta->draw("Cut FOV Delta Threshold");
+                        m_match_game_fov_camera_cut_stabilizer_rotation_delta->draw("Cut Rotation Delta Threshold");
+                        m_match_game_fov_camera_cut_stabilizer_location_delta->draw("Cut Location Delta Threshold");
+                    }
+                }
+
+                if (m_match_game_fov_dolly->value() &&
+                    ImGui::CollapsingHeader("Generic Camera Presets")) {
+                    m_match_game_fov_generic_camera_presets->draw("Enable Generic Camera Presets");
+                    if (m_match_game_fov_generic_camera_presets->value()) {
+                        m_match_game_fov_generic_camera_presets_auto_apply->draw("Auto Apply Saved Camera Presets");
+
+                        if (ImGui::Button("Save Current Generic Camera Preset")) {
+                            save_current_generic_camera_preset();
+                        }
+
+                        ImGui::SameLine();
+
+                        if (ImGui::Button("Clear Current Generic Camera Preset")) {
+                            clear_current_generic_camera_preset();
+                        }
                     }
                 }
 
@@ -5353,13 +7439,22 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     const auto fov = get_game_fov();
                     const auto raw_fov = m_game_fov_raw.load(std::memory_order_relaxed);
                     const bool fov_valid = m_game_fov_valid.load(std::memory_order_relaxed);
-                    const auto current_camera_id = get_current_prospi_camera_id();
+                    const auto current_camera_id = get_current_game_camera_id();
                     const auto calibration_applied = m_match_game_fov_prospi_calibration_applied.load(std::memory_order_relaxed);
                     const auto calibration_multiplier = m_match_game_fov_prospi_calibration_multiplier_active.load(std::memory_order_relaxed);
                     const auto calibration_dolly_distance = m_match_game_fov_prospi_calibration_dolly_distance_active.load(std::memory_order_relaxed);
+                    const auto read_only_active = m_match_game_fov_read_only_camera_active.load(std::memory_order_relaxed);
+                    const auto would_write = m_match_game_fov_would_write_game_camera.load(std::memory_order_relaxed);
+                    const auto stabilizer_active = m_match_game_fov_camera_cut_stabilizer_active.load(std::memory_order_relaxed);
+                    const auto stabilizer_remaining_ms = m_match_game_fov_camera_cut_stabilizer_remaining_ms.load(std::memory_order_relaxed);
+                    const auto generic_preset_applied = m_match_game_fov_generic_camera_preset_applied.load(std::memory_order_relaxed);
                     ImGui::Text("Current Game FOV: %.2f (%s)", fov, fov_valid ? "valid" : "invalid");
                     ImGui::Text("Raw Game FOV: %.2f", raw_fov);
                     ImGui::Text("Current Camera ID: %s", current_camera_id.empty() ? "None" : current_camera_id.c_str());
+                    ImGui::Text("Read-Only Camera Active: %s", read_only_active ? "yes" : "no");
+                    ImGui::Text("Blocked Game FOV Write Pending: %s", would_write ? "yes" : "no");
+                    ImGui::Text("Camera Cut Stabilizer: %s (%dms)", stabilizer_active ? "active" : "inactive", stabilizer_remaining_ms);
+                    ImGui::Text("Generic Camera Preset Applied: %s", generic_preset_applied ? "yes" : "no");
                     ImGui::Text("Camera Calibration Applied: %s", calibration_applied ? "yes" : "no");
                     if (calibration_applied) {
                         ImGui::Text("Calibration Multiplier: %.2f", calibration_multiplier);
@@ -5461,6 +7556,33 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_skip_pip->draw("Skip PostInitProperties");
             m_compatibility_direct_aim->draw("Direct Aim Fallback");
             m_compatibility_controller_camera_guard->draw("Controller-Camera Conflict Guard");
+            m_compatibility_head_turn_camera_stabilizer->draw("Head-Turn Camera Stabilizer");
+            m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
+            m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
+            if (m_compatibility_ui_layer_pose_stabilizer->value()) {
+                ImGui::TextWrapped("OpenXR UE5.7+: latches game UI layer pose to the same frame basis used for scene submit.");
+            }
+            m_compatibility_fullscreen_16x9_cameras->draw("Fullscreen 16:9 Cameras");
+            if (m_compatibility_fullscreen_16x9_cameras->value()) {
+                m_compatibility_fullscreen_16x9_camera_aspect->draw("Fullscreen Camera Aspect Override");
+                ImGui::TextWrapped("For SMG/Supermassive camera managers: 0 uses the current per-eye HMD aspect; otherwise this writes the selected aspect and disables camera aspect constraints/remap.");
+            }
+            m_compatibility_subnautica2_native_water->draw("Subnautica 2 Native Water Compatibility");
+            if (m_compatibility_subnautica2_native_water->value()) {
+                m_subnautica2_native_water_mode->draw("Subnautica 2 Native Water Mode");
+                ImGui::TextWrapped("Subnautica 2 only: applies in DX12 Native Stereo with Native Stereo Fix off. Safe Reflections keeps SingleLayerWater enabled and disables native-stereo-sensitive tiled/reflection history paths. Synced/AFR restores previous values.");
+            }
+            m_compatibility_daysgone_bend_ui_placement_fix->draw("Days Gone Bend UI Placement Fix");
+            if (m_compatibility_daysgone_bend_ui_placement_fix->value()) {
+                ImGui::TextWrapped("Days Gone only: keeps Bend's in-scene 3D menu path and applies controlled BP_Menu3D/BendWidgetMain placement overrides. Tuning controls are shown below.");
+                if (m_fake_stereo_hook != nullptr) {
+                    m_fake_stereo_hook->draw_daysgone_bend_ui_controls();
+                }
+            }
+            m_compatibility_daysgone_gbuffer_safe_mode->draw("Days Gone GBuffer Safe Mode");
+            if (m_compatibility_daysgone_gbuffer_safe_mode->value()) {
+                ImGui::TextWrapped("Days Gone DX11 only: applies r.GBuffer=0 to avoid Bend deferred/GBuffer black road/terrain patches. It is opt-in and restored when disabled.");
+            }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
 

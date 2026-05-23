@@ -1,6 +1,7 @@
 #define NOMINMAX
 
 #include <windows.h>
+#include <d3d11.h>
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
@@ -8,10 +9,14 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <future>
+#include <limits>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
@@ -221,6 +226,15 @@ bool mechwarrior_clans_is_current_game() {
     return result;
 }
 
+bool directive8020_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Directive8020") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool stalker2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -234,6 +248,28 @@ bool avowed_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && uevr::games::is_avowed_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+bool subnautica2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"Subnautica2-Win64-Shipping") != std::wstring::npos ||
+             exe_path->find(L"Subnautica2-WinGDK-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+bool daysgone_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"DaysGone.exe") != std::wstring::npos ||
+             exe_path->find(L"BendGame") != std::wstring::npos);
     }();
 
     return result;
@@ -558,6 +594,20 @@ bool is_ue_5_8_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50008;
 }
 
+
+bool is_ue_5_6_or_newer() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        if (str_version.starts_with("5.6") || str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
+            return true;
+        }
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50006;
+}
+
 bool is_ue_5_1_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -573,11 +623,41 @@ bool is_ue_5_1_dx12_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
-bool is_ue_5_5_dx12_backend() {
-    if (g_framework == nullptr || !g_framework->is_dx12()) {
+bool is_ue_5_1_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
         return false;
     }
 
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.1");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
+}
+
+bool is_ue_5_4_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.4");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50004 && disk_version.dwFileVersionMS < 0x50005;
+}
+
+bool is_ue_5_4_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    return is_ue_5_4_runtime();
+}
+
+bool is_ue_5_5_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
@@ -586,6 +666,22 @@ bool is_ue_5_5_dx12_backend() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50005 && disk_version.dwFileVersionMS < 0x50006;
+}
+
+bool is_ue_5_5_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    return is_ue_5_5_runtime();
+}
+
+bool is_ue_5_5_dx12_backend() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    return is_ue_5_5_runtime();
 }
 
 bool is_ue_5_6_dx12_backend() {
@@ -673,7 +769,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     // These UE5.5 titles expose a valid Slate UI texture but route Slate to the
     // wrong target, leaving the HUD clipped in the upper-left/left-eye path.
     // Keep this allowlisted and DX12-only until more UE5.5 games validate it.
-    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game()) &&
+    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game() || directive8020_is_current_game()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
         !is_ue_5_7_or_newer();
@@ -1364,6 +1460,32 @@ struct UE57SlateDrawElementsPassInputsHead {
     UE57RenderTargetLoadAction elements_load_action;
 };
 
+bool looks_like_ue57_slate_draw_elements_inputs(const UE57SlateDrawElementsPassInputsHead* inputs) {
+    if (inputs == nullptr || !is_readable_process_range((uintptr_t)inputs, sizeof(UE57SlateDrawElementsPassInputsHead))) {
+        return false;
+    }
+
+    const auto action = static_cast<uint32_t>(inputs->elements_load_action);
+
+    if (action > static_cast<uint32_t>(UE57RenderTargetLoadAction::Clear)) {
+        return false;
+    }
+
+    const auto scene_viewport_texture = inputs->scene_viewport_texture;
+    const auto elements_texture = inputs->elements_texture;
+
+    if (scene_viewport_texture == nullptr || elements_texture == nullptr) {
+        return false;
+    }
+
+    if (!is_readable_process_range((uintptr_t)scene_viewport_texture, sizeof(void*)) ||
+        !is_readable_process_range((uintptr_t)elements_texture, sizeof(void*))) {
+        return false;
+    }
+
+    return true;
+}
+
 using RegisterExternalTextureFromRHIFn = FRDGTexture* (*)(FRDGBuilder&, FRHITexture*, const wchar_t*);
 
 bool looks_like_nontrivial_virtual(uintptr_t fn) {
@@ -1480,7 +1602,8 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     uintptr_t* localplayer_vtable,
     uint32_t slot,
     const char* source_note,
-    bool require_inherited_uobject_slot)
+    bool require_inherited_uobject_slot,
+    bool allow_localplayer_callable_thunk = false)
 {
     if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
         IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
@@ -1492,8 +1615,11 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     const auto object_fn = object_vtable[slot];
     const auto localplayer_fn = localplayer_vtable[slot];
 
-    if (!looks_like_post_init_properties_virtual(object_fn) ||
-        !looks_like_post_init_properties_virtual(localplayer_fn))
+    const auto localplayer_looks_valid = allow_localplayer_callable_thunk
+        ? looks_like_callable_virtual(localplayer_fn)
+        : looks_like_post_init_properties_virtual(localplayer_fn);
+
+    if (!looks_like_post_init_properties_virtual(object_fn) || !localplayer_looks_valid)
     {
         SPDLOG_WARN("[PostInitProperties] {} slot {} did not look callable object_fn={:x} localplayer_fn={:x}",
             source_note,
@@ -1545,41 +1671,44 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
-    // UE5.1 source and the Stalker2 PDB/IDA view place UObject::PostInitProperties
-    // at slot 10 for the shipped UObject layout. Stalker2 inherits the UObject slot;
-    // only accept the exact slot when both UObject CDO and LocalPlayer agree.
-    if (stalker2_is_current_game() && is_ue_5_1_dx12_backend()) {
+    // UE5.1 source plus Stalker2/SOE PDBs place UObject::PostInitProperties at
+    // slot 10 for shipped game layouts. Some UE5.1 games put a LocalPlayer
+    // override/thunk at the same slot, so validate UObject strictly and only
+    // require the LocalPlayer target to be callable.
+    if (is_ue_5_1_dx_backend()) {
         constexpr uint32_t UE51_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
                 object_vtable,
                 localplayer_vtable,
                 UE51_POST_INIT_PROPERTIES_SLOT,
-                "UE5.1/Stalker2 UObject::PostInitProperties",
+                "UE5.1 UObject::PostInitProperties",
+                false,
                 true))
         {
             return UE51_POST_INIT_PROPERTIES_SLOT;
         }
 
-        SPDLOG_WARN("[PostInitProperties] UE5.1/Stalker2 slot 10 did not validate; skipping LocalPlayer bootstrap");
+        SPDLOG_WARN("[PostInitProperties] UE5.1 slot 10 did not validate; skipping LocalPlayer bootstrap");
         return std::nullopt;
     }
 
-    // UE 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
+    // UE 5.4.4, 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
     // for shipped game layouts:
     // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
     // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
-    if (is_ue_5_5_dx12_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
-        constexpr uint32_t UE55_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
+    if (is_ue_5_4_dx_backend() || is_ue_5_5_dx_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+        constexpr uint32_t UE54_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
                 object_vtable,
                 localplayer_vtable,
-                UE55_PLUS_POST_INIT_PROPERTIES_SLOT,
-                "UE5.5+ UObject::PostInitProperties",
-                false))
+                UE54_PLUS_POST_INIT_PROPERTIES_SLOT,
+                "UE5.4+ UObject::PostInitProperties",
+                false,
+                is_ue_5_4_dx_backend()))
         {
-            return UE55_PLUS_POST_INIT_PROPERTIES_SLOT;
+            return UE54_PLUS_POST_INIT_PROPERTIES_SLOT;
         }
     }
 
@@ -1858,6 +1987,10 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
+    attempt_hook_daysgone_slate_intermediate_buffer();
+    attempt_hook_daysgone_bend_taa_composite();
+    update_daysgone_ui_telemetry();
+    update_daysgone_bend_ui_placement_fix();
 
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
@@ -1877,6 +2010,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         m_recreate_textures_on_reset->draw("Recreate Textures on Reset");
         m_frame_delay_compensation->draw("Frame Delay Compensation");
         m_use_fmalloc_scene_view_extensions->draw("Use FMalloc for ISceneViewExtensions");
+        m_safe_tick_hook->draw("Use Safe Tick Hooking");
 
         if (m_tracking_system_hook != nullptr) {
             m_tracking_system_hook->on_draw_ui();
@@ -1974,7 +2108,312 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         ImGui::TreePop();
     }
 
+    if (daysgone_is_current_game()) {
+        draw_daysgone_bend_ui_controls();
+    }
+
     ImGui::Separator();
+}
+
+void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
+    if (!daysgone_is_current_game()) {
+        ImGui::TextWrapped("Days Gone UI tuning is only available in DaysGone.exe.");
+        return;
+    }
+
+    ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+    if (!ImGui::TreeNode("Days Gone Bend UI Placement")) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool active = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    ImGui::TextWrapped("Status: %s | menu=%llx widget=%llx applies=%llu restores=%llu",
+        active ? "enabled" : "disabled",
+        (unsigned long long)m_daysgone_bend_ui_last_menu3d.load(),
+        (unsigned long long)m_daysgone_bend_ui_last_widget_main.load(),
+        (unsigned long long)m_daysgone_bend_ui_apply_count.load(),
+        (unsigned long long)m_daysgone_bend_ui_restore_count.load());
+    ImGui::TextWrapped("Use Root Viewport Slot controls for the visible MainMenu/HUD/subtitle roots.");
+    ImGui::TextWrapped("Composite seen=%llu crop_suppressed=%llu extent_overrides=%llu shader_overrides=%llu",
+        (unsigned long long)m_daysgone_bend_taa_composite_seen.load(),
+        (unsigned long long)m_daysgone_bend_taa_composite_crop_suppressed.load(),
+        (unsigned long long)m_daysgone_bend_taa_composite_extent_overrides.load(),
+        (unsigned long long)m_daysgone_bend_taa_shader_param_overrides.load());
+    ImGui::TextWrapped("Captured Slate UI native=%llx size=%ux%u",
+        (unsigned long long)m_daysgone_slate_native_ui_target.load(),
+        m_daysgone_slate_native_ui_width.load(),
+        m_daysgone_slate_native_ui_height.load());
+
+    if (ImGui::Button("Recommended Stable UMG Mode")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = false;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_override_root_transform->value() = false;
+        m_daysgone_bend_ui_force_widget_refresh->value() = true;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = false;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1371.022f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1371.022f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_key_opacity->value() = 0.0f;
+        m_daysgone_bend_ui_manual_apply_generation.fetch_add(1);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Extracted Overlay Diagnostic Mode")) {
+        m_daysgone_bend_ui_use_slate_overlay->value() = true;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+    }
+    ImGui::TextWrapped("Stable UMG mode is the current useful path. The extracted overlay is diagnostic; only enable suppression if you want to hide the live game UI and use the copied overlay only.");
+
+    ImGui::SeparatorText("Extracted Slate UI Overlay");
+    m_daysgone_bend_ui_use_slate_overlay->draw("Use Extracted Slate UI Overlay");
+    ImGui::TextWrapped("Copies the captured Bend SlateIntermediateBuffer into UEVR's OpenXR UI layer. This keeps the scene in the normal synced/native path and does not force global 2D mode.");
+    m_daysgone_bend_ui_suppress_in_scene_composite->draw("Suppress Bend In-Scene Slate Composite");
+    ImGui::TextWrapped("Leave suppression off first. Enable it only if the extracted overlay works but the original glued/duplicated game UI still remains visible.");
+    m_daysgone_bend_ui_split_overlay->draw("Split Menu/Footer Extracted Overlay");
+    ImGui::TextWrapped("Draws the footer/bottom band and the upper-right menu as separate crops. This lets the main menu move/scale independently from the footer.");
+    m_daysgone_bend_ui_key_threshold->draw_drag("Overlay Key Threshold", 0.001f, "%.3f");
+    m_daysgone_bend_ui_key_softness->draw_drag("Overlay Key Softness", 0.001f, "%.3f");
+    m_daysgone_bend_ui_key_opacity->draw_drag("Overlay Opacity", 0.01f, "%.3f");
+    m_daysgone_bend_ui_screen_offset_x->draw_drag("Overlay Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_screen_offset_y->draw_drag("Overlay Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_screen_scale->draw_drag("Overlay Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_draw_scale->draw_drag("Overlay Fine Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_menu_offset_x->draw_drag("Upper Menu Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_menu_offset_y->draw_drag("Upper Menu Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_menu_scale->draw_drag("Upper Menu Scale", 0.01f, "%.3f");
+
+    if (ImGui::TreeNode("Extracted overlay crop tuning")) {
+        m_daysgone_bend_ui_menu_src_x->draw_drag("Upper Menu Source X", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_y->draw_drag("Upper Menu Source Y", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_w->draw_drag("Upper Menu Source W", 0.001f, "%.3f");
+        m_daysgone_bend_ui_menu_src_h->draw_drag("Upper Menu Source H", 0.001f, "%.3f");
+        m_daysgone_bend_ui_footer_src_y->draw_drag("Footer Source Y", 0.001f, "%.3f");
+        m_daysgone_bend_ui_footer_src_h->draw_drag("Footer Source H", 0.001f, "%.3f");
+        ImGui::TreePop();
+    }
+
+    ImGui::SeparatorText("Active SlateHUD / UMG Root Viewport Slot");
+    m_daysgone_bend_ui_viewport_slot_fix->draw("Root UUserWidget Viewport Slot Fix");
+    m_daysgone_bend_ui_viewport_slot_offset_x->draw_drag("Root Slot Offset X", 1.0f, "%.1f");
+    m_daysgone_bend_ui_viewport_slot_offset_y->draw_drag("Root Slot Offset Y", 1.0f, "%.1f");
+    m_daysgone_bend_ui_viewport_slot_scale->draw_drag("Root Render Scale", 0.01f, "%.3f");
+    m_daysgone_bend_ui_viewport_slot_opacity->draw_drag("Root Opacity", 0.01f, "%.3f");
+    if (ImGui::Button("Apply Current UI Tuning Once")) {
+        m_daysgone_bend_ui_manual_apply_generation.fetch_add(1);
+    }
+    ImGui::SameLine();
+    m_daysgone_bend_ui_live_watchdog->draw("Live Reapply Watchdog");
+    ImGui::TextWrapped("Targets UI_MainMenuWidget, OptionsMenuWidget, OptionsTopMenuWidget, UI_HudWidget, UI_SubtitleWidget, and UI_MegaMenu roots. The slot stays 1920x1080; scale is applied as a render transform to avoid clipping/cropping.");
+    m_daysgone_bend_ui_disable_taa_crop->draw("Disable Bend TAA Slate Crop");
+    ImGui::TextWrapped("Only active when the extracted Slate overlay is enabled and the in-scene composite is suppressed. This avoids touching Bend TAA crops during normal gameplay.");
+    ImGui::TextWrapped("This now applies only when settings change or when Apply Current UI Tuning Once is pressed. The watchdog is off by default; only enable it if the game recreates the menu widgets and you need periodic reapplication.");
+
+    if (ImGui::TreeNode("Advanced legacy BP_Menu3D/widget controls")) {
+        int mode = std::clamp(m_daysgone_bend_ui_mode->value(), 0, 2);
+        constexpr const char* kModeItems = "Player-camera fields only\0Widget transform only\0Player-camera + widget transform\0";
+        if (ImGui::Combo("Placement Mode", &mode, kModeItems)) {
+            m_daysgone_bend_ui_mode->value() = mode;
+        }
+
+        m_daysgone_bend_ui_force_player_camera->draw("Force BP_Menu3D UsePlayerCamera");
+        m_daysgone_bend_ui_distance_from_camera->draw_drag("Distance From Camera", 5.0f, "%.1f");
+        m_daysgone_bend_ui_camera_fov->draw_drag("Camera FOV", 0.25f, "%.2f");
+
+        ImGui::SeparatorText("BendWidgetMain");
+        m_daysgone_bend_ui_override_widget_transform->draw("Override Widget Transform");
+        m_daysgone_bend_ui_widget_loc_x->draw_drag("Widget Loc X", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_loc_y->draw_drag("Widget Loc Y", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_loc_z->draw_drag("Widget Loc Z", 5.0f, "%.1f");
+        m_daysgone_bend_ui_widget_rot_pitch->draw_drag("Widget Rot Pitch", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_rot_yaw->draw_drag("Widget Rot Yaw", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_rot_roll->draw_drag("Widget Rot Roll", 0.25f, "%.2f");
+        m_daysgone_bend_ui_widget_scale->draw_drag("Widget Uniform Scale", 0.01f, "%.3f");
+
+        ImGui::SeparatorText("Child Render Transform");
+        m_daysgone_bend_ui_apply_child_render_transform->draw("Experimental Child Render Transform");
+        m_daysgone_bend_ui_screen_offset_x->draw_drag("Child Render Offset X", 1.0f, "%.1f");
+        m_daysgone_bend_ui_screen_offset_y->draw_drag("Child Render Offset Y", 1.0f, "%.1f");
+        m_daysgone_bend_ui_screen_scale->draw_drag("Child Render Scale", 0.01f, "%.3f");
+        m_daysgone_bend_ui_draw_scale->draw_drag("Child Draw Scale", 0.01f, "%.3f");
+        m_daysgone_bend_ui_force_widget_refresh->draw("Force Redraw / Offscreen Safe Flags");
+
+        ImGui::SeparatorText("DefaultSceneRoot1");
+        m_daysgone_bend_ui_override_root_transform->draw("Override Root Location");
+        m_daysgone_bend_ui_root_loc_x->draw_drag("Root Loc X", 5.0f, "%.1f");
+        m_daysgone_bend_ui_root_loc_y->draw_drag("Root Loc Y", 5.0f, "%.1f");
+        m_daysgone_bend_ui_root_loc_z->draw_drag("Root Loc Z", 5.0f, "%.1f");
+        ImGui::TreePop();
+    }
+
+    if (ImGui::Button("Observed Defaults")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = false;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_override_root_transform->value() = false;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_menu_src_x->value() = 0.52f;
+        m_daysgone_bend_ui_menu_src_y->value() = 0.0f;
+        m_daysgone_bend_ui_menu_src_w->value() = 0.48f;
+        m_daysgone_bend_ui_menu_src_h->value() = 0.48f;
+        m_daysgone_bend_ui_menu_offset_x->value() = -450.0f;
+        m_daysgone_bend_ui_menu_offset_y->value() = -650.0f;
+        m_daysgone_bend_ui_menu_scale->value() = 1.0f;
+        m_daysgone_bend_ui_footer_src_y->value() = 0.68f;
+        m_daysgone_bend_ui_footer_src_h->value() = 0.32f;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1371.022f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1371.022f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_override_composite_extent->value() = false;
+        m_daysgone_bend_ui_composite_width->value() = 1920.0f;
+        m_daysgone_bend_ui_composite_height->value() = 1080.0f;
+        m_daysgone_bend_ui_override_shader_params->value() = false;
+        m_daysgone_bend_ui_shader_param_target->value() = 3;
+        m_daysgone_bend_ui_shader_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_shader_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_shader_scale_x->value() = 1.0f;
+        m_daysgone_bend_ui_shader_scale_y->value() = 1.0f;
+        m_daysgone_bend_ui_root_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_root_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_root_loc_z->value() = -1200.0f;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Recenter Test Preset")) {
+        m_daysgone_bend_ui_mode->value() = 2;
+        m_daysgone_bend_ui_force_player_camera->value() = true;
+        m_daysgone_bend_ui_override_widget_transform->value() = true;
+        m_daysgone_bend_ui_use_slate_overlay->value() = false;
+        m_daysgone_bend_ui_suppress_in_scene_composite->value() = false;
+        m_daysgone_bend_ui_split_overlay->value() = true;
+        m_daysgone_bend_ui_menu_src_x->value() = 0.52f;
+        m_daysgone_bend_ui_menu_src_y->value() = 0.0f;
+        m_daysgone_bend_ui_menu_src_w->value() = 0.48f;
+        m_daysgone_bend_ui_menu_src_h->value() = 0.48f;
+        m_daysgone_bend_ui_menu_offset_x->value() = -450.0f;
+        m_daysgone_bend_ui_menu_offset_y->value() = -650.0f;
+        m_daysgone_bend_ui_menu_scale->value() = 1.0f;
+        m_daysgone_bend_ui_footer_src_y->value() = 0.68f;
+        m_daysgone_bend_ui_footer_src_h->value() = 0.32f;
+        m_daysgone_bend_ui_key_threshold->value() = 0.025f;
+        m_daysgone_bend_ui_key_softness->value() = 0.045f;
+        m_daysgone_bend_ui_key_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_disable_taa_crop->value() = true;
+        m_daysgone_bend_ui_distance_from_camera->value() = -1200.0f;
+        m_daysgone_bend_ui_camera_fov->value() = 70.0f;
+        m_daysgone_bend_ui_widget_loc_x->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_y->value() = 0.0f;
+        m_daysgone_bend_ui_widget_loc_z->value() = -1200.0f;
+        m_daysgone_bend_ui_widget_rot_pitch->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_yaw->value() = 90.0f;
+        m_daysgone_bend_ui_widget_rot_roll->value() = 0.0f;
+        m_daysgone_bend_ui_widget_scale->value() = 1.0f;
+        m_daysgone_bend_ui_viewport_slot_fix->value() = true;
+        m_daysgone_bend_ui_live_watchdog->value() = false;
+        m_daysgone_bend_ui_apply_child_render_transform->value() = false;
+        m_daysgone_bend_ui_viewport_slot_offset_x->value() = -240.0f;
+        m_daysgone_bend_ui_viewport_slot_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_viewport_slot_scale->value() = 0.85f;
+        m_daysgone_bend_ui_viewport_slot_opacity->value() = 1.0f;
+        m_daysgone_bend_ui_screen_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_screen_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_screen_scale->value() = 1.0f;
+        m_daysgone_bend_ui_draw_scale->value() = 1.0f;
+        m_daysgone_bend_ui_override_composite_extent->value() = false;
+        m_daysgone_bend_ui_composite_width->value() = 1920.0f;
+        m_daysgone_bend_ui_composite_height->value() = 1080.0f;
+        m_daysgone_bend_ui_override_shader_params->value() = false;
+        m_daysgone_bend_ui_shader_param_target->value() = 3;
+        m_daysgone_bend_ui_shader_offset_x->value() = 0.0f;
+        m_daysgone_bend_ui_shader_offset_y->value() = 0.0f;
+        m_daysgone_bend_ui_shader_scale_x->value() = 1.0f;
+        m_daysgone_bend_ui_shader_scale_y->value() = 1.0f;
+    }
+
+    ImGui::TreePop();
+}
+
+bool FFakeStereoRenderingHook::invalidate_ue57_resolution_dependent_state(
+    uint32_t old_width,
+    uint32_t old_height,
+    uint32_t new_width,
+    uint32_t new_height) {
+    if (!is_ue_5_7_or_newer()) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[UE5.7][OpenXR] Resolution changed [{}x{}]->[{}x{}]; invalidating Slate/UI render targets",
+        old_width,
+        old_height,
+        new_width,
+        new_height);
+
+    m_wants_texture_recreation = true;
+    m_skip_next_adjust_view_rect = true;
+
+    // Force the UE5.7 Slate/UI path to observe fresh post-resize DrawWindow and
+    // PreRenderViewFamily traffic instead of reusing candidates captured at the
+    // previous OpenXR scale.
+    m_has_seen_stable_slate_draw = false;
+    m_has_seen_prerender_viewfamily = false;
+    m_first_stable_slate_draw_at = {};
+
+    m_rtm.invalidate_resolution_dependent_targets();
+    m_rtm_418.invalidate_resolution_dependent_targets();
+    m_rtm_special.invalidate_resolution_dependent_targets();
+
+    return true;
 }
 
 void FFakeStereoRenderingHook::attempt_hooking() {
@@ -2135,6 +2574,10 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     }
 
     if (!g_framework->is_game_data_intialized()) {
+        if (hook->m_safe_tick_hook->value()) {
+            return hook->m_tick_hook.call<void*>(engine, delta, idle);
+        }
+
         // This allocates memory on the stack.
         static bool check_canary_once = true;
         volatile uint64_t shadow_space[64]{};
@@ -2197,35 +2640,39 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
     void* result = nullptr;
 
     {
-        // This allocates memory on the stack.
-        static bool check_canary_once = true;
-        volatile uint64_t shadow_space[64]{};
+        if (hook->m_safe_tick_hook->value()) {
+            result = hook->m_tick_hook.call<void*>(engine, delta, idle);
+        } else {
+            // This allocates memory on the stack.
+            static bool check_canary_once = true;
+            volatile uint64_t shadow_space[64]{};
 
 #ifdef NDEBUG
-        if (check_canary_once) {
+            if (check_canary_once) {
 #endif
-            std::memset((void*)shadow_space, 0, 64 * sizeof(uint64_t));
+                std::memset((void*)shadow_space, 0, 64 * sizeof(uint64_t));
 #ifdef NDEBUG
-        }
-#endif
-        // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
-        result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
-
-        // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
-        // But only do it once in release builds.
-#ifdef NDEBUG
-        if (check_canary_once) {
-#endif
-            for (size_t i = 0; i < 64; ++i) {
-                if (shadow_space[i] != 0) {
-                    SPDLOG_ERROR("[UGameEngine::Tick] Shadow space was overwritten! {:x} @ {}", shadow_space[i], i);
-                }
             }
+#endif
+            // We're using original here instead of call_unsafe to make sure the canaries are the first thing on the stack.
+            result = hook->m_tick_hook.original<void* (*)(sdk::UGameEngine*, float, bool)>()(engine, delta, idle);
+
+            // At least do some logic with the shadow space so it doesn't get optimized out for some reason.
+            // But only do it once in release builds.
+#ifdef NDEBUG
+            if (check_canary_once) {
+#endif
+                for (size_t i = 0; i < 64; ++i) {
+                    if (shadow_space[i] != 0) {
+                        SPDLOG_ERROR("[UGameEngine::Tick] Shadow space was overwritten! {:x} @ {}", shadow_space[i], i);
+                    }
+                }
 
 #ifdef NDEBUG
-            check_canary_once = false;
-        }
+                check_canary_once = false;
+            }
 #endif
+        }
     }
 
     for (auto& mod : mods) {
@@ -2340,15 +2787,14 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         return;
     }
 
-    SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread!");
+    SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread @ 0x{:x}!", *func);
 
-    if (is_ue_5_7_or_newer() && g_framework->is_dx12()) {
-        if (is_ue_5_8_or_newer()) {
-            attempt_hook_ue58_slate_output_texture_register();
-        } else {
-            attempt_hook_ue57_slate_elements_pass();
-        }
+    if (is_ue_5_8_or_newer() && g_framework->is_dx12()) {
+        attempt_hook_ue58_slate_output_texture_register();
     }
+
+    // UE5.7 elements-pass inspection is a fallback only. Let the DrawWindow path
+    // try the dedicated UI target first before probing extra callsites.
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
@@ -2360,14 +2806,50 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
         return;
     }
 
+    if (const auto rtm = get_render_target_manager(); rtm != nullptr && rtm->has_dedicated_ui_target()) {
+        SPDLOG_INFO_ONCE("Skipping UE 5.7 Slate elements-pass fallback because the dedicated UI target is active");
+        return;
+    }
+
     m_attempted_hook_ue57_slate_elements_pass = true;
 
     const auto draw_window = g_hook->m_slate_thread_hook.target_address();
+
+    if (draw_window == 0) {
+        SPDLOG_ERROR("Cannot scan UE 5.7 DrawWindow_RenderThread for Slate callsites because the Slate hook has no target address");
+        return;
+    }
+
     const auto module_within = utility::get_module_within(draw_window);
 
     if (!module_within.has_value()) {
         SPDLOG_ERROR("Cannot scan UE 5.7 DrawWindow_RenderThread for Slate callsites because the module was not resolved");
         return;
+    }
+
+    const auto& slate_symbols = vrmod::get_ue57_slate_symbols();
+
+    if (slate_symbols.add_slate_draw_elements_pass != 0 &&
+        is_executable_process_range(slate_symbols.add_slate_draw_elements_pass, 1)) {
+        const auto symbol_module = utility::get_module_within(reinterpret_cast<void*>(slate_symbols.add_slate_draw_elements_pass));
+
+        if (symbol_module.has_value()) {
+            auto hook_result = safetyhook::create_mid(
+                reinterpret_cast<void*>(slate_symbols.add_slate_draw_elements_pass),
+                &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
+
+            if (hook_result) {
+                m_ue57_slate_elements_hooks.emplace_back(std::move(hook_result));
+                m_hooked_ue57_slate_elements_pass = true;
+                SPDLOG_INFO("Hooked UE 5.7 AddSlateDrawElementsPass by symbol at {:x}", slate_symbols.add_slate_draw_elements_pass);
+                return;
+            }
+
+            SPDLOG_WARN("Failed to hook UE 5.7 AddSlateDrawElementsPass symbol at {:x}", slate_symbols.add_slate_draw_elements_pass);
+        } else {
+            SPDLOG_INFO("Ignoring UE 5.7 AddSlateDrawElementsPass symbol {:x} because its module could not be resolved",
+                slate_symbols.add_slate_draw_elements_pass);
+        }
     }
 
     struct DirectCall {
@@ -2408,21 +2890,46 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
     }
 
     std::vector<DirectCall> candidate_calls{};
+    std::unordered_set<uintptr_t> candidate_calls_seen{};
 
     for (const auto& [target, calls] : grouped_calls) {
         if (calls.size() >= 2) {
-            candidate_calls.insert(candidate_calls.end(), calls.begin(), calls.end());
+            for (const auto& call : calls) {
+                if (candidate_calls_seen.insert(call.callsite).second) {
+                    candidate_calls.push_back(call);
+                }
+            }
+        }
+    }
+
+    // UE5.7.3 may only emit one direct call to AddSlateDrawElementsPass in optimized shipping builds.
+    // Hook a capped set of single-call candidates and let the hook validate the r8 input shape at runtime.
+    for (const auto& call : direct_calls) {
+        if (candidate_calls_seen.insert(call.callsite).second) {
+            candidate_calls.push_back(call);
         }
     }
 
     if (candidate_calls.empty()) {
-        SPDLOG_WARN("Could not find repeated direct-call candidates inside UE 5.7 DrawWindow_RenderThread");
+        const auto rtm = get_render_target_manager();
+
+        if (rtm != nullptr && rtm->has_dedicated_ui_target()) {
+            SPDLOG_INFO("No direct-call candidates inside UE 5.7 DrawWindow_RenderThread; dedicated UI target is already active");
+        } else {
+            SPDLOG_WARN("Could not find direct-call candidates inside UE 5.7 DrawWindow_RenderThread for ElementsTexture inspection");
+        }
+
         return;
     }
 
     size_t hooked_count{};
+    constexpr size_t max_ue57_slate_callsite_hooks = 32;
 
     for (const auto& call : candidate_calls) {
+        if (hooked_count >= max_ue57_slate_callsite_hooks) {
+            break;
+        }
+
         auto hook_result = safetyhook::create_mid(
             reinterpret_cast<void*>(call.callsite),
             &FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook);
@@ -2437,12 +2944,15 @@ void FFakeStereoRenderingHook::attempt_hook_ue57_slate_elements_pass() {
     }
 
     if (hooked_count == 0) {
-        SPDLOG_ERROR("Failed to hook any UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection");
+        SPDLOG_WARN("Failed to hook any UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection");
         return;
     }
 
     m_hooked_ue57_slate_elements_pass = true;
-    SPDLOG_INFO("Hooked {} UE 5.7 DrawWindow_RenderThread callsites for ElementsTexture inspection", hooked_count);
+    SPDLOG_INFO(
+        "Hooked {} UE 5.7 DrawWindow_RenderThread callsites for validated ElementsTexture inspection ({} same-module calls found)",
+        hooked_count,
+        direct_calls.size());
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register() {
@@ -2667,6 +3177,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     m_hooked_ue58_slate_output_texture_register = true;
     SPDLOG_WARN("[UE5.8][SlateUI] Hooked {} SlateOutputTexture RegisterExternalTexture callsite(s)", hooked_count);
 }
+
 
 namespace detail{
 bool pre_find_fsceneview_constructor() {
@@ -3522,7 +4033,6 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     // Actually implement the ones we care about now.
     auto idx = 0;
-    const auto ue58_stereo_layout = is_ue_5_8_or_newer();
     //m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo) -> void { SPDLOG_INFO("Destructor called?");  }; // destructor.
     m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo) -> bool { 
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
@@ -3576,21 +4086,11 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
         return g_hook->calculate_stereo_projection_matrix(stereo, out, view_index);
     }; // CalculateStereoProjectionMatrix
 
-    if (ue58_stereo_layout) {
-        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, int32_t view_index) -> bool {
-            return false;
-        }; // HasExternalViewState
+    m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, void* a2) {
+        // do nothing
+    }; // not sure what this one is. think it sets the FOV. Not present in newer UE4 versions.
 
-        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, int32_t view_index) -> void* {
-            return nullptr;
-        }; // GetExternalViewState
-    } else {
-        m_fallback_vtable[idx++] = +[](FFakeStereoRendering* stereo, void* a2) {
-            // do nothing
-        }; // not sure what this one is. think it sets the FOV. Not present in newer UE4 versions.
-
-        idx++; // just leave this one as a placeholder for now. Returns false.
-    }
+    idx++; // just leave this one as a placeholder for now. Returns false.
 
     m_fallback_vtable[idx++] = 
     +[](FFakeStereoRendering* stereo, FRHICommandListImmediate* rhi_command_list, FRHITexture2D* backbuffer, FRHITexture2D* src_texture, double window_size) {
@@ -3611,7 +4111,6 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook() {
 
     //m_418_detected = true;
     m_special_detected = true;
-    m_uses_ue58_rendertarget_manager = ue58_stereo_layout;
     m_manually_constructed = true;
     m_fallback_device.vtable = m_fallback_vtable.data();
 
@@ -5037,6 +5536,10 @@ struct SceneViewExtensionAnalyzer {
                 last_log_time = now;
             }
 
+            if (auto vr = VR::get(); vr != nullptr) {
+                vr->note_stalker2_transition_stress("duplicate_rhi_command");
+            }
+
             return;
         }
 
@@ -5068,6 +5571,10 @@ struct SceneViewExtensionAnalyzer {
                     suppressed_count);
                 suppressed_count = 0;
                 last_log_time = now;
+            }
+
+            if (auto vr = VR::get(); vr != nullptr) {
+                vr->note_stalker2_transition_stress("duplicate_old_rhi_command");
             }
 
             return;
@@ -5350,7 +5857,20 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         auto euler_d = glm::vec<3, double>{euler};
         auto euler_pointer = is_ue5 ? (Rotator<float>*)&euler_d : (Rotator<float>*)&euler;
 
-        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, 100.0f, &init_options_view_origin);
+        float scene_world_to_meters = 100.0f;
+
+        if (vr->is_sceneview_compatibility_enabled()) {
+            // SceneView compatibility manually rebuilds the eye views here. Keep its legacy
+            // 100uu/m basis so UE5.6+ world-scale changes do not flatten the stereo view.
+            SPDLOG_INFO_ONCE("[SceneViewCompat] Using fixed 100.0 world-to-meters for manual view offset");
+        } else {
+            scene_world_to_meters = init_options->get_world_to_meters_scale().value_or(100.0f);
+            if (!std::isfinite(scene_world_to_meters) || scene_world_to_meters <= 0.0f || scene_world_to_meters > 100000.0f) {
+                scene_world_to_meters = 100.0f;
+            }
+        }
+
+        g_hook->calculate_stereo_view_offset_(true_index + 1, euler_pointer, scene_world_to_meters, &init_options_view_origin);
 
         if (is_ue5) {
             euler = euler_d;
@@ -6305,11 +6825,11 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         if (exception->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
             const auto exception_address = exception->ContextRecord->Rip;
 
+            const auto daysgone_current = daysgone_is_current_game();
+
             if (ignored_addresses.contains(exception_address)) {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
-
-            ignored_addresses.insert(exception_address);
 
             if (exception_address == 0) {
                 SPDLOG_INFO("[Exception Handler] Exception address is null");
@@ -6338,6 +6858,305 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             }
 
             SPDLOG_INFO("Encountered attempted dereference of null pointer at {:x}", exception_address);
+
+            const auto fault_target = exception->ExceptionRecord->NumberParameters > 1
+                ? static_cast<uintptr_t>(exception->ExceptionRecord->ExceptionInformation[1])
+                : std::numeric_limits<uintptr_t>::max();
+
+            const auto is_rax_base = [](auto reg) {
+                return reg == NDR_RAX || reg == NDR_EAX;
+            };
+
+            const auto reg_to_index = [](auto reg) -> std::optional<uint8_t> {
+                if (reg == NDR_RAX || reg == NDR_EAX) return 0;
+                if (reg == NDR_RCX || reg == NDR_ECX) return 1;
+                if (reg == NDR_RDX || reg == NDR_EDX) return 2;
+                if (reg == NDR_RBX || reg == NDR_EBX) return 3;
+                if (reg == NDR_RSP || reg == NDR_ESP) return 4;
+                if (reg == NDR_RBP || reg == NDR_EBP) return 5;
+                if (reg == NDR_RSI || reg == NDR_ESI) return 6;
+                if (reg == NDR_RDI || reg == NDR_EDI) return 7;
+                if (reg == NDR_R8 || reg == NDR_R8D) return 8;
+                if (reg == NDR_R9 || reg == NDR_R9D) return 9;
+                if (reg == NDR_R10 || reg == NDR_R10D) return 10;
+                if (reg == NDR_R11 || reg == NDR_R11D) return 11;
+                if (reg == NDR_R12 || reg == NDR_R12D) return 12;
+                if (reg == NDR_R13 || reg == NDR_R13D) return 13;
+                if (reg == NDR_R14 || reg == NDR_R14D) return 14;
+                if (reg == NDR_R15 || reg == NDR_R15D) return 15;
+                return std::nullopt;
+            };
+
+            auto make_zero_register_patch = [&reg_to_index](auto reg) -> std::vector<int16_t> {
+                const auto index = reg_to_index(reg);
+
+                if (!index) {
+                    return {};
+                }
+
+                const auto dest = *index;
+                std::vector<int16_t> patch{};
+
+                if (dest < 8) {
+                    patch.push_back(0x31);
+                    patch.push_back(static_cast<int16_t>(0xC0 | (dest << 3) | dest));
+                } else {
+                    patch.push_back(0x45);
+                    patch.push_back(0x31);
+                    const auto r = static_cast<uint8_t>(dest - 8);
+                    patch.push_back(static_cast<int16_t>(0xC0 | (r << 3) | r));
+                }
+
+                return patch;
+            };
+
+            auto set_context_register = [&reg_to_index](CONTEXT* context, auto reg, DWORD64 value) -> bool {
+                const auto index = reg_to_index(reg);
+
+                if (!index) {
+                    return false;
+                }
+
+                switch (*index) {
+                case 0: context->Rax = value; return true;
+                case 1: context->Rcx = value; return true;
+                case 2: context->Rdx = value; return true;
+                case 3: context->Rbx = value; return true;
+                case 4: context->Rsp = value; return true;
+                case 5: context->Rbp = value; return true;
+                case 6: context->Rsi = value; return true;
+                case 7: context->Rdi = value; return true;
+                case 8: context->R8 = value; return true;
+                case 9: context->R9 = value; return true;
+                case 10: context->R10 = value; return true;
+                case 11: context->R11 = value; return true;
+                case 12: context->R12 = value; return true;
+                case 13: context->R13 = value; return true;
+                case 14: context->R14 = value; return true;
+                case 15: context->R15 = value; return true;
+                default: return false;
+                }
+            };
+
+            const auto exception_module = utility::get_module_within(exception_address).value_or(nullptr);
+            const auto executable_base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            const auto exception_rva =
+                exception_module == utility::get_executable() && executable_base != 0 && exception_address >= executable_base
+                    ? exception_address - executable_base
+                    : 0;
+
+            const auto is_daysgone_fname_block_lookup =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                exception_rva == 0x19fd30a &&
+                exception->ContextRecord->Rax == 0 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                decoded->Operands[0].Info.Register.Reg == NDR_RDX &&
+                std::string_view{decoded->Mnemonic}.starts_with("MOV") &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rax_base(op2.Info.Memory.Base);
+
+            if (is_daysgone_fname_block_lookup) {
+                constexpr uintptr_t daysgone_fname_to_string_return_rva = 0x19fd370;
+
+                SPDLOG_WARN_ONCE(
+                    "[DaysGone] Recovering invalid UE4 FName block lookup at RVA 0x19fd30a; returning empty name string");
+
+                exception->ContextRecord->Rax = exception->ContextRecord->Rbx;
+                exception->ContextRecord->Rip = executable_base + daysgone_fname_to_string_return_rva;
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
+
+            const auto is_daysgone_view_extension_null_chain =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target <= 0x20 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                std::string_view{decoded->Mnemonic}.starts_with("MOV") &&
+                op2.Info.Memory.HasDisp &&
+                is_rax_base(op2.Info.Memory.Base) &&
+                (op2.Info.Memory.Disp == 0x8 || op2.Info.Memory.Disp == 0x10);
+
+            if (is_daysgone_view_extension_null_chain) {
+                auto patch_bytes = make_zero_register_patch(decoded->Operands[0].Info.Register.Reg);
+
+                if (!patch_bytes.empty() && patch_bytes.size() <= decoded->Length) {
+                    for (size_t i = patch_bytes.size(); i < decoded->Length; ++i) {
+                        patch_bytes.push_back(0x90);
+                    }
+
+                    SPDLOG_WARN(
+                        "[DaysGone] Patching UE4.10/4.11 SceneViewExtension null chain at {:x}: fault={:x} disp={:x}",
+                        exception_address,
+                        fault_target,
+                        op2.Info.Memory.Disp);
+
+                    xrsystem_patches.push_back(Patch::create(exception_address, patch_bytes));
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Failed to create safe zero-register patch at {:x}; patch_len={} instr_len={}",
+                    exception_address,
+                    patch_bytes.size(),
+                        decoded->Length);
+            }
+
+            const auto is_rcx_base = [](auto reg) {
+                return reg == NDR_RCX || reg == NDR_ECX;
+            };
+
+            const auto is_rbx_base = [](auto reg) {
+                return reg == NDR_RBX || reg == NDR_EBX;
+            };
+
+            const auto is_daysgone_null_projection_source =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                decoded->Operands[0].Info.Register.Reg == NDR_RAX &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rcx_base(op2.Info.Memory.Base) &&
+                (!op2.Info.Memory.HasDisp || op2.Info.Memory.Disp == 0);
+
+            if (is_daysgone_null_projection_source) {
+                const auto next_instruction_addr = exception_address + decoded->Length;
+                const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+                const auto is_expected_vcall =
+                    next_instruction &&
+                    std::string_view{next_instruction->Mnemonic}.starts_with("CALL") &&
+                    next_instruction->OperandsCount >= 1 &&
+                    next_instruction->Operands[0].Type == ND_OP_MEM &&
+                    next_instruction->Operands[0].Info.Memory.HasBase &&
+                    next_instruction->Operands[0].Info.Memory.Base == NDR_RAX &&
+                    next_instruction->Operands[0].Info.Memory.HasDisp &&
+                    next_instruction->Operands[0].Info.Memory.Disp == 0x20;
+
+                if (is_expected_vcall) {
+                    alignas(16) static const std::array<float, 20> daysgone_fallback_matrix{
+                        1.0f, 0.0f, 0.0f, 0.0f,
+                        0.0f, 1.0f, 0.0f, 0.0f,
+                        0.0f, 0.0f, 1.0f, 0.0f,
+                        0.0f, 0.0f, 0.0f, 1.0f,
+                        0.0f, 0.0f, 0.0f, 0.0f,
+                    };
+
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null projection-source call at {:x}; using fallback matrix and skipping vcall {:x}",
+                        exception_address,
+                        next_instruction_addr);
+
+                    exception->ContextRecord->Rax = reinterpret_cast<DWORD64>(daysgone_fallback_matrix.data());
+                    exception->ContextRecord->Rip = next_instruction_addr + next_instruction->Length;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null projection-source pattern at {:x} did not match expected vcall",
+                    exception_address);
+            }
+
+            const auto is_daysgone_null_texture_output_ref =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0x10 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rbx_base(op2.Info.Memory.Base) &&
+                op2.Info.Memory.HasDisp &&
+                op2.Info.Memory.Disp == 0x10;
+
+            if (is_daysgone_null_texture_output_ref) {
+                const auto next_instruction_addr = exception_address + decoded->Length;
+                const auto next_instruction = utility::decode_one((uint8_t*)next_instruction_addr);
+                const auto next_base_is_expected = [&]() {
+                    if (!next_instruction ||
+                        next_instruction->OperandsCount < 2 ||
+                        next_instruction->Operands[1].Type != ND_OP_MEM ||
+                        !next_instruction->Operands[1].Info.Memory.HasBase)
+                    {
+                        return false;
+                    }
+
+                    const auto base = next_instruction->Operands[1].Info.Memory.Base;
+                    return base == NDR_R12 || base == NDR_R13 || base == NDR_R14 || base == NDR_R15 || base == NDR_RBP;
+                }();
+                const auto is_expected_followup =
+                    next_instruction &&
+                    std::string_view{next_instruction->Mnemonic}.starts_with("MOV") &&
+                    next_instruction->OperandsCount >= 2 &&
+                    next_instruction->Operands[0].Type == ND_OP_REG &&
+                    next_instruction->Operands[1].Type == ND_OP_MEM &&
+                    next_instruction->Operands[1].Info.Memory.HasBase &&
+                    next_base_is_expected &&
+                    next_instruction->Operands[1].Info.Memory.HasDisp &&
+                    next_instruction->Operands[1].Info.Memory.Disp == 0x28;
+
+                if (is_expected_followup &&
+                    set_context_register(exception->ContextRecord, decoded->Operands[0].Info.Register.Reg, 0))
+                {
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null post-process texture output ref at {:x}; dest_reg={} next_base={} using null resource ref",
+                        exception_address,
+                        (int)decoded->Operands[0].Info.Register.Reg,
+                        (int)next_instruction->Operands[1].Info.Memory.Base);
+
+                    exception->ContextRecord->Rip = next_instruction_addr;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null texture-output-ref pattern at {:x} did not match expected followup",
+                    exception_address);
+            }
+
+            const auto is_daysgone_null_scene_render_target_output_ref =
+                daysgone_current &&
+                exception_module == utility::get_executable() &&
+                fault_target == 0x10 &&
+                decoded->Operands[0].Type == ND_OP_REG &&
+                op2.Type == ND_OP_MEM &&
+                op2.Info.Memory.HasBase &&
+                is_rcx_base(op2.Info.Memory.Base) &&
+                op2.Info.Memory.HasDisp &&
+                op2.Info.Memory.Disp == 0x10;
+
+            if (is_daysgone_null_scene_render_target_output_ref) {
+                const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
+                const auto previous_is_expected_scene_target_load =
+                    previous_instruction &&
+                    std::string_view{previous_instruction->instrux.Mnemonic}.starts_with("MOV") &&
+                    previous_instruction->instrux.OperandsCount >= 2 &&
+                    previous_instruction->instrux.Operands[0].Type == ND_OP_REG &&
+                    previous_instruction->instrux.Operands[0].Info.Register.Reg == NDR_RCX &&
+                    previous_instruction->instrux.Operands[1].Type == ND_OP_MEM &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.HasBase &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.Base == NDR_RAX &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.HasDisp &&
+                    previous_instruction->instrux.Operands[1].Info.Memory.Disp == 0x188;
+
+                if (previous_is_expected_scene_target_load &&
+                    set_context_register(exception->ContextRecord, decoded->Operands[0].Info.Register.Reg, 0))
+                {
+                    SPDLOG_WARN(
+                        "[DaysGone] Recovering null scene-render-target output ref at {:x}; dest_reg={} from FSceneRenderTargets slot 0x188",
+                        exception_address,
+                        (int)decoded->Operands[0].Info.Register.Reg);
+
+                    exception->ContextRecord->Rip = exception_address + decoded->Length;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR(
+                    "[DaysGone] Null scene-render-target output-ref pattern at {:x} did not match expected FSceneRenderTargets load",
+                    exception_address);
+            }
+
+            ignored_addresses.insert(exception_address);
 
             // Get the start of the previous instruction
             auto previous_instruction = utility::resolve_instruction(exception_address - 1);
@@ -7177,8 +7996,21 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         return;
     }
 
+    const bool synced_ue56_zero_view_is_eye =
+        vr->is_using_synchronized_afr() &&
+        g_hook->m_has_double_precision &&
+        is_ue_5_6_or_newer() &&
+        // SceneView compatibility handles eye offsets manually in sceneview_constructor.
+        // Do not let the normal UE callback change legacy SceneView pass handling.
+        !vr->is_sceneview_compatibility_enabled() &&
+        view_index == 0;
+
+    if (synced_ue56_zero_view_is_eye) {
+        SPDLOG_INFO_ONCE("[SyncedSequential][UE5.6+] Treating CalculateStereoViewOffset view_index 0 as the alternating AFR eye pass");
+    }
+
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
-    if (index_was_ever_two && view_index == 0) {
+    if (index_was_ever_two && view_index == 0 && !synced_ue56_zero_view_is_eye) {
         SPDLOG_INFO_ONCE("calculate stereo view offset called with view index 0 after 2, ignoring.");
         return;
     }
@@ -7192,7 +8024,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         index_starts_from_one = false;
     }
 
-    const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative;
+    const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative && !synced_ue56_zero_view_is_eye;
 
     auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
     const auto has_double_precision = g_hook->m_has_double_precision;
@@ -7490,22 +8322,83 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
-                SPDLOG_INFO("Inserting midhook after CalculateStereoProjectionMatrix... @ {:x}", return_address);
 
-                constexpr auto max_stack_depth = 100;
-                uintptr_t stack[max_stack_depth]{};
+                if (subnautica2_is_current_game() && !g_hook->m_hooked_alternative_localplayer_scan) {
+                    // Subnautica 2 can wedge if we patch the immediate return address
+                    // during first startup projection. Use the safer GetProjectionData
+                    // pre-hook path and let the next frame provide the LocalPlayer.
+                    constexpr auto max_stack_depth = 100;
+                    uintptr_t stack[max_stack_depth]{};
 
-                const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+                    const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+                    g_hook->m_projection_matrix_stack.clear();
 
-                for (int i = 0; i < depth; i++) {
-                    g_hook->m_projection_matrix_stack.push_back(stack[i]);
-                    SPDLOG_INFO(" {:x}", (uintptr_t)stack[i]);
+                    for (int i = 0; i < depth; i++) {
+                        g_hook->m_projection_matrix_stack.push_back(stack[i]);
+                    }
+
+                    if (g_hook->m_projection_matrix_stack.size() >= 3) {
+                        const auto post_get_projection_data = g_hook->m_projection_matrix_stack[2];
+                        const auto get_projection_data_candidate_1 = utility::find_function_start_with_call(post_get_projection_data);
+                        const auto get_projection_data_candidate_2 = utility::find_virtual_function_start(post_get_projection_data);
+                        std::optional<uintptr_t> get_projection_data{};
+
+                        if (get_projection_data_candidate_1 && get_projection_data_candidate_2) {
+                            const auto candidate_1_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_1);
+                            const auto candidate_2_distance = std::abs((int64_t)post_get_projection_data - (int64_t)*get_projection_data_candidate_2);
+                            get_projection_data = candidate_1_distance < candidate_2_distance ? get_projection_data_candidate_1 : get_projection_data_candidate_2;
+                        } else if (get_projection_data_candidate_1) {
+                            get_projection_data = get_projection_data_candidate_1;
+                        } else if (get_projection_data_candidate_2) {
+                            get_projection_data = get_projection_data_candidate_2;
+                        } else {
+                            get_projection_data = utility::find_function_start(post_get_projection_data);
+                        }
+
+                        if (get_projection_data) {
+                            SPDLOG_INFO("[Subnautica2] Hooking GetProjectionData at {:x} instead of CalculateStereoProjectionMatrix return address", *get_projection_data);
+                            auto hook = safetyhook::create_mid((void*)*get_projection_data, &FFakeStereoRenderingHook::pre_get_projection_data);
+
+                            if (hook) {
+                                g_hook->m_get_projection_data_pre_hook = std::move(hook);
+                                g_hook->m_hooked_alternative_localplayer_scan = true;
+                            } else {
+                                SPDLOG_WARN("[Subnautica2] Failed to hook GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                                g_hook->m_fixed_localplayer_view_count = true;
+                            }
+                        } else {
+                            SPDLOG_WARN("[Subnautica2] Failed to locate GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                            g_hook->m_fixed_localplayer_view_count = true;
+                        }
+                    } else {
+                        SPDLOG_WARN("[Subnautica2] Projection stack was too shallow for GetProjectionData hook; disabling LocalPlayer bootstrap for this session");
+                        g_hook->m_fixed_localplayer_view_count = true;
+                    }
+
+                    g_hook->m_projection_matrix_stack.clear();
                 }
 
-                g_hook->m_calculate_stereo_projection_matrix_post_hook = safetyhook::create_mid((void*)return_address, &FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix);
+                if (g_hook->m_hooked_alternative_localplayer_scan || g_hook->m_fixed_localplayer_view_count) {
+                    // The alternative LocalPlayer bootstrap path is installed or this
+                    // session has failed closed; do not patch the return address.
+                } else {
+                    SPDLOG_INFO("Inserting midhook after CalculateStereoProjectionMatrix... @ {:x}", return_address);
 
-                if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
-                    SPDLOG_ERROR("Failed to insert midhook after CalculateStereoProjectionMatrix!");
+                    constexpr auto max_stack_depth = 100;
+                    uintptr_t stack[max_stack_depth]{};
+
+                    const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
+
+                    for (int i = 0; i < depth; i++) {
+                        g_hook->m_projection_matrix_stack.push_back(stack[i]);
+                        SPDLOG_INFO(" {:x}", (uintptr_t)stack[i]);
+                    }
+
+                    g_hook->m_calculate_stereo_projection_matrix_post_hook = safetyhook::create_mid((void*)return_address, &FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix);
+
+                    if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
+                        SPDLOG_ERROR("Failed to insert midhook after CalculateStereoProjectionMatrix!");
+                    }
                 }
             }
         } else if (g_hook->m_calculate_stereo_projection_matrix_post_hook) {
@@ -7545,9 +8438,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         g_hook->m_calculate_stereo_projection_matrix_hook.call<Matrix4x4f*>(stereo, out, view_index);
     } else {
         if (g_hook->m_has_double_precision) {
-            (*out)[3][2] = sdk::globals::get_near_clipping_plane();
-        } else {
             (*(Matrix4x4d*)out)[3][2] = (double)sdk::globals::get_near_clipping_plane();
+        } else {
+            (*out)[3][2] = sdk::globals::get_near_clipping_plane();
         }
     }
 
@@ -7873,11 +8766,6 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
-        if (is_ue_5_8_or_newer()) {
-            g_hook->m_uses_ue58_rendertarget_manager = true;
-            return reinterpret_cast<IStereoRenderTargetManager*>(&g_hook->m_rtm_58);
-        }
-
         if (g_hook->m_uses_old_rendertarget_manager) {
             return (IStereoRenderTargetManager*)&g_hook->m_rtm_418;
         }
@@ -8190,14 +9078,14 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    const auto stalker2_ue51_post_init = stalker2_is_current_game() && is_ue_5_1_dx12_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx12_backend() || stalker2_ue51_post_init;
+    const auto ue51_post_init = is_ue_5_1_dx_backend();
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || is_ue_5_4_dx_backend() || ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if (stalker2_ue51_post_init && !idx) {
+    if (ue51_post_init && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
@@ -8241,7 +9129,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     if (!idx) {
         if (needs_source_informed_post_init) {
-            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.5+/DX12 modern path; skipping LocalPlayer bootstrap for safety");
+            SPDLOG_WARN("Failed to find PostInitProperties virtual function on UE 5.4+/modern path; skipping LocalPlayer bootstrap for safety");
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
@@ -8326,7 +9214,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
                 const auto insn = utility::decode_one((uint8_t*)info->ContextRecord->Rip);
 
                 if (insn) {
-                    spdlog::info("Skipping {} bytes!", insn->Length);
+                    SPDLOG_INFO("Skipping {} bytes!", insn->Length);
                     info->ContextRecord->Rip += insn->Length;
 
                     // Nop out the next function call.
@@ -8397,25 +9285,33 @@ void FFakeStereoRenderingHook::ue57_add_slate_draw_elements_pass_hook(safetyhook
 
     auto* inputs = reinterpret_cast<UE57SlateDrawElementsPassInputsHead*>(ctx.r8);
 
-    if (inputs == nullptr || IsBadReadPtr(inputs, sizeof(UE57SlateDrawElementsPassInputsHead))) {
+    if (!looks_like_ue57_slate_draw_elements_inputs(inputs)) {
         return;
     }
 
     const auto scene_viewport_texture = inputs->scene_viewport_texture;
     const auto elements_texture = inputs->elements_texture;
 
-    if (scene_viewport_texture == nullptr || elements_texture == nullptr) {
-        return;
-    }
+    static bool logged_valid_path{false};
 
     if (elements_texture != scene_viewport_texture) {
         static bool logged_separate_path{false};
+
+        if (!logged_valid_path) {
+            logged_valid_path = true;
+            SPDLOG_INFO("[UE 5.7 Slate] Validated AddSlateDrawElementsPass inputs");
+        }
 
         if (!logged_separate_path) {
             logged_separate_path = true;
             SPDLOG_INFO("[UE 5.7 Slate] DrawElements pass already has a separate ElementsTexture");
         }
     } else {
+        if (!logged_valid_path) {
+            logged_valid_path = true;
+            SPDLOG_INFO("[UE 5.7 Slate] Validated AddSlateDrawElementsPass inputs");
+        }
+
         SPDLOG_INFO_EVERY_N_SEC(5, "[UE 5.7 Slate] DrawElements pass is still aliasing ElementsTexture to SceneViewportTexture");
     }
 }
@@ -8638,6 +9534,9 @@ void ue55_promote_slate_outputs(
         if (rtm->get_dedicated_ui_target() != outputs.viewport_texture_rhi) {
             rtm->set_dedicated_ui_target(outputs.viewport_texture_rhi, expected_extent->width, expected_extent->height);
             rtm->get_fallback_ui_target_ref() = nullptr;
+            if (mechwarrior_clans_is_current_game()) {
+                rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior DrawWindow viewport texture");
+            }
             SPDLOG_WARN("[UE5.5][SlateUI] promoted DrawWindow viewport texture output as dedicated UI target");
         }
         return;
@@ -8731,8 +9630,2322 @@ void FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook(safetyhoo
     slate_output_texture_register_hook_impl(ctx, true);
 }
 
-void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3, 
-                                                                void* a4, void* params, void* unk1, void* unk2) 
+namespace {
+struct DaysGoneRawTArray {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t max{};
+};
+
+struct DaysGoneVec2 {
+    float x{};
+    float y{};
+};
+
+struct DaysGoneVec3 {
+    float x{};
+    float y{};
+    float z{};
+};
+
+struct DaysGoneVec4 {
+    float x{};
+    float y{};
+    float z{};
+    float w{};
+};
+
+struct DaysGoneWidgetTransform {
+    DaysGoneVec2 translation{};
+    DaysGoneVec2 scale{1.0f, 1.0f};
+    DaysGoneVec2 shear{};
+    float angle{};
+};
+
+struct DaysGoneSlateWidgetOriginalState {
+    uintptr_t widget{};
+    bool captured{};
+    DaysGoneWidgetTransform transform{};
+    DaysGoneVec2 pivot{};
+};
+
+struct DaysGoneViewportRootOriginalState {
+    uintptr_t widget{};
+    bool captured{};
+    DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
+struct DaysGoneIntPoint {
+    int32_t x{};
+    int32_t y{};
+};
+
+std::array<DaysGoneSlateWidgetOriginalState, 16> g_daysgone_slate_widget_originals{};
+std::array<DaysGoneViewportRootOriginalState, 16> g_daysgone_viewport_root_originals{};
+uint64_t g_daysgone_slate_widget_apply_count{};
+uint64_t g_daysgone_slate_widget_restore_count{};
+struct DaysGoneSlateCompositeCVarState {
+    sdk::IConsoleVariable* cvar{};
+    bool looked_up{};
+    bool has_original{};
+    int32_t original_value{};
+    bool forced{};
+    bool logged_missing{};
+} g_daysgone_slate_composite_cvar{};
+
+bool daysgone_object_pointer_is_readable(sdk::UObjectBase* object);
+std::string daysgone_describe_uobject(sdk::UObjectBase* object);
+
+struct DaysGoneD3D11TextureCandidate {
+    ID3D11Texture2D* native{};
+    D3D11_TEXTURE2D_DESC desc{};
+    uintptr_t outer_offset{std::numeric_limits<uintptr_t>::max()};
+    uintptr_t inner_offset{std::numeric_limits<uintptr_t>::max()};
+};
+
+bool daysgone_is_valid_d3d11_desc(const D3D11_TEXTURE2D_DESC& desc) {
+    return desc.Width >= 640 && desc.Height >= 360 && desc.Width <= 8192 && desc.Height <= 8192;
+}
+
+bool daysgone_is_plausible_slate_ui_desc(const D3D11_TEXTURE2D_DESC& desc) {
+    if (!daysgone_is_valid_d3d11_desc(desc)) {
+        return false;
+    }
+
+    if ((desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 || (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0) {
+        return false;
+    }
+
+    switch (desc.Format) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        break;
+    default:
+        return false;
+    }
+
+    // Days Gone exposes the Bend SlateIntermediateBuffer as an HMD-sized target
+    // in VR. Accept both a normal 16:9 UI texture and the HMD-shaped buffer; the
+    // D3D11 path keys black out before submitting it as a UEVR UI layer.
+    const auto aspect = static_cast<float>(desc.Width) / static_cast<float>(desc.Height);
+    const auto looks_like_flat_ui = desc.Width >= 1280 && desc.Height >= 720 && desc.Width > desc.Height && aspect >= 1.45f && aspect <= 2.25f;
+    const auto looks_like_hmd_ui = desc.Width >= 1280 && desc.Height >= 720 && aspect >= 0.75f && aspect <= 1.35f;
+    return looks_like_flat_ui || looks_like_hmd_ui;
+}
+
+bool daysgone_is_d3d11_or_dxgi_com_object(IUnknown* object) {
+    if (object == nullptr || !is_readable_process_range((uintptr_t)object, sizeof(void*))) {
+        return false;
+    }
+
+    auto* const vtable = *(void**)object;
+    if (vtable == nullptr || !is_readable_process_range((uintptr_t)vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within(vtable);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path) {
+        return false;
+    }
+
+    auto lower = std::string{*module_path};
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+    return lower.find("d3d11") != std::string::npos || lower.find("dxgi") != std::string::npos;
+}
+
+bool daysgone_try_query_d3d11_texture(IUnknown* object, ID3D11Texture2D*& out_native, D3D11_TEXTURE2D_DESC& out_desc) {
+    out_native = nullptr;
+    out_desc = {};
+
+    if (!daysgone_is_d3d11_or_dxgi_com_object(object)) {
+        return false;
+    }
+
+    ID3D11Texture2D* texture = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+        D3D11_TEXTURE2D_DESC desc{};
+        texture->GetDesc(&desc);
+        texture->Release();
+
+        if (daysgone_is_valid_d3d11_desc(desc)) {
+            out_native = texture;
+            out_desc = desc;
+            return true;
+        }
+    }
+
+    ID3D11ShaderResourceView* srv = nullptr;
+    if (SUCCEEDED(object->QueryInterface(__uuidof(ID3D11ShaderResourceView), reinterpret_cast<void**>(&srv))) && srv != nullptr) {
+        ID3D11Resource* resource = nullptr;
+        srv->GetResource(&resource);
+        srv->Release();
+
+        if (resource != nullptr) {
+            texture = nullptr;
+            if (SUCCEEDED(resource->QueryInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<void**>(&texture))) && texture != nullptr) {
+                D3D11_TEXTURE2D_DESC desc{};
+                texture->GetDesc(&desc);
+                texture->Release();
+                resource->Release();
+
+                if (daysgone_is_valid_d3d11_desc(desc)) {
+                    out_native = texture;
+                    out_desc = desc;
+                    return true;
+                }
+
+                return false;
+            }
+
+            resource->Release();
+        }
+    }
+
+    return false;
+}
+
+bool daysgone_try_read_pointer(uintptr_t address, uintptr_t& out) {
+    out = 0;
+    if (address == 0 || !is_readable_process_range(address, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    out = *reinterpret_cast<const uintptr_t*>(address);
+    return out >= 0x10000;
+}
+
+bool daysgone_try_get_d3d11_texture_candidate(FRHITexture2D* texture, DaysGoneD3D11TextureCandidate& out_candidate) {
+    out_candidate = {};
+
+    if (texture == nullptr || !is_readable_process_range((uintptr_t)texture, sizeof(void*))) {
+        return false;
+    }
+
+    auto try_native_texture_pointer = [&](uintptr_t raw_native, uintptr_t outer_offset, uintptr_t inner_offset) {
+        auto* native = reinterpret_cast<ID3D11Texture2D*>(raw_native);
+        if (!daysgone_is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(native))) {
+            return false;
+        }
+
+        D3D11_TEXTURE2D_DESC desc{};
+        native->GetDesc(&desc);
+        if (!daysgone_is_valid_d3d11_desc(desc)) {
+            return false;
+        }
+
+        out_candidate.native = native;
+        out_candidate.desc = desc;
+        out_candidate.outer_offset = outer_offset;
+        out_candidate.inner_offset = inner_offset;
+        return true;
+    };
+
+    // Live Days Gone evidence shows BendTemporalAA's SlateIntermediateBuffer
+    // local is an UE4.11 wrapper: wrapper lives at +0x8/+0x10, and its native
+    // ID3D11Texture2D lives at +0xA0. Keep this fixed and fail-closed; broad
+    // COM probing here can destabilize injection.
+    constexpr std::array<uintptr_t, 2> kWrapperOffsets{0x8, 0x10};
+    constexpr uintptr_t kNativeTextureOffset = 0xA0;
+
+    const auto base = reinterpret_cast<uintptr_t>(texture);
+    for (const auto outer_offset : kWrapperOffsets) {
+        uintptr_t wrapper{};
+        if (!daysgone_try_read_pointer(base + outer_offset, wrapper)) {
+            continue;
+        }
+
+        uintptr_t native{};
+        if (daysgone_try_read_pointer(wrapper + kNativeTextureOffset, native) &&
+            try_native_texture_pointer(native, outer_offset, kNativeTextureOffset))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool daysgone_try_get_d3d11_texture_desc(FRHITexture2D* texture, D3D11_TEXTURE2D_DESC& out_desc) {
+    DaysGoneD3D11TextureCandidate candidate{};
+    if (!daysgone_try_get_d3d11_texture_candidate(texture, candidate)) {
+        return false;
+    }
+
+    out_desc = candidate.desc;
+    return true;
+}
+template <typename T>
+bool daysgone_read_value(uintptr_t address, T& out) {
+    if (address == 0 || !is_readable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    out = *reinterpret_cast<const T*>(address);
+    return true;
+}
+
+template <typename T>
+bool daysgone_write_value(uintptr_t address, const T& value) {
+    if (address == 0 || !is_writable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    *reinterpret_cast<T*>(address) = value;
+    return true;
+}
+
+bool daysgone_write_bool_bit(uintptr_t address, bool value) {
+    uint8_t current{};
+    if (!daysgone_read_value(address, current)) {
+        return false;
+    }
+
+    current = static_cast<uint8_t>((current & ~uint8_t{1}) | (value ? uint8_t{1} : uint8_t{0}));
+    return daysgone_write_value(address, current);
+}
+
+void daysgone_set_disable_slate_composite(bool enabled) {
+    try {
+        auto& state = g_daysgone_slate_composite_cvar;
+
+        if (!state.looked_up) {
+            state.looked_up = true;
+            const auto console_manager = sdk::FConsoleManager::get();
+            if (console_manager != nullptr) {
+                auto* object = console_manager->find(L"r.Bend.TemporalAA.DisableSlateComposite");
+                if (object != nullptr && object->AsCommand() == nullptr) {
+                    state.cvar = static_cast<sdk::IConsoleVariable*>(object);
+                }
+            }
+        }
+
+        if (state.cvar == nullptr) {
+            if (!state.logged_missing) {
+                state.logged_missing = true;
+                SPDLOG_WARN("[DaysGone][SlateOverlay] r.Bend.TemporalAA.DisableSlateComposite unavailable");
+            }
+            return;
+        }
+
+        if (enabled) {
+            if (!state.has_original) {
+                state.original_value = state.cvar->GetInt();
+                state.has_original = true;
+            }
+
+            if (state.cvar->GetInt() != 1) {
+                state.cvar->Set(L"1");
+            }
+
+            if (!state.forced) {
+                SPDLOG_INFO("[DaysGone][SlateOverlay] Disabled Bend in-scene Slate composite; using extracted UEVR UI layer");
+                state.forced = true;
+            }
+            return;
+        }
+
+        if (state.forced || state.has_original) {
+            const auto restore_value = state.has_original ? state.original_value : 0;
+            if (state.cvar->GetInt() != restore_value) {
+                state.cvar->Set(std::to_wstring(restore_value).c_str());
+            }
+
+            if (state.forced) {
+                SPDLOG_INFO("[DaysGone][SlateOverlay] Restored Bend in-scene Slate composite to {}", restore_value);
+            }
+        }
+
+        state.forced = false;
+        state.has_original = false;
+        state.original_value = 0;
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][SlateOverlay] Failed to update r.Bend.TemporalAA.DisableSlateComposite");
+    }
+}
+
+bool daysgone_capture_slate_widget_original(sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return false;
+    }
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (state.captured && state.widget == widget_address) {
+            return true;
+        }
+    }
+
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (state.captured) {
+            continue;
+        }
+
+        state.widget = widget_address;
+        state.captured = true;
+        daysgone_read_value(widget_address + 0xB0, state.transform);
+        daysgone_read_value(widget_address + 0xCC, state.pivot);
+        SPDLOG_INFO(
+            "[DaysGone][SlateWidgetFix] Captured widget original {} transform=({:.1f},{:.1f}) scale=({:.3f},{:.3f}) pivot=({:.2f},{:.2f})",
+            daysgone_describe_uobject(widget),
+            state.transform.translation.x,
+            state.transform.translation.y,
+            state.transform.scale.x,
+            state.transform.scale.y,
+            state.pivot.x,
+            state.pivot.y);
+        return true;
+    }
+
+    SPDLOG_WARN_ONCE("[DaysGone][SlateWidgetFix] Original state cache is full; cannot capture more Slate widgets");
+    return false;
+}
+
+void daysgone_call_widget_vec2_function(sdk::UObjectBase* widget, const wchar_t* function_name, DaysGoneVec2 value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec2 value;
+    } params{value};
+
+    widget->call_function(function_name, &params);
+}
+
+void daysgone_call_widget_transform_function(sdk::UObjectBase* widget, DaysGoneWidgetTransform value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneWidgetTransform value;
+    } params{value};
+
+    widget->call_function(L"SetRenderTransform", &params);
+}
+
+void daysgone_call_widget_position_in_viewport(sdk::UObjectBase* widget, DaysGoneVec2 position, bool remove_dpi_scale) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec2 position;
+        bool remove_dpi_scale;
+    } params{position, remove_dpi_scale};
+
+    widget->call_function(L"SetPositionInViewport", &params);
+}
+
+void daysgone_call_user_widget_color_and_opacity(sdk::UObjectBase* widget, DaysGoneVec4 value) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    struct Params {
+        DaysGoneVec4 value;
+    } params{value};
+
+    widget->call_function(L"SetColorAndOpacity", &params);
+}
+
+void daysgone_call_widget_no_param_function(sdk::UObjectBase* widget, const wchar_t* function_name) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    uint8_t unused_params{};
+    widget->call_function(function_name, &unused_params);
+}
+
+bool daysgone_widget_is_viewport_root_candidate(sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return false;
+    }
+
+    const auto desc = daysgone_describe_uobject(widget);
+    return desc.find("UI_MainMenuWidget_C") != std::string::npos ||
+        desc.find("UI_HudWidget_C") != std::string::npos ||
+        desc.find("UI_SubtitleWidget_C") != std::string::npos ||
+        desc.find("UI_MegaMenu_C") != std::string::npos ||
+        desc.find("OptionsMenuWidget_C") != std::string::npos ||
+        desc.find("OptionsTopMenuWidget_C") != std::string::npos;
+}
+
+bool daysgone_capture_viewport_root_original(sdk::UObjectBase* widget) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (state.captured && state.widget == widget_address) {
+            return true;
+        }
+    }
+
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (state.captured) {
+            continue;
+        }
+
+        state.widget = widget_address;
+        state.captured = true;
+        daysgone_read_value(widget_address + 0x120, state.color_and_opacity);
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][ViewportSlotFix] captured root opacity {} rgba=({:.3f},{:.3f},{:.3f},{:.3f})",
+            daysgone_describe_uobject(widget),
+            state.color_and_opacity.x,
+            state.color_and_opacity.y,
+            state.color_and_opacity.z,
+            state.color_and_opacity.w);
+        return true;
+    }
+
+    SPDLOG_WARN_ONCE("[DaysGone][ViewportSlotFix] Root original-state cache is full; opacity restore may be incomplete");
+    return false;
+}
+
+bool daysgone_restore_viewport_root_original_opacity(sdk::UObjectBase* widget) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    for (auto& state : g_daysgone_viewport_root_originals) {
+        if (!state.captured || state.widget != widget_address) {
+            continue;
+        }
+
+        daysgone_write_value(widget_address + 0x120, state.color_and_opacity);
+        daysgone_call_user_widget_color_and_opacity(widget, state.color_and_opacity);
+        state = {};
+        return true;
+    }
+
+    return false;
+}
+
+bool daysgone_apply_user_widget_viewport_slot(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale, float opacity) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return false;
+    }
+
+    daysgone_capture_viewport_root_original(widget);
+
+    const auto clamped_scale = std::clamp(scale, 0.05f, 8.0f);
+    const auto clamped_opacity = std::clamp(opacity, 0.0f, 2.0f);
+    const DaysGoneVec2 alignment{0.5f, 0.5f};
+    const DaysGoneVec2 desired_size{1920.0f, 1080.0f};
+    const DaysGoneVec2 viewport_position{960.0f + translation.x, 540.0f + translation.y};
+    const DaysGoneVec2 pivot{0.5f, 0.5f};
+    const DaysGoneVec2 render_scale{clamped_scale, clamped_scale};
+    const DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, clamped_opacity};
+
+    daysgone_call_widget_vec2_function(widget, L"SetAlignmentInViewport", alignment);
+    daysgone_call_widget_vec2_function(widget, L"SetDesiredSizeInViewport", desired_size);
+    daysgone_call_widget_position_in_viewport(widget, viewport_position, false);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", pivot);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", render_scale);
+    daysgone_write_value((uintptr_t)widget + 0x120, color_and_opacity);
+    daysgone_call_user_widget_color_and_opacity(widget, color_and_opacity);
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[DaysGone][ViewportSlotFix] applied {} pos=({:.1f},{:.1f}) size=({:.1f},{:.1f}) render_scale={:.3f} opacity={:.3f}",
+        daysgone_describe_uobject(widget),
+        viewport_position.x,
+        viewport_position.y,
+        desired_size.x,
+        desired_size.y,
+        clamped_scale,
+        clamped_opacity);
+
+    return true;
+}
+
+void daysgone_restore_user_widget_viewport_slot(sdk::UObjectBase* widget) {
+    if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+        return;
+    }
+
+    daysgone_call_widget_vec2_function(widget, L"SetAlignmentInViewport", {0.0f, 0.0f});
+    daysgone_call_widget_vec2_function(widget, L"SetDesiredSizeInViewport", {1920.0f, 1080.0f});
+    daysgone_call_widget_position_in_viewport(widget, {0.0f, 0.0f}, false);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", {0.0f, 0.0f});
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", {1.0f, 1.0f});
+    if (!daysgone_restore_viewport_root_original_opacity(widget)) {
+        const DaysGoneVec4 color_and_opacity{1.0f, 1.0f, 1.0f, 1.0f};
+        daysgone_write_value((uintptr_t)widget + 0x120, color_and_opacity);
+        daysgone_call_user_widget_color_and_opacity(widget, color_and_opacity);
+    }
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+}
+
+void daysgone_apply_slate_widget_transform(sdk::UObjectBase* widget, DaysGoneVec2 translation, float scale) {
+    if (!daysgone_object_pointer_is_readable(widget) || !daysgone_capture_slate_widget_original(widget)) {
+        return;
+    }
+
+    const auto clamped_scale = std::clamp(scale, 0.05f, 8.0f);
+    DaysGoneWidgetTransform transform{};
+    transform.translation = translation;
+    transform.scale = {clamped_scale, clamped_scale};
+    transform.shear = {};
+    transform.angle = 0.0f;
+    const DaysGoneVec2 pivot{0.5f, 0.5f};
+
+    const auto widget_address = reinterpret_cast<uintptr_t>(widget);
+    daysgone_write_value(widget_address + 0xB0, transform);
+    daysgone_write_value(widget_address + 0xCC, pivot);
+
+    // Also go through UMG's own invalidation path; direct memory writes alone
+    // are not enough for Days Gone's SlateHUD widgets.
+    daysgone_call_widget_transform_function(widget, transform);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTranslation", translation);
+    daysgone_call_widget_vec2_function(widget, L"SetRenderScale", {clamped_scale, clamped_scale});
+    daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", pivot);
+    daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+    daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+
+    ++g_daysgone_slate_widget_apply_count;
+}
+
+void daysgone_restore_slate_widget_originals() {
+    for (auto& state : g_daysgone_slate_widget_originals) {
+        if (!state.captured) {
+            continue;
+        }
+
+        auto* widget = reinterpret_cast<sdk::UObjectBase*>(state.widget);
+        if (daysgone_object_pointer_is_readable(widget)) {
+            daysgone_write_value(state.widget + 0xB0, state.transform);
+            daysgone_write_value(state.widget + 0xCC, state.pivot);
+            daysgone_call_widget_transform_function(widget, state.transform);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderTranslation", state.transform.translation);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderScale", state.transform.scale);
+            daysgone_call_widget_vec2_function(widget, L"SetRenderTransformPivot", state.pivot);
+            daysgone_restore_user_widget_viewport_slot(widget);
+            daysgone_call_widget_no_param_function(widget, L"InvalidateLayoutAndVolatility");
+            daysgone_call_widget_no_param_function(widget, L"ForceLayoutPrepass");
+            ++g_daysgone_slate_widget_restore_count;
+        }
+
+        state = {};
+    }
+}
+
+bool daysgone_has_slate_widget_originals() {
+    return std::any_of(
+        g_daysgone_slate_widget_originals.begin(),
+        g_daysgone_slate_widget_originals.end(),
+        [](const auto& state) { return state.captured; });
+}
+
+bool daysgone_object_pointer_is_readable(sdk::UObjectBase* object) {
+    if (object == nullptr || (uintptr_t)object < 0x10000) {
+        return false;
+    }
+
+    if (!is_readable_process_range((uintptr_t)object, std::max<size_t>(sizeof(void*), sdk::UObjectBase::get_class_size()))) {
+        return false;
+    }
+
+    sdk::UClass* klass{};
+    if (!daysgone_read_value((uintptr_t)object + sdk::UObjectBase::get_class_private_offset(), klass)) {
+        return false;
+    }
+
+    return klass != nullptr && is_readable_process_range((uintptr_t)klass, sizeof(void*));
+}
+
+std::string daysgone_trim_log_string(std::string value, size_t max_len = 96) {
+    if (value.size() <= max_len) {
+        return value;
+    }
+
+    value.resize(max_len);
+    value += "...";
+    return value;
+}
+
+std::string daysgone_describe_uobject(sdk::UObjectBase* object) {
+    if (object == nullptr) {
+        return "0";
+    }
+
+    if (!daysgone_object_pointer_is_readable(object)) {
+        return fmt::format("{:x}:unreadable", (uintptr_t)object);
+    }
+
+    auto* klass = object->get_class();
+    std::string class_name = klass != nullptr && is_readable_process_range((uintptr_t)klass, sizeof(void*))
+        ? utility::narrow(klass->get_name_safe())
+        : "<bad-class>";
+    std::string object_name = utility::narrow(object->get_name_safe());
+
+    if (class_name.empty()) {
+        class_name = "<empty-class>";
+    }
+
+    if (object_name.empty()) {
+        object_name = "<empty-name>";
+    }
+
+    return fmt::format(
+        "{:x} {}:{}",
+        (uintptr_t)object,
+        daysgone_trim_log_string(class_name, 48),
+        daysgone_trim_log_string(object_name, 72));
+}
+
+bool daysgone_is_default_object_name(const std::wstring& name) {
+    return name.rfind(L"Default__", 0) == 0 || name.find(L"ClassDefaultObject") != std::wstring::npos;
+}
+
+sdk::UObjectBase* daysgone_find_first_tracked_object(const wchar_t* class_full_name) {
+    auto* klass = sdk::find_uobject<sdk::UClass>(class_full_name, true);
+    if (klass == nullptr || !daysgone_object_pointer_is_readable((sdk::UObjectBase*)klass)) {
+        return nullptr;
+    }
+
+    auto hook = UObjectHook::get();
+    if (hook == nullptr) {
+        return nullptr;
+    }
+
+    auto objects = hook->get_objects_by_class(klass);
+    for (auto* object : objects) {
+        if (object == nullptr || !daysgone_object_pointer_is_readable(object)) {
+            continue;
+        }
+
+        const auto name = object->get_name_safe();
+        if (name.empty() || daysgone_is_default_object_name(name)) {
+            continue;
+        }
+
+        return object;
+    }
+
+    return nullptr;
+}
+
+sdk::UObjectBase* daysgone_find_menu3d_object() {
+    sdk::UObjectBase* menu3d{};
+    if (auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+        daysgone_object_pointer_is_readable(ui_manager))
+    {
+        daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d);
+    }
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        return menu3d;
+    }
+
+    return daysgone_find_first_tracked_object(L"Class /Script/BendGame.Menu3D");
+}
+
+bool daysgone_read_bend_widget_main(sdk::UObjectBase* menu3d, sdk::UObjectBase*& out_widget) {
+    out_widget = nullptr;
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return false;
+    }
+
+    return daysgone_read_value((uintptr_t)menu3d + 0x408, out_widget) &&
+        daysgone_object_pointer_is_readable(out_widget);
+}
+
+void daysgone_push_unique_widget(std::vector<sdk::UObjectBase*>& widgets, sdk::UObjectBase* widget) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    if (std::find(widgets.begin(), widgets.end(), widget) != widgets.end()) {
+        return;
+    }
+
+    widgets.push_back(widget);
+}
+
+void daysgone_collect_known_daysgone_widget_children(sdk::UObjectBase* widget, std::vector<sdk::UObjectBase*>& widgets);
+
+void daysgone_collect_tracked_widget_class(
+    const wchar_t* class_full_name,
+    std::vector<sdk::UObjectBase*>& widgets,
+    bool collect_known_children)
+{
+    auto* klass = sdk::find_uobject<sdk::UClass>(class_full_name, true);
+    if (klass == nullptr || !daysgone_object_pointer_is_readable((sdk::UObjectBase*)klass)) {
+        return;
+    }
+
+    auto hook = UObjectHook::get();
+    if (hook == nullptr) {
+        return;
+    }
+
+    const auto objects = hook->get_objects_by_class(klass);
+    for (auto* object : objects) {
+        if (!daysgone_object_pointer_is_readable(object)) {
+            continue;
+        }
+
+        const auto name = object->get_name_safe();
+        if (name.empty() || daysgone_is_default_object_name(name)) {
+            continue;
+        }
+
+        daysgone_push_unique_widget(widgets, object);
+        if (collect_known_children) {
+            daysgone_collect_known_daysgone_widget_children(object, widgets);
+        }
+    }
+}
+
+void daysgone_collect_widgets_from_slate_menu(sdk::UObjectBase* menu, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(menu)) {
+        return;
+    }
+
+    sdk::UObjectBase* widget{};
+    if (daysgone_read_value((uintptr_t)menu + 0x80, widget)) {
+        daysgone_push_unique_widget(widgets, widget);
+        daysgone_collect_known_daysgone_widget_children(widget, widgets);
+    }
+
+    // SlateHUD has a second strongly-typed HudWidget pointer at +0xB0. The
+    // visible main/menu/options UI lives here in Days Gone; BP_Menu3D's
+    // BendWidgetMain can exist but have widget=0/rt=0 and not affect output.
+    sdk::UObjectBase* hud_widget{};
+    if (daysgone_read_value((uintptr_t)menu + 0xB0, hud_widget)) {
+        daysgone_push_unique_widget(widgets, hud_widget);
+        daysgone_collect_known_daysgone_widget_children(hud_widget, widgets);
+    }
+}
+
+void daysgone_collect_widget_field_at(sdk::UObjectBase* owner, uintptr_t offset, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return;
+    }
+
+    sdk::UObjectBase* child{};
+    if (daysgone_read_value((uintptr_t)owner + offset, child)) {
+        daysgone_push_unique_widget(widgets, child);
+    }
+}
+
+void daysgone_collect_known_daysgone_widget_children(sdk::UObjectBase* widget, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return;
+    }
+
+    const auto desc = daysgone_describe_uobject(widget);
+
+    if (desc.find("UI_HudWidget_C") != std::string::npos) {
+        // The root UI_HudWidget did not move in live testing. These are the
+        // real UMG subtrees Days Gone paints for HUD/menu/tutorial/subtitle
+        // content, so include them in the same opt-in placement transform.
+        constexpr std::array<uintptr_t, 16> kHudChildWidgetOffsets{
+            0x450, // AccessibilityWrapper
+            0x458, // AspectBars
+            0x470, // CanvasWrapper
+            0x478, // CoreElements
+            0x480, // EdgeMarkers
+            0x488, // HCM_BGBlack
+            0x490, // HCM_BGBlack_0
+            0x4A0, // HealthOverlay
+            0x4A8, // HitEffects
+            0x4B0, // HUDContents
+            0x4B8, // HudWrapper
+            0x4C0, // Loading
+            0x4C8, // MissionPopup
+            0x4F8, // SimpleTutorialOverlay
+            0x548, // SurvivalWheel
+            0x570  // Weapon
+        };
+
+        for (const auto offset : kHudChildWidgetOffsets) {
+            daysgone_collect_widget_field_at(widget, offset, widgets);
+        }
+    }
+
+    if (desc.find("UI_MegaMenu_C") != std::string::npos) {
+        constexpr std::array<uintptr_t, 8> kMegaMenuChildWidgetOffsets{
+            0x250, // 3D_Select_Left
+            0x258, // Bars
+            0x260, // Inventory_Menu
+            0x268, // Map_Menu
+            0x270, // OverlayContent
+            0x278, // Skills_Menu
+            0x280, // Storylines_Menu
+            0x288  // UI_ModifiersMenu
+        };
+
+        for (const auto offset : kMegaMenuChildWidgetOffsets) {
+            daysgone_collect_widget_field_at(widget, offset, widgets);
+        }
+    }
+}
+
+void daysgone_collect_menu3d_user_widgets(sdk::UObjectBase* menu3d, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return;
+    }
+
+    constexpr std::array<uintptr_t, 9> kMenu3DWidgetOffsets{
+        0x5D8, // MapWidgetRef
+        0x5F8, // Menu_Base_Skills
+        0x600, // Menu_Base_Modifiers
+        0x608, // Menu_Base_Inventory
+        0x610, // Menu_Base_Storylines
+        0x618, // Menu_Base_Map
+        0x640, // Menu_Base_MegaMenu
+        0x648, // Menu_Base_Start
+        0x8C8  // Menu_Base_Selector
+    };
+
+    for (const auto offset : kMenu3DWidgetOffsets) {
+        sdk::UObjectBase* widget{};
+        if (daysgone_read_value((uintptr_t)menu3d + offset, widget)) {
+            daysgone_push_unique_widget(widgets, widget);
+            daysgone_collect_known_daysgone_widget_children(widget, widgets);
+        }
+    }
+}
+
+void daysgone_collect_widgets_from_menu_array(sdk::UObjectBase* owner, uintptr_t offset, std::vector<sdk::UObjectBase*>& widgets) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return;
+    }
+
+    DaysGoneRawTArray array{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, array) ||
+        array.count < 0 || array.max < 0 || array.count > array.max ||
+        array.count > 128 || array.data == 0)
+    {
+        return;
+    }
+
+    const auto bytes = static_cast<size_t>(array.count) * sizeof(uintptr_t);
+    if (!is_readable_process_range(array.data, bytes)) {
+        return;
+    }
+
+    for (int32_t i = 0; i < array.count; ++i) {
+        sdk::UObjectBase* menu{};
+        if (daysgone_read_value(array.data + (static_cast<uintptr_t>(i) * sizeof(uintptr_t)), menu)) {
+            daysgone_collect_widgets_from_slate_menu(menu, widgets);
+        }
+    }
+}
+
+std::vector<sdk::UObjectBase*> daysgone_collect_active_slate_widgets() {
+    std::vector<sdk::UObjectBase*> widgets{};
+    widgets.reserve(8);
+
+    auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+    if (daysgone_object_pointer_is_readable(ui_manager)) {
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x470, widgets); // HudMenus
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x480, widgets); // Menus
+        daysgone_collect_widgets_from_menu_array(ui_manager, 0x490, widgets); // MenusCreatedThisFrame
+
+        sdk::UObjectBase* menu3d{};
+        if (daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d)) {
+            daysgone_collect_widgets_from_slate_menu(menu3d, widgets);
+            daysgone_collect_menu3d_user_widgets(menu3d, widgets);
+        }
+
+        sdk::UObjectBase* subtitle_widget{};
+        if (daysgone_read_value((uintptr_t)ui_manager + 0x518, subtitle_widget)) {
+            daysgone_push_unique_widget(widgets, subtitle_widget);
+        }
+    }
+
+    if (auto* slate_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.SlateHUD");
+        daysgone_object_pointer_is_readable(slate_hud))
+    {
+        daysgone_collect_widgets_from_slate_menu(slate_hud, widgets);
+    }
+
+    if (auto* bend_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.BendHUD");
+        daysgone_object_pointer_is_readable(bend_hud))
+    {
+        sdk::UObjectBase* slate_hud{};
+        if (daysgone_read_value((uintptr_t)bend_hud + 0x480, slate_hud)) {
+            daysgone_collect_widgets_from_slate_menu(slate_hud, widgets);
+        }
+    }
+
+    // The visible Days Gone menu/HUD is often a normal viewport UUserWidget
+    // owned by BendGameInstance rather than a child of BP_Menu3D/SlateHUD.
+    // Collect those roots explicitly so viewport-slot placement can affect the
+    // actual MainMenu/HUD/subtitle widgets instead of only their child panels.
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/MainMenu/UI_MainMenuWidget.UI_MainMenuWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/_New_Menus/UI_MegaMenu.UI_MegaMenu_C",
+        widgets,
+        true);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/HUD/UI_HudWidget.UI_HudWidget_C",
+        widgets,
+        true);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/HUD/UI_SubtitleWidget.UI_SubtitleWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/Options/OptionsMenuWidget.OptionsMenuWidget_C",
+        widgets,
+        false);
+    daysgone_collect_tracked_widget_class(
+        L"WidgetBlueprintGeneratedClass /Game/Libraries/UI/Blueprints/Menus/Options/OptionsTopMenuWidget.OptionsTopMenuWidget_C",
+        widgets,
+        false);
+
+    return widgets;
+}
+
+void daysgone_restore_viewport_root_slots() {
+    const auto widgets = daysgone_collect_active_slate_widgets();
+    size_t restored{};
+    for (auto* widget : widgets) {
+        if (!daysgone_widget_is_viewport_root_candidate(widget)) {
+            continue;
+        }
+
+        daysgone_restore_user_widget_viewport_slot(widget);
+        ++restored;
+    }
+
+    if (restored != 0) {
+        SPDLOG_INFO("[DaysGone][ViewportSlotFix] restored {} root viewport widget slots", restored);
+    }
+}
+
+std::string daysgone_describe_uobject_array(sdk::UObjectBase* owner, uintptr_t offset, const char* label, size_t max_entries = 6) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return fmt::format("{}=<owner-missing>", label);
+    }
+
+    DaysGoneRawTArray array{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, array)) {
+        return fmt::format("{}=<unreadable-array>", label);
+    }
+
+    if (array.count < 0 || array.max < 0 || array.count > array.max || array.count > 512) {
+        return fmt::format("{}=<bad-array data={:x} count={} max={}>", label, array.data, array.count, array.max);
+    }
+
+    std::string result = fmt::format("{}=count:{} max:{} data:{:x}", label, array.count, array.max, array.data);
+    if (array.count == 0) {
+        return result;
+    }
+
+    const auto shown = std::min<size_t>((size_t)array.count, max_entries);
+    if (array.data == 0 || !is_readable_process_range(array.data, shown * sizeof(uintptr_t))) {
+        return result + " entries:<unreadable>";
+    }
+
+    result += " entries:[";
+    for (size_t i = 0; i < shown; ++i) {
+        uintptr_t raw_object{};
+        if (!daysgone_read_value(array.data + (i * sizeof(uintptr_t)), raw_object)) {
+            result += fmt::format("{}:<bad-read>", i);
+            continue;
+        }
+
+        if (i != 0) {
+            result += "; ";
+        }
+
+        result += fmt::format("{}:{}", i, daysgone_describe_uobject((sdk::UObjectBase*)raw_object));
+    }
+
+    if ((size_t)array.count > shown) {
+        result += fmt::format("; +{}", (size_t)array.count - shown);
+    }
+
+    result += "]";
+    return result;
+}
+
+std::string daysgone_array_count_string(sdk::UObjectBase* owner, uintptr_t offset) {
+    DaysGoneRawTArray array{};
+    if (!daysgone_object_pointer_is_readable(owner) || !daysgone_read_value((uintptr_t)owner + offset, array)) {
+        return "?";
+    }
+
+    if (array.count < 0 || array.max < 0 || array.count > array.max || array.count > 512) {
+        return "bad";
+    }
+
+    return std::to_string(array.count);
+}
+
+std::string daysgone_describe_raw_pointer_field(sdk::UObjectBase* owner, uintptr_t offset, const char* label) {
+    if (!daysgone_object_pointer_is_readable(owner)) {
+        return fmt::format("{}=<owner-missing>", label);
+    }
+
+    sdk::UObjectBase* object{};
+    if (!daysgone_read_value((uintptr_t)owner + offset, object)) {
+        return fmt::format("{}=<unreadable-field>", label);
+    }
+
+    return fmt::format("{}={}", label, daysgone_describe_uobject(object));
+}
+
+std::string daysgone_format_vec2(const DaysGoneVec2& value) {
+    return fmt::format("{:.3f},{:.3f}", value.x, value.y);
+}
+
+std::string daysgone_format_vec3(const DaysGoneVec3& value) {
+    return fmt::format("{:.3f},{:.3f},{:.3f}", value.x, value.y, value.z);
+}
+
+bool daysgone_float_is_sane(float value, float abs_limit = 100000.0f) {
+    return std::isfinite(value) && std::abs(value) <= abs_limit;
+}
+
+std::string daysgone_describe_suspect_uobject_pointer(uintptr_t raw) {
+    if (raw == 0) {
+        return "0";
+    }
+
+    auto* object = (sdk::UObjectBase*)raw;
+    if (daysgone_object_pointer_is_readable(object)) {
+        return daysgone_describe_uobject(object);
+    }
+
+    return fmt::format("{:x}:raw", raw);
+}
+
+std::string daysgone_describe_texture_render_target_2d(sdk::UObjectBase* render_target, const char* label) {
+    if (!daysgone_object_pointer_is_readable(render_target)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(render_target));
+    }
+
+    int32_t size_x{};
+    int32_t size_y{};
+    uint8_t flags{};
+    uint8_t override_format{};
+
+    daysgone_read_value((uintptr_t)render_target + 0xB0, size_x);
+    daysgone_read_value((uintptr_t)render_target + 0xB4, size_y);
+    daysgone_read_value((uintptr_t)render_target + 0xCC, flags);
+    daysgone_read_value((uintptr_t)render_target + 0xD0, override_format);
+
+    return fmt::format(
+        "{}={} size={}x{} rt_flags=0x{:02X} override_fmt={}",
+        label,
+        daysgone_describe_uobject(render_target),
+        size_x,
+        size_y,
+        flags,
+        override_format);
+}
+
+std::string daysgone_describe_scene_component_transform(sdk::UObjectBase* component, const char* label) {
+    if (!daysgone_object_pointer_is_readable(component)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(component));
+    }
+
+    sdk::UObjectBase* attach_parent{};
+    DaysGoneRawTArray attach_children{};
+    uint8_t scene_flags0{};
+    uint8_t scene_flags1{};
+    DaysGoneVec3 relative_location{};
+    DaysGoneVec3 relative_rotation{};
+    DaysGoneVec3 relative_scale{};
+    DaysGoneVec3 component_velocity{};
+
+    daysgone_read_value((uintptr_t)component + 0xD0, attach_parent);
+    daysgone_read_value((uintptr_t)component + 0xD8, attach_children);
+    daysgone_read_value((uintptr_t)component + 0xF0, scene_flags0);
+    daysgone_read_value((uintptr_t)component + 0xF1, scene_flags1);
+    daysgone_read_value((uintptr_t)component + 0x170, relative_location);
+    daysgone_read_value((uintptr_t)component + 0x17C, relative_rotation);
+    daysgone_read_value((uintptr_t)component + 0x1B0, relative_scale);
+    daysgone_read_value((uintptr_t)component + 0x1E0, component_velocity);
+
+    return fmt::format(
+        "{}={} rel_loc=({}) rel_rot=({}) rel_scale=({}) vel=({}) scene_flags=0x{:02X}/0x{:02X} attach_parent={} attach_children={}/{}",
+        label,
+        daysgone_describe_uobject(component),
+        daysgone_format_vec3(relative_location),
+        daysgone_format_vec3(relative_rotation),
+        daysgone_format_vec3(relative_scale),
+        daysgone_format_vec3(component_velocity),
+        scene_flags0,
+        scene_flags1,
+        daysgone_describe_uobject(attach_parent),
+        attach_children.count,
+        attach_children.max);
+}
+
+std::string daysgone_describe_bend_widget_component(sdk::UObjectBase* component, const char* label) {
+    if (!daysgone_object_pointer_is_readable(component)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(component));
+    }
+
+    uint8_t flags600{};
+    uint8_t pooled_widget_type{};
+    uint8_t space{};
+    uint8_t timing_policy{};
+    uint8_t world_orientation{};
+    uint8_t use_image_texture{};
+    uint8_t size_screen{};
+    uint8_t size_from_widget{};
+    uint8_t far_fade{};
+    uint8_t stick_to_edge{};
+    uint8_t disable_occlusion{};
+    uint8_t manually_redraw{};
+    uint8_t redraw_requested{};
+    uint8_t force_redraw_requested{};
+    uint8_t is_opaque{};
+    uint8_t is_two_sided{};
+    uint8_t tick_when_offscreen{};
+    uint8_t blend_mode{};
+    uint8_t use_custom_material{};
+    uint8_t use_legacy_rotation{};
+    uint8_t override_tick{};
+    uint8_t tick_enabled{};
+    uint8_t added_to_screen{};
+
+    uintptr_t widget_class{};
+    sdk::UObjectBase* image_texture{};
+    sdk::UObjectBase* owner_player{};
+    sdk::UObjectBase* widget{};
+    sdk::UObjectBase* translucent_material{};
+    sdk::UObjectBase* translucent_material_post_aa{};
+    sdk::UObjectBase* custom_material{};
+    sdk::UObjectBase* render_target{};
+    sdk::UObjectBase* material_instance{};
+
+    float screen_scale{};
+    float draw_scale{};
+    float far_fade_start{};
+    float far_fade_end{};
+    float opacity{};
+    float redraw_time{};
+    float max_interaction_distance{};
+    DaysGoneVec2 screen_pixel_offset{};
+    DaysGoneVec2 draw_size_f{};
+    DaysGoneIntPoint draw_size_i{};
+    DaysGoneVec2 pivot{};
+    DaysGoneVec3 relative_location{};
+    DaysGoneVec3 relative_rotation{};
+    DaysGoneVec3 relative_scale{};
+
+    const auto base = (uintptr_t)component;
+    daysgone_read_value(base + 0x600, flags600);
+    daysgone_read_value(base + 0x601, pooled_widget_type);
+    daysgone_read_value(base + 0x602, space);
+    daysgone_read_value(base + 0x604, timing_policy);
+    daysgone_read_value(base + 0x605, world_orientation);
+    daysgone_read_value(base + 0x608, use_image_texture);
+    daysgone_read_value(base + 0x618, widget_class);
+    daysgone_read_value(base + 0x620, size_screen);
+    daysgone_read_value(base + 0x624, screen_scale);
+    daysgone_read_value(base + 0x628, screen_pixel_offset);
+    daysgone_read_value(base + 0x630, size_from_widget);
+    daysgone_read_value(base + 0x634, draw_size_i);
+    daysgone_read_value(base + 0x634, draw_size_f);
+    daysgone_read_value(base + 0x63C, draw_scale);
+    daysgone_read_value(base + 0x640, far_fade);
+    daysgone_read_value(base + 0x644, far_fade_start);
+    daysgone_read_value(base + 0x648, far_fade_end);
+    daysgone_read_value(base + 0x64C, opacity);
+    daysgone_read_value(base + 0x650, stick_to_edge);
+    daysgone_read_value(base + 0x651, disable_occlusion);
+    daysgone_read_value(base + 0x652, manually_redraw);
+    daysgone_read_value(base + 0x653, redraw_requested);
+    daysgone_read_value(base + 0x654, force_redraw_requested);
+    daysgone_read_value(base + 0x658, redraw_time);
+    daysgone_read_value(base + 0x668, pivot);
+    daysgone_read_value(base + 0x670, max_interaction_distance);
+    daysgone_read_value(base + 0x678, owner_player);
+    daysgone_read_value(base + 0x690, blend_mode);
+    daysgone_read_value(base + 0x691, is_opaque);
+    daysgone_read_value(base + 0x692, is_two_sided);
+    daysgone_read_value(base + 0x693, tick_when_offscreen);
+    daysgone_read_value(base + 0x610, image_texture);
+    daysgone_read_value(base + 0x6C0, widget);
+    daysgone_read_value(base + 0x6C8, translucent_material);
+    daysgone_read_value(base + 0x6D8, translucent_material_post_aa);
+    daysgone_read_value(base + 0x718, use_custom_material);
+    daysgone_read_value(base + 0x720, custom_material);
+    daysgone_read_value(base + 0x728, render_target);
+    daysgone_read_value(base + 0x730, material_instance);
+    daysgone_read_value(base + 0x738, use_legacy_rotation);
+    daysgone_read_value(base + 0x739, override_tick);
+    daysgone_read_value(base + 0x73A, tick_enabled);
+    daysgone_read_value(base + 0x73C, added_to_screen);
+    daysgone_read_value(base + 0x170, relative_location);
+    daysgone_read_value(base + 0x17C, relative_rotation);
+    daysgone_read_value(base + 0x1B0, relative_scale);
+
+    const auto draw_size_f_is_sane =
+        daysgone_float_is_sane(draw_size_f.x, 32768.0f) &&
+        daysgone_float_is_sane(draw_size_f.y, 32768.0f) &&
+        draw_size_f.x >= 0.0f &&
+        draw_size_f.y >= 0.0f;
+
+    return fmt::format(
+        "{}={} rel_loc=({}) rel_rot=({}) rel_scale=({}) enums pooled={} space={} timing={} orient={} blend={} "
+        "screen_scale={:.3f} screen_offset=({}) draw_size_i={}x{} draw_size_f={} draw_scale={:.3f} pivot=({}) "
+        "flags delay={} use_img={} size_screen={} size_widget={} far={} edge={} no_occ={} manual={} redraw={} force={} opaque={} two_sided={} offscreen={} custom_mat={} legacy_rot={} tick_override={} tick_enabled={} added={} "
+        "fade={:.3f}/{:.3f} opacity={:.3f} redraw_time={:.3f} max_dist={:.3f} widget_class={} image={} owner={} widget={} trans_mat={} postaa_mat={} custom={} {} mid={}",
+        label,
+        daysgone_describe_uobject(component),
+        daysgone_format_vec3(relative_location),
+        daysgone_format_vec3(relative_rotation),
+        daysgone_format_vec3(relative_scale),
+        pooled_widget_type,
+        space,
+        timing_policy,
+        world_orientation,
+        blend_mode,
+        screen_scale,
+        daysgone_format_vec2(screen_pixel_offset),
+        draw_size_i.x,
+        draw_size_i.y,
+        draw_size_f_is_sane ? fmt::format("({})", daysgone_format_vec2(draw_size_f)) : "<not-float>",
+        draw_scale,
+        daysgone_format_vec2(pivot),
+        (flags600 & 1) != 0,
+        (use_image_texture & 1) != 0,
+        (size_screen & 1) != 0,
+        (size_from_widget & 1) != 0,
+        (far_fade & 1) != 0,
+        (stick_to_edge & 1) != 0,
+        (disable_occlusion & 1) != 0,
+        (manually_redraw & 1) != 0,
+        (redraw_requested & 1) != 0,
+        (force_redraw_requested & 1) != 0,
+        (is_opaque & 1) != 0,
+        (is_two_sided & 1) != 0,
+        (tick_when_offscreen & 1) != 0,
+        (use_custom_material & 1) != 0,
+        (use_legacy_rotation & 1) != 0,
+        (override_tick & 1) != 0,
+        (tick_enabled & 1) != 0,
+        (added_to_screen & 1) != 0,
+        far_fade_start,
+        far_fade_end,
+        opacity,
+        redraw_time,
+        max_interaction_distance,
+        daysgone_describe_suspect_uobject_pointer(widget_class),
+        daysgone_describe_uobject(image_texture),
+        daysgone_describe_uobject(owner_player),
+        daysgone_describe_uobject(widget),
+        daysgone_describe_uobject(translucent_material),
+        daysgone_describe_uobject(translucent_material_post_aa),
+        daysgone_describe_uobject(custom_material),
+        daysgone_describe_texture_render_target_2d(render_target, "rt"),
+        daysgone_describe_uobject(material_instance));
+}
+
+std::string daysgone_describe_bp_menu3d_state(sdk::UObjectBase* menu3d) {
+    if (!daysgone_object_pointer_is_readable(menu3d)) {
+        return fmt::format("bpMenu3D={}", daysgone_describe_uobject(menu3d));
+    }
+
+    sdk::UObjectBase* bend_widget_main{};
+    sdk::UObjectBase* bend_widget_bike_info{};
+    sdk::UObjectBase* default_scene_root{};
+    sdk::UObjectBase* root1{};
+    sdk::UObjectBase* main{};
+    sdk::UObjectBase* storylines{};
+    sdk::UObjectBase* skills{};
+    sdk::UObjectBase* inventory{};
+    sdk::UObjectBase* map{};
+    sdk::UObjectBase* menus{};
+    sdk::UObjectBase* current_tween{};
+    sdk::UObjectBase* current_drift{};
+    sdk::UObjectBase* gray_background{};
+    sdk::UObjectBase* white_background{};
+    sdk::UObjectBase* world_map{};
+    sdk::UObjectBase* duplicate_camera{};
+    sdk::UObjectBase* map_widget{};
+    sdk::UObjectBase* skill_menu{};
+    sdk::UObjectBase* modifiers_menu{};
+    sdk::UObjectBase* inventory_menu{};
+    sdk::UObjectBase* storylines_menu{};
+    sdk::UObjectBase* map_menu{};
+    sdk::UObjectBase* mega_menu{};
+    sdk::UObjectBase* start_menu{};
+    sdk::UObjectBase* selector_menu{};
+
+    uint8_t touch_flags{};
+    uint8_t current_menu{};
+    uint8_t next_menu{};
+    uint8_t use_player_camera{};
+    uint8_t tearing_down{};
+    uint8_t tutorial_active{};
+    uint8_t has_run_once{};
+    uint8_t selected_menu{};
+    uint8_t last_menu{};
+    uint8_t previous_menu{};
+    uint8_t override_menu{};
+    uint8_t exit_transition{};
+    int32_t tearing_down_frames{};
+    float distance_from_camera{};
+    float camera_fov{};
+    float timeline_fade{};
+    float timeline_main{};
+    float map_drift_scale{};
+    float drag_threshold_sq{};
+    DaysGoneRawTArray allowed_menus{};
+    DaysGoneVec3 menu_start_location{};
+    DaysGoneVec3 touch_start{};
+    DaysGoneVec3 touch_end{};
+    DaysGoneVec3 default_map_location{};
+
+    const auto base = (uintptr_t)menu3d;
+    daysgone_read_value(base + 0x408, bend_widget_main);
+    daysgone_read_value(base + 0x500, bend_widget_bike_info);
+    daysgone_read_value(base + 0x4F0, default_scene_root);
+    daysgone_read_value(base + 0x4F8, root1);
+    daysgone_read_value(base + 0x508, main);
+    daysgone_read_value(base + 0x510, storylines);
+    daysgone_read_value(base + 0x518, skills);
+    daysgone_read_value(base + 0x520, inventory);
+    daysgone_read_value(base + 0x530, map);
+    daysgone_read_value(base + 0x568, menus);
+    daysgone_read_value(base + 0x570, current_tween);
+    daysgone_read_value(base + 0x578, current_drift);
+    daysgone_read_value(base + 0x580, gray_background);
+    daysgone_read_value(base + 0x588, white_background);
+    daysgone_read_value(base + 0x5A0, touch_flags);
+    daysgone_read_value(base + 0x5A1, current_menu);
+    daysgone_read_value(base + 0x5A2, next_menu);
+    daysgone_read_value(base + 0x5A8, world_map);
+    daysgone_read_value(base + 0x5B0, distance_from_camera);
+    daysgone_read_value(base + 0x5B4, use_player_camera);
+    daysgone_read_value(base + 0x5B8, default_map_location);
+    daysgone_read_value(base + 0x5C8, duplicate_camera);
+    daysgone_read_value(base + 0x5D8, map_widget);
+    daysgone_read_value(base + 0x5E0, camera_fov);
+    daysgone_read_value(base + 0x5E4, tearing_down);
+    daysgone_read_value(base + 0x5E8, tearing_down_frames);
+    daysgone_read_value(base + 0x5F8, skill_menu);
+    daysgone_read_value(base + 0x600, modifiers_menu);
+    daysgone_read_value(base + 0x608, inventory_menu);
+    daysgone_read_value(base + 0x610, storylines_menu);
+    daysgone_read_value(base + 0x618, map_menu);
+    daysgone_read_value(base + 0x620, map_drift_scale);
+    daysgone_read_value(base + 0x640, mega_menu);
+    daysgone_read_value(base + 0x648, start_menu);
+    daysgone_read_value(base + 0x660, tutorial_active);
+    daysgone_read_value(base + 0x668, allowed_menus);
+    daysgone_read_value(base + 0x678, has_run_once);
+    daysgone_read_value(base + 0x688, last_menu);
+    daysgone_read_value(base + 0x68C, drag_threshold_sq);
+    daysgone_read_value(base + 0x690, selected_menu);
+    daysgone_read_value(base + 0x6B8, previous_menu);
+    daysgone_read_value(base + 0x8B0, override_menu);
+    daysgone_read_value(base + 0x8C8, selector_menu);
+    daysgone_read_value(base + 0x8F0, exit_transition);
+    daysgone_read_value(base + 0x538, timeline_fade);
+    daysgone_read_value(base + 0x548, timeline_main);
+    daysgone_read_value(base + 0x558, menu_start_location);
+    daysgone_read_value(base + 0x590, touch_start);
+    daysgone_read_value(base + 0x598, touch_end);
+
+    return fmt::format(
+        "bpMenu3D={} menus cur={} next={} last={} prev={} selected={} override={} touch_blocked={} use_player_cam={} tearing={} tear_frames={} tutorial={} run_once={} exit={} dist={:.3f} fov={:.3f} fade={:.3f} main_tl={:.3f} map_drift={:.3f} drag_sq={:.3f} allowed={}/{} menu_start=({}) default_map=({}) touch_start=({}) touch_end=({}) "
+        "main={} story={} skills={} inv={} map={} menusRoot={} tween={} drift={} gray={} white={} worldMap={} dupCam={} mapWidget={} baseSkills={} baseModifiers={} baseInventory={} baseStory={} baseMap={} mega={} start={} selector={} {} {} {} {}",
+        daysgone_describe_uobject(menu3d),
+        current_menu,
+        next_menu,
+        last_menu,
+        previous_menu,
+        selected_menu,
+        override_menu,
+        (touch_flags & 1) != 0,
+        (use_player_camera & 1) != 0,
+        (tearing_down & 1) != 0,
+        tearing_down_frames,
+        (tutorial_active & 1) != 0,
+        (has_run_once & 1) != 0,
+        (exit_transition & 1) != 0,
+        distance_from_camera,
+        camera_fov,
+        timeline_fade,
+        timeline_main,
+        map_drift_scale,
+        drag_threshold_sq,
+        allowed_menus.count,
+        allowed_menus.max,
+        daysgone_format_vec3(menu_start_location),
+        daysgone_format_vec3(default_map_location),
+        daysgone_format_vec3(touch_start),
+        daysgone_format_vec3(touch_end),
+        daysgone_describe_uobject(main),
+        daysgone_describe_uobject(storylines),
+        daysgone_describe_uobject(skills),
+        daysgone_describe_uobject(inventory),
+        daysgone_describe_uobject(map),
+        daysgone_describe_uobject(menus),
+        daysgone_describe_uobject(current_tween),
+        daysgone_describe_uobject(current_drift),
+        daysgone_describe_uobject(gray_background),
+        daysgone_describe_uobject(white_background),
+        daysgone_describe_uobject(world_map),
+        daysgone_describe_uobject(duplicate_camera),
+        daysgone_describe_uobject(map_widget),
+        daysgone_describe_uobject(skill_menu),
+        daysgone_describe_uobject(modifiers_menu),
+        daysgone_describe_uobject(inventory_menu),
+        daysgone_describe_uobject(storylines_menu),
+        daysgone_describe_uobject(map_menu),
+        daysgone_describe_uobject(mega_menu),
+        daysgone_describe_uobject(start_menu),
+        daysgone_describe_uobject(selector_menu),
+        daysgone_describe_scene_component_transform(default_scene_root, "defaultRoot"),
+        daysgone_describe_scene_component_transform(root1, "root1"),
+        daysgone_describe_bend_widget_component(bend_widget_main, "bendWidgetMain"),
+        daysgone_describe_bend_widget_component(bend_widget_bike_info, "bendWidgetBike"));
+}
+
+std::string daysgone_describe_base_menu_widget(sdk::UObjectBase* widget, const char* label) {
+    if (!daysgone_object_pointer_is_readable(widget)) {
+        return fmt::format("{}={}", label, daysgone_describe_uobject(widget));
+    }
+
+    uint8_t flags{};
+    int32_t z_order{};
+    sdk::UObjectBase* popup{};
+    sdk::UObjectBase* owning_menu{};
+
+    daysgone_read_value((uintptr_t)widget + 0x330, flags);
+    daysgone_read_value((uintptr_t)widget + 0x338, popup);
+    daysgone_read_value((uintptr_t)widget + 0x340, owning_menu);
+    daysgone_read_value((uintptr_t)widget + 0x348, z_order);
+
+    return fmt::format(
+        "{}={} flags=0x{:02X} z={} popup={} owning={}",
+        label,
+        daysgone_describe_uobject(widget),
+        flags,
+        z_order,
+        daysgone_describe_uobject(popup),
+        daysgone_describe_uobject(owning_menu));
+}
+}
+
+void FFakeStereoRenderingHook::attempt_hook_daysgone_slate_intermediate_buffer() {
+    if (m_attempted_hook_daysgone_slate_intermediate_buffer) {
+        return;
+    }
+
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    m_attempted_hook_daysgone_slate_intermediate_buffer = true;
+
+    // Days Gone's BendTemporalAA creates a real SlateIntermediateBuffer, then
+    // composites it into the scene. Capturing that texture gives UEVR a true UI
+    // target instead of treating the scene RT as UI.
+    constexpr uintptr_t kBendTemporalAASlateIntermediatePostCallRva = 0x200CD9F;
+    constexpr std::array<uint8_t, 8> kExpectedBytes{
+        0x33, 0xD2,                         // xor edx, edx
+        0xB9, 0x00, 0x01, 0x00, 0x00,       // mov ecx, 100h
+        0xE8                                // call ...
+    };
+
+    const auto module = (uintptr_t)utility::get_executable();
+    if (module == 0) {
+        SPDLOG_WARN("[DaysGone][SlateUI] Cannot hook SlateIntermediateBuffer: executable module unavailable");
+        return;
+    }
+
+    const auto hook_address = module + kBendTemporalAASlateIntermediatePostCallRva;
+    if (!is_executable_process_range(hook_address, kExpectedBytes.size()) ||
+        std::memcmp((void*)hook_address, kExpectedBytes.data(), kExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][SlateUI] Refusing SlateIntermediateBuffer hook at {:x}: byte signature mismatch",
+            hook_address);
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid((void*)hook_address, &FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook);
+    if (!hook_result) {
+        SPDLOG_WARN("[DaysGone][SlateUI] Failed to hook SlateIntermediateBuffer post-call at {:x}", hook_address);
+        return;
+    }
+
+    m_daysgone_slate_intermediate_buffer_hook = std::move(hook_result);
+    SPDLOG_INFO("[DaysGone][SlateUI] Hooked Bend SlateIntermediateBuffer post-call at {:x}", hook_address);
+}
+
+void FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto* const rtm = g_hook->get_render_target_manager();
+    if (rtm == nullptr) {
+        return;
+    }
+
+    constexpr uintptr_t kSlateIntermediateLocalRspOffset = 0x60;
+    const auto local_address = ctx.rsp + kSlateIntermediateLocalRspOffset;
+    if (!is_readable_process_range(local_address, sizeof(FRHITexture2D*))) {
+        return;
+    }
+
+    auto* slate_texture = *(FRHITexture2D**)local_address;
+    if (slate_texture == nullptr || !is_readable_process_range((uintptr_t)slate_texture, sizeof(void*))) {
+        return;
+    }
+
+    if (slate_texture == rtm->get_render_target()) {
+        SPDLOG_WARN_ONCE("[DaysGone][SlateUI] Ignoring SlateIntermediateBuffer candidate because it matches the scene RT");
+        return;
+    }
+
+    DaysGoneD3D11TextureCandidate candidate{};
+    if (!daysgone_try_get_d3d11_texture_candidate(slate_texture, candidate)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][SlateUI] SlateIntermediateBuffer candidate {:x} is not a readable nested D3D11 texture yet",
+            (uintptr_t)slate_texture);
+        return;
+    }
+
+    if (!daysgone_is_plausible_slate_ui_desc(candidate.desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DaysGone][SlateUI] Rejected non-UI SlateIntermediateBuffer candidate: wrapper={:x} native={:x} [{}x{} fmt={} bind=0x{:X}]",
+            (uintptr_t)slate_texture,
+            (uintptr_t)candidate.native,
+            candidate.desc.Width,
+            candidate.desc.Height,
+            (uint32_t)candidate.desc.Format,
+            candidate.desc.BindFlags);
+        return;
+    }
+
+    const auto last_target = g_hook->m_daysgone_slate_intermediate_last_target.load();
+    const auto last_native = g_hook->m_daysgone_slate_native_ui_target.load();
+    if (last_target == (uintptr_t)slate_texture && last_native == (uintptr_t)candidate.native) {
+        return;
+    }
+
+    // Store the captured texture so the opt-in D3D11 overlay path can draw it
+    // into UEVR's UI layer without forcing global 2D screen mode.
+    (void)rtm;
+    g_hook->m_daysgone_slate_intermediate_last_target.store((uintptr_t)slate_texture);
+    g_hook->m_daysgone_slate_native_ui_target.store((uintptr_t)candidate.native);
+    g_hook->m_daysgone_slate_native_ui_width.store(candidate.desc.Width);
+    g_hook->m_daysgone_slate_native_ui_height.store(candidate.desc.Height);
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][SlateUI] Captured Bend SlateIntermediateBuffer native UI target: wrapper={:x} native={:x} path=+0x{:X}/+0x{:X} [{}x{} fmt={} bind=0x{:X}]",
+        (uintptr_t)slate_texture,
+        (uintptr_t)candidate.native,
+        candidate.outer_offset == std::numeric_limits<uintptr_t>::max() ? 0 : candidate.outer_offset,
+        candidate.inner_offset == std::numeric_limits<uintptr_t>::max() ? 0 : candidate.inner_offset,
+        candidate.desc.Width,
+        candidate.desc.Height,
+        (uint32_t)candidate.desc.Format,
+        candidate.desc.BindFlags);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_daysgone_bend_taa_composite() {
+    if (m_attempted_hook_daysgone_bend_taa_composite) {
+        return;
+    }
+
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    m_attempted_hook_daysgone_bend_taa_composite = true;
+
+    // Days Gone's visible UI is not a normal Slate overlay. BendTemporalAA
+    // composites SlateIntermediateBuffer into the scene in this execute
+    // routine; the crop flag at pass+0x76 is what pushes the menu/HUD toward
+    // a bad HMD-sized quadrant in VR.
+    constexpr uintptr_t kBendTemporalAACompositeExecuteRva = 0x2008550;
+    constexpr std::array<uint8_t, 10> kExpectedBytes{
+        0x4C, 0x89, 0x4C, 0x24, 0x20, // mov [rsp+20h], r9
+        0x48, 0x89, 0x4C, 0x24, 0x08  // mov [rsp+08h], rcx
+    };
+
+    const auto module = (uintptr_t)utility::get_executable();
+    if (module == 0) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Cannot hook BendTemporalAA composite: executable module unavailable");
+        return;
+    }
+
+    const auto hook_address = module + kBendTemporalAACompositeExecuteRva;
+    if (!is_executable_process_range(hook_address, kExpectedBytes.size()) ||
+        std::memcmp((void*)hook_address, kExpectedBytes.data(), kExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing composite hook at {:x}: byte signature mismatch",
+            hook_address);
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid((void*)hook_address, &FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook);
+    if (!hook_result) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA composite at {:x}", hook_address);
+        return;
+    }
+
+    m_daysgone_bend_taa_composite_hook = std::move(hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA Slate composite at {:x}", hook_address);
+}
+
+void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    const auto pass = (uintptr_t)ctx.rcx;
+    if (!is_readable_process_range(pass, 0xD8)) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool compatibility_enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    const bool extracted_overlay_enabled = g_hook->m_daysgone_bend_ui_use_slate_overlay->value();
+    const bool suppress_in_scene_composite = g_hook->m_daysgone_bend_ui_suppress_in_scene_composite->value();
+    if (!compatibility_enabled ||
+        !g_hook->m_daysgone_bend_ui_disable_taa_crop->value() ||
+        !extracted_overlay_enabled ||
+        !suppress_in_scene_composite)
+    {
+        return;
+    }
+
+    uint8_t crop_flag{};
+    if (!daysgone_read_value(pass + 0x76, crop_flag)) {
+        return;
+    }
+
+    const bool had_crop = (crop_flag & 1) != 0;
+    g_hook->m_daysgone_bend_taa_composite_seen.fetch_add(1);
+
+    if (had_crop && daysgone_write_value<uint8_t>(pass + 0x76, 0)) {
+        g_hook->m_daysgone_bend_taa_composite_crop_suppressed.fetch_add(1);
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][BendTAA] crop suppression active pass={:x} had_crop={} seen={} suppressed={}",
+        pass,
+        had_crop,
+        (unsigned long long)g_hook->m_daysgone_bend_taa_composite_seen.load(),
+        (unsigned long long)g_hook->m_daysgone_bend_taa_composite_crop_suppressed.load());
+}
+
+void FFakeStereoRenderingHook::update_daysgone_ui_telemetry() {
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto vr = VR::get();
+    if (vr == nullptr || !vr->is_daysgone_bend_ui_placement_fix_enabled()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_daysgone_ui_telemetry_last_queue.time_since_epoch().count() != 0 &&
+        now - m_daysgone_ui_telemetry_last_queue < std::chrono::seconds(5))
+    {
+        return;
+    }
+
+    if (m_daysgone_ui_telemetry_queued.exchange(true)) {
+        return;
+    }
+
+    m_daysgone_ui_telemetry_last_queue = now;
+
+    auto log_telemetry = [this]() {
+        utility::ScopeGuard reset{[this]() {
+            m_daysgone_ui_telemetry_queued.store(false);
+        }};
+
+        if (g_hook != this || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+            return;
+        }
+
+        log_daysgone_ui_telemetry_game_thread();
+    };
+
+    if (GameThreadWorker::get().is_same_thread()) {
+        log_telemetry();
+        return;
+    }
+
+    GameThreadWorker::get().enqueue(std::move(log_telemetry));
+}
+
+void FFakeStereoRenderingHook::log_daysgone_ui_telemetry_game_thread() {
+    auto* ui_manager = daysgone_find_first_tracked_object(L"Class /Script/BendGame.UIManager");
+    auto* bend_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.BendHUD");
+    auto* slate_hud = daysgone_find_first_tracked_object(L"Class /Script/BendGame.SlateHUD");
+    auto* menu3d_class_instance = daysgone_find_first_tracked_object(L"Class /Script/BendGame.Menu3D");
+
+    int32_t frame_count = -1;
+    uint8_t options_menu_flags = 0;
+    uint8_t menu3d_actor_flags = 0;
+    float menu3d_flick_angle = 0.0f;
+    sdk::UObjectBase* menu3d{};
+    sdk::UObjectBase* map3d{};
+    sdk::UObjectBase* subtitle_widget{};
+    sdk::UObjectBase* devinfo_widget{};
+    sdk::UObjectBase* bend_slate_hud{};
+    sdk::UObjectBase* slate_widget{};
+    sdk::UObjectBase* slate_hud_widget{};
+
+    if (daysgone_object_pointer_is_readable(ui_manager)) {
+        daysgone_read_value((uintptr_t)ui_manager + 0x46C, frame_count);
+        daysgone_read_value((uintptr_t)ui_manager + 0x528, options_menu_flags);
+        daysgone_read_value((uintptr_t)ui_manager + 0x530, menu3d);
+        daysgone_read_value((uintptr_t)ui_manager + 0x538, map3d);
+        daysgone_read_value((uintptr_t)ui_manager + 0x518, subtitle_widget);
+        daysgone_read_value((uintptr_t)ui_manager + 0x520, devinfo_widget);
+    }
+
+    if (daysgone_object_pointer_is_readable(bend_hud)) {
+        daysgone_read_value((uintptr_t)bend_hud + 0x480, bend_slate_hud);
+    }
+
+    if (!daysgone_object_pointer_is_readable(slate_hud) && daysgone_object_pointer_is_readable(bend_slate_hud)) {
+        slate_hud = bend_slate_hud;
+    }
+
+    if (daysgone_object_pointer_is_readable(slate_hud)) {
+        daysgone_read_value((uintptr_t)slate_hud + 0x80, slate_widget);
+        daysgone_read_value((uintptr_t)slate_hud + 0xB0, slate_hud_widget);
+    }
+
+    if (!daysgone_object_pointer_is_readable(menu3d) && daysgone_object_pointer_is_readable(menu3d_class_instance)) {
+        menu3d = menu3d_class_instance;
+    }
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_read_value((uintptr_t)menu3d + 0x8, menu3d_actor_flags);
+        daysgone_read_value((uintptr_t)menu3d + 0x358, menu3d_flick_angle);
+    }
+
+    auto* const rtm = get_render_target_manager();
+    const auto scene_rt = rtm != nullptr ? (uintptr_t)rtm->get_render_target() : 0;
+    const auto fallback_ui = rtm != nullptr ? (uintptr_t)rtm->get_fallback_ui_target_ref() : 0;
+    const auto dedicated_ui = rtm != nullptr ? (uintptr_t)rtm->get_dedicated_ui_target() : 0;
+    const auto dedicated_ui_w = rtm != nullptr ? rtm->get_dedicated_ui_width() : 0;
+    const auto dedicated_ui_h = rtm != nullptr ? rtm->get_dedicated_ui_height() : 0;
+    const auto last_slate_intermediate = m_daysgone_slate_intermediate_last_target.load();
+
+    uint8_t current_menu_sig{};
+    uint8_t next_menu_sig{};
+    uint8_t last_menu_sig{};
+    uint8_t selected_menu_sig{};
+    sdk::UObjectBase* bend_widget_main_sig{};
+    sdk::UObjectBase* bend_widget_bike_sig{};
+    sdk::UObjectBase* bend_widget_main_rt_sig{};
+    DaysGoneIntPoint bend_widget_main_draw_size_sig{};
+    float bend_widget_main_draw_scale_sig{};
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_read_value((uintptr_t)menu3d + 0x5A1, current_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x5A2, next_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x688, last_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x690, selected_menu_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x408, bend_widget_main_sig);
+        daysgone_read_value((uintptr_t)menu3d + 0x500, bend_widget_bike_sig);
+    }
+
+    if (daysgone_object_pointer_is_readable(bend_widget_main_sig)) {
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x634, bend_widget_main_draw_size_sig);
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x63C, bend_widget_main_draw_scale_sig);
+        daysgone_read_value((uintptr_t)bend_widget_main_sig + 0x728, bend_widget_main_rt_sig);
+    }
+
+    const auto hmd_width = VR::get() != nullptr ? VR::get()->get_hmd_width() : 0;
+    const auto hmd_height = VR::get() != nullptr ? VR::get()->get_hmd_height() : 0;
+    const auto bp_menu3d_state = daysgone_describe_bp_menu3d_state(menu3d);
+
+    const auto signature = fmt::format(
+        "ui={:x}|frame={}|opt=0x{:02X}|hud={:x}|slate={:x}|widget={:x}|hudwidget={:x}|menu3d={:x}|map3d={:x}|menus={}|hudmenus={}|created={}|m={}/{}/{}/{}|bw={:x}/{:x}/{:x}/{}x{}/{:.3f}|rt={:x}/{:x}/{:x}/{}x{}|hmd={}x{}",
+        (uintptr_t)ui_manager,
+        frame_count,
+        options_menu_flags,
+        (uintptr_t)bend_hud,
+        (uintptr_t)slate_hud,
+        (uintptr_t)slate_widget,
+        (uintptr_t)slate_hud_widget,
+        (uintptr_t)menu3d,
+        (uintptr_t)map3d,
+        daysgone_array_count_string(ui_manager, 0x480),
+        daysgone_array_count_string(ui_manager, 0x470),
+        daysgone_array_count_string(ui_manager, 0x490),
+        current_menu_sig,
+        next_menu_sig,
+        last_menu_sig,
+        selected_menu_sig,
+        (uintptr_t)bend_widget_main_sig,
+        (uintptr_t)bend_widget_bike_sig,
+        (uintptr_t)bend_widget_main_rt_sig,
+        bend_widget_main_draw_size_sig.x,
+        bend_widget_main_draw_size_sig.y,
+        bend_widget_main_draw_scale_sig,
+        scene_rt,
+        fallback_ui,
+        dedicated_ui,
+        dedicated_ui_w,
+        dedicated_ui_h,
+        hmd_width,
+        hmd_height);
+
+    ++m_daysgone_ui_telemetry_log_counter;
+    if (signature == m_daysgone_ui_telemetry_last_signature && (m_daysgone_ui_telemetry_log_counter % 6) != 0) {
+        return;
+    }
+
+    m_daysgone_ui_telemetry_last_signature = signature;
+
+    SPDLOG_INFO(
+        "[DaysGone][UITelemetry] ui={} frame={} opt_flags=0x{:02X} hmd={}x{} postprocess_raw=[{:016x},{:016x}] {} {} {} menu3d={} actor_flags=0x{:02X} flick={} map3d={} subtitle={} devinfo={} bend_hud={} bend_slate_hud={} slate_hud={} slate_widget={} slate_hud_widget={} {} {} {} scene_rt={:x} fallback_ui={:x} dedicated_ui={:x} dedicated_ui_size={}x{} slate_intermediate_last={:x}",
+        daysgone_describe_uobject(ui_manager),
+        frame_count,
+        options_menu_flags,
+        hmd_width,
+        hmd_height,
+        daysgone_object_pointer_is_readable(ui_manager) && is_readable_process_range((uintptr_t)ui_manager + 0x4C0, sizeof(uintptr_t))
+            ? *(uintptr_t*)((uintptr_t)ui_manager + 0x4C0)
+            : 0,
+        daysgone_object_pointer_is_readable(ui_manager) && is_readable_process_range((uintptr_t)ui_manager + 0x4C8, sizeof(uintptr_t))
+            ? *(uintptr_t*)((uintptr_t)ui_manager + 0x4C8)
+            : 0,
+        daysgone_describe_uobject_array(ui_manager, 0x470, "hudMenus"),
+        daysgone_describe_uobject_array(ui_manager, 0x480, "menus"),
+        daysgone_describe_uobject_array(ui_manager, 0x490, "createdThisFrame"),
+        daysgone_describe_uobject(menu3d),
+        menu3d_actor_flags,
+        menu3d_flick_angle,
+        daysgone_describe_uobject(map3d),
+        daysgone_describe_uobject(subtitle_widget),
+        daysgone_describe_uobject(devinfo_widget),
+        daysgone_describe_uobject(bend_hud),
+        daysgone_describe_uobject(bend_slate_hud),
+        daysgone_describe_uobject(slate_hud),
+        daysgone_describe_base_menu_widget(slate_widget, "slateWidget"),
+        daysgone_describe_base_menu_widget(slate_hud_widget, "slateHudWidget"),
+        daysgone_describe_raw_pointer_field(slate_widget, 0x340, "widgetOwningMenu"),
+        daysgone_describe_raw_pointer_field(slate_hud_widget, 0x340, "hudWidgetOwningMenu"),
+        bp_menu3d_state,
+        scene_rt,
+        fallback_ui,
+        dedicated_ui,
+        dedicated_ui_w,
+        dedicated_ui_h,
+        last_slate_intermediate);
+}
+
+void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
+    if (!daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+        return;
+    }
+
+    auto vr = VR::get();
+    const bool enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    if (!enabled && !m_daysgone_bend_ui_originals.captured && !daysgone_has_slate_widget_originals() &&
+        !g_daysgone_slate_composite_cvar.forced)
+    {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (enabled) {
+        const auto apply_signature = fmt::format(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}",
+            m_daysgone_bend_ui_manual_apply_generation.load(),
+            m_daysgone_bend_ui_mode->value(),
+            m_daysgone_bend_ui_force_player_camera->value(),
+            m_daysgone_bend_ui_override_widget_transform->value(),
+            m_daysgone_bend_ui_override_root_transform->value(),
+            m_daysgone_bend_ui_force_widget_refresh->value(),
+            m_daysgone_bend_ui_viewport_slot_fix->value(),
+            m_daysgone_bend_ui_apply_child_render_transform->value(),
+            m_daysgone_bend_ui_use_slate_overlay->value(),
+            m_daysgone_bend_ui_suppress_in_scene_composite->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_x->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_y->value(),
+            m_daysgone_bend_ui_viewport_slot_scale->value(),
+            m_daysgone_bend_ui_viewport_slot_opacity->value(),
+            m_daysgone_bend_ui_distance_from_camera->value(),
+            m_daysgone_bend_ui_camera_fov->value(),
+            m_daysgone_bend_ui_widget_loc_x->value(),
+            m_daysgone_bend_ui_widget_loc_y->value(),
+            m_daysgone_bend_ui_widget_loc_z->value(),
+            m_daysgone_bend_ui_widget_rot_pitch->value(),
+            m_daysgone_bend_ui_widget_rot_yaw->value(),
+            m_daysgone_bend_ui_widget_rot_roll->value(),
+            m_daysgone_bend_ui_widget_scale->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value(),
+            m_daysgone_bend_ui_draw_scale->value(),
+            m_daysgone_bend_ui_root_loc_x->value(),
+            m_daysgone_bend_ui_root_loc_y->value(),
+            m_daysgone_bend_ui_root_loc_z->value(),
+            m_daysgone_bend_ui_key_opacity->value());
+        const bool settings_changed = apply_signature != m_daysgone_bend_ui_last_apply_signature;
+        const bool watchdog_due =
+            m_daysgone_bend_ui_live_watchdog->value() &&
+            m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
+            now - m_daysgone_bend_ui_last_apply >= std::chrono::seconds(5);
+
+        if (!settings_changed && !watchdog_due) {
+            return;
+        }
+
+        constexpr auto apply_interval = std::chrono::milliseconds(75);
+        if (m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
+            now - m_daysgone_bend_ui_last_apply < apply_interval)
+        {
+            return;
+        }
+
+        if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
+            return;
+        }
+
+        m_daysgone_bend_ui_last_apply = now;
+        m_daysgone_bend_ui_last_apply_signature = apply_signature;
+    } else {
+        m_daysgone_bend_ui_last_apply = {};
+        m_daysgone_bend_ui_last_apply_signature.clear();
+        if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
+            return;
+        }
+    }
+
+    auto apply_or_restore = [this]() {
+        utility::ScopeGuard reset{[this]() {
+            m_daysgone_bend_ui_fix_queued.store(false);
+        }};
+
+        if (g_hook != this || !daysgone_is_current_game() || g_framework == nullptr || !g_framework->is_dx11()) {
+            return;
+        }
+
+        auto vr = VR::get();
+        if (vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled()) {
+            apply_daysgone_bend_ui_placement_fix_game_thread();
+        } else {
+            restore_daysgone_bend_ui_placement_fix_game_thread();
+        }
+    };
+
+    if (GameThreadWorker::get().is_same_thread()) {
+        apply_or_restore();
+        return;
+    }
+
+    GameThreadWorker::get().enqueue(std::move(apply_or_restore));
+}
+
+void FFakeStereoRenderingHook::restore_daysgone_bend_ui_placement_fix_game_thread() {
+    daysgone_set_disable_slate_composite(false);
+    daysgone_restore_slate_widget_originals();
+    daysgone_restore_viewport_root_slots();
+
+    auto& original = m_daysgone_bend_ui_originals;
+    if (!original.captured) {
+        return;
+    }
+
+    auto* menu3d = reinterpret_cast<sdk::UObjectBase*>(original.menu3d);
+    auto* widget = reinterpret_cast<sdk::UObjectBase*>(original.widget_main);
+    auto* root = reinterpret_cast<sdk::UObjectBase*>(original.default_root);
+
+    if (daysgone_object_pointer_is_readable(menu3d)) {
+        daysgone_write_value((uintptr_t)menu3d + 0x5B0, original.distance_from_camera);
+        daysgone_write_bool_bit((uintptr_t)menu3d + 0x5B4, (original.use_player_camera & 1) != 0);
+        daysgone_write_value((uintptr_t)menu3d + 0x5E0, original.camera_fov);
+    }
+
+    if (daysgone_object_pointer_is_readable(widget)) {
+        daysgone_write_value((uintptr_t)widget + 0x170, DaysGoneVec3{original.widget_location.x, original.widget_location.y, original.widget_location.z});
+        daysgone_write_value((uintptr_t)widget + 0x17C, DaysGoneVec3{original.widget_rotation.x, original.widget_rotation.y, original.widget_rotation.z});
+        daysgone_write_value((uintptr_t)widget + 0x1B0, DaysGoneVec3{original.widget_scale.x, original.widget_scale.y, original.widget_scale.z});
+        daysgone_write_value((uintptr_t)widget + 0x624, original.screen_scale);
+        daysgone_write_value((uintptr_t)widget + 0x628, DaysGoneVec2{original.screen_offset.x, original.screen_offset.y});
+        daysgone_write_value((uintptr_t)widget + 0x63C, original.draw_scale);
+        daysgone_write_value((uintptr_t)widget + 0x668, DaysGoneVec2{original.pivot.x, original.pivot.y});
+        daysgone_write_bool_bit((uintptr_t)widget + 0x651, (original.disable_occlusion & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x693, (original.tick_when_offscreen & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x739, (original.tick_override & 1) != 0);
+        daysgone_write_bool_bit((uintptr_t)widget + 0x73A, (original.tick_enabled & 1) != 0);
+    }
+
+    if (daysgone_object_pointer_is_readable(root)) {
+        daysgone_write_value((uintptr_t)root + 0x170, DaysGoneVec3{original.root_location.x, original.root_location.y, original.root_location.z});
+        daysgone_write_value((uintptr_t)root + 0x17C, DaysGoneVec3{original.root_rotation.x, original.root_rotation.y, original.root_rotation.z});
+        daysgone_write_value((uintptr_t)root + 0x1B0, DaysGoneVec3{original.root_scale.x, original.root_scale.y, original.root_scale.z});
+    }
+
+    SPDLOG_INFO(
+        "[DaysGone][BendUIFix] Restored original placement menu={:x} widget={:x} root={:x}",
+        original.menu3d,
+        original.widget_main,
+        original.default_root);
+
+    m_daysgone_bend_ui_restore_count.fetch_add(1);
+    m_daysgone_bend_ui_last_menu3d.store(0);
+    m_daysgone_bend_ui_last_widget_main.store(0);
+    original = {};
+}
+
+void FFakeStereoRenderingHook::apply_daysgone_bend_ui_placement_fix_game_thread() {
+    const bool overlay_requested = m_daysgone_bend_ui_use_slate_overlay->value();
+    const bool use_extracted_overlay = should_use_daysgone_slate_ui_overlay();
+    const bool suppress_in_scene =
+        use_extracted_overlay &&
+        m_daysgone_bend_ui_suppress_in_scene_composite->value();
+    if (overlay_requested && suppress_in_scene) {
+        if (m_daysgone_bend_ui_originals.captured || daysgone_has_slate_widget_originals()) {
+            restore_daysgone_bend_ui_placement_fix_game_thread();
+        }
+
+        daysgone_set_disable_slate_composite(true);
+
+        m_daysgone_bend_ui_last_menu3d.store(0);
+        m_daysgone_bend_ui_last_widget_main.store(0);
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            10,
+            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=true key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; using extracted overlay only",
+            use_extracted_overlay,
+            m_daysgone_bend_ui_key_threshold->value(),
+            m_daysgone_bend_ui_key_softness->value(),
+            m_daysgone_bend_ui_key_opacity->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+        return;
+    }
+
+    if (overlay_requested) {
+        daysgone_set_disable_slate_composite(false);
+        SPDLOG_INFO_EVERY_N_SEC(
+            10,
+            "[DaysGone][SlateOverlay] requested target={} suppress_in_scene=false key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}; keeping live UMG root tuning active",
+            use_extracted_overlay,
+            m_daysgone_bend_ui_key_threshold->value(),
+            m_daysgone_bend_ui_key_softness->value(),
+            m_daysgone_bend_ui_key_opacity->value(),
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value(),
+            m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+    }
+
+    daysgone_set_disable_slate_composite(false);
+
+    const auto slate_widgets = daysgone_collect_active_slate_widgets();
+    auto apply_slate_widgets = [this, &slate_widgets]() {
+        const DaysGoneVec2 child_translation{
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value()};
+        const auto child_scale = std::max(0.01f, m_daysgone_bend_ui_screen_scale->value() * m_daysgone_bend_ui_draw_scale->value());
+        const DaysGoneVec2 viewport_translation{
+            m_daysgone_bend_ui_viewport_slot_offset_x->value(),
+            m_daysgone_bend_ui_viewport_slot_offset_y->value()};
+        const auto viewport_scale = std::max(0.01f, m_daysgone_bend_ui_viewport_slot_scale->value());
+        const auto viewport_opacity = std::clamp(m_daysgone_bend_ui_viewport_slot_opacity->value(), 0.0f, 2.0f);
+
+        size_t viewport_roots_applied{};
+        size_t child_transforms_applied{};
+        for (auto* widget : slate_widgets) {
+            if (m_daysgone_bend_ui_viewport_slot_fix->value() &&
+                daysgone_apply_user_widget_viewport_slot(widget, viewport_translation, viewport_scale, viewport_opacity))
+            {
+                ++viewport_roots_applied;
+                continue;
+            }
+
+            if (m_daysgone_bend_ui_apply_child_render_transform->value()) {
+                daysgone_apply_slate_widget_transform(widget, child_translation, child_scale);
+                ++child_transforms_applied;
+            }
+        }
+
+        if (!slate_widgets.empty()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                5,
+                "[DaysGone][SlateWidgetFix] candidates={} viewport_roots={} child_transforms={} viewport_offset=({:.1f},{:.1f}) viewport_scale={:.3f} viewport_opacity={:.3f} child_offset=({:.1f},{:.1f}) child_scale={:.3f} total_apply={} total_restore={}",
+                slate_widgets.size(),
+                viewport_roots_applied,
+                child_transforms_applied,
+                viewport_translation.x,
+                viewport_translation.y,
+                viewport_scale,
+                viewport_opacity,
+                child_translation.x,
+                child_translation.y,
+                child_scale,
+                g_daysgone_slate_widget_apply_count,
+                g_daysgone_slate_widget_restore_count);
+        }
+    };
+
+    auto* menu3d = daysgone_find_menu3d_object();
+    sdk::UObjectBase* widget{};
+    if (!daysgone_read_bend_widget_main(menu3d, widget)) {
+        apply_slate_widgets();
+        return;
+    }
+
+    sdk::UObjectBase* default_root{};
+    daysgone_read_value((uintptr_t)menu3d + 0x4F0, default_root);
+
+    auto& original = m_daysgone_bend_ui_originals;
+    if (original.captured &&
+        (original.menu3d != (uintptr_t)menu3d || original.widget_main != (uintptr_t)widget))
+    {
+        restore_daysgone_bend_ui_placement_fix_game_thread();
+    }
+
+    if (!original.captured) {
+        DaysGoneVec3 v3{};
+        DaysGoneVec2 v2{};
+
+        original.menu3d = (uintptr_t)menu3d;
+        original.widget_main = (uintptr_t)widget;
+        original.default_root = (uintptr_t)default_root;
+        daysgone_read_value((uintptr_t)menu3d + 0x5B0, original.distance_from_camera);
+        daysgone_read_value((uintptr_t)menu3d + 0x5B4, original.use_player_camera);
+        daysgone_read_value((uintptr_t)menu3d + 0x5E0, original.camera_fov);
+
+        if (daysgone_read_value((uintptr_t)widget + 0x170, v3)) { original.widget_location = {v3.x, v3.y, v3.z}; }
+        if (daysgone_read_value((uintptr_t)widget + 0x17C, v3)) { original.widget_rotation = {v3.x, v3.y, v3.z}; }
+        if (daysgone_read_value((uintptr_t)widget + 0x1B0, v3)) { original.widget_scale = {v3.x, v3.y, v3.z}; }
+        daysgone_read_value((uintptr_t)widget + 0x624, original.screen_scale);
+        if (daysgone_read_value((uintptr_t)widget + 0x628, v2)) { original.screen_offset = {v2.x, v2.y}; }
+        daysgone_read_value((uintptr_t)widget + 0x63C, original.draw_scale);
+        if (daysgone_read_value((uintptr_t)widget + 0x668, v2)) { original.pivot = {v2.x, v2.y}; }
+        daysgone_read_value((uintptr_t)widget + 0x651, original.disable_occlusion);
+        daysgone_read_value((uintptr_t)widget + 0x693, original.tick_when_offscreen);
+        daysgone_read_value((uintptr_t)widget + 0x739, original.tick_override);
+        daysgone_read_value((uintptr_t)widget + 0x73A, original.tick_enabled);
+
+        if (daysgone_object_pointer_is_readable(default_root)) {
+            if (daysgone_read_value((uintptr_t)default_root + 0x170, v3)) { original.root_location = {v3.x, v3.y, v3.z}; }
+            if (daysgone_read_value((uintptr_t)default_root + 0x17C, v3)) { original.root_rotation = {v3.x, v3.y, v3.z}; }
+            if (daysgone_read_value((uintptr_t)default_root + 0x1B0, v3)) { original.root_scale = {v3.x, v3.y, v3.z}; }
+        }
+
+        original.captured = true;
+
+        SPDLOG_INFO(
+            "[DaysGone][BendUIFix] Captured original placement menu={:x} widget={:x} root={:x}",
+            original.menu3d,
+            original.widget_main,
+            original.default_root);
+    }
+
+    const int mode = std::clamp(m_daysgone_bend_ui_mode->value(), 0, 2);
+    const bool apply_player_camera = mode == 0 || mode == 2;
+    const bool apply_widget = (mode == 1 || mode == 2) && m_daysgone_bend_ui_override_widget_transform->value();
+
+    if (apply_player_camera) {
+        daysgone_write_bool_bit((uintptr_t)menu3d + 0x5B4, m_daysgone_bend_ui_force_player_camera->value());
+        daysgone_write_value((uintptr_t)menu3d + 0x5B0, m_daysgone_bend_ui_distance_from_camera->value());
+        daysgone_write_value((uintptr_t)menu3d + 0x5E0, m_daysgone_bend_ui_camera_fov->value());
+    }
+
+    if (apply_widget) {
+        const auto scale = std::max(0.01f, m_daysgone_bend_ui_widget_scale->value());
+        daysgone_write_value((uintptr_t)widget + 0x170, DaysGoneVec3{
+            m_daysgone_bend_ui_widget_loc_x->value(),
+            m_daysgone_bend_ui_widget_loc_y->value(),
+            m_daysgone_bend_ui_widget_loc_z->value()});
+        daysgone_write_value((uintptr_t)widget + 0x17C, DaysGoneVec3{
+            m_daysgone_bend_ui_widget_rot_pitch->value(),
+            m_daysgone_bend_ui_widget_rot_yaw->value(),
+            m_daysgone_bend_ui_widget_rot_roll->value()});
+        daysgone_write_value((uintptr_t)widget + 0x1B0, DaysGoneVec3{scale, scale, scale});
+        daysgone_write_value((uintptr_t)widget + 0x624, std::max(0.01f, m_daysgone_bend_ui_screen_scale->value()));
+        daysgone_write_value((uintptr_t)widget + 0x628, DaysGoneVec2{
+            m_daysgone_bend_ui_screen_offset_x->value(),
+            m_daysgone_bend_ui_screen_offset_y->value()});
+        daysgone_write_value((uintptr_t)widget + 0x63C, std::max(0.01f, m_daysgone_bend_ui_draw_scale->value()));
+        daysgone_write_value((uintptr_t)widget + 0x668, DaysGoneVec2{0.5f, 0.5f});
+    }
+
+    if (m_daysgone_bend_ui_override_root_transform->value() && daysgone_object_pointer_is_readable(default_root)) {
+        daysgone_write_value((uintptr_t)default_root + 0x170, DaysGoneVec3{
+            m_daysgone_bend_ui_root_loc_x->value(),
+            m_daysgone_bend_ui_root_loc_y->value(),
+            m_daysgone_bend_ui_root_loc_z->value()});
+    }
+
+    if (m_daysgone_bend_ui_force_widget_refresh->value()) {
+        daysgone_write_bool_bit((uintptr_t)widget + 0x651, true); // bDisableOcclusion
+        daysgone_write_bool_bit((uintptr_t)widget + 0x653, true); // bRedrawRequested
+        daysgone_write_bool_bit((uintptr_t)widget + 0x654, true); // bForceRedrawRequested
+        daysgone_write_bool_bit((uintptr_t)widget + 0x693, true); // TickWhenOffscreen
+        daysgone_write_bool_bit((uintptr_t)widget + 0x739, true); // bShouldOverrideComponentTick
+    }
+
+    m_daysgone_bend_ui_last_menu3d.store((uintptr_t)menu3d);
+    m_daysgone_bend_ui_last_widget_main.store((uintptr_t)widget);
+    m_daysgone_bend_ui_apply_count.fetch_add(1);
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][BendUIFix] applied mode={} player={} widget={} menu={:x} widget={:x} loc=({:.1f},{:.1f},{:.1f}) rot=({:.1f},{:.1f},{:.1f}) scale={:.3f} screen_offset=({:.1f},{:.1f})",
+        mode,
+        apply_player_camera,
+        apply_widget,
+        (uintptr_t)menu3d,
+        (uintptr_t)widget,
+        m_daysgone_bend_ui_widget_loc_x->value(),
+        m_daysgone_bend_ui_widget_loc_y->value(),
+        m_daysgone_bend_ui_widget_loc_z->value(),
+        m_daysgone_bend_ui_widget_rot_pitch->value(),
+        m_daysgone_bend_ui_widget_rot_yaw->value(),
+        m_daysgone_bend_ui_widget_rot_roll->value(),
+        m_daysgone_bend_ui_widget_scale->value(),
+        m_daysgone_bend_ui_screen_offset_x->value(),
+        m_daysgone_bend_ui_screen_offset_y->value());
+
+    apply_slate_widgets();
+}
+
+void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,
+                                                                void* a4, void* params, void* unk1, void* unk2)
 {
 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
     SPDLOG_INFO("SlateRHIRenderer::DrawWindow_RenderThread called!");
@@ -8805,11 +12018,37 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             utility::emulate(*module_within, ctx.ctx->Registers.RegRip, 1000, ctx, [&](const utility::ShemuContextExtended& ctx) -> utility::ExhaustionResult {
                 SPDLOG_DEBUG("[SlateRHIRenderer::DrawWindow_RenderThread] Emulating instruction: {:x} ({:X})", ctx.ctx->ctx->Registers.RegRip, ctx.ctx->ctx->Registers.RegRip - (uintptr_t)*module_within);
 
+                auto is_within_stack = [&](uintptr_t addr) -> bool {
+                    return addr >= ctx.ctx->ctx->StackBase && addr < ctx.ctx->ctx->StackBase + ctx.ctx->ctx->StackSize;
+                };
+
                 // Allow writes to go through if we are inside the window getter.
                 // The downside is this might unintentionally increase the reference count of the window
                 // but it's necessary for the window getter to not give us a nullptr.
                 if (ctx.next.writes_to_memory && window_getter_callstack_level == 0) {
-                    return utility::ExhaustionResult::STEP_OVER;
+                    bool allow_write = false;
+
+                    // However, if it writes to the stack, allow it through.
+                    for (size_t i = 0; i < ctx.next.ix.OperandsCount; ++i) {
+                        const auto& op = ctx.next.ix.Operands[i];
+                        
+                        if (op.Type == ND_OP_MEM && op.Access.Write) {
+                            const auto base_reg = op.Info.Memory.HasBase ? ((uint64_t*)&ctx.ctx->ctx->Registers.RegRax)[op.Info.Memory.Base] : 0;
+                            const auto index_reg = op.Info.Memory.HasIndex ? ((uint64_t*)&ctx.ctx->ctx->Registers.RegRax)[op.Info.Memory.Index] : 0;
+                            const auto addr = base_reg + index_reg * op.Info.Memory.Scale + op.Info.Memory.Disp;
+
+                            if (is_within_stack(addr)) {
+                                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Allowing write to stack at {:x}!", addr);
+                                allow_write = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!allow_write) {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Instruction writes to memory but we're not inside the window getter, skipping! ({:x})", ctx.ctx->ctx->Registers.RegRip);
+                        return utility::ExhaustionResult::STEP_OVER;
+                    }
                 }
 
                 if (std::string_view{ctx.next.ix.Mnemonic}.starts_with("CALL")) {
@@ -8819,14 +12058,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                         return utility::ExhaustionResult::CONTINUE;
                     }
 
+                    const auto rcx_within_bounds = (uint8_t*)ctx.ctx->ctx->Registers.RegRcx >= window_bounds.data() && (uint8_t*)ctx.ctx->ctx->Registers.RegRcx < window_bounds.data() + window_bounds.size();
+                    const auto rdx_within_bounds = (uint8_t*)ctx.ctx->ctx->Registers.RegRdx >= window_bounds.data() && (uint8_t*)ctx.ctx->ctx->Registers.RegRdx < window_bounds.data() + window_bounds.size();
+
                     // Check if RCX != window first. We don't want to skip over the call if it is set to it.
                     // There are inlined and non-inlined versions of this function which is why we need to check this.
-                    if ((uint8_t*)ctx.ctx->ctx->Registers.RegRcx < window_bounds.data() || (uint8_t*)ctx.ctx->ctx->Registers.RegRcx > window_bounds.data() + window_bounds.size()) {
-                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping call!");
+                    if (!rcx_within_bounds && !rdx_within_bounds) {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Skipping call (not within window bounds)!");
                         return utility::ExhaustionResult::STEP_OVER;
                     }
 
-                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Allowing call, RCX matches window {:x}!", ctx.next.ix.Operands[0].Info.Register.Reg, window);
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Allowing call to 0x{:x}, RCX or RDX matches window {:x}!", ctx.next.ix.Operands[0].Info.Register.Reg, window);
                     SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] RCX: {:x}, RDX: {:x}", ctx.ctx->ctx->Registers.RegRcx, ctx.ctx->ctx->Registers.RegRdx);
                     ++window_getter_callstack_level;
                     return utility::ExhaustionResult::CONTINUE;
@@ -8845,16 +12087,43 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 // where reg contains the pointer to the window
                 // and offset is the offset to the viewport.
                 const auto& cctx = ctx.ctx->ctx;
-                const auto& ix = cctx->Instruction;
+                const auto& ix = ctx.next.ix;
+
+                // Debug stuff
+#if 0
+                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Instruction: {:x} ({})", ctx.ctx->ctx->Registers.RegRip, ix.Mnemonic);
+
+                for (uint32_t i = 0; i < ix.OperandsCount; ++i) {
+                    const auto& op = ix.Operands[i];
+
+                    if (op.Type == ND_OP_REG) {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Operand {} is register: {}", i, op.Info.Register.Reg);
+                    } else if (op.Type == ND_OP_MEM) {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Operand {} is memory: [base: {}, index: {}, scale: {}, disp: {:x}]", i,
+                            op.Info.Memory.HasBase ? op.Info.Memory.Base : 0,
+                            op.Info.Memory.HasIndex ? op.Info.Memory.Index : 0,
+                            op.Info.Memory.Scale,
+                            op.Info.Memory.HasDisp ? op.Info.Memory.Disp : 0);
+                    } else {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Operand {} is of type {}", i, static_cast<uint32_t>(op.Type));
+                    }
+                }
+
+                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] RDI: {:x}", ctx.ctx->ctx->Registers.RegRdi);
+                SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] RDX: {:x}", ctx.ctx->ctx->Registers.RegRdx);
+#endif
 
                 if (ix.Instruction == ND_INS_MOV && ix.Operands[0].Type == ND_OP_REG && ix.Operands[1].Type == ND_OP_MEM &&
                     ix.Operands[1].Info.Memory.HasBase && ix.Operands[1].Info.Memory.HasDisp)
                 {
                     uintptr_t* reg = (uintptr_t*)&((uint64_t*)&cctx->Registers.RegRax)[ix.Operands[1].Info.Memory.Base];
+                    SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found memory operand with base register {:x} and displacement {:x}!", (uintptr_t)reg, ix.Operands[1].Info.Memory.Disp);
 
                     // Instead of checking the window, we check if the register is within the bounds of the window's memory.
                     // This should allow us to catch all sorts of compiler optimizations.
                     if ((uint8_t*)*reg >= window_bounds.data() && (uint8_t*)*reg < window_bounds.data() + window_bounds.size()) try {
+                        SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Base register {:x} is within window bounds, checking offset...", (uintptr_t)reg);
+
                         SPDLOG_INFO("[SlateRHIRenderer::DrawWindow_RenderThread] Found window pointer at {:x}!", (uintptr_t)reg);
                         auto offset = ix.Operands[1].Info.Memory.Disp;
                         const auto value = *(uintptr_t***)((uintptr_t)*reg + offset);
@@ -8994,6 +12263,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 } else if (ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture")) {
                     rtm->set_dedicated_ui_target(direct_texture, expected_extent->width, expected_extent->height);
                     rtm->get_fallback_ui_target_ref() = nullptr;
+                    if (mechwarrior_clans_is_current_game()) {
+                        rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior ISlateViewport direct texture");
+                    }
                     SPDLOG_WARN_ONCE("[UE5.5][SlateUI] promoted ISlateViewport direct texture as dedicated UI target");
                 }
             }
@@ -9106,14 +12378,34 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
                 g_hook->attempt_hook_ue58_slate_output_texture_register();
             }
-        } else if (!g_hook->m_hooked_ue57_slate_elements_pass) {
-            g_hook->attempt_hook_ue57_slate_elements_pass();
         }
+
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+
+        if (!is_ue_5_8_or_newer() && !rtm->has_dedicated_ui_target() && !g_hook->m_hooked_ue57_slate_elements_pass) {
+            const auto now = std::chrono::steady_clock::now();
+
+            if (g_hook->m_ue57_dedicated_ui_missing_since.time_since_epoch().count() == 0) {
+                g_hook->m_ue57_dedicated_ui_missing_since = now;
+                g_hook->m_ue57_dedicated_ui_missing_frames = 0;
+            }
+
+            ++g_hook->m_ue57_dedicated_ui_missing_frames;
+
+            if (g_hook->m_ue57_dedicated_ui_missing_frames > 180 &&
+                now - g_hook->m_ue57_dedicated_ui_missing_since > std::chrono::seconds(3))
+            {
+                g_hook->attempt_hook_ue57_slate_elements_pass();
+            }
+        } else if (rtm->has_dedicated_ui_target()) {
+            g_hook->m_ue57_dedicated_ui_missing_since = {};
+            g_hook->m_ue57_dedicated_ui_missing_frames = 0;
+        }
     }
 
     auto ui_target = rtm->get_ui_target();
     const auto render_target_fallback = rtm->get_render_target();
+    const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
 
     if (is_ue_5_7_or_newer()) {
         if (rtm->has_dedicated_ui_target()) {
@@ -9128,6 +12420,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         ui_target = rtm->get_ui_target();
     } else {
+        if (daysgone_dx11_no_scene_as_ui && ui_target == render_target_fallback) {
+            SPDLOG_WARN_ONCE("[DaysGone] Clearing scene render target UI fallback before Slate DrawWindow");
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            ui_target = nullptr;
+        }
+
         if (ui_target == nullptr && provider_texture_native_ok && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
             ui_target = provider_texture;
@@ -9140,10 +12438,12 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             rtm->get_fallback_ui_target_ref() = engine_texture;
         }
 
-        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider) {
+        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider && !daysgone_dx11_no_scene_as_ui) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
             ui_target = render_target_fallback;
             rtm->get_fallback_ui_target_ref() = render_target_fallback;
+        } else if (ui_target == nullptr && render_target_fallback != nullptr && daysgone_dx11_no_scene_as_ui) {
+            SPDLOG_WARN_ONCE("[DaysGone] Not replacing Slate viewport with the scene RT; using Bend's in-scene Slate composite");
         }
     }
 
@@ -9513,6 +12813,15 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
             return;
         }
+    }
+
+    if (g_framework->is_dx11() && daysgone_is_current_game()) {
+        // Days Gone is UE4.11/D3D11 and its Slate/RT path can fatal if UEVR
+        // replays the texture-create call with a forced UI format while keeping
+        // UAV-capable flags. Let the original engine allocation run and adopt
+        // the resulting refs in the post hook instead.
+        SPDLOG_WARN_ONCE("[DaysGone] Skipping D3D11 pre-texture duplicate creation; using engine-created RT refs");
+        return;
     }
 
     // maybe do some work later to bruteforce the registers/offsets for these
@@ -10379,13 +13688,17 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         dedicated_ui_promoted = try_promote_dedicated_ui_candidate(rtm->shader_resource_hook_ref->texture, "shader_resource_hook_ref");
     }
 
+    const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
+
     if (!dedicated_ui_promoted && !is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && rtm->shader_resource_hook_ref != nullptr) {
         const auto shader_texture = rtm->shader_resource_hook_ref->texture;
 
-        if (shader_texture != nullptr) {
+        if (shader_texture != nullptr && !(daysgone_dx11_no_scene_as_ui && shader_texture == rtm->get_render_target())) {
             SPDLOG_INFO(" Falling back to original shader resource texture as UI target: {:x}", (uintptr_t)shader_texture);
             FRHITexture2D::set_vtable(*(void**)shader_texture);
             rtm->get_fallback_ui_target_ref() = shader_texture;
+        } else if (shader_texture != nullptr) {
+            SPDLOG_WARN_ONCE("[DaysGone] Refusing to use scene render target shader resource as a VR UI layer");
         }
     }
 
@@ -10408,6 +13721,11 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
                 }
 
                 if (!is_ue_5_7_or_newer()) {
+                    if (daysgone_dx11_no_scene_as_ui && recovered == rtm->get_render_target()) {
+                        SPDLOG_WARN_ONCE("[DaysGone] Refusing recovered scene render target as a VR UI layer");
+                        continue;
+                    }
+
                     rtm->get_fallback_ui_target_ref() = recovered;
                 }
                 break;
@@ -10416,8 +13734,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     }
 
     if (!is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
-        SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
-        rtm->get_fallback_ui_target_ref() = texture;
+        if (daysgone_dx11_no_scene_as_ui) {
+            // Days Gone composites Slate through BendTemporalAA into the scene RT.
+            // Treating that scene RT as a separate VR UI layer duplicates/crops the
+            // full scene in the overlay and pushes the menu/HUD to the wrong place.
+            SPDLOG_WARN_ONCE("[DaysGone] Skipping render-target-as-UI fallback; leaving Bend Slate composite in the scene");
+        } else {
+            SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
+            rtm->get_fallback_ui_target_ref() = texture;
+        }
     } else if (is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && texture != nullptr) {
         SPDLOG_WARN_ONCE("Skipping render-target-as-UI fallback on UE 5.7+; waiting for a dedicated UI target");
     }
@@ -10487,6 +13812,66 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
     reset_dedicated_ui_creation_state();
+}
+
+void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(const char* reason) {
+    const bool had_pending_creation =
+        dedicated_ui_creation_pending ||
+        dedicated_ui_object_created ||
+        in_flight_dedicated_ui_generation != 0 ||
+        in_flight_dedicated_ui_texture != nullptr ||
+        dedicated_ui_texture != nullptr;
+
+    if (!had_pending_creation) {
+        return;
+    }
+
+    auto rooted_texture = dedicated_ui_texture;
+    auto* in_flight_texture = in_flight_dedicated_ui_texture;
+    auto* rooted_raw = rooted_texture.get();
+
+    if (rooted_texture != nullptr && rooted_texture.valid()) {
+        GameThreadWorker::get().enqueue([rooted_texture]() mutable {
+            if (rooted_texture != nullptr && rooted_texture.valid()) {
+                rooted_texture->remove_from_root();
+            }
+        });
+    }
+
+    if (in_flight_texture != nullptr && in_flight_texture != rooted_raw) {
+        GameThreadWorker::get().enqueue([in_flight_texture]() {
+            if (in_flight_texture != nullptr && !IsBadReadPtr(in_flight_texture, sizeof(void*))) {
+                try {
+                    in_flight_texture->remove_from_root();
+                } catch (...) {
+                }
+            }
+        });
+    }
+
+    dedicated_ui_texture = nullptr;
+    in_flight_dedicated_ui_texture = nullptr;
+    reset_dedicated_ui_creation_state();
+
+    SPDLOG_INFO(
+        "[VRRenderTargetManager] Cancelled in-flight dedicated UI UObject creation after {} promotion; preserving current FRHITexture target",
+        reason != nullptr ? reason : "external UI target");
+}
+
+void VRRenderTargetManager_Base::invalidate_resolution_dependent_targets() {
+    texture_hook_ref = nullptr;
+    shader_resource_hook_ref = nullptr;
+    allocate_texture_called = false;
+    last_texture_index = 0;
+    last_width = 0;
+    last_height = 0;
+    wants_depth_reallocate = true;
+
+    ui_target = nullptr;
+    destroy_dedicated_ui_target();
+    dedicated_ui_width = 0;
+    dedicated_ui_height = 0;
+    dedicated_ui_last_attempt = {};
 }
 
 void VRRenderTargetManager_Base::reset_dedicated_ui_creation_state() {
@@ -12012,71 +15397,6 @@ bool VRRenderTargetManager::AllocateRenderTargetTextures(uint32_t SizeX, uint32_
     // Keep the engine on the deprecated single-texture allocation path for now.
     // UEVR's 5.7 UI separation still depends on analyzing and midhooking the real
     // texture creation sequence that happens after this returns false.
-    return false;
-}
-
-__declspec(noinline) void VRRenderTargetManager_58::CalculateRenderTargetSize(const sdk::FViewport& Viewport, uint32_t& InOutSizeX, uint32_t& InOutSizeY) {
-    SPDLOG_INFO_ONCE("[UE5.8][RTM] VRRenderTargetManager_58::CalculateRenderTargetSize called");
-
-    m_last_calculate_render_size_return_address = (uintptr_t)_ReturnAddress();
-
-    VRRenderTargetManager_Base::calculate_render_target_size(Viewport, InOutSizeX, InOutSizeY);
-}
-
-__declspec(noinline) bool VRRenderTargetManager_58::NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) {
-    SPDLOG_INFO_ONCE("[UE5.8][RTM] VRRenderTargetManager_58::NeedReAllocateShadingRateTexture called");
-
-    return false;
-}
-
-__declspec(noinline) bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
-    sdk::FRHICommandListBase& RHICmdList,
-    uint32_t SizeX,
-    uint32_t SizeY,
-    uint8_t Format,
-    uint32_t NumLayers,
-    ETextureCreateFlags Flags,
-    ETextureCreateFlags TargetableTextureFlags,
-    TArray<FTexture2DRHIRef>& OutTargetableTextures,
-    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
-    uint32_t NumSamples)
-{
-    m_last_allocate_render_targets_return_address = (uintptr_t)_ReturnAddress();
-
-    SPDLOG_INFO_EVERY_N_SEC(2,
-        "[UE5.8][RTM] AllocateRenderTargetTextures(RHICmdList) reached; returning false for default engine allocation size={}x{} fmt={} layers={} samples={} caller={:x}",
-        SizeX,
-        SizeY,
-        (uint32_t)Format,
-        NumLayers,
-        NumSamples,
-        m_last_allocate_render_targets_return_address);
-
-    return false;
-}
-
-__declspec(noinline) bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
-    uint32_t SizeX,
-    uint32_t SizeY,
-    uint8_t Format,
-    uint32_t NumLayers,
-    ETextureCreateFlags Flags,
-    ETextureCreateFlags TargetableTextureFlags,
-    TArray<FTexture2DRHIRef>& OutTargetableTextures,
-    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
-    uint32_t NumSamples)
-{
-    m_last_allocate_render_targets_return_address = (uintptr_t)_ReturnAddress();
-
-    SPDLOG_INFO_EVERY_N_SEC(2,
-        "[UE5.8][RTM] deprecated AllocateRenderTargetTextures reached; returning false for default engine allocation size={}x{} fmt={} layers={} samples={} caller={:x}",
-        SizeX,
-        SizeY,
-        (uint32_t)Format,
-        NumLayers,
-        NumSamples,
-        m_last_allocate_render_targets_return_address);
-
     return false;
 }
 

@@ -22,7 +22,7 @@ std::optional<uintptr_t> resolve_symbol(HANDLE process, const char* name) {
     symbol->MaxNameLen = MAX_SYM_NAME;
 
     if (!SymFromName(process, name, symbol)) {
-        SPDLOG_WARN("Failed to resolve symbol {}", name);
+        SPDLOG_INFO("Optional UE 5.7 Slate symbol was not resolved: {}", name);
         return std::nullopt;
     }
 
@@ -72,8 +72,8 @@ UE57SlateSymbols resolve() {
             symbols.add_slate_draw_elements_pass,
             symbols.register_external_texture_from_rhi);
     } else {
-        SPDLOG_ERROR(
-            "Incomplete UE 5.7 Slate symbol resolution: AddSlateDrawElementsPass={:x}, RegisterExternalTexture(FRHITexture*)={:x}",
+        SPDLOG_INFO(
+            "Incomplete optional UE 5.7 Slate symbol resolution: AddSlateDrawElementsPass={:x}, RegisterExternalTexture(FRHITexture*)={:x}",
             symbols.add_slate_draw_elements_pass,
             symbols.register_external_texture_from_rhi);
     }

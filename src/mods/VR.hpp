@@ -11,6 +11,7 @@
 #include <deque>
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <stop_token>
 #include <thread>
 #include <unordered_map>
@@ -173,6 +174,7 @@ public:
     void update_imgui_state_from_xinput_state(XINPUT_STATE& state, bool is_vr_controller);
 
     void on_pre_engine_tick(sdk::UGameEngine* engine, float delta) override;
+    void on_post_engine_tick(sdk::UGameEngine* engine, float delta) override;
     void on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t view_index, Rotator<float>* view_rotation, 
                                              const float world_to_meters, Vector3f* view_location, bool is_double) override;
     void on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas) override;
@@ -188,6 +190,12 @@ public:
             m_d3d11.force_reset();
         }
     }
+
+    bool on_openxr_resolution_scale_changed(
+        uint32_t old_width,
+        uint32_t old_height,
+        uint32_t new_width,
+        uint32_t new_height);
 
 
     Vector4f get_position(uint32_t index, bool grip = true)  const;
@@ -213,6 +221,42 @@ public:
 
     Matrix4x4f get_aim_rotation(uint32_t index) const {
         return get_rotation(index, false);
+    }
+
+    glm::vec3 get_controller_position_with_offset(VRRuntime::Hand hand, bool grip = false) const {
+        const auto controller_index = hand == VRRuntime::Hand::LEFT ? get_left_controller_index() : get_right_controller_index();
+        const auto position = glm::vec3{get_position(controller_index, grip)};
+        const auto x_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_x() : get_right_controller_position_offset_x();
+        const auto y_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_y() : get_right_controller_position_offset_y();
+        const auto z_offset = hand == VRRuntime::Hand::LEFT ? get_left_controller_position_offset_z() : get_right_controller_position_offset_z();
+
+        if (x_offset == 0.0f && y_offset == 0.0f && z_offset == 0.0f) {
+            return position;
+        }
+
+        // Offsets are relative to the controller's adjusted aim rotation, so attached-controller props
+        // behave like they are mounted on a rigid object held by the controller.
+        const auto rotated_offset = glm::vec3{
+            glm::mat4{get_controller_rotation_with_offset(hand)} * glm::vec4{-x_offset, -y_offset, z_offset, 0.0f}
+        };
+
+        return position - rotated_offset;
+    }
+
+    Matrix4x4f get_controller_rotation_with_offset(VRRuntime::Hand hand) const {
+        const auto controller_index = hand == VRRuntime::Hand::LEFT ? get_left_controller_index() : get_right_controller_index();
+        const auto rotation = get_rotation(controller_index, false);
+        const auto x_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_x() : get_right_controller_rotation_offset_x();
+        const auto y_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_y() : get_right_controller_rotation_offset_y();
+        const auto z_offset_degrees = hand == VRRuntime::Hand::LEFT ? get_left_controller_rotation_offset_z() : get_right_controller_rotation_offset_z();
+
+        if (x_offset_degrees == 0.0f && y_offset_degrees == 0.0f && z_offset_degrees == 0.0f) {
+            return rotation;
+        }
+
+        const auto requested_rotation_offset =
+            utility::math::ue_rotation_matrix(glm::vec3{y_offset_degrees, z_offset_degrees, -x_offset_degrees});
+        return rotation * requested_rotation_offset;
     }
 
     Matrix4x4f get_grip_transform(uint32_t hand_index) const;
@@ -301,6 +345,18 @@ public:
     auto& get_overlay_component() {
         return m_overlay_component;
     }
+
+    vrmod::UILayerPoseBasis build_ui_layer_pose_basis(uint32_t render_frame_count);
+    void record_ui_layer_pose_sample(
+        const vrmod::UILayerPoseBasis* basis,
+        runtimes::OpenXR::SwapchainIndex swapchain,
+        XrEyeVisibility eye,
+        bool follow_view,
+        bool stabilizer_used,
+        const glm::quat& hmd_rotation,
+        const glm::quat& live_ui_rotation,
+        const glm::quat& applied_rotation,
+        const char* refusal_reason);
 
     uint32_t get_hmd_width() const;
     uint32_t get_hmd_height() const;
@@ -435,6 +491,7 @@ public:
     }
 
     bool should_ignore_native_stereo_fix_for_avowed_sync() const;
+    bool should_force_native_stereo_fix_same_pass() const;
 
     SynchronizeStage get_synchronize_stage() {
         return (SynchronizeStage) m_sync_mode->value();
@@ -571,6 +628,10 @@ public:
     }
 
     bool is_native_stereo_fix_same_pass_enabled() const {
+        if (should_force_native_stereo_fix_same_pass()) {
+            return true;
+        }
+
         return m_native_stereo_fix_same_pass->value();
     }
 
@@ -586,12 +647,30 @@ public:
         return m_compatibility_controller_camera_guard->value();
     }
 
+    bool is_head_turn_camera_stabilizer_enabled() const {
+        return m_compatibility_head_turn_camera_stabilizer->value();
+    }
+
+    bool is_ui_layer_pose_telemetry_enabled() const {
+        return m_compatibility_ui_layer_pose_telemetry->value();
+    }
+
+    bool is_ui_layer_pose_stabilizer_enabled() const {
+        return m_compatibility_ui_layer_pose_stabilizer->value();
+    }
+
+    bool is_daysgone_bend_ui_placement_fix_enabled() const {
+        return m_compatibility_daysgone_bend_ui_placement_fix->value();
+    }
+
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
         return m_last_xinput_update.time_since_epoch().count() != 0 &&
             (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
     }
 
     bool is_controller_camera_conflict_guard_active() const;
+    void note_stalker2_transition_stress(const char* reason);
+    bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
 
     bool is_ghosting_fix_enabled() const {
         return m_ghosting_fix->value();
@@ -651,6 +730,54 @@ public:
         return m_controller_pitch_offset->value();
     }
 
+    float get_left_controller_rotation_offset_x() const {
+        return m_left_controller_rotation_offset_x->value();
+    }
+
+    float get_left_controller_rotation_offset_y() const {
+        return m_left_controller_rotation_offset_y->value();
+    }
+
+    float get_left_controller_rotation_offset_z() const {
+        return m_left_controller_rotation_offset_z->value();
+    }
+
+    float get_right_controller_rotation_offset_x() const {
+        return m_right_controller_rotation_offset_x->value();
+    }
+
+    float get_right_controller_rotation_offset_y() const {
+        return m_right_controller_rotation_offset_y->value();
+    }
+
+    float get_right_controller_rotation_offset_z() const {
+        return m_right_controller_rotation_offset_z->value();
+    }
+
+    float get_left_controller_position_offset_x() const {
+        return m_left_controller_position_offset_x->value();
+    }
+
+    float get_left_controller_position_offset_y() const {
+        return m_left_controller_position_offset_y->value();
+    }
+
+    float get_left_controller_position_offset_z() const {
+        return m_left_controller_position_offset_z->value();
+    }
+
+    float get_right_controller_position_offset_x() const {
+        return m_right_controller_position_offset_x->value();
+    }
+
+    float get_right_controller_position_offset_y() const {
+        return m_right_controller_position_offset_y->value();
+    }
+
+    float get_right_controller_position_offset_z() const {
+        return m_right_controller_position_offset_z->value();
+    }
+
     bool should_skip_post_init_properties() const {
         return m_compatibility_skip_pip->value();
     }
@@ -707,6 +834,11 @@ private:
     bool is_any_action_down();
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
+    void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
+    void restore_subnautica2_native_water_cvars();
+    void update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine);
+    void restore_daysgone_gbuffer_cvar();
     struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall);
@@ -714,6 +846,8 @@ private:
     void hitch_snapshot_writer_loop(std::stop_token stop_token);
     void stop_hitch_snapshot_writer();
     static void write_hitch_snapshot_request(HitchSnapshotDumpRequest&& request);
+    struct UILayerPoseTelemetrySnapshot;
+    UILayerPoseTelemetrySnapshot get_ui_layer_pose_telemetry_snapshot();
 
     std::optional<std::string> reinitialize_openvr() {
         spdlog::info("Reinitializing OpenVR");
@@ -882,6 +1016,28 @@ private:
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
 
+    struct UILayerPoseTelemetrySnapshot {
+        uint64_t sample_count{};
+        uint64_t stabilizer_used_count{};
+        uint64_t invalid_basis_count{};
+        uint64_t follow_view_count{};
+        uint32_t last_render_frame_count{};
+        uint32_t last_openxr_internal_frame_count{};
+        uint32_t last_openxr_internal_render_frame_count{};
+        uint32_t last_pose_update_frame_count{};
+        uint32_t last_swapchain_index{};
+        int last_eye{};
+        bool last_basis_valid{};
+        bool last_stabilizer_used{};
+        bool last_follow_view{};
+        int last_ui_image_age_frames{-1};
+        int64_t last_pose_age_ms{-1};
+        double last_orientation_delta_deg{};
+        double max_orientation_delta_deg{};
+        double last_hmd_angular_velocity_deg_s{};
+        double max_hmd_angular_velocity_deg_s{};
+    };
+
     struct HitchSnapshotSample {
         std::chrono::steady_clock::time_point timestamp{};
         uint64_t sequence{};
@@ -911,6 +1067,7 @@ private:
         bool accepted_relaxed_startup_poses{};
         uint64_t cvar_change_counter{};
         vrmod::D3D12Component::HitchFrameSnapshot d3d12{};
+        UILayerPoseTelemetrySnapshot ui_layer_pose{};
     };
 
     struct HitchSnapshotDumpRequest {
@@ -945,6 +1102,43 @@ private:
     bool m_dispatch_auto_2d_previous_mode{false};
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
+
+    struct UILayerPoseSample {
+        std::chrono::steady_clock::time_point timestamp{};
+        uint64_t sequence{};
+        uint32_t render_frame_count{};
+        uint32_t openxr_internal_frame_count{};
+        uint32_t openxr_internal_render_frame_count{};
+        uint32_t pose_update_frame_count{};
+        uint32_t swapchain_index{};
+        int eye{};
+        bool basis_valid{};
+        bool stabilizer_allowed{};
+        bool stabilizer_used{};
+        bool follow_view{};
+        int ui_image_age_frames{-1};
+        int64_t pose_age_ms{-1};
+        double orientation_delta_deg{};
+        double hmd_angular_velocity_deg_s{};
+        const char* refusal_reason{"none"};
+    };
+
+    static constexpr size_t UI_LAYER_POSE_TELEMETRY_RING_SIZE = 512;
+    std::array<UILayerPoseSample, UI_LAYER_POSE_TELEMETRY_RING_SIZE> m_ui_layer_pose_samples{};
+    size_t m_ui_layer_pose_cursor{};
+    uint64_t m_ui_layer_pose_sequence{};
+    UILayerPoseTelemetrySnapshot m_ui_layer_pose_snapshot{};
+    std::chrono::steady_clock::time_point m_ui_layer_pose_last_log{};
+    std::chrono::steady_clock::time_point m_ui_layer_pose_last_rotation_time{};
+    glm::quat m_ui_layer_pose_last_live_rotation{1.0f, 0.0f, 0.0f, 0.0f};
+    std::mutex m_ui_layer_pose_telemetry_mtx{};
+
+    std::atomic<int64_t> m_stalker2_transition_stress_until_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_first_stress_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_last_stress_ms{0};
+    std::atomic<int64_t> m_stalker2_transition_last_defer_ms{0};
+    std::atomic<uint32_t> m_stalker2_transition_stress_events{0};
+    std::atomic<uint32_t> m_stalker2_transition_deferred_frames{0};
 
     uint32_t m_lowest_xinput_user_index{};
 
@@ -1010,6 +1204,18 @@ private:
         "Scene Only",
     };
 
+    enum Subnautica2NativeWaterMode : int32_t {
+        SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS = 0,
+        SUBNAUTICA2_NATIVE_WATER_NO_REFLECTIONS = 1,
+        SUBNAUTICA2_NATIVE_WATER_DISABLE_SINGLE_LAYER = 2,
+    };
+
+    static const inline std::vector<std::string> s_subnautica2_native_water_mode_names{
+        "Native Water Safe Reflections",
+        "Native Water No Reflections",
+        "Disable SingleLayerWater Fallback",
+    };
+
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
@@ -1047,6 +1253,18 @@ private:
     bool m_was_snapturn_run_on_input{false};
 
     const ModSlider::Ptr m_controller_pitch_offset{ ModSlider::create(generate_name("ControllerPitchOffset"), -90.0f, 90.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_x{ ModSlider::create(generate_name("LeftControllerRotationOffsetX"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_y{ ModSlider::create(generate_name("LeftControllerRotationOffsetY"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_rotation_offset_z{ ModSlider::create(generate_name("LeftControllerRotationOffsetZ"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_x{ ModSlider::create(generate_name("RightControllerRotationOffsetX"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_y{ ModSlider::create(generate_name("RightControllerRotationOffsetY"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_rotation_offset_z{ ModSlider::create(generate_name("RightControllerRotationOffsetZ"), -180.0f, 180.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_x{ ModSlider::create(generate_name("LeftControllerPositionOffsetX"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_y{ ModSlider::create(generate_name("LeftControllerPositionOffsetY"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_left_controller_position_offset_z{ ModSlider::create(generate_name("LeftControllerPositionOffsetZ"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_x{ ModSlider::create(generate_name("RightControllerPositionOffsetX"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_y{ ModSlider::create(generate_name("RightControllerPositionOffsetY"), -1.0f, 1.0f, 0.0f) };
+    const ModSlider::Ptr m_right_controller_position_offset_z{ ModSlider::create(generate_name("RightControllerPositionOffsetZ"), -1.0f, 1.0f, 0.0f) };
 
     // Aim method and movement orientation are not the same thing, but they can both have the same options
     const ModCombo::Ptr m_aim_method{ ModCombo::create(generate_name("AimMethod"), s_aim_method_names, AimMethod::GAME) };
@@ -1085,6 +1303,14 @@ private:
     const ModSlider::Ptr m_match_game_fov_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModToggle::Ptr m_match_game_fov_min_enabled{ ModToggle::create(generate_name("MatchGameFOVMinEnabled"), false) };
     const ModSlider::Ptr m_match_game_fov_min{ ModSlider::create(generate_name("MatchGameFOVMin"), 5.0f, 120.0f, 40.0f) };
+    const ModToggle::Ptr m_match_game_fov_read_only_camera{ ModToggle::create(generate_name("MatchGameFOVReadOnlyCamera"), false) };
+    const ModToggle::Ptr m_match_game_fov_camera_cut_stabilizer{ ModToggle::create(generate_name("MatchGameFOVCameraCutStabilizer"), false) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_duration_ms{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerDurationMs"), 100.0f, 1500.0f, 500.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_fov_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerFOVDelta"), 1.0f, 45.0f, 10.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_rotation_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerRotationDelta"), 1.0f, 90.0f, 25.0f) };
+    const ModSlider::Ptr m_match_game_fov_camera_cut_stabilizer_location_delta{ ModSlider::create(generate_name("MatchGameFOVCameraCutStabilizerLocationDelta"), 25.0f, 10000.0f, 750.0f) };
+    const ModToggle::Ptr m_match_game_fov_generic_camera_presets{ ModToggle::create(generate_name("MatchGameFOVGenericCameraPresets"), false) };
+    const ModToggle::Ptr m_match_game_fov_generic_camera_presets_auto_apply{ ModToggle::create(generate_name("MatchGameFOVGenericCameraPresetsAutoApply"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_actual_clamp{ ModToggle::create(generate_name("MatchGameFOVProSpiActualClamp"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiActualMin"), 10.0f, 60.0f, 20.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_center_field_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCenterFieldActualMin"), 10.0f, 60.0f, 20.0f) };
@@ -1167,6 +1393,27 @@ private:
     const ModToggle::Ptr m_compatibility_ahud{ ModToggle::create(generate_name("Compatibility_AHUD"), false, true) };
     const ModToggle::Ptr m_compatibility_direct_aim{ ModToggle::create(generate_name("Compatibility_DirectAimFallback"), false, true) };
     const ModToggle::Ptr m_compatibility_controller_camera_guard{ ModToggle::create(generate_name("Compatibility_ControllerCameraGuard"), false, true) };
+    const ModToggle::Ptr m_compatibility_head_turn_camera_stabilizer{ ModToggle::create(generate_name("Compatibility_HeadTurnCameraStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
+    const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
+    const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
+    const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
+    const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
+    const ModCombo::Ptr m_subnautica2_native_water_mode{ ModCombo::create(generate_name("Subnautica2NativeWaterMode"), s_subnautica2_native_water_mode_names, SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS) };
+    const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
+    const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
+
+    struct Fullscreen16x9CameraCompatState {
+        bool was_enabled{false};
+        void* last_pcm{nullptr};
+        void* last_camera{nullptr};
+        void* last_camera_component{nullptr};
+        float last_aspect{0.0f};
+        std::chrono::steady_clock::time_point last_camera_poll{};
+        std::chrono::steady_clock::time_point last_apply{};
+        std::chrono::steady_clock::time_point last_log{};
+        std::chrono::steady_clock::time_point burst_until{};
+    } m_fullscreen_16x9_camera_compat{};
 
     // Keybinds
     const ModKey::Ptr m_keybind_recenter{ ModKey::create(generate_name("RecenterViewKey")) };
@@ -1212,6 +1459,18 @@ private:
         glm::vec3 last_rotation{};
     } m_camera_lerp{};
 
+    struct HeadTurnCameraStabilizer {
+        bool has_camera_sample{false};
+        bool has_hmd_sample{false};
+        bool active{false};
+        uint32_t stable_frames{0};
+        glm::vec3 last_stable_position{};
+        glm::vec3 last_stable_rotation{};
+        glm::quat last_hmd_rotation{};
+        std::chrono::steady_clock::time_point last_hmd_time{};
+        std::chrono::steady_clock::time_point stabilize_until{};
+    } m_head_turn_camera_stabilizer{};
+
     struct CameraData {
         glm::vec3 offset{};
         float world_scale{1.0f};
@@ -1227,6 +1486,46 @@ private:
         float projection_multiplier{1.0f};
     };
 
+    struct GenericCameraPreset {
+        std::string camera_id{};
+        float min_fov{5.0f};
+        float dolly_distance{3000.0f};
+        float projection_multiplier{1.0f};
+        bool read_only_camera{true};
+    };
+
+    struct GameCameraSample {
+        bool valid{false};
+        uintptr_t player_camera_manager{};
+        glm::vec3 location{};
+        glm::vec3 rotation{};
+        float raw_fov{};
+        std::string camera_id{};
+        std::chrono::steady_clock::time_point timestamp{};
+    };
+
+    struct GameCameraProjectionState {
+        bool valid{false};
+        float game_fov_for_matching{};
+        float effective_fov{};
+        float active_dolly_distance{};
+        float active_fov_multiplier{1.0f};
+    };
+
+    struct CameraCutState {
+        bool has_previous_sample{false};
+        bool has_last_output{false};
+        bool stabilizing{false};
+        GameCameraSample previous_sample{};
+        GameCameraSample last_cut_from{};
+        GameCameraSample last_cut_to{};
+        GameCameraProjectionState last_output{};
+        GameCameraProjectionState blend_from{};
+        GameCameraProjectionState blend_to{};
+        std::chrono::steady_clock::time_point cut_time{};
+        std::chrono::steady_clock::time_point stabilize_until{};
+    };
+
     std::array<CameraData, 3> m_camera_datas{};
     void save_cameras();
     void load_cameras();
@@ -1238,7 +1537,13 @@ private:
     void clear_current_prospi_camera_calibration();
     void clear_current_prospi_preset_calibrations();
     std::string get_current_prospi_camera_id();
+    void save_generic_camera_presets();
+    void load_generic_camera_presets();
+    void save_current_generic_camera_preset();
+    void clear_current_generic_camera_preset();
+    std::string get_current_game_camera_id();
 
+    void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
@@ -1274,6 +1579,18 @@ public:
             *m_snapturn_joystick_deadzone,
             *m_snapturn_angle,
             *m_controller_pitch_offset,
+            *m_left_controller_rotation_offset_x,
+            *m_left_controller_rotation_offset_y,
+            *m_left_controller_rotation_offset_z,
+            *m_right_controller_rotation_offset_x,
+            *m_right_controller_rotation_offset_y,
+            *m_right_controller_rotation_offset_z,
+            *m_left_controller_position_offset_x,
+            *m_left_controller_position_offset_y,
+            *m_left_controller_position_offset_z,
+            *m_right_controller_position_offset_x,
+            *m_right_controller_position_offset_y,
+            *m_right_controller_position_offset_z,
             *m_aim_method,
             *m_movement_orientation,
             *m_aim_use_pawn_control_rotation,
@@ -1294,6 +1611,14 @@ public:
             *m_match_game_fov_dolly_distance,
             *m_match_game_fov_min_enabled,
             *m_match_game_fov_min,
+            *m_match_game_fov_read_only_camera,
+            *m_match_game_fov_camera_cut_stabilizer,
+            *m_match_game_fov_camera_cut_stabilizer_duration_ms,
+            *m_match_game_fov_camera_cut_stabilizer_fov_delta,
+            *m_match_game_fov_camera_cut_stabilizer_rotation_delta,
+            *m_match_game_fov_camera_cut_stabilizer_location_delta,
+            *m_match_game_fov_generic_camera_presets,
+            *m_match_game_fov_generic_camera_presets_auto_apply,
             *m_match_game_fov_prospi_actual_clamp,
             *m_match_game_fov_prospi_actual_min,
             *m_match_game_fov_prospi_center_field_actual_min,
@@ -1368,6 +1693,15 @@ public:
             *m_compatibility_ahud,
             *m_compatibility_direct_aim,
             *m_compatibility_controller_camera_guard,
+            *m_compatibility_head_turn_camera_stabilizer,
+            *m_compatibility_ui_layer_pose_telemetry,
+            *m_compatibility_ui_layer_pose_stabilizer,
+            *m_compatibility_fullscreen_16x9_cameras,
+            *m_compatibility_fullscreen_16x9_camera_aspect,
+            *m_compatibility_subnautica2_native_water,
+            *m_subnautica2_native_water_mode,
+            *m_compatibility_daysgone_bend_ui_placement_fix,
+            *m_compatibility_daysgone_gbuffer_safe_mode,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
@@ -1411,6 +1745,12 @@ private:
     std::atomic<bool> m_match_game_fov_prospi_tv_override_active{false};
     std::atomic<float> m_match_game_fov_prospi_auto_dolly_distance_active{0.0f};
     std::atomic<bool> m_match_game_fov_prospi_telephoto_perf_active{false};
+    std::atomic<bool> m_match_game_fov_read_only_camera_active{false};
+    std::atomic<bool> m_match_game_fov_would_write_game_camera{false};
+    std::atomic<bool> m_match_game_fov_camera_cut_stabilizer_active{false};
+    std::atomic<int32_t> m_match_game_fov_camera_cut_stabilizer_remaining_ms{0};
+    std::atomic<bool> m_match_game_fov_generic_camera_preset_applied{false};
+    std::atomic<bool> m_match_game_fov_generic_camera_tracking_active{false};
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
     std::string m_prospi_current_camera_id{};
@@ -1427,6 +1767,11 @@ private:
     float m_prospi_telephoto_perf_baseline_static_mesh_lod_distance_scale{1.0f};
     int m_prospi_telephoto_perf_baseline_skeletal_mesh_lod_bias{0};
     bool m_prospi_telephoto_perf_override_applied{false};
+    std::mutex m_generic_camera_preset_mtx{};
+    std::unordered_map<std::string, GenericCameraPreset> m_generic_camera_presets{};
+    std::string m_current_game_camera_id{};
+    GenericCameraPreset m_active_generic_camera_preset{};
+    CameraCutState m_camera_cut_state{};
 
     const ModToggle::Ptr m_show_fps{ ModToggle::create(generate_name("ShowFPSOverlay"), false) };
     bool m_show_fps_state{ false };
@@ -1459,6 +1804,26 @@ private:
     bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling
     bool m_spoofed_gamepad_connection{false};
     bool m_aim_temp_disabled{false};
+    bool m_subnautica2_save_thumbnail_guard_done{false};
+    bool m_subnautica2_save_thumbnail_fallback_logged{false};
+    bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
+    bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
+    uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
+    uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
+    int32_t m_subnautica2_save_thumbnail_guard_cursor{0};
+    std::unordered_map<uintptr_t, bool> m_subnautica2_save_thumbnail_guard_class_cache{};
+    bool m_subnautica2_native_water_cvars_applied{false};
+    bool m_subnautica2_native_water_cvars_logged{false};
+    uint32_t m_subnautica2_native_water_cvar_attempts{0};
+    int32_t m_subnautica2_native_water_last_mode{-1};
+    std::chrono::steady_clock::time_point m_subnautica2_native_water_next_apply{};
+    std::unordered_map<std::wstring, int> m_subnautica2_native_water_previous_ints{};
+    bool m_daysgone_gbuffer_cvar_applied{false};
+    bool m_daysgone_gbuffer_cvar_logged{false};
+    bool m_daysgone_gbuffer_previous_valid{false};
+    int m_daysgone_gbuffer_previous_value{1};
+    uint32_t m_daysgone_gbuffer_cvar_attempts{0};
+    std::chrono::steady_clock::time_point m_daysgone_gbuffer_next_apply{};
 
     struct {
         bool draw{false};
