@@ -235,6 +235,15 @@ bool directive8020_is_current_game() {
     return result;
 }
 
+bool everwind_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Everwind-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool stalker2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -755,7 +764,11 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     // These UE5.5 titles expose a valid Slate UI texture but route Slate to the
     // wrong target, leaving the HUD clipped in the upper-left/left-eye path.
     // Keep this allowlisted and DX12-only until more UE5.5 games validate it.
-    return (aphelion_is_current_game() || ark_ascended_is_current_game() || mechwarrior_clans_is_current_game() || directive8020_is_current_game()) &&
+    return (aphelion_is_current_game() ||
+            ark_ascended_is_current_game() ||
+            mechwarrior_clans_is_current_game() ||
+            directive8020_is_current_game() ||
+            everwind_is_current_game()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
         !is_ue_5_7_or_newer();
@@ -763,6 +776,10 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
 
 bool supports_dedicated_ui_target_for_current_game() {
     return supports_ue57_dedicated_ui_target() || supports_ue55_dedicated_ui_target_for_current_game();
+}
+
+bool should_preserve_promoted_ue55_slate_target() {
+    return mechwarrior_clans_is_current_game() || everwind_is_current_game();
 }
 
 bool is_probable_ue57_dx11_texture_desc_prepare_function(uintptr_t fn) {
@@ -8910,7 +8927,17 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     const auto vtable = (uintptr_t*)vtable_address;
 
     if (vtable == nullptr || IsBadReadPtr((void*)vtable, sizeof(void*))) {
-        SPDLOG_ERROR("Cannot proceed, vtable for so-called \"local player\" is invalid!");
+        if (everwind_is_current_game()) {
+            // Everwind's UE5.5 projection path can hand us a stable non-LocalPlayer
+            // pointer every frame. Do not keep hammering PostInitProperties scans.
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Everwind][PostInitProperties] Refusing invalid LocalPlayer candidate {:x}; disabling LocalPlayer bootstrap",
+                localplayer);
+            g_hook->m_fixed_localplayer_view_count = true;
+        } else {
+            SPDLOG_ERROR("Cannot proceed, vtable for so-called \"local player\" is invalid!");
+        }
         return;
     }
 
@@ -9192,6 +9219,12 @@ struct UE55SlateDrawWindowPassOutputs {
     FRHITexture2D* output_texture_rhi;
 };
 
+struct UE55SlateDrawWindowsArrayView {
+    UE55SlateDrawWindowPassInputs* data;
+    int32_t count;
+    int32_t padding;
+};
+
 struct UE55SlateExtent {
     uint32_t width{};
     uint32_t height{};
@@ -9223,6 +9256,34 @@ bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55S
     }
 
     return is_readable_process_range((uintptr_t)out.window, sizeof(void*));
+}
+
+bool try_read_ue55_slate_draw_windows_first_input(
+    void* candidate,
+    void* renderer,
+    UE55SlateDrawWindowPassInputsHead& out_head,
+    UE55SlateDrawWindowPassInputs& out_full,
+    bool& out_has_full)
+{
+    out_has_full = false;
+
+    if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowsArrayView))) {
+        return false;
+    }
+
+    UE55SlateDrawWindowsArrayView windows{};
+    memcpy(&windows, candidate, sizeof(windows));
+
+    if (windows.data == nullptr || windows.count <= 0 || windows.count > 16) {
+        return false;
+    }
+
+    if (!try_read_ue55_slate_draw_inputs(windows.data, renderer, out_head)) {
+        return false;
+    }
+
+    out_has_full = try_read_ue55_slate_draw_inputs_full(windows.data, renderer, out_full);
+    return true;
 }
 
 std::optional<UE55SlateExtent> ue55_get_slate_expected_extent(const UE55SlateDrawWindowPassInputs& inputs) {
@@ -9370,8 +9431,8 @@ void ue55_promote_slate_outputs(
         if (rtm->get_dedicated_ui_target() != outputs.viewport_texture_rhi) {
             rtm->set_dedicated_ui_target(outputs.viewport_texture_rhi, expected_extent->width, expected_extent->height);
             rtm->get_fallback_ui_target_ref() = nullptr;
-            if (mechwarrior_clans_is_current_game()) {
-                rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior DrawWindow viewport texture");
+            if (should_preserve_promoted_ue55_slate_target()) {
+                rtm->cancel_dedicated_ui_creation_preserving_target("UE5.5 promoted DrawWindow viewport texture");
             }
             SPDLOG_WARN("[UE5.5][SlateUI] promoted DrawWindow viewport texture output as dedicated UI target");
         }
@@ -9382,6 +9443,31 @@ void ue55_promote_slate_outputs(
         SPDLOG_INFO_EVERY_N_SEC(2,
             "[UE5.5][SlateUI] DrawWindow output texture is window-sized but not promoted; explicit SlateOutputTexture routing remains preferred");
     }
+}
+
+bool ue55_try_promote_fallback_ui_target(
+    VRRenderTargetManager_Base* rtm,
+    std::optional<UE55SlateExtent> expected_extent,
+    const char* source)
+{
+    if (!everwind_is_current_game() || rtm == nullptr || !expected_extent) {
+        return false;
+    }
+
+    auto* fallback = rtm->get_fallback_ui_target_ref();
+
+    if (!ue55_is_valid_ui_texture_candidate(rtm, fallback, expected_extent, source)) {
+        return false;
+    }
+
+    if (rtm->get_dedicated_ui_target() != fallback) {
+        rtm->set_dedicated_ui_target(fallback, expected_extent->width, expected_extent->height);
+        rtm->get_fallback_ui_target_ref() = nullptr;
+        rtm->cancel_dedicated_ui_creation_preserving_target("Everwind D3D12 UI fallback target");
+        SPDLOG_WARN("[UE5.5][SlateUI] promoted Everwind D3D12 UI fallback target as dedicated UI target");
+    }
+
+    return true;
 }
 }
 
@@ -9403,6 +9489,14 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
 
     auto* rtm = g_hook->get_render_target_manager();
     auto* ui_target = rtm != nullptr ? rtm->get_dedicated_ui_target() : nullptr;
+
+    if (everwind_is_current_game() && rtm != nullptr && (ui_target == nullptr || ui_target == rtm->get_render_target())) {
+        auto* fallback = rtm->get_fallback_ui_target_ref();
+
+        if (fallback != nullptr && fallback != rtm->get_render_target() && !IsBadReadPtr(fallback, sizeof(void*))) {
+            ui_target = fallback;
+        }
+    }
 
     if (rtm == nullptr || ui_target == nullptr || ui_target == rtm->get_render_target()) {
         SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] SlateOutputTexture call reached before a valid dedicated UI target exists");
@@ -11779,8 +11873,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
     UE55SlateDrawWindowPassInputs ue55_inputs_full{};
-    const auto a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
-    const auto a4_has_ue_5_5_full_inputs = a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full);
+    bool a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
+    bool a4_has_ue_5_5_full_inputs = a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full);
+    bool ue55_inputs_are_from_windows_array = false;
+    void* ue55_draw_window_outputs_ptr = a2;
+
+    if (!a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs(a4, a2, ue55_inputs)) {
+        // Some UE5.5 builds return FSlateDrawWindowPassOutputs by hidden sret
+        // pointer, so RCX is the output struct and RDX is the renderer.
+        a4_is_ue_5_5_variant = true;
+        a4_has_ue_5_5_full_inputs = try_read_ue55_slate_draw_inputs_full(a4, a2, ue55_inputs_full);
+        ue55_draw_window_outputs_ptr = renderer;
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 sret FSlateDrawWindowPassInputs layout");
+    }
+
+    if (!a4_is_ue_5_5_variant &&
+        try_read_ue55_slate_draw_windows_first_input(a3, renderer, ue55_inputs, ue55_inputs_full, a4_has_ue_5_5_full_inputs))
+    {
+        // Everwind/UE5.5.2's SlateOutputTexture string scan lands on
+        // DrawWindows_RenderThread, whose R8 is a TConstArrayView of inputs.
+        a4_is_ue_5_5_variant = true;
+        ue55_inputs_are_from_windows_array = true;
+        ue55_draw_window_outputs_ptr = nullptr;
+        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 DrawWindows array-view layout");
+    }
 
     if (a4_is_ue_5_5_variant) {
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 FSlateDrawWindowPassInputs layout");
@@ -12049,8 +12165,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 ue55_inputs_full.scene_view_rect.max.y,
                 ue55_inputs_full.viewport_scale_ui);
 
-            rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
-            rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+            if (everwind_is_current_game()) {
+                // Everwind's UObject-created render target never exposes a stable
+                // render resource here, but the D3D12 texture path already finds a
+                // 1920x1080 UI target. Reuse that target instead of repeatedly
+                // recreating a UObject RT and clipping Slate through the scene.
+                const auto promoted_fallback =
+                    ue55_try_promote_fallback_ui_target(rtm, expected_extent, "Everwind D3D12 UI fallback");
+
+                if (!promoted_fallback && rtm->get_dedicated_ui_target() == nullptr) {
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] Everwind waiting for D3D12 UI fallback target before rerouting SlateOutputTexture");
+                }
+            } else {
+                rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
+                rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+            }
         } else {
             SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] No trusted Slate extent yet; dedicated UI creation is deferred");
         }
@@ -12079,8 +12208,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 } else if (ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture")) {
                     rtm->set_dedicated_ui_target(direct_texture, expected_extent->width, expected_extent->height);
                     rtm->get_fallback_ui_target_ref() = nullptr;
-                    if (mechwarrior_clans_is_current_game()) {
-                        rtm->cancel_dedicated_ui_creation_preserving_target("MechWarrior ISlateViewport direct texture");
+                    if (should_preserve_promoted_ue55_slate_target()) {
+                        rtm->cancel_dedicated_ui_creation_preserving_target("UE5.5 promoted ISlateViewport direct texture");
                     }
                     SPDLOG_WARN_ONCE("[UE5.5][SlateUI] promoted ISlateViewport direct texture as dedicated UI target");
                 }
@@ -12088,7 +12217,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         const auto ret = call_orig();
-        ue55_promote_slate_outputs(rtm, a2, expected_extent);
+        if (!ue55_inputs_are_from_windows_array && ue55_draw_window_outputs_ptr != nullptr) {
+            ue55_promote_slate_outputs(rtm, ue55_draw_window_outputs_ptr, expected_extent);
+        }
         return ret;
     }
 
