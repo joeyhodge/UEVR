@@ -92,12 +92,25 @@ bool is_stalker2_uobjecthook_guard_enabled() {
     return result;
 }
 
+bool is_everwind_uobjecthook_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Everwind-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool use_dynamic_uobjecthook_candidate_guard() {
-    return is_ue_5_1_uobjecthook_guard_enabled() || is_avowed_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
+    return is_ue_5_1_uobjecthook_guard_enabled() ||
+        is_avowed_uobjecthook_guard_enabled() ||
+        is_stalker2_uobjecthook_guard_enabled() ||
+        is_everwind_uobjecthook_guard_enabled();
 }
 
 bool should_incrementally_refresh_uobject_array() {
-    return is_ue_5_1_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
+    return is_ue_5_1_uobjecthook_guard_enabled() ||
+        is_stalker2_uobjecthook_guard_enabled();
 }
 
 bool should_use_stalker2_on_demand_uobject_tracking(int32_t object_count) {
