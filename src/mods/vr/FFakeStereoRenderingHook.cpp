@@ -2220,6 +2220,7 @@ void FFakeStereoRenderingHook::draw_daysgone_bend_ui_controls() {
     m_daysgone_bend_ui_live_watchdog->draw("Live Reapply Watchdog");
     ImGui::TextWrapped("Targets UI_MainMenuWidget, OptionsMenuWidget, OptionsTopMenuWidget, UI_HudWidget, UI_SubtitleWidget, and UI_MegaMenu roots. The slot stays 1920x1080; scale is applied as a render transform to avoid clipping/cropping.");
     m_daysgone_bend_ui_disable_taa_crop->draw("Disable Bend TAA Slate Crop");
+    ImGui::TextWrapped("Only active when the extracted Slate overlay is enabled and the in-scene composite is suppressed. This avoids touching Bend TAA crops during normal gameplay.");
     ImGui::TextWrapped("This now applies only when settings change or when Apply Current UI Tuning Once is pressed. The watchdog is off by default; only enable it if the game recreates the menu widgets and you need periodic reapplication.");
 
     if (ImGui::TreeNode("Advanced legacy BP_Menu3D/widget controls")) {
@@ -11159,7 +11160,13 @@ void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Cont
 
     auto vr = VR::get();
     const bool compatibility_enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
-    if (!compatibility_enabled || !g_hook->m_daysgone_bend_ui_disable_taa_crop->value()) {
+    const bool extracted_overlay_enabled = g_hook->m_daysgone_bend_ui_use_slate_overlay->value();
+    const bool suppress_in_scene_composite = g_hook->m_daysgone_bend_ui_suppress_in_scene_composite->value();
+    if (!compatibility_enabled ||
+        !g_hook->m_daysgone_bend_ui_disable_taa_crop->value() ||
+        !extracted_overlay_enabled ||
+        !suppress_in_scene_composite)
+    {
         return;
     }
 

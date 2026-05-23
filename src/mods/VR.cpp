@@ -56,6 +56,7 @@ std::shared_ptr<VR>& VR::get() {
 }
 
 VR::~VR() {
+    restore_daysgone_gbuffer_cvar();
     stop_hitch_snapshot_writer();
 }
 
@@ -1213,6 +1214,19 @@ bool is_subnautica2_executable() {
     }();
 
     return is_subnautica2;
+}
+
+bool is_daysgone_executable() {
+    static const bool is_daysgone = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        return uevr::games::is_daysgone_executable_path(*module_path);
+    }();
+
+    return is_daysgone;
 }
 
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
@@ -3930,6 +3944,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
     update_subnautica2_save_thumbnail_guard(engine);
     update_subnautica2_native_water_compatibility(engine);
+    update_daysgone_gbuffer_compatibility(engine);
 
     update_statistics_overlay(engine);
     update_game_fov();
@@ -4304,6 +4319,140 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
 
     m_subnautica2_native_water_cvars_applied = true;
     m_subnautica2_native_water_last_mode = selected_mode;
+}
+
+void VR::restore_daysgone_gbuffer_cvar() {
+    if (!m_daysgone_gbuffer_cvar_applied) {
+        m_daysgone_gbuffer_cvar_logged = false;
+        m_daysgone_gbuffer_previous_valid = false;
+        m_daysgone_gbuffer_previous_value = 1;
+        m_daysgone_gbuffer_cvar_attempts = 0;
+        m_daysgone_gbuffer_next_apply = {};
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        return;
+    }
+
+    auto* object = console_manager->find(L"r.GBuffer");
+    bool restored{};
+    bool failed{};
+
+    if (object != nullptr && object->AsCommand() == nullptr && m_daysgone_gbuffer_previous_valid) {
+        auto* variable = (sdk::IConsoleVariable*)object;
+
+        try {
+            restored = variable->Set(std::to_wstring(m_daysgone_gbuffer_previous_value).c_str());
+        } catch (...) {
+            restored = false;
+        }
+
+        failed = !restored;
+    }
+
+    SPDLOG_INFO(
+        "[DaysGone][GBufferSafeMode] Restored r.GBuffer previous={} restored={} failed={} had_previous={}",
+        m_daysgone_gbuffer_previous_value,
+        restored,
+        failed,
+        m_daysgone_gbuffer_previous_valid);
+
+    m_daysgone_gbuffer_cvar_applied = false;
+    m_daysgone_gbuffer_cvar_logged = false;
+    m_daysgone_gbuffer_previous_valid = false;
+    m_daysgone_gbuffer_previous_value = 1;
+    m_daysgone_gbuffer_cvar_attempts = 0;
+    m_daysgone_gbuffer_next_apply = {};
+}
+
+void VR::update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    const bool active =
+        is_daysgone_executable() &&
+        g_framework != nullptr &&
+        g_framework->is_dx11() &&
+        is_hmd_active() &&
+        m_compatibility_daysgone_gbuffer_safe_mode->value();
+
+    if (!active) {
+        restore_daysgone_gbuffer_cvar();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_daysgone_gbuffer_next_apply != std::chrono::steady_clock::time_point{} &&
+        now < m_daysgone_gbuffer_next_apply) {
+        return;
+    }
+
+    // Days Gone's black road/terrain patches were narrowed to the deferred
+    // GBuffer path. Reapply sparingly to correct drift without touching a hot path.
+    m_daysgone_gbuffer_next_apply = now + std::chrono::seconds(5);
+    ++m_daysgone_gbuffer_cvar_attempts;
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        if (m_daysgone_gbuffer_cvar_attempts == 1 || (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[DaysGone][GBufferSafeMode] FConsoleManager unavailable; cannot apply r.GBuffer yet");
+        }
+        return;
+    }
+
+    auto* object = console_manager->find(L"r.GBuffer");
+    if (object == nullptr || object->AsCommand() != nullptr) {
+        if (!m_daysgone_gbuffer_cvar_logged || (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[DaysGone][GBufferSafeMode] r.GBuffer cvar not found");
+        }
+        return;
+    }
+
+    auto* variable = (sdk::IConsoleVariable*)object;
+    int before{};
+    int after{};
+    bool ok{};
+
+    try {
+        before = variable->GetInt();
+
+        if (!m_daysgone_gbuffer_previous_valid) {
+            m_daysgone_gbuffer_previous_valid = true;
+            m_daysgone_gbuffer_previous_value = before;
+        }
+
+        if (before == 0) {
+            ok = true;
+        } else {
+            ok = variable->Set(L"0");
+            CVarManager::record_global_change(L"r.GBuffer", L"0", "daysgone_gbuffer_safe_mode");
+        }
+
+        after = variable->GetInt();
+    } catch (...) {
+        ok = false;
+    }
+
+    if (!m_daysgone_gbuffer_cvar_logged) {
+        SPDLOG_INFO(
+            "[DaysGone][GBufferSafeMode] Applied r.GBuffer=0 before={} after={} ok={} previous={}",
+            before,
+            after,
+            ok,
+            m_daysgone_gbuffer_previous_value);
+        m_daysgone_gbuffer_cvar_logged = true;
+    } else if (!ok && (m_daysgone_gbuffer_cvar_attempts % 120) == 0) {
+        SPDLOG_WARN(
+            "[DaysGone][GBufferSafeMode] Failed to maintain r.GBuffer=0 attempt={} before={} after={}",
+            m_daysgone_gbuffer_cvar_attempts,
+            before,
+            after);
+    }
+
+    if (ok) {
+        m_daysgone_gbuffer_cvar_applied = true;
+    }
 }
 
 void VR::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -7429,6 +7578,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 if (m_fake_stereo_hook != nullptr) {
                     m_fake_stereo_hook->draw_daysgone_bend_ui_controls();
                 }
+            }
+            m_compatibility_daysgone_gbuffer_safe_mode->draw("Days Gone GBuffer Safe Mode");
+            if (m_compatibility_daysgone_gbuffer_safe_mode->value()) {
+                ImGui::TextWrapped("Days Gone DX11 only: applies r.GBuffer=0 to avoid Bend deferred/GBuffer black road/terrain patches. It is opt-in and restored when disabled.");
             }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
