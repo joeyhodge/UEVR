@@ -6974,31 +6974,64 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 decoded->Operands[0].Type == ND_OP_REG &&
                 op2.Type == ND_OP_MEM &&
                 op2.Info.Memory.HasBase &&
-                is_rcx_base(op2.Info.Memory.Base) &&
+                (is_rcx_base(op2.Info.Memory.Base) || is_rax_base(op2.Info.Memory.Base)) &&
                 op2.Info.Memory.HasDisp &&
                 op2.Info.Memory.Disp == 0x10;
 
             if (is_daysgone_null_scene_render_target_output_ref) {
                 const auto previous_instruction = utility::resolve_instruction(exception_address - 1);
-                const auto previous_is_expected_scene_target_load =
-                    previous_instruction &&
-                    std::string_view{previous_instruction->instrux.Mnemonic}.starts_with("MOV") &&
-                    previous_instruction->instrux.OperandsCount >= 2 &&
-                    previous_instruction->instrux.Operands[0].Type == ND_OP_REG &&
-                    previous_instruction->instrux.Operands[0].Info.Register.Reg == NDR_RCX &&
-                    previous_instruction->instrux.Operands[1].Type == ND_OP_MEM &&
-                    previous_instruction->instrux.Operands[1].Info.Memory.HasBase &&
-                    previous_instruction->instrux.Operands[1].Info.Memory.Base == NDR_RAX &&
-                    previous_instruction->instrux.Operands[1].Info.Memory.HasDisp &&
-                    previous_instruction->instrux.Operands[1].Info.Memory.Disp == 0x188;
+                const auto scene_target_slot = [&]() -> std::optional<int64_t> {
+                    if (!previous_instruction ||
+                        !std::string_view{previous_instruction->instrux.Mnemonic}.starts_with("MOV") ||
+                        previous_instruction->instrux.OperandsCount < 2 ||
+                        previous_instruction->instrux.Operands[0].Type != ND_OP_REG ||
+                        previous_instruction->instrux.Operands[1].Type != ND_OP_MEM ||
+                        !previous_instruction->instrux.Operands[1].Info.Memory.HasBase ||
+                        !previous_instruction->instrux.Operands[1].Info.Memory.HasDisp)
+                    {
+                        return std::nullopt;
+                    }
 
-                if (previous_is_expected_scene_target_load &&
+                    const auto loaded_reg = previous_instruction->instrux.Operands[0].Info.Register.Reg;
+                    const auto source_base = previous_instruction->instrux.Operands[1].Info.Memory.Base;
+                    const auto source_disp = previous_instruction->instrux.Operands[1].Info.Memory.Disp;
+                    const auto current_base = op2.Info.Memory.Base;
+
+                    const auto feeds_current_null_ref =
+                        (is_rcx_base(current_base) && loaded_reg == NDR_RCX) ||
+                        (is_rax_base(current_base) && loaded_reg == NDR_RAX);
+
+                    if (!feeds_current_null_ref) {
+                        return std::nullopt;
+                    }
+
+                    const auto source_is_scene_targets =
+                        is_rax_base(source_base) ||
+                        source_base == NDR_R15 ||
+                        source_base == NDR_R15D;
+
+                    if (!source_is_scene_targets) {
+                        return std::nullopt;
+                    }
+
+                    switch (source_disp) {
+                    case 0xA8:
+                    case 0xB0:
+                    case 0x188:
+                        return source_disp;
+                    default:
+                        return std::nullopt;
+                    }
+                }();
+
+                if (scene_target_slot &&
                     set_context_register(exception->ContextRecord, decoded->Operands[0].Info.Register.Reg, 0))
                 {
                     SPDLOG_WARN(
-                        "[DaysGone] Recovering null scene-render-target output ref at {:x}; dest_reg={} from FSceneRenderTargets slot 0x188",
+                        "[DaysGone] Recovering null scene-render-target output ref at {:x}; dest_reg={} from FSceneRenderTargets slot 0x{:x}",
                         exception_address,
-                        (int)decoded->Operands[0].Info.Register.Reg);
+                        (int)decoded->Operands[0].Info.Register.Reg,
+                        *scene_target_slot);
 
                     exception->ContextRecord->Rip = exception_address + decoded->Length;
                     return EXCEPTION_CONTINUE_EXECUTION;
