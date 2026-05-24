@@ -1301,6 +1301,8 @@ private:
     const ModToggle::Ptr m_match_game_fov_prospi_generic_telephoto_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiGenericTelephotoDollyOverride"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_generic_telephoto_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiGenericTelephotoDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_calibration_auto{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraCalibrationAuto"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_field_map_flip_x{ ModToggle::create(generate_name("MatchGameFOVProSpiFieldMapFlipX"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_field_map_flip_y{ ModToggle::create(generate_name("MatchGameFOVProSpiFieldMapFlipY"), false) };
     const ModSlider::Ptr m_camera_fov_distance_multiplier{ ModSlider::create(generate_name("CameraFOVDistanceMultiplier"), 0.00f, 1000.0f, 0.0f) };
     const ModSlider::Ptr m_world_scale{ ModSlider::create(generate_name("WorldScale"), 0.01f, 10.0f, 1.0f) };
     const ModSlider::Ptr m_depth_scale{ ModSlider::create(generate_name("DepthScale"), 0.01f, 1.0f, 1.0f) };
@@ -1650,6 +1652,8 @@ public:
             *m_match_game_fov_prospi_generic_telephoto_dolly_override,
             *m_match_game_fov_prospi_generic_telephoto_dolly_distance,
             *m_match_game_fov_prospi_camera_calibration_auto,
+            *m_match_game_fov_prospi_field_map_flip_x,
+            *m_match_game_fov_prospi_field_map_flip_y,
             *m_world_scale,
             *m_depth_scale,
             *m_custom_z_near,
@@ -1727,6 +1731,32 @@ private:
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
     std::string m_prospi_current_camera_id{};
+    struct ProSpiCameraCutHistoryEntry {
+        std::string camera_id{};
+        std::string preset_name{};
+        glm::vec3 location{};
+        glm::vec3 rotation{};
+        float raw_fov{0.0f};
+        float actual_min_fov{0.0f};
+        float projection_multiplier{1.0f};
+        float dolly_distance{0.0f};
+        float effective_fov{0.0f};
+        bool calibration_applied{false};
+        bool wrote_fov{false};
+        uint64_t sequence{0};
+        std::chrono::steady_clock::time_point last_seen{};
+    };
+    std::mutex m_prospi_camera_history_mtx{};
+    std::deque<ProSpiCameraCutHistoryEntry> m_prospi_camera_cut_history{};
+    std::string m_prospi_selected_history_camera_id{};
+    uint64_t m_prospi_camera_cut_sequence{0};
+    std::string m_prospi_last_recorded_camera_id{};
+    int32_t m_prospi_last_recorded_preset{0};
+    glm::vec3 m_prospi_last_recorded_location{};
+    glm::vec3 m_prospi_last_recorded_rotation{};
+    float m_prospi_last_recorded_raw_fov{0.0f};
+    std::chrono::steady_clock::time_point m_prospi_last_recorded_time{};
+    int32_t m_prospi_selected_history_preset_index{0};
     bool m_prospi_sticky_preset_valid{false};
     int32_t m_prospi_sticky_preset{0};
     glm::vec3 m_prospi_sticky_location{};

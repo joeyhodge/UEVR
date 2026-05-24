@@ -456,7 +456,7 @@ void UObjectHook::hook() {
         m_uobject_array_last_object_count = object_count;
         m_uobject_array_startup_scan_until = std::chrono::steady_clock::now();
         m_uobject_array_full_sweep_active = false;
-        m_force_uobject_array_creation_scan.store(false, std::memory_order_relaxed);
+        m_force_uobject_array_creation_scan = false;
 
         SPDLOG_WARN(
             "[Everwind][UObjectHook] Skipping UObjectBase hook resolver/backfill for {} existing UObjects; using fail-closed lazy UI mode",

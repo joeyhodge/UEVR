@@ -390,6 +390,110 @@ const char* get_prospi_camera_preset_name(ProSpiCameraPreset preset) {
     }
 }
 
+constexpr auto get_prospi_camera_preset_choices() {
+    return std::array{
+        ProSpiCameraPreset::None,
+        ProSpiCameraPreset::GameplayBehindPlate,
+        ProSpiCameraPreset::HomePlateWaistHigh,
+        ProSpiCameraPreset::HomePlateWaistHighReverse,
+        ProSpiCameraPreset::BehindPlateWideTelephoto,
+        ProSpiCameraPreset::BehindPlateElevatedSweep,
+        ProSpiCameraPreset::OpeningAerialTelephoto,
+        ProSpiCameraPreset::TVBroadcast,
+        ProSpiCameraPreset::PlateHighTelephoto,
+        ProSpiCameraPreset::HomePlateOverheadTelephoto,
+        ProSpiCameraPreset::CenterFieldTelephoto,
+        ProSpiCameraPreset::CenterFieldHighTelephoto,
+        ProSpiCameraPreset::OffsetCenterFieldTelephoto,
+        ProSpiCameraPreset::DeepOutfieldTelephoto,
+        ProSpiCameraPreset::HomePlateSkyAerial,
+        ProSpiCameraPreset::UpperDeckTelephoto,
+        ProSpiCameraPreset::UpperDeckHomeSkyTelephoto,
+        ProSpiCameraPreset::ThirdBaseTelephoto,
+        ProSpiCameraPreset::ThirdBaseRelayLow,
+        ProSpiCameraPreset::ThirdBaseOutfieldLineLow,
+        ProSpiCameraPreset::ThirdBaseFoulTerritoryLow,
+        ProSpiCameraPreset::ThirdBaseCornerLow,
+        ProSpiCameraPreset::ThirdBaseWideTelephoto,
+        ProSpiCameraPreset::FirstBaseTelephoto,
+        ProSpiCameraPreset::FirstBaseWideTelephoto,
+        ProSpiCameraPreset::FirstBaseOutfieldLineLow,
+        ProSpiCameraPreset::FirstBaseCornerLow,
+        ProSpiCameraPreset::FirstBaseInfieldLow,
+        ProSpiCameraPreset::LowInfieldSideCloseUp,
+        ProSpiCameraPreset::BackstopHighTelephoto,
+        ProSpiCameraPreset::RightFieldCornerTelephoto,
+        ProSpiCameraPreset::RightFieldLineTelephoto,
+        ProSpiCameraPreset::RightCenterFieldTelephoto,
+        ProSpiCameraPreset::GenericTelephoto
+    };
+}
+
+int prospi_preset_index(ProSpiCameraPreset preset) {
+    const auto choices = get_prospi_camera_preset_choices();
+    for (int i = 0; i < (int)choices.size(); ++i) {
+        if (choices[i] == preset) {
+            return i;
+        }
+    }
+
+    return 0;
+}
+
+std::optional<ProSpiCameraPreset> prospi_preset_from_name(std::string_view name) {
+    const auto choices = get_prospi_camera_preset_choices();
+    for (const auto preset : choices) {
+        if (name == get_prospi_camera_preset_name(preset)) {
+            return preset;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool are_prospi_presets_in_same_sticky_family(ProSpiCameraPreset a, ProSpiCameraPreset b) {
+    if (a == b) {
+        return true;
+    }
+
+    const auto in_behind_plate = [](ProSpiCameraPreset preset) {
+        return preset == ProSpiCameraPreset::BehindPlateWideTelephoto ||
+               preset == ProSpiCameraPreset::BehindPlateElevatedSweep ||
+               preset == ProSpiCameraPreset::PlateHighTelephoto ||
+               preset == ProSpiCameraPreset::HomePlateOverheadTelephoto ||
+               preset == ProSpiCameraPreset::BackstopHighTelephoto;
+    };
+    const auto in_center_outfield = [](ProSpiCameraPreset preset) {
+        return preset == ProSpiCameraPreset::CenterFieldTelephoto ||
+               preset == ProSpiCameraPreset::CenterFieldHighTelephoto ||
+               preset == ProSpiCameraPreset::OffsetCenterFieldTelephoto ||
+               preset == ProSpiCameraPreset::DeepOutfieldTelephoto ||
+               preset == ProSpiCameraPreset::RightCenterFieldTelephoto;
+    };
+    const auto in_first_base = [](ProSpiCameraPreset preset) {
+        return preset == ProSpiCameraPreset::FirstBaseTelephoto ||
+               preset == ProSpiCameraPreset::FirstBaseWideTelephoto ||
+               preset == ProSpiCameraPreset::FirstBaseOutfieldLineLow ||
+               preset == ProSpiCameraPreset::FirstBaseCornerLow ||
+               preset == ProSpiCameraPreset::FirstBaseInfieldLow ||
+               preset == ProSpiCameraPreset::RightFieldCornerTelephoto ||
+               preset == ProSpiCameraPreset::RightFieldLineTelephoto;
+    };
+    const auto in_third_base = [](ProSpiCameraPreset preset) {
+        return preset == ProSpiCameraPreset::ThirdBaseTelephoto ||
+               preset == ProSpiCameraPreset::ThirdBaseRelayLow ||
+               preset == ProSpiCameraPreset::ThirdBaseOutfieldLineLow ||
+               preset == ProSpiCameraPreset::ThirdBaseFoulTerritoryLow ||
+               preset == ProSpiCameraPreset::ThirdBaseCornerLow ||
+               preset == ProSpiCameraPreset::ThirdBaseWideTelephoto;
+    };
+
+    return (in_behind_plate(a) && in_behind_plate(b)) ||
+           (in_center_outfield(a) && in_center_outfield(b)) ||
+           (in_first_base(a) && in_first_base(b)) ||
+           (in_third_base(a) && in_third_base(b));
+}
+
 bool is_specific_prospi_preset(ProSpiCameraPreset preset) {
     return preset != ProSpiCameraPreset::None && preset != ProSpiCameraPreset::GenericTelephoto;
 }
@@ -458,7 +562,9 @@ bool should_keep_prospi_sticky_preset(
         return true;
     }
 
-    if (candidate_preset != ProSpiCameraPreset::None && candidate_preset != ProSpiCameraPreset::GenericTelephoto) {
+    if (candidate_preset != ProSpiCameraPreset::None &&
+        candidate_preset != ProSpiCameraPreset::GenericTelephoto &&
+        !are_prospi_presets_in_same_sticky_family(sticky_preset, candidate_preset)) {
         return false;
     }
 
@@ -768,10 +874,10 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
         return ProSpiCameraPreset::OffsetCenterFieldTelephoto;
     }
 
-    if (nearly_equal(std::abs(location.x), 6640.0f, 2600.0f) &&
-        nearly_equal(location.y, -7400.0f, 2200.0f) &&
-        nearly_equal(location.z, 1750.0f, 900.0f) &&
-        (nearly_equal(rotation.y, 41.0f, 20.0f) || nearly_equal(rotation.y, 140.0f, 20.0f) || nearly_equal(rotation.y, -160.0f, 20.0f))) {
+    if (nearly_equal(std::abs(location.x), 6640.0f, 3000.0f) &&
+        nearly_equal(location.y, -8200.0f, 3400.0f) &&
+        nearly_equal(location.z, 1900.0f, 1200.0f) &&
+        (nearly_equal(rotation.y, 41.0f, 30.0f) || nearly_equal(rotation.y, 140.0f, 24.0f) || nearly_equal(rotation.y, -160.0f, 24.0f))) {
         return ProSpiCameraPreset::DeepOutfieldTelephoto;
     }
 
@@ -4958,6 +5064,16 @@ void VR::update_game_fov() {
         }
 
         m_camera_cut_state = {};
+
+        {
+            std::scoped_lock history_lock{m_prospi_camera_history_mtx};
+            m_prospi_last_recorded_camera_id.clear();
+            m_prospi_last_recorded_preset = (int32_t)ProSpiCameraPreset::None;
+            m_prospi_last_recorded_location = {};
+            m_prospi_last_recorded_rotation = {};
+            m_prospi_last_recorded_raw_fov = 0.0f;
+            m_prospi_last_recorded_time = {};
+        }
     };
 
     if (!m_match_game_fov->value()) {
@@ -5044,6 +5160,7 @@ void VR::update_game_fov() {
     const auto should_track_generic_camera = camera_cut_stabilizer_enabled || generic_camera_presets_tracking_enabled;
     const char* prospi_dolly_source = "Base";
     std::string prospi_camera_id{};
+    std::optional<ProSpiCameraPreset> prospi_calibration_preset{};
 
     const auto is_prospi = is_prospi_executable();
     const auto location = read_game_camera_location(pcm);
@@ -5088,6 +5205,7 @@ void VR::update_game_fov() {
                 active_fov_multiplier = std::clamp(it->second.projection_multiplier, 0.1f, 3.0f);
                 active_dolly_distance = std::clamp(it->second.dolly_distance, 10.0f, 50000.0f);
                 prospi_calibration_applied = true;
+                prospi_calibration_preset = prospi_preset_from_name(it->second.preset_name);
                 prospi_dolly_source = "Calibration";
             }
         }
@@ -5111,6 +5229,10 @@ void VR::update_game_fov() {
                 *rotation,
                 raw_fov)) {
             prospi_preset = (ProSpiCameraPreset)m_prospi_sticky_preset;
+        }
+
+        if (prospi_calibration_preset.has_value() && is_specific_prospi_preset(*prospi_calibration_preset)) {
+            prospi_preset = *prospi_calibration_preset;
         }
 
         if (!prospi_calibration_applied && m_match_game_fov_dolly->value()) {
@@ -5653,6 +5775,75 @@ void VR::update_game_fov() {
             last_logged_active_calibration_camera = prospi_camera_id;
             last_logged_active_calibration_dolly = active_dolly_distance;
             last_logged_active_calibration_multiplier = active_fov_multiplier;
+        }
+    }
+
+    if (is_prospi && location.has_value() && rotation.has_value() && !prospi_camera_id.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        std::scoped_lock _{m_prospi_camera_history_mtx};
+
+        const auto location_delta = glm::distance(*location, m_prospi_last_recorded_location);
+        const auto yaw_delta = normalize_angle_delta(rotation->y, m_prospi_last_recorded_rotation.y);
+        const auto pitch_delta = std::abs(rotation->x - m_prospi_last_recorded_rotation.x);
+        const auto fov_delta = std::abs(raw_fov - m_prospi_last_recorded_raw_fov);
+        const auto elapsed_ms = m_prospi_last_recorded_time.time_since_epoch().count() == 0
+            ? 1000
+            : (int)std::chrono::duration_cast<std::chrono::milliseconds>(now - m_prospi_last_recorded_time).count();
+
+        const auto should_record =
+            m_prospi_last_recorded_camera_id.empty() ||
+            prospi_camera_id != m_prospi_last_recorded_camera_id ||
+            (int32_t)prospi_preset != m_prospi_last_recorded_preset ||
+            (elapsed_ms >= 150 &&
+             (location_delta >= 750.0f ||
+              yaw_delta >= 8.0f ||
+              pitch_delta >= 6.0f ||
+              fov_delta >= 1.0f));
+
+        if (should_record) {
+            ProSpiCameraCutHistoryEntry entry{};
+            entry.camera_id = prospi_camera_id;
+            entry.preset_name = get_prospi_camera_preset_name(prospi_preset);
+            entry.location = *location;
+            entry.rotation = *rotation;
+            entry.raw_fov = raw_fov;
+            entry.actual_min_fov = active_prospi_actual_min_fov;
+            entry.projection_multiplier = active_fov_multiplier;
+            entry.dolly_distance = active_dolly_distance;
+            entry.effective_fov = effective_fov;
+            entry.calibration_applied = prospi_calibration_applied;
+            entry.wrote_fov = wrote_prospi_fov;
+            entry.sequence = ++m_prospi_camera_cut_sequence;
+            entry.last_seen = now;
+
+            if (!m_prospi_camera_cut_history.empty() &&
+                m_prospi_camera_cut_history.front().camera_id == entry.camera_id &&
+                m_prospi_camera_cut_history.front().preset_name == entry.preset_name) {
+                m_prospi_camera_cut_history.front() = entry;
+            } else {
+                m_prospi_camera_cut_history.push_front(std::move(entry));
+                while (m_prospi_camera_cut_history.size() > 64) {
+                    m_prospi_camera_cut_history.pop_back();
+                }
+            }
+
+            m_prospi_last_recorded_camera_id = prospi_camera_id;
+            m_prospi_last_recorded_preset = (int32_t)prospi_preset;
+            m_prospi_last_recorded_location = *location;
+            m_prospi_last_recorded_rotation = *rotation;
+            m_prospi_last_recorded_raw_fov = raw_fov;
+            m_prospi_last_recorded_time = now;
+        } else if (!m_prospi_camera_cut_history.empty() &&
+                   m_prospi_camera_cut_history.front().camera_id == prospi_camera_id) {
+            auto& entry = m_prospi_camera_cut_history.front();
+            entry.last_seen = now;
+            entry.raw_fov = raw_fov;
+            entry.actual_min_fov = active_prospi_actual_min_fov;
+            entry.projection_multiplier = active_fov_multiplier;
+            entry.dolly_distance = active_dolly_distance;
+            entry.effective_fov = effective_fov;
+            entry.calibration_applied = prospi_calibration_applied;
+            entry.wrote_fov = wrote_prospi_fov;
         }
     }
 
@@ -8106,6 +8297,207 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         ImGui::Text("Calibration Minimum FOV: %.2f", calibration_min);
                         ImGui::Text("Calibration Multiplier: %.2f", calibration_multiplier);
                         ImGui::Text("Calibration Dolly Distance: %.2f", calibration_dolly_distance);
+                    }
+
+                    m_match_game_fov_prospi_field_map_flip_x->draw("Flip Field Map X");
+                    ImGui::SameLine();
+                    m_match_game_fov_prospi_field_map_flip_y->draw("Flip Field Map Y");
+
+                    std::vector<ProSpiCameraCutHistoryEntry> history{};
+                    {
+                        std::scoped_lock _{m_prospi_camera_history_mtx};
+                        history.assign(m_prospi_camera_cut_history.begin(), m_prospi_camera_cut_history.end());
+                    }
+
+                    auto selected_it = std::find_if(history.begin(), history.end(), [&](const auto& entry) {
+                        return entry.camera_id == m_prospi_selected_history_camera_id;
+                    });
+                    if (selected_it == history.end() && !history.empty()) {
+                        selected_it = history.begin();
+                        if (m_prospi_selected_history_camera_id.empty()) {
+                            m_prospi_selected_history_camera_id = selected_it->camera_id;
+                            const auto preset = prospi_preset_from_name(selected_it->preset_name).value_or(ProSpiCameraPreset::None);
+                            m_prospi_selected_history_preset_index = prospi_preset_index(preset);
+                        }
+                    }
+
+                    if (ImGui::TreeNode("ProSpi Field Map")) {
+                        const ImVec2 canvas_pos = ImGui::GetCursorScreenPos();
+                        const ImVec2 canvas_size{std::min(ImGui::GetContentRegionAvail().x, 520.0f), 300.0f};
+                        auto* draw_list = ImGui::GetWindowDrawList();
+                        const auto canvas_end = ImVec2{canvas_pos.x + canvas_size.x, canvas_pos.y + canvas_size.y};
+                        draw_list->AddRectFilled(canvas_pos, canvas_end, IM_COL32(16, 34, 22, 220), 6.0f);
+                        draw_list->AddRect(canvas_pos, canvas_end, IM_COL32(140, 190, 150, 180), 6.0f);
+
+                        const auto field_center = ImVec2{canvas_pos.x + canvas_size.x * 0.5f, canvas_pos.y + canvas_size.y * 0.83f};
+                        const auto first_base = ImVec2{field_center.x + canvas_size.x * 0.20f, field_center.y - canvas_size.y * 0.18f};
+                        const auto second_base = ImVec2{field_center.x, field_center.y - canvas_size.y * 0.35f};
+                        const auto third_base = ImVec2{field_center.x - canvas_size.x * 0.20f, field_center.y - canvas_size.y * 0.18f};
+                        const auto center_field = ImVec2{field_center.x, canvas_pos.y + canvas_size.y * 0.12f};
+
+                        draw_list->AddLine(field_center, first_base, IM_COL32(235, 235, 210, 180), 2.0f);
+                        draw_list->AddLine(first_base, second_base, IM_COL32(235, 235, 210, 180), 2.0f);
+                        draw_list->AddLine(second_base, third_base, IM_COL32(235, 235, 210, 180), 2.0f);
+                        draw_list->AddLine(third_base, field_center, IM_COL32(235, 235, 210, 180), 2.0f);
+                        draw_list->AddBezierCubic(
+                            ImVec2{canvas_pos.x + canvas_size.x * 0.08f, canvas_pos.y + canvas_size.y * 0.28f},
+                            ImVec2{canvas_pos.x + canvas_size.x * 0.24f, canvas_pos.y + canvas_size.y * 0.02f},
+                            ImVec2{canvas_pos.x + canvas_size.x * 0.76f, canvas_pos.y + canvas_size.y * 0.02f},
+                            ImVec2{canvas_pos.x + canvas_size.x * 0.92f, canvas_pos.y + canvas_size.y * 0.28f},
+                            IM_COL32(235, 235, 210, 120),
+                            2.0f);
+
+                        draw_list->AddText(ImVec2{field_center.x - 18.0f, field_center.y + 8.0f}, IM_COL32_WHITE, "HOME");
+                        draw_list->AddText(ImVec2{first_base.x + 4.0f, first_base.y - 6.0f}, IM_COL32_WHITE, "1B");
+                        draw_list->AddText(ImVec2{second_base.x + 4.0f, second_base.y - 18.0f}, IM_COL32_WHITE, "2B");
+                        draw_list->AddText(ImVec2{third_base.x - 22.0f, third_base.y - 6.0f}, IM_COL32_WHITE, "3B");
+                        draw_list->AddText(ImVec2{center_field.x - 10.0f, center_field.y - 14.0f}, IM_COL32_WHITE, "CF");
+
+                        const auto map_camera_to_field = [&](const glm::vec3& location) {
+                            auto nx = std::clamp(location.x / 9000.0f, -1.0f, 1.0f);
+                            auto ny = std::clamp((-location.y + 1000.0f) / 15000.0f, 0.0f, 1.0f);
+                            if (m_match_game_fov_prospi_field_map_flip_x->value()) {
+                                nx = -nx;
+                            }
+                            if (m_match_game_fov_prospi_field_map_flip_y->value()) {
+                                ny = 1.0f - ny;
+                            }
+
+                            return ImVec2{
+                                field_center.x + nx * canvas_size.x * 0.42f,
+                                field_center.y - ny * canvas_size.y * 0.76f
+                            };
+                        };
+
+                        for (int i = (int)history.size() - 1; i >= 0; --i) {
+                            const auto& entry = history[(size_t)i];
+                            const auto pos = map_camera_to_field(entry.location);
+                            const auto selected = entry.camera_id == m_prospi_selected_history_camera_id;
+                            const auto active = i == 0;
+                            const auto color = selected
+                                ? IM_COL32(255, 210, 70, 255)
+                                : (active ? IM_COL32(70, 210, 255, 255) : IM_COL32(180, 210, 255, 130));
+                            draw_list->AddCircleFilled(pos, selected ? 5.5f : 4.0f, color);
+                            if (selected || active) {
+                                draw_list->AddText(ImVec2{pos.x + 7.0f, pos.y - 8.0f}, color, active ? "active" : "selected");
+                            }
+                        }
+
+                        ImGui::InvisibleButton("##ProSpiFieldMapCanvas", canvas_size);
+                        ImGui::TreePop();
+                    }
+
+                    if (ImGui::TreeNode("Recent Camera Cuts")) {
+                        ImGui::TextWrapped("Select a fast cut here, tune the sliders, then save calibration against that saved camera ID.");
+
+                        if (selected_it != history.end()) {
+                            auto& selected = *selected_it;
+                            ImGui::SeparatorText("Selected Cut");
+                            ImGui::Text("Camera: %s", selected.camera_id.c_str());
+                            ImGui::Text("Preset: %s", selected.preset_name.c_str());
+                            ImGui::Text("Loc %.0f %.0f %.0f | Rot %.0f %.0f %.0f | Raw %.2f",
+                                selected.location.x, selected.location.y, selected.location.z,
+                                selected.rotation.x, selected.rotation.y, selected.rotation.z,
+                                selected.raw_fov);
+
+                            constexpr auto choices = get_prospi_camera_preset_choices();
+                            std::array<const char*, choices.size()> names{};
+                            for (size_t i = 0; i < choices.size(); ++i) {
+                                names[i] = get_prospi_camera_preset_name(choices[i]);
+                            }
+
+                            m_prospi_selected_history_preset_index = std::clamp(
+                                m_prospi_selected_history_preset_index,
+                                0,
+                                (int)names.size() - 1);
+                            ImGui::Combo("Saved Preset Name", &m_prospi_selected_history_preset_index, names.data(), (int)names.size());
+
+                            if (ImGui::Button("Load Selected Values Into Sliders")) {
+                                if (selected.actual_min_fov > 0.0f) {
+                                    m_match_game_fov_prospi_actual_min->value() = std::clamp(selected.actual_min_fov, 5.0f, 175.0f);
+                                }
+                                m_match_game_fov_multiplier->value() = std::clamp(selected.projection_multiplier, 0.1f, 3.0f);
+                                m_match_game_fov_dolly_distance->value() = std::clamp(selected.dolly_distance, 10.0f, 50000.0f);
+                            }
+
+                            ImGui::SameLine();
+
+                            if (ImGui::Button("Save Selected Calibration")) {
+                                ProSpiCameraCalibration calibration{};
+                                calibration.camera_id = selected.camera_id;
+                                calibration.preset_name = get_prospi_camera_preset_name(choices[(size_t)m_prospi_selected_history_preset_index]);
+                                calibration.actual_min_fov = std::clamp(m_match_game_fov_prospi_actual_min->value(), 5.0f, 175.0f);
+                                calibration.dolly_distance = std::clamp(m_match_game_fov_dolly_distance->value(), 10.0f, 50000.0f);
+                                calibration.projection_multiplier = std::clamp(m_match_game_fov_multiplier->value(), 0.1f, 3.0f);
+
+                                {
+                                    std::scoped_lock _{m_prospi_camera_calibration_mtx};
+                                    m_prospi_camera_calibrations[calibration.camera_id] = calibration;
+                                }
+
+                                save_prospi_camera_calibrations();
+                                spdlog::info(
+                                    "[VR] Saved selected ProSpi camera calibration camera={} preset={} min={:.2f} mult={:.2f} dolly={:.2f}",
+                                    calibration.camera_id,
+                                    calibration.preset_name,
+                                    calibration.actual_min_fov,
+                                    calibration.projection_multiplier,
+                                    calibration.dolly_distance);
+                            }
+
+                            ImGui::SameLine();
+
+                            if (ImGui::Button("Clear Selected Calibration")) {
+                                bool removed = false;
+                                {
+                                    std::scoped_lock _{m_prospi_camera_calibration_mtx};
+                                    removed = m_prospi_camera_calibrations.erase(selected.camera_id) > 0;
+                                }
+
+                                if (removed) {
+                                    save_prospi_camera_calibrations();
+                                }
+                            }
+                        }
+
+                        if (ImGui::BeginTable("ProSpiRecentCameraCuts", 7, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY, ImVec2{0.0f, 240.0f})) {
+                            ImGui::TableSetupColumn("Use", ImGuiTableColumnFlags_WidthFixed, 52.0f);
+                            ImGui::TableSetupColumn("Preset", ImGuiTableColumnFlags_WidthFixed, 210.0f);
+                            ImGui::TableSetupColumn("Camera ID", ImGuiTableColumnFlags_WidthStretch);
+                            ImGui::TableSetupColumn("Raw");
+                            ImGui::TableSetupColumn("Min");
+                            ImGui::TableSetupColumn("Mult");
+                            ImGui::TableSetupColumn("Dolly");
+                            ImGui::TableHeadersRow();
+
+                            for (const auto& entry : history) {
+                                ImGui::PushID((int)entry.sequence);
+                                ImGui::TableNextRow();
+                                ImGui::TableSetColumnIndex(0);
+                                if (ImGui::Button("Select")) {
+                                    m_prospi_selected_history_camera_id = entry.camera_id;
+                                    const auto preset = prospi_preset_from_name(entry.preset_name).value_or(ProSpiCameraPreset::None);
+                                    m_prospi_selected_history_preset_index = prospi_preset_index(preset);
+                                }
+                                ImGui::TableSetColumnIndex(1);
+                                ImGui::TextUnformatted(entry.preset_name.c_str());
+                                ImGui::TableSetColumnIndex(2);
+                                ImGui::TextUnformatted(entry.camera_id.c_str());
+                                ImGui::TableSetColumnIndex(3);
+                                ImGui::Text("%.2f", entry.raw_fov);
+                                ImGui::TableSetColumnIndex(4);
+                                ImGui::Text("%.1f", entry.actual_min_fov);
+                                ImGui::TableSetColumnIndex(5);
+                                ImGui::Text("%.3f", entry.projection_multiplier);
+                                ImGui::TableSetColumnIndex(6);
+                                ImGui::Text("%.0f", entry.dolly_distance);
+                                ImGui::PopID();
+                            }
+
+                            ImGui::EndTable();
+                        }
+
+                        ImGui::TreePop();
                     }
                 }
 
