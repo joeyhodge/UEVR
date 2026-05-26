@@ -284,6 +284,16 @@ bool daysgone_is_current_game() {
     return result;
 }
 
+bool pitpanic_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        // Cover both the demo and future/full Pit Panic executable names.
+        return exe_path && exe_path->find(L"PitPanic") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 void avowed_native_fix_gate_reset(const char* reason) {
     if (!avowed_is_current_game()) {
         return;
@@ -12661,6 +12671,15 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     }
 
     auto rtm = g_hook->get_render_target_manager();
+
+    if (g_framework->is_dx12() && pitpanic_is_current_game() && is_ue_5_7_or_newer()) {
+        // Pit Panic 5.7.2's resolved texture-desc helper copies an internal
+        // TArray<EPixelFormat>. Replaying it into UEVR's scratch byte buffer can
+        // trip UE's sized-allocation assert. Let the engine allocation run and
+        // adopt the resulting texture refs in the post hook instead.
+        SPDLOG_WARN_ONCE("[PitPanic] Skipping UE 5.7 DX12 pre-texture duplicate creation; using engine-created RT refs");
+        return;
+    }
 
     if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
         if (rtm->texture_desc_prepare_func == 0 || rtm->texture_create_wrapper_func == 0 || rtm->texture_finalize_func == 0) {
