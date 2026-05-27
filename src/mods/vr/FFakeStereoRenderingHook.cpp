@@ -11991,6 +11991,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (!a4_is_ue_5_5_variant &&
+        everwind_is_current_game() &&
         try_read_ue55_slate_draw_windows_first_input(a3, renderer, ue55_inputs, ue55_inputs_full, a4_has_ue_5_5_full_inputs))
     {
         // Everwind/UE5.5.2's SlateOutputTexture string scan lands on
