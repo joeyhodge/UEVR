@@ -746,7 +746,13 @@ float get_prospi_outfield_ball_follow_min_dolly(float raw_fov) {
         return 5500.0f;
     }
 
-    return 6500.0f;
+    if (raw_fov > 8.0f) {
+        return 6500.0f;
+    }
+
+    // ProSpi's ultra-telephoto outfield/gameplay cameras report tiny raw FOVs.
+    // They need a much stronger dolly than the normal outfield pan bucket.
+    return 9000.0f;
 }
 
 bool is_prospi_line_telephoto_perf_preset(ProSpiCameraPreset preset) {
@@ -6639,6 +6645,13 @@ void VR::update_game_fov() {
             }
         }
 
+        if (m_match_game_fov_dolly->value() &&
+            prospi_preset == ProSpiCameraPreset::GameplayBehindPlate &&
+            raw_fov >= 25.0f) {
+            active_dolly_distance = std::clamp(active_dolly_distance + 35.0f, 10.0f, 50000.0f);
+            prospi_dolly_source = prospi_calibration_applied ? "CalibrationBehindPlateBackoff" : "GameplayBehindPlateBackoff";
+        }
+
         if (is_specific_prospi_preset(prospi_preset)) {
             m_prospi_sticky_preset_valid = true;
             m_prospi_sticky_preset = (int32_t)prospi_preset;
@@ -6964,17 +6977,6 @@ void VR::update_game_fov() {
             source = ProSpiAutoCameraSource::ExactCalibration;
             confidence = 1.0f;
             match_label = prospi_camera_id;
-        }
-
-        if (prospi_calibration_applied &&
-            sequencer_mode != PROSPI_AUTO_CAMERA_SEQUENCER_OBSERVE &&
-            prospi_preset == ProSpiCameraPreset::OffsetCenterFieldTelephoto &&
-            sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
-            const auto exact_outfield_cap = get_prospi_outfield_ball_follow_min_dolly(raw_fov);
-            if (active_dolly_distance > exact_outfield_cap) {
-                active_dolly_distance = exact_outfield_cap;
-                prospi_dolly_source = "CalibrationOutfieldCap";
-            }
         }
 
         if (!prospi_calibration_applied &&
