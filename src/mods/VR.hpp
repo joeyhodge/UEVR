@@ -412,7 +412,7 @@ public:
     }
 
     auto get_camera_up_offset() const {
-        return m_camera_up_offset->value();
+        return m_camera_up_offset->value() + m_prospi_camera_safety_up_offset.load(std::memory_order_relaxed);
     }
 
     auto get_world_scale() const {
@@ -1148,6 +1148,40 @@ private:
         "Disable SingleLayerWater Fallback",
     };
 
+    enum ProSpiCrowdCullingTriageMode : int32_t {
+        PROSPI_CROWD_CULLING_TRIAGE_OFF = 0,
+        PROSPI_CROWD_CULLING_TRIAGE_OCCLUSION_QUERIES = 1,
+        PROSPI_CROWD_CULLING_TRIAGE_HZB_OCCLUSION = 2,
+        PROSPI_CROWD_CULLING_TRIAGE_PRECOMPUTED_VISIBILITY = 3,
+        PROSPI_CROWD_CULLING_TRIAGE_CULL_DISTANCE = 4,
+        PROSPI_CROWD_CULLING_TRIAGE_FOLIAGE_CULLING = 5,
+        PROSPI_CROWD_CULLING_TRIAGE_INSTANCE_CULLING = 6,
+        PROSPI_CROWD_CULLING_TRIAGE_COMBINED_SAFE = 7,
+    };
+
+    static const inline std::vector<std::string> s_prospi_crowd_culling_triage_mode_names{
+        "Off / Restore",
+        "Disable Occlusion Queries",
+        "Disable HZB Occlusion",
+        "Disable Precomputed Visibility",
+        "Relax Cull Distance",
+        "Relax Foliage Culling",
+        "Disable Instance/GPU Culling",
+        "Combined UE4 Conservative",
+    };
+
+    enum ProSpiAutoCameraSequencerMode : int32_t {
+        PROSPI_AUTO_CAMERA_SEQUENCER_OBSERVE = 0,
+        PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST = 1,
+        PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST = 2,
+    };
+
+    static const inline std::vector<std::string> s_prospi_auto_camera_sequencer_mode_names{
+        "Observe Only",
+        "Assist",
+        "Learned Assist",
+    };
+
     const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
@@ -1242,6 +1276,58 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfViewDistanceScale"), 0.10f, 2.0f, 0.50f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfStaticMeshLODDistanceScale"), 0.10f, 4.0f, 2.00f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfSkeletalMeshLODBias"), 0.0f, 4.0f, 1.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_crowd_visibility_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdVisibilityGuard"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityTriggerFOV"), 10.0f, 40.0f, 26.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityHoldSeconds"), 0.5f, 15.0f, 4.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityViewDistanceScale"), 0.10f, 4.0f, 1.25f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityStaticMeshLODDistanceScale"), 0.10f, 4.0f, 0.50f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_skeletal_mesh_lod_bias{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilitySkeletalMeshLODBias"), 0.0f, 4.0f, 0.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_skeletal_radius_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilitySkeletalRadiusScale"), 0.25f, 8.0f, 2.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_crowd_culling_triage{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdCullingTriage"), false) };
+    const ModCombo::Ptr m_match_game_fov_prospi_crowd_culling_triage_mode{ ModCombo::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageMode"), s_prospi_crowd_culling_triage_mode_names, PROSPI_CROWD_CULLING_TRIAGE_OFF) };
+    const ModToggle::Ptr m_match_game_fov_prospi_crowd_culling_triage_auto_cycle{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageAutoCycle"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_culling_triage_cycle_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageCycleSeconds"), 1.0f, 10.0f, 3.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_culling_triage_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageTriggerFOV"), 10.0f, 45.0f, 26.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_crowd_culling_triage_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageHoldSeconds"), 0.5f, 15.0f, 4.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriage"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageAutoRefresh"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageInflateBounds"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageBoundsScale"), 1.0f, 100.0f, 20.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageDisableDistanceCull"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_force_visibility{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageForceVisibility"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyGuard"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_field_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyFieldRule"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_baseline_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineRule"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_stand_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyStandRule"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_outfield_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldRule"), true) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_field_min_z{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyFieldMinZ"), -500.0f, 2500.0f, 80.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_baseline_min_z{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineMinZ"), -500.0f, 3000.0f, 400.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_stand_min_z{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyStandMinZ"), -500.0f, 4000.0f, 700.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_min_z{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldMinZ"), -500.0f, 3000.0f, 350.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_max_up_offset{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyMaxUpOffset"), 0.0f, 4000.0f, 1200.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_dolly_cap_strength{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyDollyCapStrength"), 0.0f, 1.0f, 1.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_baseline_x_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineXMin"), 0.0f, 10000.0f, 2000.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_baseline_y_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineYMin"), -20000.0f, 5000.0f, -7000.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_baseline_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineYMax"), -5000.0f, 10000.0f, 1500.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_stand_x_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyStandXMin"), 0.0f, 10000.0f, 2500.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_stand_y_min{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyStandYMin"), -10000.0f, 10000.0f, -1500.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_stand_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyStandYMax"), -5000.0f, 15000.0f, 4500.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyTelephotoTriggerFOV"), 5.0f, 60.0f, 26.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldYMax"), -20000.0f, 5000.0f, -6000.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
+    const ModCombo::Ptr m_match_game_fov_prospi_auto_camera_sequencer_mode{ ModCombo::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMode"), s_prospi_auto_camera_sequencer_mode_names, PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerTriggerFOV"), 5.0f, 60.0f, 26.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_low_camera_max_z{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerLowCameraMaxZ"), -500.0f, 5000.0f, 1400.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_field_cap{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerFieldCap"), 10.0f, 15000.0f, 1800.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerBaselineCap"), 10.0f, 15000.0f, 1600.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_stand_cap{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerStandCap"), 10.0f, 15000.0f, 900.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerOutfieldCap"), 10.0f, 15000.0f, 2200.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_smoothing{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerSmoothing"), 0.0f, 0.95f, 0.25f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_match_location_radius{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMatchLocationRadius"), 250.0f, 15000.0f, 3500.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_match_yaw_radius{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMatchYawRadius"), 2.0f, 90.0f, 28.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_match_pitch_radius{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMatchPitchRadius"), 2.0f, 90.0f, 22.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_match_fov_radius{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMatchFOVRadius"), 1.0f, 60.0f, 16.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_match_min_confidence{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMatchMinConfidence"), 0.05f, 1.0f, 0.35f) };
     const ModToggle::Ptr m_match_game_fov_prospi_gameplay_behind_plate_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiGameplayBehindPlateDollyOverride"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_gameplay_behind_plate_dolly_distance{ ModSlider::create(generate_name("MatchGameFOVProSpiGameplayBehindPlateDollyDistance"), 10.0f, 50000.0f, 3000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_home_plate_waist_high_dolly_override{ ModToggle::create(generate_name("MatchGameFOVProSpiHomePlateWaistHighDollyOverride"), false) };
@@ -1424,6 +1510,11 @@ private:
         float actual_min_fov{20.0f};
         float dolly_distance{3000.0f};
         float projection_multiplier{1.0f};
+        bool has_pose{false};
+        int32_t preset{0};
+        glm::vec3 location{};
+        glm::vec3 rotation{};
+        float raw_fov{0.0f};
     };
 
     struct ProSpiFieldMapSample {
@@ -1510,7 +1601,7 @@ private:
     ProSpiFieldMapSample get_last_detected_prospi_camera_sample();
     ProSpiFieldMapSample get_selected_prospi_field_map_sample();
     void select_prospi_field_map_sample(const ProSpiFieldMapSample& sample);
-    bool apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float dolly_distance);
+    bool apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float dolly_distance, bool save = true);
     void draw_prospi_field_map_visualizer();
     void save_generic_camera_presets();
     void load_generic_camera_presets();
@@ -1593,6 +1684,58 @@ public:
             *m_match_game_fov_prospi_telephoto_perf_view_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias,
+            *m_match_game_fov_prospi_crowd_visibility_guard,
+            *m_match_game_fov_prospi_crowd_visibility_trigger_fov,
+            *m_match_game_fov_prospi_crowd_visibility_hold_seconds,
+            *m_match_game_fov_prospi_crowd_visibility_view_distance_scale,
+            *m_match_game_fov_prospi_crowd_visibility_static_mesh_lod_distance_scale,
+            *m_match_game_fov_prospi_crowd_visibility_skeletal_mesh_lod_bias,
+            *m_match_game_fov_prospi_crowd_visibility_skeletal_radius_scale,
+            *m_match_game_fov_prospi_crowd_culling_triage,
+            *m_match_game_fov_prospi_crowd_culling_triage_mode,
+            *m_match_game_fov_prospi_crowd_culling_triage_auto_cycle,
+            *m_match_game_fov_prospi_crowd_culling_triage_cycle_seconds,
+            *m_match_game_fov_prospi_crowd_culling_triage_trigger_fov,
+            *m_match_game_fov_prospi_crowd_culling_triage_hold_seconds,
+            *m_match_game_fov_prospi_spectator_mesh_triage,
+            *m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh,
+            *m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds,
+            *m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale,
+            *m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull,
+            *m_match_game_fov_prospi_spectator_mesh_triage_force_visibility,
+            *m_match_game_fov_prospi_camera_safety_guard,
+            *m_match_game_fov_prospi_camera_safety_field_rule,
+            *m_match_game_fov_prospi_camera_safety_baseline_rule,
+            *m_match_game_fov_prospi_camera_safety_stand_rule,
+            *m_match_game_fov_prospi_camera_safety_outfield_rule,
+            *m_match_game_fov_prospi_camera_safety_field_min_z,
+            *m_match_game_fov_prospi_camera_safety_baseline_min_z,
+            *m_match_game_fov_prospi_camera_safety_stand_min_z,
+            *m_match_game_fov_prospi_camera_safety_outfield_min_z,
+            *m_match_game_fov_prospi_camera_safety_max_up_offset,
+            *m_match_game_fov_prospi_camera_safety_dolly_cap_strength,
+            *m_match_game_fov_prospi_camera_safety_baseline_x_min,
+            *m_match_game_fov_prospi_camera_safety_baseline_y_min,
+            *m_match_game_fov_prospi_camera_safety_baseline_y_max,
+            *m_match_game_fov_prospi_camera_safety_stand_x_min,
+            *m_match_game_fov_prospi_camera_safety_stand_y_min,
+            *m_match_game_fov_prospi_camera_safety_stand_y_max,
+            *m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov,
+            *m_match_game_fov_prospi_camera_safety_outfield_y_max,
+            *m_match_game_fov_prospi_auto_camera_sequencer,
+            *m_match_game_fov_prospi_auto_camera_sequencer_mode,
+            *m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov,
+            *m_match_game_fov_prospi_auto_camera_sequencer_low_camera_max_z,
+            *m_match_game_fov_prospi_auto_camera_sequencer_field_cap,
+            *m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap,
+            *m_match_game_fov_prospi_auto_camera_sequencer_stand_cap,
+            *m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap,
+            *m_match_game_fov_prospi_auto_camera_sequencer_smoothing,
+            *m_match_game_fov_prospi_auto_camera_sequencer_match_location_radius,
+            *m_match_game_fov_prospi_auto_camera_sequencer_match_yaw_radius,
+            *m_match_game_fov_prospi_auto_camera_sequencer_match_pitch_radius,
+            *m_match_game_fov_prospi_auto_camera_sequencer_match_fov_radius,
+            *m_match_game_fov_prospi_auto_camera_sequencer_match_min_confidence,
             *m_match_game_fov_prospi_gameplay_behind_plate_dolly_override,
             *m_match_game_fov_prospi_gameplay_behind_plate_dolly_distance,
             *m_match_game_fov_prospi_home_plate_waist_high_dolly_override,
@@ -1728,6 +1871,7 @@ private:
     std::atomic<bool> m_match_game_fov_prospi_tv_override_active{false};
     std::atomic<float> m_match_game_fov_prospi_auto_dolly_distance_active{0.0f};
     std::atomic<bool> m_match_game_fov_prospi_telephoto_perf_active{false};
+    std::atomic<bool> m_match_game_fov_prospi_crowd_visibility_active{false};
     std::atomic<bool> m_match_game_fov_read_only_camera_active{false};
     std::atomic<bool> m_match_game_fov_would_write_game_camera{false};
     std::atomic<bool> m_match_game_fov_camera_cut_stabilizer_active{false};
@@ -1795,6 +1939,114 @@ private:
     int m_prospi_telephoto_perf_target_skeletal_mesh_lod_bias{0};
     bool m_prospi_telephoto_perf_line_mode{false};
     std::chrono::steady_clock::time_point m_prospi_line_telephoto_perf_hold_until{};
+    bool m_prospi_crowd_visibility_baselines_valid{false};
+    bool m_prospi_crowd_visibility_baseline_view_distance_valid{false};
+    bool m_prospi_crowd_visibility_baseline_static_mesh_lod_valid{false};
+    bool m_prospi_crowd_visibility_baseline_skeletal_lod_bias_valid{false};
+    bool m_prospi_crowd_visibility_baseline_skeletal_radius_valid{false};
+    bool m_prospi_crowd_visibility_baseline_fov_affects_hlod_valid{false};
+    float m_prospi_crowd_visibility_baseline_view_distance_scale{1.0f};
+    float m_prospi_crowd_visibility_baseline_static_mesh_lod_distance_scale{1.0f};
+    int m_prospi_crowd_visibility_baseline_skeletal_mesh_lod_bias{0};
+    float m_prospi_crowd_visibility_baseline_skeletal_mesh_lod_radius_scale{1.0f};
+    int m_prospi_crowd_visibility_baseline_fov_affects_hlod{1};
+    bool m_prospi_crowd_visibility_applied{false};
+    bool m_prospi_crowd_visibility_target_valid{false};
+    float m_prospi_crowd_visibility_target_view_distance_scale{1.0f};
+    float m_prospi_crowd_visibility_target_static_mesh_lod_distance_scale{1.0f};
+    int m_prospi_crowd_visibility_target_skeletal_mesh_lod_bias{0};
+    float m_prospi_crowd_visibility_target_skeletal_mesh_lod_radius_scale{1.0f};
+    bool m_prospi_crowd_visibility_target_line_mode{false};
+    std::chrono::steady_clock::time_point m_prospi_crowd_visibility_hold_until{};
+    struct ProSpiCrowdCullingTriageBaseline {
+        bool is_int{true};
+        bool valid{false};
+        int int_value{0};
+        float float_value{0.0f};
+    };
+    std::unordered_map<std::wstring, ProSpiCrowdCullingTriageBaseline> m_prospi_crowd_culling_triage_baselines{};
+    std::chrono::steady_clock::time_point m_prospi_crowd_culling_triage_hold_until{};
+    std::chrono::steady_clock::time_point m_prospi_crowd_culling_triage_next_cycle{};
+    bool m_prospi_crowd_culling_triage_applied{false};
+    int32_t m_prospi_crowd_culling_triage_last_mode{0};
+    std::atomic<bool> m_prospi_crowd_culling_triage_active{false};
+    std::atomic<int32_t> m_prospi_crowd_culling_triage_mode_active{0};
+    std::atomic<int32_t> m_prospi_crowd_culling_triage_set_count{0};
+    std::atomic<int32_t> m_prospi_crowd_culling_triage_missing_count{0};
+    struct ProSpiSpectatorMeshBaseline {
+        sdk::UObject* mesh{nullptr};
+        bool bounds_scale_valid{false};
+        float bounds_scale{1.0f};
+        bool ld_max_draw_distance_valid{false};
+        float ld_max_draw_distance{0.0f};
+        bool cached_max_draw_distance_valid{false};
+        float cached_max_draw_distance{0.0f};
+        bool min_draw_distance_valid{false};
+        float min_draw_distance{0.0f};
+        bool never_distance_cull_valid{false};
+        bool never_distance_cull{false};
+        bool allow_cull_distance_volume_valid{false};
+        bool allow_cull_distance_volume{true};
+        bool visible_valid{false};
+        bool visible{true};
+        bool hidden_in_game_valid{false};
+        bool hidden_in_game{false};
+    };
+    ProSpiSpectatorMeshBaseline m_prospi_spectator_mesh_baseline{};
+    sdk::UObject* m_prospi_spectator_controller{nullptr};
+    sdk::UObject* m_prospi_spectator_mesh_component{nullptr};
+    std::chrono::steady_clock::time_point m_prospi_spectator_mesh_next_scan{};
+    bool m_prospi_spectator_mesh_applied{false};
+    bool m_prospi_spectator_mesh_last_inflate_bounds{false};
+    bool m_prospi_spectator_mesh_last_disable_distance_cull{false};
+    bool m_prospi_spectator_mesh_last_force_visibility{false};
+    float m_prospi_spectator_mesh_last_bounds_scale{1.0f};
+    std::atomic<bool> m_prospi_spectator_mesh_refresh_requested{false};
+    std::atomic<bool> m_prospi_spectator_mesh_found{false};
+    std::atomic<bool> m_prospi_spectator_mesh_applied_status{false};
+    std::atomic<uintptr_t> m_prospi_spectator_controller_address{0};
+    std::atomic<uintptr_t> m_prospi_spectator_mesh_address{0};
+    std::atomic<int32_t> m_prospi_spectator_mesh_assets_count{-1};
+    std::atomic<int32_t> m_prospi_spectator_mesh_materials_count{-1};
+    std::atomic<int32_t> m_prospi_spectator_mesh_motion_count{-1};
+    std::atomic<int32_t> m_prospi_spectator_mesh_spectator_mesh_present{-1};
+    std::atomic<int32_t> m_prospi_spectator_mesh_scan_count{0};
+    std::atomic<int32_t> m_prospi_spectator_mesh_write_count{0};
+    std::atomic<int32_t> m_prospi_spectator_mesh_missing_count{0};
+    std::atomic<bool> m_prospi_camera_safety_active{false};
+    std::atomic<int32_t> m_prospi_camera_safety_zone{0};
+    std::atomic<float> m_prospi_camera_safety_min_z{0.0f};
+    std::atomic<float> m_prospi_camera_safety_predicted_z{0.0f};
+    std::atomic<float> m_prospi_camera_safety_up_offset{0.0f};
+    std::atomic<float> m_prospi_camera_safety_dolly_before{0.0f};
+    std::atomic<float> m_prospi_camera_safety_dolly_after{0.0f};
+    bool m_prospi_camera_safety_logged_active{false};
+    int32_t m_prospi_camera_safety_logged_zone{0};
+    std::atomic<bool> m_prospi_auto_camera_sequencer_active{false};
+    std::atomic<int32_t> m_prospi_auto_camera_sequencer_zone{0};
+    std::atomic<float> m_prospi_auto_camera_sequencer_dolly_before{0.0f};
+    std::atomic<float> m_prospi_auto_camera_sequencer_dolly_after{0.0f};
+    std::atomic<int32_t> m_prospi_auto_camera_sequencer_play_mode{0};
+    std::atomic<int32_t> m_prospi_auto_camera_sequencer_source{0};
+    std::atomic<float> m_prospi_auto_camera_sequencer_confidence{0.0f};
+    std::atomic<float> m_prospi_auto_camera_sequencer_fov_before{0.0f};
+    std::atomic<float> m_prospi_auto_camera_sequencer_fov_after{0.0f};
+    bool m_prospi_auto_camera_sequencer_logged_active{false};
+    int32_t m_prospi_auto_camera_sequencer_logged_zone{0};
+    std::string m_prospi_auto_camera_sequencer_logged_camera_id{};
+    std::string m_prospi_auto_camera_sequencer_last_camera_id{};
+    int32_t m_prospi_auto_camera_sequencer_last_zone{0};
+    int32_t m_prospi_auto_camera_sequencer_last_play_mode{0};
+    float m_prospi_auto_camera_sequencer_last_dolly{0.0f};
+    bool m_prospi_auto_camera_sequencer_last_valid{false};
+    std::chrono::steady_clock::time_point m_prospi_auto_camera_sequencer_last_ball_follow_time{};
+    bool m_prospi_auto_camera_observation_valid{false};
+    glm::vec3 m_prospi_auto_camera_observation_location{};
+    glm::vec3 m_prospi_auto_camera_observation_rotation{};
+    float m_prospi_auto_camera_observation_raw_fov{0.0f};
+    std::chrono::steady_clock::time_point m_prospi_auto_camera_observation_time{};
+    std::mutex m_prospi_auto_camera_sequencer_mtx{};
+    std::string m_prospi_auto_camera_sequencer_match_label{};
     std::mutex m_generic_camera_preset_mtx{};
     std::unordered_map<std::string, GenericCameraPreset> m_generic_camera_presets{};
     std::string m_current_game_camera_id{};
