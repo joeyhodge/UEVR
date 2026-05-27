@@ -739,7 +739,7 @@ bool is_prospi_home_plate_pitch_view(
 
 float get_prospi_outfield_ball_follow_min_dolly(float raw_fov) {
     if (raw_fov > 35.0f) {
-        return 4200.0f;
+        return 5000.0f;
     }
 
     if (raw_fov > 20.0f) {
@@ -6832,11 +6832,20 @@ void VR::update_game_fov() {
         const auto outfield_like_for_hold =
             low_camera &&
             !home_plate_pitch_view &&
-            camera_y <= -4500.0f &&
+            camera_y <= -3500.0f &&
             camera_y >= -13000.0f &&
             camera_z <= 3500.0f &&
             raw_fov <= 55.0f &&
             (abs_x >= 750.0f || is_outfield || outfield_assist_preset);
+        const auto outfield_home_plate_pan =
+            low_camera &&
+            !home_plate_pitch_view &&
+            camera_y <= -2500.0f &&
+            camera_y >= -13000.0f &&
+            camera_z <= 2500.0f &&
+            raw_fov >= 28.0f &&
+            raw_fov <= 60.0f &&
+            abs_x <= 7500.0f;
         const auto upper_deck_ball_camera =
             is_stand &&
             camera_z >= 1000.0f &&
@@ -6858,12 +6867,12 @@ void VR::update_game_fov() {
         const auto recent_outfield_follow =
             m_prospi_auto_camera_sequencer_last_play_mode == (int32_t)ProSpiPlayCameraMode::BallFollow &&
             m_prospi_auto_camera_sequencer_last_zone == (int32_t)ProSpiCameraSafetyZone::OutfieldLow &&
-            std::chrono::duration<float>(observation_now - m_prospi_auto_camera_sequencer_last_ball_follow_time).count() <= 0.75f &&
-            outfield_like_for_hold;
+            std::chrono::duration<float>(observation_now - m_prospi_auto_camera_sequencer_last_ball_follow_time).count() <= 1.10f &&
+            (outfield_like_for_hold || outfield_home_plate_pan);
 
         if (camera_z >= 7000.0f || std::abs(location->x) >= 50000.0f || std::abs(location->y) >= 25000.0f) {
             play_mode = ProSpiPlayCameraMode::AerialEstablishing;
-        } else if (follow_pan_like || recent_ball_follow || recent_outfield_follow) {
+        } else if (follow_pan_like || outfield_home_plate_pan || recent_ball_follow || recent_outfield_follow) {
             play_mode = ProSpiPlayCameraMode::BallFollow;
         } else if (outfield_corner_camera) {
             play_mode = ProSpiPlayCameraMode::BallFollow;
@@ -6891,7 +6900,7 @@ void VR::update_game_fov() {
             sequence_zone = ProSpiCameraSafetyZone::StandCrowd;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_stand_cap->value(), 10.0f, 15000.0f);
         }
-        if ((is_outfield && low_camera) || outfield_corner_camera || recent_outfield_follow) {
+        if ((is_outfield && low_camera) || outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow) {
             sequence_zone = ProSpiCameraSafetyZone::OutfieldLow;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap->value(), 10.0f, 15000.0f);
         }
@@ -6989,7 +6998,7 @@ void VR::update_game_fov() {
             auto allow_dolly_increase = false;
             if (play_mode == ProSpiPlayCameraMode::BallFollow) {
                 auto ball_follow_min_dolly = 5500.0f;
-                if (outfield_corner_camera || recent_outfield_follow || sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
+                if (outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow || sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
                     ball_follow_min_dolly = get_prospi_outfield_ball_follow_min_dolly(raw_fov);
                     target_dolly = std::clamp(ball_follow_min_dolly, 10.0f, 15000.0f);
                 } else if (upper_deck_ball_camera) {
