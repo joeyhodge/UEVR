@@ -36,6 +36,31 @@ RenderTargetPoolHook::RenderTargetPoolHook() {
     g_hook = this;
 }
 
+bool RenderTargetPoolHook::try_get_native_resource(IPooledRenderTarget* rt, void** out_native) {
+    if (out_native == nullptr) {
+        return false;
+    }
+
+    *out_native = nullptr;
+
+    __try {
+        if (rt == nullptr) {
+            return true;
+        }
+
+        auto* texture = rt->item.texture.texture;
+        if (texture == nullptr) {
+            return true;
+        }
+
+        *out_native = texture->get_native_resource();
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        *out_native = nullptr;
+        return false;
+    }
+}
+
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     if (!m_attempted_hook && VR::get()->is_depth_enabled()) {
         m_wants_activate = true;

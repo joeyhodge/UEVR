@@ -3,12 +3,15 @@
 #include <mutex>
 #include <wrl.h>
 
+#include <spdlog/spdlog.h>
+
 #include "../../Mod.hpp"
 
 #include <SafetyHook.hpp>
 
 #include <sdk/RHICommandList.hpp>
 #include <sdk/StereoStuff.hpp>
+#include <utility/String.hpp>
 
 namespace sdk {
 class FRenderTargetPool;
@@ -49,13 +52,21 @@ public:
         std::scoped_lock _{m_mutex};
         if (auto it = m_render_targets.find(name); it != m_render_targets.end()) {
             const auto& rt = it->second;
-            const auto& tex = rt->item.texture.texture;
 
-            if (tex == nullptr) {
+            if (auto bad = m_bad_native_resource_targets.find(name);
+                bad != m_bad_native_resource_targets.end() && bad->second == rt)
+            {
                 return nullptr;
             }
 
-            auto native_resource = (T*)tex->get_native_resource();
+            void* native_resource_raw{};
+            if (!try_get_native_resource(rt, &native_resource_raw)) {
+                m_bad_native_resource_targets[name] = rt;
+                SPDLOG_WARN("RenderTargetPool native resource probe faulted for {}; skipping this pooled target", utility::narrow(name));
+                return nullptr;
+            }
+
+            auto native_resource = (T*)native_resource_raw;
 
             if (native_resource == nullptr) {
                 return nullptr;
@@ -69,6 +80,7 @@ public:
 
 private:
     bool hook();
+    static bool try_get_native_resource(IPooledRenderTarget* rt, void** out_native);
 
     // Stuff past name param is added in newer UE versions.
     static bool find_free_element_hook(
@@ -102,5 +114,6 @@ private:
     std::recursive_mutex m_mutex{};
     SafetyHookInline m_find_free_element_hook{};
     std::unordered_map<std::wstring, IPooledRenderTarget*> m_render_targets{};
+    std::unordered_map<std::wstring, IPooledRenderTarget*> m_bad_native_resource_targets{};
     std::unordered_set<std::wstring> m_seen_names{};
 };

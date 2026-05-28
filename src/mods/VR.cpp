@@ -739,11 +739,11 @@ bool is_prospi_home_plate_pitch_view(
 
 float get_prospi_outfield_ball_follow_min_dolly(float raw_fov) {
     if (raw_fov > 35.0f) {
-        return 5000.0f;
+        return 4400.0f;
     }
 
     if (raw_fov > 20.0f) {
-        return 5500.0f;
+        return 6500.0f;
     }
 
     if (raw_fov > 8.0f) {
@@ -753,6 +753,34 @@ float get_prospi_outfield_ball_follow_min_dolly(float raw_fov) {
     // ProSpi's ultra-telephoto outfield/gameplay cameras report tiny raw FOVs.
     // They need a much stronger dolly than the normal outfield pan bucket.
     return 9000.0f;
+}
+
+float get_prospi_stand_crowd_preserved_dolly(float raw_fov) {
+    if (raw_fov <= 5.0f) {
+        return 4200.0f;
+    }
+
+    if (raw_fov <= 12.0f) {
+        return 3800.0f;
+    }
+
+    return 3200.0f;
+}
+
+float get_prospi_baseline_ball_follow_min_dolly(float raw_fov) {
+    if (raw_fov >= 20.0f) {
+        return 2800.0f;
+    }
+
+    if (raw_fov >= 12.0f) {
+        return 3400.0f;
+    }
+
+    if (raw_fov >= 7.0f) {
+        return 4200.0f;
+    }
+
+    return 4600.0f;
 }
 
 bool is_prospi_line_telephoto_perf_preset(ProSpiCameraPreset preset) {
@@ -6869,10 +6897,18 @@ void VR::update_game_fov() {
             m_prospi_auto_camera_sequencer_last_zone == (int32_t)ProSpiCameraSafetyZone::OutfieldLow &&
             std::chrono::duration<float>(observation_now - m_prospi_auto_camera_sequencer_last_ball_follow_time).count() <= 1.10f &&
             (outfield_like_for_hold || outfield_home_plate_pan);
+        const auto baseline_cutscene_like =
+            is_baseline &&
+            low_camera &&
+            !outfield_corner_camera &&
+            !outfield_home_plate_pan &&
+            !recent_outfield_follow;
 
         if (camera_z >= 7000.0f || std::abs(location->x) >= 50000.0f || std::abs(location->y) >= 25000.0f) {
             play_mode = ProSpiPlayCameraMode::AerialEstablishing;
-        } else if (follow_pan_like || outfield_home_plate_pan || recent_ball_follow || recent_outfield_follow) {
+        } else if (((follow_pan_like || recent_ball_follow) && !baseline_cutscene_like) ||
+                   outfield_home_plate_pan ||
+                   recent_outfield_follow) {
             play_mode = ProSpiPlayCameraMode::BallFollow;
         } else if (outfield_corner_camera) {
             play_mode = ProSpiPlayCameraMode::BallFollow;
@@ -7001,6 +7037,9 @@ void VR::update_game_fov() {
                 if (outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow || sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
                     ball_follow_min_dolly = get_prospi_outfield_ball_follow_min_dolly(raw_fov);
                     target_dolly = std::clamp(ball_follow_min_dolly, 10.0f, 15000.0f);
+                } else if (sequence_zone == ProSpiCameraSafetyZone::BaselineDugout) {
+                    ball_follow_min_dolly = get_prospi_baseline_ball_follow_min_dolly(raw_fov);
+                    target_dolly = std::clamp(std::max(active_dolly_distance, ball_follow_min_dolly), 10.0f, 15000.0f);
                 } else if (upper_deck_ball_camera) {
                     ball_follow_min_dolly = 3600.0f;
                     target_dolly = std::clamp(std::max(active_dolly_distance, ball_follow_min_dolly), 10.0f, 15000.0f);
@@ -7620,7 +7659,16 @@ void VR::update_game_fov() {
                     if (cap_strength > 0.0f && vertical_factor > 0.001f && dolly_offset > 0.0f) {
                         const auto base_z = location->z + m_camera_up_offset->value();
                         const auto max_safe_dolly = std::max(0.0f, (base_z - safety_min_z) / vertical_factor);
-                        const auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
+                        auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
+
+                        if (safety_zone == ProSpiCameraSafetyZone::StandCrowd) {
+                            // Stand/crowd telephoto cuts need enough retained dolly to avoid falling back into
+                            // ProSpi's flat-camera crowd cull zone. Keep lift safety, but never collapse to zero.
+                            capped_dolly = std::min(
+                                dolly_offset,
+                                std::max(max_safe_dolly, get_prospi_stand_crowd_preserved_dolly(raw_fov)));
+                        }
+
                         dolly_offset = lerp_float(dolly_offset, capped_dolly, cap_strength);
                         predicted_z = base_z - std::max(dolly_offset, 0.0f) * vertical_factor;
                     }
