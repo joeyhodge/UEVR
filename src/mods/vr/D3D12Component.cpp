@@ -207,6 +207,15 @@ bool is_shf_current_game() {
     return result;
 }
 
+bool is_deadzone_rogue_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"DeadzoneSteam-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_stalker2_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -737,6 +746,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (vr->is_extreme_compatibility_mode_enabled()) {
+        backbuffer = real_backbuffer;
+    }
+
+    if (is_deadzone_rogue_current_game() && backbuffer == nullptr && real_backbuffer != nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable on frame; using real swapchain backbuffer fallback");
         backbuffer = real_backbuffer;
     }
 
@@ -2544,6 +2558,16 @@ bool D3D12Component::setup() {
         backbuffer = real_backbuffer;
     }
 
+    const bool deadzone_real_backbuffer_bootstrap =
+        is_deadzone_rogue_current_game() &&
+        backbuffer == nullptr &&
+        real_backbuffer != nullptr;
+
+    if (deadzone_real_backbuffer_bootstrap) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable during setup; using real swapchain backbuffer bootstrap");
+        backbuffer = real_backbuffer;
+    }
+
     if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer (D3D12).");
         return false;
@@ -2563,7 +2587,7 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!vr->is_extreme_compatibility_mode_enabled() && !deadzone_real_backbuffer_bootstrap) {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
     }
 
