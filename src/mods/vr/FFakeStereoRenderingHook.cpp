@@ -8947,6 +8947,17 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     SPDLOG_INFO("Searching for PostInitProperties virtual function...");
 
+    if (is_deadzone_ue56_executable()) {
+        // Deadzone Rogue's UE5.6.1 retail build can OOM while resolving
+        // UObject::StaticClass() through FName/object scans during this
+        // bootstrap. The game already reaches the stereo path without this
+        // call, so fail closed instead of hammering the unsafe resolver.
+        SPDLOG_WARN_ONCE("[Deadzone][PostInitProperties] Skipping UObject-based PostInitProperties resolver to avoid unsafe FName scan");
+        g_hook->m_sceneview_data.known_scene_states.clear();
+        g_hook->m_fixed_localplayer_view_count = true;
+        return;
+    }
+
     std::optional<uint32_t> idx{};
     const auto engine = sdk::UEngine::get_lvalue();
 
