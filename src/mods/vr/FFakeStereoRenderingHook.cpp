@@ -294,6 +294,15 @@ bool pitpanic_is_current_game() {
     return result;
 }
 
+bool windrose_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Windrose-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 void avowed_native_fix_gate_reset(const char* reason) {
     if (!avowed_is_current_game()) {
         return;
@@ -3546,6 +3555,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     SPDLOG_INFO("IsStereoEnabled: {:x}", (uintptr_t)*is_stereo_enabled_func_ptr);
 
     m_has_double_precision = is_using_double_precision(stereo_view_offset_func) || is_using_double_precision(calculate_stereo_projection_matrix_func);
+
+    if (!m_has_double_precision && windrose_is_current_game() && is_ue_5_6_or_newer()) {
+        m_has_double_precision = true;
+        SPDLOG_WARN("[Windrose][R5] Forcing UE5.6 double-precision view math because function-scan detection missed it");
+    }
 
     {
         m_adjust_view_rect_hook = safetyhook::create_inline((void*)adjust_view_rect_func, adjust_view_rect);
@@ -7783,6 +7797,20 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     // stereo to be enabled if it starts from the first call to IsStereoEnabled inside UGameViewportClient::Draw.
     if (hook->m_has_game_viewport_client_draw_hook) {
         if (GameThreadWorker::get().is_same_thread()) {
+            if (windrose_is_current_game() && hook->m_in_viewport_client_draw && VR::get()->is_hmd_active()) {
+                if (!last_state) {
+                    VR::get()->wait_for_present();
+                    hook->set_should_recreate_textures(true);
+                }
+
+                last_state = true;
+                hook->m_was_in_viewport_client_draw = hook->m_in_viewport_client_draw;
+
+                SPDLOG_INFO_ONCE("[Windrose][R5] Forcing IsStereoEnabled=true inside UGameViewportClient::Draw so UE5.6 GetProjectionData takes the stereo/HMD view branch");
+
+                return true;
+            }
+
             if (hook->m_in_viewport_client_draw && !hook->m_was_in_viewport_client_draw) {
                 const auto is_hmd_active = VR::get()->is_hmd_active();
 
