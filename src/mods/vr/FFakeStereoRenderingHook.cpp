@@ -7717,6 +7717,15 @@ bool FFakeStereoRenderingHook::attempt_runtime_inject_stereo() {
         return false;
     }
 
+    if (everwind_is_current_game()) {
+        // Everwind's updated UE5.5 build can crash inside InitializeHMDDevice
+        // before UEVR reaches its fallback stereo-device path. The old build
+        // already relied on that fallback after InitializeHMDDevice failed to
+        // create a device, so avoid the unsafe engine call for all Everwind builds.
+        SPDLOG_WARN_ONCE("[Everwind] Skipping runtime InitializeHMDDevice; using fallback stereo-device injection");
+        return false;
+    }
+
     static auto enable_stereo_emulation_cvar = sdk::vr::get_enable_stereo_emulation_cvar();
 
     if (!locate_active_stereo_rendering_device()) {
