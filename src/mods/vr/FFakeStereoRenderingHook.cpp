@@ -6238,7 +6238,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     const auto frame_count = *(uint32_t*)((uintptr_t)&view_family + SceneViewExtensionAnalyzer::frame_count_offset);
     auto views_ptr = view_family.get_views();
 
-    //vr->update_hmd_state(true, frame_count);
     auto runtime = vr->get_runtime();
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
@@ -7849,20 +7848,6 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     // stereo to be enabled if it starts from the first call to IsStereoEnabled inside UGameViewportClient::Draw.
     if (hook->m_has_game_viewport_client_draw_hook) {
         if (GameThreadWorker::get().is_same_thread()) {
-            if (windrose_is_current_game() && hook->m_in_viewport_client_draw && VR::get()->is_hmd_active()) {
-                if (!last_state) {
-                    VR::get()->wait_for_present();
-                    hook->set_should_recreate_textures(true);
-                }
-
-                last_state = true;
-                hook->m_was_in_viewport_client_draw = hook->m_in_viewport_client_draw;
-
-                SPDLOG_INFO_ONCE("[Windrose][R5] Forcing IsStereoEnabled=true inside UGameViewportClient::Draw so UE5.6 GetProjectionData takes the stereo/HMD view branch");
-
-                return true;
-            }
-
             if (hook->m_in_viewport_client_draw && !hook->m_was_in_viewport_client_draw) {
                 const auto is_hmd_active = VR::get()->is_hmd_active();
 
