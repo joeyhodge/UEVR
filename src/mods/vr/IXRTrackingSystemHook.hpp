@@ -11,6 +11,7 @@
 
 namespace sdk {
 class UEngine;
+class UGameEngine;
 class IXRTrackingSystem;
 class IXRCamera;
 class IHeadMountedDisplay;
@@ -38,7 +39,7 @@ public:
 
     auto& get_process_view_rotation_data() { return m_process_view_rotation_data; }
 
-    void manual_update_control_rotation();
+    void manual_update_control_rotation(sdk::UGameEngine* engine = nullptr);
     void update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
 
 private:
