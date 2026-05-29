@@ -787,7 +787,8 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
             directive8020_is_current_game() ||
-            everwind_is_current_game()) &&
+            everwind_is_current_game() ||
+            is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
         !is_ue_5_7_or_newer();
@@ -798,7 +799,7 @@ bool supports_dedicated_ui_target_for_current_game() {
 }
 
 bool should_preserve_promoted_ue55_slate_target() {
-    return mechwarrior_clans_is_current_game() || everwind_is_current_game();
+    return mechwarrior_clans_is_current_game() || everwind_is_current_game() || is_deadzone_ue56_executable();
 }
 
 bool is_probable_ue57_dx11_texture_desc_prepare_function(uintptr_t fn) {
@@ -9550,7 +9551,7 @@ bool ue55_try_promote_fallback_ui_target(
     std::optional<UE55SlateExtent> expected_extent,
     const char* source)
 {
-    if (!everwind_is_current_game() || rtm == nullptr || !expected_extent) {
+    if (!(everwind_is_current_game() || is_deadzone_ue56_executable()) || rtm == nullptr || !expected_extent) {
         return false;
     }
 
@@ -9563,8 +9564,10 @@ bool ue55_try_promote_fallback_ui_target(
     if (rtm->get_dedicated_ui_target() != fallback) {
         rtm->set_dedicated_ui_target(fallback, expected_extent->width, expected_extent->height);
         rtm->get_fallback_ui_target_ref() = nullptr;
-        rtm->cancel_dedicated_ui_creation_preserving_target("Everwind D3D12 UI fallback target");
-        SPDLOG_WARN("[UE5.5][SlateUI] promoted Everwind D3D12 UI fallback target as dedicated UI target");
+        rtm->cancel_dedicated_ui_creation_preserving_target(
+            is_deadzone_ue56_executable() ? "Deadzone D3D12 UI fallback target" : "Everwind D3D12 UI fallback target");
+        SPDLOG_WARN("[UE5.5][SlateUI] promoted {} D3D12 UI fallback target as dedicated UI target",
+            is_deadzone_ue56_executable() ? "Deadzone" : "Everwind");
     }
 
     return true;
@@ -9590,7 +9593,10 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     auto* rtm = g_hook->get_render_target_manager();
     auto* ui_target = rtm != nullptr ? rtm->get_dedicated_ui_target() : nullptr;
 
-    if (everwind_is_current_game() && rtm != nullptr && (ui_target == nullptr || ui_target == rtm->get_render_target())) {
+    if ((everwind_is_current_game() || is_deadzone_ue56_executable()) &&
+        rtm != nullptr &&
+        (ui_target == nullptr || ui_target == rtm->get_render_target()))
+    {
         auto* fallback = rtm->get_fallback_ui_target_ref();
 
         if (fallback != nullptr && fallback != rtm->get_render_target() && !IsBadReadPtr(fallback, sizeof(void*))) {
@@ -12266,16 +12272,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 ue55_inputs_full.scene_view_rect.max.y,
                 ue55_inputs_full.viewport_scale_ui);
 
-            if (everwind_is_current_game()) {
-                // Everwind's UObject-created render target never exposes a stable
-                // render resource here, but the D3D12 texture path already finds a
-                // 1920x1080 UI target. Reuse that target instead of repeatedly
-                // recreating a UObject RT and clipping Slate through the scene.
+            if (everwind_is_current_game() || is_deadzone_ue56_executable()) {
+                // Some UE5.5/5.6 titles already expose the correct UI texture
+                // through the D3D12 path while Slate's viewport resource path is
+                // unavailable. Reuse that target instead of clipping Slate through
+                // the scene or creating an unstable UObject RT.
                 const auto promoted_fallback =
-                    ue55_try_promote_fallback_ui_target(rtm, expected_extent, "Everwind D3D12 UI fallback");
+                    ue55_try_promote_fallback_ui_target(
+                        rtm,
+                        expected_extent,
+                        is_deadzone_ue56_executable() ? "Deadzone D3D12 UI fallback" : "Everwind D3D12 UI fallback");
 
                 if (!promoted_fallback && rtm->get_dedicated_ui_target() == nullptr) {
-                    SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] Everwind waiting for D3D12 UI fallback target before rerouting SlateOutputTexture");
+                    SPDLOG_INFO_EVERY_N_SEC(2,
+                        "[UE5.5][SlateUI] {} waiting for D3D12 UI fallback target before rerouting SlateOutputTexture",
+                        is_deadzone_ue56_executable() ? "Deadzone" : "Everwind");
                 }
             } else {
                 rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
