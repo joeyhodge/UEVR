@@ -50,8 +50,26 @@ bool is_deadzone_ue56_executable() {
     return result;
 }
 
+bool is_daysgone_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        return exe_path && exe_path->find(L"DaysGone.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool is_daysgone_controller_aim_requested() {
+    return is_daysgone_executable() && VR::get()->is_controller_aim_enabled();
+}
+
 bool is_direct_aim_compatibility_requested() {
     if (is_deadzone_ue56_executable()) {
+        return true;
+    }
+
+    if (is_daysgone_controller_aim_requested()) {
         return true;
     }
 
@@ -78,6 +96,10 @@ bool is_direct_aim_compatibility_active() {
         // fallback tick path. Let the normal ProcessViewRotation hook drive
         // HMD/controller aim instead of scanning or resolving UObject names.
         return false;
+    }
+
+    if (is_daysgone_controller_aim_requested()) {
+        return vr->is_using_controllers();
     }
 
     if (vr->is_headlocked_aim_enabled()) {
@@ -581,18 +603,25 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
+    const auto daysgone_controller_aim = is_daysgone_controller_aim_requested();
 
     if (direct_aim_compat_requested && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
-        if (aim_method == VR::AimMethod::HEAD) {
+        if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
+            SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because Controller-Camera Conflict Guard blocks the safe direct controller-aim path");
+            vr->set_aim_method(VR::AimMethod::GAME);
+            return;
+        } else if (aim_method == VR::AimMethod::HEAD) {
             if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing HMD aim on UE5.6 through ProcessViewRotation; unsafe direct UObject/FName fallback is disabled");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Allowing experimental HMD aim through direct control rotation updates");
             }
         } else if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
-            if (deadzone_direct_aim) {
+            if (daysgone_controller_aim) {
+                SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because controller tracking is not actively available");
+            } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Falling back to game aim because controller aim is not actively available");
@@ -600,7 +629,9 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             vr->set_aim_method(VR::AimMethod::GAME);
             return;
         } else {
-            if (deadzone_direct_aim) {
+            if (daysgone_controller_aim) {
+                SPDLOG_WARN_ONCE("[DaysGone][Aim] Using direct controller-aim fallback; skipping legacy UE4.11 HMD/ProcessViewRotation controller aim hooks");
+            } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Allowing experimental controller aim; XR camera path remains disabled");
@@ -615,7 +646,9 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     }
 
     if (direct_aim_compat_active) {
-        if (deadzone_direct_aim) {
+        if (daysgone_controller_aim) {
+            SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving Days Gone controller aim through direct control rotation updates");
+        } else if (deadzone_direct_aim) {
             SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
         } else {
             SPDLOG_INFO_ONCE("[AimCompat] Driving direct aim fallback through control rotation updates");
