@@ -1295,6 +1295,11 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageBoundsScale"), 1.0f, 100.0f, 20.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageDisableDistanceCull"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_force_visibility{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageForceVisibility"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_line_mesh_freeze{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorLineMeshFreeze"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_material_override{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMaterialOverride"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_alpha{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialAlpha"), 0.0f, 4.0f, 1.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_fade{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialFade"), 0.0f, 4.0f, 1.0f) };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_lod{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialLOD"), -4.0f, 4.0f, 0.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyGuard"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_field_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyFieldRule"), true) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_baseline_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineRule"), true) };
@@ -1703,6 +1708,10 @@ public:
             *m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale,
             *m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull,
             *m_match_game_fov_prospi_spectator_mesh_triage_force_visibility,
+            *m_match_game_fov_prospi_spectator_material_override,
+            *m_match_game_fov_prospi_spectator_material_alpha,
+            *m_match_game_fov_prospi_spectator_material_fade,
+            *m_match_game_fov_prospi_spectator_material_lod,
             *m_match_game_fov_prospi_camera_safety_guard,
             *m_match_game_fov_prospi_camera_safety_field_rule,
             *m_match_game_fov_prospi_camera_safety_baseline_rule,
@@ -1995,17 +2004,32 @@ private:
     ProSpiSpectatorMeshBaseline m_prospi_spectator_mesh_baseline{};
     sdk::UObject* m_prospi_spectator_controller{nullptr};
     sdk::UObject* m_prospi_spectator_mesh_component{nullptr};
+    sdk::UObject* m_prospi_spectator_line_mesh_intersection{nullptr};
+    std::vector<sdk::UObject*> m_prospi_spectator_materials{};
     std::chrono::steady_clock::time_point m_prospi_spectator_mesh_next_scan{};
     bool m_prospi_spectator_mesh_applied{false};
     bool m_prospi_spectator_mesh_last_inflate_bounds{false};
     bool m_prospi_spectator_mesh_last_disable_distance_cull{false};
     bool m_prospi_spectator_mesh_last_force_visibility{false};
     float m_prospi_spectator_mesh_last_bounds_scale{1.0f};
+    bool m_prospi_spectator_material_last_override{false};
+    float m_prospi_spectator_material_last_alpha{1.0f};
+    float m_prospi_spectator_material_last_fade{1.0f};
+    float m_prospi_spectator_material_last_lod{0.0f};
+    bool m_prospi_spectator_line_mesh_freeze_applied{false};
+    sdk::UObject* m_prospi_spectator_line_mesh_freeze_object{nullptr};
+    uint8_t m_prospi_spectator_line_mesh_original_active{0};
+    bool m_prospi_spectator_line_mesh_original_active_valid{false};
+    sdk::UObject* m_prospi_spectator_line_mesh_writable_object{nullptr};
+    bool m_prospi_spectator_line_mesh_writable_checked{false};
+    bool m_prospi_spectator_line_mesh_writable{false};
     std::atomic<bool> m_prospi_spectator_mesh_refresh_requested{false};
     std::atomic<bool> m_prospi_spectator_mesh_found{false};
     std::atomic<bool> m_prospi_spectator_mesh_applied_status{false};
     std::atomic<uintptr_t> m_prospi_spectator_controller_address{0};
     std::atomic<uintptr_t> m_prospi_spectator_mesh_address{0};
+    std::atomic<uintptr_t> m_prospi_spectator_line_mesh_address{0};
+    std::atomic<int32_t> m_prospi_spectator_line_mesh_active_value{-1};
     std::atomic<int32_t> m_prospi_spectator_mesh_assets_count{-1};
     std::atomic<int32_t> m_prospi_spectator_mesh_materials_count{-1};
     std::atomic<int32_t> m_prospi_spectator_mesh_motion_count{-1};
@@ -2013,6 +2037,10 @@ private:
     std::atomic<int32_t> m_prospi_spectator_mesh_scan_count{0};
     std::atomic<int32_t> m_prospi_spectator_mesh_write_count{0};
     std::atomic<int32_t> m_prospi_spectator_mesh_missing_count{0};
+    std::atomic<int32_t> m_prospi_spectator_line_mesh_write_count{0};
+    std::atomic<int32_t> m_prospi_spectator_line_mesh_missing_count{0};
+    std::atomic<int32_t> m_prospi_spectator_material_param_attempt_count{0};
+    std::atomic<int32_t> m_prospi_spectator_material_param_write_count{0};
     std::atomic<bool> m_prospi_camera_safety_active{false};
     std::atomic<int32_t> m_prospi_camera_safety_zone{0};
     std::atomic<float> m_prospi_camera_safety_min_z{0.0f};

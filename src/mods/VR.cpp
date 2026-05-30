@@ -29,6 +29,7 @@
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
+#include <sdk/FName.hpp>
 #include <sdk/FBoolProperty.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/TArray.hpp>
@@ -815,6 +816,64 @@ bool is_prospi_line_telephoto_perf_location(const glm::vec3& location, const glm
     return (near_first_or_third_line || low_outfield_line) && looking_along_line;
 }
 
+bool is_prospi_third_base_outfield_line_replay_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= -5000.0f &&
+        location.x <= -2200.0f &&
+        location.y >= -5000.0f &&
+        location.y <= -2000.0f &&
+        location.z >= 500.0f &&
+        location.z <= 2200.0f &&
+        rotation.x >= -35.0f &&
+        rotation.x <= 5.0f &&
+        rotation.y >= -150.0f &&
+        rotation.y <= -85.0f &&
+        raw_fov >= 28.0f &&
+        raw_fov <= 65.0f;
+}
+
+bool is_prospi_third_base_low_line_telephoto_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= -3500.0f &&
+        location.x <= -1500.0f &&
+        location.y >= -1600.0f &&
+        location.y <= 500.0f &&
+        std::abs(location.z) <= 700.0f &&
+        rotation.x >= -10.0f &&
+        rotation.x <= 10.0f &&
+        rotation.y >= -55.0f &&
+        rotation.y <= -10.0f &&
+        raw_fov <= 18.0f;
+}
+
+bool is_prospi_first_base_crowd_side_facing_field_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= 1500.0f &&
+        location.x <= 3500.0f &&
+        location.y >= -1800.0f &&
+        location.y <= -350.0f &&
+        std::abs(location.z) <= 900.0f &&
+        rotation.x >= -12.0f &&
+        rotation.x <= 10.0f &&
+        rotation.y >= 120.0f &&
+        rotation.y <= 170.0f &&
+        raw_fov <= 25.0f;
+}
+
+bool is_prospi_first_base_crowd_side_wide_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= -3500.0f &&
+        location.x <= -1500.0f &&
+        location.y >= -1800.0f &&
+        location.y <= -350.0f &&
+        std::abs(location.z) <= 900.0f &&
+        rotation.x >= -10.0f &&
+        rotation.x <= 10.0f &&
+        rotation.y >= 15.0f &&
+        rotation.y <= 55.0f &&
+        raw_fov <= 45.0f;
+}
+
 bool is_prospi_executable() {
     static const bool is_prospi = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -1108,6 +1167,10 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
         return ProSpiCameraPreset::ThirdBaseRelayLow;
     }
 
+    if (is_prospi_third_base_outfield_line_replay_camera(location, rotation, raw_fov)) {
+        return ProSpiCameraPreset::ThirdBaseOutfieldLineLow;
+    }
+
     if (nearly_equal(location.x, -500.0f, 1800.0f) &&
         nearly_equal(location.y, -3500.0f, 2000.0f) &&
         nearly_equal(location.z, 250.0f, 800.0f) &&
@@ -1133,6 +1196,10 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
         rotation.y >= 35.0f && rotation.y <= 80.0f &&
         raw_fov <= 22.0f) {
         return ProSpiCameraPreset::ThirdBaseCornerLow;
+    }
+
+    if (is_prospi_first_base_crowd_side_wide_camera(location, rotation, raw_fov)) {
+        return ProSpiCameraPreset::FirstBaseWideTelephoto;
     }
 
     if (nearly_equal(location.x, -3230.0f, 2200.0f) &&
@@ -1737,6 +1804,125 @@ bool object_or_class_name_contains(sdk::UObject* object, std::wstring_view needl
     return false;
 }
 
+std::wstring get_object_full_name_safe_wide(sdk::UObject* object) {
+    if (!is_valid_uobject_basic(object)) {
+        return {};
+    }
+
+    try {
+        return object->get_full_name();
+    } catch (...) {
+        return {};
+    }
+}
+
+bool is_runtime_object_full_name(std::wstring_view full_name) {
+    if (full_name.empty()) {
+        return false;
+    }
+
+    return full_name.rfind(L"Class ", 0) != 0 &&
+           full_name.rfind(L"ScriptStruct ", 0) != 0 &&
+           !contains_case_insensitive(full_name, L"Default__");
+}
+
+bool is_prospi_runtime_spectator_controller(sdk::UObject* object) {
+    const auto full_name = get_object_full_name_safe_wide(object);
+    return is_runtime_object_full_name(full_name) &&
+           contains_case_insensitive(full_name, L"GfxSpectatorControllerUE_");
+}
+
+bool is_prospi_runtime_spectator_mesh_component(sdk::UObject* object) {
+    const auto full_name = get_object_full_name_safe_wide(object);
+    return is_runtime_object_full_name(full_name) &&
+           contains_case_insensitive(full_name, L"SpectatorMeshComponent");
+}
+
+bool is_prospi_runtime_spectator_material(sdk::UObject* object) {
+    const auto full_name = get_object_full_name_safe_wide(object);
+    return is_runtime_object_full_name(full_name) &&
+           contains_case_insensitive(full_name, L"GfxSpectatorControllerUE_") &&
+           contains_case_insensitive(full_name, L"MaterialInstanceDynamic");
+}
+
+bool is_prospi_runtime_line_mesh_intersection(sdk::UObject* object) {
+    const auto full_name = get_object_full_name_safe_wide(object);
+    return is_runtime_object_full_name(full_name) &&
+           contains_case_insensitive(full_name, L"LineMeshIntersection");
+}
+
+bool is_memory_writable(void* ptr, size_t size) {
+    if (ptr == nullptr || size == 0 || IsBadReadPtr(ptr, size)) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_READWRITE ||
+           protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READWRITE ||
+           protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+std::optional<uint8_t> read_object_byte_at(sdk::UObject* object, uintptr_t offset) try {
+    if (!is_valid_uobject_basic(object)) {
+        return std::nullopt;
+    }
+
+    const auto ptr = (uint8_t*)object + offset;
+    if (IsBadReadPtr(ptr, sizeof(uint8_t))) {
+        return std::nullopt;
+    }
+
+    return *ptr;
+} catch (...) {
+    return std::nullopt;
+}
+
+bool write_object_byte_at(sdk::UObject* object, uintptr_t offset, uint8_t value) try {
+    if (!is_valid_uobject_basic(object)) {
+        return false;
+    }
+
+    const auto ptr = (uint8_t*)object + offset;
+    if (!is_memory_writable(ptr, sizeof(uint8_t))) {
+        return false;
+    }
+
+    *ptr = value;
+    return true;
+} catch (...) {
+    return false;
+}
+
+std::optional<sdk::UObject*> read_object_pointer_at(sdk::UObject* object, uintptr_t offset) try {
+    if (!is_valid_uobject_basic(object)) {
+        return std::nullopt;
+    }
+
+    const auto ptr = (sdk::UObject**)((uint8_t*)object + offset);
+    if (IsBadReadPtr(ptr, sizeof(sdk::UObject*))) {
+        return std::nullopt;
+    }
+
+    const auto value = *ptr;
+    if (!is_valid_uobject_basic(value)) {
+        return std::nullopt;
+    }
+
+    return value;
+} catch (...) {
+    return std::nullopt;
+}
+
 std::optional<float> read_object_float_property(sdk::UObject* object, std::wstring_view name) try {
     if (!is_valid_uobject_basic(object)) {
         return std::nullopt;
@@ -1816,6 +2002,56 @@ std::optional<int32_t> read_object_array_count_property(sdk::UObject* object, st
     return std::nullopt;
 }
 
+std::vector<sdk::UObject*> read_object_array_object_property(sdk::UObject* object, std::wstring_view name, int32_t max_items = 64) try {
+    std::vector<sdk::UObject*> result{};
+
+    if (!is_valid_uobject_basic(object) || max_items <= 0) {
+        return result;
+    }
+
+    const auto klass = object->get_class();
+    if (klass == nullptr) {
+        return result;
+    }
+
+    const auto prop = klass->find_property(name);
+    if (prop == nullptr || prop->get_class() == nullptr) {
+        return result;
+    }
+
+    const auto prop_type = prop->get_class()->get_name().to_string();
+    if (prop_type != L"ArrayProperty") {
+        return result;
+    }
+
+    struct TArrayHeader {
+        sdk::UObject** data{nullptr};
+        int32_t count{0};
+        int32_t capacity{0};
+    };
+
+    const auto array = (TArrayHeader*)((uint8_t*)object + prop->get_offset());
+    if (array->count <= 0 || array->count > max_items || array->capacity < array->count || array->data == nullptr) {
+        return result;
+    }
+
+    if (IsBadReadPtr(array->data, sizeof(sdk::UObject*) * (size_t)array->count)) {
+        return result;
+    }
+
+    result.reserve((size_t)array->count);
+    for (int32_t i = 0; i < array->count; ++i) {
+        const auto item = array->data[i];
+        if (is_valid_uobject_basic(item)) {
+            result.emplace_back(item);
+        }
+    }
+
+    return result;
+} catch (...) {
+    return {};
+}
+
 std::optional<sdk::UObject*> call_object_object_function(sdk::UObject* object, std::wstring_view function_name) try {
     if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
         return std::nullopt;
@@ -1866,6 +2102,35 @@ bool write_object_bool_property(sdk::UObject* object, std::wstring_view name, bo
     }
 
     ((sdk::FBoolProperty*)prop)->set_value_in_object(object, value);
+    return true;
+} catch (...) {
+    return false;
+}
+
+bool call_material_instance_set_scalar_parameter(sdk::UObject* material, std::wstring_view parameter_name, float value) try {
+    if (!is_valid_uobject_basic(material) || parameter_name.empty() || !std::isfinite(value)) {
+        return false;
+    }
+
+    const auto klass = material->get_class();
+    if (klass == nullptr) {
+        return false;
+    }
+
+    const auto fn = klass->find_function(L"SetScalarParameterValue");
+    if (fn == nullptr) {
+        return false;
+    }
+
+    struct ScalarParameterParams {
+        sdk::FName parameter_name{};
+        float value{0.0f};
+    } params{};
+
+    params.parameter_name = sdk::FName{parameter_name, sdk::EFindName::Add};
+    params.value = value;
+
+    material->process_event(fn, &params);
     return true;
 } catch (...) {
     return false;
@@ -5826,9 +6091,95 @@ void VR::update_game_fov() {
             missing_count);
     };
 
+    static constexpr uintptr_t PROSPI_LINE_MESH_INTERSECTION_ACTIVE_OFFSET = 0x2d0;
+
+    const auto reset_prospi_line_mesh_writable_cache = [&]() {
+        m_prospi_spectator_line_mesh_writable_object = nullptr;
+        m_prospi_spectator_line_mesh_writable_checked = false;
+        m_prospi_spectator_line_mesh_writable = false;
+    };
+
+    const auto prospi_line_mesh_active_is_writable = [&](sdk::UObject* object) {
+        if (!is_valid_uobject_basic(object)) {
+            return false;
+        }
+
+        if (m_prospi_spectator_line_mesh_writable_object != object) {
+            m_prospi_spectator_line_mesh_writable_object = object;
+            m_prospi_spectator_line_mesh_writable_checked = false;
+            m_prospi_spectator_line_mesh_writable = false;
+        }
+
+        if (!m_prospi_spectator_line_mesh_writable_checked) {
+            const auto ptr = (uint8_t*)object + PROSPI_LINE_MESH_INTERSECTION_ACTIVE_OFFSET;
+            m_prospi_spectator_line_mesh_writable = is_memory_writable(ptr, sizeof(uint8_t));
+            m_prospi_spectator_line_mesh_writable_checked = true;
+
+            spdlog::info(
+                "[PROSPI_LINE_MESH] writable_check line=0x{:x} writable={}",
+                (uintptr_t)object,
+                m_prospi_spectator_line_mesh_writable);
+        }
+
+        return m_prospi_spectator_line_mesh_writable;
+    };
+
+    const auto write_prospi_line_mesh_active = [&](sdk::UObject* object, uint8_t value) {
+        if (!prospi_line_mesh_active_is_writable(object)) {
+            return false;
+        }
+
+        const auto ptr = (uint8_t*)object + PROSPI_LINE_MESH_INTERSECTION_ACTIVE_OFFSET;
+        if (IsBadReadPtr(ptr, sizeof(uint8_t))) {
+            reset_prospi_line_mesh_writable_cache();
+            return false;
+        }
+
+        *ptr = value;
+        return true;
+    };
+
+    const auto restore_prospi_line_mesh_freeze = [&]() {
+        if (!m_prospi_spectator_line_mesh_freeze_applied) {
+            return std::pair{0, 0};
+        }
+
+        int restored_count = 0;
+        int missing_count = 0;
+        const auto object = m_prospi_spectator_line_mesh_freeze_object;
+
+        if (m_prospi_spectator_line_mesh_original_active_valid && is_valid_uobject_basic(object)) {
+            if (write_prospi_line_mesh_active(object, m_prospi_spectator_line_mesh_original_active)) {
+                ++restored_count;
+                m_prospi_spectator_line_mesh_active_value.store((int32_t)m_prospi_spectator_line_mesh_original_active, std::memory_order_relaxed);
+            } else {
+                ++missing_count;
+            }
+        } else {
+            ++missing_count;
+        }
+
+        spdlog::info(
+            "[PROSPI_LINE_MESH] freeze=false line=0x{:x} restored={} missing={}",
+            (uintptr_t)object,
+            restored_count,
+            missing_count);
+
+        m_prospi_spectator_line_mesh_freeze_applied = false;
+        m_prospi_spectator_line_mesh_freeze_object = nullptr;
+        m_prospi_spectator_line_mesh_original_active = 0;
+        m_prospi_spectator_line_mesh_original_active_valid = false;
+        reset_prospi_line_mesh_writable_cache();
+        return std::pair{restored_count, missing_count};
+    };
+
     const auto restore_prospi_spectator_mesh_triage = [&]() {
         int restored_count = 0;
         int missing_count = 0;
+
+        const auto line_restore = restore_prospi_line_mesh_freeze();
+        restored_count += line_restore.first;
+        missing_count += line_restore.second;
 
         auto restore_float = [&](std::wstring_view name, bool valid, float value) {
             if (!valid) {
@@ -5879,18 +6230,31 @@ void VR::update_game_fov() {
         m_prospi_spectator_mesh_last_disable_distance_cull = false;
         m_prospi_spectator_mesh_last_force_visibility = false;
         m_prospi_spectator_mesh_last_bounds_scale = 1.0f;
+        m_prospi_spectator_material_last_override = false;
+        m_prospi_spectator_material_last_alpha = 1.0f;
+        m_prospi_spectator_material_last_fade = 1.0f;
+        m_prospi_spectator_material_last_lod = 0.0f;
         m_prospi_spectator_mesh_applied_status.store(false, std::memory_order_relaxed);
         m_prospi_spectator_mesh_write_count.store(restored_count, std::memory_order_relaxed);
         m_prospi_spectator_mesh_missing_count.store(missing_count, std::memory_order_relaxed);
+        m_prospi_spectator_line_mesh_write_count.store(line_restore.first, std::memory_order_relaxed);
+        m_prospi_spectator_line_mesh_missing_count.store(line_restore.second, std::memory_order_relaxed);
+        m_prospi_spectator_material_param_attempt_count.store(0, std::memory_order_relaxed);
+        m_prospi_spectator_material_param_write_count.store(0, std::memory_order_relaxed);
+        reset_prospi_line_mesh_writable_cache();
     };
 
     const auto scan_prospi_spectator_mesh = [&](bool force_log = false) {
         sdk::UObject* controller = nullptr;
         sdk::UObject* mesh_component = nullptr;
+        sdk::UObject* line_mesh_intersection = nullptr;
+        std::vector<sdk::UObject*> material_objects{};
         int32_t assets_count = -1;
         int32_t materials_count = -1;
         int32_t motion_count = -1;
         int32_t spectator_mesh_present = -1;
+        int32_t line_active = -1;
+        int32_t line_offset = -1;
 
         if (const auto objects = sdk::FUObjectArray::get(); objects != nullptr) {
             const auto object_count = std::clamp(objects->get_object_count(), 0, 2'000'000);
@@ -5910,7 +6274,7 @@ void VR::update_game_fov() {
                     continue;
                 }
 
-                if (!object_or_class_name_contains(object, L"GfxSpectatorControllerUE")) {
+                if (!is_prospi_runtime_spectator_controller(object)) {
                     continue;
                 }
 
@@ -5918,6 +6282,23 @@ void VR::update_game_fov() {
 
                 if (const auto mesh = read_object_property(object, L"MeshComponent"); mesh.has_value() && is_valid_uobject_basic(*mesh)) {
                     mesh_component = *mesh;
+                }
+
+                if (const auto line = read_object_property(object, L"LineMeshIntersection");
+                    line.has_value() && is_prospi_runtime_line_mesh_intersection(*line)) {
+                    line_mesh_intersection = *line;
+                    line_offset = -2; // reflected property
+                }
+
+                if (line_mesh_intersection == nullptr) {
+                    for (const auto offset : {0x40ull, 0x70ull}) {
+                        const auto line = read_object_pointer_at(object, offset);
+                        if (line.has_value() && is_prospi_runtime_line_mesh_intersection(*line)) {
+                            line_mesh_intersection = *line;
+                            line_offset = (int32_t)offset;
+                            break;
+                        }
+                    }
                 }
 
                 break;
@@ -5939,8 +6320,57 @@ void VR::update_game_fov() {
                         continue;
                     }
 
-                    if (object_or_class_name_contains(object, L"SpectatorMeshComponent")) {
+                    if (is_prospi_runtime_spectator_mesh_component(object)) {
                         mesh_component = object;
+                        break;
+                    }
+                }
+            }
+
+            if (material_objects.empty()) {
+                for (int32_t i = 0; i < object_count; ++i) {
+                    const auto item = objects->get_object(i);
+                    if (item == nullptr) {
+                        continue;
+                    }
+
+                    const auto object = (sdk::UObject*)item->get_object();
+                    if (!is_valid_uobject_basic(object)) {
+                        continue;
+                    }
+
+                    if ((object->get_object_flags() & 0x10) != 0) {
+                        continue;
+                    }
+
+                    if (is_prospi_runtime_spectator_material(object)) {
+                        material_objects.emplace_back(object);
+                        if (material_objects.size() >= 16) {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (line_mesh_intersection == nullptr) {
+                for (int32_t i = 0; i < object_count; ++i) {
+                    const auto item = objects->get_object(i);
+                    if (item == nullptr) {
+                        continue;
+                    }
+
+                    const auto object = (sdk::UObject*)item->get_object();
+                    if (!is_valid_uobject_basic(object)) {
+                        continue;
+                    }
+
+                    if ((object->get_object_flags() & 0x10) != 0) {
+                        continue;
+                    }
+
+                    if (is_prospi_runtime_line_mesh_intersection(object)) {
+                        line_mesh_intersection = object;
+                        line_offset = -3; // object-array fallback
                         break;
                     }
                 }
@@ -5950,6 +6380,10 @@ void VR::update_game_fov() {
         if (is_valid_uobject_basic(controller)) {
             assets_count = read_object_array_count_property(controller, L"Assets").value_or(-1);
             materials_count = read_object_array_count_property(controller, L"Materials").value_or(-1);
+            auto controller_materials = read_object_array_object_property(controller, L"Materials", 16);
+            if (!controller_materials.empty()) {
+                material_objects = std::move(controller_materials);
+            }
         }
 
         if (is_valid_uobject_basic(mesh_component)) {
@@ -5957,18 +6391,32 @@ void VR::update_game_fov() {
             spectator_mesh_present = read_object_property(mesh_component, L"SpectatorMesh").has_value() ? 1 : 0;
         }
 
+        if (is_valid_uobject_basic(line_mesh_intersection)) {
+            line_active = read_object_byte_at(line_mesh_intersection, PROSPI_LINE_MESH_INTERSECTION_ACTIVE_OFFSET).value_or(-1);
+        }
+
         const auto old_controller = m_prospi_spectator_controller;
         const auto old_mesh = m_prospi_spectator_mesh_component;
+        const auto old_line = m_prospi_spectator_line_mesh_intersection;
         const auto old_assets = m_prospi_spectator_mesh_assets_count.load(std::memory_order_relaxed);
         const auto old_materials = m_prospi_spectator_mesh_materials_count.load(std::memory_order_relaxed);
         const auto old_motion = m_prospi_spectator_mesh_motion_count.load(std::memory_order_relaxed);
         const auto old_spectator_mesh = m_prospi_spectator_mesh_spectator_mesh_present.load(std::memory_order_relaxed);
+        const auto old_line_active = m_prospi_spectator_line_mesh_active_value.load(std::memory_order_relaxed);
+        const auto old_material_object_count = (int32_t)m_prospi_spectator_materials.size();
 
         m_prospi_spectator_controller = controller;
         m_prospi_spectator_mesh_component = mesh_component;
-        m_prospi_spectator_mesh_found.store(mesh_component != nullptr, std::memory_order_relaxed);
+        m_prospi_spectator_line_mesh_intersection = line_mesh_intersection;
+        m_prospi_spectator_materials = std::move(material_objects);
+        if (old_line != line_mesh_intersection) {
+            reset_prospi_line_mesh_writable_cache();
+        }
+        m_prospi_spectator_mesh_found.store(mesh_component != nullptr || line_mesh_intersection != nullptr || !m_prospi_spectator_materials.empty(), std::memory_order_relaxed);
         m_prospi_spectator_controller_address.store((uintptr_t)controller, std::memory_order_relaxed);
         m_prospi_spectator_mesh_address.store((uintptr_t)mesh_component, std::memory_order_relaxed);
+        m_prospi_spectator_line_mesh_address.store((uintptr_t)line_mesh_intersection, std::memory_order_relaxed);
+        m_prospi_spectator_line_mesh_active_value.store(line_active, std::memory_order_relaxed);
         m_prospi_spectator_mesh_assets_count.store(assets_count, std::memory_order_relaxed);
         m_prospi_spectator_mesh_materials_count.store(materials_count, std::memory_order_relaxed);
         m_prospi_spectator_mesh_motion_count.store(motion_count, std::memory_order_relaxed);
@@ -5978,20 +6426,39 @@ void VR::update_game_fov() {
         const auto changed =
             old_controller != controller ||
             old_mesh != mesh_component ||
+            old_line != line_mesh_intersection ||
             old_assets != assets_count ||
             old_materials != materials_count ||
+            old_material_object_count != (int32_t)m_prospi_spectator_materials.size() ||
             old_motion != motion_count ||
-            old_spectator_mesh != spectator_mesh_present;
+            old_spectator_mesh != spectator_mesh_present ||
+            old_line_active != line_active;
 
         if (changed || force_log) {
             spdlog::info(
-                "[PROSPI_SPECTATOR_MESH] scan controller=0x{:x} mesh=0x{:x} assets={} materials={} spectator_mesh={} motion_array={}",
+                "[PROSPI_SPECTATOR_MESH] scan controller=0x{:x} mesh=0x{:x} line=0x{:x} line_active={} line_src={} assets={} materials={} spectator_mesh={} motion_array={} controller_name={} mesh_name={} line_name={}",
                 (uintptr_t)controller,
                 (uintptr_t)mesh_component,
+                (uintptr_t)line_mesh_intersection,
+                line_active,
+                line_offset,
                 assets_count,
                 materials_count,
                 spectator_mesh_present,
-                motion_count);
+                motion_count,
+                get_log_object_name(controller),
+                get_log_object_name(mesh_component),
+                get_log_object_name(line_mesh_intersection));
+
+            for (size_t i = 0; i < m_prospi_spectator_materials.size() && i < 6; ++i) {
+                const auto material = m_prospi_spectator_materials[i];
+                const auto parent = read_object_property(material, L"Parent").value_or(nullptr);
+                spdlog::info(
+                    "[PROSPI_SPECTATOR_MATERIAL] index={} material={} parent={}",
+                    i,
+                    get_log_object_name(material),
+                    get_log_object_name(parent));
+            }
         }
     };
 
@@ -6002,17 +6469,25 @@ void VR::update_game_fov() {
             m_prospi_spectator_mesh_found.store(false, std::memory_order_relaxed);
             m_prospi_spectator_controller_address.store(0, std::memory_order_relaxed);
             m_prospi_spectator_mesh_address.store(0, std::memory_order_relaxed);
+            m_prospi_spectator_line_mesh_address.store(0, std::memory_order_relaxed);
+            m_prospi_spectator_line_mesh_active_value.store(-1, std::memory_order_relaxed);
+            reset_prospi_line_mesh_writable_cache();
             return;
         }
 
         const auto now = std::chrono::steady_clock::now();
         const auto refresh_requested = m_prospi_spectator_mesh_refresh_requested.exchange(false, std::memory_order_relaxed);
+        const auto auto_refresh = m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh->value();
+        const auto has_scan_state = m_prospi_spectator_mesh_next_scan.time_since_epoch().count() != 0;
+        const auto missing_resolved_targets =
+            !is_valid_uobject_basic(m_prospi_spectator_mesh_component) &&
+            !is_valid_uobject_basic(m_prospi_spectator_line_mesh_intersection) &&
+            m_prospi_spectator_materials.empty();
         const auto scan_due =
             force_scan ||
             refresh_requested ||
-            !is_valid_uobject_basic(m_prospi_spectator_mesh_component) ||
-            m_prospi_spectator_mesh_next_scan.time_since_epoch().count() == 0 ||
-            (m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh->value() && now >= m_prospi_spectator_mesh_next_scan);
+            !has_scan_state ||
+            (auto_refresh && (missing_resolved_targets || now >= m_prospi_spectator_mesh_next_scan));
 
         if (scan_due) {
             scan_prospi_spectator_mesh(force_scan || refresh_requested);
@@ -6020,130 +6495,159 @@ void VR::update_game_fov() {
         }
 
         const auto mesh = m_prospi_spectator_mesh_component;
-        if (!is_valid_uobject_basic(mesh)) {
+        const auto line_mesh = m_prospi_spectator_line_mesh_intersection;
+        const auto has_mesh = is_valid_uobject_basic(mesh);
+        const auto has_line_mesh = is_valid_uobject_basic(line_mesh);
+        const auto has_materials = !m_prospi_spectator_materials.empty();
+
+        if (!has_mesh && !has_line_mesh && !has_materials) {
             restore_prospi_spectator_mesh_triage();
             return;
         }
 
-        const auto inflate_bounds = m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds->value();
-        const auto disable_distance_cull = m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull->value();
-        const auto force_visibility = m_match_game_fov_prospi_spectator_mesh_triage_force_visibility->value();
-        const auto bounds_scale = std::clamp(m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale->value(), 1.0f, 100.0f);
-        const auto should_write = inflate_bounds || disable_distance_cull || force_visibility;
+        const auto line_mesh_freeze = m_match_game_fov_prospi_spectator_line_mesh_freeze->value();
+        const auto material_override = m_match_game_fov_prospi_spectator_material_override->value();
+        const auto alpha_value = std::clamp(m_match_game_fov_prospi_spectator_material_alpha->value(), 0.0f, 4.0f);
+        const auto fade_value = std::clamp(m_match_game_fov_prospi_spectator_material_fade->value(), 0.0f, 4.0f);
+        const auto lod_value = std::clamp(m_match_game_fov_prospi_spectator_material_lod->value(), -4.0f, 4.0f);
 
-        if (!should_write) {
-            restore_prospi_spectator_mesh_triage();
-            m_prospi_spectator_mesh_found.store(true, std::memory_order_relaxed);
+        if (!line_mesh_freeze) {
+            const auto line_restore = restore_prospi_line_mesh_freeze();
+            if (line_restore.first != 0 || line_restore.second != 0) {
+                m_prospi_spectator_line_mesh_write_count.store(line_restore.first, std::memory_order_relaxed);
+                m_prospi_spectator_line_mesh_missing_count.store(line_restore.second, std::memory_order_relaxed);
+            }
+        } else if (has_line_mesh) {
+            auto active_value = read_object_byte_at(line_mesh, PROSPI_LINE_MESH_INTERSECTION_ACTIVE_OFFSET);
+            if (active_value.has_value()) {
+                if (!m_prospi_spectator_line_mesh_freeze_applied ||
+                    m_prospi_spectator_line_mesh_freeze_object != line_mesh) {
+                    restore_prospi_line_mesh_freeze();
+                    m_prospi_spectator_line_mesh_freeze_object = line_mesh;
+                    m_prospi_spectator_line_mesh_original_active = *active_value;
+                    m_prospi_spectator_line_mesh_original_active_valid = true;
+                    m_prospi_spectator_line_mesh_freeze_applied = true;
+                    spdlog::info(
+                        "[PROSPI_LINE_MESH] freeze=true line=0x{:x} original_active={} name={}",
+                        (uintptr_t)line_mesh,
+                        (int)*active_value,
+                        get_log_object_name(line_mesh));
+                }
+
+                if (*active_value != 0 || refresh_requested || force_scan) {
+                    const auto wrote = write_prospi_line_mesh_active(line_mesh, 0);
+                    m_prospi_spectator_line_mesh_write_count.fetch_add(wrote ? 1 : 0, std::memory_order_relaxed);
+                    m_prospi_spectator_line_mesh_missing_count.fetch_add(wrote ? 0 : 1, std::memory_order_relaxed);
+                    m_prospi_spectator_line_mesh_active_value.store(wrote ? 0 : (int32_t)*active_value, std::memory_order_relaxed);
+                    m_prospi_spectator_mesh_applied_status.store(wrote, std::memory_order_relaxed);
+                }
+            } else {
+                m_prospi_spectator_line_mesh_active_value.store(-1, std::memory_order_relaxed);
+                m_prospi_spectator_line_mesh_missing_count.fetch_add(1, std::memory_order_relaxed);
+            }
+        } else {
+            restore_prospi_line_mesh_freeze();
+            m_prospi_spectator_line_mesh_active_value.store(-1, std::memory_order_relaxed);
+            reset_prospi_line_mesh_writable_cache();
+        }
+
+        if (!material_override) {
+            // The old bounds/distance/visibility experiments were not the ProSpi culprit.
+            // Leave this panel as a low-frequency resolver plus LineMeshIntersection gate test.
+            if (!line_mesh_freeze) {
+                restore_prospi_spectator_mesh_triage();
+            }
+            m_prospi_spectator_mesh_found.store(has_mesh || has_line_mesh || has_materials, std::memory_order_relaxed);
             return;
         }
 
         const auto target_changed =
-            !m_prospi_spectator_mesh_applied ||
+            !m_prospi_spectator_material_last_override ||
             m_prospi_spectator_mesh_baseline.mesh != mesh ||
-            m_prospi_spectator_mesh_last_inflate_bounds != inflate_bounds ||
-            m_prospi_spectator_mesh_last_disable_distance_cull != disable_distance_cull ||
-            m_prospi_spectator_mesh_last_force_visibility != force_visibility ||
-            std::abs(m_prospi_spectator_mesh_last_bounds_scale - bounds_scale) > 0.001f;
+            std::abs(m_prospi_spectator_material_last_alpha - alpha_value) > 0.001f ||
+            std::abs(m_prospi_spectator_material_last_fade - fade_value) > 0.001f ||
+            std::abs(m_prospi_spectator_material_last_lod - lod_value) > 0.001f;
 
-        if (!target_changed) {
-            m_prospi_spectator_mesh_found.store(true, std::memory_order_relaxed);
-            m_prospi_spectator_mesh_applied_status.store(m_prospi_spectator_mesh_write_count.load(std::memory_order_relaxed) > 0, std::memory_order_relaxed);
+        if (!target_changed && !refresh_requested && !force_scan) {
+            m_prospi_spectator_mesh_found.store(has_mesh || has_line_mesh || has_materials, std::memory_order_relaxed);
+            m_prospi_spectator_mesh_applied_status.store(
+                m_prospi_spectator_material_param_write_count.load(std::memory_order_relaxed) > 0 ||
+                    m_prospi_spectator_line_mesh_freeze_applied,
+                std::memory_order_relaxed);
             return;
         }
 
-        restore_prospi_spectator_mesh_triage();
+        if (!line_mesh_freeze) {
+            restore_prospi_spectator_mesh_triage();
+        }
+
+        static constexpr std::wstring_view alpha_params[] = {
+            L"Alpha",
+            L"Opacity",
+            L"InstanceAlpha",
+            L"SpectatorAlpha",
+            L"ViewAlpha",
+            L"Visibility",
+        };
+        static constexpr std::wstring_view fade_params[] = {
+            L"Fade",
+            L"FadeAlpha",
+            L"DistanceFade",
+            L"ViewFade",
+            L"SpectatorFade",
+        };
+        static constexpr std::wstring_view lod_params[] = {
+            L"LOD",
+            L"Lod",
+            L"SpectatorLOD",
+            L"SpectatorLod",
+            L"InstanceLOD",
+            L"InstanceLod",
+        };
+
+        int attempt_count = 0;
+        int write_count = 0;
+
+        const auto apply_param_set = [&](sdk::UObject* material, const auto& params, float value) {
+            for (const auto name : params) {
+                ++attempt_count;
+                if (call_material_instance_set_scalar_parameter(material, name, value)) {
+                    ++write_count;
+                }
+            }
+        };
+
+        for (const auto material : m_prospi_spectator_materials) {
+            if (!is_valid_uobject_basic(material) || !object_or_class_name_contains(material, L"MaterialInstanceDynamic")) {
+                continue;
+            }
+
+            apply_param_set(material, alpha_params, alpha_value);
+            apply_param_set(material, fade_params, fade_value);
+            apply_param_set(material, lod_params, lod_value);
+        }
 
         m_prospi_spectator_mesh_baseline.mesh = mesh;
-        if (const auto value = read_object_float_property(mesh, L"BoundsScale"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.bounds_scale_valid = true;
-            m_prospi_spectator_mesh_baseline.bounds_scale = *value;
-        }
-        if (const auto value = read_object_float_property(mesh, L"LDMaxDrawDistance"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.ld_max_draw_distance_valid = true;
-            m_prospi_spectator_mesh_baseline.ld_max_draw_distance = *value;
-        }
-        if (const auto value = read_object_float_property(mesh, L"CachedMaxDrawDistance"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.cached_max_draw_distance_valid = true;
-            m_prospi_spectator_mesh_baseline.cached_max_draw_distance = *value;
-        }
-        if (const auto value = read_object_float_property(mesh, L"MinDrawDistance"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.min_draw_distance_valid = true;
-            m_prospi_spectator_mesh_baseline.min_draw_distance = *value;
-        }
-        if (const auto value = read_object_bool_property(mesh, L"bNeverDistanceCull"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.never_distance_cull_valid = true;
-            m_prospi_spectator_mesh_baseline.never_distance_cull = *value;
-        }
-        if (const auto value = read_object_bool_property(mesh, L"bAllowCullDistanceVolume"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.allow_cull_distance_volume_valid = true;
-            m_prospi_spectator_mesh_baseline.allow_cull_distance_volume = *value;
-        }
-        if (const auto value = read_object_bool_property(mesh, L"bVisible"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.visible_valid = true;
-            m_prospi_spectator_mesh_baseline.visible = *value;
-        }
-        if (const auto value = read_object_bool_property(mesh, L"bHiddenInGame"); value.has_value()) {
-            m_prospi_spectator_mesh_baseline.hidden_in_game_valid = true;
-            m_prospi_spectator_mesh_baseline.hidden_in_game = *value;
-        }
-
-        int write_count = 0;
-        int missing_count = 0;
-        auto write_float = [&](std::wstring_view name, float value) {
-            if (write_object_float_property(mesh, name, value)) {
-                ++write_count;
-            } else {
-                ++missing_count;
-            }
-        };
-        auto write_bool = [&](std::wstring_view name, bool value) {
-            if (write_object_bool_property(mesh, name, value)) {
-                ++write_count;
-            } else {
-                ++missing_count;
-            }
-        };
-
-        if (inflate_bounds) {
-            write_float(L"BoundsScale", bounds_scale);
-        }
-
-        if (disable_distance_cull) {
-            write_float(L"LDMaxDrawDistance", 0.0f);
-            write_float(L"CachedMaxDrawDistance", 0.0f);
-            write_float(L"MinDrawDistance", 0.0f);
-            write_bool(L"bNeverDistanceCull", true);
-            write_bool(L"bAllowCullDistanceVolume", false);
-        }
-
-        if (force_visibility) {
-            write_bool(L"bVisible", true);
-            write_bool(L"bHiddenInGame", false);
-        }
-
-        // Mark the target as attempted even if the requested properties are absent,
-        // otherwise a missing-property test retries and logs every frame.
-        m_prospi_spectator_mesh_applied = true;
-        m_prospi_spectator_mesh_last_inflate_bounds = inflate_bounds;
-        m_prospi_spectator_mesh_last_disable_distance_cull = disable_distance_cull;
-        m_prospi_spectator_mesh_last_force_visibility = force_visibility;
-        m_prospi_spectator_mesh_last_bounds_scale = bounds_scale;
-        m_prospi_spectator_mesh_found.store(true, std::memory_order_relaxed);
+        m_prospi_spectator_material_last_override = true;
+        m_prospi_spectator_material_last_alpha = alpha_value;
+        m_prospi_spectator_material_last_fade = fade_value;
+        m_prospi_spectator_material_last_lod = lod_value;
+        m_prospi_spectator_mesh_found.store(has_mesh || has_materials, std::memory_order_relaxed);
         m_prospi_spectator_mesh_applied_status.store(write_count > 0, std::memory_order_relaxed);
         m_prospi_spectator_mesh_write_count.store(write_count, std::memory_order_relaxed);
-        m_prospi_spectator_mesh_missing_count.store(missing_count, std::memory_order_relaxed);
+        m_prospi_spectator_mesh_missing_count.store(std::max(0, attempt_count - write_count), std::memory_order_relaxed);
+        m_prospi_spectator_material_param_attempt_count.store(attempt_count, std::memory_order_relaxed);
+        m_prospi_spectator_material_param_write_count.store(write_count, std::memory_order_relaxed);
 
         spdlog::info(
-            "[PROSPI_SPECTATOR_MESH] attempted=true active={} bounds={}({:.1f}) distance_cull={} visibility={} writes={} missing={}",
-            write_count > 0,
-            inflate_bounds,
-            bounds_scale,
-            disable_distance_cull,
-            force_visibility,
-            write_count,
-            missing_count);
+            "[PROSPI_SPECTATOR_MATERIAL] override=true materials={} alpha={:.2f} fade={:.2f} lod={:.2f} attempts={} calls={}",
+            m_prospi_spectator_materials.size(),
+            alpha_value,
+            fade_value,
+            lod_value,
+            attempt_count,
+            write_count);
     };
-
     const auto update_prospi_camera_safety_state = [&](
         bool active,
         ProSpiCameraSafetyZone zone = ProSpiCameraSafetyZone::None,
@@ -6467,6 +6971,14 @@ void VR::update_game_fov() {
             prospi_preset = *prospi_calibration_preset;
         }
 
+        if (is_prospi_first_base_crowd_side_facing_field_camera(*location, *rotation, raw_fov)) {
+            prospi_preset = ProSpiCameraPreset::FirstBaseCornerLow;
+        }
+
+        if (is_prospi_first_base_crowd_side_wide_camera(*location, *rotation, raw_fov)) {
+            prospi_preset = ProSpiCameraPreset::FirstBaseWideTelephoto;
+        }
+
         if (!prospi_calibration_applied && m_match_game_fov_dolly->value()) {
             switch (prospi_preset) {
             case ProSpiCameraPreset::GameplayBehindPlate:
@@ -6745,6 +7257,15 @@ void VR::update_game_fov() {
         }
     }
 
+    if (is_prospi &&
+        prospi_calibration_applied &&
+        active_prospi_actual_min_fov > 0.0f &&
+        m_match_game_fov_dolly->value()) {
+        // Exact ProSpi camera calibrations store the "actual minimum" FOV we want UEVR to use for
+        // projection/dolly math. Apply that floor even when the destructive game-FOV write clamp is off.
+        game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
+    }
+
     if (generic_camera_presets_apply_enabled && camera_sample.valid) {
         std::optional<GenericCameraPreset> preset{};
         {
@@ -6838,6 +7359,16 @@ void VR::update_game_fov() {
             abs_x >= baseline_x_min &&
             camera_y >= baseline_y_min &&
             camera_y <= baseline_y_max;
+        const auto third_base_outfield_line_replay_camera =
+            is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
+        const auto third_base_low_line_telephoto_camera =
+            is_prospi_third_base_low_line_telephoto_camera(*location, *rotation, raw_fov);
+        const auto forced_third_base_line_camera =
+            third_base_outfield_line_replay_camera || third_base_low_line_telephoto_camera;
+        const auto first_base_crowd_side_facing_field_camera =
+            is_prospi_first_base_crowd_side_facing_field_camera(*location, *rotation, raw_fov);
+        const auto first_base_crowd_side_wide_camera =
+            is_prospi_first_base_crowd_side_wide_camera(*location, *rotation, raw_fov);
         const auto is_stand =
             abs_x >= stand_x_min &&
             camera_y >= stand_y_min &&
@@ -6867,6 +7398,7 @@ void VR::update_game_fov() {
             (abs_x >= 750.0f || is_outfield || outfield_assist_preset);
         const auto outfield_home_plate_pan =
             low_camera &&
+            !third_base_outfield_line_replay_camera &&
             !home_plate_pitch_view &&
             camera_y <= -2500.0f &&
             camera_y >= -13000.0f &&
@@ -6896,9 +7428,10 @@ void VR::update_game_fov() {
             m_prospi_auto_camera_sequencer_last_play_mode == (int32_t)ProSpiPlayCameraMode::BallFollow &&
             m_prospi_auto_camera_sequencer_last_zone == (int32_t)ProSpiCameraSafetyZone::OutfieldLow &&
             std::chrono::duration<float>(observation_now - m_prospi_auto_camera_sequencer_last_ball_follow_time).count() <= 1.10f &&
+            !third_base_outfield_line_replay_camera &&
             (outfield_like_for_hold || outfield_home_plate_pan);
         const auto baseline_cutscene_like =
-            is_baseline &&
+            (is_baseline || forced_third_base_line_camera) &&
             low_camera &&
             !outfield_corner_camera &&
             !outfield_home_plate_pan &&
@@ -6916,7 +7449,7 @@ void VR::update_game_fov() {
             play_mode = ProSpiPlayCameraMode::BallFollow;
         } else if (is_stand) {
             play_mode = ProSpiPlayCameraMode::CrowdStandRisk;
-        } else if (is_baseline && telephoto_like) {
+        } else if ((is_baseline && telephoto_like) || forced_third_base_line_camera) {
             play_mode = ProSpiPlayCameraMode::TelephotoBaseline;
         } else if (std::abs(location->x) <= 1500.0f && camera_y >= -1500.0f && camera_y <= 3000.0f && raw_fov >= 25.0f) {
             play_mode = ProSpiPlayCameraMode::PitchBatterView;
@@ -6928,15 +7461,22 @@ void VR::update_game_fov() {
             sequence_zone = ProSpiCameraSafetyZone::FieldFloor;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_field_cap->value(), 10.0f, 15000.0f);
         }
-        if (is_baseline && low_camera) {
+        if ((is_baseline || third_base_low_line_telephoto_camera) && low_camera) {
             sequence_zone = ProSpiCameraSafetyZone::BaselineDugout;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap->value(), 10.0f, 15000.0f);
+        }
+        if (third_base_outfield_line_replay_camera) {
+            sequence_zone = ProSpiCameraSafetyZone::BaselineDugout;
+            sequence_cap = m_match_game_fov_prospi_third_base_outfield_line_low_dolly_override->value()
+                ? std::clamp(m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance->value(), 10.0f, 15000.0f)
+                : std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap->value(), 10.0f, 15000.0f);
         }
         if (is_stand) {
             sequence_zone = ProSpiCameraSafetyZone::StandCrowd;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_stand_cap->value(), 10.0f, 15000.0f);
         }
-        if ((is_outfield && low_camera) || outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow) {
+        if (!third_base_outfield_line_replay_camera &&
+            ((is_outfield && low_camera) || outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow)) {
             sequence_zone = ProSpiCameraSafetyZone::OutfieldLow;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap->value(), 10.0f, 15000.0f);
         }
@@ -6958,6 +7498,16 @@ void VR::update_game_fov() {
             std::scoped_lock _{m_prospi_camera_calibration_mtx};
             for (const auto& [_, calibration] : m_prospi_camera_calibrations) {
                 if (!calibration.has_pose) {
+                    continue;
+                }
+
+                if (first_base_crowd_side_facing_field_camera &&
+                    !is_prospi_first_base_crowd_side_facing_field_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (first_base_crowd_side_wide_camera &&
+                    !is_prospi_first_base_crowd_side_wide_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
                     continue;
                 }
 
@@ -9964,22 +10514,25 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         );
                     }
 
-                    ImGui::SeparatorText("Spectator Mesh Triage");
+                    ImGui::SeparatorText("Spectator Module / LineMesh Triage");
                     ImGui::TextWrapped(
                         "ProSpi-only object triage for the custom UGfxSpectatorControllerUE -> USpectatorMeshComponent path. "
-                        "It scans at low frequency only while enabled, then can inflate bounds or disable distance culling on the spectator mesh component."
+                        "The material scalar route was confirmed to execute but did not affect the crowd, so the active test now targets the native spectator_module LineMeshIntersection pass."
                     );
-                    m_match_game_fov_prospi_spectator_mesh_triage->draw("Enable Spectator Mesh Triage");
+                    m_match_game_fov_prospi_spectator_mesh_triage->draw("Enable Spectator Module Triage");
                     if (m_match_game_fov_prospi_spectator_mesh_triage->value()) {
-                        m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh->draw("Auto Refresh Spectator Mesh");
-                        if (ImGui::Button("Refresh Spectator Mesh Now")) {
+                        m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh->draw("Auto Refresh Spectator Resolver");
+                        if (ImGui::Button("Refresh Spectator Resolver Now")) {
                             m_prospi_spectator_mesh_refresh_requested.store(true, std::memory_order_relaxed);
                         }
 
                         const auto controller_addr = m_prospi_spectator_controller_address.load(std::memory_order_relaxed);
                         const auto mesh_addr = m_prospi_spectator_mesh_address.load(std::memory_order_relaxed);
+                        const auto line_addr = m_prospi_spectator_line_mesh_address.load(std::memory_order_relaxed);
+                        const auto line_active = m_prospi_spectator_line_mesh_active_value.load(std::memory_order_relaxed);
                         ImGui::Text("Controller: 0x%llx", (unsigned long long)controller_addr);
                         ImGui::Text("MeshComponent: 0x%llx", (unsigned long long)mesh_addr);
+                        ImGui::Text("LineMeshIntersection: 0x%llx active=%d", (unsigned long long)line_addr, line_active);
                         ImGui::Text(
                             "Assets=%d Materials=%d SpectatorMesh=%d MotionArray=%d Scans=%d",
                             m_prospi_spectator_mesh_assets_count.load(std::memory_order_relaxed),
@@ -9988,14 +10541,28 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             m_prospi_spectator_mesh_motion_count.load(std::memory_order_relaxed),
                             m_prospi_spectator_mesh_scan_count.load(std::memory_order_relaxed));
 
-                        m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds->draw("Inflate Spectator Bounds");
-                        if (m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds->value()) {
-                            m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale->draw("Spectator Bounds Scale");
-                        }
-                        m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull->draw("Disable Spectator Distance Culling");
-                        m_match_game_fov_prospi_spectator_mesh_triage_force_visibility->draw("Force Spectator Visibility");
+                        ImGui::Text(
+                            "LineMesh writes: %d missing=%d",
+                            m_prospi_spectator_line_mesh_write_count.load(std::memory_order_relaxed),
+                            m_prospi_spectator_line_mesh_missing_count.load(std::memory_order_relaxed));
+                        m_match_game_fov_prospi_spectator_line_mesh_freeze->draw("Freeze Spectator LineMeshIntersection Pass");
                         ImGui::TextWrapped(
-                            "Use one sub-option at a time first. All writes are restored when the triage checkbox is disabled."
+                            "This flips the native ULineMeshIntersection render/update gate at +0x2D0 to 0. "
+                            "Binary Ninja shows UGfxSpectatorControllerUE creates this object and vfunc_0x270 jumps into the spectator-module render pass only when that byte is non-zero.");
+
+                        ImGui::Text(
+                            "Material param calls: %d/%d",
+                            m_prospi_spectator_material_param_write_count.load(std::memory_order_relaxed),
+                            m_prospi_spectator_material_param_attempt_count.load(std::memory_order_relaxed));
+                        m_match_game_fov_prospi_spectator_material_override->draw("Force Spectator Material Alpha/LOD Params");
+                        if (m_match_game_fov_prospi_spectator_material_override->value()) {
+                            m_match_game_fov_prospi_spectator_material_alpha->draw("Spectator Alpha/Opacity Value");
+                            m_match_game_fov_prospi_spectator_material_fade->draw("Spectator Fade Value");
+                            m_match_game_fov_prospi_spectator_material_lod->draw("Spectator LOD Value");
+                        }
+                        ImGui::TextWrapped(
+                            "This calls SetScalarParameterValue only on the transient GfxSpectatorControllerUE MaterialInstanceDynamic array. "
+                            "Last test showed non-zero calls with no visual change, so keep this off unless you need to re-check that path."
                         );
                     }
 
@@ -10272,8 +10839,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     const auto spectator_mesh_applied = m_prospi_spectator_mesh_applied_status.load(std::memory_order_relaxed);
                     const auto spectator_controller_addr = m_prospi_spectator_controller_address.load(std::memory_order_relaxed);
                     const auto spectator_mesh_addr = m_prospi_spectator_mesh_address.load(std::memory_order_relaxed);
+                    const auto spectator_line_addr = m_prospi_spectator_line_mesh_address.load(std::memory_order_relaxed);
+                    const auto spectator_line_active = m_prospi_spectator_line_mesh_active_value.load(std::memory_order_relaxed);
                     const auto spectator_write_count = m_prospi_spectator_mesh_write_count.load(std::memory_order_relaxed);
                     const auto spectator_missing_count = m_prospi_spectator_mesh_missing_count.load(std::memory_order_relaxed);
+                    const auto spectator_line_write_count = m_prospi_spectator_line_mesh_write_count.load(std::memory_order_relaxed);
+                    const auto spectator_line_missing_count = m_prospi_spectator_line_mesh_missing_count.load(std::memory_order_relaxed);
                     const auto camera_safety_active = m_prospi_camera_safety_active.load(std::memory_order_relaxed);
                     const auto camera_safety_zone = m_prospi_camera_safety_zone.load(std::memory_order_relaxed);
                     const auto camera_safety_min_z = m_prospi_camera_safety_min_z.load(std::memory_order_relaxed);
@@ -10312,13 +10883,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         crowd_culling_triage_set_count,
                         crowd_culling_triage_missing_count);
                     ImGui::Text(
-                        "Spectator Mesh Triage: found=%s applied=%s ctrl=0x%llx mesh=0x%llx writes=%d missing=%d",
+                        "Spectator Triage: found=%s applied=%s ctrl=0x%llx mesh=0x%llx line=0x%llx active=%d mesh_writes=%d/%d line_writes=%d/%d",
                         spectator_mesh_found ? "yes" : "no",
                         spectator_mesh_applied ? "yes" : "no",
                         (unsigned long long)spectator_controller_addr,
                         (unsigned long long)spectator_mesh_addr,
+                        (unsigned long long)spectator_line_addr,
+                        spectator_line_active,
                         spectator_write_count,
-                        spectator_missing_count);
+                        spectator_missing_count,
+                        spectator_line_write_count,
+                        spectator_line_missing_count);
                     ImGui::Text("Camera Safety Guard: %s (%s)", camera_safety_active ? "yes" : "no", get_prospi_camera_safety_zone_name(camera_safety_zone));
                     if (m_match_game_fov_prospi_camera_safety_guard->value()) {
                         ImGui::Text(
