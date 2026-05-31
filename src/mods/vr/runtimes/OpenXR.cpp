@@ -2949,7 +2949,6 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto& pipelined_stage_views = submit_state.stage_views;
     const auto& pipelined_frame_state = submit_state.frame_state;
     const auto debug_submit_empty = this->debug_submit_empty_frame->value();
-    const auto windrose_r5_modal_scene_blackout = VR::get()->is_windrose_r5_native_modal_scene_blackout_active();
 
     if (pipelined_stage_views.empty()) {
         spdlog::warn("[VR] No stage views to submit");
@@ -2996,7 +2995,6 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
     if (!debug_submit_empty && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
-        if (!windrose_r5_modal_scene_blackout) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
@@ -3084,11 +3082,6 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
         for (auto& l : this->projection_layer_cache) {
             layers.push_back((XrCompositionLayerBaseHeader*)&l);
-        }
-        } else {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Windrose][R5UI][OpenXR] Suppressing scene projection layer while modal UI uses black backplate");
         }
 
         for (auto& l : quad_layers) {   
