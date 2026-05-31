@@ -5573,10 +5573,9 @@ bool VR::is_windrose_r5_native_modal_ui_phase_lock_active() const {
 }
 
 bool VR::is_windrose_r5_native_modal_scene_blackout_active() const {
-    return is_windrose_executable_cached() &&
-        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
-        !is_using_afr() &&
-        m_windrose_r5_modal_scene_blackout_active.load(std::memory_order_relaxed);
+    // The R5 modal detector can false-positive or stay active across menu close.
+    // Keep UI phase-lock telemetry, but never suppress the game scene from this path.
+    return false;
 }
 
 void VR::note_windrose_r5_ui_copy(
@@ -5831,7 +5830,7 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
          m_windrose_r5_ui_scan.sweep_saw_inventory);
 
     const auto active = m_windrose_r5_ui_scan.sweep_saw_modal || active_meta_menu_controller;
-    const auto scene_blackout_active = m_windrose_r5_ui_scan.sweep_saw_scene_blackout || active_meta_menu_controller;
+    const auto scene_blackout_active = false;
     m_windrose_r5_modal_ui_active.store(active, std::memory_order_relaxed);
     m_windrose_r5_modal_scene_blackout_active.store(scene_blackout_active, std::memory_order_relaxed);
 
