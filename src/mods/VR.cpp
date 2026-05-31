@@ -1443,50 +1443,26 @@ std::string windrose_r5_ui_log_sample(std::wstring_view full_name) {
 bool windrose_r5_ui_class_candidate(std::wstring_view class_name) {
     return contains_case_insensitive(class_name, L"BP_SimpleUIMounter_SC") ||
            contains_case_insensitive(class_name, L"R5WidgetPool") ||
-           contains_case_insensitive(class_name, L"R5SC_MetaMenuTabs") ||
-           contains_case_insensitive(class_name, L"R5MetaMenuTabsVM") ||
-           contains_case_insensitive(class_name, L"R5DefaultInventoriesScreenHFSMComponent") ||
-           contains_case_insensitive(class_name, L"R5HFSMInventoryItemsInfoComponent") ||
-           contains_case_insensitive(class_name, L"R5BaseInventoryVM") ||
-           contains_case_insensitive(class_name, L"R5DefaultInventoryVM") ||
-           contains_case_insensitive(class_name, L"R5ShipInventoryVM") ||
-           contains_case_insensitive(class_name, L"R5UITalentTreeVM") ||
-           contains_case_insensitive(class_name, L"R5EntityProgressionVM") ||
-           contains_case_insensitive(class_name, L"R5StatTreeVM") ||
-           contains_case_insensitive(class_name, L"R5UIDialogueController") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_MetaCharacter") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_InventoryAndEquipment") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_FullscreenMap") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Adventure") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Discovery") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Progression") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Talents") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_PlayerFlagShip") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_LootStorage") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_WaterLootStorage") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Storage") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_PosthumousContainer") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Rarities") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ShipInteraction") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Craft_") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_Trade_") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ScenarioDialogue") ||
-           contains_case_insensitive(class_name, L"WBP_MetaMenu") ||
-           contains_case_insensitive(class_name, L"WBP_MetaCharacter_Tabs") ||
+           contains_case_insensitive(class_name, L"R5Inventory") ||
+           contains_case_insensitive(class_name, L"Inventory") ||
+           contains_case_insensitive(class_name, L"Inventories") ||
+           contains_case_insensitive(class_name, L"HFSM") ||
+           contains_case_insensitive(class_name, L"Meta") ||
+           contains_case_insensitive(class_name, L"Tabs") ||
+           contains_case_insensitive(class_name, L"Progression") ||
+           contains_case_insensitive(class_name, L"Talent") ||
+           contains_case_insensitive(class_name, L"Adventure") ||
+           contains_case_insensitive(class_name, L"Discovery") ||
            contains_case_insensitive(class_name, L"FullscreenMap") ||
-           contains_case_insensitive(class_name, L"WBP_InventoryDefaultAndAction_Panel") ||
-           contains_case_insensitive(class_name, L"WBP_PlayerEquipment_Panel") ||
-           contains_case_insensitive(class_name, L"WBP_Character_Progression") ||
-           contains_case_insensitive(class_name, L"WBP_Adventure") ||
-           contains_case_insensitive(class_name, L"WBP_Discovery_Screen") ||
-           contains_case_insensitive(class_name, L"WBP_TalentTree") ||
-           contains_case_insensitive(class_name, L"WBP_ShipManage_") ||
-           contains_case_insensitive(class_name, L"WBP_CraftTrade_") ||
-           contains_case_insensitive(class_name, L"WBP_CraftProduction_") ||
-           contains_case_insensitive(class_name, L"WBP_CraftGear_") ||
-           contains_case_insensitive(class_name, L"WBP_CraftEquipment_") ||
-           contains_case_insensitive(class_name, L"WBP_Dialog") ||
-           contains_case_insensitive(class_name, L"WBP_Chat");
+           contains_case_insensitive(class_name, L"NegativeSpace") ||
+           contains_case_insensitive(class_name, L"Dialogue") ||
+           contains_case_insensitive(class_name, L"ShipManage") ||
+           contains_case_insensitive(class_name, L"FlagShip") ||
+           contains_case_insensitive(class_name, L"WBP_") ||
+           contains_case_insensitive(class_name, L"Widget") ||
+           contains_case_insensitive(class_name, L"UIMounter") ||
+           contains_case_insensitive(class_name, L"HUD") ||
+           contains_case_insensitive(class_name, L"Menu");
 }
 
 bool windrose_r5_ui_name_is_gameplay_meta_hfsm(std::wstring_view value) {
@@ -5441,14 +5417,8 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto recently_signaled_ui =
-        m_windrose_r5_ui_scan.last_active ||
-        m_windrose_r5_ui_scan.last_scene_blackout_active ||
-        m_windrose_r5_ui_scan.last_saw_meta_menu_controller;
-    const auto scan_interval = recently_signaled_ui ? std::chrono::milliseconds(120) : std::chrono::milliseconds(500);
-
     if (m_windrose_r5_ui_scan.last_scan.time_since_epoch().count() != 0 &&
-        now - m_windrose_r5_ui_scan.last_scan < scan_interval) {
+        now - m_windrose_r5_ui_scan.last_scan < std::chrono::milliseconds(120)) {
         return;
     }
 
@@ -5485,8 +5455,7 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
 
     m_windrose_r5_ui_scan.last_object_count = object_count;
 
-    // Keep the idle discovery sweep tiny; Windrose menus have a huge UObject pool and name lookups are expensive.
-    const int32_t scan_budget = recently_signaled_ui ? 8192 : 2048;
+    constexpr int32_t scan_budget = 16384;
     int32_t scanned = 0;
 
     while (scanned < scan_budget && m_windrose_r5_ui_scan.cursor < object_count) {
