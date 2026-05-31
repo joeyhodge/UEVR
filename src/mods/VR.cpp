@@ -51,7 +51,6 @@ namespace {
 bool is_stalker2_executable_cached();
 std::optional<bool> call_object_bool_function(sdk::UObject* object, std::wstring_view function_name);
 std::optional<uint8_t> call_object_uint8_function(sdk::UObject* object, std::wstring_view function_name);
-std::optional<float> call_object_float_function(sdk::UObject* object, std::wstring_view function_name);
 }
 
 std::shared_ptr<VR>& VR::get() {
@@ -1893,12 +1892,6 @@ bool windrose_r5_ui_class_candidate(std::wstring_view class_name) {
            contains_case_insensitive(class_name, L"R5EntityProgressionVM") ||
            contains_case_insensitive(class_name, L"R5StatTreeVM") ||
            contains_case_insensitive(class_name, L"R5UIDialogueController") ||
-           contains_case_insensitive(class_name, L"BP_CraftUIMounter_") ||
-           contains_case_insensitive(class_name, L"BP_NPC_ViewAll_SC") ||
-           contains_case_insensitive(class_name, L"BP_NPC_Dispatcher_SC") ||
-           contains_case_insensitive(class_name, L"BP_NPC") ||
-           contains_case_insensitive(class_name, L"BP_ShipDock_Shipyard_SC") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_FastTravel_Component") ||
            contains_case_insensitive(class_name, L"BP_HFSM_MetaUI") ||
            contains_case_insensitive(class_name, L"BP_HFSM_MetaCharacter") ||
            contains_case_insensitive(class_name, L"BP_HFSM_InventoryAndEquipment") ||
@@ -1908,11 +1901,6 @@ bool windrose_r5_ui_class_candidate(std::wstring_view class_name) {
            contains_case_insensitive(class_name, L"BP_HFSM_Progression") ||
            contains_case_insensitive(class_name, L"BP_HFSM_Talents") ||
            contains_case_insensitive(class_name, L"BP_HFSM_PlayerFlagShip") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ShipDock") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ShipManager") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ShipManage_") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_ShipInventory") ||
-           contains_case_insensitive(class_name, L"BP_HFSM_BuildingCenter") ||
            contains_case_insensitive(class_name, L"BP_HFSM_LootStorage") ||
            contains_case_insensitive(class_name, L"BP_HFSM_WaterLootStorage") ||
            contains_case_insensitive(class_name, L"BP_HFSM_Storage") ||
@@ -1995,7 +1983,26 @@ bool windrose_r5_ui_name_is_gameplay_fullscreen_meta(std::wstring_view value) {
         return false;
     }
 
-    if (contains_case_insensitive(value, L"Lobby") ||
+    if (contains_case_insensitive(value, L"Build") ||
+        contains_case_insensitive(value, L"Building") ||
+        contains_case_insensitive(value, L"Construction") ||
+        contains_case_insensitive(value, L"Construct") ||
+        contains_case_insensitive(value, L"Placement") ||
+        contains_case_insensitive(value, L"Craft") ||
+        contains_case_insensitive(value, L"Trade") ||
+        contains_case_insensitive(value, L"Cook") ||
+        contains_case_insensitive(value, L"Cooking") ||
+        contains_case_insensitive(value, L"Recipe") ||
+        contains_case_insensitive(value, L"Dialogue") ||
+        contains_case_insensitive(value, L"Dialog") ||
+        contains_case_insensitive(value, L"Chat") ||
+        contains_case_insensitive(value, L"Scenario") ||
+        contains_case_insensitive(value, L"LootStorage") ||
+        contains_case_insensitive(value, L"WaterLootStorage") ||
+        contains_case_insensitive(value, L"PosthumousContainer") ||
+        contains_case_insensitive(value, L"Storage") ||
+        contains_case_insensitive(value, L"ShipInteraction") ||
+        contains_case_insensitive(value, L"Lobby") ||
         contains_case_insensitive(value, L"MainMenu") ||
         contains_case_insensitive(value, L"World_Select") ||
         contains_case_insensitive(value, L"WorldSelect") ||
@@ -2018,10 +2025,9 @@ bool windrose_r5_ui_name_is_gameplay_fullscreen_meta(std::wstring_view value) {
         return false;
     }
 
-    // These are the R5 UI routes that reference BP_NegativeSpaceController_SC.
-    // Use them as the trigger, and the controller/widget as the target. This
-    // avoids broad scene suppression while still covering the non-map tabs that
-    // flicker when the game's own negative-space layer is not stable in HMD.
+    // Keep this intentionally narrower than the modal phase-lock signal. These
+    // are the K-opened gameplay fullscreen meta tabs that should use R5's own
+    // NegativeSpace backplate; build/dialogue/cooking stay out of this path.
     return contains_case_insensitive(value, L"BP_HFSM_MetaUI") ||
            contains_case_insensitive(value, L"BP_HFSM_MetaCharacter") ||
            contains_case_insensitive(value, L"BP_HFSM_InventoryAndEquipment") ||
@@ -2032,27 +2038,6 @@ bool windrose_r5_ui_name_is_gameplay_fullscreen_meta(std::wstring_view value) {
            contains_case_insensitive(value, L"BP_HFSM_Talents") ||
            contains_case_insensitive(value, L"BP_HFSM_PlayerFlagShip") ||
            contains_case_insensitive(value, L"BP_HFSM_Rarities") ||
-           contains_case_insensitive(value, L"BP_HFSM_Progression") ||
-           contains_case_insensitive(value, L"BP_HFSM_LootStorage") ||
-           contains_case_insensitive(value, L"BP_HFSM_WaterLootStorage") ||
-           contains_case_insensitive(value, L"BP_HFSM_Storage") ||
-           contains_case_insensitive(value, L"BP_HFSM_PosthumousContainer") ||
-           contains_case_insensitive(value, L"BP_HFSM_ShipInteraction") ||
-           contains_case_insensitive(value, L"BP_HFSM_Craft_") ||
-           contains_case_insensitive(value, L"BP_HFSM_Trade_") ||
-           contains_case_insensitive(value, L"BP_HFSM_BuildingCenter") ||
-           contains_case_insensitive(value, L"BP_HFSM_ScenarioDialogue") ||
-           contains_case_insensitive(value, L"BP_HFSM_ScenarioHiring") ||
-           contains_case_insensitive(value, L"BP_HFSM_ShipDock") ||
-           contains_case_insensitive(value, L"BP_HFSM_ShipManager") ||
-           contains_case_insensitive(value, L"BP_HFSM_ShipManage_") ||
-           contains_case_insensitive(value, L"BP_HFSM_ShipInventory") ||
-           contains_case_insensitive(value, L"BP_HFSM_FastTravel_Component") ||
-           contains_case_insensitive(value, L"BP_CraftUIMounter_") ||
-           contains_case_insensitive(value, L"BP_NPC_ViewAll_SC") ||
-           contains_case_insensitive(value, L"BP_NPC_Dispatcher_SC") ||
-           contains_case_insensitive(value, L"BP_NPC") ||
-           contains_case_insensitive(value, L"BP_ShipDock_Shipyard_SC") ||
            contains_case_insensitive(value, L"R5SC_MetaMenuTabs") ||
            contains_case_insensitive(value, L"R5MetaMenuTabsVM") ||
            contains_case_insensitive(value, L"R5DefaultInventoriesScreenHFSMComponent") ||
@@ -2073,12 +2058,6 @@ bool windrose_r5_ui_name_is_gameplay_fullscreen_meta(std::wstring_view value) {
            contains_case_insensitive(value, L"WBP_Discovery_Screen") ||
            contains_case_insensitive(value, L"WBP_TalentTree") ||
            contains_case_insensitive(value, L"WBP_Rarities") ||
-           contains_case_insensitive(value, L"WBP_NPC") ||
-           contains_case_insensitive(value, L"WBP_Craft") ||
-           contains_case_insensitive(value, L"WBP_Cooking") ||
-           contains_case_insensitive(value, L"WBP_Cook") ||
-           contains_case_insensitive(value, L"WBP_Dialog") ||
-           contains_case_insensitive(value, L"WBP_Chat") ||
            contains_case_insensitive(value, L"WBP_ShipManage_");
 }
 
@@ -2223,26 +2202,6 @@ bool windrose_r5_ui_name_is_meta_menu_controller(std::wstring_view value) {
            contains_case_insensitive(value, L"R5StatTreeVM");
 }
 
-bool windrose_r5_hfsm_state_has_active_time(sdk::UObject* object) {
-    const auto active_time = call_object_float_function(object, L"GetActiveTime");
-    // GCFSM exposes active time on the currently entered state. Keep a wide
-    // upper bound so stale/corrupt values do not pin the detector on forever.
-    return active_time.has_value() && *active_time > 0.0f && *active_time < 24.0f * 60.0f * 60.0f;
-}
-
-bool windrose_r5_ui_hfsm_object_is_active(sdk::UObject* object) {
-    if (!is_valid_uobject_basic(object)) {
-        return false;
-    }
-
-    if (windrose_r5_hfsm_state_has_active_time(object)) {
-        return true;
-    }
-
-    const auto state = read_object_property(object, L"State").value_or(nullptr);
-    return is_valid_uobject_basic(state) && state != object && windrose_r5_hfsm_state_has_active_time(state);
-}
-
 bool windrose_r5_ui_instance_is_active(sdk::UObject* object) {
     const auto in_viewport = call_object_bool_function(object, L"IsInViewport");
     const auto visible = call_object_bool_function(object, L"IsVisible");
@@ -2265,7 +2224,7 @@ bool windrose_r5_ui_instance_is_active(sdk::UObject* object) {
         return *in_viewport;
     }
 
-    return windrose_r5_ui_hfsm_object_is_active(object);
+    return false;
 }
 
 bool windrose_r5_ingame_2d_menu_ui_name(std::wstring_view value) {
@@ -2739,35 +2698,6 @@ std::optional<uint8_t> call_object_uint8_function(sdk::UObject* object, std::wst
     } params{};
 
     object->process_event(fn, &params);
-    return params.ret;
-} catch (...) {
-    return std::nullopt;
-}
-
-std::optional<float> call_object_float_function(sdk::UObject* object, std::wstring_view function_name) try {
-    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
-        return std::nullopt;
-    }
-
-    const auto klass = object->get_class();
-    if (klass == nullptr) {
-        return std::nullopt;
-    }
-
-    const auto fn = klass->find_function(function_name);
-    if (fn == nullptr) {
-        return std::nullopt;
-    }
-
-    struct FloatReturnParams {
-        float ret{0.0f};
-    } params{};
-
-    object->process_event(fn, &params);
-    if (!std::isfinite(params.ret)) {
-        return std::nullopt;
-    }
-
     return params.ret;
 } catch (...) {
     return std::nullopt;
@@ -6218,19 +6148,11 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto recently_seen_fullscreen_meta =
-        m_windrose_r5_ui_scan.last_seen_fullscreen_meta.time_since_epoch().count() != 0 &&
-        now - m_windrose_r5_ui_scan.last_seen_fullscreen_meta < std::chrono::milliseconds(1200);
-    const auto recently_seen_negative_space =
-        m_windrose_r5_ui_scan.last_seen_negative_space.time_since_epoch().count() != 0 &&
-        now - m_windrose_r5_ui_scan.last_seen_negative_space < std::chrono::seconds(6);
     const auto recently_signaled_ui =
         m_windrose_r5_ui_scan.last_active ||
         m_windrose_r5_ui_scan.last_scene_blackout_active ||
         m_windrose_r5_ui_scan.last_saw_meta_menu_controller ||
         m_windrose_r5_ui_scan.last_saw_fullscreen_meta ||
-        recently_seen_fullscreen_meta ||
-        recently_seen_negative_space ||
         m_windrose_r5_ui_scan.negative_space_forced_active;
     const auto scan_interval = recently_signaled_ui ? std::chrono::milliseconds(120) : std::chrono::milliseconds(500);
 
@@ -6340,24 +6262,18 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         if (contains_case_insensitive(combined_name, L"BP_NegativeSpaceController_SC")) {
             m_windrose_r5_ui_scan.sweep_saw_negative_space_controller = true;
             m_windrose_r5_ui_scan.sweep_negative_space_controller = reinterpret_cast<uintptr_t>(object);
-            m_windrose_r5_ui_scan.forced_negative_space_controller = m_windrose_r5_ui_scan.sweep_negative_space_controller;
-            m_windrose_r5_ui_scan.last_seen_negative_space = now;
 
             if (m_windrose_r5_ui_scan.sweep_negative_space_sample.empty()) {
                 m_windrose_r5_ui_scan.sweep_negative_space_sample = windrose_r5_ui_log_sample(full_name);
             }
-            m_windrose_r5_ui_scan.last_seen_negative_space_sample = windrose_r5_ui_log_sample(full_name);
         }
         if (contains_case_insensitive(combined_name, L"WBP_NegativeSpace")) {
             m_windrose_r5_ui_scan.sweep_saw_negative_space_widget = true;
             m_windrose_r5_ui_scan.sweep_negative_space_widget = reinterpret_cast<uintptr_t>(object);
-            m_windrose_r5_ui_scan.forced_negative_space_widget = m_windrose_r5_ui_scan.sweep_negative_space_widget;
-            m_windrose_r5_ui_scan.last_seen_negative_space = now;
 
             if (m_windrose_r5_ui_scan.sweep_negative_space_sample.empty()) {
                 m_windrose_r5_ui_scan.sweep_negative_space_sample = windrose_r5_ui_log_sample(full_name);
             }
-            m_windrose_r5_ui_scan.last_seen_negative_space_sample = windrose_r5_ui_log_sample(full_name);
         }
         if (contains_case_insensitive(combined_name, L"R5Inventory") ||
             contains_case_insensitive(combined_name, L"Inventories") ||
@@ -6390,12 +6306,10 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         if (is_active_fullscreen_meta) {
             m_windrose_r5_ui_scan.sweep_saw_fullscreen_meta = true;
             ++m_windrose_r5_ui_scan.sweep_fullscreen_meta_hits;
-            m_windrose_r5_ui_scan.last_seen_fullscreen_meta = now;
 
             if (m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample.empty()) {
                 m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample = windrose_r5_ui_log_sample(full_name);
             }
-            m_windrose_r5_ui_scan.last_seen_fullscreen_meta_sample = windrose_r5_ui_log_sample(full_name);
         }
 
         const auto is_modal_name = windrose_r5_modal_ui_name(combined_name);
@@ -6420,13 +6334,9 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         }
     }
 
-    const auto completed_sweep = m_windrose_r5_ui_scan.cursor >= object_count;
-    const auto recent_fullscreen_meta =
-        m_windrose_r5_ui_scan.last_seen_fullscreen_meta.time_since_epoch().count() != 0 &&
-        now - m_windrose_r5_ui_scan.last_seen_fullscreen_meta < std::chrono::milliseconds(1200);
-    const auto recent_negative_space =
-        m_windrose_r5_ui_scan.last_seen_negative_space.time_since_epoch().count() != 0 &&
-        now - m_windrose_r5_ui_scan.last_seen_negative_space < std::chrono::seconds(6);
+    if (m_windrose_r5_ui_scan.cursor < object_count) {
+        return;
+    }
 
     const auto active_meta_menu_controller =
         m_windrose_r5_ui_scan.sweep_saw_mounter &&
@@ -6434,12 +6344,12 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         (m_windrose_r5_ui_scan.sweep_saw_widget_pool ||
          m_windrose_r5_ui_scan.sweep_saw_inventory);
 
-    const auto active = m_windrose_r5_ui_scan.sweep_saw_modal || active_meta_menu_controller || recent_fullscreen_meta;
+    const auto active = m_windrose_r5_ui_scan.sweep_saw_modal || active_meta_menu_controller;
     const auto scene_blackout_active = false;
     m_windrose_r5_modal_ui_active.store(active, std::memory_order_relaxed);
     m_windrose_r5_modal_scene_blackout_active.store(scene_blackout_active, std::memory_order_relaxed);
 
-    if (recent_fullscreen_meta) {
+    if (m_windrose_r5_ui_scan.sweep_saw_fullscreen_meta) {
         ++m_windrose_r5_ui_scan.negative_space_active_confirm_frames;
         m_windrose_r5_ui_scan.negative_space_inactive_confirm_frames = 0;
     } else {
@@ -6456,9 +6366,8 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
 
     const auto force_negative_space =
         m_windrose_r5_ui_scan.negative_space_active_confirm_frames >= 2 &&
-        recent_negative_space &&
-        (m_windrose_r5_ui_scan.forced_negative_space_controller != 0 ||
-         m_windrose_r5_ui_scan.forced_negative_space_widget != 0);
+        (m_windrose_r5_ui_scan.sweep_saw_negative_space_controller ||
+         m_windrose_r5_ui_scan.sweep_saw_negative_space_widget);
 
     if (force_negative_space) {
         auto* controller = reinterpret_cast<sdk::UObject*>(m_windrose_r5_ui_scan.forced_negative_space_controller);
@@ -6483,22 +6392,9 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         if (force_transition || should_keepalive) {
             bool applied = false;
             if (controller != nullptr) {
-                applied |= write_object_bool_property(controller, L"bEnableCapturing", true);
-                applied |= write_object_bool_property(controller, L"bTickable", true);
-                applied |= call_object_bool_param_function(controller, L"SetComponentTickEnabled", true);
                 applied |= call_object_bool_param_function(controller, L"SetForceDisableCapture", false);
                 if (force_transition) {
-                    if (widget == nullptr) {
-                        applied |= call_object_void_function(controller, L"Init");
-                    }
                     applied |= call_object_void_function(controller, L"OnEnter");
-                }
-
-                if (widget == nullptr) {
-                    widget = windrose_r5_negative_space_widget_from_controller(controller);
-                    if (is_valid_uobject_basic(widget)) {
-                        m_windrose_r5_ui_scan.forced_negative_space_widget = reinterpret_cast<uintptr_t>(widget);
-                    }
                 }
             }
 
@@ -6506,15 +6402,15 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
             m_windrose_r5_ui_scan.last_negative_space_force_apply = now;
 
             if (force_transition ||
-                m_windrose_r5_ui_scan.last_seen_fullscreen_meta_sample != m_windrose_r5_ui_scan.last_forced_menu_sample) {
-                m_windrose_r5_ui_scan.last_forced_menu_sample = m_windrose_r5_ui_scan.last_seen_fullscreen_meta_sample;
+                m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample != m_windrose_r5_ui_scan.last_forced_menu_sample) {
+                m_windrose_r5_ui_scan.last_forced_menu_sample = m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample;
                 SPDLOG_INFO(
                     "[Windrose][R5UI] negative-space force active=true applied={} controller=0x{:x} widget=0x{:x} menu_sample=\"{}\" ns_sample=\"{}\"",
                     applied,
                     reinterpret_cast<uintptr_t>(controller),
                     reinterpret_cast<uintptr_t>(widget),
-                    m_windrose_r5_ui_scan.last_seen_fullscreen_meta_sample.empty() ? "none" : m_windrose_r5_ui_scan.last_seen_fullscreen_meta_sample,
-                    m_windrose_r5_ui_scan.last_seen_negative_space_sample.empty() ? "none" : m_windrose_r5_ui_scan.last_seen_negative_space_sample);
+                    m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample.empty() ? "none" : m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample,
+                    m_windrose_r5_ui_scan.sweep_negative_space_sample.empty() ? "none" : m_windrose_r5_ui_scan.sweep_negative_space_sample);
             }
 
             m_windrose_r5_ui_scan.negative_space_forced_active = true;
@@ -6545,22 +6441,11 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
         m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample != m_windrose_r5_ui_scan.last_fullscreen_meta_sample ||
         m_windrose_r5_ui_scan.sweep_scene_blackout_sample != m_windrose_r5_ui_scan.last_scene_blackout_sample;
 
-    const auto partial_signal_log_due =
-        recent_fullscreen_meta &&
-        !completed_sweep &&
-        (m_windrose_r5_ui_scan.last_partial_signal_log.time_since_epoch().count() == 0 ||
-         now - m_windrose_r5_ui_scan.last_partial_signal_log > std::chrono::seconds(2));
-
-    if (changed || partial_signal_log_due) {
-        if (partial_signal_log_due) {
-            m_windrose_r5_ui_scan.last_partial_signal_log = now;
-        }
-
+    if (changed) {
         SPDLOG_INFO(
-            "[Windrose][R5UI] modal transition active={} blackout={} partial={} mounter={} pool={} inventory={} meta_ctrl={} ns_ctrl={} ns_widget={} fullscreen_meta={} recent_fullscreen={} recent_ns={} hits={} blackout_hits={} fullscreen_hits={} sample=\"{}\" meta_sample=\"{}\" ns_sample=\"{}\" fullscreen_sample=\"{}\" blackout_sample=\"{}\"",
+            "[Windrose][R5UI] modal transition active={} blackout={} mounter={} pool={} inventory={} meta_ctrl={} ns_ctrl={} ns_widget={} fullscreen_meta={} hits={} blackout_hits={} fullscreen_hits={} sample=\"{}\" meta_sample=\"{}\" ns_sample=\"{}\" fullscreen_sample=\"{}\" blackout_sample=\"{}\"",
             active,
             scene_blackout_active,
-            !completed_sweep,
             m_windrose_r5_ui_scan.sweep_saw_mounter,
             m_windrose_r5_ui_scan.sweep_saw_widget_pool,
             m_windrose_r5_ui_scan.sweep_saw_inventory,
@@ -6568,8 +6453,6 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
             m_windrose_r5_ui_scan.sweep_saw_negative_space_controller,
             m_windrose_r5_ui_scan.sweep_saw_negative_space_widget,
             m_windrose_r5_ui_scan.sweep_saw_fullscreen_meta,
-            recent_fullscreen_meta,
-            recent_negative_space,
             m_windrose_r5_ui_scan.sweep_modal_hits,
             m_windrose_r5_ui_scan.sweep_scene_blackout_hits,
             m_windrose_r5_ui_scan.sweep_fullscreen_meta_hits,
@@ -6578,10 +6461,6 @@ void VR::update_windrose_r5_ui_state(sdk::UGameEngine* engine) {
             m_windrose_r5_ui_scan.sweep_negative_space_sample.empty() ? "none" : m_windrose_r5_ui_scan.sweep_negative_space_sample,
             m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample.empty() ? "none" : m_windrose_r5_ui_scan.sweep_fullscreen_meta_sample,
             m_windrose_r5_ui_scan.sweep_scene_blackout_sample.empty() ? "none" : m_windrose_r5_ui_scan.sweep_scene_blackout_sample);
-    }
-
-    if (!completed_sweep) {
-        return;
     }
 
     m_windrose_r5_ui_scan.last_active = active;

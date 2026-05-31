@@ -1088,11 +1088,6 @@ private:
         bool negative_space_forced_active{false};
         std::string last_forced_menu_sample{};
         std::chrono::steady_clock::time_point last_negative_space_force_apply{};
-        std::chrono::steady_clock::time_point last_seen_fullscreen_meta{};
-        std::chrono::steady_clock::time_point last_seen_negative_space{};
-        std::chrono::steady_clock::time_point last_partial_signal_log{};
-        std::string last_seen_fullscreen_meta_sample{};
-        std::string last_seen_negative_space_sample{};
     };
 
     WindroseR5UiScanState m_windrose_r5_ui_scan{};
