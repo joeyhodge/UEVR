@@ -10,10 +10,12 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cwctype>
 #include <future>
 #include <limits>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -44,6 +46,7 @@
 #include <sdk/FViewport.hpp>
 #include <sdk/UKismetRenderingLibrary.hpp>
 #include <sdk/UTexture.hpp>
+#include <sdk/UObjectBase.hpp>
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/FSceneViewFamily.hpp>
@@ -301,6 +304,130 @@ bool windrose_is_current_game() {
     }();
 
     return result;
+}
+
+bool windrose_contains_i(std::wstring_view value, std::wstring_view needle) {
+    if (needle.empty()) {
+        return true;
+    }
+
+    return std::search(
+        value.begin(),
+        value.end(),
+        needle.begin(),
+        needle.end(),
+        [](wchar_t a, wchar_t b) {
+            return std::towlower(a) == std::towlower(b);
+        }) != value.end();
+}
+
+std::wstring windrose_object_full_name(void* object) {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*) * 4)) {
+        return {};
+    }
+
+    try {
+        return ((sdk::UObjectBase*)object)->get_full_name();
+    } catch (...) {
+        return {};
+    }
+}
+
+bool windrose_hfsm_name_is_interesting(std::wstring_view name) {
+    return windrose_contains_i(name, L"BP_HFSM_") ||
+           windrose_contains_i(name, L"NegativeSpace") ||
+           windrose_contains_i(name, L"UILayoutTemplate") ||
+           windrose_contains_i(name, L"R5WidgetPool");
+}
+
+bool windrose_hfsm_name_wants_meta_2d(std::wstring_view name) {
+    if (windrose_contains_i(name, L"BP_HFSM_FullscreenMap") ||
+        windrose_contains_i(name, L"BP_FullscreenMap"))
+    {
+        return false;
+    }
+
+    static constexpr std::wstring_view targets[] = {
+        L"BP_HFSM_MetaUI",
+        L"BP_HFSM_InventoryAndEquipment",
+        L"BP_HFSM_Discovery",
+        L"BP_HFSM_Adventure",
+        L"BP_HFSM_Progression",
+        L"BP_HFSM_Talents",
+        L"BP_HFSM_PlayerFlagShip",
+        L"BP_HFSM_Rarities",
+        L"BP_HFSM_ShipInventory",
+        L"BP_HFSM_ShipManager",
+        L"BP_HFSM_ShipDock",
+        L"BP_HFSM_ShipInteraction",
+        L"BP_HFSM_MetaInteraction",
+        L"BP_HFSM_LootStorage",
+        L"BP_HFSM_WaterLootStorage",
+        L"BP_HFSM_PosthumousContainer",
+        L"BP_HFSM_Storage",
+        L"BP_HFSM_Craft_",
+        L"BP_CraftUIMounter_",
+        L"BP_NPC_ViewAll_SC",
+        L"WBP_NPCView_Screen",
+        L"WBP_NPCAssignment_",
+    };
+
+    for (const auto target : targets) {
+        if (windrose_contains_i(name, target)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+void windrose_note_hfsm_transition(void* object, bool entering, const char* source) {
+    if (!windrose_is_current_game()) {
+        return;
+    }
+
+    const auto name = windrose_object_full_name(object);
+    if (name.empty()) {
+        return;
+    }
+
+    const bool interesting = windrose_hfsm_name_is_interesting(name);
+    const bool wants_2d = windrose_hfsm_name_wants_meta_2d(name);
+
+    if (interesting || wants_2d) {
+        SPDLOG_INFO(
+            "[Windrose][HFSM] {} {} wants_2d={} object={}",
+            source != nullptr ? source : "unknown",
+            entering ? "enter" : "exit",
+            wants_2d,
+            utility::narrow(name));
+    }
+
+    if (!wants_2d) {
+        return;
+    }
+
+    auto& vr = VR::get();
+    if (vr != nullptr) {
+        vr->set_windrose_meta_ui_2d_state_active(utility::narrow(name), entering);
+    }
+}
+
+std::optional<uintptr_t> windrose_resolve_hfsm_symbol(
+    const char* label,
+    uintptr_t expected_rva,
+    const char* pattern)
+{
+    const auto module = utility::get_executable();
+    const auto scanned = utility::scan(module, pattern);
+
+    if (scanned) {
+        SPDLOG_INFO("[Windrose][HFSM] Resolved {} by signature at {:x} (rva {:x})", label, *scanned, *scanned - (uintptr_t)module);
+        return scanned;
+    }
+
+    SPDLOG_WARN("[Windrose][HFSM] Failed to resolve {} by update-proof signature (expected old RVA {:x}, not hooking stale RVA)", label, expected_rva);
+    return std::nullopt;
 }
 
 void avowed_native_fix_gate_reset(const char* reason) {
@@ -2454,8 +2581,122 @@ void FFakeStereoRenderingHook::attempt_hooking() {
         attempt_runtime_inject_stereo();
         m_injected_stereo_at_runtime = true;
     }
+
+    attempt_hook_windrose_hfsm_ui();
     
     m_hooked = hook();
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_windrose_hfsm_ui() {
+    if (m_attempted_hook_windrose_hfsm_ui || !windrose_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_windrose_hfsm_ui = true;
+
+    struct Target {
+        const char* label;
+        uintptr_t old_rva;
+        const char* pattern;
+        safetyhook::InlineHook FFakeStereoRenderingHook::* hook;
+        void* destination;
+    };
+
+    const Target targets[] = {
+        {
+            "UHFSMState::Enter",
+            0x4A087C0,
+            "48 89 5C 24 20 56 48 83 EC 30 80 B9 B0 00 00 00 00 48 8B F1 48 89 6C 24 48 48 89 7C 24 50 74 58 48 8B 01 FF 90 80 01 00 00 48 8B C8 E8 ? ? ? ? 48 8B F8 48 85 C0",
+            &FFakeStereoRenderingHook::m_windrose_hfsm_state_enter_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_hfsm_state_enter_hook,
+        },
+        {
+            "UHFSMState::Exit",
+            0x4A08970,
+            "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 33 C0 48 8B F1 48 89 44 24 30 32 C9 48 3B 54 24 30 B8 01 00 00 00 0F B6 E9 48 8B DA 0F 44 E8",
+            &FFakeStereoRenderingHook::m_windrose_hfsm_state_exit_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_hfsm_state_exit_hook,
+        },
+        {
+            "UHFSMStateComponent::Enter",
+            0x4A08D20,
+            "40 57 48 83 EC 20 80 79 31 00 48 8B F9 74 72 48 83 C1 34 E8 ? ? ? ? 84 C0 74 65 48 83 7F 28 00 74 5E 48 8B 07 48 8B CF FF 90 80 01 00 00 48 8B C8 E8 ? ? ? ? 48 85 C0 74 45",
+            &FFakeStereoRenderingHook::m_windrose_hfsm_component_enter_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_hfsm_component_enter_hook,
+        },
+        {
+            "UHFSMStateComponent::Exit",
+            0x4A08DB0,
+            "48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 80 79 31 00 41 0F B6 E8 48 8B FA 48 8B F1 74 63 48 83 C1 34 E8 ? ? ? ? 84 C0 74 56 48 83 7E 28 00 74 4F",
+            &FFakeStereoRenderingHook::m_windrose_hfsm_component_exit_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_hfsm_component_exit_hook,
+        },
+        {
+            "UUILayoutTemplate::Enter",
+            0x4A0A570,
+            "48 89 5C 24 18 48 89 74 24 20 57 48 83 EC 30 48 8B 01 48 8B F9 C6 41 30 01 FF 90 80 01 00 00 48 8B C8 33 D2 E8 ? ? ? ? 0F B6 0D ? ? ? ? 48 8B F0 48 8B 5F 50",
+            &FFakeStereoRenderingHook::m_windrose_layout_template_enter_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_layout_template_enter_hook,
+        },
+        {
+            "UUILayoutTemplate::Exit",
+            0x4A0A6B0,
+            "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20 48 8B E9 45 0F B6 F0 48 8B 49 28 48 8B DA E8 ? ? ? ? 48 85 C0 74 0B 48 8B D5",
+            &FFakeStereoRenderingHook::m_windrose_layout_template_exit_hook,
+            (void*)&FFakeStereoRenderingHook::windrose_layout_template_exit_hook,
+        },
+    };
+
+    uint32_t hooked_count = 0;
+    for (const auto& target : targets) {
+        const auto address = windrose_resolve_hfsm_symbol(target.label, target.old_rva, target.pattern);
+        if (!address) {
+            continue;
+        }
+
+        auto& hook = this->*target.hook;
+        hook = safetyhook::create_inline((void*)*address, target.destination);
+        if (!hook) {
+            SPDLOG_ERROR("[Windrose][HFSM] Failed to hook {}", target.label);
+            continue;
+        }
+
+        ++hooked_count;
+        SPDLOG_INFO("[Windrose][HFSM] Hooked {}", target.label);
+    }
+
+    SPDLOG_INFO("[Windrose][HFSM] Transition hook setup complete hooked={}/{}", hooked_count, sizeof(targets) / sizeof(targets[0]));
+    return hooked_count != 0;
+}
+
+void FFakeStereoRenderingHook::windrose_hfsm_state_enter_hook(void* state) {
+    windrose_note_hfsm_transition(state, true, "UHFSMState");
+    g_hook->m_windrose_hfsm_state_enter_hook.call<void>(state);
+}
+
+void FFakeStereoRenderingHook::windrose_hfsm_state_exit_hook(void* state, uintptr_t destination_name) {
+    g_hook->m_windrose_hfsm_state_exit_hook.call<void>(state, destination_name);
+    windrose_note_hfsm_transition(state, false, "UHFSMState");
+}
+
+void FFakeStereoRenderingHook::windrose_hfsm_component_enter_hook(void* component) {
+    windrose_note_hfsm_transition(component, true, "UHFSMStateComponent");
+    g_hook->m_windrose_hfsm_component_enter_hook.call<void>(component);
+}
+
+void FFakeStereoRenderingHook::windrose_hfsm_component_exit_hook(void* component, uintptr_t destination_name, int32_t reason) {
+    g_hook->m_windrose_hfsm_component_exit_hook.call<void>(component, destination_name, reason);
+    windrose_note_hfsm_transition(component, false, "UHFSMStateComponent");
+}
+
+void FFakeStereoRenderingHook::windrose_layout_template_enter_hook(void* layout) {
+    windrose_note_hfsm_transition(layout, true, "UUILayoutTemplate");
+    g_hook->m_windrose_layout_template_enter_hook.call<void>(layout);
+}
+
+void FFakeStereoRenderingHook::windrose_layout_template_exit_hook(void* layout, uintptr_t destination_name, int32_t reason) {
+    g_hook->m_windrose_layout_template_exit_hook.call<void>(layout, destination_name, reason);
+    windrose_note_hfsm_transition(layout, false, "UUILayoutTemplate");
 }
 
 namespace detail{
