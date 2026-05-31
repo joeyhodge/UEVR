@@ -669,6 +669,13 @@ private:
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
     static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
+    static void windrose_hfsm_state_enter_hook(void* state);
+    static void windrose_hfsm_state_exit_hook(void* state, uintptr_t destination_name);
+    static void windrose_hfsm_component_enter_hook(void* component);
+    static void windrose_hfsm_component_exit_hook(void* component, uintptr_t destination_name, int32_t reason);
+    static void windrose_layout_template_enter_hook(void* layout);
+    static void windrose_layout_template_exit_hook(void* layout, uintptr_t destination_name, int32_t reason);
+    bool attempt_hook_windrose_hfsm_ui();
 
     // FViewport
     static void* viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4);
@@ -711,6 +718,12 @@ private:
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
+    safetyhook::InlineHook m_windrose_hfsm_state_enter_hook{};
+    safetyhook::InlineHook m_windrose_hfsm_state_exit_hook{};
+    safetyhook::InlineHook m_windrose_hfsm_component_enter_hook{};
+    safetyhook::InlineHook m_windrose_hfsm_component_exit_hook{};
+    safetyhook::InlineHook m_windrose_layout_template_enter_hook{};
+    safetyhook::InlineHook m_windrose_layout_template_exit_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
@@ -780,6 +793,7 @@ private:
     bool m_attempted_hook_ue55_slate_output_texture_register{false};
     bool m_attempted_hook_daysgone_slate_intermediate_buffer{false};
     bool m_attempted_hook_daysgone_bend_taa_composite{false};
+    bool m_attempted_hook_windrose_hfsm_ui{false};
     std::atomic<uintptr_t> m_daysgone_slate_intermediate_last_target{0};
     std::atomic<uintptr_t> m_daysgone_slate_native_ui_target{0};
     std::atomic<uint32_t> m_daysgone_slate_native_ui_width{0};

@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -662,6 +663,8 @@ public:
         return m_mixtape_auto_2d_active.load(std::memory_order_relaxed);
     }
 
+    void set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool active);
+
     bool is_roomscale_enabled() const {
         return m_roomscale_movement->value() && !m_aim_temp_disabled;
     }
@@ -755,6 +758,7 @@ private:
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_windrose_meta_ui_auto_2d_mode();
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
     void restore_subnautica2_native_water_cvars();
@@ -1048,6 +1052,12 @@ private:
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
+    std::mutex m_windrose_meta_ui_auto_2d_mtx{};
+    std::unordered_map<std::string, uint32_t> m_windrose_meta_ui_auto_2d_states{};
+    std::chrono::steady_clock::time_point m_windrose_meta_ui_auto_2d_restore_after{};
+    bool m_windrose_meta_ui_auto_2d_active{false};
+    bool m_windrose_meta_ui_auto_2d_previous_mode{false};
+    std::string m_windrose_meta_ui_auto_2d_last_state{};
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
     static constexpr size_t PROSPI_ROLLING_HITCH_GAP_RING_SIZE = 16;

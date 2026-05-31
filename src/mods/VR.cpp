@@ -4274,6 +4274,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_shf_auto_2d_mode(engine);
     update_dispatch_auto_2d_mode(engine);
     update_mixtape_auto_2d_mode(engine);
+    update_windrose_meta_ui_auto_2d_mode();
 
     // Dont update action states on AFR frames
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
@@ -4920,6 +4921,80 @@ void VR::update_mixtape_auto_2d_mode(sdk::UGameEngine* engine) {
         m_2d_screen_mode->value() = m_mixtape_auto_2d_previous_mode;
         spdlog::info("[Mixtape][Auto2D] active=false restored={}", m_mixtape_auto_2d_previous_mode);
     }
+}
+
+void VR::set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool active) {
+    if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+        return;
+    }
+
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    const std::string key{state_name};
+    auto& count = m_windrose_meta_ui_auto_2d_states[key];
+
+    if (active) {
+        ++count;
+        m_windrose_meta_ui_auto_2d_last_state = key;
+        m_windrose_meta_ui_auto_2d_restore_after = {};
+
+        if (!m_windrose_meta_ui_auto_2d_active) {
+            m_windrose_meta_ui_auto_2d_previous_mode = m_2d_screen_mode->value();
+            m_windrose_meta_ui_auto_2d_active = true;
+            spdlog::info(
+                "[Windrose][MetaUI2D] active=true previous={} state={}",
+                m_windrose_meta_ui_auto_2d_previous_mode,
+                key);
+        }
+
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (count > 1) {
+        --count;
+    } else {
+        m_windrose_meta_ui_auto_2d_states.erase(key);
+    }
+
+    if (m_windrose_meta_ui_auto_2d_states.empty()) {
+        // Tab switches can emit Exit then Enter in the same tick; defer restore a touch
+        // so we do not flap 2D mode while R5 swaps HFSM states.
+        m_windrose_meta_ui_auto_2d_restore_after = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
+        m_windrose_meta_ui_auto_2d_last_state = key;
+        spdlog::info("[Windrose][MetaUI2D] pending restore state={}", key);
+    }
+}
+
+void VR::update_windrose_meta_ui_auto_2d_mode() {
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    if (!m_windrose_meta_ui_auto_2d_active) {
+        return;
+    }
+
+    if (!m_windrose_meta_ui_auto_2d_states.empty()) {
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (m_windrose_meta_ui_auto_2d_restore_after.time_since_epoch().count() == 0 ||
+        std::chrono::steady_clock::now() < m_windrose_meta_ui_auto_2d_restore_after)
+    {
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    m_2d_screen_mode->value() = m_windrose_meta_ui_auto_2d_previous_mode;
+    spdlog::info(
+        "[Windrose][MetaUI2D] active=false restored={} last_state={}",
+        m_windrose_meta_ui_auto_2d_previous_mode,
+        m_windrose_meta_ui_auto_2d_last_state);
+
+    m_windrose_meta_ui_auto_2d_active = false;
+    m_windrose_meta_ui_auto_2d_previous_mode = false;
+    m_windrose_meta_ui_auto_2d_restore_after = {};
+    m_windrose_meta_ui_auto_2d_last_state.clear();
 }
 
 void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {
