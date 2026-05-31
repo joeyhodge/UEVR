@@ -805,22 +805,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto debug_skip_scene_copy = openxr_runtime != nullptr && openxr_runtime->debug_skip_scene_copy->value();
     const auto debug_skip_ui_copy = openxr_runtime != nullptr && openxr_runtime->debug_skip_ui_copy->value();
     const auto debug_disable_depth_submit = openxr_runtime != nullptr && openxr_runtime->debug_disable_depth_submit->value();
-    const auto windrose_r5_modal_scene_blackout = vr->is_windrose_r5_native_modal_scene_blackout_active();
-    const auto suppress_scene_copy = debug_submit_empty_frame || debug_skip_scene_copy || windrose_r5_modal_scene_blackout;
+    const auto suppress_scene_copy = debug_submit_empty_frame || debug_skip_scene_copy;
     const auto suppress_ui_copy = debug_submit_empty_frame || debug_skip_ui_copy;
-    const auto log_suppressed_scene_copy = [&](const char* label) {
-        if (windrose_r5_modal_scene_blackout) {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Windrose][R5UI][D3D12] Blacking out {} scene layer behind modal UI",
-                label != nullptr ? label : "unknown");
-        } else {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[OpenXR][debug] Skipping {} scene copy for perf isolation",
-                label != nullptr ? label : "unknown");
-        }
-    };
 
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
     m_last_rendered_frame = vr->m_render_frame_count;
@@ -1424,34 +1410,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, clear_rt, ENGINE_SRC_COLOR);
                     }
                 } else if (ui_target != nullptr) {
-                    auto* native_ui_resource = (ID3D12Resource*)ui_target->get_native_resource();
-
-                    if (native_ui_resource != nullptr && vr->is_windrose_r5_native_modal_ui_phase_lock_active()) {
-                        // Windrose/R5 modal UI can update Slate on alternating eye phases.
-                        // Copy one stable UI resource to both eye layers at this boundary.
-                        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, native_ui_resource, draw_2d_view, std::nullopt, ENGINE_SRC_COLOR);
-                        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, native_ui_resource, std::nullopt, clear_rt, ENGINE_SRC_COLOR);
-                        vr->note_windrose_r5_ui_copy(
-                            frame_count,
-                            is_same_frame,
-                            is_afr,
-                            is_right_eye_frame,
-                            ui_target,
-                            native_ui_resource,
-                            true,
-                            "phase_locked_both_eyes");
-                    } else {
-                        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, native_ui_resource, draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
-                        vr->note_windrose_r5_ui_copy(
-                            frame_count,
-                            is_same_frame,
-                            is_afr,
-                            is_right_eye_frame,
-                            ui_target,
-                            native_ui_resource,
-                            false,
-                            "default_ui_eye");
-                    }
+                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, (ID3D12Resource*)ui_target->get_native_resource(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
                 }
 
                 auto fw_rt = g_framework->get_rendertarget_d3d12();
@@ -1510,12 +1469,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         scene_depth_tex.Reset();
     }
 
-    if ((debug_disable_depth_submit || debug_submit_empty_frame || debug_skip_scene_copy || windrose_r5_modal_scene_blackout) && scene_depth_tex != nullptr) {
-        if (windrose_r5_modal_scene_blackout) {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[Windrose][R5UI][D3D12] Suppressing depth submit while modal scene blackout is active");
-        } else {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Suppressing depth submit for perf isolation");
-        }
+    if ((debug_disable_depth_submit || debug_submit_empty_frame || debug_skip_scene_copy) && scene_depth_tex != nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Suppressing depth submit for perf isolation");
         scene_depth_tex.Reset();
     }
 
@@ -1544,7 +1499,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (suppress_scene_copy) {
-                log_suppressed_scene_copy("left-eye");
+                SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Skipping left-eye scene copy for perf isolation");
                 if (!debug_submit_empty_frame) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, nullptr, scene_source_state, nullptr);
                 }
@@ -1611,7 +1566,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
 
                 if (suppress_scene_copy) {
-                    log_suppressed_scene_copy("staged left-eye");
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Skipping staged left-eye scene copy for perf isolation");
                     if (!debug_submit_empty_frame) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, nullptr, scene_source_state, nullptr);
                     }
@@ -1653,7 +1608,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
 
                 if (suppress_scene_copy) {
-                    log_suppressed_scene_copy("right-eye");
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Skipping right-eye scene copy for perf isolation");
                     if (!debug_submit_empty_frame) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE, nullptr, scene_source_state, nullptr);
                     }
@@ -1667,7 +1622,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             } else {
                 // Copy over the entire double wide instead
                 if (suppress_scene_copy) {
-                    log_suppressed_scene_copy("double-wide");
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Skipping double-wide scene copy for perf isolation");
                     if (!debug_submit_empty_frame) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, scene_source_state, nullptr);
                     }
@@ -1796,9 +1751,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto ui_pose_diagnostics_enabled = vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
             const auto ui_pose_basis = ui_pose_diagnostics_enabled ? vr->build_ui_layer_pose_basis(frame_count) : vrmod::UILayerPoseBasis{};
             const auto* ui_pose_basis_ptr = ui_pose_diagnostics_enabled ? &ui_pose_basis : nullptr;
-            const auto windrose_r5_ui_phase_lock = vr->is_windrose_r5_native_modal_ui_phase_lock_active();
 
-            if (!suppress_ui_copy && (use_2d_screen || windrose_r5_ui_phase_lock)) {
+            if (!suppress_ui_copy && use_2d_screen) {
                 if (shf_auto_2d_screen) {
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,

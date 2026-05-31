@@ -662,18 +662,6 @@ public:
         return m_mixtape_auto_2d_active.load(std::memory_order_relaxed);
     }
 
-    bool is_windrose_r5_native_modal_ui_phase_lock_active() const;
-    bool is_windrose_r5_native_modal_scene_blackout_active() const;
-    void note_windrose_r5_ui_copy(
-        uint64_t frame_count,
-        bool is_same_frame,
-        bool is_afr,
-        bool is_right_eye_frame,
-        const void* ui_target,
-        const void* native_resource,
-        bool copied_to_both_eyes,
-        const char* reason);
-
     bool is_roomscale_enabled() const {
         return m_roomscale_movement->value() && !m_aim_temp_disabled;
     }
@@ -767,7 +755,6 @@ private:
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
-    void update_windrose_r5_ui_state(sdk::UGameEngine* engine);
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
     void restore_subnautica2_native_water_cvars();
@@ -1061,49 +1048,6 @@ private:
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
-
-    struct WindroseR5UiScanState {
-        std::chrono::steady_clock::time_point last_scan{};
-        int32_t cursor{0};
-        int32_t last_object_count{0};
-        bool sweep_saw_mounter{false};
-        bool sweep_saw_widget_pool{false};
-        bool sweep_saw_inventory{false};
-        bool sweep_saw_meta_menu_controller{false};
-        bool sweep_saw_modal{false};
-        bool sweep_saw_scene_blackout{false};
-        int32_t sweep_modal_hits{0};
-        int32_t sweep_scene_blackout_hits{0};
-        std::string sweep_sample{};
-        std::string sweep_meta_menu_controller_sample{};
-        std::string sweep_scene_blackout_sample{};
-        bool last_active{false};
-        bool last_scene_blackout_active{false};
-        bool last_saw_mounter{false};
-        bool last_saw_widget_pool{false};
-        bool last_saw_inventory{false};
-        bool last_saw_meta_menu_controller{false};
-        int32_t last_modal_hits{0};
-        int32_t last_scene_blackout_hits{0};
-        std::string last_sample{};
-        std::string last_meta_menu_controller_sample{};
-        std::string last_scene_blackout_sample{};
-    };
-
-    WindroseR5UiScanState m_windrose_r5_ui_scan{};
-    std::atomic_bool m_windrose_r5_modal_ui_active{false};
-    std::atomic_bool m_windrose_r5_modal_scene_blackout_active{false};
-    mutable std::mutex m_windrose_r5_ui_copy_mutex{};
-    uintptr_t m_windrose_r5_last_ui_target{};
-    uintptr_t m_windrose_r5_last_ui_native{};
-    uint64_t m_windrose_r5_last_ui_copy_frame{};
-    bool m_windrose_r5_has_ui_copy_sample{};
-    bool m_windrose_r5_last_ui_copy_modal{};
-    bool m_windrose_r5_last_ui_copy_blackout{};
-    bool m_windrose_r5_last_ui_copy_both{};
-    bool m_windrose_r5_last_ui_copy_right{};
-    std::chrono::steady_clock::time_point m_windrose_r5_last_ui_copy_log{};
-
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
     static constexpr size_t PROSPI_ROLLING_HITCH_GAP_RING_SIZE = 16;
