@@ -159,6 +159,15 @@ bool is_shf_current_game() {
     return result;
 }
 
+bool is_deadzone_rogue_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"DeadzoneSteam-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_stalker2_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -692,6 +701,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer = real_backbuffer;
     }
 
+    if (is_deadzone_rogue_current_game() && backbuffer == nullptr && real_backbuffer != nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable on frame; using real swapchain backbuffer fallback");
+        backbuffer = real_backbuffer;
+    }
+
     if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer.");
         return vr::VRCompositorError_None;
@@ -1075,12 +1089,22 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         shf_scene_mode == ShfSceneMode::Mono2D &&
         m_game_tex.texture.Get() != nullptr &&
         m_game_tex.srv_heap != nullptr;
-    const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen;
+    const auto mixtape_auto_2d_screen =
+        vr->is_mixtape_auto_2d_active() &&
+        m_game_tex.texture.Get() != nullptr &&
+        m_game_tex.srv_heap != nullptr;
+    const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen;
 
     if (shf_auto_2d_screen) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
             "[SHf][D3D12] Auto 2D screen active for detected Mono2D cinematic segment");
+    }
+
+    if (mixtape_auto_2d_screen) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Mixtape][D3D12] Auto 2D screen using mono Bink source for both eyes");
     }
 
     if (use_2d_screen && effective_game_tex != nullptr && effective_game_tex->texture.Get() != nullptr) {
@@ -1121,6 +1145,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             const auto use_shf_flat_screen_source = is_shf_current_game();
+            const auto use_mono_flat_screen_source = use_shf_flat_screen_source || mixtape_auto_2d_screen;
             auto* screen_source_tex = &view_game_tex;
 
             if (use_shf_flat_screen_source &&
@@ -1135,13 +1160,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             RECT right_source_rect{(LONG)((float)m_backbuffer_size[0] / 2.0f), 0, (LONG)((float)m_backbuffer_size[0]), (LONG)m_backbuffer_size[1]};
             std::optional<RECT> screen_dest_rect = std::nullopt;
 
-            if (use_shf_flat_screen_source) {
+            if (use_mono_flat_screen_source) {
                 const auto source_width = (LONG)view_desc.Width;
                 const auto source_height = (LONG)view_desc.Height;
                 left_source_rect = RECT{0, 0, source_width, source_height};
 
-                // Mono2D uses the original wide cinematic source. Other manual 2D cases use a matched single eye.
-                if (shf_scene_mode != ShfSceneMode::Mono2D &&
+                // Mono movies need the full source copied to both eyes; stereo/manual 2D keeps a single-eye crop.
+                if (!mixtape_auto_2d_screen &&
+                    shf_scene_mode != ShfSceneMode::Mono2D &&
                     view_desc.Width >= (uint64_t)view_desc.Height * 2 &&
                     view_desc.Width >= 2) {
                     left_source_rect.right = (LONG)(view_desc.Width / 2);
@@ -1176,9 +1202,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
-                    "[SHf][D3D12] 2D screen using matched mono source mode={} auto={} tex=[{}x{} fmt={}] src=[{},{} -> {},{}] dst=[{},{} -> {},{}]",
+                    "[D3D12] 2D screen using matched mono source game={} mode={} auto={} tex=[{}x{} fmt={}] src=[{},{} -> {},{}] dst=[{},{} -> {},{}]",
+                    mixtape_auto_2d_screen ? "Mixtape" : "SHf",
                     shf_scene_mode_name(m_shf_scene_mode),
-                    shf_auto_2d_screen,
+                    shf_auto_2d_screen || mixtape_auto_2d_screen,
                     view_desc.Width,
                     view_desc.Height,
                     (uint32_t)view_desc.Format,
@@ -1215,7 +1242,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (!is_afr) {
-                if (!use_shf_flat_screen_source && m_scene_capture_tex.texture.Get() != nullptr) {
+                if (!use_mono_flat_screen_source && m_scene_capture_tex.texture.Get() != nullptr) {
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
                         commands.cmd_list.Get(),
@@ -2483,6 +2510,16 @@ bool D3D12Component::setup() {
         backbuffer = real_backbuffer;
     }
 
+    const bool deadzone_real_backbuffer_bootstrap =
+        is_deadzone_rogue_current_game() &&
+        backbuffer == nullptr &&
+        real_backbuffer != nullptr;
+
+    if (deadzone_real_backbuffer_bootstrap) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable during setup; using real swapchain backbuffer bootstrap");
+        backbuffer = real_backbuffer;
+    }
+
     if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer (D3D12).");
         return false;
@@ -2502,7 +2539,7 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!vr->is_extreme_compatibility_mode_enabled() && !deadzone_real_backbuffer_bootstrap) {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
     }
 

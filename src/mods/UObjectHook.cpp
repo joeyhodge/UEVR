@@ -92,17 +92,34 @@ bool is_stalker2_uobjecthook_guard_enabled() {
     return result;
 }
 
+bool is_everwind_uobjecthook_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Everwind-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool use_dynamic_uobjecthook_candidate_guard() {
-    return is_ue_5_1_uobjecthook_guard_enabled() || is_avowed_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
+    return is_ue_5_1_uobjecthook_guard_enabled() ||
+        is_avowed_uobjecthook_guard_enabled() ||
+        is_stalker2_uobjecthook_guard_enabled() ||
+        is_everwind_uobjecthook_guard_enabled();
 }
 
 bool should_incrementally_refresh_uobject_array() {
-    return is_ue_5_1_uobjecthook_guard_enabled() || is_stalker2_uobjecthook_guard_enabled();
+    return is_ue_5_1_uobjecthook_guard_enabled() ||
+        is_stalker2_uobjecthook_guard_enabled();
 }
 
 bool should_use_stalker2_on_demand_uobject_tracking(int32_t object_count) {
     (void)object_count;
     return is_stalker2_uobjecthook_guard_enabled();
+}
+
+bool should_use_everwind_lazy_uobjecthook_startup() {
+    return is_everwind_uobjecthook_guard_enabled();
 }
 
 bool is_stalker2_bulk_scene_component(sdk::USceneComponent* component) {
@@ -424,6 +441,33 @@ void UObjectHook::hook() {
     }
 
     SPDLOG_INFO("[UObjectHook] Hooking UObjectBase");
+
+    if (should_use_everwind_lazy_uobjecthook_startup()) {
+        // Everwind's shipped UE5.5 build can stall inside UObjectBase AddObject/
+        // destructor resolver scans when the UObject/Developer UI is opened.
+        // Keep the UI responsive by avoiding the resolver and old-object backfill.
+        auto uobjectarray = sdk::FUObjectArray::get();
+        const auto object_count = uobjectarray != nullptr ? uobjectarray->get_object_count() : 0;
+
+        m_hooked = true;
+        m_wants_activate = false;
+        m_add_object_hooked = false;
+        m_uobject_array_scan_cursor = object_count;
+        m_uobject_array_last_object_count = object_count;
+        m_uobject_array_startup_scan_until = std::chrono::steady_clock::now();
+        m_uobject_array_full_sweep_active = false;
+        m_force_uobject_array_creation_scan.store(false, std::memory_order_relaxed);
+
+        SPDLOG_WARN(
+            "[Everwind][UObjectHook] Skipping UObjectBase hook resolver/backfill for {} existing UObjects; using fail-closed lazy UI mode",
+            object_count);
+        SPDLOG_INFO("[UObjectHook] Deserializing persistent states");
+        reload_persistent_states();
+        SPDLOG_INFO("[UObjectHook] Deserialized {} persistent states", m_persistent_states.size());
+
+        m_fully_hooked = true;
+        return;
+    }
 
     m_hooked = true;
     m_wants_activate = false;

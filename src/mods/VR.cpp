@@ -1197,6 +1197,24 @@ bool is_dispatch_executable() {
     return is_dispatch;
 }
 
+bool is_mixtape_executable() {
+    static const bool is_mixtape = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto lowered = *module_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"mixtape-win64-shipping") != std::wstring::npos;
+    }();
+
+    return is_mixtape;
+}
+
 bool is_subnautica2_executable() {
     static const bool is_subnautica2 = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -1834,6 +1852,81 @@ DispatchAuto2DDecision evaluate_dispatch_auto_2d(sdk::UGameEngine* engine) {
     }
 
     return decision;
+}
+
+struct MixtapeAuto2DDecision {
+    bool should_force{false};
+    std::string reason{};
+    std::string player{};
+    std::string url{};
+    std::optional<bool> playing{};
+    std::optional<bool> preparing{};
+    std::optional<bool> buffering{};
+    std::optional<bool> ready{};
+};
+
+bool looks_like_mixtape_bink_url(std::wstring_view value) {
+    return contains_case_insensitive(value, L".bk2") ||
+           contains_case_insensitive(value, L".bik") ||
+           contains_case_insensitive(value, L"/movies/") ||
+           contains_case_insensitive(value, L"\\movies\\");
+}
+
+std::optional<std::wstring> read_mixtape_bink_url(sdk::UObject* player) {
+    for (const auto property_name : {L"URL", L"Url", L"MediaUrl", L"MediaURL"}) {
+        const auto url = read_object_text_property(player, property_name);
+        if (url.has_value() && !url->empty()) {
+            return url;
+        }
+    }
+
+    return std::nullopt;
+}
+
+bool is_mixtape_bink_media_player_active(sdk::UObject* player, MixtapeAuto2DDecision& decision) {
+    decision.playing = call_object_bool_function(player, L"IsPlaying");
+    decision.preparing = call_object_bool_function(player, L"IsPreparing");
+    decision.buffering = call_object_bool_function(player, L"IsBuffering");
+    decision.ready = call_object_bool_function(player, L"IsReady");
+
+    if (decision.playing.value_or(false)) {
+        decision.reason = "bink-playing";
+        return true;
+    }
+
+    if (decision.preparing.value_or(false) || decision.buffering.value_or(false)) {
+        decision.reason = "bink-loading";
+        return true;
+    }
+
+    return false;
+}
+
+MixtapeAuto2DDecision evaluate_mixtape_auto_2d(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    static const std::wstring bink_player_class_name = L"Class /Script/BinkMediaPlayer.BinkMediaPlayer";
+
+    for (auto* player : get_live_objects_by_class_name(bink_player_class_name)) {
+        MixtapeAuto2DDecision decision{};
+        decision.player = get_log_object_name(player);
+
+        const auto url = read_mixtape_bink_url(player);
+        if (url.has_value()) {
+            decision.url = utility::narrow(*url);
+        }
+
+        if (!url.has_value() || !looks_like_mixtape_bink_url(*url)) {
+            continue;
+        }
+
+        if (is_mixtape_bink_media_player_active(player, decision)) {
+            decision.should_force = true;
+            return decision;
+        }
+    }
+
+    return {};
 }
 }
 
@@ -3950,6 +4043,8 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_game_fov();
     update_shf_auto_2d_mode(engine);
     update_dispatch_auto_2d_mode(engine);
+    update_mixtape_auto_2d_mode(engine);
+    update_windrose_meta_ui_auto_2d_mode();
 
     // Dont update action states on AFR frames
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
@@ -4555,6 +4650,121 @@ void VR::update_dispatch_auto_2d_mode(sdk::UGameEngine* engine) {
         m_dispatch_auto_2d_active = false;
         spdlog::info("[Dispatch][Auto2D] active=false restored={}", m_dispatch_auto_2d_previous_mode);
     }
+}
+
+void VR::update_mixtape_auto_2d_mode(sdk::UGameEngine* engine) {
+    if (!is_mixtape_executable()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_mixtape_auto_2d_last_sample.time_since_epoch().count() != 0 &&
+        now - m_mixtape_auto_2d_last_sample < std::chrono::milliseconds(250)) {
+        return;
+    }
+
+    m_mixtape_auto_2d_last_sample = now;
+
+    const auto decision = evaluate_mixtape_auto_2d(engine);
+
+    if (decision.should_force) {
+        if (!m_mixtape_auto_2d_active.load(std::memory_order_relaxed)) {
+            m_mixtape_auto_2d_previous_mode = m_2d_screen_mode->value();
+            m_mixtape_auto_2d_active.store(true, std::memory_order_relaxed);
+            spdlog::info(
+                "[Mixtape][Auto2D] active=true previous={} reason={} player={} url={} playing={} preparing={} buffering={} ready={}",
+                m_mixtape_auto_2d_previous_mode,
+                decision.reason,
+                decision.player.empty() ? "unresolved" : decision.player,
+                decision.url.empty() ? "unresolved" : decision.url,
+                decision.playing.has_value() ? (*decision.playing ? "true" : "false") : "unresolved",
+                decision.preparing.has_value() ? (*decision.preparing ? "true" : "false") : "unresolved",
+                decision.buffering.has_value() ? (*decision.buffering ? "true" : "false") : "unresolved",
+                decision.ready.has_value() ? (*decision.ready ? "true" : "false") : "unresolved");
+        }
+
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (m_mixtape_auto_2d_active.exchange(false, std::memory_order_relaxed)) {
+        m_2d_screen_mode->value() = m_mixtape_auto_2d_previous_mode;
+        spdlog::info("[Mixtape][Auto2D] active=false restored={}", m_mixtape_auto_2d_previous_mode);
+    }
+}
+
+void VR::set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool active) {
+    if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+        return;
+    }
+
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    const std::string key{state_name};
+    auto& count = m_windrose_meta_ui_auto_2d_states[key];
+
+    if (active) {
+        ++count;
+        m_windrose_meta_ui_auto_2d_last_state = key;
+        m_windrose_meta_ui_auto_2d_restore_after = {};
+
+        if (!m_windrose_meta_ui_auto_2d_active) {
+            m_windrose_meta_ui_auto_2d_previous_mode = m_2d_screen_mode->value();
+            m_windrose_meta_ui_auto_2d_active = true;
+            spdlog::info(
+                "[Windrose][MetaUI2D] active=true previous={} state={}",
+                m_windrose_meta_ui_auto_2d_previous_mode,
+                key);
+        }
+
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (count > 1) {
+        --count;
+    } else {
+        m_windrose_meta_ui_auto_2d_states.erase(key);
+    }
+
+    if (m_windrose_meta_ui_auto_2d_states.empty()) {
+        // Tab switches can emit Exit then Enter in the same tick; defer restore a touch
+        // so we do not flap 2D mode while R5 swaps HFSM states.
+        m_windrose_meta_ui_auto_2d_restore_after = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
+        m_windrose_meta_ui_auto_2d_last_state = key;
+        spdlog::info("[Windrose][MetaUI2D] pending restore state={}", key);
+    }
+}
+
+void VR::update_windrose_meta_ui_auto_2d_mode() {
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    if (!m_windrose_meta_ui_auto_2d_active) {
+        return;
+    }
+
+    if (!m_windrose_meta_ui_auto_2d_states.empty()) {
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    if (m_windrose_meta_ui_auto_2d_restore_after.time_since_epoch().count() == 0 ||
+        std::chrono::steady_clock::now() < m_windrose_meta_ui_auto_2d_restore_after)
+    {
+        m_2d_screen_mode->value() = true;
+        return;
+    }
+
+    m_2d_screen_mode->value() = m_windrose_meta_ui_auto_2d_previous_mode;
+    spdlog::info(
+        "[Windrose][MetaUI2D] active=false restored={} last_state={}",
+        m_windrose_meta_ui_auto_2d_previous_mode,
+        m_windrose_meta_ui_auto_2d_last_state);
+
+    m_windrose_meta_ui_auto_2d_active = false;
+    m_windrose_meta_ui_auto_2d_previous_mode = false;
+    m_windrose_meta_ui_auto_2d_restore_after = {};
+    m_windrose_meta_ui_auto_2d_last_state.clear();
 }
 
 void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {

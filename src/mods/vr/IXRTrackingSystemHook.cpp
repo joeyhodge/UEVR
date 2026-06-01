@@ -50,8 +50,26 @@ bool is_deadzone_ue56_executable() {
     return result;
 }
 
+bool is_daysgone_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        return exe_path && exe_path->find(L"DaysGone.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool is_daysgone_controller_aim_requested() {
+    return is_daysgone_executable() && VR::get()->is_controller_aim_enabled();
+}
+
 bool is_direct_aim_compatibility_requested() {
     if (is_deadzone_ue56_executable()) {
+        return true;
+    }
+
+    if (is_daysgone_controller_aim_requested()) {
         return true;
     }
 
@@ -73,12 +91,24 @@ bool is_direct_aim_compatibility_active() {
         return false;
     }
 
+    if (is_deadzone_ue56_executable()) {
+        // Deadzone's UE5.6 UObject/FName path is unsafe from the direct
+        // fallback tick path. Let the normal ProcessViewRotation hook drive
+        // HMD/controller aim instead of scanning or resolving UObject names.
+        return false;
+    }
+
+    if (is_daysgone_controller_aim_requested()) {
+        return vr->is_using_controllers();
+    }
+
     if (vr->is_headlocked_aim_enabled()) {
         return true;
     }
 
     return vr->is_controller_aim_enabled() && vr->is_using_controllers();
 }
+
 }
 
 detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::string> version_override = std::nullopt) {
@@ -585,18 +615,25 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
+    const auto daysgone_controller_aim = is_daysgone_controller_aim_requested();
 
     if (direct_aim_compat_requested && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
-        if (aim_method == VR::AimMethod::HEAD) {
+        if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
+            SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because Controller-Camera Conflict Guard blocks the safe direct controller-aim path");
+            vr->set_aim_method(VR::AimMethod::GAME);
+            return;
+        } else if (aim_method == VR::AimMethod::HEAD) {
             if (deadzone_direct_aim) {
-                SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental HMD aim on UE5.6 through direct control rotation updates");
+                SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing HMD aim on UE5.6 through ProcessViewRotation; unsafe direct UObject/FName fallback is disabled");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Allowing experimental HMD aim through direct control rotation updates");
             }
         } else if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
-            if (deadzone_direct_aim) {
+            if (daysgone_controller_aim) {
+                SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because controller tracking is not actively available");
+            } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Falling back to game aim because controller aim is not actively available");
@@ -604,7 +641,9 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             vr->set_aim_method(VR::AimMethod::GAME);
             return;
         } else {
-            if (deadzone_direct_aim) {
+            if (daysgone_controller_aim) {
+                SPDLOG_WARN_ONCE("[DaysGone][Aim] Using direct controller-aim fallback; skipping legacy UE4.11 HMD/ProcessViewRotation controller aim hooks");
+            } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Allowing experimental controller aim; XR camera path remains disabled");
@@ -619,12 +658,14 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     }
 
     if (direct_aim_compat_active) {
-        if (deadzone_direct_aim) {
+        if (daysgone_controller_aim) {
+            SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving Days Gone controller aim through direct control rotation updates");
+        } else if (deadzone_direct_aim) {
             SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
         } else {
             SPDLOG_INFO_ONCE("[AimCompat] Driving direct aim fallback through control rotation updates");
         }
-        manual_update_control_rotation();
+        manual_update_control_rotation(engine);
     }
 
     auto& data = m_process_view_rotation_data;
@@ -657,7 +698,7 @@ void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float 
         return;
     }
 
-    manual_update_control_rotation();
+    manual_update_control_rotation(engine);
 }
 
 void IXRTrackingSystemHook::initialize() {
@@ -1043,20 +1084,37 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
     return nullptr;
 }
 
-void IXRTrackingSystemHook::manual_update_control_rotation() {
+void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* engine_override) {
     if (VR::get()->is_controller_camera_conflict_guard_active()) {
         return;
     }
 
-    const auto world = sdk::UEngine::get()->get_world();
+    if (is_deadzone_ue56_executable()) {
+        SPDLOG_WARN_ONCE("[Deadzone][Aim] Direct PlayerController aim fallback is disabled because UObject/FName lookup is unsafe; using ProcessViewRotation instead");
+        return;
+    }
+
+    sdk::APlayerController* controller = nullptr;
+
+    auto engine = (sdk::UEngine*)engine_override;
+    if (engine == nullptr) {
+        engine = sdk::UEngine::get();
+    }
+
+    if (engine == nullptr) {
+        return;
+    }
+
+    const auto world = engine->get_world();
 
     if (world == nullptr) {
         return;
     }
 
-    const auto controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+    controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
 
     if (controller == nullptr) {
+        SPDLOG_WARN_ONCE("[AimCompat] Skipping direct aim until a PlayerController is available");
         return;
     }
 
@@ -2178,7 +2236,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
 
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
-    if (!had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
+    if (!is_deadzone_ue56_executable() && !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();
 
