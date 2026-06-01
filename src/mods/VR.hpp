@@ -1300,7 +1300,7 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_culling_triage_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageTriggerFOV"), 10.0f, 45.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_culling_triage_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdCullingTriageHoldSeconds"), 0.5f, 15.0f, 4.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriage"), false) };
-    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageAutoRefresh"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageAutoRefresh"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_inflate_bounds{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageInflateBounds"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_spectator_mesh_triage_bounds_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageBoundsScale"), 1.0f, 100.0f, 20.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_mesh_triage_disable_distance_cull{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorMeshTriageDisableDistanceCull"), false) };

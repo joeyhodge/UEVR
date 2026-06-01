@@ -784,6 +784,26 @@ float get_prospi_baseline_ball_follow_min_dolly(float raw_fov) {
     return 4600.0f;
 }
 
+float get_prospi_baseline_telephoto_min_dolly(float raw_fov) {
+    if (raw_fov <= 3.0f) {
+        return 3000.0f;
+    }
+
+    if (raw_fov <= 8.0f) {
+        return 2600.0f;
+    }
+
+    if (raw_fov <= 14.0f) {
+        return 2200.0f;
+    }
+
+    return 1800.0f;
+}
+
+float get_prospi_baseline_telephoto_preserved_dolly(float raw_fov) {
+    return std::max(1400.0f, get_prospi_baseline_telephoto_min_dolly(raw_fov) * 0.70f);
+}
+
 bool is_prospi_line_telephoto_perf_preset(ProSpiCameraPreset preset) {
     switch (preset) {
     case ProSpiCameraPreset::ThirdBaseTelephoto:
@@ -814,6 +834,42 @@ bool is_prospi_line_telephoto_perf_location(const glm::vec3& location, const glm
     const auto looking_along_line = std::abs(rotation.y) >= 35.0f || std::abs(rotation.y) <= 15.0f;
 
     return (near_first_or_third_line || low_outfield_line) && looking_along_line;
+}
+
+bool is_prospi_first_base_low_line_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    const auto first_base_low_location =
+        location.x >= 1400.0f &&
+        location.x <= 4800.0f &&
+        location.y >= -1800.0f &&
+        location.y <= 1600.0f &&
+        std::abs(location.z) <= 1000.0f;
+    const auto first_base_low_rotation =
+        rotation.x >= -16.0f &&
+        rotation.x <= 16.0f &&
+        (rotation.y <= -95.0f || rotation.y >= 120.0f);
+
+    return first_base_low_location && first_base_low_rotation && raw_fov <= 18.0f;
+}
+
+bool is_prospi_baseline_telephoto_floor_preset(ProSpiCameraPreset preset) {
+    switch (preset) {
+    case ProSpiCameraPreset::ThirdBaseTelephoto:
+    case ProSpiCameraPreset::ThirdBaseRelayLow:
+    case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+    case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
+    case ProSpiCameraPreset::ThirdBaseCornerLow:
+    case ProSpiCameraPreset::ThirdBaseWideTelephoto:
+    case ProSpiCameraPreset::FirstBaseTelephoto:
+    case ProSpiCameraPreset::FirstBaseWideTelephoto:
+    case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
+    case ProSpiCameraPreset::FirstBaseCornerLow:
+    case ProSpiCameraPreset::FirstBaseInfieldLow:
+    case ProSpiCameraPreset::RightFieldCornerTelephoto:
+    case ProSpiCameraPreset::RightFieldLineTelephoto:
+        return true;
+    default:
+        return false;
+    }
 }
 
 bool is_prospi_third_base_outfield_line_replay_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
@@ -7430,10 +7486,6 @@ void VR::update_game_fov() {
         const auto outfield_y_max = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_y_max->value(), -20000.0f, 5000.0f);
 
         const auto is_cut_like = location_delta >= 2500.0f || yaw_delta >= 30.0f || pitch_delta >= 20.0f || fov_delta >= 7.5f;
-        const auto is_baseline =
-            abs_x >= baseline_x_min &&
-            camera_y >= baseline_y_min &&
-            camera_y <= baseline_y_max;
         const auto third_base_outfield_line_replay_camera =
             is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
         const auto third_base_low_line_telephoto_camera =
@@ -7444,6 +7496,20 @@ void VR::update_game_fov() {
             is_prospi_first_base_crowd_side_facing_field_camera(*location, *rotation, raw_fov);
         const auto first_base_crowd_side_wide_camera =
             is_prospi_first_base_crowd_side_wide_camera(*location, *rotation, raw_fov);
+        const auto first_base_low_line_camera =
+            is_prospi_first_base_low_line_camera(*location, *rotation, raw_fov);
+        const auto is_baseline =
+            (abs_x >= baseline_x_min &&
+             camera_y >= baseline_y_min &&
+             camera_y <= baseline_y_max) ||
+            first_base_low_line_camera;
+        const auto baseline_telephoto_floor_camera =
+            (first_base_low_line_camera || forced_third_base_line_camera ||
+             (is_prospi_baseline_telephoto_floor_preset(prospi_preset) &&
+              raw_fov <= trigger_fov &&
+              low_camera &&
+              camera_y >= baseline_y_min &&
+              camera_y <= baseline_y_max));
         const auto is_stand =
             abs_x >= stand_x_min &&
             camera_y >= stand_y_min &&
@@ -7522,9 +7588,9 @@ void VR::update_game_fov() {
             play_mode = ProSpiPlayCameraMode::BallFollow;
         } else if (is_outfield && (location_speed >= 1200.0f || yaw_delta >= 5.0f || is_cut_like)) {
             play_mode = ProSpiPlayCameraMode::BallFollow;
-        } else if (is_stand) {
+        } else if (is_stand && !baseline_telephoto_floor_camera) {
             play_mode = ProSpiPlayCameraMode::CrowdStandRisk;
-        } else if ((is_baseline && telephoto_like) || forced_third_base_line_camera) {
+        } else if ((is_baseline && telephoto_like) || forced_third_base_line_camera || baseline_telephoto_floor_camera) {
             play_mode = ProSpiPlayCameraMode::TelephotoBaseline;
         } else if (std::abs(location->x) <= 1500.0f && camera_y >= -1500.0f && camera_y <= 3000.0f && raw_fov >= 25.0f) {
             play_mode = ProSpiPlayCameraMode::PitchBatterView;
@@ -7546,7 +7612,7 @@ void VR::update_game_fov() {
                 ? std::clamp(m_match_game_fov_prospi_third_base_outfield_line_low_dolly_distance->value(), 10.0f, 15000.0f)
                 : std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap->value(), 10.0f, 15000.0f);
         }
-        if (is_stand) {
+        if (is_stand && !baseline_telephoto_floor_camera) {
             sequence_zone = ProSpiCameraSafetyZone::StandCrowd;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_stand_cap->value(), 10.0f, 15000.0f);
         }
@@ -7583,6 +7649,11 @@ void VR::update_game_fov() {
 
                 if (first_base_crowd_side_wide_camera &&
                     !is_prospi_first_base_crowd_side_wide_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (first_base_low_line_camera &&
+                    !is_prospi_first_base_low_line_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
                     continue;
                 }
 
@@ -7650,6 +7721,16 @@ void VR::update_game_fov() {
         }
 
         if (!prospi_calibration_applied &&
+            source == ProSpiAutoCameraSource::LearnedNearest &&
+            baseline_telephoto_floor_camera) {
+            const auto learned_floor = std::clamp(get_prospi_baseline_telephoto_min_dolly(raw_fov), 10.0f, 15000.0f);
+            if (active_dolly_distance < learned_floor) {
+                active_dolly_distance = learned_floor;
+                prospi_dolly_source = "SmartLearnedFloor";
+            }
+        }
+
+        if (!prospi_calibration_applied &&
             source != ProSpiAutoCameraSource::LearnedNearest &&
             (sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST ||
              sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST) &&
@@ -7657,6 +7738,10 @@ void VR::update_game_fov() {
             sequence_cap > 0.0f) {
             auto target_dolly = std::clamp(sequence_cap * fov_scale, 10.0f, 15000.0f);
             auto allow_dolly_increase = false;
+            if (sequence_zone == ProSpiCameraSafetyZone::BaselineDugout && baseline_telephoto_floor_camera) {
+                target_dolly = std::max(target_dolly, get_prospi_baseline_telephoto_min_dolly(raw_fov));
+                allow_dolly_increase = true;
+            }
             if (play_mode == ProSpiPlayCameraMode::BallFollow) {
                 auto ball_follow_min_dolly = 5500.0f;
                 if (outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow || sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
@@ -8238,12 +8323,33 @@ void VR::update_game_fov() {
             const auto baseline_y_max = std::max(
                 m_match_game_fov_prospi_camera_safety_baseline_y_min->value(),
                 m_match_game_fov_prospi_camera_safety_baseline_y_max->value());
+            const auto first_base_low_line_camera =
+                is_prospi_first_base_low_line_camera(*location, *rotation, raw_fov);
+            const auto third_base_low_line_telephoto_camera =
+                is_prospi_third_base_low_line_telephoto_camera(*location, *rotation, raw_fov);
+            const auto third_base_outfield_line_replay_camera =
+                is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
+            const auto baseline_line_telephoto_camera =
+                first_base_low_line_camera ||
+                third_base_low_line_telephoto_camera ||
+                third_base_outfield_line_replay_camera ||
+                (is_prospi_baseline_telephoto_floor_preset(prospi_preset) &&
+                 raw_fov <= telephoto_fov &&
+                 std::abs(location->z) <= 1000.0f &&
+                 camera_y >= baseline_y_min &&
+                 camera_y <= baseline_y_max);
             if (m_match_game_fov_prospi_camera_safety_baseline_rule->value() &&
-                abs_x >= baseline_x_min &&
-                camera_y >= baseline_y_min &&
-                camera_y <= baseline_y_max) {
+                ((abs_x >= baseline_x_min &&
+                  camera_y >= baseline_y_min &&
+                  camera_y <= baseline_y_max) ||
+                 baseline_line_telephoto_camera)) {
                 safety_zone = ProSpiCameraSafetyZone::BaselineDugout;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_baseline_min_z->value(), -500.0f, 3000.0f);
+                if (first_base_low_line_camera) {
+                    safety_min_z = std::max(safety_min_z, 650.0f);
+                } else if (baseline_line_telephoto_camera) {
+                    safety_min_z = std::max(safety_min_z, 450.0f);
+                }
             }
 
             const auto stand_x_min = std::clamp(m_match_game_fov_prospi_camera_safety_stand_x_min->value(), 0.0f, 10000.0f);
@@ -8257,7 +8363,8 @@ void VR::update_game_fov() {
                 abs_x >= stand_x_min &&
                 camera_y >= stand_y_min &&
                 camera_y <= stand_y_max &&
-                raw_fov <= telephoto_fov) {
+                raw_fov <= telephoto_fov &&
+                !baseline_line_telephoto_camera) {
                 safety_zone = ProSpiCameraSafetyZone::StandCrowd;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_stand_min_z->value(), -500.0f, 4000.0f);
             }
@@ -8292,6 +8399,10 @@ void VR::update_game_fov() {
                             capped_dolly = std::min(
                                 dolly_offset,
                                 std::max(max_safe_dolly, get_prospi_stand_crowd_preserved_dolly(raw_fov)));
+                        } else if (safety_zone == ProSpiCameraSafetyZone::BaselineDugout && baseline_line_telephoto_camera) {
+                            capped_dolly = std::min(
+                                dolly_offset,
+                                std::max(max_safe_dolly, get_prospi_baseline_telephoto_preserved_dolly(raw_fov)));
                         }
 
                         dolly_offset = lerp_float(dolly_offset, capped_dolly, cap_strength);
@@ -9556,6 +9667,10 @@ void VR::draw_prospi_field_map_visualizer() {
     draw_list->AddText(ImVec2{second_base.x + 4.0f, second_base.y - 18.0f}, IM_COL32_WHITE, "2B");
     draw_list->AddText(ImVec2{third_base.x - 22.0f, third_base.y - 6.0f}, IM_COL32_WHITE, "3B");
     draw_list->AddText(ImVec2{center_field.x - 10.0f, center_field.y - 14.0f}, IM_COL32_WHITE, "CF");
+    draw_list->AddText(ImVec2{canvas_pos.x + 10.0f, canvas_pos.y + 8.0f}, IM_COL32(220, 240, 220, 220), "Field view: HOME bottom -> CF top");
+    draw_list->AddText(ImVec2{canvas_pos.x + canvas_size.x * 0.70f, canvas_pos.y + canvas_size.y * 0.50f}, IM_COL32(120, 240, 150, 220), "1B / RF");
+    draw_list->AddText(ImVec2{canvas_pos.x + canvas_size.x * 0.08f, canvas_pos.y + canvas_size.y * 0.50f}, IM_COL32(255, 140, 145, 220), "3B / LF");
+    draw_list->AddText(ImVec2{canvas_pos.x + canvas_size.x * 0.43f, canvas_end.y - 22.0f}, IM_COL32(220, 240, 220, 180), "Backstop");
 
     ImGui::InvisibleButton("##ProSpiFieldMap", canvas_size);
     const auto hovered = ImGui::IsItemHovered();
@@ -9579,13 +9694,17 @@ void VR::draw_prospi_field_map_visualizer() {
             return IM_COL32(245, 225, 105, 255);
         case ProSpiCameraPreset::FirstBaseTelephoto:
         case ProSpiCameraPreset::FirstBaseWideTelephoto:
+        case ProSpiCameraPreset::FirstBaseOutfieldLineLow:
         case ProSpiCameraPreset::FirstBaseCornerLow:
         case ProSpiCameraPreset::FirstBaseInfieldLow:
         case ProSpiCameraPreset::RightFieldCornerTelephoto:
+        case ProSpiCameraPreset::RightFieldLineTelephoto:
         case ProSpiCameraPreset::RightCenterFieldTelephoto:
             return IM_COL32(90, 220, 120, 255);
         case ProSpiCameraPreset::ThirdBaseTelephoto:
         case ProSpiCameraPreset::ThirdBaseRelayLow:
+        case ProSpiCameraPreset::ThirdBaseOutfieldLineLow:
+        case ProSpiCameraPreset::ThirdBaseFoulTerritoryLow:
         case ProSpiCameraPreset::ThirdBaseCornerLow:
         case ProSpiCameraPreset::ThirdBaseWideTelephoto:
         case ProSpiCameraPreset::OffsetCenterFieldTelephoto:
@@ -9613,6 +9732,15 @@ void VR::draw_prospi_field_map_visualizer() {
         const auto selected = selected_sample.valid && sample.camera_id == selected_sample.camera_id;
         const auto last = last_sample.valid && sample.camera_id == last_sample.camera_id;
         const auto radius = selected ? 6.0f : (last ? 5.0f : 4.0f);
+        const auto yaw_rad = glm::radians(sample.rotation.y);
+        auto arrow_dx = std::cos(yaw_rad);
+        auto arrow_dy = std::sin(yaw_rad);
+        if (m_match_game_fov_prospi_field_map_flip_x->value()) {
+            arrow_dx = -arrow_dx;
+        }
+        if (m_match_game_fov_prospi_field_map_flip_y->value()) {
+            arrow_dy = -arrow_dy;
+        }
 
         if (clicked) {
             const auto dx = mouse.x - point.x;
@@ -9625,6 +9753,12 @@ void VR::draw_prospi_field_map_visualizer() {
         }
 
         draw_list->AddCircleFilled(point, radius, color_for_sample(sample));
+        if (selected || last) {
+            const auto arrow_len = selected ? 26.0f : 20.0f;
+            const auto arrow_end = ImVec2{point.x + arrow_dx * arrow_len, point.y + arrow_dy * arrow_len};
+            draw_list->AddLine(point, arrow_end, IM_COL32(255, 255, 255, selected ? 230 : 170), selected ? 2.0f : 1.4f);
+            draw_list->AddCircleFilled(arrow_end, selected ? 2.4f : 2.0f, IM_COL32(255, 255, 255, selected ? 230 : 170));
+        }
         if (selected) {
             draw_list->AddCircle(point, radius + 3.0f, IM_COL32(255, 255, 255, 255), 12, 2.0f);
         } else if (last) {
@@ -9637,7 +9771,7 @@ void VR::draw_prospi_field_map_visualizer() {
     }
 
     if (hovered && !samples.empty()) {
-        ImGui::SetTooltip("Click a dot to select that camera for the slider. Yellow=plate, green=1B/RF, red=3B/LF, blue=outfield, purple=aerial.");
+        ImGui::SetTooltip("Click a dot to select that camera for the slider. Layout is HOME bottom, CF top, 1B/RF right, 3B/LF left. White arrow shows selected/last camera yaw.");
     }
 }
 
