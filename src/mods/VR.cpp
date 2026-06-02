@@ -6684,11 +6684,14 @@ void VR::update_game_fov() {
 
         if (!material_override) {
             // The old bounds/distance/visibility experiments were not the ProSpi culprit.
-            // Leave this panel as a low-frequency resolver plus LineMeshIntersection gate test.
+            // Leave this panel as a low-frequency resolver plus the old LineMeshIntersection gate test.
             if (!line_mesh_freeze) {
                 restore_prospi_spectator_mesh_triage();
             }
             m_prospi_spectator_mesh_found.store(has_mesh || has_line_mesh || has_materials, std::memory_order_relaxed);
+            m_prospi_spectator_mesh_applied_status.store(
+                m_prospi_spectator_line_mesh_freeze_applied,
+                std::memory_order_relaxed);
             return;
         }
 
@@ -6763,7 +6766,7 @@ void VR::update_game_fov() {
         m_prospi_spectator_material_last_alpha = alpha_value;
         m_prospi_spectator_material_last_fade = fade_value;
         m_prospi_spectator_material_last_lod = lod_value;
-        m_prospi_spectator_mesh_found.store(has_mesh || has_materials, std::memory_order_relaxed);
+        m_prospi_spectator_mesh_found.store(has_mesh || has_line_mesh || has_materials, std::memory_order_relaxed);
         m_prospi_spectator_mesh_applied_status.store(write_count > 0, std::memory_order_relaxed);
         m_prospi_spectator_mesh_write_count.store(write_count, std::memory_order_relaxed);
         m_prospi_spectator_mesh_missing_count.store(std::max(0, attempt_count - write_count), std::memory_order_relaxed);
@@ -10725,8 +10728,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                     ImGui::SeparatorText("Spectator Module / LineMesh Triage");
                     ImGui::TextWrapped(
-                        "ProSpi-only object triage for the custom UGfxSpectatorControllerUE -> USpectatorMeshComponent path. "
-                        "The material scalar route was confirmed to execute but did not affect the crowd, so the active test now targets the native spectator_module LineMeshIntersection pass."
+                        "ProSpi-only object triage for the custom UGfxSpectatorControllerUE -> ULineMeshIntersection spectator path. "
+                        "Known failed probes are parked under the legacy section so normal camera tuning stays clean."
                     );
                     m_match_game_fov_prospi_spectator_mesh_triage->draw("Enable Spectator Module Triage");
                     if (m_match_game_fov_prospi_spectator_mesh_triage->value()) {
@@ -10754,25 +10757,26 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             "LineMesh writes: %d missing=%d",
                             m_prospi_spectator_line_mesh_write_count.load(std::memory_order_relaxed),
                             m_prospi_spectator_line_mesh_missing_count.load(std::memory_order_relaxed));
-                        m_match_game_fov_prospi_spectator_line_mesh_freeze->draw("Freeze Spectator LineMeshIntersection Pass");
-                        ImGui::TextWrapped(
-                            "This flips the native ULineMeshIntersection render/update gate at +0x2D0 to 0. "
-                            "Binary Ninja shows UGfxSpectatorControllerUE creates this object and vfunc_0x270 jumps into the spectator-module render pass only when that byte is non-zero.");
 
-                        ImGui::Text(
-                            "Material param calls: %d/%d",
-                            m_prospi_spectator_material_param_write_count.load(std::memory_order_relaxed),
-                            m_prospi_spectator_material_param_attempt_count.load(std::memory_order_relaxed));
-                        m_match_game_fov_prospi_spectator_material_override->draw("Force Spectator Material Alpha/LOD Params");
-                        if (m_match_game_fov_prospi_spectator_material_override->value()) {
-                            m_match_game_fov_prospi_spectator_material_alpha->draw("Spectator Alpha/Opacity Value");
-                            m_match_game_fov_prospi_spectator_material_fade->draw("Spectator Fade Value");
-                            m_match_game_fov_prospi_spectator_material_lod->draw("Spectator LOD Value");
+                        if (ImGui::TreeNode("Legacy failed probes")) {
+                            m_match_game_fov_prospi_spectator_line_mesh_freeze->draw("Freeze Spectator LineMeshIntersection Pass");
+                            ImGui::TextWrapped(
+                                "Old test: flips the native ULineMeshIntersection render/update gate at +0x2D0 to 0. Previous testing did not help the crowd.");
+
+                            ImGui::Text(
+                                "Material param calls: %d/%d",
+                                m_prospi_spectator_material_param_write_count.load(std::memory_order_relaxed),
+                                m_prospi_spectator_material_param_attempt_count.load(std::memory_order_relaxed));
+                            m_match_game_fov_prospi_spectator_material_override->draw("Force Spectator Material Alpha/LOD Params");
+                            if (m_match_game_fov_prospi_spectator_material_override->value()) {
+                                m_match_game_fov_prospi_spectator_material_alpha->draw("Spectator Alpha/Opacity Value");
+                                m_match_game_fov_prospi_spectator_material_fade->draw("Spectator Fade Value");
+                                m_match_game_fov_prospi_spectator_material_lod->draw("Spectator LOD Value");
+                            }
+                            ImGui::TextWrapped(
+                                "Old test: calls SetScalarParameterValue only on the transient GfxSpectatorControllerUE MaterialInstanceDynamic array. Last test showed calls but no visual change.");
+                            ImGui::TreePop();
                         }
-                        ImGui::TextWrapped(
-                            "This calls SetScalarParameterValue only on the transient GfxSpectatorControllerUE MaterialInstanceDynamic array. "
-                            "Last test showed non-zero calls with no visual change, so keep this off unless you need to re-check that path."
-                        );
                     }
 
                     ImGui::SeparatorText("Camera Safety Guard");
