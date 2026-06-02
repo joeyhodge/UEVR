@@ -793,6 +793,36 @@ bool is_ue_5_1_dx_backend() {
     return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
 }
 
+bool is_ue_5_2_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.2");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50002 && disk_version.dwFileVersionMS < 0x50003;
+}
+
+bool is_ue_5_3_dx_backend() {
+    if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
+        return false;
+    }
+
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.3");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50003 && disk_version.dwFileVersionMS < 0x50004;
+}
+
 bool is_ue_5_4_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -1854,6 +1884,28 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         }
 
         SPDLOG_WARN("[PostInitProperties] UE5.1 slot 10 did not validate; skipping LocalPlayer bootstrap");
+        return std::nullopt;
+    }
+
+    // UE5.2.1/5.3.2 source plus The Complex Expedition PDB place
+    // UObject::PostInitProperties at slot 9 in shipped layouts. The older
+    // legacy body scan sees the function but cannot identify it because this
+    // implementation does not reference GEngine.
+    if (is_ue_5_2_dx_backend() || is_ue_5_3_dx_backend()) {
+        constexpr uint32_t UE52_53_POST_INIT_PROPERTIES_SLOT = 9;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                UE52_53_POST_INIT_PROPERTIES_SLOT,
+                is_ue_5_3_dx_backend() ? "UE5.3 UObject::PostInitProperties" : "UE5.2 UObject::PostInitProperties",
+                false,
+                true))
+        {
+            return UE52_53_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN("[PostInitProperties] UE5.2/5.3 slot 9 did not validate; skipping LocalPlayer bootstrap");
         return std::nullopt;
     }
 
@@ -9424,13 +9476,15 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     }
 
     const auto ue51_post_init = is_ue_5_1_dx_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || is_ue_5_4_dx_backend() || ue51_post_init;
+    const auto ue52_post_init = is_ue_5_2_dx_backend();
+    const auto ue53_post_init = is_ue_5_3_dx_backend();
+    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || is_ue_5_4_dx_backend() || ue53_post_init || ue52_post_init || ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if (ue51_post_init && !idx) {
+    if ((ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
