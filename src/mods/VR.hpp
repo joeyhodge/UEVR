@@ -18,6 +18,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include <safetyhook.hpp>
 #include <sdk/Math.hpp>
 
 #include "vr/runtimes/OpenVR.hpp"
@@ -1310,6 +1311,9 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_alpha{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialAlpha"), 0.0f, 4.0f, 1.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_fade{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialFade"), 0.0f, 4.0f, 1.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_spectator_material_lod{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorMaterialLOD"), -4.0f, 4.0f, 0.0f) };
+    const ModToggle::Ptr m_match_game_fov_prospi_line_mesh_consumer_telemetry{ ModToggle::create(generate_name("MatchGameFOVProSpiLineMeshConsumerTelemetry"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_camera_frustum_widen{ ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorCameraFrustumWiden"), false) };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_camera_frustum_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorCameraFrustumScale"), 1.0f, 8.0f, 2.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyGuard"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_field_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyFieldRule"), true) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_baseline_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineRule"), true) };
@@ -1626,6 +1630,11 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void attempt_hook_prospi_line_mesh_consumer();
+    void attempt_hook_prospi_camera_frustum_matrix();
+    void record_prospi_line_mesh_consumer_snapshot(void* line_mesh, uint32_t insertion_counter_before);
+    static int64_t prospi_line_mesh_consumer_hook(void* line_mesh, void* command_list);
+    static void prospi_camera_frustum_matrix_hook(safetyhook::Context& ctx);
     float get_game_fov() const;
     float get_game_fov_scale(float base_half_fov) const;
     float get_game_fov_dolly_offset() const;
@@ -1722,6 +1731,9 @@ public:
             *m_match_game_fov_prospi_spectator_material_alpha,
             *m_match_game_fov_prospi_spectator_material_fade,
             *m_match_game_fov_prospi_spectator_material_lod,
+            *m_match_game_fov_prospi_line_mesh_consumer_telemetry,
+            *m_match_game_fov_prospi_spectator_camera_frustum_widen,
+            *m_match_game_fov_prospi_spectator_camera_frustum_scale,
             *m_match_game_fov_prospi_camera_safety_guard,
             *m_match_game_fov_prospi_camera_safety_field_rule,
             *m_match_game_fov_prospi_camera_safety_baseline_rule,
@@ -2051,6 +2063,34 @@ private:
     std::atomic<int32_t> m_prospi_spectator_line_mesh_missing_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_attempt_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_write_count{0};
+    safetyhook::InlineHook m_prospi_line_mesh_consumer_hook{};
+    bool m_prospi_line_mesh_consumer_hook_attempted{false};
+    std::atomic<bool> m_prospi_line_mesh_consumer_hooked{false};
+    std::atomic<uintptr_t> m_prospi_line_mesh_consumer_address{0};
+    std::atomic<uintptr_t> m_prospi_line_mesh_consumer_line_address{0};
+    std::atomic<uint64_t> m_prospi_line_mesh_consumer_call_count{0};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_insertion_before{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_insertion_after{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_class_map_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_class_entry_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_line_segment_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_render_map_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_render_entry_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_render_populated_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_render_dispatch_count{-1};
+    std::atomic<int32_t> m_prospi_line_mesh_consumer_render_cleanup_count{-1};
+    std::atomic<int64_t> m_prospi_line_mesh_consumer_last_log_ms{0};
+    std::atomic<bool> m_prospi_line_mesh_consumer_telemetry_enabled{false};
+    safetyhook::MidHook m_prospi_camera_frustum_matrix_hook{};
+    bool m_prospi_camera_frustum_matrix_hook_attempted{false};
+    std::atomic<bool> m_prospi_camera_frustum_matrix_hooked{false};
+    std::atomic<bool> m_prospi_camera_frustum_matrix_widen_enabled{false};
+    std::atomic<uintptr_t> m_prospi_camera_frustum_matrix_hook_address{0};
+    std::atomic<uint64_t> m_prospi_camera_frustum_matrix_call_count{0};
+    std::atomic<float> m_prospi_camera_frustum_matrix_scale{1.0f};
+    std::atomic<float> m_prospi_camera_frustum_matrix_last_m00_before{0.0f};
+    std::atomic<float> m_prospi_camera_frustum_matrix_last_m00_after{0.0f};
+    std::atomic<int64_t> m_prospi_camera_frustum_matrix_last_log_ms{0};
     std::atomic<bool> m_prospi_camera_safety_active{false};
     std::atomic<int32_t> m_prospi_camera_safety_zone{0};
     std::atomic<float> m_prospi_camera_safety_min_z{0.0f};
