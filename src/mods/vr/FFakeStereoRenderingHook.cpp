@@ -8245,7 +8245,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         index_starts_from_one = false;
     }
 
-    const auto is_full_pass = view_index == 0 && !index_was_ever_two && !index_was_ever_negative && !synced_ue56_zero_view_is_eye;
+    // UE5 uses zero-based 0/1 eye indices; a genuine mono pass arrives as INDEX_NONE above.
+    // Do not misclassify the left eye as a full pass when no -1/2 call preceded it.
+    const auto is_full_pass =
+        view_index == 0 &&
+        !index_was_ever_two &&
+        !index_was_ever_negative &&
+        !g_hook->m_has_double_precision &&
+        !synced_ue56_zero_view_is_eye;
 
     auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
     const auto has_double_precision = g_hook->m_has_double_precision;
