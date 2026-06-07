@@ -3,6 +3,7 @@
 #include <fstream>
 #include <cmath>
 #include <algorithm>
+#include <cstddef>
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
@@ -18,8 +19,8 @@
 #include <nlohmann/json.hpp>
 #include <utility/Module.hpp>
 #include <utility/Registry.hpp>
-#include <utility/ScopeGuard.hpp>
 #include <utility/Scan.hpp>
+#include <utility/ScopeGuard.hpp>
 
 #include <sdk/Globals.hpp>
 #include <sdk/CVar.hpp>
@@ -178,6 +179,31 @@ int64_t hitch_age_ms(std::chrono::steady_clock::time_point now, std::chrono::ste
 int64_t steady_clock_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
+
+struct alignas(16) ProSpiWorldCullUniformBuffer {
+    std::array<std::array<float, 4>, 8> min_z{};
+    std::array<std::array<float, 4>, 8> max_z{};
+    std::array<float, 16> view_projection_matrix{};
+    std::array<float, 2> cot_fov{};
+    float near_z{};
+    float lod_slope{};
+    float lod_bias{};
+    float offset_y{};
+    uint32_t num_instances{};
+    uint32_t num_views{};
+    uint32_t num_lods{};
+    uint32_t state_mask{};
+    uint32_t state_condition{};
+    uint32_t padding_16c{};
+    std::array<float, 3> light_source{};
+    uint32_t current_bone_page{};
+};
+
+static_assert(sizeof(ProSpiWorldCullUniformBuffer) == 0x180);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, view_projection_matrix) == 0x100);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, cot_fov) == 0x140);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, num_instances) == 0x158);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, current_bone_page) == 0x17c);
 
 std::string hitch_timestamp_suffix() {
     const auto now = std::chrono::system_clock::now();
@@ -769,6 +795,20 @@ float get_prospi_stand_crowd_preserved_dolly(float raw_fov) {
     return 3200.0f;
 }
 
+float get_prospi_outfield_safety_preserved_dolly(float raw_fov) {
+    return std::max(2200.0f, get_prospi_outfield_ball_follow_min_dolly(raw_fov) * 0.55f);
+}
+
+float get_prospi_field_safety_preserved_dolly(ProSpiCameraPreset preset, float current_dolly) {
+    switch (preset) {
+    case ProSpiCameraPreset::PlateHighTelephoto:
+    case ProSpiCameraPreset::LowInfieldSideCloseUp:
+        return std::min(current_dolly, std::max(650.0f, current_dolly * 0.45f));
+    default:
+        return 0.0f;
+    }
+}
+
 float get_prospi_baseline_ball_follow_min_dolly(float raw_fov) {
     if (raw_fov >= 20.0f) {
         return 2800.0f;
@@ -918,7 +958,21 @@ bool is_prospi_first_base_crowd_side_facing_field_camera(const glm::vec3& locati
 }
 
 bool is_prospi_first_base_crowd_side_wide_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
-    return
+    const auto first_base_rail_wide =
+        location.x >= 2500.0f &&
+        location.x <= 4200.0f &&
+        location.y >= 600.0f &&
+        location.y <= 1900.0f &&
+        location.z >= 250.0f &&
+        location.z <= 900.0f &&
+        rotation.x >= -30.0f &&
+        rotation.x <= 6.0f &&
+        rotation.y >= 115.0f &&
+        rotation.y <= 155.0f &&
+        raw_fov >= 45.0f &&
+        raw_fov <= 80.0f;
+
+    const auto first_base_line_wide =
         location.x >= -3500.0f &&
         location.x <= -1500.0f &&
         location.y >= -1800.0f &&
@@ -929,6 +983,8 @@ bool is_prospi_first_base_crowd_side_wide_camera(const glm::vec3& location, cons
         rotation.y >= 15.0f &&
         rotation.y <= 55.0f &&
         raw_fov <= 45.0f;
+
+    return first_base_rail_wide || first_base_line_wide;
 }
 
 bool is_prospi_executable() {
@@ -1107,9 +1163,9 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
     }
 
     if (std::abs(location.x) >= 100000.0f &&
-        std::abs(location.y) >= 25000.0f &&
+        std::abs(location.y) >= 5000.0f &&
         location.z >= 45000.0f &&
-        raw_fov >= 55.0f &&
+        raw_fov >= 50.0f &&
         (nearly_equal(rotation.y, -162.0f, 18.0f) || nearly_equal(rotation.y, 168.0f, 18.0f))) {
         return ProSpiCameraPreset::OpeningAerialTelephoto;
     }
@@ -1179,7 +1235,10 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
     if (nearly_equal(std::abs(location.x), 6640.0f, 3000.0f) &&
         nearly_equal(location.y, -8200.0f, 3400.0f) &&
         nearly_equal(location.z, 1900.0f, 1200.0f) &&
-        (nearly_equal(rotation.y, 41.0f, 30.0f) || nearly_equal(rotation.y, 140.0f, 24.0f) || nearly_equal(rotation.y, -160.0f, 24.0f))) {
+        (nearly_equal(rotation.y, 0.0f, 24.0f) ||
+         nearly_equal(rotation.y, 41.0f, 30.0f) ||
+         nearly_equal(rotation.y, 140.0f, 24.0f) ||
+         nearly_equal(rotation.y, -160.0f, 24.0f))) {
         return ProSpiCameraPreset::DeepOutfieldTelephoto;
     }
 
@@ -2025,119 +2084,6 @@ std::optional<bool> read_object_bool_property(sdk::UObject* object, std::wstring
     return ((sdk::FBoolProperty*)prop)->get_value_from_object(object);
 } catch (...) {
     return std::nullopt;
-}
-
-template <typename T>
-std::optional<T> read_memory_value(uintptr_t address) {
-    if (address == 0 || IsBadReadPtr((void*)address, sizeof(T))) {
-        return std::nullopt;
-    }
-
-    return *(T*)address;
-}
-
-struct ProSpiSparseMapSummary {
-    int32_t allocation_count{-1};
-    int32_t free_count{-1};
-    int32_t active_count{-1};
-};
-
-ProSpiSparseMapSummary summarize_prospi_sparse_map(uintptr_t map_base) {
-    ProSpiSparseMapSummary summary{};
-    summary.allocation_count = read_memory_value<int32_t>(map_base + 0x8).value_or(-1);
-    summary.free_count = read_memory_value<int32_t>(map_base + 0x34).value_or(-1);
-
-    if (summary.allocation_count >= 0 && summary.free_count >= 0 && summary.free_count <= summary.allocation_count) {
-        summary.active_count = summary.allocation_count - summary.free_count;
-    }
-
-    return summary;
-}
-
-int32_t summarize_prospi_class_line_segments(uintptr_t line_mesh) {
-    constexpr int32_t MAX_SAFE_ENTRIES = 4096;
-
-    const auto map_base = line_mesh + 0x1d0;
-    const auto data = read_memory_value<uintptr_t>(map_base).value_or(0);
-    const auto count = read_memory_value<int32_t>(map_base + 0x8).value_or(0);
-
-    if (data == 0 || count <= 0) {
-        return 0;
-    }
-
-    int64_t total_segments = 0;
-    const auto safe_count = std::min(count, MAX_SAFE_ENTRIES);
-
-    for (int32_t i = 0; i < safe_count; ++i) {
-        const auto entry = data + (uintptr_t)i * 0x20;
-        const auto key = read_memory_value<uintptr_t>(entry).value_or(0);
-        const auto segment_count = read_memory_value<int32_t>(entry + 0x10).value_or(0);
-
-        if (key == 0 || segment_count <= 0) {
-            continue;
-        }
-
-        total_segments += segment_count;
-    }
-
-    return (int32_t)std::min<int64_t>(total_segments, INT32_MAX);
-}
-
-struct ProSpiRenderEntrySummary {
-    int32_t entry_count{0};
-    int32_t populated_count{0};
-    int32_t segment_count{0};
-    int32_t dispatch_count{0};
-    int32_t cleanup_count{0};
-};
-
-ProSpiRenderEntrySummary summarize_prospi_render_entries(uintptr_t line_mesh) {
-    constexpr int32_t MAX_SAFE_ENTRIES = 4096;
-
-    ProSpiRenderEntrySummary summary{};
-    const auto map_base = line_mesh + 0x180;
-    const auto data = read_memory_value<uintptr_t>(map_base).value_or(0);
-    const auto count = read_memory_value<int32_t>(map_base + 0x8).value_or(0);
-
-    if (data == 0 || count <= 0) {
-        return summary;
-    }
-
-    const auto safe_count = std::min(count, MAX_SAFE_ENTRIES);
-
-    for (int32_t i = 0; i < safe_count; ++i) {
-        const auto entry = data + (uintptr_t)i * 0x90;
-        const auto key = read_memory_value<uintptr_t>(entry).value_or(0);
-
-        if (key == 0) {
-            continue;
-        }
-
-        ++summary.entry_count;
-
-        const auto populated = read_memory_value<int32_t>(entry + 0x64).value_or(0);
-        const auto segment_count = read_memory_value<int32_t>(entry + 0x6c).value_or(0);
-        const auto cleanup_flag = read_memory_value<int32_t>(entry + 0x74).value_or(0);
-        const auto dispatch_count = read_memory_value<int32_t>(entry + 0x7c).value_or(0);
-
-        if (populated > 0) {
-            ++summary.populated_count;
-        }
-
-        if (segment_count > 0) {
-            summary.segment_count = (int32_t)std::min<int64_t>((int64_t)summary.segment_count + segment_count, INT32_MAX);
-        }
-
-        if (dispatch_count > 0) {
-            ++summary.dispatch_count;
-        }
-
-        if (cleanup_flag == 0) {
-            ++summary.cleanup_count;
-        }
-    }
-
-    return summary;
 }
 
 std::optional<int32_t> read_object_array_count_property(sdk::UObject* object, std::wstring_view name) try {
@@ -4826,186 +4772,133 @@ bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
     return true;
 }
 
-void VR::attempt_hook_prospi_line_mesh_consumer() {
-    if (m_prospi_line_mesh_consumer_hook_attempted || !is_prospi_executable()) {
+void VR::attempt_hook_prospi_spectator_world_cull() {
+    if (m_prospi_spectator_world_cull_hook_attempted || !is_prospi_executable()) {
         return;
     }
 
-    m_prospi_line_mesh_consumer_hook_attempted = true;
+    m_prospi_spectator_world_cull_hook_attempted = true;
 
-    constexpr const char* LINE_MESH_CONSUMER_PATTERN =
-        "48 8B C4 48 89 50 10 48 89 48 08 55 41 56 48 8D A8 88 FC FF FF "
-        "48 81 EC 68 04 00 00 48 89 58 E8 48 89 70 E0 48 89 78 D8 48 8B F9 "
-        "4C 89 60 D0 4C 89 68 C8 4C 89 78 C0 48 8D 81 88 02 00 00";
+    // FWorldCullUniformBuffer is passed in r8 immediately before the spectator
+    // module creates its uniform buffer for /Spectator/worldcull.usf.
+    constexpr const char* WORLD_CULL_UNIFORM_CREATE_PATTERN =
+        "4C 8D 85 ? ? ? ? 41 BE 01 00 00 00 48 8D 55 ? 48 8B 01 "
+        "44 89 74 24 28 89 74 24 20 FF 90 00 01 00 00";
 
-    const auto target = utility::scan(utility::get_executable(), LINE_MESH_CONSUMER_PATTERN);
-    if (!target) {
-        SPDLOG_WARN("[PROSPI_LINE_MESH_CONSUMER] Failed to find ULineMeshIntersection consumer signature");
+    const auto sequence = utility::scan(utility::get_executable(), WORLD_CULL_UNIFORM_CREATE_PATTERN);
+    if (!sequence) {
+        SPDLOG_WARN("[PROSPI_WORLD_CULL] Failed to find spectator FWorldCullUniformBuffer creation sequence");
         return;
     }
 
-    auto hook = safetyhook::create_inline((void*)*target, &VR::prospi_line_mesh_consumer_hook);
+    constexpr uintptr_t CALL_OFFSET = 0x1d;
+    const auto hook_address = *sequence + CALL_OFFSET;
+    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_spectator_world_cull_hook);
     if (!hook) {
-        SPDLOG_WARN("[PROSPI_LINE_MESH_CONSUMER] Failed to hook consumer at 0x{:x}", *target);
+        SPDLOG_WARN("[PROSPI_WORLD_CULL] Failed to hook spectator world-cull uniform creation at 0x{:x}", hook_address);
         return;
     }
 
-    m_prospi_line_mesh_consumer_hook = std::move(hook);
-    m_prospi_line_mesh_consumer_address.store(*target, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_hooked.store(true, std::memory_order_relaxed);
-    SPDLOG_INFO("[PROSPI_LINE_MESH_CONSUMER] Hooked ULineMeshIntersection consumer at 0x{:x}", *target);
-}
+    m_prospi_spectator_world_cull_hook = std::move(hook);
+    m_prospi_spectator_world_cull_hook_address.store(hook_address, std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_hooked.store(true, std::memory_order_relaxed);
 
-void VR::attempt_hook_prospi_camera_frustum_matrix() {
-    if (m_prospi_camera_frustum_matrix_hook_attempted || !is_prospi_executable()) {
-        return;
-    }
-
-    m_prospi_camera_frustum_matrix_hook_attempted = true;
-
-    constexpr const char* CAMERA_CONTROLLER_PATTERN =
-        "48 89 5C 24 18 55 48 8D AC 24 30 F4 FF FF 48 81 EC D0 0C 00 00 "
-        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 C0 0B 00 00 48 8B 41 10 48 8B D9";
-    constexpr const char* GET_VIEW_FRUSTUM_BOUNDS_CALL_PATTERN =
-        "48 8D 4B 20 45 33 C0 48 8D 54 24 20 E8 ? ? ? ?";
-
-    const auto function = utility::scan(utility::get_executable(), CAMERA_CONTROLLER_PATTERN);
-    if (!function) {
-        SPDLOG_WARN("[PROSPI_CAMERA_FRUSTUM] Failed to find UGfxCameraControllerUE::vfunc_0x2e8 signature");
-        return;
-    }
-
-    const auto call = utility::scan(*function, 0x240, GET_VIEW_FRUSTUM_BOUNDS_CALL_PATTERN);
-    if (!call) {
-        SPDLOG_WARN(
-            "[PROSPI_CAMERA_FRUSTUM] Found UGfxCameraControllerUE::vfunc_0x2e8 at 0x{:x} but not the GetViewFrustumBounds call",
-            *function);
-        return;
-    }
-
-    const auto hook_address = *call + 12; // the E8 call after rcx/rdx/r8 are prepared
-    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_camera_frustum_matrix_hook);
-    if (!hook) {
-        SPDLOG_WARN("[PROSPI_CAMERA_FRUSTUM] Failed to hook GetViewFrustumBounds call at 0x{:x}", hook_address);
-        return;
-    }
-
-    m_prospi_camera_frustum_matrix_hook = std::move(hook);
-    m_prospi_camera_frustum_matrix_hook_address.store(hook_address, std::memory_order_relaxed);
-    m_prospi_camera_frustum_matrix_hooked.store(true, std::memory_order_relaxed);
     SPDLOG_INFO(
-        "[PROSPI_CAMERA_FRUSTUM] Hooked UGfxCameraControllerUE::vfunc_0x2e8 GetViewFrustumBounds call at 0x{:x}",
+        "[PROSPI_WORLD_CULL] Hooked /Spectator/worldcull.usf uniform creation at 0x{:x}",
         hook_address);
 }
 
-void VR::record_prospi_line_mesh_consumer_snapshot(void* line_mesh, uint32_t insertion_counter_before) {
-    const auto base = (uintptr_t)line_mesh;
-    if (base == 0 || IsBadReadPtr((void*)base, 0x300)) {
-        return;
-    }
-
-    const auto calls = m_prospi_line_mesh_consumer_call_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto insertion_after = read_memory_value<uint32_t>(base + 0x278).value_or(0xffffffffu);
-    const auto class_map = summarize_prospi_sparse_map(base + 0x1d0);
-    const auto render_map = summarize_prospi_sparse_map(base + 0x180);
-    const auto line_segments = summarize_prospi_class_line_segments(base);
-    const auto render_entries = summarize_prospi_render_entries(base);
-
-    m_prospi_line_mesh_consumer_line_address.store(base, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_insertion_before.store((int32_t)insertion_counter_before, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_insertion_after.store((int32_t)insertion_after, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_class_map_count.store(class_map.active_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_class_entry_count.store(class_map.allocation_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_line_segment_count.store(line_segments, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_render_map_count.store(render_map.active_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_render_entry_count.store(render_entries.entry_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_render_populated_count.store(render_entries.populated_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_render_dispatch_count.store(render_entries.dispatch_count, std::memory_order_relaxed);
-    m_prospi_line_mesh_consumer_render_cleanup_count.store(render_entries.cleanup_count, std::memory_order_relaxed);
-
-    const auto now_ms = steady_clock_ms();
-    auto last_ms = m_prospi_line_mesh_consumer_last_log_ms.load(std::memory_order_relaxed);
-    if ((last_ms == 0 || now_ms - last_ms >= 1000) &&
-        m_prospi_line_mesh_consumer_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
-    {
-        SPDLOG_INFO(
-            "[PROSPI_LINE_MESH_CONSUMER] calls={} line=0x{:x} insert={} -> {} class_active={} class_segments={} render_active={} render_entries={} populated={} dispatch={} cleanup={}",
-            calls,
-            base,
-            insertion_counter_before,
-            insertion_after,
-            class_map.active_count,
-            line_segments,
-            render_map.active_count,
-            render_entries.entry_count,
-            render_entries.populated_count,
-            render_entries.dispatch_count,
-            render_entries.cleanup_count);
-    }
-}
-
-int64_t VR::prospi_line_mesh_consumer_hook(void* line_mesh, void* command_list) {
-    if (g_framework == nullptr || g_framework->vr() == nullptr) {
-        return 0;
-    }
-
-    auto* vr = g_framework->vr().get();
-    const auto before = read_memory_value<uint32_t>((uintptr_t)line_mesh + 0x278).value_or(0xffffffffu);
-    const auto result = vr->m_prospi_line_mesh_consumer_hook.call<int64_t>(line_mesh, command_list);
-
-    if (vr->m_prospi_line_mesh_consumer_telemetry_enabled.load(std::memory_order_relaxed)) {
-        vr->record_prospi_line_mesh_consumer_snapshot(line_mesh, before);
-    }
-
-    return result;
-}
-
-void VR::prospi_camera_frustum_matrix_hook(safetyhook::Context& ctx) {
+void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
     if (g_framework == nullptr || g_framework->vr() == nullptr) {
         return;
     }
 
     auto* vr = g_framework->vr().get();
-    if (!vr->m_prospi_camera_frustum_matrix_widen_enabled.load(std::memory_order_relaxed)) {
+    if (!vr->m_prospi_spectator_world_cull_override_enabled.load(std::memory_order_relaxed)) {
         return;
     }
 
-    auto* matrix = (float*)ctx.rdx;
-    if (matrix == nullptr || IsBadReadPtr(matrix, sizeof(float) * 16)) {
+    auto* uniform = reinterpret_cast<ProSpiWorldCullUniformBuffer*>(ctx.r8);
+    if (uniform == nullptr) {
         return;
     }
 
-    const auto scale = std::clamp(vr->m_prospi_camera_frustum_matrix_scale.load(std::memory_order_relaxed), 1.0f, 8.0f);
-    if (scale <= 1.001f || !std::isfinite(scale)) {
-        return;
+    const auto horizontal_scale =
+        std::clamp(vr->m_prospi_spectator_world_cull_horizontal_scale.load(std::memory_order_relaxed), 0.001f, 128.0f);
+    const auto vertical_scale =
+        std::clamp(vr->m_prospi_spectator_world_cull_vertical_scale.load(std::memory_order_relaxed), 0.001f, 128.0f);
+    const auto horizontal_cap =
+        std::clamp(vr->m_prospi_spectator_world_cull_horizontal_cap.load(std::memory_order_relaxed), 0.01f, 64.0f);
+    const auto vertical_cap =
+        std::clamp(vr->m_prospi_spectator_world_cull_vertical_cap.load(std::memory_order_relaxed), 0.01f, 64.0f);
+    const auto horizontal_before = uniform->cot_fov[1];
+    const auto vertical_before = uniform->cot_fov[0];
+    bool horizontal_capped = false;
+    bool vertical_capped = false;
+
+    if (std::isfinite(horizontal_before)) {
+        auto horizontal_after = horizontal_before * horizontal_scale;
+        if (vr->m_prospi_spectator_world_cull_horizontal_cap_enabled.load(std::memory_order_relaxed)) {
+            horizontal_capped = std::abs(horizontal_after) > horizontal_cap;
+            horizontal_after = std::copysign(std::min(std::abs(horizontal_after), horizontal_cap), horizontal_after);
+        }
+        uniform->cot_fov[1] = horizontal_after;
     }
 
-    // This is only the spectator controller's internal culling frustum. Scaling
-    // the clip-space X column mimics a wider aspect ratio without touching the
-    // real HMD/game projection that the player sees.
-    const auto before = matrix[0];
-    matrix[0] /= scale;
-    matrix[4] /= scale;
-    matrix[8] /= scale;
-    matrix[12] /= scale;
-    const auto after = matrix[0];
+    if (std::isfinite(vertical_before)) {
+        auto vertical_after = vertical_before * vertical_scale;
+        if (vr->m_prospi_spectator_world_cull_vertical_cap_enabled.load(std::memory_order_relaxed)) {
+            vertical_capped = std::abs(vertical_after) > vertical_cap;
+            vertical_after = std::copysign(std::min(std::abs(vertical_after), vertical_cap), vertical_after);
+        }
+        uniform->cot_fov[0] = vertical_after;
+    }
 
-    const auto calls = vr->m_prospi_camera_frustum_matrix_call_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    vr->m_prospi_camera_frustum_matrix_last_m00_before.store(before, std::memory_order_relaxed);
-    vr->m_prospi_camera_frustum_matrix_last_m00_after.store(after, std::memory_order_relaxed);
+    const auto num_views = std::clamp<uint32_t>(uniform->num_views, 0u, 8u);
+    if (vr->m_prospi_spectator_world_cull_expand_depth_enabled.load(std::memory_order_relaxed)) {
+        constexpr float DEPTH_MIN = -1.0e9f;
+        constexpr float DEPTH_MAX = 1.0e9f;
+
+        for (uint32_t i = 0; i < num_views; ++i) {
+            uniform->min_z[i][0] = DEPTH_MIN;
+            uniform->max_z[i][0] = DEPTH_MAX;
+        }
+    }
+
+    const auto calls = vr->m_prospi_spectator_world_cull_call_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    vr->m_prospi_spectator_world_cull_last_horizontal_before.store(horizontal_before, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_horizontal_after.store(uniform->cot_fov[1], std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_vertical_before.store(vertical_before, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_vertical_after.store(uniform->cot_fov[0], std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_num_instances.store((int32_t)uniform->num_instances, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_num_views.store((int32_t)uniform->num_views, std::memory_order_relaxed);
 
     const auto now_ms = steady_clock_ms();
-    auto last_ms = vr->m_prospi_camera_frustum_matrix_last_log_ms.load(std::memory_order_relaxed);
+    auto last_ms = vr->m_prospi_spectator_world_cull_last_log_ms.load(std::memory_order_relaxed);
     if ((last_ms == 0 || now_ms - last_ms >= 1000) &&
-        vr->m_prospi_camera_frustum_matrix_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
+        vr->m_prospi_spectator_world_cull_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
     {
         SPDLOG_INFO(
-            "[PROSPI_CAMERA_FRUSTUM] calls={} matrix=0x{:x} scale={:.2f} m00={:.6f}->{:.6f}",
+            "[PROSPI_WORLD_CULL] calls={} uniform=0x{:x} instances={} views={} cot_h={:.6f}->{:.6f} scale_h={:.4f} cap_h={}:{:.4f}:hit={} cot_v={:.6f}->{:.6f} scale_v={:.4f} cap_v={}:{:.4f}:hit={} depth_expand={} min0={:.3f} max0={:.3f}",
             calls,
-            (uintptr_t)matrix,
-            scale,
-            before,
-            after);
+            (uintptr_t)uniform,
+            uniform->num_instances,
+            uniform->num_views,
+            horizontal_before,
+            uniform->cot_fov[1],
+            horizontal_scale,
+            vr->m_prospi_spectator_world_cull_horizontal_cap_enabled.load(std::memory_order_relaxed),
+            horizontal_cap,
+            horizontal_capped,
+            vertical_before,
+            uniform->cot_fov[0],
+            vertical_scale,
+            vr->m_prospi_spectator_world_cull_vertical_cap_enabled.load(std::memory_order_relaxed),
+            vertical_cap,
+            vertical_capped,
+            vr->m_prospi_spectator_world_cull_expand_depth_enabled.load(std::memory_order_relaxed),
+            uniform->min_z[0][0],
+            uniform->max_z[0][0]);
     }
 }
 
@@ -5178,25 +5071,37 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_daysgone_gbuffer_compatibility(engine);
 
     update_statistics_overlay(engine);
-    update_game_fov();
 
-    const auto prospi_line_consumer_telemetry =
-        is_prospi_executable() && m_match_game_fov_prospi_line_mesh_consumer_telemetry->value();
-    m_prospi_line_mesh_consumer_telemetry_enabled.store(prospi_line_consumer_telemetry, std::memory_order_relaxed);
-    if (prospi_line_consumer_telemetry) {
-        attempt_hook_prospi_line_mesh_consumer();
-    }
-
-    const auto prospi_camera_frustum_widen =
-        is_prospi_executable() && m_match_game_fov_prospi_spectator_camera_frustum_widen->value();
-    m_prospi_camera_frustum_matrix_widen_enabled.store(prospi_camera_frustum_widen, std::memory_order_relaxed);
-    m_prospi_camera_frustum_matrix_scale.store(
-        std::clamp(m_match_game_fov_prospi_spectator_camera_frustum_scale->value(), 1.0f, 8.0f),
+    const auto prospi_world_cull_override =
+        is_prospi_executable() && m_match_game_fov_prospi_spectator_world_cull_override->value();
+    m_prospi_spectator_world_cull_override_enabled.store(prospi_world_cull_override, std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_horizontal_scale.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_horizontal_scale->value(), 0.001f, 128.0f),
         std::memory_order_relaxed);
-    if (prospi_camera_frustum_widen) {
-        attempt_hook_prospi_camera_frustum_matrix();
+    m_prospi_spectator_world_cull_vertical_scale.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_vertical_scale->value(), 0.001f, 128.0f),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_horizontal_cap_enabled.store(
+        prospi_world_cull_override && m_match_game_fov_prospi_spectator_world_cull_horizontal_cap_enabled->value(),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_horizontal_cap.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_horizontal_cap->value(), 0.01f, 64.0f),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_vertical_cap_enabled.store(
+        prospi_world_cull_override && m_match_game_fov_prospi_spectator_world_cull_vertical_cap_enabled->value(),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_vertical_cap.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_vertical_cap->value(), 0.01f, 64.0f),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_expand_depth_enabled.store(
+        prospi_world_cull_override && m_match_game_fov_prospi_spectator_world_cull_expand_depth->value(),
+        std::memory_order_relaxed);
+
+    if (prospi_world_cull_override) {
+        attempt_hook_prospi_spectator_world_cull();
     }
 
+    update_game_fov();
     update_shf_auto_2d_mode(engine);
     update_dispatch_auto_2d_mode(engine);
     update_mixtape_auto_2d_mode(engine);
@@ -8049,6 +7954,16 @@ void VR::update_game_fov() {
         }
 
         if (!prospi_calibration_applied &&
+            source == ProSpiAutoCameraSource::LearnedNearest &&
+            first_base_crowd_side_wide_camera) {
+            const auto learned_floor = std::clamp(get_prospi_baseline_telephoto_min_dolly(raw_fov), 10.0f, 15000.0f);
+            if (active_dolly_distance < learned_floor) {
+                active_dolly_distance = learned_floor;
+                prospi_dolly_source = "SmartLearnedFirstBaseRailFloor";
+            }
+        }
+
+        if (!prospi_calibration_applied &&
             source != ProSpiAutoCameraSource::LearnedNearest &&
             (sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST ||
              sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST) &&
@@ -8721,6 +8636,15 @@ void VR::update_game_fov() {
                             capped_dolly = std::min(
                                 dolly_offset,
                                 std::max(max_safe_dolly, get_prospi_baseline_telephoto_preserved_dolly(raw_fov)));
+                        } else if (safety_zone == ProSpiCameraSafetyZone::OutfieldLow) {
+                            capped_dolly = std::min(
+                                dolly_offset,
+                                std::max(max_safe_dolly, get_prospi_outfield_safety_preserved_dolly(raw_fov)));
+                        } else if (safety_zone == ProSpiCameraSafetyZone::FieldFloor) {
+                            const auto preserved_dolly = get_prospi_field_safety_preserved_dolly(prospi_preset, dolly_offset);
+                            if (preserved_dolly > 0.0f) {
+                                capped_dolly = std::min(dolly_offset, std::max(max_safe_dolly, preserved_dolly));
+                            }
                         }
 
                         dolly_offset = lerp_float(dolly_offset, capped_dolly, cap_strength);
@@ -11046,42 +10970,6 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         "ProSpi-only object triage for the custom UGfxSpectatorControllerUE -> ULineMeshIntersection spectator path. "
                         "Known failed probes are parked under the legacy section so normal camera tuning stays clean."
                     );
-                    m_match_game_fov_prospi_spectator_camera_frustum_widen->draw("Widen Spectator Camera Frustum");
-                    if (m_match_game_fov_prospi_spectator_camera_frustum_widen->value()) {
-                        m_match_game_fov_prospi_spectator_camera_frustum_scale->draw("Spectator Frustum Horizontal Scale");
-                        ImGui::TextWrapped(
-                            "New test: widens UGfxCameraControllerUE's internal GetViewFrustumBounds matrix only. "
-                            "This should affect spectator/crowd visibility decisions without changing the HMD projection.");
-                        ImGui::Text(
-                            "Frustum hook: %s addr=0x%llx calls=%llu m00 %.6f -> %.6f",
-                            m_prospi_camera_frustum_matrix_hooked.load(std::memory_order_relaxed) ? "hooked" : "not hooked",
-                            (unsigned long long)m_prospi_camera_frustum_matrix_hook_address.load(std::memory_order_relaxed),
-                            (unsigned long long)m_prospi_camera_frustum_matrix_call_count.load(std::memory_order_relaxed),
-                            m_prospi_camera_frustum_matrix_last_m00_before.load(std::memory_order_relaxed),
-                            m_prospi_camera_frustum_matrix_last_m00_after.load(std::memory_order_relaxed));
-                    }
-
-                    m_match_game_fov_prospi_line_mesh_consumer_telemetry->draw("Log LineMesh Consumer Telemetry");
-                    if (m_match_game_fov_prospi_line_mesh_consumer_telemetry->value()) {
-                        ImGui::Text(
-                            "Consumer hook: %s fn=0x%llx line=0x%llx calls=%llu",
-                            m_prospi_line_mesh_consumer_hooked.load(std::memory_order_relaxed) ? "hooked" : "not hooked",
-                            (unsigned long long)m_prospi_line_mesh_consumer_address.load(std::memory_order_relaxed),
-                            (unsigned long long)m_prospi_line_mesh_consumer_line_address.load(std::memory_order_relaxed),
-                            (unsigned long long)m_prospi_line_mesh_consumer_call_count.load(std::memory_order_relaxed));
-                        ImGui::Text(
-                            "LineMesh maps: insert %d -> %d class_active=%d class_segments=%d render_active=%d entries=%d populated=%d dispatch=%d cleanup=%d",
-                            m_prospi_line_mesh_consumer_insertion_before.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_insertion_after.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_class_map_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_line_segment_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_render_map_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_render_entry_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_render_populated_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_render_dispatch_count.load(std::memory_order_relaxed),
-                            m_prospi_line_mesh_consumer_render_cleanup_count.load(std::memory_order_relaxed));
-                    }
-
                     m_match_game_fov_prospi_spectator_mesh_triage->draw("Enable Spectator Module Triage");
                     if (m_match_game_fov_prospi_spectator_mesh_triage->value()) {
                         m_match_game_fov_prospi_spectator_mesh_triage_auto_refresh->draw("Auto Refresh Spectator Resolver");
@@ -11128,6 +11016,54 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                 "Old test: calls SetScalarParameterValue only on the transient GfxSpectatorControllerUE MaterialInstanceDynamic array. Last test showed calls but no visual change.");
                             ImGui::TreePop();
                         }
+                    }
+
+                    ImGui::SeparatorText("Spectator GPU World Cull");
+                    ImGui::TextWrapped(
+                        "ProSpi-only override for the exact FWorldCullCS uniform buffer consumed by "
+                        "/Spectator/worldcull.usf. This widens the custom spectator compute-cull input "
+                        "without changing the HMD projection, rendered view, or camera aspect ratio."
+                    );
+                    m_match_game_fov_prospi_spectator_world_cull_override->draw("Override Spectator GPU World Cull");
+                    if (m_match_game_fov_prospi_spectator_world_cull_override->value()) {
+                        m_match_game_fov_prospi_spectator_world_cull_horizontal_scale->draw_drag(
+                            "Horizontal Cull Width Scale", 0.001f, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        m_match_game_fov_prospi_spectator_world_cull_vertical_scale->draw_drag(
+                            "Vertical Cull Height Scale", 0.001f, "%.4f", ImGuiSliderFlags_Logarithmic);
+                        m_match_game_fov_prospi_spectator_world_cull_horizontal_cap_enabled->draw(
+                            "Cap Extreme Horizontal Cull Values");
+                        if (m_match_game_fov_prospi_spectator_world_cull_horizontal_cap_enabled->value()) {
+                            m_match_game_fov_prospi_spectator_world_cull_horizontal_cap->draw_drag(
+                                "Maximum Horizontal Cull Cotangent", 0.01f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                        }
+                        m_match_game_fov_prospi_spectator_world_cull_vertical_cap_enabled->draw(
+                            "Cap Extreme Vertical Cull Values");
+                        if (m_match_game_fov_prospi_spectator_world_cull_vertical_cap_enabled->value()) {
+                            m_match_game_fov_prospi_spectator_world_cull_vertical_cap->draw_drag(
+                                "Maximum Vertical Cull Cotangent", 0.01f, "%.3f", ImGuiSliderFlags_Logarithmic);
+                        }
+                        m_match_game_fov_prospi_spectator_world_cull_expand_depth->draw("Expand Spectator Cull Depth");
+
+                        const auto hooked = m_prospi_spectator_world_cull_hooked.load(std::memory_order_relaxed);
+                        const auto hook_address = m_prospi_spectator_world_cull_hook_address.load(std::memory_order_relaxed);
+                        const auto calls = m_prospi_spectator_world_cull_call_count.load(std::memory_order_relaxed);
+                        ImGui::Text(
+                            "Hook: %s at 0x%llx | Calls: %llu | Instances: %d | Views: %d",
+                            hooked ? "active" : "pending",
+                            (unsigned long long)hook_address,
+                            (unsigned long long)calls,
+                            m_prospi_spectator_world_cull_last_num_instances.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_num_views.load(std::memory_order_relaxed));
+                        ImGui::Text(
+                            "Cull cotangent H %.5f -> %.5f | V %.5f -> %.5f",
+                            m_prospi_spectator_world_cull_last_horizontal_before.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_horizontal_after.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_vertical_before.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_vertical_after.load(std::memory_order_relaxed));
+                        ImGui::TextWrapped(
+                            "Recommended test: horizontal and vertical scale 0.125, both caps enabled at 0.5, "
+                            "and depth expansion off. The caps catch extreme telephoto cuts without making already-wide cuts unnecessarily broader."
+                        );
                     }
 
                     ImGui::SeparatorText("Camera Safety Guard");
@@ -11409,11 +11345,6 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     const auto spectator_missing_count = m_prospi_spectator_mesh_missing_count.load(std::memory_order_relaxed);
                     const auto spectator_line_write_count = m_prospi_spectator_line_mesh_write_count.load(std::memory_order_relaxed);
                     const auto spectator_line_missing_count = m_prospi_spectator_line_mesh_missing_count.load(std::memory_order_relaxed);
-                    const auto spectator_frustum_hooked = m_prospi_camera_frustum_matrix_hooked.load(std::memory_order_relaxed);
-                    const auto spectator_frustum_calls = m_prospi_camera_frustum_matrix_call_count.load(std::memory_order_relaxed);
-                    const auto spectator_frustum_scale = m_prospi_camera_frustum_matrix_scale.load(std::memory_order_relaxed);
-                    const auto line_consumer_hooked = m_prospi_line_mesh_consumer_hooked.load(std::memory_order_relaxed);
-                    const auto line_consumer_calls = m_prospi_line_mesh_consumer_call_count.load(std::memory_order_relaxed);
                     const auto camera_safety_active = m_prospi_camera_safety_active.load(std::memory_order_relaxed);
                     const auto camera_safety_zone = m_prospi_camera_safety_zone.load(std::memory_order_relaxed);
                     const auto camera_safety_min_z = m_prospi_camera_safety_min_z.load(std::memory_order_relaxed);
@@ -11463,13 +11394,6 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         spectator_missing_count,
                         spectator_line_write_count,
                         spectator_line_missing_count);
-                    ImGui::Text(
-                        "Spectator Frustum: %s calls=%llu scale=%.2f | LineMesh Consumer: %s calls=%llu",
-                        spectator_frustum_hooked ? "hooked" : "not hooked",
-                        (unsigned long long)spectator_frustum_calls,
-                        spectator_frustum_scale,
-                        line_consumer_hooked ? "hooked" : "not hooked",
-                        (unsigned long long)line_consumer_calls);
                     ImGui::Text("Camera Safety Guard: %s (%s)", camera_safety_active ? "yes" : "no", get_prospi_camera_safety_zone_name(camera_safety_zone));
                     if (m_match_game_fov_prospi_camera_safety_guard->value()) {
                         ImGui::Text(
