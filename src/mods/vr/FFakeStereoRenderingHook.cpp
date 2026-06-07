@@ -736,6 +736,31 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
+bool is_ue_5_8_or_newer() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        if (str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
+            return true;
+        }
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50008;
+}
+
+bool is_ue_5_8() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.8");
+    }
+
+    return disk_version.dwFileVersionMS == 0x50008;
+}
+
+
 bool is_ue_5_6_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -3096,6 +3121,10 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread @ 0x{:x}!", *func);
 
+    if (is_ue_5_8() && g_framework->is_dx12()) {
+        attempt_hook_ue58_slate_output_texture_register();
+    }
+
     // UE5.7 elements-pass inspection is a fallback only. Let the DrawWindow path
     // try the dedicated UI target first before probing extra callsites.
 }
@@ -3343,6 +3372,215 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
     m_hooked_ue55_slate_output_texture_register = true;
 
     SPDLOG_WARN("[UE5.5][SlateUI] Hooked SlateOutputTexture RegisterExternalTexture callsite {:x} -> {:x}", register_callsite, register_target);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register() {
+    if (!is_ue_5_8() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+        return;
+    }
+
+    if (m_attempted_hook_ue58_slate_output_texture_register) {
+        return;
+    }
+
+    const auto draw_window = g_hook != nullptr ? g_hook->m_slate_thread_hook.target_address() : 0;
+
+    if (draw_window == 0) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the Slate hook has no target address");
+        return;
+    }
+
+    const auto module_within = utility::get_module_within(draw_window);
+
+    if (!module_within.has_value()) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the DrawWindow module was not resolved");
+        return;
+    }
+
+    m_attempted_hook_ue58_slate_output_texture_register = true;
+
+    const auto draw_function = utility::find_function_start(draw_window).value_or(draw_window);
+
+    struct SlateOutputFunctionRefs {
+        std::vector<uintptr_t> base_refs{};
+        std::vector<uintptr_t> layered_refs{};
+    };
+
+    std::unordered_map<uintptr_t, SlateOutputFunctionRefs> refs_by_function{};
+
+    const auto collect_refs = [&](std::wstring_view label, const std::vector<uintptr_t>& strings, bool layered) {
+        if (strings.empty()) {
+            SPDLOG_WARN("[UE5.8][SlateUI] Could not find {} string in SlateRHIRenderer", utility::narrow(label));
+            return;
+        }
+
+        for (const auto string_addr : strings) {
+            const auto refs = utility::scan_displacement_references(*module_within, string_addr);
+
+            for (const auto ref : refs) {
+                const auto function_start = utility::find_function_start_with_call(ref);
+
+                if (!function_start.has_value() || *function_start != draw_function) {
+                    continue;
+                }
+
+                auto& function_refs = refs_by_function[*function_start];
+
+                if (layered) {
+                    function_refs.layered_refs.push_back(ref);
+                } else {
+                    function_refs.base_refs.push_back(ref);
+                }
+            }
+        }
+    };
+
+    std::vector<uintptr_t> spectator_refs{};
+
+    try {
+        collect_refs(L"SlateOutputTexture", utility::scan_strings(*module_within, L"SlateOutputTexture", true), false);
+        collect_refs(L"SlateOutputTexture-%d", utility::scan_strings(*module_within, L"SlateOutputTexture-%d", true), true);
+
+        for (const auto string_addr : utility::scan_strings(*module_within, L"StereoSpectatorSwapChainTexture", true)) {
+            for (const auto ref : utility::scan_displacement_references(*module_within, string_addr)) {
+                const auto function_start = utility::find_function_start_with_call(ref);
+
+                if (function_start.has_value() && *function_start == draw_function) {
+                    spectator_refs.push_back(ref);
+                }
+            }
+        }
+    } catch (...) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Exception while scanning SlateRHIRenderer for SlateOutputTexture strings");
+        return;
+    }
+
+    std::vector<uintptr_t> proven_functions{};
+
+    for (const auto& [function_start, refs] : refs_by_function) {
+        if (!refs.base_refs.empty() && !refs.layered_refs.empty()) {
+            proven_functions.push_back(function_start);
+        }
+    }
+
+    if (proven_functions.size() != 1) {
+        SPDLOG_ERROR(
+            "[UE5.8][SlateUI] Refusing SlateOutputTexture hook because validated DrawWindow functions={} (expected exactly 1)",
+            proven_functions.size());
+        return;
+    }
+
+    if (spectator_refs.empty()) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Refusing SlateOutputTexture hook because DrawWindow lacks the StereoSpectatorSwapChainTexture validation anchor");
+        return;
+    }
+
+    struct RegisterCallsite {
+        uintptr_t callsite{};
+        uintptr_t target{};
+    };
+
+    const auto collect_internal_calls_after_ref = [&](uintptr_t ref, uintptr_t max_bytes) {
+        std::vector<RegisterCallsite> calls{};
+
+        for (auto* ip = reinterpret_cast<uint8_t*>(ref); (uintptr_t)ip < ref + max_bytes;) {
+            const auto decoded = utility::decode_one(ip);
+
+            if (!decoded) {
+                break;
+            }
+
+            const auto mnemonic = std::string_view{decoded->Mnemonic};
+
+            if (mnemonic.starts_with("CALL")) {
+                const auto target = utility::resolve_displacement((uintptr_t)ip);
+
+                if (target.has_value()) {
+                    const auto target_module = utility::get_module_within((void*)*target);
+
+                    if (target_module.has_value() && *target_module == *module_within) {
+                        calls.push_back({(uintptr_t)ip, *target});
+                    }
+                }
+            }
+
+            if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
+                break;
+            }
+
+            ip += decoded->Length;
+        }
+
+        return calls;
+    };
+
+    const auto function_start = proven_functions.front();
+    const auto& refs = refs_by_function[function_start];
+    const auto latest_base_ref = *std::max_element(refs.base_refs.begin(), refs.base_refs.end());
+    const auto latest_layered_ref = *std::max_element(refs.layered_refs.begin(), refs.layered_refs.end());
+    const auto latest_ref = std::max(latest_base_ref, latest_layered_ref);
+
+    uintptr_t register_callsite{};
+    uintptr_t register_target{};
+    constexpr uintptr_t MAX_BYTES_AFTER_NAME_REF = 0x200;
+    const auto slate_candidates = collect_internal_calls_after_ref(latest_ref, MAX_BYTES_AFTER_NAME_REF);
+    std::vector<RegisterCallsite> proven_candidates{};
+    std::unordered_set<uintptr_t> proven_callsites{};
+
+    for (const auto& candidate : slate_candidates) {
+        bool target_is_reused_for_swapchain_register = false;
+
+        for (const auto spectator_ref : spectator_refs) {
+            for (const auto& spectator_call : collect_internal_calls_after_ref(spectator_ref, MAX_BYTES_AFTER_NAME_REF)) {
+                if (spectator_call.target == candidate.target) {
+                    target_is_reused_for_swapchain_register = true;
+                    break;
+                }
+            }
+
+            if (target_is_reused_for_swapchain_register) {
+                break;
+            }
+        }
+
+        if (target_is_reused_for_swapchain_register && !proven_callsites.contains(candidate.callsite)) {
+            proven_callsites.insert(candidate.callsite);
+            proven_candidates.push_back(candidate);
+        }
+    }
+
+    if (proven_candidates.size() == 1) {
+        register_callsite = proven_candidates.front().callsite;
+        register_target = proven_candidates.front().target;
+    }
+
+    if (register_callsite == 0 || register_target == 0) {
+        SPDLOG_ERROR(
+            "[UE5.8][SlateUI] Failed to prove a unique SlateOutputTexture RegisterExternalTexture callsite near refs base={:x} layered={:x}; slate_calls={} proven={}",
+            latest_base_ref,
+            latest_layered_ref,
+            slate_candidates.size(),
+            proven_candidates.size());
+        return;
+    }
+
+    auto hook_result = safetyhook::create_mid(
+        reinterpret_cast<void*>(register_callsite),
+        &FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook);
+
+    if (!hook_result) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] Failed to hook proven SlateOutputTexture callsite {:x} -> {:x}", register_callsite, register_target);
+        return;
+    }
+
+    m_ue58_slate_output_texture_register_hooks.emplace_back(std::move(hook_result));
+    m_hooked_ue58_slate_output_texture_register = true;
+
+    SPDLOG_WARN(
+        "[UE5.8][SlateUI] Hooked proven SlateOutputTexture RegisterExternalTexture callsite {:x} -> {:x} in DrawWindow {:x}",
+        register_callsite,
+        register_target,
+        function_start);
 }
 
 namespace detail{
@@ -9852,8 +10090,18 @@ bool ue55_try_promote_fallback_ui_target(
 }
 }
 
-void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
-    if (g_hook == nullptr || !supports_ue55_dedicated_ui_target_for_current_game()) {
+void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58) {
+    const char* tag = ue58 ? "[UE5.8][SlateUI]" : "[UE5.5][SlateUI]";
+
+    if (g_hook == nullptr) {
+        return;
+    }
+
+    if (ue58) {
+        if (!is_ue_5_8() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+            return;
+        }
+    } else if (!supports_ue55_dedicated_ui_target_for_current_game()) {
         return;
     }
 
@@ -9883,13 +10131,13 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     }
 
     if (rtm == nullptr || ui_target == nullptr || ui_target == rtm->get_render_target()) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] SlateOutputTexture call reached before a valid dedicated UI target exists");
+        SPDLOG_INFO_EVERY_N_SEC(1, "{} SlateOutputTexture call reached before a valid dedicated UI target exists", tag);
         return;
     }
 
     const auto desc = ue55_try_get_d3d12_desc(ui_target, "dedicated UI target at SlateOutputTexture");
     if (!desc) {
-        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.5][SlateUI] dedicated UI target is not a valid D3D12 texture yet: {:x}", (uintptr_t)ui_target);
+        SPDLOG_INFO_EVERY_N_SEC(1, "{} dedicated UI target is not a valid D3D12 texture yet: {:x}", tag, (uintptr_t)ui_target);
         return;
     }
 
@@ -9900,7 +10148,8 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
         (desc->Width != expected_width || desc->Height != expected_height))
     {
         SPDLOG_INFO_EVERY_N_SEC(1,
-            "[UE5.5][SlateUI] refusing SlateOutputTexture replacement because dedicated UI target extent [{}x{}] != requested [{}x{}]",
+            "{} refusing SlateOutputTexture replacement because dedicated UI target extent [{}x{}] != requested [{}x{}]",
+            tag,
             desc->Width,
             desc->Height,
             expected_width,
@@ -9911,17 +10160,33 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     const auto original = (FRHITexture2D*)ctx.rdx;
     const auto original_desc = ue55_try_get_d3d12_desc(original, "original SlateOutputTexture");
 
+    if (!original_desc) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "{} refusing SlateOutputTexture replacement because the original RDX texture is not a valid D3D12 texture: {:x}",
+            tag,
+            (uintptr_t)original);
+        return;
+    }
+
     SPDLOG_INFO_EVERY_N_SEC(1,
-        "[UE5.5][SlateUI] routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+        "{} routing SlateOutputTexture original={:x} [{}x{}] -> dedicated={:x} [{}x{} fmt={}]",
+        tag,
         (uintptr_t)original,
-        original_desc ? original_desc->Width : 0,
-        original_desc ? original_desc->Height : 0,
+        original_desc->Width,
+        original_desc->Height,
         (uintptr_t)ui_target,
         desc->Width,
         desc->Height,
         (uint32_t)desc->Format);
 
     ctx.rdx = (uintptr_t)ui_target;
+}
+
+void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
+    slate_output_texture_register_hook_impl(ctx, false);
+}
+
+void FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook(safetyhook::Context& ctx) {
+    slate_output_texture_register_hook_impl(ctx, true);
 }
 
 namespace {
@@ -12660,6 +12925,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (slate_resource == nullptr) {
+        if (is_ue_5_8()) {
+            if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
+                g_hook->attempt_hook_ue58_slate_output_texture_register();
+            }
+
+            if (rtm != nullptr) {
+                rtm->ensure_dedicated_ui_target((uintptr_t)a2);
+            }
+        }
+
         SPDLOG_INFO_EVERY_N_SEC(1, "No slate resource, skipping!");
         return call_orig();
     }
@@ -12701,9 +12976,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue_5_7_or_newer()) {
+        if (is_ue_5_8()) {
+            if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
+                g_hook->attempt_hook_ue58_slate_output_texture_register();
+            }
+        }
+
         rtm->ensure_dedicated_ui_target((uintptr_t)a2);
 
-        if (!rtm->has_dedicated_ui_target() && !g_hook->m_hooked_ue57_slate_elements_pass) {
+        if (!is_ue_5_8_or_newer() && !rtm->has_dedicated_ui_target() && !g_hook->m_hooked_ue57_slate_elements_pass) {
             const auto now = std::chrono::steady_clock::now();
 
             if (g_hook->m_ue57_dedicated_ui_missing_since.time_since_epoch().count() == 0) {
