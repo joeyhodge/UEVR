@@ -945,6 +945,30 @@ bool is_prospi_first_base_low_line_camera(const glm::vec3& location, const glm::
     return first_base_low_location && first_base_low_rotation && raw_fov <= 18.0f;
 }
 
+bool is_prospi_dugout_celebration_tracking_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (raw_fov > 12.5f ||
+        std::abs(location.z) > 750.0f ||
+        location.y < -1800.0f ||
+        location.y > 800.0f ||
+        rotation.x < -12.0f ||
+        rotation.x > 12.0f) {
+        return false;
+    }
+
+    const auto first_base_dugout_facing =
+        location.x >= 1500.0f &&
+        location.x <= 3300.0f &&
+        rotation.y >= -170.0f &&
+        rotation.y <= -105.0f;
+    const auto third_base_dugout_facing =
+        location.x >= -3300.0f &&
+        location.x <= -1500.0f &&
+        rotation.y >= -10.0f &&
+        rotation.y <= 60.0f;
+
+    return first_base_dugout_facing || third_base_dugout_facing;
+}
+
 bool is_prospi_baseline_telephoto_floor_preset(ProSpiCameraPreset preset) {
     switch (preset) {
     case ProSpiCameraPreset::ThirdBaseTelephoto:
@@ -7783,6 +7807,29 @@ void VR::update_game_fov() {
         }
     };
 
+    const auto apply_prospi_dugout_celebration_tuning = [&]() {
+        if (!is_prospi ||
+            !m_match_game_fov_dolly->value() ||
+            !location.has_value() ||
+            !rotation.has_value() ||
+            !is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov)) {
+            return;
+        }
+
+        constexpr auto celebration_min_fov = 16.5f;
+        constexpr auto celebration_max_focus_distance = 1250.0f;
+        const auto safe_multiplier = std::max(active_fov_multiplier, 0.1f);
+
+        projection_min_fov = std::max(projection_min_fov, celebration_min_fov);
+        game_fov_for_matching = std::max(game_fov_for_matching, celebration_min_fov / safe_multiplier);
+        active_prospi_actual_min_fov = std::max(active_prospi_actual_min_fov, celebration_min_fov);
+
+        if (active_dolly_distance > celebration_max_focus_distance) {
+            active_dolly_distance = celebration_max_focus_distance;
+            prospi_dolly_source = "DugoutCelebrationTracking";
+        }
+    };
+
     if (is_prospi &&
         m_match_game_fov_dolly->value() &&
         m_match_game_fov_prospi_auto_camera_sequencer->value() &&
@@ -8147,6 +8194,7 @@ void VR::update_game_fov() {
         }
 
         apply_ebaseball_camera_tuning();
+        apply_prospi_dugout_celebration_tuning();
 
         const auto fov_after = game_fov_for_matching * active_fov_multiplier;
         const auto sequencer_changed =
@@ -8189,6 +8237,7 @@ void VR::update_game_fov() {
         m_prospi_auto_camera_observation_valid = false;
         update_prospi_auto_camera_sequencer_state(false);
         apply_ebaseball_camera_tuning();
+        apply_prospi_dugout_celebration_tuning();
     }
 
     effective_fov = game_fov_for_matching * active_fov_multiplier;
@@ -8703,6 +8752,8 @@ void VR::update_game_fov() {
                 is_prospi_third_base_low_line_telephoto_camera(*location, *rotation, raw_fov);
             const auto third_base_outfield_line_replay_camera =
                 is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
+            const auto dugout_celebration_tracking_camera =
+                is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
             const auto baseline_line_telephoto_camera =
                 first_base_low_line_camera ||
                 third_base_low_line_telephoto_camera ||
@@ -8727,6 +8778,13 @@ void VR::update_game_fov() {
                 } else if (baseline_line_telephoto_camera) {
                     safety_min_z = std::max(safety_min_z, 450.0f);
                 }
+            }
+
+            if (dugout_celebration_tracking_camera) {
+                // These post-home-run cameras already track the high-five line at player height.
+                // Keep the normal field floor instead of lifting them to the generic dugout ceiling.
+                safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_field_min_z->value(), -500.0f, 2500.0f);
             }
 
             const auto stand_x_min = std::clamp(m_match_game_fov_prospi_camera_safety_stand_x_min->value(), 0.0f, 10000.0f);
@@ -8770,7 +8828,11 @@ void VR::update_game_fov() {
                         const auto max_safe_dolly = std::max(0.0f, (base_z - safety_min_z) / vertical_factor);
                         auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
 
-                        if (safety_zone == ProSpiCameraSafetyZone::StandCrowd) {
+                        if (dugout_celebration_tracking_camera) {
+                            // Preserve the stable celebration tracking distance and satisfy the small
+                            // field-floor correction with the temporary up offset.
+                            capped_dolly = dolly_offset;
+                        } else if (safety_zone == ProSpiCameraSafetyZone::StandCrowd) {
                             // Stand/crowd telephoto cuts need enough retained dolly to avoid falling back into
                             // ProSpi's flat-camera crowd cull zone. Keep lift safety, but never collapse to zero.
                             capped_dolly = std::min(
