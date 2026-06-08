@@ -229,6 +229,20 @@ const char* get_prospi_game_variant_name() {
     return variant;
 }
 
+bool is_ebaseball_pro_spirit_variant() {
+    static const auto is_ebaseball = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path) {
+            return false;
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*module_path);
+        return lowered.find(L"ebaseball pro spirit") != std::wstring::npos;
+    }();
+
+    return is_ebaseball;
+}
+
 bool is_plausible_prospi_world_cull_uniform(const ProSpiWorldCullUniformBuffer& uniform) {
     constexpr float MAX_REASONABLE_COT_FOV = 1.0e6f;
     constexpr uint32_t MAX_REASONABLE_INSTANCES = 10'000'000;
@@ -1026,6 +1040,34 @@ bool is_prospi_first_base_crowd_side_wide_camera(const glm::vec3& location, cons
     return first_base_rail_wide || first_base_line_wide;
 }
 
+bool is_ebaseball_center_field_pitcher_view(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) <= 2500.0f &&
+        location.y >= -13500.0f &&
+        location.y <= -8500.0f &&
+        location.z >= 250.0f &&
+        location.z <= 2600.0f &&
+        rotation.x >= -18.0f &&
+        rotation.x <= 8.0f &&
+        rotation.y >= 65.0f &&
+        rotation.y <= 115.0f &&
+        raw_fov <= 12.0f;
+}
+
+bool is_ebaseball_right_outfield_facing_home_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= 5000.0f &&
+        location.x <= 9000.0f &&
+        location.y >= -9500.0f &&
+        location.y <= -5500.0f &&
+        location.z >= 900.0f &&
+        location.z <= 3000.0f &&
+        rotation.x >= -25.0f &&
+        rotation.x <= 5.0f &&
+        normalize_angle_delta(rotation.y, 170.0f) <= 20.0f &&
+        raw_fov <= 12.0f;
+}
+
 bool is_prospi_executable() {
     static const bool is_prospi = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -1269,6 +1311,11 @@ ProSpiCameraPreset classify_prospi_camera_preset(const glm::vec3& location, cons
          (rotation.y >= 110.0f && rotation.y <= 160.0f)) &&
         raw_fov >= 20.0f && raw_fov <= 45.0f) {
         return ProSpiCameraPreset::OffsetCenterFieldTelephoto;
+    }
+
+    if (is_ebaseball_pro_spirit_variant() &&
+        is_ebaseball_right_outfield_facing_home_camera(location, rotation, raw_fov)) {
+        return ProSpiCameraPreset::RightFieldLineTelephoto;
     }
 
     if (nearly_equal(std::abs(location.x), 6640.0f, 3000.0f) &&
@@ -7314,6 +7361,7 @@ void VR::update_game_fov() {
     std::optional<ProSpiCameraPreset> prospi_calibration_preset{};
 
     const auto is_prospi = is_prospi_executable();
+    const auto is_ebaseball_pro_spirit = is_prospi && is_ebaseball_pro_spirit_variant();
     const auto location = read_game_camera_location(pcm);
     const auto rotation = read_game_camera_rotation(pcm);
     GameCameraSample camera_sample{};
@@ -7706,6 +7754,35 @@ void VR::update_game_fov() {
         m_active_generic_camera_preset = {};
     }
 
+    const auto apply_ebaseball_camera_tuning = [&]() {
+        if (!is_ebaseball_pro_spirit ||
+            !m_match_game_fov_dolly->value() ||
+            !location.has_value() ||
+            !rotation.has_value()) {
+            return;
+        }
+
+        if (prospi_preset == ProSpiCameraPreset::OpeningAerialTelephoto &&
+            active_dolly_distance < 7400.0f) {
+            active_dolly_distance = 7400.0f;
+            prospi_dolly_source = "EBaseballOpeningAerialFloor";
+            return;
+        }
+
+        if (is_ebaseball_center_field_pitcher_view(*location, *rotation, raw_fov) &&
+            active_dolly_distance < 11000.0f) {
+            active_dolly_distance = 11000.0f;
+            prospi_dolly_source = "EBaseballCenterFieldPitcherFloor";
+            return;
+        }
+
+        if (is_ebaseball_right_outfield_facing_home_camera(*location, *rotation, raw_fov) &&
+            active_dolly_distance < 7000.0f) {
+            active_dolly_distance = 7000.0f;
+            prospi_dolly_source = "EBaseballRightOutfieldHomeFloor";
+        }
+    };
+
     if (is_prospi &&
         m_match_game_fov_dolly->value() &&
         m_match_game_fov_prospi_auto_camera_sequencer->value() &&
@@ -8069,6 +8146,8 @@ void VR::update_game_fov() {
             confidence = 0.65f;
         }
 
+        apply_ebaseball_camera_tuning();
+
         const auto fov_after = game_fov_for_matching * active_fov_multiplier;
         const auto sequencer_changed =
             std::abs(active_dolly_distance - dolly_before) > 0.25f ||
@@ -8109,6 +8188,7 @@ void VR::update_game_fov() {
         m_prospi_auto_camera_sequencer_last_valid = false;
         m_prospi_auto_camera_observation_valid = false;
         update_prospi_auto_camera_sequencer_state(false);
+        apply_ebaseball_camera_tuning();
     }
 
     effective_fov = game_fov_for_matching * active_fov_multiplier;
@@ -8632,6 +8712,9 @@ void VR::update_game_fov() {
                  std::abs(location->z) <= 1000.0f &&
                  camera_y >= baseline_y_min &&
                  camera_y <= baseline_y_max);
+            const auto ebaseball_center_field_pitcher_camera =
+                is_ebaseball_pro_spirit &&
+                is_ebaseball_center_field_pitcher_view(*location, *rotation, raw_fov);
             if (m_match_game_fov_prospi_camera_safety_baseline_rule->value() &&
                 ((abs_x >= baseline_x_min &&
                   camera_y >= baseline_y_min &&
@@ -8698,9 +8781,15 @@ void VR::update_game_fov() {
                                 dolly_offset,
                                 std::max(max_safe_dolly, get_prospi_baseline_telephoto_preserved_dolly(raw_fov)));
                         } else if (safety_zone == ProSpiCameraSafetyZone::OutfieldLow) {
-                            capped_dolly = std::min(
-                                dolly_offset,
-                                std::max(max_safe_dolly, get_prospi_outfield_safety_preserved_dolly(raw_fov)));
+                            if (ebaseball_center_field_pitcher_camera) {
+                                // Keep the requested pitcher-facing center-field dolly and satisfy the
+                                // field floor with the temporary safety up offset instead.
+                                capped_dolly = dolly_offset;
+                            } else {
+                                capped_dolly = std::min(
+                                    dolly_offset,
+                                    std::max(max_safe_dolly, get_prospi_outfield_safety_preserved_dolly(raw_fov)));
+                            }
                         } else if (safety_zone == ProSpiCameraSafetyZone::FieldFloor) {
                             const auto preserved_dolly = get_prospi_field_safety_preserved_dolly(prospi_preset, dolly_offset);
                             if (preserved_dolly > 0.0f) {
