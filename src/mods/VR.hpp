@@ -2089,12 +2089,14 @@ private:
     safetyhook::MidHook m_prospi_spectator_world_cull_hook{};
     bool m_prospi_spectator_world_cull_hook_attempted{false};
     std::atomic<bool> m_prospi_spectator_world_cull_hooked{false};
+    std::atomic<bool> m_prospi_spectator_world_cull_layout_validated{false};
     std::atomic<bool> m_prospi_spectator_world_cull_override_enabled{false};
     std::atomic<bool> m_prospi_spectator_world_cull_expand_depth_enabled{false};
     std::atomic<bool> m_prospi_spectator_world_cull_horizontal_cap_enabled{true};
     std::atomic<bool> m_prospi_spectator_world_cull_vertical_cap_enabled{true};
     std::atomic<uintptr_t> m_prospi_spectator_world_cull_hook_address{0};
     std::atomic<uint64_t> m_prospi_spectator_world_cull_call_count{0};
+    std::atomic<uint64_t> m_prospi_spectator_world_cull_rejected_count{0};
     std::atomic<float> m_prospi_spectator_world_cull_horizontal_scale{0.125f};
     std::atomic<float> m_prospi_spectator_world_cull_vertical_scale{0.125f};
     std::atomic<float> m_prospi_spectator_world_cull_horizontal_cap{0.5f};

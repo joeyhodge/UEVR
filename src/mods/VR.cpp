@@ -205,6 +205,45 @@ static_assert(offsetof(ProSpiWorldCullUniformBuffer, cot_fov) == 0x140);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, num_instances) == 0x158);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, current_bone_page) == 0x17c);
 
+const char* get_prospi_game_variant_name() {
+    static const auto variant = []() -> const char* {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path) {
+            return "ProSpi family";
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*module_path);
+        if (lowered.find(L"ebaseball pro spirit") != std::wstring::npos) {
+            return "eBaseball PRO SPIRIT";
+        }
+
+        if (lowered.find(L"prospi_2024") != std::wstring::npos ||
+            lowered.find(L"professional baseball spirits") != std::wstring::npos)
+        {
+            return "Professional Baseball Spirits 2024-2025";
+        }
+
+        return "ProSpi family";
+    }();
+
+    return variant;
+}
+
+bool is_plausible_prospi_world_cull_uniform(const ProSpiWorldCullUniformBuffer& uniform) {
+    constexpr float MAX_REASONABLE_COT_FOV = 1.0e6f;
+    constexpr uint32_t MAX_REASONABLE_INSTANCES = 10'000'000;
+    constexpr uint32_t MAX_REASONABLE_LODS = 256;
+
+    return uniform.num_views >= 1 &&
+           uniform.num_views <= uniform.min_z.size() &&
+           uniform.num_instances <= MAX_REASONABLE_INSTANCES &&
+           uniform.num_lods <= MAX_REASONABLE_LODS &&
+           std::isfinite(uniform.cot_fov[0]) &&
+           std::isfinite(uniform.cot_fov[1]) &&
+           std::abs(uniform.cot_fov[0]) <= MAX_REASONABLE_COT_FOV &&
+           std::abs(uniform.cot_fov[1]) <= MAX_REASONABLE_COT_FOV;
+}
+
 std::string hitch_timestamp_suffix() {
     const auto now = std::chrono::system_clock::now();
     const auto time = std::chrono::system_clock::to_time_t(now);
@@ -4803,9 +4842,12 @@ void VR::attempt_hook_prospi_spectator_world_cull() {
     m_prospi_spectator_world_cull_hook_address.store(hook_address, std::memory_order_relaxed);
     m_prospi_spectator_world_cull_hooked.store(true, std::memory_order_relaxed);
 
+    const auto module_base = reinterpret_cast<uintptr_t>(utility::get_executable());
     SPDLOG_INFO(
-        "[PROSPI_WORLD_CULL] Hooked /Spectator/worldcull.usf uniform creation at 0x{:x}",
-        hook_address);
+        "[PROSPI_WORLD_CULL] Hooked /Spectator/worldcull.usf uniform creation for {} at 0x{:x} (RVA 0x{:x})",
+        get_prospi_game_variant_name(),
+        hook_address,
+        hook_address - module_base);
 }
 
 void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
@@ -4822,6 +4864,24 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
     if (uniform == nullptr) {
         return;
     }
+
+    if (!is_plausible_prospi_world_cull_uniform(*uniform)) {
+        const auto rejected = vr->m_prospi_spectator_world_cull_rejected_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        SPDLOG_WARNING_EVERY_N_SEC(
+            1,
+            "[PROSPI_WORLD_CULL] Rejected implausible {} uniform layout at 0x{:x}: rejected={} instances={} views={} lods={} cot_h={} cot_v={}",
+            get_prospi_game_variant_name(),
+            reinterpret_cast<uintptr_t>(uniform),
+            rejected,
+            uniform->num_instances,
+            uniform->num_views,
+            uniform->num_lods,
+            uniform->cot_fov[1],
+            uniform->cot_fov[0]);
+        return;
+    }
+
+    vr->m_prospi_spectator_world_cull_layout_validated.store(true, std::memory_order_relaxed);
 
     const auto horizontal_scale =
         std::clamp(vr->m_prospi_spectator_world_cull_horizontal_scale.load(std::memory_order_relaxed), 0.001f, 128.0f);
@@ -4879,7 +4939,8 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
         vr->m_prospi_spectator_world_cull_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
     {
         SPDLOG_INFO(
-            "[PROSPI_WORLD_CULL] calls={} uniform=0x{:x} instances={} views={} cot_h={:.6f}->{:.6f} scale_h={:.4f} cap_h={}:{:.4f}:hit={} cot_v={:.6f}->{:.6f} scale_v={:.4f} cap_v={}:{:.4f}:hit={} depth_expand={} min0={:.3f} max0={:.3f}",
+            "[PROSPI_WORLD_CULL] game={} calls={} uniform=0x{:x} instances={} views={} cot_h={:.6f}->{:.6f} scale_h={:.4f} cap_h={}:{:.4f}:hit={} cot_v={:.6f}->{:.6f} scale_v={:.4f} cap_v={}:{:.4f}:hit={} depth_expand={} min0={:.3f} max0={:.3f}",
+            get_prospi_game_variant_name(),
             calls,
             (uintptr_t)uniform,
             uniform->num_instances,
@@ -11020,10 +11081,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                     ImGui::SeparatorText("Spectator GPU World Cull");
                     ImGui::TextWrapped(
-                        "ProSpi-only override for the exact FWorldCullCS uniform buffer consumed by "
+                        "ProSpi-family override for the exact FWorldCullCS uniform buffer consumed by "
                         "/Spectator/worldcull.usf. This widens the custom spectator compute-cull input "
                         "without changing the HMD projection, rendered view, or camera aspect ratio."
                     );
+                    ImGui::Text("Detected game: %s", get_prospi_game_variant_name());
                     m_match_game_fov_prospi_spectator_world_cull_override->draw("Override Spectator GPU World Cull");
                     if (m_match_game_fov_prospi_spectator_world_cull_override->value()) {
                         m_match_game_fov_prospi_spectator_world_cull_horizontal_scale->draw_drag(
@@ -11045,13 +11107,18 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         m_match_game_fov_prospi_spectator_world_cull_expand_depth->draw("Expand Spectator Cull Depth");
 
                         const auto hooked = m_prospi_spectator_world_cull_hooked.load(std::memory_order_relaxed);
+                        const auto layout_validated =
+                            m_prospi_spectator_world_cull_layout_validated.load(std::memory_order_relaxed);
                         const auto hook_address = m_prospi_spectator_world_cull_hook_address.load(std::memory_order_relaxed);
                         const auto calls = m_prospi_spectator_world_cull_call_count.load(std::memory_order_relaxed);
+                        const auto rejected = m_prospi_spectator_world_cull_rejected_count.load(std::memory_order_relaxed);
                         ImGui::Text(
-                            "Hook: %s at 0x%llx | Calls: %llu | Instances: %d | Views: %d",
+                            "Hook: %s at 0x%llx | Layout: %s | Calls: %llu | Rejected: %llu | Instances: %d | Views: %d",
                             hooked ? "active" : "pending",
                             (unsigned long long)hook_address,
+                            layout_validated ? "validated" : "pending",
                             (unsigned long long)calls,
+                            (unsigned long long)rejected,
                             m_prospi_spectator_world_cull_last_num_instances.load(std::memory_order_relaxed),
                             m_prospi_spectator_world_cull_last_num_views.load(std::memory_order_relaxed));
                         ImGui::Text(
