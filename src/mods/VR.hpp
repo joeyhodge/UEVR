@@ -1335,6 +1335,15 @@ private:
     const ModToggle::Ptr m_match_game_fov_prospi_spectator_world_cull_expand_depth{
         ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorWorldCullExpandDepth"), false)
     };
+    const ModToggle::Ptr m_match_game_fov_prospi_spectator_world_cull_lod_override{
+        ModToggle::create(generate_name("MatchGameFOVProSpiSpectatorWorldCullLODOverride"), false)
+    };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale{
+        ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorWorldCullLODSlopeScale"), 0.0625f, 4.0f, 1.0f)
+    };
+    const ModSlider::Ptr m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset{
+        ModSlider::create(generate_name("MatchGameFOVProSpiSpectatorWorldCullLODBiasOffset"), -8.0f, 8.0f, 0.0f)
+    };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyGuard"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_field_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyFieldRule"), true) };
     const ModToggle::Ptr m_match_game_fov_prospi_camera_safety_baseline_rule{ ModToggle::create(generate_name("MatchGameFOVProSpiCameraSafetyBaselineRule"), true) };
@@ -1757,6 +1766,9 @@ public:
             *m_match_game_fov_prospi_spectator_world_cull_vertical_cap_enabled,
             *m_match_game_fov_prospi_spectator_world_cull_vertical_cap,
             *m_match_game_fov_prospi_spectator_world_cull_expand_depth,
+            *m_match_game_fov_prospi_spectator_world_cull_lod_override,
+            *m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale,
+            *m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset,
             *m_match_game_fov_prospi_camera_safety_guard,
             *m_match_game_fov_prospi_camera_safety_field_rule,
             *m_match_game_fov_prospi_camera_safety_baseline_rule,
@@ -2092,6 +2104,7 @@ private:
     std::atomic<bool> m_prospi_spectator_world_cull_layout_validated{false};
     std::atomic<bool> m_prospi_spectator_world_cull_override_enabled{false};
     std::atomic<bool> m_prospi_spectator_world_cull_expand_depth_enabled{false};
+    std::atomic<bool> m_prospi_spectator_world_cull_lod_override_enabled{false};
     std::atomic<bool> m_prospi_spectator_world_cull_horizontal_cap_enabled{true};
     std::atomic<bool> m_prospi_spectator_world_cull_vertical_cap_enabled{true};
     std::atomic<uintptr_t> m_prospi_spectator_world_cull_hook_address{0};
@@ -2101,12 +2114,19 @@ private:
     std::atomic<float> m_prospi_spectator_world_cull_vertical_scale{0.125f};
     std::atomic<float> m_prospi_spectator_world_cull_horizontal_cap{0.5f};
     std::atomic<float> m_prospi_spectator_world_cull_vertical_cap{0.5f};
+    std::atomic<float> m_prospi_spectator_world_cull_lod_slope_scale{1.0f};
+    std::atomic<float> m_prospi_spectator_world_cull_lod_bias_offset{0.0f};
     std::atomic<float> m_prospi_spectator_world_cull_last_horizontal_before{0.0f};
     std::atomic<float> m_prospi_spectator_world_cull_last_horizontal_after{0.0f};
     std::atomic<float> m_prospi_spectator_world_cull_last_vertical_before{0.0f};
     std::atomic<float> m_prospi_spectator_world_cull_last_vertical_after{0.0f};
+    std::atomic<float> m_prospi_spectator_world_cull_last_lod_slope_before{0.0f};
+    std::atomic<float> m_prospi_spectator_world_cull_last_lod_slope_after{0.0f};
+    std::atomic<float> m_prospi_spectator_world_cull_last_lod_bias_before{0.0f};
+    std::atomic<float> m_prospi_spectator_world_cull_last_lod_bias_after{0.0f};
     std::atomic<int32_t> m_prospi_spectator_world_cull_last_num_instances{0};
     std::atomic<int32_t> m_prospi_spectator_world_cull_last_num_views{0};
+    std::atomic<int32_t> m_prospi_spectator_world_cull_last_num_lods{0};
     std::atomic<int64_t> m_prospi_spectator_world_cull_last_log_ms{0};
     std::atomic<bool> m_prospi_camera_safety_active{false};
     std::atomic<int32_t> m_prospi_camera_safety_zone{0};

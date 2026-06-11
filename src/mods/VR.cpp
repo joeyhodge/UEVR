@@ -202,7 +202,10 @@ struct alignas(16) ProSpiWorldCullUniformBuffer {
 static_assert(sizeof(ProSpiWorldCullUniformBuffer) == 0x180);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, view_projection_matrix) == 0x100);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, cot_fov) == 0x140);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, lod_slope) == 0x14c);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, lod_bias) == 0x150);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, num_instances) == 0x158);
+static_assert(offsetof(ProSpiWorldCullUniformBuffer, num_lods) == 0x160);
 static_assert(offsetof(ProSpiWorldCullUniformBuffer, current_bone_page) == 0x17c);
 
 const char* get_prospi_game_variant_name() {
@@ -254,8 +257,12 @@ bool is_plausible_prospi_world_cull_uniform(const ProSpiWorldCullUniformBuffer& 
            uniform.num_lods <= MAX_REASONABLE_LODS &&
            std::isfinite(uniform.cot_fov[0]) &&
            std::isfinite(uniform.cot_fov[1]) &&
+           std::isfinite(uniform.lod_slope) &&
+           std::isfinite(uniform.lod_bias) &&
            std::abs(uniform.cot_fov[0]) <= MAX_REASONABLE_COT_FOV &&
-           std::abs(uniform.cot_fov[1]) <= MAX_REASONABLE_COT_FOV;
+           std::abs(uniform.cot_fov[1]) <= MAX_REASONABLE_COT_FOV &&
+           std::abs(uniform.lod_slope) <= MAX_REASONABLE_COT_FOV &&
+           std::abs(uniform.lod_bias) <= MAX_REASONABLE_COT_FOV;
 }
 
 std::string hitch_timestamp_suffix() {
@@ -4964,6 +4971,8 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
         std::clamp(vr->m_prospi_spectator_world_cull_vertical_cap.load(std::memory_order_relaxed), 0.01f, 64.0f);
     const auto horizontal_before = uniform->cot_fov[1];
     const auto vertical_before = uniform->cot_fov[0];
+    const auto lod_slope_before = uniform->lod_slope;
+    const auto lod_bias_before = uniform->lod_bias;
     bool horizontal_capped = false;
     bool vertical_capped = false;
 
@@ -4985,6 +4994,21 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
         uniform->cot_fov[0] = vertical_after;
     }
 
+    const auto lod_override_enabled =
+        vr->m_prospi_spectator_world_cull_lod_override_enabled.load(std::memory_order_relaxed);
+    if (lod_override_enabled) {
+        constexpr float MAX_REASONABLE_LOD_VALUE = 1.0e6f;
+        const auto lod_slope_scale =
+            std::clamp(vr->m_prospi_spectator_world_cull_lod_slope_scale.load(std::memory_order_relaxed), 0.0625f, 4.0f);
+        const auto lod_bias_offset =
+            std::clamp(vr->m_prospi_spectator_world_cull_lod_bias_offset.load(std::memory_order_relaxed), -8.0f, 8.0f);
+
+        uniform->lod_slope =
+            std::clamp(lod_slope_before * lod_slope_scale, -MAX_REASONABLE_LOD_VALUE, MAX_REASONABLE_LOD_VALUE);
+        uniform->lod_bias =
+            std::clamp(lod_bias_before + lod_bias_offset, -MAX_REASONABLE_LOD_VALUE, MAX_REASONABLE_LOD_VALUE);
+    }
+
     const auto num_views = std::clamp<uint32_t>(uniform->num_views, 0u, 8u);
     if (vr->m_prospi_spectator_world_cull_expand_depth_enabled.load(std::memory_order_relaxed)) {
         constexpr float DEPTH_MIN = -1.0e9f;
@@ -5001,8 +5025,13 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
     vr->m_prospi_spectator_world_cull_last_horizontal_after.store(uniform->cot_fov[1], std::memory_order_relaxed);
     vr->m_prospi_spectator_world_cull_last_vertical_before.store(vertical_before, std::memory_order_relaxed);
     vr->m_prospi_spectator_world_cull_last_vertical_after.store(uniform->cot_fov[0], std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_lod_slope_before.store(lod_slope_before, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_lod_slope_after.store(uniform->lod_slope, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_lod_bias_before.store(lod_bias_before, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_lod_bias_after.store(uniform->lod_bias, std::memory_order_relaxed);
     vr->m_prospi_spectator_world_cull_last_num_instances.store((int32_t)uniform->num_instances, std::memory_order_relaxed);
     vr->m_prospi_spectator_world_cull_last_num_views.store((int32_t)uniform->num_views, std::memory_order_relaxed);
+    vr->m_prospi_spectator_world_cull_last_num_lods.store((int32_t)uniform->num_lods, std::memory_order_relaxed);
 
     const auto now_ms = steady_clock_ms();
     auto last_ms = vr->m_prospi_spectator_world_cull_last_log_ms.load(std::memory_order_relaxed);
@@ -5010,12 +5039,13 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
         vr->m_prospi_spectator_world_cull_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
     {
         SPDLOG_INFO(
-            "[PROSPI_WORLD_CULL] game={} calls={} uniform=0x{:x} instances={} views={} cot_h={:.6f}->{:.6f} scale_h={:.4f} cap_h={}:{:.4f}:hit={} cot_v={:.6f}->{:.6f} scale_v={:.4f} cap_v={}:{:.4f}:hit={} depth_expand={} min0={:.3f} max0={:.3f}",
+            "[PROSPI_WORLD_CULL] game={} calls={} uniform=0x{:x} instances={} views={} lods={} cot_h={:.6f}->{:.6f} scale_h={:.4f} cap_h={}:{:.4f}:hit={} cot_v={:.6f}->{:.6f} scale_v={:.4f} cap_v={}:{:.4f}:hit={} depth_expand={} min0={:.3f} max0={:.3f} lod_override={} slope={:.6f}->{:.6f} bias={:.6f}->{:.6f}",
             get_prospi_game_variant_name(),
             calls,
             (uintptr_t)uniform,
             uniform->num_instances,
             uniform->num_views,
+            uniform->num_lods,
             horizontal_before,
             uniform->cot_fov[1],
             horizontal_scale,
@@ -5030,7 +5060,12 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
             vertical_capped,
             vr->m_prospi_spectator_world_cull_expand_depth_enabled.load(std::memory_order_relaxed),
             uniform->min_z[0][0],
-            uniform->max_z[0][0]);
+            uniform->max_z[0][0],
+            lod_override_enabled,
+            lod_slope_before,
+            uniform->lod_slope,
+            lod_bias_before,
+            uniform->lod_bias);
     }
 }
 
@@ -5227,6 +5262,15 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         std::memory_order_relaxed);
     m_prospi_spectator_world_cull_expand_depth_enabled.store(
         prospi_world_cull_override && m_match_game_fov_prospi_spectator_world_cull_expand_depth->value(),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_lod_override_enabled.store(
+        prospi_world_cull_override && m_match_game_fov_prospi_spectator_world_cull_lod_override->value(),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_lod_slope_scale.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->value(), 0.0625f, 4.0f),
+        std::memory_order_relaxed);
+    m_prospi_spectator_world_cull_lod_bias_offset.store(
+        std::clamp(m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->value(), -8.0f, 8.0f),
         std::memory_order_relaxed);
 
     if (prospi_world_cull_override) {
@@ -11257,6 +11301,43 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         }
                         m_match_game_fov_prospi_spectator_world_cull_expand_depth->draw("Expand Spectator Cull Depth");
 
+                        ImGui::SeparatorText("Spectator GPU LOD Quality");
+                        ImGui::TextWrapped(
+                            "Experimental compensation for the custom spectator compute shader's native LOD selection. "
+                            "It changes only lod_slope and lod_bias in the validated world-cull uniform; the LOD count and "
+                            "the working visibility values remain untouched.");
+                        m_match_game_fov_prospi_spectator_world_cull_lod_override->draw(
+                            "Override Spectator GPU LOD Selection");
+                        if (m_match_game_fov_prospi_spectator_world_cull_lod_override->value()) {
+                            m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->draw_drag(
+                                "Native LOD Slope Scale", 0.01f, "%.4f", ImGuiSliderFlags_Logarithmic);
+                            m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->draw_drag(
+                                "Native LOD Bias Offset", 0.05f, "%.2f");
+
+                            if (ImGui::Button("Bias -1")) {
+                                m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->value() = 1.0f;
+                                m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->value() = -1.0f;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Bias -2")) {
+                                m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->value() = 1.0f;
+                                m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->value() = -2.0f;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Slope 0.5")) {
+                                m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->value() = 0.5f;
+                                m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->value() = 0.0f;
+                            }
+                            ImGui::SameLine();
+                            if (ImGui::Button("Slope 0.25")) {
+                                m_match_game_fov_prospi_spectator_world_cull_lod_slope_scale->value() = 0.25f;
+                                m_match_game_fov_prospi_spectator_world_cull_lod_bias_offset->value() = 0.0f;
+                            }
+                            ImGui::TextWrapped(
+                                "Test one preset at a time. Start with Bias -1, then Bias -2. If neither improves quality, "
+                                "reset the bias to 0 and try Slope 0.5, then Slope 0.25.");
+                        }
+
                         const auto hooked = m_prospi_spectator_world_cull_hooked.load(std::memory_order_relaxed);
                         const auto layout_validated =
                             m_prospi_spectator_world_cull_layout_validated.load(std::memory_order_relaxed);
@@ -11278,6 +11359,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             m_prospi_spectator_world_cull_last_horizontal_after.load(std::memory_order_relaxed),
                             m_prospi_spectator_world_cull_last_vertical_before.load(std::memory_order_relaxed),
                             m_prospi_spectator_world_cull_last_vertical_after.load(std::memory_order_relaxed));
+                        ImGui::Text(
+                            "Spectator LODs: %d | Slope %.6f -> %.6f | Bias %.6f -> %.6f",
+                            m_prospi_spectator_world_cull_last_num_lods.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_lod_slope_before.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_lod_slope_after.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_lod_bias_before.load(std::memory_order_relaxed),
+                            m_prospi_spectator_world_cull_last_lod_bias_after.load(std::memory_order_relaxed));
                         ImGui::TextWrapped(
                             "Recommended test: horizontal and vertical scale 0.125, both caps enabled at 0.5, "
                             "and depth expansion off. The caps catch extreme telephoto cuts without making already-wide cuts unnecessarily broader."
