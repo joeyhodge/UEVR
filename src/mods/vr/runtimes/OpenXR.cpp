@@ -16,6 +16,7 @@
 
 #include <sdk/CVar.hpp>
 #include <sdk/Globals.hpp>
+#include <sdk/Utility.hpp>
 
 #include "Framework.hpp"
 
@@ -43,6 +44,8 @@ constexpr auto STALE_POSE_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto SLOW_POSE_UPDATE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto SLOW_POSE_UPDATE_LOG_THRESHOLD_MS = 10.0;
 constexpr auto STALE_POSE_REFRESH_MIN_AGE_MS = 50LL;
+constexpr auto EVERSPACE2_COHERENT_SUBMIT_LOG_INTERVAL = std::chrono::seconds(2);
+constexpr auto EVERSPACE2_COHERENT_SUBMIT_SUMMARY_INTERVAL = std::chrono::seconds(5);
 
 struct ScopedOpenXRTiming {
     OpenXR::FrameTimingStats& stats;
@@ -131,6 +134,15 @@ bool is_stalker2_openxr_frame_loop_guarded() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+bool is_everspace2_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_everspace2_executable_path(*exe_path);
     }();
 
     return result;
@@ -455,7 +467,33 @@ void OpenXR::on_config_save(utility::Config& cfg) {
 }
 
 void OpenXR::on_pre_render_game_thread(uint32_t frame_count) {
+    if (this->is_everspace2_coherent_submit_active()) {
+        std::scoped_lock _{this->sync_assignment_mtx};
+        auto& pipeline_state = this->pipeline_states[frame_count % OpenXR::QUEUE_SIZE];
+
+        if (pipeline_state.frame_count != frame_count) {
+            pipeline_state = {};
+            pipeline_state.frame_count = frame_count;
+        }
+
+        return;
+    }
+
     this->pipeline_states[frame_count % OpenXR::QUEUE_SIZE].frame_count = frame_count;
+}
+
+bool OpenXR::is_everspace2_coherent_submit_active() const {
+    return is_everspace2_executable() &&
+        g_framework != nullptr &&
+        g_framework->get_renderer_type() == Framework::RendererType::D3D12;
+}
+
+void OpenXR::set_everspace2_d3d12_submit_active(bool active) {
+    if (!this->is_everspace2_coherent_submit_active()) {
+        return;
+    }
+
+    this->everspace2_d3d12_submit_active.store(active, std::memory_order_release);
 }
 
 void OpenXR::log_frame_lifecycle_state(const char* prefix) const {
@@ -573,6 +611,13 @@ void OpenXR::clear_frame_synced(const char* reason) {
 }
 
 VRRuntime::Error OpenXR::refresh_stale_pose_before_submit(uint32_t frame_count, const char* caller) {
+    if (this->is_everspace2_coherent_submit_active()) {
+        SPDLOG_INFO_ONCE(
+            "[Everspace2][OpenXR][coherent-submit] Legacy stale-pose refresh is bypassed; "
+            "submit-time coherent capture owns refresh without regressing internal frame state");
+        return VRRuntime::Error::SUCCESS;
+    }
+
     if (!this->refresh_stale_pose_before_submit_enabled->value()) {
         return VRRuntime::Error::SUCCESS;
     }
@@ -692,6 +737,26 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         !this->frame_began)
     {
         return false;
+    }
+
+    if (this->is_everspace2_coherent_submit_active()) {
+        if (!this->everspace2_has_real_projection_submit.load(std::memory_order_acquire)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Everspace2][OpenXR][coherent-submit] Preserving startup synchronized frame; "
+                "no successful projection-layer submit has occurred yet caller={}",
+                caller != nullptr ? caller : "unknown");
+            return false;
+        }
+
+        if (this->everspace2_d3d12_submit_active.load(std::memory_order_acquire)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Everspace2][OpenXR][coherent-submit] Suppressing stale-frame recovery while "
+                "the D3D12 submit path is active caller={}",
+                caller != nullptr ? caller : "unknown");
+            return false;
+        }
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -1144,6 +1209,11 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
 
 VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_count) {
     //std::scoped_lock ___{sync_mtx};
+    std::unique_lock<std::mutex> everspace2_pose_lock{this->everspace2_pose_capture_mtx, std::defer_lock};
+    if (this->is_everspace2_coherent_submit_active()) {
+        everspace2_pose_lock.lock();
+    }
+
     std::scoped_lock _{ this->sync_assignment_mtx };
 
     if (!this->session_ready) {
@@ -1224,6 +1294,15 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
 
     auto& pipeline_state = this->pipeline_states[frame_count % OpenXR::QUEUE_SIZE];
 
+    if (this->is_everspace2_coherent_submit_active()) {
+        if (pipeline_state.frame_count != frame_count) {
+            pipeline_state = {};
+            pipeline_state.frame_count = frame_count;
+        }
+
+        pipeline_state.coherent_complete = false;
+    }
+
     if (pipeline_state.frame_state.predictedDisplayTime <= 1000) {
         pipeline_state.frame_state = this->frame_state;
         pipeline_state.prev_frame_count = frame_count;
@@ -1295,7 +1374,9 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
         return finish_pose_update((VRRuntime::Error)result);
     }
 
-    pipeline_state.stage_views = this->stage_views;
+    if (!this->is_everspace2_coherent_submit_active()) {
+        pipeline_state.stage_views = this->stage_views;
+    }
     //this->frame_state_queue[frame_count % this->frame_state_queue.size()] = this->frame_state;
     
     if (should_enqueue) {
@@ -1317,6 +1398,15 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
     }
 
     pipeline_state.view_space_location = this->view_space_location;
+
+    if (this->is_everspace2_coherent_submit_active()) {
+        pipeline_state.stage_views = this->stage_views;
+        pipeline_state.coherent_source_frame_count = frame_count;
+        pipeline_state.coherent_sequence = ++this->everspace2_snapshot_sequence;
+        pipeline_state.coherent_display_time = display_time;
+        pipeline_state.coherent_capture_time = std::chrono::steady_clock::now();
+        pipeline_state.coherent_complete = !pipeline_state.stage_views.empty();
+    }
 
     for (auto i = 0; i < this->hands.size(); ++i) {
         auto& hand = this->hands[i];
@@ -1842,7 +1932,293 @@ void OpenXR::destroy() {
     this->frame_began = false;
 }
 
+bool OpenXR::is_everspace2_snapshot_fresh(
+    const PipelineState& snapshot,
+    std::chrono::steady_clock::time_point now,
+    int64_t* age_ms) const
+{
+    if (!snapshot.coherent_complete ||
+        snapshot.stage_views.empty() ||
+        snapshot.frame_state.predictedDisplayTime <= 1000 ||
+        snapshot.coherent_capture_time.time_since_epoch().count() == 0)
+    {
+        if (age_ms != nullptr) {
+            *age_ms = -1;
+        }
+        return false;
+    }
+
+    const auto snapshot_age_ms = elapsed_ms_since(now, snapshot.coherent_capture_time);
+    if (age_ms != nullptr) {
+        *age_ms = snapshot_age_ms;
+    }
+
+    const auto period_ms = snapshot.frame_state.predictedDisplayPeriod > 0
+        ? std::max<int64_t>(1, snapshot.frame_state.predictedDisplayPeriod / 1000000)
+        : 11LL;
+    return snapshot_age_ms >= 0 && snapshot_age_ms <= period_ms * 2;
+}
+
+bool OpenXR::capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot) {
+    if (!this->is_everspace2_coherent_submit_active() ||
+        this->session == XR_NULL_HANDLE ||
+        this->stage_space == XR_NULL_HANDLE ||
+        this->view_space == XR_NULL_HANDLE)
+    {
+        return false;
+    }
+
+    std::scoped_lock pose_lock{this->everspace2_pose_capture_mtx};
+
+    XrFrameState local_frame_state{XR_TYPE_FRAME_STATE};
+    size_t stage_view_count{};
+    {
+        std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+        const auto& requested_state = this->pipeline_states[frame_count % QUEUE_SIZE];
+        local_frame_state =
+            requested_state.frame_count == frame_count &&
+            requested_state.frame_state.predictedDisplayTime > 1000
+            ? requested_state.frame_state
+            : this->frame_state;
+        stage_view_count = this->stage_views.size();
+    }
+
+    if (local_frame_state.predictedDisplayTime <= 1000 || stage_view_count == 0) {
+        return false;
+    }
+
+    const auto display_time =
+        local_frame_state.predictedDisplayTime +
+        static_cast<XrDuration>(local_frame_state.predictedDisplayPeriod * this->prediction_scale);
+
+    std::vector<XrView> local_stage_views(stage_view_count, {XR_TYPE_VIEW});
+    XrViewState local_stage_view_state{XR_TYPE_VIEW_STATE};
+    XrViewLocateInfo view_locate_info{XR_TYPE_VIEW_LOCATE_INFO};
+    view_locate_info.viewConfigurationType = this->view_config;
+    view_locate_info.displayTime = display_time;
+    view_locate_info.space = this->stage_space;
+
+    uint32_t located_view_count{};
+    const auto locate_views_result = xrLocateViews(
+        this->session,
+        &view_locate_info,
+        &local_stage_view_state,
+        static_cast<uint32_t>(local_stage_views.size()),
+        &located_view_count,
+        local_stage_views.data());
+
+    if (locate_views_result != XR_SUCCESS || located_view_count == 0) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Everspace2][OpenXR][coherent-submit] Fresh stage-view capture failed frame={} result={} views={}",
+            frame_count,
+            this->get_result_string(locate_views_result),
+            located_view_count);
+        return false;
+    }
+
+    local_stage_views.resize(std::min<size_t>(local_stage_views.size(), located_view_count));
+
+    XrSpaceLocation local_view_space_location{XR_TYPE_SPACE_LOCATION};
+    const auto locate_space_result = xrLocateSpace(
+        this->view_space,
+        this->stage_space,
+        display_time,
+        &local_view_space_location);
+
+    constexpr auto required_location_flags =
+        XR_SPACE_LOCATION_POSITION_VALID_BIT |
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+    if (locate_space_result != XR_SUCCESS ||
+        (local_view_space_location.locationFlags & required_location_flags) != required_location_flags)
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Everspace2][OpenXR][coherent-submit] Fresh view-space capture failed frame={} result={} flags={}",
+            frame_count,
+            this->get_result_string(locate_space_result),
+            format_space_location_flags(local_view_space_location.locationFlags));
+        return false;
+    }
+
+    PipelineState captured{};
+    captured.frame_state = local_frame_state;
+    captured.view_space_location = local_view_space_location;
+    captured.stage_views = std::move(local_stage_views);
+    captured.frame_count = frame_count;
+    captured.prev_frame_count = frame_count;
+    captured.coherent_source_frame_count = frame_count;
+    captured.coherent_display_time = display_time;
+    captured.coherent_capture_time = std::chrono::steady_clock::now();
+    captured.coherent_complete = true;
+
+    {
+        std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+        captured.coherent_sequence = ++this->everspace2_snapshot_sequence;
+        auto& destination = this->pipeline_states[frame_count % QUEUE_SIZE];
+
+        if (destination.frame_count == 0 ||
+            destination.frame_count == frame_count ||
+            !is_older_frame_count(frame_count, destination.frame_count))
+        {
+            destination = captured;
+        }
+    }
+
+    snapshot = std::move(captured);
+    return true;
+}
+
+void OpenXR::log_everspace2_coherent_submit_summary_if_needed() {
+    if (!this->is_everspace2_coherent_submit_active()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (this->everspace2_last_summary_log.time_since_epoch().count() != 0 &&
+        now - this->everspace2_last_summary_log < EVERSPACE2_COHERENT_SUBMIT_SUMMARY_INTERVAL)
+    {
+        return;
+    }
+
+    this->everspace2_last_summary_log = now;
+    spdlog::info(
+        "[Everspace2][OpenXR][coherent-submit] summary exact={} nearby={} fresh={} one_frame_hold={} "
+        "rejected={} max_pose_age_ms={} real_projection_submitted={}",
+        this->everspace2_exact_submit_count,
+        this->everspace2_nearby_submit_count,
+        this->everspace2_fresh_capture_submit_count,
+        this->everspace2_single_frame_hold_submit_count,
+        this->everspace2_rejected_submit_count,
+        this->everspace2_max_submit_pose_age_ms,
+        this->everspace2_has_real_projection_submit.load(std::memory_order_acquire));
+}
+
 OpenXR::PipelineState OpenXR::get_submit_state() {
+    if (this->is_everspace2_coherent_submit_active()) {
+        SPDLOG_INFO_ONCE(
+            "[Everspace2][OpenXR][coherent-submit] Active executable=ES2-Win64-Shipping.exe "
+            "runtime=OpenXR renderer=D3D12 engine={} persistent_pose_latch=false "
+            "slate_target_redirect=false global_mixed_frame_fallback=false",
+            utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"unknown")));
+        SPDLOG_INFO_ONCE(
+            "[Everspace2][OpenXR][coherent-submit] Prior rejected paths remain disabled: "
+            "persistent pose latching produced multi-second stale poses; Slate target redirection "
+            "caused D3D12 render-target crashes; mixed global fallback combined different frames");
+
+        uint32_t requested_frame{};
+        XrTime current_display_time{};
+        {
+            std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+            requested_frame = this->internal_render_frame_count;
+            current_display_time = this->frame_state.predictedDisplayTime;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        PipelineState selected{};
+        const char* reason = "rejected";
+        int64_t selected_age_ms{-1};
+
+        {
+            std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+            const auto& exact = this->pipeline_states[requested_frame % QUEUE_SIZE];
+            if (exact.coherent_source_frame_count == requested_frame &&
+                this->is_everspace2_snapshot_fresh(exact, now, &selected_age_ms))
+            {
+                selected = exact;
+                reason = "exact";
+            } else {
+                for (uint32_t delta = 1; delta <= 2 && requested_frame >= delta; ++delta) {
+                    const auto candidate_frame = requested_frame - delta;
+                    const auto& candidate = this->pipeline_states[candidate_frame % QUEUE_SIZE];
+                    int64_t candidate_age_ms{-1};
+                    if (candidate.coherent_source_frame_count == candidate_frame &&
+                        this->is_everspace2_snapshot_fresh(candidate, now, &candidate_age_ms))
+                    {
+                        selected = candidate;
+                        selected_age_ms = candidate_age_ms;
+                        reason = "nearby";
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (selected.stage_views.empty()) {
+            if (this->capture_everspace2_submit_snapshot(requested_frame, selected)) {
+                selected_age_ms = 0;
+                reason = "fresh_capture";
+            } else {
+                std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+                int64_t held_age_ms{-1};
+                if (!this->everspace2_single_frame_hold_used &&
+                    this->is_everspace2_snapshot_fresh(this->last_submit_state, now, &held_age_ms))
+                {
+                    selected = this->last_submit_state;
+                    selected_age_ms = held_age_ms;
+                    reason = "single_frame_hold";
+                    this->everspace2_single_frame_hold_used = true;
+                } else {
+                    selected = {};
+                    selected.frame_state = this->frame_state;
+                    selected.frame_count = requested_frame;
+                    selected.coherent_source_frame_count = requested_frame;
+                    selected_age_ms = -1;
+                    reason = "rejected";
+                }
+            }
+        }
+
+        {
+            std::scoped_lock assignment_lock{this->sync_assignment_mtx};
+            if (std::string_view{reason} == "exact") {
+                ++this->everspace2_exact_submit_count;
+                this->everspace2_single_frame_hold_used = false;
+            } else if (std::string_view{reason} == "nearby") {
+                ++this->everspace2_nearby_submit_count;
+                this->everspace2_single_frame_hold_used = false;
+            } else if (std::string_view{reason} == "fresh_capture") {
+                ++this->everspace2_fresh_capture_submit_count;
+                this->everspace2_single_frame_hold_used = false;
+            } else if (std::string_view{reason} == "single_frame_hold") {
+                ++this->everspace2_single_frame_hold_submit_count;
+            } else {
+                ++this->everspace2_rejected_submit_count;
+            }
+
+            if (selected_age_ms >= 0) {
+                this->everspace2_max_submit_pose_age_ms =
+                    std::max(this->everspace2_max_submit_pose_age_ms, selected_age_ms);
+            }
+
+            if (!selected.stage_views.empty()) {
+                this->last_submit_state = selected;
+            }
+            this->has_render_frame_count = false;
+        }
+
+        if (this->everspace2_last_submit_log.time_since_epoch().count() == 0 ||
+            now - this->everspace2_last_submit_log >= EVERSPACE2_COHERENT_SUBMIT_LOG_INTERVAL)
+        {
+            this->everspace2_last_submit_log = now;
+            spdlog::info(
+                "[Everspace2][OpenXR][coherent-submit] select reason={} requested_frame={} "
+                "selected_frame={} sequence={} age_ms={} display_time={} current_display_time={} "
+                "display_time_delta={}",
+                reason,
+                requested_frame,
+                selected.coherent_source_frame_count,
+                selected.coherent_sequence,
+                selected_age_ms,
+                selected.frame_state.predictedDisplayTime,
+                current_display_time,
+                selected.frame_state.predictedDisplayTime - current_display_time);
+        }
+
+        this->log_everspace2_coherent_submit_summary_if_needed();
+        return selected;
+    }
+
     std::scoped_lock __{ this->sync_assignment_mtx };
 
     if (this->has_render_frame_count) {
@@ -3151,6 +3527,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     frame_end_info.layerCount = (uint32_t)layers.size();
     frame_end_info.layers = layers.data();
 
+    const auto submitted_real_projection =
+        this->is_everspace2_coherent_submit_active() &&
+        !projection_layer_views.empty() &&
+        !this->projection_layer_cache.empty();
+
     //spdlog::info("[VR] display time diff: {}", pipelined_frame_state.predictedDisplayTime - this->frame_state.predictedDisplayTime);
     //spdlog::info("[VR] Ending frame, {} layers", frame_end_info.layerCount);
     //spdlog::info("[VR] Ending frame, layer ptr: {:x}", (uintptr_t)frame_end_info.layers);
@@ -3170,6 +3551,9 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         }
     } else {
         this->ever_submitted = true;
+        if (submitted_real_projection) {
+            this->everspace2_has_real_projection_submit.store(true, std::memory_order_release);
+        }
         const auto now = std::chrono::steady_clock::now();
         const auto should_log = this->last_successful_end_frame.time_since_epoch().count() == 0 ||
             now - this->last_successful_end_frame >= std::chrono::seconds(2);

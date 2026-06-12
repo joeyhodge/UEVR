@@ -3,6 +3,7 @@
 #include <unordered_set>
 #include <deque>
 #include <chrono>
+#include <mutex>
 
 #include <d3d11.h>
 #include <d3d12.h>
@@ -160,6 +161,8 @@ public:
     bool should_trace_frame_flow() const;
     int64_t get_pose_update_age_ms(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) const;
     VRRuntime::Error refresh_stale_pose_before_submit(uint32_t frame_count, const char* caller);
+    bool is_everspace2_coherent_submit_active() const;
+    void set_everspace2_d3d12_submit_active(bool active);
 
     void begin_profile() {
         if (!this->profile_calls) {
@@ -242,6 +245,11 @@ public:
         std::vector<XrView> stage_views{};
         uint32_t frame_count{0}; // Updated on game thread prior to rendering
         uint32_t prev_frame_count{0}; // Updated right after xrWaitFrame is called
+        uint32_t coherent_source_frame_count{};
+        uint64_t coherent_sequence{};
+        XrTime coherent_display_time{};
+        std::chrono::steady_clock::time_point coherent_capture_time{};
+        bool coherent_complete{};
     };
     /*std::array<std::vector<XrView>, 3> stage_view_queue{};
     std::array<XrSpaceLocation, 3> view_space_location_queue{};
@@ -321,6 +329,12 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+    bool capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot);
+    bool is_everspace2_snapshot_fresh(
+        const PipelineState& snapshot,
+        std::chrono::steady_clock::time_point now,
+        int64_t* age_ms = nullptr) const;
+    void log_everspace2_coherent_submit_summary_if_needed();
 
     struct FrameTimingStats {
         uint64_t count{};
@@ -365,6 +379,19 @@ public:
     bool push_dummy_projection{ false };
     bool ever_submitted{false};
     bool has_valid_projection_data{false};
+    std::mutex everspace2_pose_capture_mtx{};
+    std::atomic_bool everspace2_d3d12_submit_active{false};
+    std::atomic_bool everspace2_has_real_projection_submit{false};
+    uint64_t everspace2_snapshot_sequence{};
+    uint64_t everspace2_exact_submit_count{};
+    uint64_t everspace2_nearby_submit_count{};
+    uint64_t everspace2_fresh_capture_submit_count{};
+    uint64_t everspace2_single_frame_hold_submit_count{};
+    uint64_t everspace2_rejected_submit_count{};
+    int64_t everspace2_max_submit_pose_age_ms{};
+    bool everspace2_single_frame_hold_used{};
+    std::chrono::steady_clock::time_point everspace2_last_submit_log{};
+    std::chrono::steady_clock::time_point everspace2_last_summary_log{};
     uint64_t last_wait_trace_sequence{};
     uint32_t last_wait_trace_frame_count{};
     SyncFrameCallsite last_wait_trace_callsite{SyncFrameCallsite::Unknown};

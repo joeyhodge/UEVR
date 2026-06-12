@@ -45,6 +45,13 @@ inline bool is_daysgone_executable_path(std::wstring_view path) {
            lowered == L"daysgone.exe";
 }
 
+inline bool is_everspace2_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\es2-win64-shipping.exe") ||
+           lowered.ends_with(L"/es2-win64-shipping.exe") ||
+           lowered == L"es2-win64-shipping.exe";
+}
+
 inline bool is_controller_camera_guard_candidate_path(std::wstring_view path) {
     return is_stalker2_executable_path(path) || is_mechwarrior_clans_executable_path(path);
 }

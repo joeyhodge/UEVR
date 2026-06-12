@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <cwctype>
 #include <future>
 #include <limits>
@@ -285,6 +287,521 @@ bool daysgone_is_current_game() {
     }();
 
     return result;
+}
+
+bool everspace2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_everspace2_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+enum class Everspace2PoolTraceKind : uint32_t {
+    CreateTracked,
+    RefAssignment,
+    FinalRelease,
+};
+
+constexpr size_t EVERSPACE2_POOL_TRACE_STACK_DEPTH = 12;
+
+struct Everspace2PoolTraceEvent {
+    std::atomic<uint64_t> committed_sequence{};
+    Everspace2PoolTraceKind kind{};
+    uintptr_t pooled_target{};
+    uintptr_t targetable_texture{};
+    uintptr_t shader_resource_texture{};
+    uintptr_t owning_pool{};
+    uintptr_t owner_slot{};
+    uintptr_t replacement{};
+    uint32_t ref_count{};
+    uint32_t thread_id{};
+    uint16_t stack_depth{};
+    std::array<uintptr_t, EVERSPACE2_POOL_TRACE_STACK_DEPTH> stack{};
+    std::array<wchar_t, 64> name{};
+};
+
+constexpr uintptr_t EVERSPACE2_COMPUTE_MEMORY_SIZE_RVA = 0x1353B8C;
+constexpr uintptr_t EVERSPACE2_CREATE_RENDER_TARGET_RVA = 0x1600E44;
+constexpr uintptr_t EVERSPACE2_REF_ASSIGNMENT_RVA = 0x1583B68;
+constexpr uintptr_t EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA = 0x1356DEB;
+constexpr uintptr_t EVERSPACE2_FINAL_RELEASE_PATH_RVA = 0x11AF8E8;
+constexpr uint32_t EVERSPACE2_IMAGE_TIMESTAMP = 0xECBB6BE7;
+constexpr uint32_t EVERSPACE2_IMAGE_SIZE = 0x0A7B1000;
+constexpr size_t EVERSPACE2_POOL_TRACE_CAPACITY = 16384;
+
+std::array<Everspace2PoolTraceEvent, EVERSPACE2_POOL_TRACE_CAPACITY> g_everspace2_pool_trace{};
+std::atomic<uint64_t> g_everspace2_pool_trace_sequence{};
+std::atomic<uintptr_t> g_everspace2_last_bad_pool_entry{};
+safetyhook::MidHook g_everspace2_pool_trace_hook{};
+safetyhook::InlineHook g_everspace2_create_render_target_hook{};
+safetyhook::InlineHook g_everspace2_ref_assignment_hook{};
+safetyhook::MidHook g_everspace2_final_release_hook{};
+std::atomic_bool g_everspace2_pool_trace_attempted{};
+std::mutex g_everspace2_preshadow_depth_assignment_mutex{};
+
+bool everspace2_is_exact_traced_build(HMODULE module) {
+    if (module == nullptr || IsBadReadPtr(module, sizeof(IMAGE_DOS_HEADER))) {
+        return false;
+    }
+
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
+        return false;
+    }
+
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((uintptr_t)module + dos->e_lfanew);
+    return !IsBadReadPtr(nt, sizeof(*nt)) &&
+        nt->Signature == IMAGE_NT_SIGNATURE &&
+        nt->FileHeader.TimeDateStamp == EVERSPACE2_IMAGE_TIMESTAMP &&
+        nt->OptionalHeader.SizeOfImage == EVERSPACE2_IMAGE_SIZE;
+}
+
+void record_everspace2_pool_trace(
+    Everspace2PoolTraceKind kind,
+    uintptr_t pooled_target,
+    uintptr_t targetable_texture,
+    uintptr_t shader_resource_texture,
+    uintptr_t owning_pool,
+    uint32_t ref_count,
+    const wchar_t* name,
+    uintptr_t direct_caller = 0,
+    uintptr_t owner_slot = 0,
+    uintptr_t replacement = 0,
+    bool capture_stack = true)
+{
+    const auto sequence = g_everspace2_pool_trace_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+    auto& event = g_everspace2_pool_trace[(sequence - 1) % g_everspace2_pool_trace.size()];
+    event.committed_sequence.store(0, std::memory_order_relaxed);
+    event.kind = kind;
+    event.pooled_target = pooled_target;
+    event.targetable_texture = targetable_texture;
+    event.shader_resource_texture = shader_resource_texture;
+    event.owning_pool = owning_pool;
+    event.owner_slot = owner_slot;
+    event.replacement = replacement;
+    event.ref_count = ref_count;
+    event.thread_id = GetCurrentThreadId();
+    event.stack.fill(0);
+    event.name.fill(L'\0');
+
+    uint16_t stack_offset{};
+    if (direct_caller != 0) {
+        event.stack[0] = direct_caller;
+        stack_offset = 1;
+    }
+
+    if (capture_stack) {
+        event.stack_depth = stack_offset + RtlCaptureStackBackTrace(
+            1,
+            static_cast<DWORD>(event.stack.size() - stack_offset),
+            reinterpret_cast<void**>(event.stack.data() + stack_offset),
+            nullptr);
+    } else {
+        event.stack_depth = stack_offset;
+    }
+
+    if (name != nullptr) {
+        wcsncpy_s(event.name.data(), event.name.size(), name, _TRUNCATE);
+    }
+
+    event.committed_sequence.store(sequence, std::memory_order_release);
+}
+
+void* everspace2_create_render_target_hook(
+    void* pool,
+    void* command_list,
+    const void* desc,
+    uint32_t desc_hash,
+    const wchar_t* name)
+{
+    auto* result = g_everspace2_create_render_target_hook.call<void*>(
+        pool,
+        command_list,
+        desc,
+        desc_hash,
+        name);
+
+    if (result != nullptr) {
+        record_everspace2_pool_trace(
+            Everspace2PoolTraceKind::CreateTracked,
+            reinterpret_cast<uintptr_t>(result),
+            *reinterpret_cast<const uintptr_t*>(reinterpret_cast<uintptr_t>(result) + 0x08),
+            *reinterpret_cast<const uintptr_t*>(reinterpret_cast<uintptr_t>(result) + 0x10),
+            *reinterpret_cast<const uintptr_t*>(reinterpret_cast<uintptr_t>(result) + 0x20),
+            *reinterpret_cast<const uint32_t*>(reinterpret_cast<uintptr_t>(result) + 0x68),
+            name);
+    }
+
+    return result;
+}
+
+void* everspace2_ref_assignment_hook(void* owner_slot_ptr, void* replacement_ptr) {
+    const auto direct_caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const auto expected_caller =
+        reinterpret_cast<uintptr_t>(utility::get_executable()) +
+        EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA;
+
+    if (direct_caller != expected_caller) {
+        return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
+    }
+
+    // ES2 can execute overlapping shadow-depth setup during the cutscene
+    // transition. TRefCountPtr assignment itself is not safe when two callers
+    // replace the same slot concurrently: both can capture and Release the same
+    // old pointer, consuming the render-target pool's final reference.
+    std::scoped_lock lock{g_everspace2_preshadow_depth_assignment_mutex};
+
+    const auto owner_slot = reinterpret_cast<uintptr_t>(owner_slot_ptr);
+    if (owner_slot == 0) {
+        return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
+    }
+
+    // This is TRefCountPtr<IPooledRenderTarget>::operator=. At entry, RCX is
+    // the destination TRefCountPtr and RDX is its replacement raw pointer.
+    // The old pointer is still valid until operator= releases it.
+    const auto pooled_target = *reinterpret_cast<const uintptr_t*>(owner_slot);
+    if (pooled_target == 0) {
+        return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
+    }
+
+    const auto owning_pool = *reinterpret_cast<const uintptr_t*>(pooled_target + 0x20);
+    if (owning_pool != 0) {
+        record_everspace2_pool_trace(
+            Everspace2PoolTraceKind::RefAssignment,
+            pooled_target,
+            *reinterpret_cast<const uintptr_t*>(pooled_target + 0x08),
+            *reinterpret_cast<const uintptr_t*>(pooled_target + 0x10),
+            owning_pool,
+            *reinterpret_cast<const uint32_t*>(pooled_target + 0x68),
+            nullptr,
+            direct_caller,
+            owner_slot,
+            reinterpret_cast<uintptr_t>(replacement_ptr),
+            false);
+    }
+
+    return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
+}
+
+void everspace2_final_release_trace(safetyhook::Context& ctx) {
+    const auto pooled_target = static_cast<uintptr_t>(ctx.rbx);
+    if (pooled_target == 0) {
+        return;
+    }
+
+    // At this exact instruction Release has decremented NumRefs to zero but
+    // has not run the destructor. The original caller is 0x28 bytes above the
+    // current stack pointer after Release's prologue.
+    const auto direct_caller = *reinterpret_cast<const uintptr_t*>(ctx.rsp + 0x28);
+    record_everspace2_pool_trace(
+        Everspace2PoolTraceKind::FinalRelease,
+        pooled_target,
+        *reinterpret_cast<const uintptr_t*>(pooled_target + 0x08),
+        *reinterpret_cast<const uintptr_t*>(pooled_target + 0x10),
+        *reinterpret_cast<const uintptr_t*>(pooled_target + 0x20),
+        0,
+        nullptr,
+        direct_caller);
+}
+
+const char* everspace2_pool_trace_kind_name(Everspace2PoolTraceKind kind) {
+    switch (kind) {
+    case Everspace2PoolTraceKind::CreateTracked:
+        return "create-tracked";
+    case Everspace2PoolTraceKind::RefAssignment:
+        return "ref-assignment";
+    case Everspace2PoolTraceKind::FinalRelease:
+        return "final-release";
+    default:
+        return "unknown";
+    }
+}
+
+void log_everspace2_pool_owner_history(uintptr_t pooled_target) {
+    const auto module_base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    size_t matching_events{};
+
+    for (const auto& event : g_everspace2_pool_trace) {
+        const auto sequence = event.committed_sequence.load(std::memory_order_acquire);
+        if (sequence == 0 || event.pooled_target != pooled_target) {
+            continue;
+        }
+
+        ++matching_events;
+        const auto name = event.name[0] != L'\0'
+            ? utility::narrow(std::wstring{event.name.data()})
+            : std::string{"<none>"};
+
+        SPDLOG_ERROR(
+            "[Everspace2][PoolOwner] sequence={} kind={} object={:x} targetable={:x} "
+            "shader_resource={:x} owning_pool={:x} owner_slot={:x} replacement={:x} "
+            "refs={} thread={} name={} "
+            "stack=[{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x},{:x}] "
+            "rvas=[{:x},{:x},{:x},{:x}]",
+            sequence,
+            everspace2_pool_trace_kind_name(event.kind),
+            event.pooled_target,
+            event.targetable_texture,
+            event.shader_resource_texture,
+            event.owning_pool,
+            event.owner_slot,
+            event.replacement,
+            event.ref_count,
+            event.thread_id,
+            name,
+            event.stack[0],
+            event.stack[1],
+            event.stack[2],
+            event.stack[3],
+            event.stack[4],
+            event.stack[5],
+            event.stack[6],
+            event.stack[7],
+            event.stack[8],
+            event.stack[9],
+            event.stack[10],
+            event.stack[11],
+            event.stack[0] >= module_base ? event.stack[0] - module_base : 0,
+            event.stack[1] >= module_base ? event.stack[1] - module_base : 0,
+            event.stack[2] >= module_base ? event.stack[2] - module_base : 0,
+            event.stack[3] >= module_base ? event.stack[3] - module_base : 0);
+    }
+
+    if (matching_events == 0) {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolOwner] No tracked allocation or final-release event remained for object {:x}; "
+            "this points to an overwrite of a still-live pooled object or an allocation older than the bounded trace",
+            pooled_target);
+    }
+}
+
+void everspace2_compute_memory_size_trace(safetyhook::Context& ctx) {
+    const auto pooled_target = (uintptr_t)ctx.rcx;
+    if (pooled_target == 0) {
+        return;
+    }
+
+    // The engine immediately reads these fields at this callsite, so avoid
+    // expensive Win32 pointer probes in a render-thread hot path.
+    const auto targetable_texture = *(const uintptr_t*)(pooled_target + 0x08);
+    const auto shader_resource_texture = *(const uintptr_t*)(pooled_target + 0x10);
+    const auto is_probable_process_pointer = [](uintptr_t pointer) {
+        constexpr uintptr_t minimum_user_object = 0x0000010000000000ULL;
+        constexpr uintptr_t maximum_user_address = 0x00007FFFFFFFFFFFULL;
+        return pointer == 0 ||
+            (pointer >= minimum_user_object &&
+             pointer <= maximum_user_address &&
+             (pointer & (alignof(void*) - 1)) == 0);
+    };
+
+    const auto targetable_bad = !is_probable_process_pointer(targetable_texture);
+    const auto shader_resource_bad = !is_probable_process_pointer(shader_resource_texture);
+
+    if (!targetable_bad && !shader_resource_bad) {
+        return;
+    }
+
+    const auto bad_key = pooled_target ^ targetable_texture ^ std::rotl(shader_resource_texture, 17);
+    if (g_everspace2_last_bad_pool_entry.exchange(bad_key, std::memory_order_relaxed) == bad_key) {
+        return;
+    }
+
+    SPDLOG_ERROR(
+        "[Everspace2][PoolTrace] corrupt pooled target observed sequence={} pool={:x} "
+        "targetable={:x} shader_resource={:x} targetable_bad={} shader_bad={} thread={}",
+        g_everspace2_pool_trace_sequence.load(std::memory_order_relaxed),
+        pooled_target,
+        targetable_texture,
+        shader_resource_texture,
+        targetable_bad,
+        shader_resource_bad,
+        GetCurrentThreadId());
+
+    log_everspace2_pool_owner_history(pooled_target);
+
+    if (const auto logger = spdlog::default_logger(); logger != nullptr) {
+        logger->flush();
+    }
+}
+
+void attempt_everspace2_pool_trace() {
+    if (!everspace2_is_current_game() ||
+        g_everspace2_pool_trace_attempted.exchange(true, std::memory_order_acq_rel))
+    {
+        return;
+    }
+
+    const auto module = utility::get_executable();
+    if (!everspace2_is_exact_traced_build(module)) {
+        SPDLOG_WARN(
+            "[Everspace2][PoolTrace] Disabled because the executable fingerprint does not match "
+            "timestamp=0x{:x} image_size=0x{:x}",
+            EVERSPACE2_IMAGE_TIMESTAMP,
+            EVERSPACE2_IMAGE_SIZE);
+        return;
+    }
+
+    const auto hook_address = (uintptr_t)module + EVERSPACE2_COMPUTE_MEMORY_SIZE_RVA;
+    constexpr std::array<uint8_t, 13> expected{
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x41, 0x54,
+    };
+
+    if (IsBadReadPtr((void*)hook_address, expected.size()) ||
+        std::memcmp((void*)hook_address, expected.data(), expected.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[Everspace2][PoolTrace] Disabled because FPooledRenderTarget::ComputeMemorySize "
+            "signature did not match at {:x}",
+            hook_address);
+        return;
+    }
+
+    g_everspace2_pool_trace_hook =
+        safetyhook::create_mid((void*)hook_address, &everspace2_compute_memory_size_trace);
+
+    if (!g_everspace2_pool_trace_hook) {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] Failed to install passive ComputeMemorySize entry trace at {:x}",
+            hook_address);
+        return;
+    }
+
+    const auto create_render_target_address =
+        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_CREATE_RENDER_TARGET_RVA;
+    constexpr std::array<uint8_t, 13> create_render_target_expected{
+        0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
+    };
+
+    if (IsBadReadPtr((void*)create_render_target_address, create_render_target_expected.size()) ||
+        std::memcmp(
+            (void*)create_render_target_address,
+            create_render_target_expected.data(),
+            create_render_target_expected.size()) != 0)
+    {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] CreateRenderTarget signature did not match at {:x}",
+            create_render_target_address);
+        return;
+    }
+
+    g_everspace2_create_render_target_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(create_render_target_address),
+        &everspace2_create_render_target_hook);
+
+    const auto final_release_address =
+        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_FINAL_RELEASE_PATH_RVA;
+    constexpr std::array<uint8_t, 9> final_release_expected{
+        0x48, 0x83, 0xC1, 0x70, 0xE8, 0x3B, 0x21, 0x45, 0x00,
+    };
+
+    if (IsBadReadPtr((void*)final_release_address, final_release_expected.size()) ||
+        std::memcmp((void*)final_release_address, final_release_expected.data(), final_release_expected.size()) != 0)
+    {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] FPooledRenderTarget final-release signature did not match at {:x}",
+            final_release_address);
+        return;
+    }
+
+    const auto ref_assignment_address =
+        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_REF_ASSIGNMENT_RVA;
+    constexpr std::array<uint8_t, 13> ref_assignment_expected{
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x19,
+    };
+
+    if (IsBadReadPtr((void*)ref_assignment_address, ref_assignment_expected.size()) ||
+        std::memcmp(
+            (void*)ref_assignment_address,
+            ref_assignment_expected.data(),
+            ref_assignment_expected.size()) != 0)
+    {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] TRefCountPtr assignment signature did not match at {:x}",
+            ref_assignment_address);
+        return;
+    }
+
+    g_everspace2_ref_assignment_hook =
+        safetyhook::create_inline(reinterpret_cast<void*>(ref_assignment_address), &everspace2_ref_assignment_hook);
+    g_everspace2_final_release_hook =
+        safetyhook::create_mid(reinterpret_cast<void*>(final_release_address), &everspace2_final_release_trace);
+
+    if (!g_everspace2_create_render_target_hook ||
+        !g_everspace2_ref_assignment_hook ||
+        !g_everspace2_final_release_hook)
+    {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] Failed to install allocation/assignment/release provenance hooks "
+            "create={} assignment={} final_release={}",
+            static_cast<bool>(g_everspace2_create_render_target_hook),
+            static_cast<bool>(g_everspace2_ref_assignment_hook),
+            static_cast<bool>(g_everspace2_final_release_hook));
+        return;
+    }
+
+    SPDLOG_INFO(
+        "[Everspace2][PoolTrace] Installed passive bounded owner trace "
+        "observer={:x} create={:x} assignment={:x} final_release={:x}; "
+        "the exact PreshadowCache depth assignment at return RVA 0x{:x} is serialized",
+        hook_address,
+        create_render_target_address,
+        ref_assignment_address,
+        final_release_address,
+        EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA);
+}
+
+bool everspace2_set_dedicated_ui_root(sdk::UObjectBase* object, bool rooted) {
+    if (object == nullptr) {
+        return false;
+    }
+
+    auto* object_array = sdk::FUObjectArray::get();
+    auto* object_item = object_array != nullptr ? object_array->get_object(object->get_internal_index()) : nullptr;
+
+    if (object_item == nullptr || object_item->get_object() != object) {
+        return false;
+    }
+
+    constexpr uint32_t root_set_flag = 1u << 30;
+
+    for (;;) {
+        const auto current = object_item->get_flags();
+        const auto desired = rooted ? current | root_set_flag : current & ~root_set_flag;
+
+        if (current == desired || object_item->compare_exchange_flags(current, desired)) {
+            return true;
+        }
+    }
+}
+
+void root_dedicated_ui_texture(sdk::UTexture* texture) {
+    if (texture == nullptr) {
+        return;
+    }
+
+    if (everspace2_is_current_game()) {
+        if (!everspace2_set_dedicated_ui_root(texture, true)) {
+            SPDLOG_ERROR("[Everspace2][UE5.5][SlateUI] Failed to root the persistent dedicated UI texture");
+        }
+        return;
+    }
+
+    texture->add_to_root();
+}
+
+void unroot_dedicated_ui_texture(sdk::UTexture* texture) {
+    if (texture == nullptr) {
+        return;
+    }
+
+    if (everspace2_is_current_game()) {
+        everspace2_set_dedicated_ui_root(texture, false);
+        return;
+    }
+
+    texture->remove_from_root();
 }
 
 bool pitpanic_is_current_game() {
@@ -968,6 +1485,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     return (aphelion_is_current_game() ||
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
+            everspace2_is_current_game() ||
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
             is_deadzone_ue56_executable()) &&
@@ -1282,6 +1800,84 @@ std::optional<D3D12_RESOURCE_DESC> ue55_try_get_d3d12_desc(FRHITexture2D* textur
     }
 
     return desc;
+}
+
+struct Everspace2ViewportTextureCandidate {
+    FRHITexture2D* texture{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> native_resource{};
+    D3D12_RESOURCE_DESC desc{};
+    const char* source{};
+};
+
+std::optional<Everspace2ViewportTextureCandidate> everspace2_get_scene_viewport_texture(sdk::FViewport* viewport) {
+    if (!everspace2_is_current_game() || !is_ue_5_5_dx12_backend() ||
+        viewport == nullptr || IsBadReadPtr(viewport, 0x2F0))
+    {
+        return std::nullopt;
+    }
+
+    // ES2's shipped 5.5.4 PDB places FViewport at complete-object +0x8.
+    // These offsets are therefore relative to the FViewport* passed to Draw.
+    constexpr uintptr_t base_render_target_texture_offset = 0x08;
+    constexpr uintptr_t buffered_render_targets_data_offset = 0x2B8;
+    constexpr uintptr_t buffered_render_targets_count_offset = 0x2C0;
+    constexpr uintptr_t render_thread_texture_offset = 0x2D8;
+    constexpr uintptr_t buffered_render_targets_index_offset = 0x2E8;
+
+    const auto viewport_address = (uintptr_t)viewport;
+    const auto validate = [](FRHITexture2D* texture, const char* source)
+        -> std::optional<Everspace2ViewportTextureCandidate>
+    {
+        ID3D12Resource* native_resource{};
+        D3D12_RESOURCE_DESC desc{};
+
+        if (!ue55_dx12_try_get_native_resource_direct(texture, source, &native_resource, &desc) ||
+            native_resource == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Everspace2][ViewportRT] Rejected {} texture {:x}: not render-target capable flags=0x{:x}",
+                source,
+                (uintptr_t)texture,
+                (uint32_t)desc.Flags);
+            return std::nullopt;
+        }
+
+        return Everspace2ViewportTextureCandidate{
+            .texture = texture,
+            .native_resource = native_resource,
+            .desc = desc,
+            .source = source,
+        };
+    };
+
+    const auto render_thread_texture =
+        *(FRHITexture2D**)(viewport_address + render_thread_texture_offset);
+    if (const auto candidate = validate(render_thread_texture, "FSceneViewport render-thread target")) {
+        return candidate;
+    }
+
+    const auto base_render_target_texture =
+        *(FRHITexture2D**)(viewport_address + base_render_target_texture_offset);
+    if (const auto candidate = validate(base_render_target_texture, "FViewport render target")) {
+        return candidate;
+    }
+
+    const auto count = *(const int32_t*)(viewport_address + buffered_render_targets_count_offset);
+    const auto index = *(const int32_t*)(viewport_address + buffered_render_targets_index_offset);
+    const auto data = *(FRHITexture2D***)(viewport_address + buffered_render_targets_data_offset);
+
+    if (count <= 0 || count > 8 || index < 0 || index >= count ||
+        data == nullptr || IsBadReadPtr(data, sizeof(FRHITexture2D*) * count))
+    {
+        return std::nullopt;
+    }
+
+    return validate(data[index], "FSceneViewport buffered target");
 }
 
 void shf_log_rtm_candidate(VRRenderTargetManager_Base* rtm, FRHITexture2D* texture, const char* source) {
@@ -2211,6 +2807,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
 }
 
 void FFakeStereoRenderingHook::on_frame() {
+    attempt_everspace2_pool_trace();
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
@@ -5311,6 +5908,8 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 
 void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
     constexpr bool allow_scene_viewport_rt_adoption = false;
+    const bool everspace2_direct_observation =
+        everspace2_is_current_game() && is_ue_5_5_dx12_backend();
 
     if (is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
         return;
@@ -5324,13 +5923,29 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     auto rtm = get_render_target_manager();
 
-    if (rtm == nullptr || rtm->get_render_target() != nullptr) {
+    if (rtm == nullptr || (!everspace2_direct_observation && rtm->get_render_target() != nullptr)) {
         return;
     }
 
-    auto candidate = viewport->get_scene_viewport_render_target_texture_direct();
+    std::optional<Everspace2ViewportTextureCandidate> everspace2_candidate{};
+    auto candidate = (FRHITexture2D*)nullptr;
+
+    if (everspace2_direct_observation) {
+        everspace2_candidate = everspace2_get_scene_viewport_texture(viewport);
+        candidate = everspace2_candidate ? everspace2_candidate->texture : nullptr;
+    } else {
+        candidate = viewport->get_scene_viewport_render_target_texture_direct();
+    }
 
     if (candidate == nullptr) {
+        if (everspace2_direct_observation) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Everspace2][ViewportRT] No valid engine-owned scene target available from {}",
+                source);
+            return;
+        }
+
         shf_probe_scene_viewport_memory(viewport, source, nullptr);
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target is not available yet from {}", source);
         return;
@@ -5339,7 +5954,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     ID3D12Resource* native_resource = nullptr;
     D3D12_RESOURCE_DESC desc{};
 
-    if (is_ue_5_6_dx12_backend()) {
+    if (everspace2_candidate) {
+        desc = everspace2_candidate->desc;
+    } else if (is_ue_5_6_dx12_backend()) {
         if (!ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc)) {
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
             return;
@@ -5360,7 +5977,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
     }
 
-    if (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*))) {
+    if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target from {} has no native D3D12 resource yet", source);
         return;
     }
@@ -5369,6 +5986,36 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         SPDLOG_WARNING_EVERY_N_SEC(2,
             "[SHf] Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
             source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+        return;
+    }
+
+    if (everspace2_direct_observation) {
+        if (candidate == rtm->get_dedicated_ui_target()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Everspace2][ViewportRT] Rejected dedicated UI texture returned by {}",
+                everspace2_candidate->source);
+            return;
+        }
+
+        if (!rtm->publish_everspace2_scene_target_snapshot(
+                candidate,
+                everspace2_candidate->native_resource.Get(),
+                desc,
+                everspace2_candidate->source))
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Everspace2][ViewportRT] Failed to publish native scene-target snapshot from {}",
+                everspace2_candidate->source);
+            return;
+        }
+
+        // Retain the raw address only for existing identity comparisons. ES2's
+        // D3D12 consumers use the COM-owned native snapshot and never call back
+        // through this FRHI wrapper after the render-thread observation.
+        rtm->set_render_target(candidate);
+
         return;
     }
 
@@ -5406,6 +6053,15 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     auto call_orig = [=]() {
         ZoneScopedN("UGameViewportClient::Draw");
         g_hook->m_gameviewportclient_draw_hook.call(viewport_client, viewport, canvas, a4);
+
+        // ES2 can replace the viewport texture during a Draw when a cinematic
+        // reallocates pooled targets. Observe the engine-owned pointer again
+        // immediately after Draw rather than retaining the allocation-time ref.
+        if (everspace2_is_current_game()) {
+            g_hook->try_adopt_scene_viewport_render_target(
+                viewport,
+                "UGameViewportClient::Draw post");
+        }
     };
 
     SPDLOG_INFO_ONCE("UGameViewportClient::Draw called for the first time.");
@@ -6967,6 +7623,14 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             }
 
             static size_t actual_offset = 0;
+
+            // ES2's private UE5.5.4 symbols place FMemStackBase at the start of
+            // FRHICommandListBase and Root immediately after it at +0x28.
+            if (is_ue_5_5_runtime() && everspace2_is_current_game()) {
+                actual_offset = 0x28;
+                SPDLOG_INFO_ONCE("[Everspace2][UE5.5][RHICommandList] Using source-validated Root offset 0x28");
+            }
+
             auto l = (sdk::FRHICommandListBase*)((uintptr_t)command_list + actual_offset);
             const auto is_ue5 = g_hook->has_double_precision();
 
@@ -10044,6 +10708,16 @@ void ue55_promote_slate_outputs(
         expected_extent ? expected_extent->width : 0,
         expected_extent ? expected_extent->height : 0);
 
+    if (everspace2_is_current_game()) {
+        // ES2 transitions through pooled render targets during cinematics.
+        // Keep the rooted dedicated UI target instead of retaining a transient
+        // DrawWindow output that may be recycled by FRenderTargetPool.
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Everspace2][UE5.5][SlateUI] Observed DrawWindow outputs without promoting pooled candidates");
+        return;
+    }
+
     if (ue55_is_valid_ui_texture_candidate(rtm, outputs.viewport_texture_rhi, expected_extent, "DrawWindow viewport texture output")) {
         if (rtm->get_dedicated_ui_target() != outputs.viewport_texture_rhi) {
             rtm->set_dedicated_ui_target(outputs.viewport_texture_rhi, expected_extent->width, expected_extent->height);
@@ -12831,7 +13505,26 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                         "[UE5.5][SlateUI] {} waiting for D3D12 UI fallback target before rerouting SlateOutputTexture",
                         is_deadzone_ue56_executable() ? "Deadzone" : "Everwind");
                 }
+            } else if (everspace2_is_current_game() &&
+                       rtm->get_dedicated_ui_width() != 0 &&
+                       rtm->get_dedicated_ui_height() != 0)
+            {
+                if (rtm->get_dedicated_ui_width() != expected_extent->width ||
+                    rtm->get_dedicated_ui_height() != expected_extent->height)
+                {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Everspace2][UE5.5][SlateUI] Preserving stable UI extent [{}x{}] across DrawWindow extent [{}x{}]",
+                        rtm->get_dedicated_ui_width(),
+                        rtm->get_dedicated_ui_height(),
+                        expected_extent->width,
+                        expected_extent->height);
+                }
+
+                rtm->get_fallback_ui_target_ref() = nullptr;
+                rtm->ensure_dedicated_ui_target((uintptr_t)a2);
             } else {
+                rtm->get_fallback_ui_target_ref() = nullptr;
                 rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
                 rtm->ensure_dedicated_ui_target((uintptr_t)a2);
             }
@@ -12860,7 +13553,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
                 if (slate_viewport_faulted) {
                     SPDLOG_WARN_ONCE("[UE5.5][SlateUI] GetViewportRenderTargetTexture faulted; relying on DrawWindow outputs and dedicated target");
-                } else if (ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture")) {
+                } else if (!everspace2_is_current_game() &&
+                           ue55_is_valid_ui_texture_candidate(rtm, direct_texture, expected_extent, "ISlateViewport direct texture"))
+                {
                     rtm->set_dedicated_ui_target(direct_texture, expected_extent->width, expected_extent->height);
                     rtm->get_fallback_ui_target_ref() = nullptr;
                     if (should_preserve_promoted_ue55_slate_target()) {
@@ -13139,6 +13834,65 @@ void VRRenderTargetManager_Base::update_viewport(bool use_separate_rt, const sdk
     //SPDLOG_INFO("Widget: {:x}", (uintptr_t)ViewportWidget);
 }
 
+bool VRRenderTargetManager_Base::publish_everspace2_scene_target_snapshot(
+    FRHITexture2D* source_texture,
+    ID3D12Resource* resource,
+    const D3D12_RESOURCE_DESC& desc,
+    const char* source)
+{
+    if (source_texture == nullptr ||
+        resource == nullptr ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0)
+    {
+        return false;
+    }
+
+    const auto current = everspace2_scene_target_snapshot.load(std::memory_order_acquire);
+    if (current != nullptr &&
+        current->source_texture == (uintptr_t)source_texture &&
+        current->resource.Get() == resource &&
+        current->desc.Width == desc.Width &&
+        current->desc.Height == desc.Height &&
+        current->desc.Format == desc.Format)
+    {
+        return true;
+    }
+
+    auto next = std::make_shared<Everspace2D3D12SceneTargetSnapshot>();
+    next->resource = resource;
+    next->desc = desc;
+    next->source_texture = (uintptr_t)source_texture;
+    next->generation = everspace2_scene_target_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    next->source = source;
+
+    if (next->resource == nullptr) {
+        return false;
+    }
+
+    const auto previous =
+        everspace2_scene_target_snapshot.exchange(next, std::memory_order_acq_rel);
+
+    SPDLOG_INFO(
+        "[Everspace2][SceneTargetSnapshot] publish generation={} source={} "
+        "frhi={:x} native={:x} previous_generation={} previous_frhi={:x} previous_native={:x} "
+        "size={}x{} format={} flags=0x{:x}",
+        next->generation,
+        source != nullptr ? source : "<unknown>",
+        (uintptr_t)source_texture,
+        (uintptr_t)resource,
+        previous != nullptr ? previous->generation : 0,
+        previous != nullptr ? previous->source_texture : 0,
+        previous != nullptr ? (uintptr_t)previous->resource.Get() : 0,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        (uint32_t)desc.Flags);
+
+    return true;
+}
+
 void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewport& viewport, uint32_t& x, uint32_t& y) {
     SPDLOG_INFO_ONCE("VRRenderTargetManager_Base::calculate_render_target_size called!");
 
@@ -13306,6 +14060,24 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         // trip UE's sized-allocation assert. Let the engine allocation run and
         // adopt the resulting texture refs in the post hook instead.
         SPDLOG_WARN_ONCE("[PitPanic] Skipping UE 5.7 DX12 pre-texture duplicate creation; using engine-created RT refs");
+        return;
+    }
+
+    if (g_framework->is_dx12() && everspace2_is_current_game() && is_ue_5_5_runtime()) {
+        // ES2's UE5.5.4 cutscene transitions recycle pooled render targets.
+        // Replaying RHICreateTexture here creates an extra engine RHI object
+        // whose lifetime is not represented safely in that pool. Track the
+        // original output ref and let the dedicated Slate path own UI instead.
+        if (!rtm->is_pre_texture_call_e8 &&
+            ctx.rdx != 0 &&
+            !IsBadReadPtr((void*)ctx.rdx, sizeof(FTexture2DRHIRef)))
+        {
+            rtm->texture_hook_ref = (FTexture2DRHIRef*)ctx.rdx;
+        }
+
+        SPDLOG_WARN_ONCE(
+            "[Everspace2][UE5.5][TextureReplay] Skipping duplicate RHICreateTexture call; "
+            "tracking the engine scene target and using dedicated Slate UI routing");
         return;
     }
 
@@ -13777,7 +14549,6 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
             int32_t old_width{};
             int32_t old_height{};
-
             for (auto i = 0; i < 0x100; ++i) {
                 auto& x = *(int32_t*)(ctx.r9 + i);
                 auto& y = *(int32_t*)(ctx.r9 + i + 4);
@@ -13806,7 +14577,7 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
             }
 
             func(ctx.rcx, &out, ctx.r8, ctx.r9,
-                stack_args[0], stack_args[1], 
+                stack_args[0], stack_args[1],
                 stack_args[2], stack_args[3],
                 stack_args[4],
                 stack_args[5], stack_args[6],
@@ -14300,8 +15071,15 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     }
 
     const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
+    const auto everspace2_dx12_dedicated_ui_only =
+        everspace2_is_current_game() && g_framework->is_dx12() && is_ue_5_5_runtime();
 
-    if (!dedicated_ui_promoted && !is_ue_5_7_or_newer() && rtm->get_fallback_ui_target_ref() == nullptr && rtm->shader_resource_hook_ref != nullptr) {
+    if (!dedicated_ui_promoted &&
+        !everspace2_dx12_dedicated_ui_only &&
+        !is_ue_5_7_or_newer() &&
+        rtm->get_fallback_ui_target_ref() == nullptr &&
+        rtm->shader_resource_hook_ref != nullptr)
+    {
         const auto shader_texture = rtm->shader_resource_hook_ref->texture;
 
         if (shader_texture != nullptr && !(daysgone_dx11_no_scene_as_ui && shader_texture == rtm->get_render_target())) {
@@ -14313,7 +15091,10 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
         }
     }
 
-    if (!dedicated_ui_promoted && rtm->get_fallback_ui_target_ref() == nullptr) {
+    if (!dedicated_ui_promoted &&
+        !everspace2_dx12_dedicated_ui_only &&
+        rtm->get_fallback_ui_target_ref() == nullptr)
+    {
         for (const auto& candidate : {
                 std::pair{(uintptr_t)rtm->shader_resource_hook_ref, "shader_resource_hook_ref"},
                 std::pair{ctx.rdx, "RDX"},
@@ -14350,6 +15131,10 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
             // Treating that scene RT as a separate VR UI layer duplicates/crops the
             // full scene in the overlay and pushes the menu/HUD to the wrong place.
             SPDLOG_WARN_ONCE("[DaysGone] Skipping render-target-as-UI fallback; leaving Bend Slate composite in the scene");
+        } else if (everspace2_dx12_dedicated_ui_only) {
+            SPDLOG_WARN_ONCE(
+                "[Everspace2][UE5.5][SlateUI] Refusing scene render target as UI fallback; "
+                "waiting for the rooted dedicated Slate target");
         } else {
             SPDLOG_WARN(" Falling back to render target texture as UI target: {:x}", (uintptr_t)texture);
             rtm->get_fallback_ui_target_ref() = texture;
@@ -14400,7 +15185,7 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
 
         GameThreadWorker::get().enqueue([rooted_texture]() mutable {
             if (rooted_texture != nullptr && rooted_texture.valid()) {
-                rooted_texture->remove_from_root();
+                unroot_dedicated_ui_texture(rooted_texture.get());
             }
         });
     }
@@ -14411,7 +15196,7 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
         GameThreadWorker::get().enqueue([rooted_texture]() {
             if (rooted_texture != nullptr && !IsBadReadPtr(rooted_texture, sizeof(void*))) {
                 try {
-                    rooted_texture->remove_from_root();
+                    unroot_dedicated_ui_texture(rooted_texture);
                 } catch (...) {
                 }
             }
@@ -14444,7 +15229,7 @@ void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(
     if (rooted_texture != nullptr && rooted_texture.valid()) {
         GameThreadWorker::get().enqueue([rooted_texture]() mutable {
             if (rooted_texture != nullptr && rooted_texture.valid()) {
-                rooted_texture->remove_from_root();
+                unroot_dedicated_ui_texture(rooted_texture.get());
             }
         });
     }
@@ -14453,7 +15238,7 @@ void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(
         GameThreadWorker::get().enqueue([in_flight_texture]() {
             if (in_flight_texture != nullptr && !IsBadReadPtr(in_flight_texture, sizeof(void*))) {
                 try {
-                    in_flight_texture->remove_from_root();
+                    unroot_dedicated_ui_texture(in_flight_texture);
                 } catch (...) {
                 }
             }
@@ -14480,6 +15265,7 @@ void VRRenderTargetManager_Base::invalidate_resolution_dependent_targets() {
 
     ui_target = nullptr;
     destroy_dedicated_ui_target();
+
     dedicated_ui_width = 0;
     dedicated_ui_height = 0;
     dedicated_ui_last_attempt = {};
@@ -14493,10 +15279,55 @@ void VRRenderTargetManager_Base::reset_dedicated_ui_creation_state() {
     dedicated_ui_resource_pending_since = {};
 }
 
+void VRRenderTargetManager_Base::retain_everspace2_dedicated_ui_target(FRHITexture2D* rt) {
+    if (!everspace2_is_current_game() || !is_ue_5_5_dx12_backend() || rt == nullptr || IsBadReadPtr(rt, sizeof(void*))) {
+        return;
+    }
+
+    void* vtable{};
+
+    try {
+        vtable = *(void**)rt;
+    } catch (...) {
+        return;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        return;
+    }
+
+    std::scoped_lock lock{everspace2_dedicated_ui_lifetime_mutex};
+
+    for (auto* retained : everspace2_retained_dedicated_ui_targets) {
+        if (retained == rt) {
+            return;
+        }
+    }
+
+    // ES2 can release the UTextureRenderTarget2D's FRHI texture while queued
+    // Slate render passes still reference it during cutscene transitions.
+    // Keep one bounded, process-lifetime reference instead of releasing it
+    // through the simplified SDK wrapper, whose deferred-delete semantics are
+    // intentionally incomplete.
+    rt->add_ref();
+    everspace2_retained_dedicated_ui_targets.emplace_back(rt);
+
+    SPDLOG_WARN(
+        "[Everspace2][UE5.5][SlateUI] Pinned dedicated UI FRHI texture {:x} for process lifetime (retained_count={})",
+        (uintptr_t)rt,
+        everspace2_retained_dedicated_ui_targets.size());
+}
+
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
     if (rt != nullptr) {
         FRHITexture2D::set_vtable(*(void**)rt);
-        owned_dedicated_ui_target = std::make_unique<FTexture2DRHIRef>(*rt);
+
+        if (everspace2_is_current_game() && is_ue_5_5_dx12_backend()) {
+            retain_everspace2_dedicated_ui_target(rt);
+            owned_dedicated_ui_target.reset();
+        } else {
+            owned_dedicated_ui_target = std::make_unique<FTexture2DRHIRef>(*rt);
+        }
     } else {
         owned_dedicated_ui_target.reset();
     }
@@ -14513,6 +15344,7 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
     }
 
     const bool extent_changed = dedicated_ui_width != width || dedicated_ui_height != height;
+
     dedicated_ui_width = width;
     dedicated_ui_height = height;
 
@@ -14531,6 +15363,14 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 
 bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
     if (!supports_dedicated_ui_target_for_current_game() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return false;
+    }
+
+    // ES2 initially reaches Slate before a trustworthy UE5.5 FRHITexture
+    // layout has been observed. Creating temporary render targets in that
+    // window caused two objects to be initialized and torn down immediately
+    // before the real target was available.
+    if (everspace2_is_current_game() && FRHITexture2D::get_vtable() == nullptr) {
         return false;
     }
 
@@ -14644,8 +15484,27 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 return;
             }
 
+            // UKismetRenderingLibrary uses WorldContextObject as both the world
+            // lookup and the new render target's Outer. ES2 replaces UWorld
+            // during the opening cinematic, so a world-owned UI target is
+            // collected while Slate/RDG can still reference its RHI resource.
+            // UGameInstance resolves the same world but persists across travel.
+            auto* world_context = (sdk::UObject*)world;
+            if (everspace2_is_current_game()) {
+                world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
+
+                if (world_context == nullptr || world_context->is_pending_kill_or_unreachable()) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    this->reset_dedicated_ui_creation_state();
+                    return;
+                }
+            }
+
             const float clear_color[4]{0.0f, 0.0f, 0.0f, 0.0f};
-            auto* tgt_raw = kismet_rendering->create_render_target_2d(world, width, height, 2, clear_color, false);
+            auto* tgt_raw = kismet_rendering->create_render_target_2d(
+                (sdk::UWorld*)world_context, width, height, 2, clear_color, false);
 
             if (tgt_raw == nullptr) {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[VRRenderTargetManager] Failed to create dedicated UI texture [{}x{}] on the game thread", width, height);
@@ -14653,11 +15512,11 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 return;
             }
 
-            tgt_raw->add_to_root();
+            root_dedicated_ui_texture(tgt_raw);
 
             if (!this->is_dedicated_ui_generation_current(generation)) {
                 try {
-                    tgt_raw->remove_from_root();
+                    unroot_dedicated_ui_texture(tgt_raw);
                 } catch (...) {
                 }
                 return;
@@ -14748,8 +15607,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                                 return;
                             }
 
-                            this->dedicated_ui_texture = nullptr;
                             this->in_flight_dedicated_ui_texture = nullptr;
+                            this->dedicated_ui_texture = nullptr;
                             this->destroy_dedicated_ui_target();
                         });
                         return true;
@@ -14766,8 +15625,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return;
                         }
 
-                        this->dedicated_ui_texture = nullptr;
                         this->in_flight_dedicated_ui_texture = nullptr;
+                        this->dedicated_ui_texture = nullptr;
                         this->destroy_dedicated_ui_target();
                     });
                 },
@@ -15468,6 +16327,25 @@ void FFakeStereoRenderingHook::attempt_hook_update_viewport_rhi(uintptr_t return
 }
 
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
+    if (everspace2_is_current_game() && is_ue_5_5_dx12_backend()) {
+        // Returning false leaves allocation and ownership entirely with
+        // FSceneViewport. Retaining these stack refs or replaying InitRHI's
+        // texture-create call leaves ES2 with stale pooled targets at cinematic
+        // reallocations.
+        this->texture_hook_ref = nullptr;
+        this->shader_resource_hook_ref = nullptr;
+        this->allocate_texture_called = false;
+
+        if (!this->set_up_texture_hook) {
+            this->set_up_texture_hook = true;
+            SPDLOG_INFO(
+                "[Everspace2][ViewportRT] Using direct engine-owned FSceneViewport observation; generic texture replay/midhooks disabled (caller={:x})",
+                return_address);
+        }
+
+        return false;
+    }
+
     this->texture_hook_ref = tex;
     this->shader_resource_hook_ref = shader_resource;
     this->allocate_texture_called = true;

@@ -184,6 +184,72 @@ bool is_deadzone_rogue_current_game() {
     return result;
 }
 
+bool is_everspace2_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_everspace2_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
+    VR* vr,
+    const char* consumer,
+    bool* from_everspace2_snapshot = nullptr)
+{
+    if (from_everspace2_snapshot != nullptr) {
+        *from_everspace2_snapshot = false;
+    }
+
+    if (vr == nullptr) {
+        return nullptr;
+    }
+
+    const auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+    if (fake_stereo_hook == nullptr) {
+        return nullptr;
+    }
+
+    const auto rtm = fake_stereo_hook->get_render_target_manager();
+    if (rtm == nullptr) {
+        return nullptr;
+    }
+
+    if (is_everspace2_current_game() && g_framework->is_dx12()) {
+        const auto snapshot = rtm->get_everspace2_scene_target_snapshot();
+        if (snapshot == nullptr || snapshot->resource == nullptr) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[Everspace2][SceneTargetSnapshot] {} waiting for a valid native scene target",
+                consumer != nullptr ? consumer : "<unknown>");
+            return nullptr;
+        }
+
+        if (from_everspace2_snapshot != nullptr) {
+            *from_everspace2_snapshot = true;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[Everspace2][SceneTargetSnapshot] {} consuming generation={} frhi={:x} native={:x} size={}x{}",
+            consumer != nullptr ? consumer : "<unknown>",
+            snapshot->generation,
+            snapshot->source_texture,
+            (uintptr_t)snapshot->resource.Get(),
+            snapshot->desc.Width,
+            snapshot->desc.Height);
+        return snapshot->resource;
+    }
+
+    const auto ue4_texture = rtm->get_render_target();
+    if (ue4_texture == nullptr) {
+        return nullptr;
+    }
+
+    return (ID3D12Resource*)ue4_texture->get_native_resource();
+}
+
 bool is_stalker2_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -689,11 +755,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
-    auto ue4_texture = VR::get()->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
-
-    if (ue4_texture != nullptr) {
-        backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
-    }
+    backbuffer = acquire_scene_target_resource(vr, "D3D12Component::on_frame");
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
         spdlog::error("[VR] Failed to get real back buffer.");
@@ -711,6 +773,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (backbuffer == nullptr) {
         SPDLOG_ERROR_EVERY_N_SEC(1, "[VR] Failed to get back buffer.");
+        if (is_everspace2_current_game()) {
+            close_openxr_setup_failure_frame();
+        }
         return vr::VRCompositorError_None;
     }
 
@@ -1664,6 +1729,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             utility::ScopeGuard openxr_submit_timing_guard{[&]() {
                 m_perf_openxr_submit.add(std::chrono::steady_clock::now() - openxr_submit_start);
             }};
+            vr->m_openxr->set_everspace2_d3d12_submit_active(true);
+            utility::ScopeGuard everspace2_submit_guard{[&]() {
+                vr->m_openxr->set_everspace2_d3d12_submit_active(false);
+            }};
 
             if (defer_stalker2_transition_openxr && !vr->m_openxr->frame_synced && !vr->m_openxr->frame_began) {
                 SPDLOG_INFO_EVERY_N_SEC(
@@ -2508,12 +2577,7 @@ bool D3D12Component::setup() {
     auto swapchain = hook->get_swap_chain();
 
     ComPtr<ID3D12Resource> backbuffer{};
-
-    auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
-
-    if (ue4_texture != nullptr) {
-        backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
-    }
+    backbuffer = acquire_scene_target_resource(vr.get(), "D3D12Component::setup");
 
     ComPtr<ID3D12Resource> real_backbuffer{};
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -2708,13 +2772,9 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
     auto vr = VR::get();
     bool has_actual_vr_backbuffer = false;
 
-    if (vr != nullptr && vr->m_fake_stereo_hook != nullptr) {
-        auto ue4_texture = vr->m_fake_stereo_hook->get_render_target_manager()->get_render_target();
-
-        if (ue4_texture != nullptr) {
-            backbuffer = (ID3D12Resource*)ue4_texture->get_native_resource();
-            has_actual_vr_backbuffer = backbuffer != nullptr;
-        }
+    if (vr != nullptr) {
+        backbuffer = acquire_scene_target_resource(vr.get(), "D3D12Component::OpenXR::create_swapchains");
+        has_actual_vr_backbuffer = backbuffer != nullptr;
     }
     
     // Get the existing backbuffer
