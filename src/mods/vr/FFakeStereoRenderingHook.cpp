@@ -330,6 +330,7 @@ struct Everspace2ExecutableProfile {
     uintptr_t create_render_target_rva;
     uintptr_t ref_assignment_rva;
     uintptr_t preshadow_depth_assignment_return_rva;
+    std::array<uint8_t, 5> preshadow_assignment_call_signature;
     uintptr_t final_release_path_rva;
     std::array<uint8_t, 9> final_release_signature;
 };
@@ -342,6 +343,7 @@ constexpr Everspace2ExecutableProfile EVERSPACE2_DEMO_PROFILE{
     0x1600E44,
     0x1583B68,
     0x1356DEB,
+    {0xE8, 0x7D, 0xCD, 0x22, 0x00},
     0x11AF8E8,
     {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x3B, 0x21, 0x45, 0x00},
 };
@@ -354,6 +356,7 @@ constexpr Everspace2ExecutableProfile EVERSPACE2_RETAIL_PROFILE{
     0x162386C,
     0x15877B8,
     0x15A3EC3,
+    {0xE8, 0xF5, 0x38, 0xFE, 0xFF},
     0x11AD448,
     {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x03, 0x70, 0x47, 0x00},
 };
@@ -392,9 +395,16 @@ const Everspace2ExecutableProfile* everspace2_find_executable_profile(HMODULE mo
     };
 
     for (const auto* profile : profiles) {
-        if (nt->FileHeader.TimeDateStamp == profile->image_timestamp &&
-            nt->OptionalHeader.SizeOfImage == profile->image_size)
-        {
+        if (nt->OptionalHeader.SizeOfImage == profile->image_size) {
+            if (nt->FileHeader.TimeDateStamp != profile->image_timestamp) {
+                SPDLOG_WARN(
+                    "[Everspace2][PoolTrace] {} image timestamp differs "
+                    "(expected=0x{:x}, actual=0x{:x}); continuing with strict RVA signature validation",
+                    profile->name,
+                    profile->image_timestamp,
+                    nt->FileHeader.TimeDateStamp);
+            }
+
             return profile;
         }
     }
@@ -691,8 +701,6 @@ void attempt_everspace2_pool_trace() {
         return;
     }
 
-    g_everspace2_active_profile = profile;
-
     const auto hook_address = (uintptr_t)module + profile->compute_memory_size_rva;
     constexpr std::array<uint8_t, 13> expected{
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x41, 0x54,
@@ -704,16 +712,6 @@ void attempt_everspace2_pool_trace() {
         SPDLOG_WARN(
             "[Everspace2][PoolTrace] Disabled because FPooledRenderTarget::ComputeMemorySize "
             "signature did not match at {:x}",
-            hook_address);
-        return;
-    }
-
-    g_everspace2_pool_trace_hook =
-        safetyhook::create_mid((void*)hook_address, &everspace2_compute_memory_size_trace);
-
-    if (!g_everspace2_pool_trace_hook) {
-        SPDLOG_ERROR(
-            "[Everspace2][PoolTrace] Failed to install passive ComputeMemorySize entry trace at {:x}",
             hook_address);
         return;
     }
@@ -735,10 +733,6 @@ void attempt_everspace2_pool_trace() {
             create_render_target_address);
         return;
     }
-
-    g_everspace2_create_render_target_hook = safetyhook::create_inline(
-        reinterpret_cast<void*>(create_render_target_address),
-        &everspace2_create_render_target_hook);
 
     const auto final_release_address =
         reinterpret_cast<uintptr_t>(module) + profile->final_release_path_rva;
@@ -773,18 +767,65 @@ void attempt_everspace2_pool_trace() {
         return;
     }
 
+    const auto preshadow_assignment_call_address =
+        reinterpret_cast<uintptr_t>(module) +
+        profile->preshadow_depth_assignment_return_rva -
+        profile->preshadow_assignment_call_signature.size();
+
+    if (IsBadReadPtr(
+            reinterpret_cast<void*>(preshadow_assignment_call_address),
+            profile->preshadow_assignment_call_signature.size()) ||
+        std::memcmp(
+            reinterpret_cast<void*>(preshadow_assignment_call_address),
+            profile->preshadow_assignment_call_signature.data(),
+            profile->preshadow_assignment_call_signature.size()) != 0)
+    {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] PreshadowCache assignment call signature did not match at {:x}",
+            preshadow_assignment_call_address);
+        return;
+    }
+
+    int32_t preshadow_assignment_displacement{};
+    std::memcpy(
+        &preshadow_assignment_displacement,
+        reinterpret_cast<void*>(preshadow_assignment_call_address + 1),
+        sizeof(preshadow_assignment_displacement));
+
+    const auto preshadow_assignment_target =
+        preshadow_assignment_call_address +
+        profile->preshadow_assignment_call_signature.size() +
+        preshadow_assignment_displacement;
+
+    if (preshadow_assignment_target != ref_assignment_address) {
+        SPDLOG_ERROR(
+            "[Everspace2][PoolTrace] PreshadowCache assignment call target mismatch "
+            "expected={:x} actual={:x}",
+            ref_assignment_address,
+            preshadow_assignment_target);
+        return;
+    }
+
+    g_everspace2_active_profile = profile;
+    g_everspace2_pool_trace_hook =
+        safetyhook::create_mid((void*)hook_address, &everspace2_compute_memory_size_trace);
+    g_everspace2_create_render_target_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(create_render_target_address),
+        &everspace2_create_render_target_hook);
     g_everspace2_ref_assignment_hook =
         safetyhook::create_inline(reinterpret_cast<void*>(ref_assignment_address), &everspace2_ref_assignment_hook);
     g_everspace2_final_release_hook =
         safetyhook::create_mid(reinterpret_cast<void*>(final_release_address), &everspace2_final_release_trace);
 
-    if (!g_everspace2_create_render_target_hook ||
+    if (!g_everspace2_pool_trace_hook ||
+        !g_everspace2_create_render_target_hook ||
         !g_everspace2_ref_assignment_hook ||
         !g_everspace2_final_release_hook)
     {
         SPDLOG_ERROR(
-            "[Everspace2][PoolTrace] Failed to install allocation/assignment/release provenance hooks "
-            "create={} assignment={} final_release={}",
+            "[Everspace2][PoolTrace] Failed to install provenance hooks "
+            "observer={} create={} assignment={} final_release={}",
+            static_cast<bool>(g_everspace2_pool_trace_hook),
             static_cast<bool>(g_everspace2_create_render_target_hook),
             static_cast<bool>(g_everspace2_ref_assignment_hook),
             static_cast<bool>(g_everspace2_final_release_hook));
