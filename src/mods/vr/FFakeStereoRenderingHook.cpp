@@ -289,6 +289,135 @@ bool daysgone_is_current_game() {
     return result;
 }
 
+bool strikers_club_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            exe_path->find(L"StrikersClubDemo") != std::wstring::npos &&
+            exe_path->find(L"UFG-Win64-Shipping.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+std::atomic<uintptr_t> g_strikers_club_shadow_object{};
+std::atomic<uintptr_t> g_strikers_club_shadow_vtable{};
+
+bool install_strikers_club_shadow_vtable(uintptr_t stereo_device) {
+    // UE 5.7.1 IStereoRendering ends at EndFinalPostprocessSettings (slot 20).
+    constexpr size_t vtable_entry_count = 21;
+    static std::array<uintptr_t, vtable_entry_count> shadow_vtable{};
+    uintptr_t original_vtable{};
+    SIZE_T bytes_read{};
+
+    if (stereo_device == 0 ||
+        !ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(stereo_device),
+            &original_vtable,
+            sizeof(original_vtable),
+            &bytes_read) ||
+        bytes_read != sizeof(original_vtable) ||
+        original_vtable == 0) {
+        SPDLOG_WARN(
+            "[StrikersClub] Failed to read stereo-device vtable pointer object={:x} error={}",
+            stereo_device,
+            GetLastError());
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION object_page{};
+    MEMORY_BASIC_INFORMATION vtable_page{};
+    VirtualQuery(reinterpret_cast<const void*>(stereo_device), &object_page, sizeof(object_page));
+    VirtualQuery(reinterpret_cast<const void*>(original_vtable), &vtable_page, sizeof(vtable_page));
+
+    const auto vtable_bytes = shadow_vtable.size() * sizeof(uintptr_t);
+    bytes_read = 0;
+    if (!ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(original_vtable),
+            shadow_vtable.data(),
+            vtable_bytes,
+            &bytes_read) ||
+        bytes_read != vtable_bytes) {
+        SPDLOG_WARN(
+            "[StrikersClub] Failed to clone stereo vtable object={:x} vtable={:x} bytes={}/{} object_protect={:x} "
+            "vtable_protect={:x} error={}",
+            stereo_device,
+            original_vtable,
+            bytes_read,
+            vtable_bytes,
+            object_page.Protect,
+            vtable_page.Protect,
+            GetLastError());
+        return false;
+    }
+
+    auto* const shadow_vtable_ptr = shadow_vtable.data();
+    SIZE_T bytes_written{};
+    if (!WriteProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<void*>(stereo_device),
+            &shadow_vtable_ptr,
+            sizeof(shadow_vtable_ptr),
+            &bytes_written) ||
+        bytes_written != sizeof(shadow_vtable_ptr)) {
+        DWORD old_protect{};
+        if (!VirtualProtect(
+                reinterpret_cast<void*>(stereo_device),
+                sizeof(shadow_vtable_ptr),
+                PAGE_READWRITE,
+                &old_protect)) {
+            SPDLOG_WARN(
+                "[StrikersClub] Failed to make stereo object writable object={:x} vtable={:x} protect={:x} error={}",
+                stereo_device,
+                original_vtable,
+                object_page.Protect,
+                GetLastError());
+            return false;
+        }
+
+        std::memcpy(reinterpret_cast<void*>(stereo_device), &shadow_vtable_ptr, sizeof(shadow_vtable_ptr));
+
+        DWORD restored_protect{};
+        VirtualProtect(
+            reinterpret_cast<void*>(stereo_device),
+            sizeof(shadow_vtable_ptr),
+            old_protect,
+            &restored_protect);
+    }
+
+    uintptr_t installed_vtable{};
+    bytes_read = 0;
+    if (!ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(stereo_device),
+            &installed_vtable,
+            sizeof(installed_vtable),
+            &bytes_read) ||
+        bytes_read != sizeof(installed_vtable) ||
+        installed_vtable != reinterpret_cast<uintptr_t>(shadow_vtable_ptr)) {
+        SPDLOG_WARN(
+            "[StrikersClub] Stereo shadow vtable verification failed object={:x} expected={:x} actual={:x}",
+            stereo_device,
+            reinterpret_cast<uintptr_t>(shadow_vtable_ptr),
+            installed_vtable);
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[StrikersClub] Stereo shadow vtable installed object={:x} original={:x} shadow={:x} object_protect={:x} "
+        "vtable_protect={:x}",
+        stereo_device,
+        original_vtable,
+        installed_vtable,
+        object_page.Protect,
+        vtable_page.Protect);
+    g_strikers_club_shadow_object.store(stereo_device, std::memory_order_release);
+    g_strikers_club_shadow_vtable.store(installed_vtable, std::memory_order_release);
+    return true;
+}
+
 bool everspace2_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -5068,7 +5197,11 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // It is very rare that this should need to be done.
     if (!active_stereo_device) {
         SPDLOG_INFO("Attempting to create a stereo device without InitializeHMDDevice...");
-        const auto device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+        const auto discovered_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
+        const auto device_offset =
+            strikers_club_is_current_game() && s_stereo_rendering_device_offset != 0
+                ? std::optional<uintptr_t>{s_stereo_rendering_device_offset}
+                : discovered_device_offset;
 
         if (device_offset) {
             auto engine = sdk::UGameEngine::get();
@@ -5089,14 +5222,24 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         SPDLOG_INFO("Found active stereo device: {:x}", (uintptr_t)*active_stereo_device);
         SPDLOG_INFO("Overwriting vtable...");
 
-        static std::vector<uintptr_t> shadow_vtable{};
-        auto& vtable = *(uintptr_t**)*active_stereo_device;
+        if (strikers_club_is_current_game()) {
+            if (install_strikers_club_shadow_vtable(*active_stereo_device)) {
+                SPDLOG_INFO("[StrikersClub] Installed bounded UE 5.7.1 stereo shadow vtable (21 entries)");
+            } else {
+                // The original vtable hooks are already installed. Fail closed
+                // instead of crashing while cloning a transient startup object.
+                SPDLOG_WARN("[StrikersClub] Stereo shadow vtable was not safely writable; keeping original vtable");
+            }
+        } else {
+            static std::vector<uintptr_t> shadow_vtable{};
+            auto& vtable = *(uintptr_t**)*active_stereo_device;
 
-        for (auto i = 0; i < 100; i++) {
-            shadow_vtable.push_back(vtable[i]);
+            for (auto i = 0; i < 100; i++) {
+                shadow_vtable.push_back(vtable[i]);
+            }
+
+            vtable = shadow_vtable.data();
         }
-
-        vtable = shadow_vtable.data();
     } else {
         SPDLOG_INFO("Current stereo device is null, cannot overwrite vtable");
         patch_vtable_checks(); // fallback to patching vtable checks
@@ -8829,6 +8972,43 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_renderin
 
         if (result == 0) {
             return std::nullopt;
+        }
+
+        if (strikers_club_is_current_game()) {
+            uintptr_t current_vtable{};
+            SIZE_T bytes_read{};
+            const auto read_ok =
+                ReadProcessMemory(
+                    GetCurrentProcess(),
+                    reinterpret_cast<const void*>(result),
+                    &current_vtable,
+                    sizeof(current_vtable),
+                    &bytes_read) &&
+                bytes_read == sizeof(current_vtable);
+
+            const auto installed_shadow_object =
+                g_strikers_club_shadow_object.load(std::memory_order_acquire);
+            const auto installed_shadow_vtable =
+                g_strikers_club_shadow_vtable.load(std::memory_order_acquire);
+            const auto is_original_device = current_vtable == *fake_stereo_device_vtable;
+            const auto is_installed_shadow =
+                result == installed_shadow_object &&
+                installed_shadow_vtable != 0 &&
+                current_vtable == installed_shadow_vtable;
+
+            if (!read_ok || (!is_original_device && !is_installed_shadow)) {
+                SPDLOG_WARN(
+                    "[StrikersClub] Rejecting stale cached stereo device offset={:x} object={:x} expected_vtable={:x} "
+                    "shadow_object={:x} shadow_vtable={:x} actual_vtable={:x} read_ok={}",
+                    s_stereo_rendering_device_offset,
+                    result,
+                    *fake_stereo_device_vtable,
+                    installed_shadow_object,
+                    installed_shadow_vtable,
+                    current_vtable,
+                    read_ok);
+                return std::nullopt;
+            }
         }
 
         return result;
