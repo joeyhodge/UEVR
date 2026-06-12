@@ -303,6 +303,73 @@ bool strikers_club_is_current_game() {
 std::atomic<uintptr_t> g_strikers_club_shadow_object{};
 std::atomic<uintptr_t> g_strikers_club_shadow_vtable{};
 
+struct StrikersClubViewExtensionsHeader {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t capacity{};
+};
+
+bool strikers_club_has_valid_engine_stereo_layout(uintptr_t engine, uintptr_t stereo_device_offset) {
+    constexpr auto shared_ptr_size = sizeof(TWeakPtr<void*>);
+    constexpr int32_t max_reasonable_view_extensions = 4096;
+
+    if (engine == 0 || stereo_device_offset == 0) {
+        return false;
+    }
+
+    uintptr_t view_extensions{};
+    SIZE_T bytes_read{};
+    const auto view_extensions_slot = engine + stereo_device_offset + (shared_ptr_size * 2);
+
+    if (!ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(view_extensions_slot),
+            &view_extensions,
+            sizeof(view_extensions),
+            &bytes_read) ||
+        bytes_read != sizeof(view_extensions) ||
+        view_extensions == 0) {
+        return false;
+    }
+
+    StrikersClubViewExtensionsHeader header{};
+    bytes_read = 0;
+    if (!ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(view_extensions),
+            &header,
+            sizeof(header),
+            &bytes_read) ||
+        bytes_read != sizeof(header)) {
+        return false;
+    }
+
+    if (header.count < 0 ||
+        header.capacity < 0 ||
+        header.count > header.capacity ||
+        header.capacity > max_reasonable_view_extensions) {
+        return false;
+    }
+
+    if (header.data == 0) {
+        return header.count == 0;
+    }
+
+    if (header.count == 0) {
+        return true;
+    }
+
+    uintptr_t first_extension{};
+    bytes_read = 0;
+    return ReadProcessMemory(
+               GetCurrentProcess(),
+               reinterpret_cast<const void*>(header.data),
+               &first_extension,
+               sizeof(first_extension),
+               &bytes_read) &&
+        bytes_read == sizeof(first_extension);
+}
+
 bool install_strikers_club_shadow_vtable(uintptr_t stereo_device) {
     // UE 5.7.1 IStereoRendering ends at EndFinalPostprocessSettings (slot 20).
     constexpr size_t vtable_entry_count = 21;
@@ -5189,10 +5256,35 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     if (!active_stereo_device) {
         SPDLOG_INFO("Attempting to create a stereo device without InitializeHMDDevice...");
         const auto discovered_device_offset = sdk::UEngine::get_stereo_rendering_device_offset();
-        const auto device_offset =
-            strikers_club_is_current_game() && s_stereo_rendering_device_offset != 0
-                ? std::optional<uintptr_t>{s_stereo_rendering_device_offset}
-                : discovered_device_offset;
+        auto device_offset = discovered_device_offset;
+
+        if (strikers_club_is_current_game()) {
+            const auto engine = reinterpret_cast<uintptr_t>(sdk::UGameEngine::get());
+            const auto scanned_device_offset = s_stereo_rendering_device_offset;
+            const auto discovered_layout_valid =
+                discovered_device_offset &&
+                strikers_club_has_valid_engine_stereo_layout(engine, *discovered_device_offset);
+            const auto scanned_layout_valid =
+                scanned_device_offset != 0 &&
+                strikers_club_has_valid_engine_stereo_layout(engine, scanned_device_offset);
+
+            if (discovered_layout_valid) {
+                device_offset = discovered_device_offset;
+            } else if (scanned_layout_valid) {
+                device_offset = scanned_device_offset;
+            } else {
+                device_offset.reset();
+            }
+
+            SPDLOG_INFO(
+                "[StrikersClub] Stereo layout selection scanned_offset={:x} scanned_valid={} discovered_offset={:x} "
+                "discovered_valid={} selected_offset={:x}",
+                scanned_device_offset,
+                scanned_layout_valid,
+                discovered_device_offset.value_or(0),
+                discovered_layout_valid,
+                device_offset.value_or(0));
+        }
 
         if (device_offset) {
             auto engine = sdk::UGameEngine::get();
