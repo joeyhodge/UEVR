@@ -322,13 +322,42 @@ struct Everspace2PoolTraceEvent {
     std::array<wchar_t, 64> name{};
 };
 
-constexpr uintptr_t EVERSPACE2_COMPUTE_MEMORY_SIZE_RVA = 0x1353B8C;
-constexpr uintptr_t EVERSPACE2_CREATE_RENDER_TARGET_RVA = 0x1600E44;
-constexpr uintptr_t EVERSPACE2_REF_ASSIGNMENT_RVA = 0x1583B68;
-constexpr uintptr_t EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA = 0x1356DEB;
-constexpr uintptr_t EVERSPACE2_FINAL_RELEASE_PATH_RVA = 0x11AF8E8;
-constexpr uint32_t EVERSPACE2_IMAGE_TIMESTAMP = 0xECBB6BE7;
-constexpr uint32_t EVERSPACE2_IMAGE_SIZE = 0x0A7B1000;
+struct Everspace2ExecutableProfile {
+    const char* name;
+    uint32_t image_timestamp;
+    uint32_t image_size;
+    uintptr_t compute_memory_size_rva;
+    uintptr_t create_render_target_rva;
+    uintptr_t ref_assignment_rva;
+    uintptr_t preshadow_depth_assignment_return_rva;
+    uintptr_t final_release_path_rva;
+    std::array<uint8_t, 9> final_release_signature;
+};
+
+constexpr Everspace2ExecutableProfile EVERSPACE2_DEMO_PROFILE{
+    "Steam Demo",
+    0xECBB6BE7,
+    0x0A7B1000,
+    0x1353B8C,
+    0x1600E44,
+    0x1583B68,
+    0x1356DEB,
+    0x11AF8E8,
+    {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x3B, 0x21, 0x45, 0x00},
+};
+
+constexpr Everspace2ExecutableProfile EVERSPACE2_RETAIL_PROFILE{
+    "Steam Retail",
+    0xFBD525DD,
+    0x0A7B2000,
+    0x15A0D18,
+    0x162386C,
+    0x15877B8,
+    0x15A3EC3,
+    0x11AD448,
+    {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x03, 0x70, 0x47, 0x00},
+};
+
 constexpr size_t EVERSPACE2_POOL_TRACE_CAPACITY = 16384;
 
 std::array<Everspace2PoolTraceEvent, EVERSPACE2_POOL_TRACE_CAPACITY> g_everspace2_pool_trace{};
@@ -340,22 +369,37 @@ safetyhook::InlineHook g_everspace2_ref_assignment_hook{};
 safetyhook::MidHook g_everspace2_final_release_hook{};
 std::atomic_bool g_everspace2_pool_trace_attempted{};
 std::mutex g_everspace2_preshadow_depth_assignment_mutex{};
+const Everspace2ExecutableProfile* g_everspace2_active_profile{};
 
-bool everspace2_is_exact_traced_build(HMODULE module) {
+const Everspace2ExecutableProfile* everspace2_find_executable_profile(HMODULE module) {
     if (module == nullptr || IsBadReadPtr(module, sizeof(IMAGE_DOS_HEADER))) {
-        return false;
+        return nullptr;
     }
 
     const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
     if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-        return false;
+        return nullptr;
     }
 
     const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>((uintptr_t)module + dos->e_lfanew);
-    return !IsBadReadPtr(nt, sizeof(*nt)) &&
-        nt->Signature == IMAGE_NT_SIGNATURE &&
-        nt->FileHeader.TimeDateStamp == EVERSPACE2_IMAGE_TIMESTAMP &&
-        nt->OptionalHeader.SizeOfImage == EVERSPACE2_IMAGE_SIZE;
+    if (IsBadReadPtr(nt, sizeof(*nt)) || nt->Signature != IMAGE_NT_SIGNATURE) {
+        return nullptr;
+    }
+
+    constexpr std::array profiles{
+        &EVERSPACE2_DEMO_PROFILE,
+        &EVERSPACE2_RETAIL_PROFILE,
+    };
+
+    for (const auto* profile : profiles) {
+        if (nt->FileHeader.TimeDateStamp == profile->image_timestamp &&
+            nt->OptionalHeader.SizeOfImage == profile->image_size)
+        {
+            return profile;
+        }
+    }
+
+    return nullptr;
 }
 
 void record_everspace2_pool_trace(
@@ -439,9 +483,14 @@ void* everspace2_create_render_target_hook(
 
 void* everspace2_ref_assignment_hook(void* owner_slot_ptr, void* replacement_ptr) {
     const auto direct_caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const auto* profile = g_everspace2_active_profile;
+    if (profile == nullptr) {
+        return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
+    }
+
     const auto expected_caller =
         reinterpret_cast<uintptr_t>(utility::get_executable()) +
-        EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA;
+        profile->preshadow_depth_assignment_return_rva;
 
     if (direct_caller != expected_caller) {
         return g_everspace2_ref_assignment_hook.call<void*>(owner_slot_ptr, replacement_ptr);
@@ -634,16 +683,17 @@ void attempt_everspace2_pool_trace() {
     }
 
     const auto module = utility::get_executable();
-    if (!everspace2_is_exact_traced_build(module)) {
+    const auto* profile = everspace2_find_executable_profile(module);
+    if (profile == nullptr) {
         SPDLOG_WARN(
             "[Everspace2][PoolTrace] Disabled because the executable fingerprint does not match "
-            "timestamp=0x{:x} image_size=0x{:x}",
-            EVERSPACE2_IMAGE_TIMESTAMP,
-            EVERSPACE2_IMAGE_SIZE);
+            "a supported demo or retail build");
         return;
     }
 
-    const auto hook_address = (uintptr_t)module + EVERSPACE2_COMPUTE_MEMORY_SIZE_RVA;
+    g_everspace2_active_profile = profile;
+
+    const auto hook_address = (uintptr_t)module + profile->compute_memory_size_rva;
     constexpr std::array<uint8_t, 13> expected{
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x8B, 0x41, 0x54,
     };
@@ -669,7 +719,7 @@ void attempt_everspace2_pool_trace() {
     }
 
     const auto create_render_target_address =
-        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_CREATE_RENDER_TARGET_RVA;
+        reinterpret_cast<uintptr_t>(module) + profile->create_render_target_rva;
     constexpr std::array<uint8_t, 13> create_render_target_expected{
         0x48, 0x89, 0x5C, 0x24, 0x18, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41,
     };
@@ -691,13 +741,13 @@ void attempt_everspace2_pool_trace() {
         &everspace2_create_render_target_hook);
 
     const auto final_release_address =
-        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_FINAL_RELEASE_PATH_RVA;
-    constexpr std::array<uint8_t, 9> final_release_expected{
-        0x48, 0x83, 0xC1, 0x70, 0xE8, 0x3B, 0x21, 0x45, 0x00,
-    };
+        reinterpret_cast<uintptr_t>(module) + profile->final_release_path_rva;
 
-    if (IsBadReadPtr((void*)final_release_address, final_release_expected.size()) ||
-        std::memcmp((void*)final_release_address, final_release_expected.data(), final_release_expected.size()) != 0)
+    if (IsBadReadPtr((void*)final_release_address, profile->final_release_signature.size()) ||
+        std::memcmp(
+            (void*)final_release_address,
+            profile->final_release_signature.data(),
+            profile->final_release_signature.size()) != 0)
     {
         SPDLOG_ERROR(
             "[Everspace2][PoolTrace] FPooledRenderTarget final-release signature did not match at {:x}",
@@ -706,7 +756,7 @@ void attempt_everspace2_pool_trace() {
     }
 
     const auto ref_assignment_address =
-        reinterpret_cast<uintptr_t>(module) + EVERSPACE2_REF_ASSIGNMENT_RVA;
+        reinterpret_cast<uintptr_t>(module) + profile->ref_assignment_rva;
     constexpr std::array<uint8_t, 13> ref_assignment_expected{
         0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x19,
     };
@@ -742,14 +792,15 @@ void attempt_everspace2_pool_trace() {
     }
 
     SPDLOG_INFO(
-        "[Everspace2][PoolTrace] Installed passive bounded owner trace "
+        "[Everspace2][PoolTrace] Installed {} passive bounded owner trace "
         "observer={:x} create={:x} assignment={:x} final_release={:x}; "
         "the exact PreshadowCache depth assignment at return RVA 0x{:x} is serialized",
+        profile->name,
         hook_address,
         create_render_target_address,
         ref_assignment_address,
         final_release_address,
-        EVERSPACE2_PRESHADOW_DEPTH_ASSIGNMENT_RETURN_RVA);
+        profile->preshadow_depth_assignment_return_rva);
 }
 
 bool everspace2_set_dedicated_ui_root(sdk::UObjectBase* object, bool rooted) {
