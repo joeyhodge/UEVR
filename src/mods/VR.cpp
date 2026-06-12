@@ -4643,6 +4643,7 @@ void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
     if (!state.was_enabled) {
         state = {};
         state.was_enabled = true;
+        SPDLOG_INFO("[Everspace2][CinematicBars] Compatibility enabled; waiting for WG_Ingame_HUD");
     }
 
     if (state.processed_hud != nullptr &&
@@ -4672,7 +4673,7 @@ void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
             return;
         }
 
-        state.scan_cursor = 0;
+        state.scan_cursor = -1;
     }
 
     const auto hud_class = (sdk::UClass*)state.hud_class;
@@ -4686,20 +4687,11 @@ void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
     }
 
     const auto object_count = objects->get_object_count();
-    constexpr int32_t OBJECTS_PER_TICK = 4096;
-    const auto scan_end = std::min(state.scan_cursor + OBJECTS_PER_TICK, object_count);
-
-    for (auto index = state.scan_cursor; index < scan_end; ++index) {
-        const auto item = objects->get_object(index);
-        if (item == nullptr) {
-            continue;
-        }
-
-        auto object = (sdk::UObject*)item->get_object();
+    const auto try_remove_from_hud = [&](sdk::UObject* object, int32_t index, int32_t serial) {
         if (object == nullptr || object == hud_class->get_class_default_object() ||
-            !is_live_uobject_identity(object, index, item->get_serial_number()) ||
+            !is_live_uobject_identity(object, index, serial) ||
             object->get_class() != hud_class) {
-            continue;
+            return false;
         }
 
         if (!remove_everspace2_cinematic_bars(object)) {
@@ -4708,12 +4700,12 @@ void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
                     "[Everspace2][CinematicBars] Exact WG_Ingame_HUD bar layout/function validation failed; leaving UI unchanged");
                 state.invalid_layout_logged = true;
             }
-            continue;
+            return false;
         }
 
         state.processed_hud = object;
         state.processed_index = index;
-        state.processed_serial = item->get_serial_number();
+        state.processed_serial = serial;
         ++state.removed_instances;
         SPDLOG_INFO(
             "[Everspace2][CinematicBars] Removed BarImageTop/BarImageBottom from {} instance={} index={} serial={}",
@@ -4721,14 +4713,51 @@ void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
             state.removed_instances,
             state.processed_index,
             state.processed_serial);
-        return;
+        return true;
+    };
+
+    // UObjectHook already maintains this exact class set in normal ES2 runs.
+    // Use it first so enabling the checkbox in-game reacts immediately.
+    if (const auto object_hook = UObjectHook::get();
+        object_hook != nullptr && object_hook->is_fully_hooked() && !object_hook->is_disabled()) {
+        for (const auto object_base : object_hook->get_objects_by_class(hud_class)) {
+            auto object = (sdk::UObject*)object_base;
+            if (object == nullptr || !object_hook->exists(object)) {
+                continue;
+            }
+
+            const auto index = (int32_t)object->get_internal_index();
+            const auto item = index >= 0 && index < object_count ? objects->get_object(index) : nullptr;
+            if (item != nullptr && try_remove_from_hud(object, index, item->get_serial_number())) {
+                return;
+            }
+        }
     }
 
-    state.scan_cursor = scan_end;
-    if (state.scan_cursor >= object_count) {
-        // The current HUD may be replaced during level travel. Restart only
-        // after exhausting a bounded scan; a live processed HUD returns above.
-        state.scan_cursor = 0;
+    // Fail-safe fallback searches newest objects first. Runtime HUD instances
+    // live near the end of GUObjectArray, so a live toggle should not wait for
+    // a full 600k-object ascending sweep.
+    constexpr int32_t OBJECTS_PER_TICK = 4096;
+    if (state.scan_cursor <= 0 || state.scan_cursor > object_count) {
+        state.scan_cursor = object_count;
+    }
+    const auto scan_start = std::max(0, state.scan_cursor - OBJECTS_PER_TICK);
+
+    for (auto index = state.scan_cursor - 1; index >= scan_start; --index) {
+        const auto item = objects->get_object(index);
+        if (item == nullptr) {
+            continue;
+        }
+
+        auto object = (sdk::UObject*)item->get_object();
+        if (try_remove_from_hud(object, index, item->get_serial_number())) {
+            return;
+        }
+    }
+
+    state.scan_cursor = scan_start;
+    if (state.scan_cursor == 0) {
+        state.scan_cursor = object_count;
         state.next_scan = now + std::chrono::milliseconds(500);
     }
 }
