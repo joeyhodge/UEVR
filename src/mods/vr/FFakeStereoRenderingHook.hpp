@@ -4,7 +4,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
+#include <vector>
+
+#include <d3d12.h>
+#include <wrl.h>
 
 #include <SafetyHook.hpp>
 
@@ -51,6 +56,14 @@ class FSceneView;
 // so we need a unified way of storing data that can be used for all versions
 struct VRRenderTargetManager_Base {
 public:
+    struct Everspace2D3D12SceneTargetSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+        const char* source{};
+    };
+
     bool allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource);
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
@@ -108,6 +121,16 @@ public:
         return render_target; 
     }
 
+    std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot> get_everspace2_scene_target_snapshot() const {
+        return everspace2_scene_target_snapshot.load(std::memory_order_acquire);
+    }
+
+    bool publish_everspace2_scene_target_snapshot(
+        FRHITexture2D* source_texture,
+        ID3D12Resource* resource,
+        const D3D12_RESOURCE_DESC& desc,
+        const char* source);
+
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
@@ -151,6 +174,8 @@ public:
     }
 
 protected:
+    void retain_everspace2_dedicated_ui_target(FRHITexture2D* rt);
+
     struct VerifiedFTexture2D {
         VerifiedFTexture2D() = default;
         VerifiedFTexture2D(FRHITexture2D* tex) 
@@ -245,6 +270,8 @@ protected:
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
+    std::mutex everspace2_dedicated_ui_lifetime_mutex{};
+    std::vector<FRHITexture2D*> everspace2_retained_dedicated_ui_targets{};
     uint32_t dedicated_ui_width{0};
     uint32_t dedicated_ui_height{0};
     std::chrono::steady_clock::time_point dedicated_ui_last_attempt{};
@@ -255,6 +282,8 @@ protected:
     uint64_t dedicated_ui_generation{0};
     uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
+    std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
+    std::atomic<uint64_t> everspace2_scene_target_generation{};
 };
 
 struct VRRenderTargetManager : IStereoRenderTargetManager, VRRenderTargetManager_Base {
