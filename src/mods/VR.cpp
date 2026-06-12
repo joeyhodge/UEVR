@@ -29,6 +29,7 @@
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/UEngine.hpp>
 #include <sdk/UClass.hpp>
+#include <sdk/UFunction.hpp>
 #include <sdk/FBoolProperty.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/TArray.hpp>
@@ -215,6 +216,15 @@ bool is_stalker2_executable_cached() {
     }();
 
     return is_stalker2;
+}
+
+bool is_everspace2_executable_cached() {
+    static const bool is_everspace2 = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_everspace2_executable_path(*exe_path);
+    }();
+
+    return is_everspace2;
 }
 
 bool is_directive8020_executable_cached() {
@@ -1334,6 +1344,70 @@ std::optional<sdk::UObject*> read_object_property(sdk::UObject* object, std::wst
     return value;
 } catch (...) {
     return std::nullopt;
+}
+
+bool is_live_uobject_identity(sdk::UObject* object, int32_t expected_index = -1, int32_t expected_serial = 0) try {
+    if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
+        return false;
+    }
+
+    const auto objects = sdk::FUObjectArray::get();
+    if (objects == nullptr) {
+        return false;
+    }
+
+    const auto index = expected_index >= 0 ? expected_index : (int32_t)object->get_internal_index();
+    if (index < 0 || index >= objects->get_object_count()) {
+        return false;
+    }
+
+    const auto item = objects->get_object(index);
+    if (item == nullptr || item->get_object() != object) {
+        return false;
+    }
+
+    return expected_serial == 0 || item->get_serial_number() == expected_serial;
+} catch (...) {
+    return false;
+}
+
+bool is_everspace2_cinematic_bar(sdk::UObject* object, std::wstring_view expected_name) try {
+    if (!is_live_uobject_identity(object) || object->get_name_safe() != expected_name) {
+        return false;
+    }
+
+    const auto klass = object->get_class();
+    return klass != nullptr && klass->get_full_name() == L"Class /Script/UMG.Image";
+} catch (...) {
+    return false;
+}
+
+bool remove_everspace2_cinematic_bars(sdk::UObject* hud) try {
+    if (!is_live_uobject_identity(hud)) {
+        return false;
+    }
+
+    const auto top = read_object_property(hud, L"BarImageTop");
+    const auto bottom = read_object_property(hud, L"BarImageBottom");
+    if (!top.has_value() || !bottom.has_value() ||
+        !is_everspace2_cinematic_bar(*top, L"BarImageTop") ||
+        !is_everspace2_cinematic_bar(*bottom, L"BarImageBottom")) {
+        return false;
+    }
+
+    const auto top_function = (*top)->get_class()->find_function(L"RemoveFromParent");
+    const auto bottom_function = (*bottom)->get_class()->find_function(L"RemoveFromParent");
+    if (top_function == nullptr || bottom_function == nullptr ||
+        top_function->get_full_name() != L"Function /Script/UMG.Widget.RemoveFromParent" ||
+        bottom_function->get_full_name() != L"Function /Script/UMG.Widget.RemoveFromParent") {
+        return false;
+    }
+
+    (*top)->process_event(top_function, nullptr);
+    (*bottom)->process_event(bottom_function, nullptr);
+    return true;
+} catch (...) {
+    return false;
 }
 
 std::optional<sdk::UObject*> call_object_object_function(sdk::UObject* object, std::wstring_view function_name) try {
@@ -4038,6 +4112,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_subnautica2_save_thumbnail_guard(engine);
     update_subnautica2_native_water_compatibility(engine);
     update_daysgone_gbuffer_compatibility(engine);
+    update_everspace2_cinematic_bars(engine);
 
     update_statistics_overlay(engine);
     update_game_fov();
@@ -4547,6 +4622,114 @@ void VR::update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine) {
 
     if (ok) {
         m_daysgone_gbuffer_cvar_applied = true;
+    }
+}
+
+void VR::update_everspace2_cinematic_bars(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    auto& state = m_everspace2_cinematic_bars;
+    const bool enabled =
+        is_everspace2_executable_cached() &&
+        m_compatibility_everspace2_remove_cinematic_bars->value();
+
+    if (!enabled) {
+        if (state.was_enabled) {
+            state = {};
+        }
+        return;
+    }
+
+    if (!state.was_enabled) {
+        state = {};
+        state.was_enabled = true;
+    }
+
+    if (state.processed_hud != nullptr &&
+        is_live_uobject_identity(
+            (sdk::UObject*)state.processed_hud,
+            state.processed_index,
+            state.processed_serial)) {
+        return;
+    }
+
+    state.processed_hud = nullptr;
+    state.processed_index = -1;
+    state.processed_serial = 0;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (state.hud_class == nullptr) {
+        if (state.next_class_lookup != std::chrono::steady_clock::time_point{} &&
+            now < state.next_class_lookup) {
+            return;
+        }
+
+        state.next_class_lookup = now + std::chrono::seconds(2);
+        state.hud_class = sdk::find_uobject<sdk::UClass>(
+            L"WidgetBlueprintGeneratedClass /Game/Blueprints/UI/HUD/WG_Ingame_HUD.WG_Ingame_HUD_C",
+            true);
+        if (state.hud_class == nullptr) {
+            return;
+        }
+
+        state.scan_cursor = 0;
+    }
+
+    const auto hud_class = (sdk::UClass*)state.hud_class;
+    const auto objects = sdk::FUObjectArray::get();
+    if (objects == nullptr) {
+        return;
+    }
+
+    if (state.next_scan != std::chrono::steady_clock::time_point{} && now < state.next_scan) {
+        return;
+    }
+
+    const auto object_count = objects->get_object_count();
+    constexpr int32_t OBJECTS_PER_TICK = 4096;
+    const auto scan_end = std::min(state.scan_cursor + OBJECTS_PER_TICK, object_count);
+
+    for (auto index = state.scan_cursor; index < scan_end; ++index) {
+        const auto item = objects->get_object(index);
+        if (item == nullptr) {
+            continue;
+        }
+
+        auto object = (sdk::UObject*)item->get_object();
+        if (object == nullptr || object == hud_class->get_class_default_object() ||
+            !is_live_uobject_identity(object, index, item->get_serial_number()) ||
+            object->get_class() != hud_class) {
+            continue;
+        }
+
+        if (!remove_everspace2_cinematic_bars(object)) {
+            if (!state.invalid_layout_logged) {
+                SPDLOG_WARN(
+                    "[Everspace2][CinematicBars] Exact WG_Ingame_HUD bar layout/function validation failed; leaving UI unchanged");
+                state.invalid_layout_logged = true;
+            }
+            continue;
+        }
+
+        state.processed_hud = object;
+        state.processed_index = index;
+        state.processed_serial = item->get_serial_number();
+        ++state.removed_instances;
+        SPDLOG_INFO(
+            "[Everspace2][CinematicBars] Removed BarImageTop/BarImageBottom from {} instance={} index={} serial={}",
+            get_log_object_name(object),
+            state.removed_instances,
+            state.processed_index,
+            state.processed_serial);
+        return;
+    }
+
+    state.scan_cursor = scan_end;
+    if (state.scan_cursor >= object_count) {
+        // The current HUD may be replaced during level travel. Restart only
+        // after exhausting a bounded scan; a live processed HUD returns above.
+        state.scan_cursor = 0;
+        state.next_scan = now + std::chrono::milliseconds(500);
     }
 }
 
@@ -7792,6 +7975,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_daysgone_gbuffer_safe_mode->draw("Days Gone GBuffer Safe Mode");
             if (m_compatibility_daysgone_gbuffer_safe_mode->value()) {
                 ImGui::TextWrapped("Days Gone DX11 only: applies r.GBuffer=0 to avoid Bend deferred/GBuffer black road/terrain patches. It is opt-in and restored when disabled.");
+            }
+            if (is_everspace2_executable_cached()) {
+                m_compatibility_everspace2_remove_cinematic_bars->draw("Everspace 2 Remove Cinematic Bars");
+                if (m_compatibility_everspace2_remove_cinematic_bars->value()) {
+                    ImGui::TextWrapped("Everspace 2 only: removes the exact WG_Ingame_HUD top and bottom cinematic-bar Image widgets once per HUD instance. Disabling does not restore bars already removed from the current HUD.");
+                }
             }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
