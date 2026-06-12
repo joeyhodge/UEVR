@@ -848,6 +848,7 @@ private:
     void restore_subnautica2_native_water_cvars();
     void update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine);
     void restore_daysgone_gbuffer_cvar();
+    void update_everspace2_cinematic_bars(sdk::UGameEngine* engine);
     struct HitchSnapshotDumpRequest;
     void record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now);
     void dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const char* suspected_stall);
@@ -1420,6 +1421,7 @@ private:
     const ModCombo::Ptr m_subnautica2_native_water_mode{ ModCombo::create(generate_name("Subnautica2NativeWaterMode"), s_subnautica2_native_water_mode_names, SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS) };
     const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
     const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
+    const ModToggle::Ptr m_compatibility_everspace2_remove_cinematic_bars{ ModToggle::create(generate_name("Compatibility_Everspace2RemoveCinematicBars"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1720,6 +1722,7 @@ public:
             *m_subnautica2_native_water_mode,
             *m_compatibility_daysgone_bend_ui_placement_fix,
             *m_compatibility_daysgone_gbuffer_safe_mode,
+            *m_compatibility_everspace2_remove_cinematic_bars,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
@@ -1842,6 +1845,18 @@ private:
     int m_daysgone_gbuffer_previous_value{1};
     uint32_t m_daysgone_gbuffer_cvar_attempts{0};
     std::chrono::steady_clock::time_point m_daysgone_gbuffer_next_apply{};
+    struct Everspace2CinematicBarState {
+        void* hud_class{nullptr};
+        void* processed_hud{nullptr};
+        int32_t processed_index{-1};
+        int32_t processed_serial{0};
+        int32_t scan_cursor{0};
+        uint32_t removed_instances{0};
+        bool was_enabled{false};
+        bool invalid_layout_logged{false};
+        std::chrono::steady_clock::time_point next_class_lookup{};
+        std::chrono::steady_clock::time_point next_scan{};
+    } m_everspace2_cinematic_bars{};
 
     struct {
         bool draw{false};
