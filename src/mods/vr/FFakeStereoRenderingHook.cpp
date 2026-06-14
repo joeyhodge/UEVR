@@ -2939,6 +2939,137 @@ bool is_executable_process_range(uintptr_t address, size_t size) {
            protect == PAGE_EXECUTE_WRITECOPY;
 }
 
+struct RuntimeFunctionRange {
+    uintptr_t begin{};
+    uintptr_t end{};
+    uintptr_t image_base{};
+
+    size_t size() const {
+        return end - begin;
+    }
+};
+
+std::optional<RuntimeFunctionRange> get_runtime_function_range(uintptr_t address) {
+    DWORD64 image_base{};
+    const auto runtime_function = RtlLookupFunctionEntry(
+        static_cast<DWORD64>(address),
+        &image_base,
+        nullptr);
+
+    if (runtime_function == nullptr || image_base == 0) {
+        return std::nullopt;
+    }
+
+    const auto begin = static_cast<uintptr_t>(image_base + runtime_function->BeginAddress);
+    const auto end = static_cast<uintptr_t>(image_base + runtime_function->EndAddress);
+
+    if (begin == 0 || end <= begin || address < begin || address >= end ||
+        !is_executable_process_range(begin, std::min<size_t>(end - begin, 16)))
+    {
+        return std::nullopt;
+    }
+
+    return RuntimeFunctionRange{
+        .begin = begin,
+        .end = end,
+        .image_base = static_cast<uintptr_t>(image_base),
+    };
+}
+
+bool direct_call_returns_to(uintptr_t return_address, uintptr_t expected_target) {
+    constexpr size_t direct_call_size = 5;
+
+    if (return_address < direct_call_size ||
+        !is_readable_process_range(return_address - direct_call_size, direct_call_size))
+    {
+        return false;
+    }
+
+    const auto call = reinterpret_cast<const uint8_t*>(return_address - direct_call_size);
+    if (call[0] != 0xE8) {
+        return false;
+    }
+
+    int32_t displacement{};
+    std::memcpy(&displacement, call + 1, sizeof(displacement));
+    return static_cast<uintptr_t>(return_address + displacement) == expected_target;
+}
+
+bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
+    // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
+    // this as corroborating evidence rather than the sole resolver condition.
+    constexpr std::array<uint8_t, 4> store_r8_to_stack{0x4C, 0x89, 0x44, 0x24};
+    constexpr std::array<uint8_t, 4> load_r8_from_stack{0x4C, 0x8D, 0x44, 0x24};
+
+    if (wrapper.size() > 0x180 || !is_readable_process_range(wrapper.begin, wrapper.size())) {
+        return false;
+    }
+
+    const auto bytes = reinterpret_cast<const uint8_t*>(wrapper.begin);
+    const auto contains = [&](const auto& pattern) {
+        return std::search(bytes, bytes + wrapper.size(), pattern.begin(), pattern.end()) !=
+               bytes + wrapper.size();
+    };
+
+    return contains(store_r8_to_stack) && contains(load_r8_from_stack);
+}
+
+std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
+    constexpr uint32_t max_stack_depth = 32;
+    std::array<uintptr_t, max_stack_depth> stack{};
+    const auto depth = RtlCaptureStackBackTrace(
+        0,
+        max_stack_depth,
+        reinterpret_cast<void**>(stack.data()),
+        nullptr);
+
+    const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    std::optional<uintptr_t> best_candidate{};
+    int best_score = std::numeric_limits<int>::min();
+
+    // The view-extension callback runs inside CreateSceneRenderers. The next
+    // frames are BeginRenderingViewFamilies and its small singular wrapper.
+    // Validate that wrapper's exact direct CALL instead of guessing from the
+    // first captured frame.
+    for (uint32_t i = 1; i + 1 < depth; ++i) {
+        const auto callee = get_runtime_function_range(stack[i]);
+        const auto caller = get_runtime_function_range(stack[i + 1]);
+
+        if (!callee || !caller || callee->begin == caller->begin ||
+            callee->image_base != game_module || caller->image_base != game_module ||
+            caller->size() > 0x180 || callee->size() < 0x200 ||
+            !direct_call_returns_to(stack[i + 1], callee->begin))
+        {
+            continue;
+        }
+
+        auto score = 0;
+        score += static_cast<int>(std::min<size_t>(callee->size() / 0x100, 32));
+        score += static_cast<int>((0x180 - caller->size()) / 8);
+
+        if (has_begin_rendering_viewfamily_wrapper_shape(*caller)) {
+            score += 100;
+        }
+
+        if (score > best_score) {
+            best_score = score;
+            best_candidate = callee->begin;
+            SPDLOG_INFO(
+                "[NativeStereoFix] BeginRenderingViewFamilies candidate target={:x} size={:x} "
+                "wrapper={:x} wrapper_size={:x} return={:x} stack_index={} score={}",
+                callee->begin,
+                callee->size(),
+                caller->begin,
+                caller->size(),
+                stack[i + 1],
+                i,
+                score);
+        }
+    }
+
+    return best_candidate;
+}
+
 bool looks_like_virtual_function_table(uintptr_t table) {
     if (!is_readable_process_range(table, sizeof(uintptr_t) * 12)) {
         return false;
@@ -7301,19 +7432,46 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     std::optional<uint32_t> views_original_count{};
 
-    if (vr->is_native_stereo_fix_enabled() && vr->is_native_stereo_fix_same_pass_enabled() && init_options_stereo_pass > EStereoscopicPass::eSSP_PRIMARY) {
+    if (vr->is_native_stereo_fix_enabled() && init_options_stereo_pass > EStereoscopicPass::eSSP_PRIMARY) {
         if (g_hook->get_render_target_manager()->get_scene_capture_render_target() != nullptr) {
-            init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+            const bool is_ue55_or_newer = is_ue_5_5_runtime() || is_ue_5_6_or_newer();
+            const bool force_primary_constructor_pass = subnautica2_is_current_game();
+            const bool preserve_secondary_pass =
+                is_ue55_or_newer &&
+                vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
+                !vr->should_force_native_stereo_fix_same_pass() &&
+                !force_primary_constructor_pass;
+            const bool use_primary_constructor_pass =
+                force_primary_constructor_pass ||
+                (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass);
 
-            auto view_family = init_options->get_view_family();
-            auto views = view_family != nullptr ? view_family->get_views() : nullptr;
+            if (use_primary_constructor_pass) {
+                init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+                if (force_primary_constructor_pass) {
+                    SPDLOG_INFO_ONCE(
+                        "[Subnautica2][NativeStereoFix] Using PRIMARY constructor pass with hidden view list");
+                } else {
+                    SPDLOG_INFO_ONCE(
+                        "[NativeStereoFix] Relabeling the secondary eye as PRIMARY using the legacy same-pass path");
+                }
+            } else if (preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE(
+                    "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
+            }
 
-            if (views != nullptr) {
-                // Hide the fact that we have multiple views from the FSceneView constructor.
-                // At least 1 view causes special stereo logic to run in the constructor.
-                // Notably I've seen more than 1 view causing crashes on UE5 with the native stereo fix without doing this.
-                views_original_count = views->count;
-                views->count = 0;
+            if (is_ue5) {
+                auto view_family = init_options->get_view_family();
+                auto views = view_family != nullptr ? view_family->get_views() : nullptr;
+
+                if (views != nullptr && use_primary_constructor_pass) {
+                    // UE5.5+ indexes the primary view while constructing a
+                    // secondary pass. Never hide this list unless the temporary
+                    // constructor pass has also been relabeled as PRIMARY.
+                    views_original_count = views->count;
+                    views->count = 0;
+                    SPDLOG_INFO_ONCE(
+                        "[NativeStereoFix] Hiding FSceneViewFamily views during secondary-view construction");
+                }
             }
         }
     }
@@ -7832,44 +7990,42 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
     using BeginRenderViewFamilyRealFn = void(*)(void*, sdk::FCanvas*, sdk::FSceneViewFamily*);
     static BeginRenderViewFamilyRealFn begin_rendering_view_family_real_fn = nullptr;
-    static bool already_tried = false;
-    if (begin_rendering_view_family_real_fn == nullptr && !already_tried && vr->is_native_stereo_fix_enabled()) {
-        already_tried = true;
+    static uint32_t resolver_attempts = 0;
+    static uint32_t calls_until_retry = 0;
 
-        // Get callstack
-        constexpr auto max_stack_depth = 100;
-        uintptr_t stack[max_stack_depth]{};
+    if (begin_rendering_view_family_real_fn == nullptr && vr->is_native_stereo_fix_enabled()) {
+        if (calls_until_retry > 0) {
+            --calls_until_retry;
+        } else {
+            ++resolver_attempts;
+            calls_until_retry = 30;
 
-        const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
-        uintptr_t mid = 0;
+            const auto candidate = resolve_begin_rendering_viewfamilies_from_stack();
+            if (!candidate) {
+                SPDLOG_WARN(
+                    "[NativeStereoFix] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
+                    "will retry in {} callbacks",
+                    resolver_attempts,
+                    calls_until_retry);
+                return;
+            }
 
-        for (int i = 1; i < depth; i++) {
-            SPDLOG_INFO(" {:x}", (uintptr_t)stack[i]);
-            mid = stack[i];
-            break;
-        }
+            begin_rendering_view_family_real_fn =
+                reinterpret_cast<BeginRenderViewFamilyRealFn>(*candidate);
+            SPDLOG_INFO(
+                "[NativeStereoFix] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
+                reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn),
+                resolver_attempts);
 
-        if (mid != 0) {
-            const auto candidate = utility::find_virtual_function_start(mid);
+            g_hook->m_render_module_begin_render_viewfamily_hook = safetyhook::create_inline(
+                reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn),
+                reinterpret_cast<uintptr_t>(&begin_render_viewfamily_real));
 
-            if (candidate) {
-                begin_rendering_view_family_real_fn = (BeginRenderViewFamilyRealFn)*candidate;
-
-                if (begin_rendering_view_family_real_fn != nullptr) {
-                    SPDLOG_INFO("Found BeginRenderingViewFamily real function at {:x}", (uintptr_t)begin_rendering_view_family_real_fn);
-
-                    g_hook->m_render_module_begin_render_viewfamily_hook = safetyhook::create_inline((uintptr_t)begin_rendering_view_family_real_fn, (uintptr_t)&begin_render_viewfamily_real);
-
-                    if (g_hook->m_render_module_begin_render_viewfamily_hook) {
-                        SPDLOG_INFO("Hooked BeginRenderingViewFamily real function");
-                    } else {
-                        SPDLOG_ERROR("Failed to hook BeginRenderingViewFamily real function");
-                    }
-                } else {
-                    SPDLOG_ERROR("Failed to find BeginRenderingViewFamily real function");
-                }
+            if (g_hook->m_render_module_begin_render_viewfamily_hook) {
+                SPDLOG_INFO("[NativeStereoFix] Hooked BeginRenderingViewFamilies real function");
             } else {
-                SPDLOG_ERROR("Failed to find BeginRenderingViewFamily real function");
+                SPDLOG_ERROR("[NativeStereoFix] Failed to hook BeginRenderingViewFamilies real function");
+                begin_rendering_view_family_real_fn = nullptr;
             }
         }
     }
