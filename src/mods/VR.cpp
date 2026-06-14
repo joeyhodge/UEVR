@@ -57,6 +57,7 @@ std::shared_ptr<VR>& VR::get() {
 }
 
 VR::~VR() {
+    restore_1666amsterdam_native_postprocess_cvars();
     restore_daysgone_gbuffer_cvar();
     stop_hitch_snapshot_writer();
 }
@@ -1242,6 +1243,24 @@ bool is_subnautica2_executable() {
     }();
 
     return is_subnautica2;
+}
+
+bool is_1666amsterdam_executable() {
+    static const bool is_1666amsterdam = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto filename = std::filesystem::path{*module_path}.filename().wstring();
+        std::transform(filename.begin(), filename.end(), filename.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return filename == L"1666amsterdam.exe";
+    }();
+
+    return is_1666amsterdam;
 }
 
 bool is_daysgone_executable() {
@@ -4111,6 +4130,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     m_render_target_pool_hook->on_pre_engine_tick(engine, delta);
     update_subnautica2_save_thumbnail_guard(engine);
     update_subnautica2_native_water_compatibility(engine);
+    update_1666amsterdam_native_postprocess_compatibility(engine);
     update_daysgone_gbuffer_compatibility(engine);
     update_everspace2_cinematic_bars(engine);
 
@@ -4489,6 +4509,192 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
 
     m_subnautica2_native_water_cvars_applied = true;
     m_subnautica2_native_water_last_mode = selected_mode;
+}
+
+void VR::restore_1666amsterdam_native_postprocess_cvars() {
+    if (!m_1666amsterdam_native_postprocess_cvars_applied ||
+        m_1666amsterdam_native_postprocess_previous_ints.empty()) {
+        m_1666amsterdam_native_postprocess_cvars_applied = false;
+        m_1666amsterdam_native_postprocess_cvars_logged = false;
+        m_1666amsterdam_native_postprocess_cvar_attempts = 0;
+        m_1666amsterdam_native_postprocess_next_apply = {};
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        return;
+    }
+
+    uint32_t restored{};
+    uint32_t missing{};
+    uint32_t failed{};
+
+    for (const auto& [name, value] : m_1666amsterdam_native_postprocess_previous_ints) {
+        auto* object = console_manager->find(name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        auto* variable = (sdk::IConsoleVariable*)object;
+        bool ok{};
+
+        try {
+            ok = variable->Set(std::to_wstring(value).c_str());
+        } catch (...) {
+            ok = false;
+        }
+
+        if (ok) {
+            ++restored;
+        } else {
+            ++failed;
+        }
+    }
+
+    SPDLOG_INFO(
+        "[1666Amsterdam][NativePostProcess] Restored cvars restored={} missing={} failed={}",
+        restored,
+        missing,
+        failed);
+
+    m_1666amsterdam_native_postprocess_previous_ints.clear();
+    m_1666amsterdam_native_postprocess_cvars_applied = false;
+    m_1666amsterdam_native_postprocess_cvars_logged = false;
+    m_1666amsterdam_native_postprocess_cvar_attempts = 0;
+    m_1666amsterdam_native_postprocess_next_apply = {};
+}
+
+void VR::update_1666amsterdam_native_postprocess_compatibility(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    const bool active =
+        is_1666amsterdam_executable() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        is_hmd_active() &&
+        m_compatibility_1666amsterdam_native_postprocess->value() &&
+        m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+        !m_native_stereo_fix->value();
+
+    if (!active) {
+        restore_1666amsterdam_native_postprocess_cvars();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_1666amsterdam_native_postprocess_next_apply != std::chrono::steady_clock::time_point{} &&
+        now < m_1666amsterdam_native_postprocess_next_apply) {
+        return;
+    }
+
+    // Amsterdam's full temporal path can replace the secondary-eye scene with
+    // black while its geometry, HUD, and gamma-only path remain valid.
+    m_1666amsterdam_native_postprocess_next_apply = now + std::chrono::seconds(5);
+    ++m_1666amsterdam_native_postprocess_cvar_attempts;
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        if (m_1666amsterdam_native_postprocess_cvar_attempts == 1 ||
+            (m_1666amsterdam_native_postprocess_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN("[1666Amsterdam][NativePostProcess] FConsoleManager unavailable");
+        }
+        return;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        int value;
+    };
+
+    // Preserve the full tonemap/exposure chain, but bypass temporal history and
+    // temporal upscaling. FXAA is spatial and therefore cannot consume a stale
+    // or primary-eye-only history texture.
+    static constexpr std::array<ForcedCVar, 3> forced_cvars{{
+        ForcedCVar{L"r.AntiAliasingMethod", 1},
+        ForcedCVar{L"r.TemporalAA.Upsampling", 0},
+        ForcedCVar{L"r.TemporalAA.Upscaler", 0},
+    }};
+
+    uint32_t found{};
+    uint32_t already_ok{};
+    uint32_t set_ok{};
+    uint32_t set_failed{};
+    uint32_t missing{};
+
+    for (const auto& forced : forced_cvars) {
+        const std::wstring cvar_name{forced.name};
+        auto* object = console_manager->find(cvar_name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            ++missing;
+            continue;
+        }
+
+        ++found;
+        auto* variable = (sdk::IConsoleVariable*)object;
+        int before{};
+        int after{};
+        bool ok{};
+
+        try {
+            before = variable->GetInt();
+            if (!m_1666amsterdam_native_postprocess_previous_ints.contains(cvar_name)) {
+                m_1666amsterdam_native_postprocess_previous_ints.emplace(cvar_name, before);
+            }
+
+            if (before == forced.value) {
+                ok = true;
+                ++already_ok;
+            } else {
+                ok = variable->Set(std::to_wstring(forced.value).c_str());
+            }
+
+            after = variable->GetInt();
+        } catch (...) {
+            ok = false;
+        }
+
+        if (!ok || after != forced.value) {
+            ++set_failed;
+        } else if (before != forced.value) {
+            ++set_ok;
+        }
+
+        if (!m_1666amsterdam_native_postprocess_cvars_logged) {
+            SPDLOG_INFO(
+                "[1666Amsterdam][NativePostProcess] forced {}: before={} requested={} after={} ok={}",
+                utility::narrow(forced.name),
+                before,
+                forced.value,
+                after,
+                ok && after == forced.value);
+        }
+    }
+
+    if (found == 0) {
+        if (!m_1666amsterdam_native_postprocess_cvars_logged ||
+            (m_1666amsterdam_native_postprocess_cvar_attempts % 120) == 0) {
+            SPDLOG_WARN(
+                "[1666Amsterdam][NativePostProcess] No target cvars found attempt={} missing={}",
+                m_1666amsterdam_native_postprocess_cvar_attempts,
+                missing);
+        }
+        return;
+    }
+
+    if (!m_1666amsterdam_native_postprocess_cvars_logged) {
+        SPDLOG_INFO(
+            "[1666Amsterdam][NativePostProcess] Applied FXAA temporal bypass found={} missing={} already_ok={} set_ok={} set_failed={}",
+            found,
+            missing,
+            already_ok,
+            set_ok,
+            set_failed);
+        m_1666amsterdam_native_postprocess_cvars_logged = true;
+    }
+
+    m_1666amsterdam_native_postprocess_cvars_applied = true;
 }
 
 void VR::restore_daysgone_gbuffer_cvar() {
@@ -7993,6 +8199,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             if (m_compatibility_subnautica2_native_water->value()) {
                 m_subnautica2_native_water_mode->draw("Subnautica 2 Native Water Mode");
                 ImGui::TextWrapped("Subnautica 2 only: applies in DX12 Native Stereo with Native Stereo Fix off. Safe Reflections keeps SingleLayerWater enabled and disables native-stereo-sensitive tiled/reflection history paths. Synced/AFR restores previous values.");
+            }
+            if (is_1666amsterdam_executable()) {
+                m_compatibility_1666amsterdam_native_postprocess->draw("1666 Amsterdam Native Post-Process Compatibility");
+                if (m_compatibility_1666amsterdam_native_postprocess->value()) {
+                    ImGui::TextWrapped("1666 Amsterdam only: in DX12 Native Stereo with Native Stereo Fix off, keeps full tonemapping but replaces the broken temporal history/upscaler path with FXAA. Enable before injection or restart after changing it.");
+                }
             }
             m_compatibility_daysgone_bend_ui_placement_fix->draw("Days Gone Bend UI Placement Fix");
             if (m_compatibility_daysgone_bend_ui_placement_fix->value()) {
