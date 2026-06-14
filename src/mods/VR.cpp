@@ -4341,6 +4341,11 @@ void VR::update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine)
     }
 
     const bool mode_changed = selected_mode != m_subnautica2_native_water_last_mode;
+    if (mode_changed && m_subnautica2_native_water_cvars_applied) {
+        // Switching modes must not retain disables from the previous mode.
+        restore_subnautica2_native_water_cvars();
+    }
+
     if (mode_changed) {
         m_subnautica2_native_water_cvars_logged = false;
     }
@@ -7663,6 +7668,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             } else {
                 m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
             }
+            m_native_stereo_fix_preserve_secondary_pass->draw("Preserve Secondary Pass on UE5.5+");
+            ImGui::TextWrapped(
+                "Recommended for UE5.5 and newer. Keeps the real secondary-eye pass identity for per-eye water, "
+                "post-process, and renderer paths while retaining the Native Fix constructor safety guard. "
+                "Disable only to restore the legacy same-pass behavior.");
             ImGui::TreePop();
         }
 
