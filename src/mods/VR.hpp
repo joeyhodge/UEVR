@@ -846,6 +846,8 @@ private:
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
     void restore_subnautica2_native_water_cvars();
+    void update_1666amsterdam_native_postprocess_compatibility(sdk::UGameEngine* engine);
+    void restore_1666amsterdam_native_postprocess_cvars();
     void update_daysgone_gbuffer_compatibility(sdk::UGameEngine* engine);
     void restore_daysgone_gbuffer_cvar();
     void update_everspace2_cinematic_bars(sdk::UGameEngine* engine);
@@ -1419,6 +1421,7 @@ private:
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
     const ModCombo::Ptr m_subnautica2_native_water_mode{ ModCombo::create(generate_name("Subnautica2NativeWaterMode"), s_subnautica2_native_water_mode_names, SUBNAUTICA2_NATIVE_WATER_SAFE_REFLECTIONS) };
+    const ModToggle::Ptr m_compatibility_1666amsterdam_native_postprocess{ ModToggle::create(generate_name("Compatibility_1666AmsterdamNativePostProcess"), true, true) };
     const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
     const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
     const ModToggle::Ptr m_compatibility_everspace2_remove_cinematic_bars{ ModToggle::create(generate_name("Compatibility_Everspace2RemoveCinematicBars"), false, true) };
@@ -1720,6 +1723,7 @@ public:
             *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_compatibility_subnautica2_native_water,
             *m_subnautica2_native_water_mode,
+            *m_compatibility_1666amsterdam_native_postprocess,
             *m_compatibility_daysgone_bend_ui_placement_fix,
             *m_compatibility_daysgone_gbuffer_safe_mode,
             *m_compatibility_everspace2_remove_cinematic_bars,
@@ -1839,6 +1843,11 @@ private:
     int32_t m_subnautica2_native_water_last_mode{-1};
     std::chrono::steady_clock::time_point m_subnautica2_native_water_next_apply{};
     std::unordered_map<std::wstring, int> m_subnautica2_native_water_previous_ints{};
+    bool m_1666amsterdam_native_postprocess_cvars_applied{false};
+    bool m_1666amsterdam_native_postprocess_cvars_logged{false};
+    uint32_t m_1666amsterdam_native_postprocess_cvar_attempts{0};
+    std::chrono::steady_clock::time_point m_1666amsterdam_native_postprocess_next_apply{};
+    std::unordered_map<std::wstring, int> m_1666amsterdam_native_postprocess_previous_ints{};
     bool m_daysgone_gbuffer_cvar_applied{false};
     bool m_daysgone_gbuffer_cvar_logged{false};
     bool m_daysgone_gbuffer_previous_valid{false};
