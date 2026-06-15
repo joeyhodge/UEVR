@@ -580,8 +580,29 @@ safetyhook::MidHook g_everspace2_final_release_hook{};
 safetyhook::InlineHook g_everspace2_world_cleanup_hook{};
 std::atomic_bool g_everspace2_pool_trace_attempted{};
 std::atomic<uint32_t> g_everspace2_last_view_pose_frame{std::numeric_limits<uint32_t>::max()};
+std::atomic<uint32_t> g_everspace2_next_view_pose_frame{};
 std::mutex g_everspace2_preshadow_depth_assignment_mutex{};
 const Everspace2ExecutableProfile* g_everspace2_active_profile{};
+
+uint32_t everspace2_get_next_view_pose_frame(VRRuntime* runtime) {
+    auto frame_count = g_everspace2_next_view_pose_frame.load(std::memory_order_acquire);
+
+    if (frame_count != 0) {
+        return frame_count;
+    }
+
+    const auto initial_frame_count = runtime->internal_frame_count + 1;
+    if (g_everspace2_next_view_pose_frame.compare_exchange_strong(
+            frame_count,
+            initial_frame_count,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire))
+    {
+        return initial_frame_count;
+    }
+
+    return frame_count;
+}
 
 bool everspace2_is_live_uniform_buffer(uintptr_t buffer) {
     if (buffer == 0 || (buffer & (alignof(void*) - 1)) != 0) {
@@ -7667,7 +7688,7 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
 
     if (everspace2_is_current_game() && view_info != nullptr && vr->is_hmd_active()) {
         const auto runtime = vr->get_runtime();
-        const auto frame_count = runtime->internal_frame_count + 1;
+        const auto frame_count = everspace2_get_next_view_pose_frame(runtime);
 
         if (const auto openxr = vr->get_openxr_runtime();
             openxr != nullptr &&
@@ -7992,6 +8013,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     auto runtime = vr->get_runtime();
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
+
+    if (everspace2_is_current_game()) {
+        // SetupViewPoint runs before this callback. Publish a stable token for
+        // the next frame so all of its viewpoint calls share one tracking pose.
+        g_everspace2_next_view_pose_frame.store(frame_count + 1, std::memory_order_release);
+    }
 
     // This is a HACKHACKHACK to get splitscreen working on around 4.20 to 4.27 something
     // This is completely borked on UE5
@@ -9841,7 +9868,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
         if (everspace2_is_current_game() && !g_hook->m_has_game_viewport_client_draw_hook) {
             const auto runtime = vr->get_runtime();
-            const auto frame_count = runtime->internal_frame_count + 1;
+            const auto frame_count = everspace2_get_next_view_pose_frame(runtime);
 
             if (const auto openxr = vr->get_openxr_runtime();
                 openxr != nullptr &&
