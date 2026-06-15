@@ -640,6 +640,10 @@ public:
         return m_native_stereo_fix_preserve_secondary_pass->value();
     }
 
+    bool is_hitch_diagnostics_enabled() const {
+        return m_enable_hitch_diagnostics->value();
+    }
+
     bool is_ahud_compatibility_enabled() const {
         return m_compatibility_ahud->value();
     }
