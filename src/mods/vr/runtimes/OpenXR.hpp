@@ -250,6 +250,7 @@ public:
         XrTime coherent_display_time{};
         std::chrono::steady_clock::time_point coherent_capture_time{};
         bool coherent_complete{};
+        bool coherent_matches_render{};
     };
     /*std::array<std::vector<XrView>, 3> stage_view_queue{};
     std::array<XrSpaceLocation, 3> view_space_location_queue{};

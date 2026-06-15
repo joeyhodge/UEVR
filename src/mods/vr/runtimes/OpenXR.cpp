@@ -1301,6 +1301,7 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
         }
 
         pipeline_state.coherent_complete = false;
+        pipeline_state.coherent_matches_render = false;
     }
 
     if (pipeline_state.frame_state.predictedDisplayTime <= 1000) {
@@ -1406,6 +1407,7 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
         pipeline_state.coherent_display_time = display_time;
         pipeline_state.coherent_capture_time = std::chrono::steady_clock::now();
         pipeline_state.coherent_complete = !pipeline_state.stage_views.empty();
+        pipeline_state.coherent_matches_render = pipeline_state.coherent_complete;
     }
 
     for (auto i = 0; i < this->hands.size(); ++i) {
@@ -2051,15 +2053,22 @@ bool OpenXR::capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineSt
     captured.coherent_display_time = display_time;
     captured.coherent_capture_time = std::chrono::steady_clock::now();
     captured.coherent_complete = true;
+    captured.coherent_matches_render = false;
 
     {
         std::scoped_lock assignment_lock{this->sync_assignment_mtx};
         captured.coherent_sequence = ++this->everspace2_snapshot_sequence;
         auto& destination = this->pipeline_states[frame_count % QUEUE_SIZE];
 
-        if (destination.frame_count == 0 ||
-            destination.frame_count == frame_count ||
-            !is_older_frame_count(frame_count, destination.frame_count))
+        // A submit-only capture did not produce the texture being submitted.
+        // Never replace the pose that was published before ES2 rendered this
+        // frame, especially while a cutscene stalls on the same image.
+        if (!(destination.frame_count == frame_count &&
+              destination.coherent_matches_render &&
+              destination.coherent_complete) &&
+            (destination.frame_count == 0 ||
+             destination.frame_count == frame_count ||
+             !is_older_frame_count(frame_count, destination.frame_count)))
         {
             destination = captured;
         }
@@ -2123,9 +2132,14 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
             std::scoped_lock assignment_lock{this->sync_assignment_mtx};
             const auto& exact = this->pipeline_states[requested_frame % QUEUE_SIZE];
             if (exact.coherent_source_frame_count == requested_frame &&
-                this->is_everspace2_snapshot_fresh(exact, now, &selected_age_ms))
+                exact.coherent_matches_render &&
+                exact.coherent_complete &&
+                !exact.stage_views.empty() &&
+                exact.frame_state.predictedDisplayTime > 1000 &&
+                exact.coherent_capture_time.time_since_epoch().count() != 0)
             {
                 selected = exact;
+                selected_age_ms = elapsed_ms_since(now, exact.coherent_capture_time);
                 reason = "exact";
             } else {
                 for (uint32_t delta = 1; delta <= 2 && requested_frame >= delta; ++delta) {
@@ -2133,6 +2147,7 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
                     const auto& candidate = this->pipeline_states[candidate_frame % QUEUE_SIZE];
                     int64_t candidate_age_ms{-1};
                     if (candidate.coherent_source_frame_count == candidate_frame &&
+                        candidate.coherent_matches_render &&
                         this->is_everspace2_snapshot_fresh(candidate, now, &candidate_age_ms))
                     {
                         selected = candidate;

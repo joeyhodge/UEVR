@@ -529,6 +529,8 @@ struct Everspace2ExecutableProfile {
     std::array<uint8_t, 5> preshadow_assignment_call_signature;
     uintptr_t final_release_path_rva;
     std::array<uint8_t, 9> final_release_signature;
+    uintptr_t world_cleanup_rva;
+    std::array<uint8_t, 19> world_cleanup_signature;
 };
 
 constexpr Everspace2ExecutableProfile EVERSPACE2_DEMO_PROFILE{
@@ -542,6 +544,8 @@ constexpr Everspace2ExecutableProfile EVERSPACE2_DEMO_PROFILE{
     {0xE8, 0x7D, 0xCD, 0x22, 0x00},
     0x11AF8E8,
     {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x3B, 0x21, 0x45, 0x00},
+    0,
+    {},
 };
 
 constexpr Everspace2ExecutableProfile EVERSPACE2_RETAIL_PROFILE{
@@ -555,6 +559,13 @@ constexpr Everspace2ExecutableProfile EVERSPACE2_RETAIL_PROFILE{
     {0xE8, 0xF5, 0x38, 0xFE, 0xFF},
     0x11AD448,
     {0x48, 0x83, 0xC1, 0x70, 0xE8, 0x03, 0x70, 0x47, 0x00},
+    0x3BA4AA8,
+    {
+        0x48, 0x89, 0x5C, 0x24, 0x08,
+        0x48, 0x89, 0x74, 0x24, 0x10,
+        0x57, 0x48, 0x83, 0xEC, 0x20,
+        0x48, 0x8D, 0x59, 0x30,
+    },
 };
 
 constexpr size_t EVERSPACE2_POOL_TRACE_CAPACITY = 16384;
@@ -566,9 +577,83 @@ safetyhook::MidHook g_everspace2_pool_trace_hook{};
 safetyhook::InlineHook g_everspace2_create_render_target_hook{};
 safetyhook::InlineHook g_everspace2_ref_assignment_hook{};
 safetyhook::MidHook g_everspace2_final_release_hook{};
+safetyhook::InlineHook g_everspace2_world_cleanup_hook{};
 std::atomic_bool g_everspace2_pool_trace_attempted{};
+std::atomic<uint32_t> g_everspace2_last_view_pose_frame{std::numeric_limits<uint32_t>::max()};
 std::mutex g_everspace2_preshadow_depth_assignment_mutex{};
 const Everspace2ExecutableProfile* g_everspace2_active_profile{};
+
+bool everspace2_is_live_uniform_buffer(uintptr_t buffer) {
+    if (buffer == 0 || (buffer & (alignof(void*) - 1)) != 0) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION object_region{};
+    if (VirtualQuery(reinterpret_cast<void*>(buffer), &object_region, sizeof(object_region)) == 0 ||
+        object_region.State != MEM_COMMIT ||
+        (object_region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0 ||
+        buffer + 0x10 > reinterpret_cast<uintptr_t>(object_region.BaseAddress) + object_region.RegionSize)
+    {
+        return false;
+    }
+
+    const auto vtable = *reinterpret_cast<const uintptr_t*>(buffer);
+    const auto module = reinterpret_cast<uintptr_t>(utility::get_executable());
+    const auto module_size = utility::get_module_size(reinterpret_cast<HMODULE>(module));
+
+    if (!module_size || vtable < module || vtable >= module + *module_size) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION vtable_region{};
+    if (VirtualQuery(reinterpret_cast<void*>(vtable), &vtable_region, sizeof(vtable_region)) == 0 ||
+        vtable_region.State != MEM_COMMIT ||
+        (vtable_region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0 ||
+        vtable + sizeof(uintptr_t) >
+            reinterpret_cast<uintptr_t>(vtable_region.BaseAddress) + vtable_region.RegionSize)
+    {
+        return false;
+    }
+
+    const auto first_virtual = *reinterpret_cast<const uintptr_t*>(vtable);
+    return first_virtual >= module && first_virtual < module + *module_size;
+}
+
+void everspace2_world_cleanup_hook(void* scene) {
+    constexpr uintptr_t uniform_buffers_offset = 0x30;
+    constexpr size_t uniform_buffer_count = 5;
+    size_t sanitized{};
+
+    if (scene != nullptr && !IsBadWritePtr(
+            reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(scene) + uniform_buffers_offset),
+            sizeof(uintptr_t) * uniform_buffer_count))
+    {
+        auto* slots = reinterpret_cast<uintptr_t*>(
+            reinterpret_cast<uintptr_t>(scene) + uniform_buffers_offset);
+
+        for (size_t index = 0; index < uniform_buffer_count; ++index) {
+            const auto buffer = slots[index];
+            if (buffer != 0 && !everspace2_is_live_uniform_buffer(buffer)) {
+                slots[index] = 0;
+                ++sanitized;
+                SPDLOG_ERROR(
+                    "[Everspace2][WorldCleanup] Dropped stale persistent uniform buffer "
+                    "scene={:x} slot={} buffer={:x} before FScene::OnWorldCleanup",
+                    reinterpret_cast<uintptr_t>(scene),
+                    index,
+                    buffer);
+            }
+        }
+    }
+
+    if (sanitized != 0) {
+        if (const auto logger = spdlog::default_logger(); logger != nullptr) {
+            logger->flush();
+        }
+    }
+
+    g_everspace2_world_cleanup_hook.call<void>(scene);
+}
 
 const Everspace2ExecutableProfile* everspace2_find_executable_profile(HMODULE module) {
     if (module == nullptr || IsBadReadPtr(module, sizeof(IMAGE_DOS_HEADER))) {
@@ -1002,6 +1087,26 @@ void attempt_everspace2_pool_trace() {
         return;
     }
 
+    uintptr_t world_cleanup_address{};
+    if (profile->world_cleanup_rva != 0) {
+        world_cleanup_address =
+            reinterpret_cast<uintptr_t>(module) + profile->world_cleanup_rva;
+
+        if (IsBadReadPtr(
+                reinterpret_cast<void*>(world_cleanup_address),
+                profile->world_cleanup_signature.size()) ||
+            std::memcmp(
+                reinterpret_cast<void*>(world_cleanup_address),
+                profile->world_cleanup_signature.data(),
+                profile->world_cleanup_signature.size()) != 0)
+        {
+            SPDLOG_ERROR(
+                "[Everspace2][WorldCleanup] FScene::OnWorldCleanup signature did not match at {:x}",
+                world_cleanup_address);
+            return;
+        }
+    }
+
     g_everspace2_active_profile = profile;
     g_everspace2_pool_trace_hook =
         safetyhook::create_mid((void*)hook_address, &everspace2_compute_memory_size_trace);
@@ -1012,31 +1117,39 @@ void attempt_everspace2_pool_trace() {
         safetyhook::create_inline(reinterpret_cast<void*>(ref_assignment_address), &everspace2_ref_assignment_hook);
     g_everspace2_final_release_hook =
         safetyhook::create_mid(reinterpret_cast<void*>(final_release_address), &everspace2_final_release_trace);
+    if (world_cleanup_address != 0) {
+        g_everspace2_world_cleanup_hook = safetyhook::create_inline(
+            reinterpret_cast<void*>(world_cleanup_address),
+            &everspace2_world_cleanup_hook);
+    }
 
     if (!g_everspace2_pool_trace_hook ||
         !g_everspace2_create_render_target_hook ||
         !g_everspace2_ref_assignment_hook ||
-        !g_everspace2_final_release_hook)
+        !g_everspace2_final_release_hook ||
+        (world_cleanup_address != 0 && !g_everspace2_world_cleanup_hook))
     {
         SPDLOG_ERROR(
             "[Everspace2][PoolTrace] Failed to install provenance hooks "
-            "observer={} create={} assignment={} final_release={}",
+            "observer={} create={} assignment={} final_release={} world_cleanup={}",
             static_cast<bool>(g_everspace2_pool_trace_hook),
             static_cast<bool>(g_everspace2_create_render_target_hook),
             static_cast<bool>(g_everspace2_ref_assignment_hook),
-            static_cast<bool>(g_everspace2_final_release_hook));
+            static_cast<bool>(g_everspace2_final_release_hook),
+            world_cleanup_address == 0 || static_cast<bool>(g_everspace2_world_cleanup_hook));
         return;
     }
 
     SPDLOG_INFO(
         "[Everspace2][PoolTrace] Installed {} passive bounded owner trace "
-        "observer={:x} create={:x} assignment={:x} final_release={:x}; "
+        "observer={:x} create={:x} assignment={:x} final_release={:x} world_cleanup={:x}; "
         "the exact PreshadowCache depth assignment at return RVA 0x{:x} is serialized",
         profile->name,
         hook_address,
         create_render_target_address,
         ref_assignment_address,
         final_release_address,
+        world_cleanup_address,
         profile->preshadow_depth_assignment_return_rva);
 }
 
@@ -7531,7 +7644,6 @@ void FFakeStereoRenderingHook::setup_view_family(ISceneViewExtension* extension,
         return;
     }
 
-    //vr->update_hmd_state(true, vr->get_runtime()->internal_frame_count + 1);
 }
 
 void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, void* player_controller, void* view_info) {
@@ -7543,6 +7655,24 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
     }
 
     auto& vr = VR::get();
+
+    if (everspace2_is_current_game() && view_info != nullptr && vr->is_hmd_active()) {
+        const auto runtime = vr->get_runtime();
+        const auto frame_count = runtime->internal_frame_count + 1;
+
+        if (const auto openxr = vr->get_openxr_runtime();
+            openxr != nullptr &&
+            openxr->ready() &&
+            g_everspace2_last_view_pose_frame.exchange(frame_count, std::memory_order_acq_rel) != frame_count)
+        {
+            // ES2 never resolves UGameViewportClient::Draw. SetupViewPoint is
+            // its reliable per-frame pre-culling opportunity to publish the
+            // tracking pose consumed by the normal stereo view calculation.
+            vr->update_hmd_state(true, frame_count);
+            SPDLOG_INFO_ONCE(
+                "[Everspace2][OpenXR][render-pose] Publishing HMD poses from SetupViewPoint");
+        }
+    }
 
     if (!vr->is_ghosting_fix_enabled() || g_hook->m_fixed_localplayer_view_count) {
         return;
@@ -9699,8 +9829,24 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         }
 
         //vr->wait_for_present();
-        
-        if (!g_hook->m_has_view_extension_hook && !g_hook->m_has_game_viewport_client_draw_hook) {
+
+        if (everspace2_is_current_game() && !g_hook->m_has_game_viewport_client_draw_hook) {
+            const auto runtime = vr->get_runtime();
+            const auto frame_count = runtime->internal_frame_count + 1;
+
+            if (const auto openxr = vr->get_openxr_runtime();
+                openxr != nullptr &&
+                openxr->ready() &&
+                g_everspace2_last_view_pose_frame.exchange(frame_count, std::memory_order_acq_rel) != frame_count)
+            {
+                // ES2 never resolves UGameViewportClient::Draw, so its normal
+                // pre-view pose update is absent. Refresh immediately before
+                // the first eye consumes the HMD transform.
+                vr->update_hmd_state(true, frame_count);
+                SPDLOG_INFO_ONCE(
+                    "[Everspace2][OpenXR][render-pose] Publishing HMD poses from CalculateStereoViewOffset");
+            }
+        } else if (!g_hook->m_has_view_extension_hook && !g_hook->m_has_game_viewport_client_draw_hook) {
             vr->update_hmd_state();
         }
     }
