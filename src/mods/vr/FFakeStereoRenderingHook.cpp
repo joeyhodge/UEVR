@@ -2006,6 +2006,11 @@ void log_engine_render_timing_if_needed() {
     g_prerender_viewfamily_rt_timing.reset();
 }
 
+bool should_profile_engine_render_timing() {
+    const auto vr = VR::get();
+    return is_ue_5_7_or_newer() && vr != nullptr && vr->is_hitch_diagnostics_enabled();
+}
+
 bool shf_is_valid_texture_with_vtable(FRHITexture2D* texture, void* required_vtable) {
     if (texture == nullptr || required_vtable == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return false;
@@ -7810,8 +7815,14 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
 
 void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family_candidate) {
     ZoneScopedN("BeginRenderViewFamilyReal");
-    const auto begin_render_viewfamily_real_start = std::chrono::steady_clock::now();
+    const auto profile_engine_render = should_profile_engine_render_timing();
+    const auto begin_render_viewfamily_real_start =
+        profile_engine_render ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     utility::ScopeGuard begin_render_viewfamily_real_timing_guard{[&]() {
+        if (!profile_engine_render) {
+            return;
+        }
+
         g_begin_render_viewfamily_real_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_real_start);
         log_engine_render_timing_if_needed();
     }};
@@ -8017,8 +8028,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
 void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("BeginRenderViewFamily");
-    const auto begin_render_viewfamily_start = std::chrono::steady_clock::now();
+    const auto profile_engine_render = should_profile_engine_render_timing();
+    const auto begin_render_viewfamily_start =
+        profile_engine_render ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     utility::ScopeGuard begin_render_viewfamily_timing_guard{[&]() {
+        if (!profile_engine_render) {
+            return;
+        }
+
         g_begin_render_viewfamily_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_start);
         log_engine_render_timing_if_needed();
     }};
@@ -8241,8 +8258,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("PreRenderViewFamily_RenderThread");
-    const auto prerender_viewfamily_rt_start = std::chrono::steady_clock::now();
+    const auto profile_engine_render = should_profile_engine_render_timing();
+    const auto prerender_viewfamily_rt_start =
+        profile_engine_render ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
     utility::ScopeGuard prerender_viewfamily_rt_timing_guard{[&]() {
+        if (!profile_engine_render) {
+            return;
+        }
+
         g_prerender_viewfamily_rt_timing.add(std::chrono::steady_clock::now() - prerender_viewfamily_rt_start);
         log_engine_render_timing_if_needed();
     }};
