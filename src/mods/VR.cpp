@@ -8092,10 +8092,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 "post-process, and renderer paths while retaining the Native Fix constructor safety guard. "
                 "Disable only to restore the legacy same-pass behavior.");
             m_native_stereo_fix_texture_array_submit->draw("Experimental OpenXR Texture-Array Submit");
+            if (m_native_stereo_fix_same_pass->value()) {
+                ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.20f, 1.0f), "Inactive while Use Same Stereo Pass is enabled.");
+                ImGui::TextWrapped("Turn off Use Same Stereo Pass before testing texture-array submit or async pre-acquire.");
+            }
             ImGui::TextWrapped(
-                "Default off. D3D12 + OpenXR + Native Stereo Fix only, and requires Use Same Stereo Pass off. "
+                "Default off. D3D12 + OpenXR + Native Stereo Fix only, and requires Use Same Stereo Pass OFF. "
                 "Copies each eye into a two-slice OpenXR swapchain and falls back to the existing double-wide path if unavailable.");
             m_native_stereo_fix_async_openxr_wait->draw("Experimental Async OpenXR Wait/Pre-Acquire");
+            if (m_native_stereo_fix_same_pass->value()) {
+                ImGui::TextWrapped("Inactive until texture-array submit can run; turn Use Same Stereo Pass off first.");
+            }
             ImGui::TextWrapped(
                 "Default off and only active with texture-array submit. Moves xrWaitFrame/pre-acquire off the render thread opportunistically; "
                 "it never auto-enables per game and falls back to the normal wait path if it cannot queue safely.");
