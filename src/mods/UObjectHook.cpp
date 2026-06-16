@@ -1,5 +1,6 @@
 #include <atomic>
 #include <algorithm>
+#include <cstdio>
 #include <fstream>
 #include <vector>
 
@@ -99,6 +100,51 @@ bool is_everwind_uobjecthook_guard_enabled() {
     }();
 
     return result;
+}
+
+bool is_ue_5_6_or_newer_uobjecthook() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto found_version = sdk::search_for_version(utility::get_executable());
+
+    if (found_version) {
+        const auto version = utility::narrow(*found_version);
+        int major = 0;
+        int minor = 0;
+
+        if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
+            return major > 5 || (major == 5 && minor >= 6);
+        }
+    }
+
+    const auto major = HIWORD(disk_version.dwFileVersionMS);
+    const auto minor = LOWORD(disk_version.dwFileVersionMS);
+    return major > 5 || (major == 5 && minor >= 6);
+}
+
+bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool is_double) {
+    if ((view_index + 1) % 2 == 0) {
+        return true;
+    }
+
+    auto& vr = VR::get();
+    if (view_index != 0 ||
+        !is_double ||
+        !vr->is_using_synchronized_afr() ||
+        vr->is_sceneview_compatibility_enabled() ||
+        !is_ue_5_6_or_newer_uobjecthook())
+    {
+        return false;
+    }
+
+    const auto runtime = vr->get_runtime();
+    const auto frame_count = runtime != nullptr ? runtime->internal_frame_count : vr->get_frame_count();
+
+    if ((frame_count % 2) != 1) {
+        return false;
+    }
+
+    SPDLOG_INFO_ONCE("[SyncedSequential][MotionController] Treating UE5.6+ raw view_index 0 as the right-eye attachment update");
+    return true;
 }
 
 bool use_dynamic_uobjecthook_candidate_guard() {
@@ -1647,7 +1693,7 @@ void UObjectHook::on_pre_calculate_stereo_view_offset(void* stereo_device, const
         } // else todo?
     }
 
-    if ((view_index + 1) % 2 == 0) {
+    if (should_tick_motion_controller_attachments_for_view(view_index, is_double)) {
         tick_attachments(view_rotation, world_to_meters, view_location, is_double);
     }
 }
