@@ -310,10 +310,14 @@ void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOUR
 }
 
 void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12_BOX* src_box, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
+    copy_region_to_subresource(src, dst, src_box, 0, src_state, dst_state);
+}
+
+void CommandContext::copy_region_to_subresource(ID3D12Resource* src, ID3D12Resource* dst, D3D12_BOX* src_box, UINT dst_subresource, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
     std::scoped_lock _{this->mtx};
 
     if (src == nullptr || dst == nullptr) {
-        spdlog::error("[VR] nullptr passed to copy_region");
+        spdlog::error("[VR] nullptr passed to copy_region_to_subresource");
         return;
     }
 
@@ -351,7 +355,7 @@ void CommandContext::copy_region(ID3D12Resource* src, ID3D12Resource* dst, D3D12
     D3D12_TEXTURE_COPY_LOCATION dst_loc{};
     dst_loc.pResource = dst;
     dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    dst_loc.SubresourceIndex = 0;
+    dst_loc.SubresourceIndex = dst_subresource;
 
     this->cmd_list->CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, src_box);
 
