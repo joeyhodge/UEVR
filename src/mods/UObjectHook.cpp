@@ -102,7 +102,7 @@ bool is_everwind_uobjecthook_guard_enabled() {
     return result;
 }
 
-bool is_ue_5_6_or_newer_uobjecthook() {
+bool is_ue_5_5_or_newer_uobjecthook() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto found_version = sdk::search_for_version(utility::get_executable());
 
@@ -112,13 +112,13 @@ bool is_ue_5_6_or_newer_uobjecthook() {
         int minor = 0;
 
         if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
-            return major > 5 || (major == 5 && minor >= 6);
+            return major > 5 || (major == 5 && minor >= 5);
         }
     }
 
     const auto major = HIWORD(disk_version.dwFileVersionMS);
     const auto minor = LOWORD(disk_version.dwFileVersionMS);
-    return major > 5 || (major == 5 && minor >= 6);
+    return major > 5 || (major == 5 && minor >= 5);
 }
 
 bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool is_double) {
@@ -131,7 +131,7 @@ bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool
         !is_double ||
         !vr->is_using_synchronized_afr() ||
         vr->is_sceneview_compatibility_enabled() ||
-        !is_ue_5_6_or_newer_uobjecthook())
+        !is_ue_5_5_or_newer_uobjecthook())
     {
         return false;
     }
@@ -143,7 +143,7 @@ bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool
         return false;
     }
 
-    SPDLOG_INFO_ONCE("[SyncedSequential][MotionController] Treating UE5.6+ raw view_index 0 as the right-eye attachment update");
+    SPDLOG_INFO_ONCE("[SyncedSequential][MotionController] Treating UE5.5+ raw view_index 0 as the right-eye attachment update");
     return true;
 }
 
