@@ -610,6 +610,26 @@ public:
         return m_native_stereo_fix_preserve_secondary_pass->value();
     }
 
+    bool is_native_stereo_fix_texture_array_submit_enabled() const {
+        const auto runtime = get_runtime();
+        return m_native_stereo_fix_texture_array_submit->value() &&
+            is_native_stereo_fix_enabled() &&
+            !is_native_stereo_fix_same_pass_enabled() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->is_openxr() &&
+            !is_using_afr() &&
+            m_rendering_method->value() == RenderingMethod::NATIVE_STEREO;
+    }
+
+    bool is_native_stereo_fix_async_openxr_wait_enabled() const {
+        const auto runtime = get_runtime();
+        return m_native_stereo_fix_async_openxr_wait->value() &&
+            is_native_stereo_fix_texture_array_submit_enabled() &&
+            runtime != nullptr &&
+            runtime->is_openxr();
+    }
+
     bool is_hitch_diagnostics_enabled() const {
         return m_enable_hitch_diagnostics->value();
     }
@@ -650,6 +670,11 @@ public:
     bool is_controller_camera_conflict_guard_active() const;
     void note_stalker2_transition_stress(const char* reason);
     bool should_defer_stalker2_openxr_frame_for_transition(const char* reason);
+    bool is_native_openxr_async_wait_active() const;
+    bool request_native_openxr_async_wait();
+    void ensure_native_openxr_async_wait_worker();
+    void stop_native_openxr_async_wait_worker();
+    void native_openxr_async_wait_worker_loop(std::stop_token stop_token);
 
     bool is_ghosting_fix_enabled() const {
         return m_ghosting_fix->value();
@@ -1465,6 +1490,8 @@ private:
     const ModToggle::Ptr m_native_stereo_fix{ ModToggle::create(generate_name("NativeStereoFix"), false) };
     const ModToggle::Ptr m_native_stereo_fix_same_pass{ ModToggle::create(generate_name("NativeStereoFixSamePass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
+    const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false, true) };
+    const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false, true) };
 
     const ModSlider::Ptr m_custom_z_near{ ModSlider::create(generate_name("CustomZNear"), 0.001f, 100.0f, 0.01f, true) };
     const ModToggle::Ptr m_custom_z_near_enabled{ ModToggle::create(generate_name("EnableCustomZNear"), false, true) };
@@ -1893,6 +1920,8 @@ public:
             *m_native_stereo_fix,
             *m_native_stereo_fix_same_pass,
             *m_native_stereo_fix_preserve_secondary_pass,
+            *m_native_stereo_fix_texture_array_submit,
+            *m_native_stereo_fix_async_openxr_wait,
             *m_splitscreen_compatibility_mode,
             *m_splitscreen_view_index,
             *m_compatibility_skip_pip,
@@ -2220,6 +2249,11 @@ private:
     bool m_subnautica2_save_thumbnail_fallback_logged{false};
     bool m_subnautica2_save_thumbnail_guard_warned_exhausted{false};
     bool m_subnautica2_save_thumbnail_guard_found_candidate{false};
+    std::jthread m_native_openxr_async_wait_thread{};
+    std::mutex m_native_openxr_async_wait_mtx{};
+    std::condition_variable m_native_openxr_async_wait_cv{};
+    std::atomic_bool m_native_openxr_async_wait_inflight{false};
+    bool m_native_openxr_async_wait_pending{false};
     uint32_t m_subnautica2_save_thumbnail_guard_full_sweeps{0};
     uint32_t m_subnautica2_save_thumbnail_guard_patched_objects{0};
     int32_t m_subnautica2_save_thumbnail_guard_cursor{0};

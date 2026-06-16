@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <unordered_set>
 #include <deque>
 #include <chrono>
@@ -34,6 +35,16 @@ struct OpenXR final : public VRRuntime {
         XrSwapchain handle;
         int32_t width;
         int32_t height;
+    };
+
+    struct SwapchainDimensionSnapshot {
+        uint32_t count{};
+        uint32_t ui_width{};
+        uint32_t ui_height{};
+        uint32_t eye_width{};
+        uint32_t eye_height{};
+        uint32_t depth_width{};
+        uint32_t depth_height{};
     };
 
     VRRuntime::Type type() const override { 
@@ -235,6 +246,13 @@ public:
 
     std::vector<XrViewConfigurationView> view_configs{};
     std::unordered_map<uint32_t, Swapchain> swapchains{}; // SwapchainIndex -> Swapchain
+    std::atomic_uint32_t cached_swapchain_count{};
+    std::atomic_uint32_t cached_ui_swapchain_width{};
+    std::atomic_uint32_t cached_ui_swapchain_height{};
+    std::atomic_uint32_t cached_eye_swapchain_width{};
+    std::atomic_uint32_t cached_eye_swapchain_height{};
+    std::atomic_uint32_t cached_depth_swapchain_width{};
+    std::atomic_uint32_t cached_depth_swapchain_height{};
     std::vector<XrView> views{};
     std::vector<XrView> stage_views{};
 
@@ -462,6 +480,7 @@ public:
         DOUBLE_WIDE = STANDARD_START,
         DEPTH,
         DUMMY_VIRTUAL_DESKTOP,
+        NATIVE_STEREO_ARRAY,
 
         STANDARD_END,
 
@@ -488,6 +507,71 @@ public:
         STANDARD_COUNT = STANDARD_END - STANDARD_START,
         EXTRA_COUNT = EXTRA_END - EXTRA_START,
     };
+
+    void clear_cached_swapchain_dimensions() {
+        cached_swapchain_count.store(0, std::memory_order_relaxed);
+        cached_ui_swapchain_width.store(0, std::memory_order_relaxed);
+        cached_ui_swapchain_height.store(0, std::memory_order_relaxed);
+        cached_eye_swapchain_width.store(0, std::memory_order_relaxed);
+        cached_eye_swapchain_height.store(0, std::memory_order_relaxed);
+        cached_depth_swapchain_width.store(0, std::memory_order_relaxed);
+        cached_depth_swapchain_height.store(0, std::memory_order_relaxed);
+    }
+
+    void cache_swapchain_dimensions(uint32_t index, int32_t width, int32_t height) {
+        const auto w = width > 0 ? (uint32_t)width : 0;
+        const auto h = height > 0 ? (uint32_t)height : 0;
+        cached_swapchain_count.fetch_add(1, std::memory_order_relaxed);
+
+        switch ((SwapchainIndex)index) {
+        case SwapchainIndex::UI:
+            cached_ui_swapchain_width.store(w, std::memory_order_relaxed);
+            cached_ui_swapchain_height.store(h, std::memory_order_relaxed);
+            break;
+        case SwapchainIndex::DOUBLE_WIDE:
+            cached_eye_swapchain_width.store(w, std::memory_order_relaxed);
+            cached_eye_swapchain_height.store(h, std::memory_order_relaxed);
+            break;
+        case SwapchainIndex::NATIVE_STEREO_ARRAY:
+            cached_eye_swapchain_width.store(w, std::memory_order_relaxed);
+            cached_eye_swapchain_height.store(h, std::memory_order_relaxed);
+            break;
+        case SwapchainIndex::AFR_LEFT_EYE:
+            if (cached_eye_swapchain_width.load(std::memory_order_relaxed) == 0 ||
+                cached_eye_swapchain_height.load(std::memory_order_relaxed) == 0)
+            {
+                cached_eye_swapchain_width.store(w, std::memory_order_relaxed);
+                cached_eye_swapchain_height.store(h, std::memory_order_relaxed);
+            }
+            break;
+        case SwapchainIndex::DEPTH:
+            cached_depth_swapchain_width.store(w, std::memory_order_relaxed);
+            cached_depth_swapchain_height.store(h, std::memory_order_relaxed);
+            break;
+        case SwapchainIndex::AFR_DEPTH_LEFT_EYE:
+            if (cached_depth_swapchain_width.load(std::memory_order_relaxed) == 0 ||
+                cached_depth_swapchain_height.load(std::memory_order_relaxed) == 0)
+            {
+                cached_depth_swapchain_width.store(w, std::memory_order_relaxed);
+                cached_depth_swapchain_height.store(h, std::memory_order_relaxed);
+            }
+            break;
+        default:
+            break;
+        }
+    }
+
+    SwapchainDimensionSnapshot get_cached_swapchain_dimensions() const {
+        return {
+            .count = cached_swapchain_count.load(std::memory_order_relaxed),
+            .ui_width = cached_ui_swapchain_width.load(std::memory_order_relaxed),
+            .ui_height = cached_ui_swapchain_height.load(std::memory_order_relaxed),
+            .eye_width = cached_eye_swapchain_width.load(std::memory_order_relaxed),
+            .eye_height = cached_eye_swapchain_height.load(std::memory_order_relaxed),
+            .depth_width = cached_depth_swapchain_width.load(std::memory_order_relaxed),
+            .depth_height = cached_depth_swapchain_height.load(std::memory_order_relaxed),
+        };
+    }
 
     struct Action {
         std::vector<XrAction> action_collection{};
