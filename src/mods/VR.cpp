@@ -57,6 +57,7 @@ std::shared_ptr<VR>& VR::get() {
 }
 
 VR::~VR() {
+    stop_native_openxr_async_wait_worker();
     restore_1666amsterdam_native_postprocess_cvars();
     restore_daysgone_gbuffer_cvar();
     stop_hitch_snapshot_writer();
@@ -2074,6 +2075,109 @@ bool VR::should_force_native_stereo_fix_same_pass() const {
     // invalidate active render state and crash during cutscene/gameplay RT work.
     SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass while Native Stereo Fix is enabled");
     return true;
+}
+
+bool VR::is_native_openxr_async_wait_active() const {
+    return is_native_stereo_fix_async_openxr_wait_enabled() &&
+        m_openxr != nullptr &&
+        get_runtime() != nullptr &&
+        get_runtime()->is_openxr();
+}
+
+void VR::ensure_native_openxr_async_wait_worker() {
+    if (m_native_openxr_async_wait_thread.joinable()) {
+        return;
+    }
+
+    m_native_openxr_async_wait_thread = std::jthread([this](std::stop_token stop_token) {
+        native_openxr_async_wait_worker_loop(stop_token);
+    });
+}
+
+void VR::stop_native_openxr_async_wait_worker() {
+    if (!m_native_openxr_async_wait_thread.joinable()) {
+        return;
+    }
+
+    m_native_openxr_async_wait_thread.request_stop();
+    m_native_openxr_async_wait_cv.notify_all();
+}
+
+bool VR::request_native_openxr_async_wait() {
+    if (!is_native_openxr_async_wait_active()) {
+        return false;
+    }
+
+    auto openxr = m_openxr;
+    if (openxr == nullptr ||
+        !openxr->can_run_frame_loop() ||
+        !openxr->ever_submitted ||
+        openxr->frame_synced ||
+        openxr->frame_began)
+    {
+        return false;
+    }
+
+    if (m_native_openxr_async_wait_inflight.exchange(true)) {
+        return false;
+    }
+
+    ensure_native_openxr_async_wait_worker();
+
+    {
+        std::lock_guard lock{m_native_openxr_async_wait_mtx};
+        m_native_openxr_async_wait_pending = true;
+    }
+
+    m_native_openxr_async_wait_cv.notify_one();
+    return true;
+}
+
+void VR::native_openxr_async_wait_worker_loop(std::stop_token stop_token) {
+    SetThreadDescription(GetCurrentThread(), L"UEVR Native OpenXR Wait");
+
+    while (!stop_token.stop_requested()) {
+        {
+            std::unique_lock lock{m_native_openxr_async_wait_mtx};
+            m_native_openxr_async_wait_cv.wait(lock, [this, &stop_token]() {
+                return stop_token.stop_requested() || m_native_openxr_async_wait_pending;
+            });
+
+            if (stop_token.stop_requested()) {
+                break;
+            }
+
+            m_native_openxr_async_wait_pending = false;
+        }
+
+        utility::ScopeGuard clear_inflight{[this]() {
+            m_native_openxr_async_wait_inflight.store(false);
+        }};
+
+        auto openxr = m_openxr;
+        if (openxr == nullptr ||
+            !is_native_openxr_async_wait_active() ||
+            !openxr->can_run_frame_loop() ||
+            openxr->frame_synced ||
+            openxr->frame_began)
+        {
+            continue;
+        }
+
+        const auto sync_result = openxr->synchronize_frame(std::nullopt, VRRuntime::SyncFrameCallsite::VRVeryLatePostPresent);
+
+        if (sync_result == VRRuntime::Error::SUCCESS &&
+            m_is_d3d12 &&
+            is_native_openxr_async_wait_active() &&
+            openxr->frame_synced &&
+            !openxr->frame_began)
+        {
+            const auto native_array_swapchain = (uint32_t)runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY;
+            m_d3d12.openxr().pre_acquire(native_array_swapchain);
+        }
+    }
+
+    m_native_openxr_async_wait_inflight.store(false);
 }
 
 bool VR::is_controller_camera_conflict_guard_active() const {
@@ -7737,6 +7841,14 @@ void VR::on_post_present() {
         m_d3d12.on_post_present(this);
     }
 
+    bool native_openxr_async_wait_requested = false;
+    if (m_is_d3d12 && runtime->is_openxr() && is_native_openxr_async_wait_active()) {
+        native_openxr_async_wait_requested = request_native_openxr_async_wait();
+        if (native_openxr_async_wait_requested) {
+            SPDLOG_INFO_ONCE("[OpenXR][native] Running opt-in xrWaitFrame asynchronously after D3D12 submit");
+        }
+    }
+
     detect_controllers();
 
     const auto is_left_eye_frame = is_using_afr() ? (is_same_frame || (m_render_frame_count % 2 == m_left_eye_interval)) : true;
@@ -7746,7 +7858,7 @@ void VR::on_post_present() {
             get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE &&
             should_defer_stalker2_very_late_openxr_wait(runtime, m_is_d3d12);
 
-        if (!should_defer_very_late_wait && (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync)) {
+        if (!native_openxr_async_wait_requested && !should_defer_very_late_wait && (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync)) {
             const auto had_sync = runtime->got_first_sync;
             const auto callsite = get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE
                 ? VRRuntime::SyncFrameCallsite::VRVeryLatePostPresent
@@ -7979,6 +8091,14 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 "Recommended for UE5.5 and newer. Keeps the real secondary-eye pass identity for per-eye water, "
                 "post-process, and renderer paths while retaining the Native Fix constructor safety guard. "
                 "Disable only to restore the legacy same-pass behavior.");
+            m_native_stereo_fix_texture_array_submit->draw("Experimental OpenXR Texture-Array Submit");
+            ImGui::TextWrapped(
+                "Default off. D3D12 + OpenXR + Native Stereo Fix only, and requires Use Same Stereo Pass off. "
+                "Copies each eye into a two-slice OpenXR swapchain and falls back to the existing double-wide path if unavailable.");
+            m_native_stereo_fix_async_openxr_wait->draw("Experimental Async OpenXR Wait/Pre-Acquire");
+            ImGui::TextWrapped(
+                "Default off and only active with texture-array submit. Moves xrWaitFrame/pre-acquire off the render thread opportunistically; "
+                "it never auto-enables per game and falls back to the normal wait path if it cannot queue safely.");
             ImGui::TreePop();
         }
 
