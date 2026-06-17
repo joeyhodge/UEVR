@@ -1675,6 +1675,36 @@ bool is_ue_5_7_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50007;
 }
 
+bool is_ue_4_27_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("4.27");
+    }
+
+    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 27;
+}
+
+bool prospi_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"prospi-win64-shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool is_ue_5_8_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -2896,6 +2926,27 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         IsBadReadPtr(object_vtable, sizeof(void*)) || IsBadReadPtr(localplayer_vtable, sizeof(void*)))
     {
         SPDLOG_WARN("[PostInitProperties] UObject or LocalPlayer vtable is invalid");
+        return std::nullopt;
+    }
+
+    // ProSpi 4.27.2 shipped layout validates at slot 8 in the live log/PDB path.
+    // Do not force the modern UE5 slot here; if slot 8 is not provably callable,
+    // fail closed instead of scanning broad/random LocalPlayer virtuals.
+    if (is_ue_4_27_runtime() && prospi_is_current_game()) {
+        constexpr uint32_t PROSPI_UE427_POST_INIT_PROPERTIES_SLOT = 8;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                PROSPI_UE427_POST_INIT_PROPERTIES_SLOT,
+                "ProSpi UE4.27 UObject::PostInitProperties",
+                false,
+                true))
+        {
+            return PROSPI_UE427_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN("[PostInitProperties] ProSpi UE4.27 slot 8 did not validate; skipping Ghosting Fix bootstrap for safety");
         return std::nullopt;
     }
 
@@ -7448,6 +7499,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
     const auto init_options_scene_state = init_options->get_scene_state();
+    const auto init_options_original_stereo_pass = init_options->get_stereo_pass();
+    const auto init_options_view_family = init_options->get_view_family();
+    const auto init_options_scene = init_options_view_family != nullptr
+        ? init_options_view_family->get_scene_interface()
+        : nullptr;
+    bool restore_init_options_after_constructor = false;
+
+    utility::ScopeGuard restore_init_options_guard{[&]() {
+        if (!restore_init_options_after_constructor) {
+            return;
+        }
+
+        init_options->set_scene_state(init_options_scene_state);
+        init_options->set_stereo_pass(init_options_original_stereo_pass);
+    }};
 
     if (init_options_scene_state != nullptr) {
         if (is_ue5) {
@@ -7558,7 +7624,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    const auto init_options_stereo_pass = init_options->get_stereo_pass();
+    const auto init_options_stereo_pass = init_options_original_stereo_pass;
 
     std::optional<uint32_t> views_original_count{};
 
@@ -7577,6 +7643,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
             if (use_primary_constructor_pass) {
                 init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+                restore_init_options_after_constructor = true;
                 if (force_primary_constructor_pass) {
                     SPDLOG_INFO_ONCE(
                         "[Subnautica2][NativeStereoFix] Using PRIMARY constructor pass with hidden view list");
@@ -7606,12 +7673,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    bool new_scene_state_inserted_this_frame = false;
-
     if (init_options_scene_state != nullptr && !g_hook->m_sceneview_data.known_scene_states.contains(init_options_scene_state)) {
         SPDLOG_INFO("Inserting new scene state {:x}", (uintptr_t)init_options_scene_state);
         known_scene_states.insert(init_options_scene_state);
-        new_scene_state_inserted_this_frame = true;
     } else if (init_options_scene_state == nullptr) {
         SPDLOG_ERROR_ONCE("Scene state passed to FSceneView constructor is null");
 
@@ -7620,15 +7684,121 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    if (init_options_scene_state != nullptr && !new_scene_state_inserted_this_frame && vr->is_ghosting_fix_enabled() && !known_scene_states.empty() && vr->is_using_afr() && true_index == 1) {
-        init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+    auto& ghosting_pair = g_hook->m_sceneview_data.ghosting_pair;
+    auto& ghosting_state = g_hook->m_sceneview_data.ghosting_state;
 
-        // Set the scene state to the one that isn't the current one
-        for (auto scene_state : known_scene_states) {
-            if (scene_state != init_options_scene_state) {
-                SPDLOG_INFO_ONCE("Setting scene state to {:x}", (uintptr_t)scene_state);
-                init_options->set_scene_state(scene_state);
-                break;
+    const auto is_valid_scene_state = [](sdk::FSceneViewStateInterface* state) {
+        if (state == nullptr || !is_readable_process_range((uintptr_t)state, sizeof(uintptr_t))) {
+            return false;
+        }
+
+        const auto vtable = *(uintptr_t*)state;
+        return vtable != 0 &&
+            is_readable_process_range(vtable, sizeof(uintptr_t)) &&
+            utility::get_module_within((void*)vtable).has_value();
+    };
+
+    const bool ghosting_fix_can_remap =
+        vr->is_ghosting_fix_enabled() &&
+        vr->is_using_afr() &&
+        !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_splitscreen_compatibility_enabled() &&
+        !vr->is_sceneview_compatibility_enabled();
+
+    if (!ghosting_fix_can_remap) {
+        if (ghosting_state != GhostingFixState::Off) {
+            SPDLOG_INFO_ONCE("[GhostingFix] Disabling remap state because the rendering mode changed");
+        }
+
+        ghosting_pair = {};
+        ghosting_state = GhostingFixState::Off;
+        g_hook->m_sceneview_data.ghosting_learning_start_frame = 0;
+        g_hook->m_sceneview_data.ghosting_fail_frame = 0;
+        g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = false;
+    } else if (!g_hook->m_has_view_extensions_installed || !g_hook->m_sceneview_data.constructor_hook) {
+        ghosting_state = GhostingFixState::WaitingForHooks;
+    } else if (init_options_scene == nullptr || !is_valid_scene_state(init_options_scene_state)) {
+        if (ghosting_state != GhostingFixState::WaitingForHooks) {
+            SPDLOG_INFO_ONCE("[GhostingFix] Waiting for a valid FSceneView scene/state before remapping");
+        }
+
+        ghosting_state = GhostingFixState::WaitingForHooks;
+    } else {
+        const auto scene_id = (uintptr_t)init_options_scene;
+        if (ghosting_pair.scene != scene_id) {
+            ghosting_pair = {};
+            ghosting_pair.scene = scene_id;
+            ghosting_pair.first_seen_frame = g_frame_count;
+            g_hook->m_sceneview_data.ghosting_learning_start_frame = g_frame_count;
+            g_hook->m_sceneview_data.ghosting_fail_frame = 0;
+            g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = false;
+            ghosting_state = GhostingFixState::LearningViewStates;
+
+            SPDLOG_INFO("[GhostingFix] Learning scene-state pair for scene={:x}", scene_id);
+        }
+
+        if (ghosting_state != GhostingFixState::FailedClosed) {
+            ghosting_pair.last_seen_frame = g_frame_count;
+
+            const auto eye_index = true_index & 1;
+            const auto other_eye_index = eye_index ^ 1;
+
+            if (ghosting_pair.eye_state[eye_index] == nullptr ||
+                !is_valid_scene_state(ghosting_pair.eye_state[eye_index]) ||
+                (ghosting_pair.eye_state[eye_index] != init_options_scene_state &&
+                    ghosting_pair.eye_state[other_eye_index] != init_options_scene_state))
+            {
+                ghosting_pair.eye_state[eye_index] = init_options_scene_state;
+                SPDLOG_INFO(
+                    "[GhostingFix] Learned eye {} scene state {:x}",
+                    eye_index,
+                    (uintptr_t)init_options_scene_state);
+            }
+
+            const bool has_valid_pair =
+                is_valid_scene_state(ghosting_pair.eye_state[0]) &&
+                is_valid_scene_state(ghosting_pair.eye_state[1]) &&
+                ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1];
+
+            if (has_valid_pair) {
+                ghosting_state = GhostingFixState::Active;
+
+                if (eye_index == 1) {
+                    init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+
+                    if (init_options_scene_state != ghosting_pair.eye_state[1]) {
+                        init_options->set_scene_state(ghosting_pair.eye_state[1]);
+                    }
+
+                    restore_init_options_after_constructor = true;
+
+                    SPDLOG_INFO_ONCE(
+                        "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state");
+                }
+            } else {
+                ghosting_state = GhostingFixState::LearningViewStates;
+
+                if (!vr->is_ghosting_fix_bootstrap_enabled() &&
+                    !g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled)
+                {
+                    g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = true;
+                    SPDLOG_INFO(
+                        "[GhostingFix] Remap-only mode has not seen a second scene state yet; enable Bootstrap Separate View States if this game needs UEVR to force one");
+                }
+
+                if (vr->is_ghosting_fix_bootstrap_enabled()) {
+                    constexpr uint32_t BOOTSTRAP_TIMEOUT_FRAMES = 600;
+
+                    if (g_hook->m_sceneview_data.ghosting_learning_start_frame != 0 &&
+                        g_frame_count - g_hook->m_sceneview_data.ghosting_learning_start_frame > BOOTSTRAP_TIMEOUT_FRAMES)
+                    {
+                        ghosting_state = GhostingFixState::FailedClosed;
+                        g_hook->m_sceneview_data.ghosting_fail_frame = g_frame_count;
+                        SPDLOG_WARN(
+                            "[GhostingFix] Failed to learn separate scene states within {} frames; failing closed for this scene",
+                            BOOTSTRAP_TIMEOUT_FRAMES);
+                    }
+                }
             }
         }
     }
@@ -10152,10 +10322,21 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
 
     auto& vr = VR::get();
 
-    // Only call PostInitProperties if ghosting fix enabled or native stereo is being used.
-    // Also, if we don't have a hook on GetDesiredNumberOfViews, we need to call PostInitProperties
-    //if (!vr->is_using_afr() || vr->is_ghosting_fix_enabled() || !g_hook->m_get_desired_number_of_views_hook) {
-    if (!vr->should_skip_post_init_properties()) {
+    const bool wants_ghosting_bootstrap =
+        vr->is_ghosting_fix_enabled() &&
+        vr->is_ghosting_fix_bootstrap_enabled() &&
+        vr->is_using_afr() &&
+        !vr->is_native_stereo_fix_enabled() &&
+        !vr->is_splitscreen_compatibility_enabled() &&
+        !vr->is_sceneview_compatibility_enabled();
+    const bool wants_localplayer_bootstrap =
+        wants_ghosting_bootstrap ||
+        vr->is_native_stereo_fix_enabled() ||
+        vr->is_splitscreen_compatibility_enabled() ||
+        vr->is_sceneview_compatibility_enabled() ||
+        !g_hook->m_get_desired_number_of_views_hook;
+
+    if (!vr->should_skip_post_init_properties() && wants_localplayer_bootstrap) {
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
@@ -10500,11 +10681,27 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (!is_stereo_enabled || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
-        // We need to know about the second scene state to fix ghosting, so set the view count to 2
-        // after we know about it, we can continue returning 1.
-        if (is_stereo_enabled && vr->is_ghosting_fix_enabled() && vr->is_using_afr() &&
-            g_hook->m_sceneview_data.known_scene_states.size() < 2 && g_hook->m_fixed_localplayer_view_count &&
-            !!g_hook->m_sceneview_data.constructor_hook && g_hook->m_has_view_extensions_installed)
+        const auto& ghosting_pair = g_hook->m_sceneview_data.ghosting_pair;
+        const bool ghosting_needs_second_state =
+            ghosting_pair.eye_state[0] == nullptr ||
+            ghosting_pair.eye_state[1] == nullptr ||
+            ghosting_pair.eye_state[0] == ghosting_pair.eye_state[1];
+
+        // Remap-only is the default safe Ghosting Fix path. The old
+        // GetDesiredNumberOfViews=2 bootstrap is now explicit opt-in because
+        // some UE4.27/UE5 titles crash when PostInitProperties is forced.
+        if (is_stereo_enabled &&
+            vr->is_ghosting_fix_enabled() &&
+            vr->is_ghosting_fix_bootstrap_enabled() &&
+            vr->is_using_afr() &&
+            !vr->is_native_stereo_fix_enabled() &&
+            !vr->is_sceneview_compatibility_enabled() &&
+            !vr->is_splitscreen_compatibility_enabled() &&
+            g_hook->m_sceneview_data.ghosting_state != GhostingFixState::FailedClosed &&
+            ghosting_needs_second_state &&
+            g_hook->m_fixed_localplayer_view_count &&
+            !!g_hook->m_sceneview_data.constructor_hook &&
+            g_hook->m_has_view_extensions_installed)
         {
             // Only works correctly if view extensions are installed, so we can reset the view count to 1 without crashing
             return 2;
@@ -10939,13 +11136,22 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     const auto ue51_post_init = is_ue_5_1_dx_backend();
     const auto ue52_post_init = is_ue_5_2_dx_backend();
     const auto ue53_post_init = is_ue_5_3_dx_backend();
-    const auto needs_source_informed_post_init = is_ue_5_7_or_newer() || is_ue_5_6_dx12_backend() || is_ue_5_5_dx_backend() || is_ue_5_4_dx_backend() || ue53_post_init || ue52_post_init || ue51_post_init;
+    const auto prospi_ue427_post_init = is_ue_4_27_runtime() && prospi_is_current_game();
+    const auto needs_source_informed_post_init =
+        prospi_ue427_post_init ||
+        is_ue_5_7_or_newer() ||
+        is_ue_5_6_dx12_backend() ||
+        is_ue_5_5_dx_backend() ||
+        is_ue_5_4_dx_backend() ||
+        ue53_post_init ||
+        ue52_post_init ||
+        ue51_post_init;
 
     if (needs_source_informed_post_init) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if ((ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+    if ((prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
