@@ -722,6 +722,21 @@ private:
 
     std::unique_ptr<ThreadWorker<FRHICommandListImmediate*>> m_slate_thread_worker{std::make_unique<ThreadWorker<FRHICommandListImmediate*>>()};
 
+    enum class GhostingFixState : uint8_t {
+        Off,
+        WaitingForHooks,
+        LearningViewStates,
+        Active,
+        FailedClosed,
+    };
+
+    struct GhostingFixPair {
+        sdk::FSceneViewStateInterface* eye_state[2]{};
+        uintptr_t scene{};
+        uint32_t first_seen_frame{};
+        uint32_t last_seen_frame{};
+    };
+
     struct {
         std::recursive_mutex mtx{};
         safetyhook::InlineHook constructor_hook{};
@@ -730,6 +745,12 @@ private:
 
         uint32_t last_frame_count{};
         uint32_t last_index{};
+
+        GhostingFixPair ghosting_pair{};
+        GhostingFixState ghosting_state{GhostingFixState::Off};
+        uint32_t ghosting_learning_start_frame{};
+        uint32_t ghosting_fail_frame{};
+        bool ghosting_logged_bootstrap_disabled{};
 
         // For keeping track of what the states were before our modifications.
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE4> view_init_options_ue4{};
