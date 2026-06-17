@@ -8072,7 +8072,30 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_enable_gui->draw("Enable GUI");
         m_enable_depth->draw("Enable Depth-based Latency Reduction");
         m_load_blueprint_code->draw("Load Blueprint Code");
+
+        const auto draw_status_badge = [](const char* label, const char* status, const ImVec4& color) {
+            ImGui::TextUnformatted(label);
+            ImGui::SameLine();
+            ImGui::TextColored(color, "%s", status);
+        };
+        const ImVec4 active_color{0.35f, 0.95f, 0.45f, 1.0f};
+        const ImVec4 skipped_color{0.70f, 0.70f, 0.70f, 1.0f};
+        const ImVec4 blocked_color{1.0f, 0.64f, 0.25f, 1.0f};
+        const ImVec4 fallback_color{1.0f, 0.82f, 0.20f, 1.0f};
+
         m_ghosting_fix->draw("Ghosting Fix");
+        if (!m_ghosting_fix->value()) {
+            draw_status_badge("Ghosting status:", "skipped: disabled", skipped_color);
+        } else if (m_fake_stereo_hook == nullptr) {
+            draw_status_badge("Ghosting status:", "skipped: stereo hook unavailable", skipped_color);
+        } else {
+            const auto* ghost_status = m_fake_stereo_hook->get_ghosting_fix_status_text();
+            const ImVec4& ghost_color =
+                std::string_view{ghost_status} == "active" ? active_color :
+                std::string_view{ghost_status} == "failed closed" ? blocked_color :
+                fallback_color;
+            draw_status_badge("Ghosting status:", ghost_status, ghost_color);
+        }
         if (m_ghosting_fix->value()) {
             ImGui::Indent();
             m_ghosting_fix_bootstrap_view_states->draw("Bootstrap Separate View States");
@@ -8087,6 +8110,16 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Native Stereo Fix")) {
             m_native_stereo_fix->draw("Enabled");
+            if (!m_native_stereo_fix->value()) {
+                draw_status_badge("Native Fix status:", "skipped: disabled", skipped_color);
+            } else if (is_using_afr()) {
+                draw_status_badge("Native Fix status:", "skipped: Synced/AFR path", skipped_color);
+            } else if (is_native_stereo_fix_enabled()) {
+                draw_status_badge("Native Fix status:", "active", active_color);
+            } else {
+                draw_status_badge("Native Fix status:", "skipped: title/runtime guard", blocked_color);
+            }
+
             if (should_force_native_stereo_fix_same_pass()) {
                 m_native_stereo_fix_same_pass->value() = true;
                 ImGui::BeginDisabled();
@@ -8102,15 +8135,53 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 "post-process, and renderer paths while retaining the Native Fix constructor safety guard. "
                 "Disable only to restore the legacy same-pass behavior.");
             m_native_stereo_fix_texture_array_submit->draw("Experimental OpenXR Texture-Array Submit");
-            if (m_native_stereo_fix_same_pass->value()) {
-                ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.20f, 1.0f), "Inactive while Use Same Stereo Pass is enabled.");
+            {
+                const auto runtime = get_runtime();
+                const bool has_array_swapchain =
+                    m_openxr != nullptr &&
+                    m_openxr->swapchains.contains((uint32_t)runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY);
+
+                if (!m_native_stereo_fix_texture_array_submit->value()) {
+                    draw_status_badge("Texture-array status:", "skipped: disabled", skipped_color);
+                } else if (is_native_stereo_fix_same_pass_enabled()) {
+                    draw_status_badge("Texture-array status:", "blocked: Use Same Stereo Pass is on", blocked_color);
+                } else if (!is_native_stereo_fix_enabled()) {
+                    draw_status_badge("Texture-array status:", "blocked: Native Stereo Fix inactive", blocked_color);
+                } else if (!m_is_d3d12) {
+                    draw_status_badge("Texture-array status:", "blocked: D3D12 required", blocked_color);
+                } else if (runtime == nullptr || !runtime->is_openxr()) {
+                    draw_status_badge("Texture-array status:", "blocked: OpenXR required", blocked_color);
+                } else if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+                    draw_status_badge("Texture-array status:", "blocked: Native Stereo required", blocked_color);
+                } else if (has_array_swapchain) {
+                    draw_status_badge("Texture-array status:", "active", active_color);
+                } else {
+                    draw_status_badge("Texture-array status:", "fell back: array swapchain unavailable", fallback_color);
+                }
+            }
+            if (is_native_stereo_fix_same_pass_enabled()) {
+                ImGui::TextColored(fallback_color, "Inactive while Use Same Stereo Pass is enabled.");
                 ImGui::TextWrapped("Turn off Use Same Stereo Pass before testing texture-array submit or async pre-acquire.");
             }
             ImGui::TextWrapped(
                 "Default off. D3D12 + OpenXR + Native Stereo Fix only, and requires Use Same Stereo Pass OFF. "
                 "Copies each eye into a two-slice OpenXR swapchain and falls back to the existing double-wide path if unavailable.");
             m_native_stereo_fix_async_openxr_wait->draw("Experimental Async OpenXR Wait/Pre-Acquire");
-            if (m_native_stereo_fix_same_pass->value()) {
+            if (!m_native_stereo_fix_async_openxr_wait->value()) {
+                draw_status_badge("Async wait status:", "skipped: disabled", skipped_color);
+            } else if (is_native_stereo_fix_same_pass_enabled()) {
+                draw_status_badge("Async wait status:", "blocked: Use Same Stereo Pass is on", blocked_color);
+            } else if (!is_native_stereo_fix_texture_array_submit_enabled()) {
+                draw_status_badge("Async wait status:", "blocked: texture-array submit inactive", blocked_color);
+            } else if (m_openxr == nullptr ||
+                       !m_openxr->swapchains.contains((uint32_t)runtimes::OpenXR::SwapchainIndex::NATIVE_STEREO_ARRAY)) {
+                draw_status_badge("Async wait status:", "fell back: array swapchain unavailable", fallback_color);
+            } else if (is_native_openxr_async_wait_active()) {
+                draw_status_badge("Async wait status:", "active: opportunistic pre-acquire", active_color);
+            } else {
+                draw_status_badge("Async wait status:", "fell back: normal OpenXR wait", fallback_color);
+            }
+            if (is_native_stereo_fix_same_pass_enabled()) {
                 ImGui::TextWrapped("Inactive until texture-array submit can run; turn Use Same Stereo Pass off first.");
             }
             ImGui::TextWrapped(

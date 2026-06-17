@@ -8426,6 +8426,24 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     }
 }
 
+const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
+    std::scoped_lock lock{m_sceneview_data.mtx};
+
+    switch (m_sceneview_data.ghosting_state) {
+    case GhostingFixState::WaitingForHooks:
+        return "waiting for SceneView hooks";
+    case GhostingFixState::LearningViewStates:
+        return "learning per-eye view states";
+    case GhostingFixState::Active:
+        return "active";
+    case GhostingFixState::FailedClosed:
+        return "failed closed";
+    case GhostingFixState::Off:
+    default:
+        return "off";
+    }
+}
+
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("PreRenderViewFamily_RenderThread");
     const auto profile_engine_render = should_profile_engine_render_timing();
