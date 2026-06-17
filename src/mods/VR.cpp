@@ -1277,6 +1277,24 @@ bool is_daysgone_executable() {
     return is_daysgone;
 }
 
+bool is_windrose_executable() {
+    static const bool is_windrose = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto filename = std::filesystem::path{*module_path}.filename().wstring();
+        std::transform(filename.begin(), filename.end(), filename.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return filename == L"windrose-win64-shipping.exe";
+    }();
+
+    return is_windrose;
+}
+
 bool contains_case_insensitive(std::wstring_view value, std::wstring_view needle) {
     auto value_lower = std::wstring{value};
     auto needle_lower = std::wstring{needle};
@@ -5220,7 +5238,13 @@ void VR::update_mixtape_auto_2d_mode(sdk::UGameEngine* engine) {
     }
 }
 
-void VR::set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool active) {
+void VR::set_windrose_meta_ui_2d_state_active(
+    std::string_view state_name,
+    uintptr_t state_id,
+    std::string_view source,
+    bool force_2d,
+    bool active)
+{
     if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
         return;
     }
@@ -5228,38 +5252,81 @@ void VR::set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool 
     std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
 
     const std::string key{state_name};
-    auto& count = m_windrose_meta_ui_auto_2d_states[key];
+    const std::string source_key{source};
 
-    if (active) {
-        ++count;
+    if (active && force_2d) {
+        m_windrose_meta_ui_auto_2d_tokens[state_id] = WindroseMetaUiToken{
+            key,
+            source_key,
+            std::chrono::steady_clock::now()};
         m_windrose_meta_ui_auto_2d_last_state = key;
+        m_windrose_meta_ui_auto_2d_last_source = source_key;
         m_windrose_meta_ui_auto_2d_restore_after = {};
 
         if (!m_windrose_meta_ui_auto_2d_active) {
             m_windrose_meta_ui_auto_2d_previous_mode = m_2d_screen_mode->value();
             m_windrose_meta_ui_auto_2d_active = true;
             spdlog::info(
-                "[Windrose][MetaUI2D] active=true previous={} state={}",
+                "[Windrose][MetaUI2D] active=true previous={} state={} source={} tokens={}",
                 m_windrose_meta_ui_auto_2d_previous_mode,
-                key);
+                key,
+                source_key,
+                m_windrose_meta_ui_auto_2d_tokens.size());
         }
 
-        m_2d_screen_mode->value() = true;
+        if (!m_2d_screen_mode->value()) {
+            m_2d_screen_mode->value() = true;
+        }
         return;
     }
 
-    if (count > 1) {
-        --count;
-    } else {
-        m_windrose_meta_ui_auto_2d_states.erase(key);
+    if (active && !force_2d) {
+        // Windrose sends Adventure/NPC/cutscene transitions through the same HFSM path
+        // as fullscreen menus. Treat them as a hard boundary so stale menu tokens cannot
+        // keep the whole scene forced into 2D after dialogue or cutscene playback.
+        if (m_windrose_meta_ui_auto_2d_active || !m_windrose_meta_ui_auto_2d_tokens.empty()) {
+            const auto cleared = m_windrose_meta_ui_auto_2d_tokens.size();
+            m_windrose_meta_ui_auto_2d_tokens.clear();
+            m_windrose_meta_ui_auto_2d_last_state = key;
+            m_windrose_meta_ui_auto_2d_last_source = source_key;
+            m_windrose_meta_ui_auto_2d_restore_after = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+            ++m_windrose_meta_ui_auto_2d_stale_clears;
+            spdlog::info(
+                "[Windrose][MetaUI2D] stale clear state={} source={} cleared={} pending_restore_ms=150 stale_clears={}",
+                key,
+                source_key,
+                cleared,
+                m_windrose_meta_ui_auto_2d_stale_clears);
+        }
+        return;
     }
 
-    if (m_windrose_meta_ui_auto_2d_states.empty()) {
+    if (!force_2d) {
+        return;
+    }
+
+    auto erased = m_windrose_meta_ui_auto_2d_tokens.erase(state_id);
+    if (erased == 0 && !key.empty()) {
+        for (auto it = m_windrose_meta_ui_auto_2d_tokens.begin(); it != m_windrose_meta_ui_auto_2d_tokens.end(); ++it) {
+            if (it->second.name == key && it->second.source == source_key) {
+                m_windrose_meta_ui_auto_2d_tokens.erase(it);
+                erased = 1;
+                break;
+            }
+        }
+    }
+
+    if (m_windrose_meta_ui_auto_2d_tokens.empty()) {
         // Tab switches can emit Exit then Enter in the same tick; defer restore a touch
         // so we do not flap 2D mode while R5 swaps HFSM states.
         m_windrose_meta_ui_auto_2d_restore_after = std::chrono::steady_clock::now() + std::chrono::milliseconds(350);
         m_windrose_meta_ui_auto_2d_last_state = key;
-        spdlog::info("[Windrose][MetaUI2D] pending restore state={}", key);
+        m_windrose_meta_ui_auto_2d_last_source = source_key;
+        spdlog::info(
+            "[Windrose][MetaUI2D] pending restore state={} source={} erased={}",
+            key,
+            source_key,
+            erased);
     }
 }
 
@@ -5270,28 +5337,86 @@ void VR::update_windrose_meta_ui_auto_2d_mode() {
         return;
     }
 
-    if (!m_windrose_meta_ui_auto_2d_states.empty()) {
-        m_2d_screen_mode->value() = true;
+    if (!m_windrose_meta_ui_auto_2d_tokens.empty()) {
+        if (!m_2d_screen_mode->value()) {
+            m_2d_screen_mode->value() = true;
+        }
         return;
     }
 
     if (m_windrose_meta_ui_auto_2d_restore_after.time_since_epoch().count() == 0 ||
         std::chrono::steady_clock::now() < m_windrose_meta_ui_auto_2d_restore_after)
     {
-        m_2d_screen_mode->value() = true;
+        if (!m_2d_screen_mode->value()) {
+            m_2d_screen_mode->value() = true;
+        }
         return;
     }
 
     m_2d_screen_mode->value() = m_windrose_meta_ui_auto_2d_previous_mode;
     spdlog::info(
-        "[Windrose][MetaUI2D] active=false restored={} last_state={}",
+        "[Windrose][MetaUI2D] active=false restored={} last_state={} last_source={} stale_clears={}",
         m_windrose_meta_ui_auto_2d_previous_mode,
-        m_windrose_meta_ui_auto_2d_last_state);
+        m_windrose_meta_ui_auto_2d_last_state,
+        m_windrose_meta_ui_auto_2d_last_source,
+        m_windrose_meta_ui_auto_2d_stale_clears);
 
     m_windrose_meta_ui_auto_2d_active = false;
     m_windrose_meta_ui_auto_2d_previous_mode = false;
     m_windrose_meta_ui_auto_2d_restore_after = {};
     m_windrose_meta_ui_auto_2d_last_state.clear();
+    m_windrose_meta_ui_auto_2d_last_source.clear();
+}
+
+void VR::clear_windrose_meta_ui_2d_state(std::string_view reason) {
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    if (!m_windrose_meta_ui_auto_2d_active && m_windrose_meta_ui_auto_2d_tokens.empty()) {
+        return;
+    }
+
+    const auto cleared = m_windrose_meta_ui_auto_2d_tokens.size();
+    m_windrose_meta_ui_auto_2d_tokens.clear();
+    m_windrose_meta_ui_auto_2d_restore_after = {};
+    m_2d_screen_mode->value() = m_windrose_meta_ui_auto_2d_previous_mode;
+    spdlog::info(
+        "[Windrose][MetaUI2D] manual clear reason={} restored={} cleared={}",
+        std::string{reason},
+        m_windrose_meta_ui_auto_2d_previous_mode,
+        cleared);
+
+    m_windrose_meta_ui_auto_2d_active = false;
+    m_windrose_meta_ui_auto_2d_previous_mode = false;
+    m_windrose_meta_ui_auto_2d_last_state.clear();
+    m_windrose_meta_ui_auto_2d_last_source.clear();
+}
+
+std::string VR::get_windrose_meta_ui_2d_status_text() const {
+    std::scoped_lock _{m_windrose_meta_ui_auto_2d_mtx};
+
+    std::ostringstream out;
+    out << (m_windrose_meta_ui_auto_2d_active ? "active" : "inactive")
+        << " tokens=" << m_windrose_meta_ui_auto_2d_tokens.size();
+
+    if (m_windrose_meta_ui_auto_2d_restore_after.time_since_epoch().count() != 0) {
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_windrose_meta_ui_auto_2d_restore_after) {
+            const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                m_windrose_meta_ui_auto_2d_restore_after - now).count();
+            out << " restore_in_ms=" << remaining;
+        }
+    }
+
+    if (!m_windrose_meta_ui_auto_2d_last_state.empty()) {
+        out << " last=" << m_windrose_meta_ui_auto_2d_last_state;
+    }
+
+    if (!m_windrose_meta_ui_auto_2d_last_source.empty()) {
+        out << " source=" << m_windrose_meta_ui_auto_2d_last_source;
+    }
+
+    out << " stale_clears=" << m_windrose_meta_ui_auto_2d_stale_clears;
+    return out.str();
 }
 
 void VR::update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine) {
@@ -8440,6 +8565,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 if (m_compatibility_everspace2_remove_cinematic_bars->value()) {
                     ImGui::TextWrapped("Everspace 2 only: removes the exact WG_Ingame_HUD top and bottom cinematic-bar Image widgets once per HUD instance. Disabling does not restore bars already removed from the current HUD.");
                 }
+            }
+            if (is_windrose_executable()) {
+                ImGui::SeparatorText("Windrose");
+                const auto windrose_meta_ui_status = get_windrose_meta_ui_2d_status_text();
+                ImGui::TextWrapped("Windrose MetaUI 2D: %s", windrose_meta_ui_status.c_str());
+                if (ImGui::Button("Clear Windrose MetaUI 2D State")) {
+                    clear_windrose_meta_ui_2d_state("manual_ui");
+                }
+                ImGui::TextWrapped("Windrose only: forces 2D for specific fullscreen meta menus only. NPC, cutscene, and Adventure transitions clear stale 2D state so flicker should not persist after interaction.");
             }
             m_sceneview_compatibility_mode->draw("SceneView Compatibility Mode");
             m_extreme_compat_mode->draw("Extreme Compatibility Mode");
