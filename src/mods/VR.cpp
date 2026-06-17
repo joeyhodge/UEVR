@@ -7767,6 +7767,16 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_enable_depth->draw("Enable Depth-based Latency Reduction");
         m_load_blueprint_code->draw("Load Blueprint Code");
         m_ghosting_fix->draw("Ghosting Fix");
+        if (m_ghosting_fix->value()) {
+            ImGui::Indent();
+            m_ghosting_fix_bootstrap_view_states->draw("Bootstrap Separate View States");
+            ImGui::TextWrapped(
+                "Default is remap-only for safety. Enable bootstrap only if Ghosting Fix stays inactive/"
+                "learning and the game needs UEVR to force Unreal to create a second scene history.");
+            ImGui::TextWrapped(
+                "Risky/legacy path: enable before injection or a scene load when possible; avoid live toggle spam.");
+            ImGui::Unindent();
+        }
 
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Native Stereo Fix")) {
