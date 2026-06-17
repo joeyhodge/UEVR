@@ -1279,18 +1279,60 @@ bool windrose_hfsm_name_is_interesting(std::wstring_view name) {
            windrose_contains_i(name, L"R5WidgetPool");
 }
 
-bool windrose_hfsm_name_wants_meta_2d(std::wstring_view name) {
-    if (windrose_contains_i(name, L"BP_HFSM_FullscreenMap") ||
-        windrose_contains_i(name, L"BP_FullscreenMap"))
-    {
-        return false;
+std::wstring windrose_hfsm_self_name(std::wstring_view full_name) {
+    if (full_name.empty()) {
+        return {};
     }
 
-    static constexpr std::wstring_view targets[] = {
-        L"BP_HFSM_MetaUI",
+    const auto space = full_name.find(L' ');
+    const auto class_name = full_name.substr(0, space == std::wstring_view::npos ? full_name.size() : space);
+    std::wstring result{class_name};
+
+    if (space != std::wstring_view::npos && space + 1 < full_name.size()) {
+        auto object_path = full_name.substr(space + 1);
+        const auto leaf_start = object_path.find_last_of(L".:");
+        const auto leaf = object_path.substr(leaf_start == std::wstring_view::npos ? 0 : leaf_start + 1);
+
+        if (!leaf.empty() && leaf != class_name) {
+            result += L" ";
+            result += leaf;
+        }
+    }
+
+    return result;
+}
+
+enum class WindroseMetaUiClass {
+    Ignored,
+    Transient,
+    HardMenu,
+};
+
+const char* windrose_meta_ui_class_label(WindroseMetaUiClass value) {
+    switch (value) {
+    case WindroseMetaUiClass::HardMenu:
+        return "hard_menu";
+    case WindroseMetaUiClass::Transient:
+        return "transient";
+    default:
+        return "ignored";
+    }
+}
+
+WindroseMetaUiClass windrose_classify_hfsm_meta_ui(std::wstring_view self_name) {
+    if (self_name.empty()) {
+        return WindroseMetaUiClass::Ignored;
+    }
+
+    if (windrose_contains_i(self_name, L"BP_HFSM_FullscreenMap") ||
+        windrose_contains_i(self_name, L"BP_FullscreenMap"))
+    {
+        return WindroseMetaUiClass::Ignored;
+    }
+
+    static constexpr std::wstring_view hard_menu_targets[] = {
         L"BP_HFSM_InventoryAndEquipment",
         L"BP_HFSM_Discovery",
-        L"BP_HFSM_Adventure",
         L"BP_HFSM_Progression",
         L"BP_HFSM_Talents",
         L"BP_HFSM_PlayerFlagShip",
@@ -1298,26 +1340,43 @@ bool windrose_hfsm_name_wants_meta_2d(std::wstring_view name) {
         L"BP_HFSM_ShipInventory",
         L"BP_HFSM_ShipManager",
         L"BP_HFSM_ShipDock",
-        L"BP_HFSM_ShipInteraction",
-        L"BP_HFSM_MetaInteraction",
         L"BP_HFSM_LootStorage",
         L"BP_HFSM_WaterLootStorage",
         L"BP_HFSM_PosthumousContainer",
         L"BP_HFSM_Storage",
         L"BP_HFSM_Craft_",
         L"BP_CraftUIMounter_",
-        L"BP_NPC_ViewAll_SC",
-        L"WBP_NPCView_Screen",
-        L"WBP_NPCAssignment_",
     };
 
-    for (const auto target : targets) {
-        if (windrose_contains_i(name, target)) {
-            return true;
+    for (const auto target : hard_menu_targets) {
+        if (windrose_contains_i(self_name, target)) {
+            return WindroseMetaUiClass::HardMenu;
         }
     }
 
-    return false;
+    static constexpr std::wstring_view transient_targets[] = {
+        L"BP_HFSM_MetaUI",
+        L"BP_HFSM_MetaUIBuffer",
+        L"BP_HFSM_Adventure",
+        L"BP_HFSM_ShipInteraction",
+        L"BP_HFSM_MetaInteraction",
+        L"BP_NPC_ViewAll_SC",
+        L"WBP_NPCView_Screen",
+        L"WBP_NPCAssignment_",
+        L"Cutscene",
+        L"Cinematic",
+        L"Dialogue",
+        L"Dialog",
+        L"BP_HFSM_OverlayShow",
+    };
+
+    for (const auto target : transient_targets) {
+        if (windrose_contains_i(self_name, target)) {
+            return WindroseMetaUiClass::Transient;
+        }
+    }
+
+    return WindroseMetaUiClass::Ignored;
 }
 
 void windrose_note_hfsm_transition(void* object, bool entering, const char* source) {
@@ -1330,25 +1389,32 @@ void windrose_note_hfsm_transition(void* object, bool entering, const char* sour
         return;
     }
 
+    const auto self_name = windrose_hfsm_self_name(name);
     const bool interesting = windrose_hfsm_name_is_interesting(name);
-    const bool wants_2d = windrose_hfsm_name_wants_meta_2d(name);
+    const auto meta_ui_class = windrose_classify_hfsm_meta_ui(self_name);
 
-    if (interesting || wants_2d) {
+    if (interesting || meta_ui_class != WindroseMetaUiClass::Ignored) {
         SPDLOG_INFO(
-            "[Windrose][HFSM] {} {} wants_2d={} object={}",
+            "[Windrose][HFSM] {} {} class={} self={} object={}",
             source != nullptr ? source : "unknown",
             entering ? "enter" : "exit",
-            wants_2d,
+            windrose_meta_ui_class_label(meta_ui_class),
+            utility::narrow(self_name),
             utility::narrow(name));
     }
 
-    if (!wants_2d) {
+    if (meta_ui_class == WindroseMetaUiClass::Ignored) {
         return;
     }
 
     auto& vr = VR::get();
     if (vr != nullptr) {
-        vr->set_windrose_meta_ui_2d_state_active(utility::narrow(name), entering);
+        vr->set_windrose_meta_ui_2d_state_active(
+            utility::narrow(self_name.empty() ? name : self_name),
+            reinterpret_cast<uintptr_t>(object),
+            source != nullptr ? source : "unknown",
+            meta_ui_class == WindroseMetaUiClass::HardMenu,
+            entering);
     }
 }
 

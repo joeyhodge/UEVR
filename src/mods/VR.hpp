@@ -700,7 +700,14 @@ public:
         return m_mixtape_auto_2d_active.load(std::memory_order_relaxed);
     }
 
-    void set_windrose_meta_ui_2d_state_active(std::string_view state_name, bool active);
+    void set_windrose_meta_ui_2d_state_active(
+        std::string_view state_name,
+        uintptr_t state_id,
+        std::string_view source,
+        bool force_2d,
+        bool active);
+    void clear_windrose_meta_ui_2d_state(std::string_view reason);
+    std::string get_windrose_meta_ui_2d_status_text() const;
 
     bool is_roomscale_enabled() const {
         return m_roomscale_movement->value() && !m_aim_temp_disabled;
@@ -1092,12 +1099,20 @@ private:
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
-    std::mutex m_windrose_meta_ui_auto_2d_mtx{};
-    std::unordered_map<std::string, uint32_t> m_windrose_meta_ui_auto_2d_states{};
+    struct WindroseMetaUiToken {
+        std::string name{};
+        std::string source{};
+        std::chrono::steady_clock::time_point entered_at{};
+    };
+
+    mutable std::mutex m_windrose_meta_ui_auto_2d_mtx{};
+    std::unordered_map<uintptr_t, WindroseMetaUiToken> m_windrose_meta_ui_auto_2d_tokens{};
     std::chrono::steady_clock::time_point m_windrose_meta_ui_auto_2d_restore_after{};
     bool m_windrose_meta_ui_auto_2d_active{false};
     bool m_windrose_meta_ui_auto_2d_previous_mode{false};
     std::string m_windrose_meta_ui_auto_2d_last_state{};
+    std::string m_windrose_meta_ui_auto_2d_last_source{};
+    uint32_t m_windrose_meta_ui_auto_2d_stale_clears{};
     uint32_t m_post_focus_tick_gap_count{};
     uint32_t m_post_focus_long_tick_gap_count{};
     static constexpr size_t PROSPI_ROLLING_HITCH_GAP_RING_SIZE = 16;
