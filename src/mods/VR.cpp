@@ -662,6 +662,17 @@ std::optional<ProSpiCameraPreset> prospi_preset_from_name(std::string_view name)
     return std::nullopt;
 }
 
+ProSpiCameraPreset prospi_preset_from_value(int32_t value) {
+    const auto choices = get_prospi_camera_preset_choices();
+    for (const auto preset : choices) {
+        if ((int32_t)preset == value) {
+            return preset;
+        }
+    }
+
+    return ProSpiCameraPreset::None;
+}
+
 bool are_prospi_presets_in_same_sticky_family(ProSpiCameraPreset a, ProSpiCameraPreset b) {
     if (a == b) {
         return true;
@@ -839,20 +850,20 @@ bool is_prospi_home_plate_pitch_view(
 
 float get_prospi_outfield_ball_follow_min_dolly(float raw_fov) {
     if (raw_fov > 35.0f) {
-        return 4400.0f;
+        return 6200.0f;
     }
 
     if (raw_fov > 20.0f) {
-        return 6500.0f;
+        return 8500.0f;
     }
 
     if (raw_fov > 8.0f) {
-        return 6500.0f;
+        return 9800.0f;
     }
 
     // ProSpi's ultra-telephoto outfield/gameplay cameras report tiny raw FOVs.
     // They need a much stronger dolly than the normal outfield pan bucket.
-    return 9000.0f;
+    return 11500.0f;
 }
 
 float get_prospi_stand_crowd_preserved_dolly(float raw_fov) {
@@ -965,27 +976,149 @@ bool is_prospi_first_base_low_line_camera(const glm::vec3& location, const glm::
 }
 
 bool is_prospi_dugout_celebration_tracking_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
-    if (raw_fov > 12.5f ||
-        std::abs(location.z) > 750.0f ||
-        location.y < -1800.0f ||
-        location.y > 800.0f ||
-        rotation.x < -12.0f ||
-        rotation.x > 12.0f) {
+    if (raw_fov > 24.0f ||
+        std::abs(location.z) > 1200.0f ||
+        location.y < -2500.0f ||
+        location.y > 1800.0f ||
+        rotation.x < -18.0f ||
+        rotation.x > 16.0f) {
         return false;
     }
 
     const auto first_base_dugout_facing =
-        location.x >= 1500.0f &&
-        location.x <= 3300.0f &&
-        rotation.y >= -170.0f &&
-        rotation.y <= -105.0f;
+        location.x >= 1200.0f &&
+        location.x <= 4200.0f &&
+        (rotation.y >= 125.0f || rotation.y <= -170.0f);
+    const auto first_base_reverse_celebration =
+        location.x >= 1600.0f &&
+        location.x <= 3200.0f &&
+        location.y >= -1200.0f &&
+        location.y <= 500.0f &&
+        raw_fov <= 8.0f &&
+        rotation.y >= -165.0f &&
+        rotation.y <= -135.0f;
     const auto third_base_dugout_facing =
-        location.x >= -3300.0f &&
-        location.x <= -1500.0f &&
-        rotation.y >= -10.0f &&
-        rotation.y <= 60.0f;
+        location.x >= -4200.0f &&
+        location.x <= -1200.0f &&
+        rotation.y >= -45.0f &&
+        rotation.y <= 75.0f;
 
-    return first_base_dugout_facing || third_base_dugout_facing;
+    return first_base_dugout_facing || first_base_reverse_celebration || third_base_dugout_facing;
+}
+
+bool is_prospi_outfield_facing_home_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (location.y < -14000.0f ||
+        location.y > -4500.0f ||
+        std::abs(location.x) > 9500.0f ||
+        location.z < -250.0f ||
+        location.z > 4200.0f ||
+        rotation.x < -30.0f ||
+        rotation.x > 18.0f ||
+        raw_fov > 65.0f) {
+        return false;
+    }
+
+    // Home-facing outfield cameras cover LF/CF/RF, wrapping through +/-180 on the RF line.
+    return (rotation.y >= 20.0f && rotation.y <= 180.0f) ||
+        rotation.y <= -145.0f ||
+        normalize_angle_delta(rotation.y, 180.0f) <= 35.0f;
+}
+
+bool is_prospi_close_home_line_tracking_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (raw_fov > 28.0f ||
+        std::abs(location.z) > 1300.0f ||
+        location.y < -2800.0f ||
+        location.y > 2200.0f ||
+        rotation.x < -22.0f ||
+        rotation.x > 20.0f) {
+        return false;
+    }
+
+    if (is_prospi_dugout_celebration_tracking_camera(location, rotation, raw_fov)) {
+        return true;
+    }
+
+    const auto near_home_tracking =
+        std::abs(location.x) <= 1700.0f &&
+        location.y >= -1200.0f &&
+        location.y <= 1800.0f &&
+        normalize_angle_delta(rotation.y, -90.0f) <= 45.0f;
+
+    return near_home_tracking;
+}
+
+bool is_prospi_left_field_stadium_back_risk_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x <= -2500.0f &&
+        location.x >= -6500.0f &&
+        location.y >= -3200.0f &&
+        location.y <= 800.0f &&
+        location.z >= 600.0f &&
+        location.z <= 2200.0f &&
+        rotation.x >= -28.0f &&
+        rotation.x <= 4.0f &&
+        rotation.y >= -135.0f &&
+        rotation.y <= -80.0f &&
+        raw_fov >= 35.0f &&
+        raw_fov <= 65.0f;
+}
+
+bool is_prospi_elevated_transition_sweep_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) <= 6000.0f &&
+        location.y >= -6500.0f &&
+        location.y <= 2500.0f &&
+        location.z >= 800.0f &&
+        location.z <= 1800.0f &&
+        rotation.x >= -30.0f &&
+        rotation.x <= -10.0f &&
+        normalize_angle_delta(rotation.y, -90.0f) <= 45.0f &&
+        raw_fov >= 32.0f &&
+        raw_fov <= 60.0f;
+}
+
+bool is_prospi_near_home_side_tracking_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) <= 900.0f &&
+        location.y >= -950.0f &&
+        location.y <= 100.0f &&
+        std::abs(location.z) <= 500.0f &&
+        rotation.x >= -2.0f &&
+        rotation.x <= 12.0f &&
+        rotation.y >= 110.0f &&
+        rotation.y <= 140.0f &&
+        raw_fov >= 10.0f &&
+        raw_fov <= 22.0f;
+}
+
+bool is_prospi_low_outfield_under_stands_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) >= 2500.0f &&
+        std::abs(location.x) <= 6000.0f &&
+        location.y >= -8000.0f &&
+        location.y <= -4500.0f &&
+        location.z >= -300.0f &&
+        location.z <= 450.0f &&
+        rotation.x >= -8.0f &&
+        rotation.x <= 8.0f &&
+        raw_fov <= 8.0f &&
+        ((location.x < 0.0f && rotation.y >= 15.0f && rotation.y <= 65.0f) ||
+         (location.x > 0.0f && (rotation.y >= 115.0f || rotation.y <= -150.0f)));
+}
+
+bool is_prospi_center_field_pitch_up_under_stands_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) <= 2500.0f &&
+        location.y >= -13500.0f &&
+        location.y <= -9500.0f &&
+        location.z >= 500.0f &&
+        location.z <= 1700.0f &&
+        rotation.x >= 6.0f &&
+        rotation.x <= 16.0f &&
+        rotation.y >= 65.0f &&
+        rotation.y <= 115.0f &&
+        raw_fov >= 18.0f &&
+        raw_fov <= 40.0f;
 }
 
 bool is_prospi_baseline_telephoto_floor_preset(ProSpiCameraPreset preset) {
@@ -8443,9 +8576,9 @@ void VR::update_game_fov() {
     if (is_prospi &&
         prospi_calibration_applied &&
         active_prospi_actual_min_fov > 0.0f &&
-        m_match_game_fov_dolly->value()) {
-        // Exact ProSpi camera calibrations store the "actual minimum" FOV we want UEVR to use for
-        // projection/dolly math. Apply that floor even when the destructive game-FOV write clamp is off.
+        m_match_game_fov_dolly->value() &&
+        m_match_game_fov_prospi_actual_clamp->value()) {
+        // Keep calibration FOV floors tied to the explicit ProSpi clamp toggle.
         game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
     }
 
@@ -8512,13 +8645,7 @@ void VR::update_game_fov() {
             return;
         }
 
-        constexpr auto celebration_min_fov = 16.5f;
         constexpr auto celebration_max_focus_distance = 1250.0f;
-        const auto safe_multiplier = std::max(active_fov_multiplier, 0.1f);
-
-        projection_min_fov = std::max(projection_min_fov, celebration_min_fov);
-        game_fov_for_matching = std::max(game_fov_for_matching, celebration_min_fov / safe_multiplier);
-        active_prospi_actual_min_fov = std::max(active_prospi_actual_min_fov, celebration_min_fov);
 
         if (active_dolly_distance > celebration_max_focus_distance) {
             active_dolly_distance = celebration_max_focus_distance;
@@ -8602,6 +8729,20 @@ void VR::update_game_fov() {
             is_prospi_first_base_crowd_side_wide_camera(*location, *rotation, raw_fov);
         const auto first_base_low_line_camera =
             is_prospi_first_base_low_line_camera(*location, *rotation, raw_fov);
+        const auto outfield_facing_home_camera =
+            is_prospi_outfield_facing_home_camera(*location, *rotation, raw_fov);
+        const auto close_home_line_tracking_camera =
+            is_prospi_close_home_line_tracking_camera(*location, *rotation, raw_fov);
+        const auto left_field_stadium_back_risk_camera =
+            is_prospi_left_field_stadium_back_risk_camera(*location, *rotation, raw_fov);
+        const auto elevated_transition_sweep_camera =
+            is_prospi_elevated_transition_sweep_camera(*location, *rotation, raw_fov);
+        const auto near_home_side_tracking_camera =
+            is_prospi_near_home_side_tracking_camera(*location, *rotation, raw_fov);
+        const auto low_outfield_under_stands_camera =
+            is_prospi_low_outfield_under_stands_camera(*location, *rotation, raw_fov);
+        const auto center_field_pitch_up_under_stands_camera =
+            is_prospi_center_field_pitch_up_under_stands_camera(*location, *rotation, raw_fov);
         const auto is_baseline =
             (abs_x >= baseline_x_min &&
              camera_y >= baseline_y_min &&
@@ -8634,23 +8775,22 @@ void VR::update_game_fov() {
             prospi_preset == ProSpiCameraPreset::RightCenterFieldTelephoto ||
             prospi_preset == ProSpiCameraPreset::PlateHighTelephoto;
         const auto outfield_like_for_hold =
-            low_camera &&
+            (low_camera || outfield_facing_home_camera) &&
             !home_plate_pitch_view &&
             camera_y <= -3500.0f &&
             camera_y >= -13000.0f &&
-            camera_z <= 3500.0f &&
+            camera_z <= 4200.0f &&
             raw_fov <= 55.0f &&
             (abs_x >= 750.0f || is_outfield || outfield_assist_preset);
         const auto outfield_home_plate_pan =
-            low_camera &&
+            (low_camera || outfield_facing_home_camera) &&
+            outfield_facing_home_camera &&
             !third_base_outfield_line_replay_camera &&
             !home_plate_pitch_view &&
-            camera_y <= -2500.0f &&
+            camera_y <= -4500.0f &&
             camera_y >= -13000.0f &&
-            camera_z <= 2500.0f &&
-            raw_fov >= 28.0f &&
-            raw_fov <= 60.0f &&
-            abs_x <= 7500.0f;
+            camera_z <= 4200.0f &&
+            abs_x <= 9500.0f;
         const auto upper_deck_ball_camera =
             is_stand &&
             camera_z >= 1000.0f &&
@@ -8676,7 +8816,12 @@ void VR::update_game_fov() {
             !third_base_outfield_line_replay_camera &&
             (outfield_like_for_hold || outfield_home_plate_pan);
         const auto baseline_cutscene_like =
-            (is_baseline || forced_third_base_line_camera) &&
+            (is_baseline ||
+             forced_third_base_line_camera ||
+             close_home_line_tracking_camera ||
+             left_field_stadium_back_risk_camera ||
+             elevated_transition_sweep_camera ||
+             near_home_side_tracking_camera) &&
             low_camera &&
             !outfield_corner_camera &&
             !outfield_home_plate_pan &&
@@ -8684,6 +8829,8 @@ void VR::update_game_fov() {
 
         if (camera_z >= 7000.0f || std::abs(location->x) >= 50000.0f || std::abs(location->y) >= 25000.0f) {
             play_mode = ProSpiPlayCameraMode::AerialEstablishing;
+        } else if (elevated_transition_sweep_camera || near_home_side_tracking_camera) {
+            play_mode = ProSpiPlayCameraMode::ReplayCutscene;
         } else if (((follow_pan_like || recent_ball_follow) && !baseline_cutscene_like) ||
                    outfield_home_plate_pan ||
                    recent_outfield_follow) {
@@ -8706,9 +8853,19 @@ void VR::update_game_fov() {
             sequence_zone = ProSpiCameraSafetyZone::FieldFloor;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_field_cap->value(), 10.0f, 15000.0f);
         }
-        if ((is_baseline || third_base_low_line_telephoto_camera) && low_camera) {
+        if (((is_baseline || third_base_low_line_telephoto_camera) && low_camera) ||
+            close_home_line_tracking_camera ||
+            left_field_stadium_back_risk_camera) {
             sequence_zone = ProSpiCameraSafetyZone::BaselineDugout;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_baseline_cap->value(), 10.0f, 15000.0f);
+        }
+        if (elevated_transition_sweep_camera) {
+            sequence_zone = ProSpiCameraSafetyZone::FieldFloor;
+            sequence_cap = 2600.0f;
+        }
+        if (near_home_side_tracking_camera) {
+            sequence_zone = ProSpiCameraSafetyZone::FieldFloor;
+            sequence_cap = 2600.0f;
         }
         if (third_base_outfield_line_replay_camera) {
             sequence_zone = ProSpiCameraSafetyZone::BaselineDugout;
@@ -8721,6 +8878,9 @@ void VR::update_game_fov() {
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_stand_cap->value(), 10.0f, 15000.0f);
         }
         if (!third_base_outfield_line_replay_camera &&
+            !left_field_stadium_back_risk_camera &&
+            !elevated_transition_sweep_camera &&
+            !near_home_side_tracking_camera &&
             ((is_outfield && low_camera) || outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow)) {
             sequence_zone = ProSpiCameraSafetyZone::OutfieldLow;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap->value(), 10.0f, 15000.0f);
@@ -8746,6 +8906,53 @@ void VR::update_game_fov() {
                     continue;
                 }
 
+                const auto calibration_preset = prospi_preset_from_value(calibration.preset);
+                const auto current_family_known =
+                    prospi_preset != ProSpiCameraPreset::None &&
+                    prospi_preset != ProSpiCameraPreset::GenericTelephoto;
+                const auto calibration_family_known =
+                    calibration_preset != ProSpiCameraPreset::None &&
+                    calibration_preset != ProSpiCameraPreset::GenericTelephoto;
+
+                if (current_family_known &&
+                    calibration_family_known &&
+                    !are_prospi_presets_in_same_sticky_family(prospi_preset, calibration_preset)) {
+                    continue;
+                }
+
+                if (!current_family_known &&
+                    calibration_family_known &&
+                    !outfield_facing_home_camera &&
+                    !close_home_line_tracking_camera &&
+                    !left_field_stadium_back_risk_camera &&
+                    !elevated_transition_sweep_camera &&
+                    !near_home_side_tracking_camera) {
+                    continue;
+                }
+
+                const auto current_pitch_view =
+                    is_prospi_home_plate_pitch_view(*location, *rotation, prospi_preset, raw_fov);
+                const auto calibration_pitch_view =
+                    is_prospi_home_plate_pitch_view(calibration.location, calibration.rotation, calibration_preset, calibration.raw_fov);
+                if (current_pitch_view != calibration_pitch_view) {
+                    continue;
+                }
+
+                const auto current_plate_overhead =
+                    std::abs(location->x) <= 1250.0f &&
+                    location->y >= 1800.0f &&
+                    location->z >= 400.0f &&
+                    normalize_angle_delta(rotation->y, -90.0f) <= 35.0f;
+                const auto calibration_plate_overhead =
+                    std::abs(calibration.location.x) <= 1250.0f &&
+                    calibration.location.y >= 1800.0f &&
+                    calibration.location.z >= 400.0f &&
+                    normalize_angle_delta(calibration.rotation.y, -90.0f) <= 35.0f;
+                if ((current_plate_overhead || calibration_plate_overhead) &&
+                    current_plate_overhead != calibration_plate_overhead) {
+                    continue;
+                }
+
                 if (first_base_crowd_side_facing_field_camera &&
                     !is_prospi_first_base_crowd_side_facing_field_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
                     continue;
@@ -8761,11 +8968,41 @@ void VR::update_game_fov() {
                     continue;
                 }
 
+                if (outfield_facing_home_camera &&
+                    !is_prospi_outfield_facing_home_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (close_home_line_tracking_camera &&
+                    !is_prospi_close_home_line_tracking_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (left_field_stadium_back_risk_camera &&
+                    !is_prospi_left_field_stadium_back_risk_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (elevated_transition_sweep_camera &&
+                    !is_prospi_elevated_transition_sweep_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
+                if (near_home_side_tracking_camera &&
+                    !is_prospi_near_home_side_tracking_camera(calibration.location, calibration.rotation, calibration.raw_fov)) {
+                    continue;
+                }
+
                 const auto loc_norm = glm::distance(*location, calibration.location) / location_radius;
                 const auto yaw_norm = normalize_angle_delta(rotation->y, calibration.rotation.y) / yaw_radius;
                 const auto pitch_norm = normalize_angle_delta(rotation->x, calibration.rotation.x) / pitch_radius;
                 const auto fov_norm = std::abs(raw_fov - calibration.raw_fov) / fov_radius;
-                if (loc_norm > 2.5f || yaw_norm > 2.5f || pitch_norm > 2.5f || fov_norm > 2.5f) {
+                const auto absolute_fov_gate = std::clamp(fov_radius * 1.5f, 6.0f, outfield_facing_home_camera ? 28.0f : 20.0f);
+                if (loc_norm > 2.5f ||
+                    yaw_norm > 2.5f ||
+                    pitch_norm > 2.5f ||
+                    fov_norm > 2.5f ||
+                    std::abs(raw_fov - calibration.raw_fov) > absolute_fov_gate) {
                     continue;
                 }
 
@@ -8811,7 +9048,9 @@ void VR::update_game_fov() {
                 active_dolly_distance = std::clamp(learned_dolly / weight_sum, 10.0f, 50000.0f);
                 active_prospi_actual_min_fov = std::clamp(learned_min_fov / weight_sum, 5.0f, 175.0f);
                 active_fov_multiplier = std::clamp(learned_multiplier / weight_sum, 0.1f, 3.0f);
-                game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
+                if (m_match_game_fov_prospi_actual_clamp->value()) {
+                    game_fov_for_matching = std::clamp(raw_fov, active_prospi_actual_min_fov, 175.0f);
+                }
                 prospi_dolly_source = "SmartLearned";
                 source = ProSpiAutoCameraSource::LearnedNearest;
                 match_label = candidate_count == 1
@@ -8845,6 +9084,51 @@ void VR::update_game_fov() {
         }
 
         if (!prospi_calibration_applied &&
+            source == ProSpiAutoCameraSource::LearnedNearest &&
+            outfield_facing_home_camera) {
+            const auto learned_floor = std::clamp(get_prospi_outfield_ball_follow_min_dolly(raw_fov), 10.0f, 15000.0f);
+            if (active_dolly_distance < learned_floor) {
+                active_dolly_distance = learned_floor;
+                prospi_dolly_source = "SmartLearnedOutfieldHomeFloor";
+            }
+        }
+
+        if (prospi_calibration_applied && outfield_facing_home_camera && active_dolly_distance < 7000.0f) {
+            const auto calibration_floor = std::clamp(get_prospi_outfield_ball_follow_min_dolly(raw_fov), 10.0f, 15000.0f);
+            if (active_dolly_distance < calibration_floor) {
+                active_dolly_distance = calibration_floor;
+                prospi_dolly_source = "CalibrationOutfieldHomeFloor";
+            }
+        }
+
+        if (low_outfield_under_stands_camera && active_dolly_distance > 7600.0f) {
+            active_dolly_distance = 7600.0f;
+            prospi_dolly_source = "LowOutfieldUnderStandCap";
+        }
+
+        if (center_field_pitch_up_under_stands_camera && active_dolly_distance > 5600.0f) {
+            active_dolly_distance = 5600.0f;
+            prospi_dolly_source = "CenterFieldPitchUpUnderStandCap";
+        }
+
+        if (near_home_side_tracking_camera && active_dolly_distance > 2600.0f) {
+            active_dolly_distance = 2600.0f;
+            prospi_dolly_source = "NearHomeSideTrackingCap";
+        }
+
+        if (!prospi_calibration_applied &&
+            source == ProSpiAutoCameraSource::LearnedNearest &&
+            (close_home_line_tracking_camera || left_field_stadium_back_risk_camera)) {
+            const auto learned_ceiling = close_home_line_tracking_camera ? 1250.0f : 1400.0f;
+            if (active_dolly_distance > learned_ceiling) {
+                active_dolly_distance = learned_ceiling;
+                prospi_dolly_source = close_home_line_tracking_camera
+                    ? "SmartLearnedCloseHomeCeiling"
+                    : "SmartLearnedLeftFieldBackCeiling";
+            }
+        }
+
+        if (!prospi_calibration_applied &&
             source != ProSpiAutoCameraSource::LearnedNearest &&
             (sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST ||
              sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST) &&
@@ -8852,11 +9136,31 @@ void VR::update_game_fov() {
             sequence_cap > 0.0f) {
             auto target_dolly = std::clamp(sequence_cap * fov_scale, 10.0f, 15000.0f);
             auto allow_dolly_increase = false;
-            if (sequence_zone == ProSpiCameraSafetyZone::BaselineDugout && baseline_telephoto_floor_camera) {
+            if (left_field_stadium_back_risk_camera) {
+                target_dolly = std::min(target_dolly, 1400.0f);
+            } else if (close_home_line_tracking_camera) {
+                target_dolly = std::min(target_dolly, 1250.0f);
+            } else if (elevated_transition_sweep_camera) {
+                target_dolly = 2600.0f;
+            } else if (near_home_side_tracking_camera) {
+                target_dolly = 2600.0f;
+            } else if (low_outfield_under_stands_camera) {
+                target_dolly = std::min(target_dolly, 7600.0f);
+            } else if (center_field_pitch_up_under_stands_camera) {
+                target_dolly = std::min(target_dolly, 5600.0f);
+            }
+            const auto close_line_or_back_risk_camera =
+                close_home_line_tracking_camera || left_field_stadium_back_risk_camera;
+            if (elevated_transition_sweep_camera || near_home_side_tracking_camera) {
+                allow_dolly_increase = true;
+            }
+            if (sequence_zone == ProSpiCameraSafetyZone::BaselineDugout &&
+                baseline_telephoto_floor_camera &&
+                !close_line_or_back_risk_camera) {
                 target_dolly = std::max(target_dolly, get_prospi_baseline_telephoto_min_dolly(raw_fov));
                 allow_dolly_increase = true;
             }
-            if (play_mode == ProSpiPlayCameraMode::BallFollow) {
+            if (play_mode == ProSpiPlayCameraMode::BallFollow && !close_line_or_back_risk_camera) {
                 auto ball_follow_min_dolly = 5500.0f;
                 if (outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow || sequence_zone == ProSpiCameraSafetyZone::OutfieldLow) {
                     ball_follow_min_dolly = get_prospi_outfield_ball_follow_min_dolly(raw_fov);
@@ -8870,6 +9174,15 @@ void VR::update_game_fov() {
                 } else {
                     target_dolly = std::clamp(std::max(active_dolly_distance, ball_follow_min_dolly), 10.0f, 15000.0f);
                 }
+                allow_dolly_increase = true;
+            }
+
+            if (low_outfield_under_stands_camera) {
+                target_dolly = std::min(target_dolly, 7600.0f);
+                allow_dolly_increase = true;
+            }
+            if (center_field_pitch_up_under_stands_camera) {
+                target_dolly = std::min(target_dolly, 5600.0f);
                 allow_dolly_increase = true;
             }
 
@@ -9428,11 +9741,12 @@ void VR::update_game_fov() {
             const auto raw_pitch = rotation->x;
             const auto telephoto_fov = std::clamp(m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov->value(), 5.0f, 60.0f);
             const auto home_plate_pitch_view = is_prospi_home_plate_pitch_view(*location, *rotation, prospi_preset, raw_fov);
+            const auto field_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_field_min_z->value(), -500.0f, 2500.0f);
 
             const auto use_field_rule = m_match_game_fov_prospi_camera_safety_field_rule->value();
             if (use_field_rule && !home_plate_pitch_view) {
                 safety_zone = ProSpiCameraSafetyZone::FieldFloor;
-                safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_field_min_z->value(), -500.0f, 2500.0f);
+                safety_min_z = field_min_z;
             }
 
             const auto baseline_x_min = std::clamp(m_match_game_fov_prospi_camera_safety_baseline_x_min->value(), 0.0f, 10000.0f);
@@ -9450,6 +9764,20 @@ void VR::update_game_fov() {
                 is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
             const auto dugout_celebration_tracking_camera =
                 is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
+            const auto outfield_facing_home_camera =
+                is_prospi_outfield_facing_home_camera(*location, *rotation, raw_fov);
+            const auto close_home_line_tracking_camera =
+                is_prospi_close_home_line_tracking_camera(*location, *rotation, raw_fov);
+            const auto left_field_stadium_back_risk_camera =
+                is_prospi_left_field_stadium_back_risk_camera(*location, *rotation, raw_fov);
+            const auto elevated_transition_sweep_camera =
+                is_prospi_elevated_transition_sweep_camera(*location, *rotation, raw_fov);
+            const auto near_home_side_tracking_camera =
+                is_prospi_near_home_side_tracking_camera(*location, *rotation, raw_fov);
+            const auto low_outfield_under_stands_camera =
+                is_prospi_low_outfield_under_stands_camera(*location, *rotation, raw_fov);
+            const auto center_field_pitch_up_under_stands_camera =
+                is_prospi_center_field_pitch_up_under_stands_camera(*location, *rotation, raw_fov);
             const auto baseline_line_telephoto_camera =
                 first_base_low_line_camera ||
                 third_base_low_line_telephoto_camera ||
@@ -9466,10 +9794,17 @@ void VR::update_game_fov() {
                 ((abs_x >= baseline_x_min &&
                   camera_y >= baseline_y_min &&
                   camera_y <= baseline_y_max) ||
-                 baseline_line_telephoto_camera)) {
+                 baseline_line_telephoto_camera ||
+                 close_home_line_tracking_camera ||
+                 left_field_stadium_back_risk_camera)) {
                 safety_zone = ProSpiCameraSafetyZone::BaselineDugout;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_baseline_min_z->value(), -500.0f, 3000.0f);
-                if (first_base_low_line_camera) {
+                if (close_home_line_tracking_camera || left_field_stadium_back_risk_camera) {
+                    // These are player/cutscene tracking cameras near field level; keep the floor guard,
+                    // but do not lift them to the generic dugout/stadium safety height.
+                    safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                    safety_min_z = field_min_z;
+                } else if (first_base_low_line_camera) {
                     safety_min_z = std::max(safety_min_z, 650.0f);
                 } else if (baseline_line_telephoto_camera) {
                     safety_min_z = std::max(safety_min_z, 450.0f);
@@ -9480,7 +9815,20 @@ void VR::update_game_fov() {
                 // These post-home-run cameras already track the high-five line at player height.
                 // Keep the normal field floor instead of lifting them to the generic dugout ceiling.
                 safety_zone = ProSpiCameraSafetyZone::FieldFloor;
-                safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_field_min_z->value(), -500.0f, 2500.0f);
+                safety_min_z = field_min_z;
+            }
+
+            if (elevated_transition_sweep_camera) {
+                // The pre/post celebration sweeps cross the shallow-outfield threshold while pointed at home.
+                // Keep them on the field rule so the view does not snap between outfield and neutral handling.
+                safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                safety_min_z = field_min_z;
+            }
+
+            if (near_home_side_tracking_camera) {
+                // Avoid the catcher/near-home side replay collapsing dolly to zero when the floor guard engages.
+                safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                safety_min_z = field_min_z;
             }
 
             const auto stand_x_min = std::clamp(m_match_game_fov_prospi_camera_safety_stand_x_min->value(), 0.0f, 10000.0f);
@@ -9502,7 +9850,11 @@ void VR::update_game_fov() {
 
             const auto outfield_y_max = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_y_max->value(), -20000.0f, 5000.0f);
             if (m_match_game_fov_prospi_camera_safety_outfield_rule->value() &&
-                camera_y <= outfield_y_max) {
+                camera_y <= outfield_y_max &&
+                !close_home_line_tracking_camera &&
+                !left_field_stadium_back_risk_camera &&
+                !elevated_transition_sweep_camera &&
+                !near_home_side_tracking_camera) {
                 safety_zone = ProSpiCameraSafetyZone::OutfieldLow;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_min_z->value(), -500.0f, 3000.0f);
             }
@@ -9524,7 +9876,7 @@ void VR::update_game_fov() {
                         const auto max_safe_dolly = std::max(0.0f, (base_z - safety_min_z) / vertical_factor);
                         auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
 
-                        if (dugout_celebration_tracking_camera) {
+                        if (dugout_celebration_tracking_camera || close_home_line_tracking_camera || near_home_side_tracking_camera) {
                             // Preserve the stable celebration tracking distance and satisfy the small
                             // field-floor correction with the temporary up offset.
                             capped_dolly = dolly_offset;
@@ -9539,7 +9891,15 @@ void VR::update_game_fov() {
                                 dolly_offset,
                                 std::max(max_safe_dolly, get_prospi_baseline_telephoto_preserved_dolly(raw_fov)));
                         } else if (safety_zone == ProSpiCameraSafetyZone::OutfieldLow) {
-                            if (ebaseball_center_field_pitcher_camera) {
+                            if (low_outfield_under_stands_camera) {
+                                capped_dolly = std::min(
+                                    dolly_offset,
+                                    std::max(max_safe_dolly, 6500.0f));
+                            } else if (center_field_pitch_up_under_stands_camera) {
+                                capped_dolly = std::min(
+                                    dolly_offset,
+                                    std::max(max_safe_dolly, 5000.0f));
+                            } else if (ebaseball_center_field_pitcher_camera || outfield_facing_home_camera) {
                                 // Keep the requested pitcher-facing center-field dolly and satisfy the
                                 // field floor with the temporary safety up offset instead.
                                 capped_dolly = dolly_offset;
@@ -10564,6 +10924,7 @@ void VR::record_prospi_field_map_sample(
     if (!m_prospi_selected_field_map_camera.valid) {
         m_prospi_selected_field_map_camera = sample;
         m_prospi_tune_camera_dolly_distance = sample.dolly_distance;
+        m_prospi_tune_camera_projection_multiplier = sample.projection_multiplier;
     }
 }
 
@@ -10603,9 +10964,14 @@ void VR::select_prospi_field_map_sample(const ProSpiFieldMapSample& sample) {
     std::scoped_lock _{m_prospi_field_map_mtx};
     m_prospi_selected_field_map_camera = sample;
     m_prospi_tune_camera_dolly_distance = sample.dolly_distance;
+    m_prospi_tune_camera_projection_multiplier = sample.projection_multiplier;
 }
 
-bool VR::apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float dolly_distance, bool save) {
+bool VR::apply_prospi_tuning_to_camera(
+    const ProSpiFieldMapSample& sample,
+    float dolly_distance,
+    float projection_multiplier,
+    bool save) {
     if (!sample.valid || sample.camera_id.empty()) {
         return false;
     }
@@ -10615,7 +10981,7 @@ bool VR::apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float
     calibration.preset_name = sample.preset_name;
     calibration.actual_min_fov = std::clamp(sample.actual_min_fov > 0.0f ? sample.actual_min_fov : m_match_game_fov_prospi_actual_min->value(), 5.0f, 175.0f);
     calibration.dolly_distance = std::clamp(dolly_distance, 10.0f, 50000.0f);
-    calibration.projection_multiplier = std::clamp(sample.projection_multiplier, 0.1f, 3.0f);
+    calibration.projection_multiplier = std::clamp(projection_multiplier, 0.1f, 3.0f);
     calibration.has_pose = true;
     calibration.preset = sample.preset;
     calibration.location = sample.location;
@@ -10639,15 +11005,18 @@ bool VR::apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float
         std::scoped_lock _{m_prospi_field_map_mtx};
         if (m_prospi_selected_field_map_camera.camera_id == sample.camera_id) {
             m_prospi_selected_field_map_camera.dolly_distance = calibration.dolly_distance;
+            m_prospi_selected_field_map_camera.projection_multiplier = calibration.projection_multiplier;
         }
 
         if (m_prospi_last_detected_camera.camera_id == sample.camera_id) {
             m_prospi_last_detected_camera.dolly_distance = calibration.dolly_distance;
+            m_prospi_last_detected_camera.projection_multiplier = calibration.projection_multiplier;
         }
 
         for (auto& field_sample : m_prospi_field_map_samples) {
             if (field_sample.valid && field_sample.camera_id == sample.camera_id) {
                 field_sample.dolly_distance = calibration.dolly_distance;
+                field_sample.projection_multiplier = calibration.projection_multiplier;
                 field_sample.calibration_applied = true;
             }
         }
@@ -10674,6 +11043,7 @@ void VR::draw_prospi_field_map_visualizer() {
     {
         std::scoped_lock _{m_prospi_field_map_mtx};
         m_prospi_tune_camera_dolly_distance = std::clamp(m_prospi_tune_camera_dolly_distance, 10.0f, 50000.0f);
+        m_prospi_tune_camera_projection_multiplier = std::clamp(m_prospi_tune_camera_projection_multiplier, 0.1f, 3.0f);
     }
 
     if (last_sample.valid) {
@@ -10691,9 +11061,11 @@ void VR::draw_prospi_field_map_visualizer() {
     }
 
     float tune_dolly{};
+    float tune_multiplier{};
     {
         std::scoped_lock _{m_prospi_field_map_mtx};
         tune_dolly = m_prospi_tune_camera_dolly_distance;
+        tune_multiplier = m_prospi_tune_camera_projection_multiplier;
     }
 
     const auto live_tune_target = selected_sample.valid ? selected_sample : last_sample;
@@ -10704,13 +11076,26 @@ void VR::draw_prospi_field_map_visualizer() {
         m_prospi_tune_camera_dolly_distance = std::clamp(tune_dolly, 10.0f, 50000.0f);
     }
     if (dolly_dragged && live_tune_target.valid) {
-        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, false);
+        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, tune_multiplier, false);
     }
     if (dolly_drag_committed && live_tune_target.valid) {
-        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, true);
+        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, tune_multiplier, true);
     }
 
-    if (ImGui::Button("Use Last Camera Dolly")) {
+    const auto multiplier_dragged = ImGui::DragFloat("Last/Selected Camera FOV Multiplier", &tune_multiplier, 0.005f, 0.1f, 3.0f, "%.3f");
+    const auto multiplier_drag_committed = ImGui::IsItemDeactivatedAfterEdit();
+    if (multiplier_dragged) {
+        std::scoped_lock _{m_prospi_field_map_mtx};
+        m_prospi_tune_camera_projection_multiplier = std::clamp(tune_multiplier, 0.1f, 3.0f);
+    }
+    if (multiplier_dragged && live_tune_target.valid) {
+        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, tune_multiplier, false);
+    }
+    if (multiplier_drag_committed && live_tune_target.valid) {
+        apply_prospi_tuning_to_camera(live_tune_target, tune_dolly, tune_multiplier, true);
+    }
+
+    if (ImGui::Button("Use Last Camera Tuning")) {
         if (last_sample.valid) {
             select_prospi_field_map_sample(last_sample);
         }
@@ -10721,12 +11106,14 @@ void VR::draw_prospi_field_map_visualizer() {
     if (ImGui::Button("Apply Slider to Last Detected ProSpi Camera")) {
         if (last_sample.valid) {
             float dolly{};
+            float multiplier{};
             {
                 std::scoped_lock _{m_prospi_field_map_mtx};
                 dolly = m_prospi_tune_camera_dolly_distance;
+                multiplier = m_prospi_tune_camera_projection_multiplier;
             }
 
-            apply_prospi_tuning_to_camera(last_sample, dolly);
+            apply_prospi_tuning_to_camera(last_sample, dolly, multiplier);
         }
     }
 
@@ -10735,12 +11122,14 @@ void VR::draw_prospi_field_map_visualizer() {
     if (ImGui::Button("Save Last + Enable Learned Assist")) {
         if (last_sample.valid) {
             float dolly{};
+            float multiplier{};
             {
                 std::scoped_lock _{m_prospi_field_map_mtx};
                 dolly = m_prospi_tune_camera_dolly_distance;
+                multiplier = m_prospi_tune_camera_projection_multiplier;
             }
 
-            if (apply_prospi_tuning_to_camera(last_sample, dolly)) {
+            if (apply_prospi_tuning_to_camera(last_sample, dolly, multiplier)) {
                 m_match_game_fov_prospi_auto_camera_sequencer->value() = true;
                 m_match_game_fov_prospi_auto_camera_sequencer_mode->value() = PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST;
             }
@@ -10753,17 +11142,19 @@ void VR::draw_prospi_field_map_visualizer() {
 
         if (ImGui::Button("Apply Slider to Selected Field Map Camera")) {
             float dolly{};
+            float multiplier{};
             {
                 std::scoped_lock _{m_prospi_field_map_mtx};
                 dolly = m_prospi_tune_camera_dolly_distance;
+                multiplier = m_prospi_tune_camera_projection_multiplier;
             }
 
-            apply_prospi_tuning_to_camera(selected_sample, dolly);
+            apply_prospi_tuning_to_camera(selected_sample, dolly, multiplier);
         }
     }
 
     ImGui::TextDisabled("Apply saves a per-camera calibration and enables Auto Apply Camera Calibration.");
-    ImGui::TextDisabled("Dragging the dolly slider previews the selected camera immediately; releasing it saves.");
+    ImGui::TextDisabled("Dragging dolly or FOV multiplier previews the selected camera immediately; releasing saves.");
     m_match_game_fov_prospi_field_map_flip_x->draw("Flip Field Map X");
     ImGui::SameLine();
     m_match_game_fov_prospi_field_map_flip_y->draw("Flip Field Map Y");

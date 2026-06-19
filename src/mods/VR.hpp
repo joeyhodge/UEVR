@@ -1711,7 +1711,11 @@ private:
     ProSpiFieldMapSample get_last_detected_prospi_camera_sample();
     ProSpiFieldMapSample get_selected_prospi_field_map_sample();
     void select_prospi_field_map_sample(const ProSpiFieldMapSample& sample);
-    bool apply_prospi_tuning_to_camera(const ProSpiFieldMapSample& sample, float dolly_distance, bool save = true);
+    bool apply_prospi_tuning_to_camera(
+        const ProSpiFieldMapSample& sample,
+        float dolly_distance,
+        float projection_multiplier,
+        bool save = true);
     void draw_prospi_field_map_visualizer();
     void save_generic_camera_presets();
     void load_generic_camera_presets();
@@ -2058,6 +2062,7 @@ private:
     ProSpiFieldMapSample m_prospi_last_detected_camera{};
     ProSpiFieldMapSample m_prospi_selected_field_map_camera{};
     float m_prospi_tune_camera_dolly_distance{3000.0f};
+    float m_prospi_tune_camera_projection_multiplier{1.0f};
     bool m_prospi_telephoto_perf_baselines_valid{false};
     float m_prospi_telephoto_perf_baseline_view_distance_scale{1.0f};
     float m_prospi_telephoto_perf_baseline_static_mesh_lod_distance_scale{1.0f};
