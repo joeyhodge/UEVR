@@ -11,6 +11,7 @@
 #include <cstring>
 #include <DirectXMath.h>
 #include <mutex>
+#include <limits>
 #include <sstream>
 #include <unordered_set>
 
@@ -948,6 +949,61 @@ bool D3D12Component::run_dibr_preview(
     return true;
 }
 
+D3D12Component::DIBRSingleViewReadiness D3D12Component::get_dibr_single_view_readiness() const {
+    const auto generation_before = m_dibr_single_view_generation.load(std::memory_order_acquire);
+    const auto snapshot = DIBRSingleViewReadiness{
+        .generation = generation_before,
+        .consecutive_ready_frames = m_dibr_single_view_ready_frames.load(std::memory_order_acquire),
+        .source_width = m_dibr_single_view_source_width.load(std::memory_order_acquire),
+        .source_height = m_dibr_single_view_source_height.load(std::memory_order_acquire),
+        .preview_ready = m_dibr_single_view_preview_ready.load(std::memory_order_acquire),
+    };
+
+    // Resource resets can happen on the D3D thread while the renderer hook is
+    // reading this snapshot. Reject a mixed-generation read instead of using a
+    // depth/color pair that may already have been released.
+    if (m_dibr_single_view_generation.load(std::memory_order_acquire) != generation_before) {
+        return DIBRSingleViewReadiness{};
+    }
+
+    return snapshot;
+}
+
+void D3D12Component::note_dibr_single_view_preview_result(bool success, const D3D12_RESOURCE_DESC* source_desc) {
+    if (!success || source_desc == nullptr || source_desc->Width == 0 || source_desc->Height == 0) {
+        m_dibr_single_view_preview_ready.store(false, std::memory_order_release);
+        return;
+    }
+
+    const auto width = static_cast<uint32_t>(std::min<uint64_t>(source_desc->Width, std::numeric_limits<uint32_t>::max()));
+    const auto height = source_desc->Height;
+    const auto signature =
+        (static_cast<uint64_t>(width) << 32) ^
+        static_cast<uint64_t>(height) ^
+        (static_cast<uint64_t>(source_desc->Format) << 48) ^
+        (static_cast<uint64_t>(source_desc->SampleDesc.Count) << 56);
+    const auto previous_signature = m_dibr_single_view_source_signature.exchange(signature, std::memory_order_acq_rel);
+
+    if (previous_signature != 0 && previous_signature != signature) {
+        m_dibr_single_view_generation.fetch_add(1, std::memory_order_acq_rel);
+        m_dibr_single_view_ready_frames.store(0, std::memory_order_release);
+    }
+
+    m_dibr_single_view_source_width.store(width, std::memory_order_release);
+    m_dibr_single_view_source_height.store(height, std::memory_order_release);
+    m_dibr_single_view_preview_ready.store(true, std::memory_order_release);
+
+    auto ready_frames = m_dibr_single_view_ready_frames.load(std::memory_order_relaxed);
+    while (ready_frames != std::numeric_limits<uint32_t>::max() &&
+        !m_dibr_single_view_ready_frames.compare_exchange_weak(
+            ready_frames,
+            ready_frames + 1,
+            std::memory_order_release,
+            std::memory_order_relaxed))
+    {
+    }
+}
+
 void D3D12Component::reset_dibr_preview() {
     if (auto& hook = g_framework->get_d3d12_hook(); hook != nullptr) {
         hook->set_depth_stencil_observer(nullptr);
@@ -964,6 +1020,12 @@ void D3D12Component::reset_dibr_preview() {
     m_dibr_depth_capture.reset();
     m_dibr_slot_cursor = 0;
     m_dibr_active_present_tex = nullptr;
+    m_dibr_single_view_source_signature.store(0, std::memory_order_release);
+    m_dibr_single_view_ready_frames.store(0, std::memory_order_release);
+    m_dibr_single_view_source_width.store(0, std::memory_order_release);
+    m_dibr_single_view_source_height.store(0, std::memory_order_release);
+    m_dibr_single_view_preview_ready.store(false, std::memory_order_release);
+    m_dibr_single_view_generation.fetch_add(1, std::memory_order_acq_rel);
     m_dibr_was_active = false;
 }
 
@@ -1784,14 +1846,21 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_dibr_was_active = true;
     }
 
-    if (vr->is_dibr_preview_active() &&
+    const auto dibr_preview_succeeded = vr->is_dibr_preview_active() &&
         run_dibr_preview(
             vr,
             device,
             backbuffer.Get(),
             scene_source_state,
             dibr_depth_tex.Get(),
-            dibr_uses_ue5_rdg_capture ? ENGINE_SRC_COLOR : ENGINE_SRC_DEPTH)) {
+            dibr_uses_ue5_rdg_capture ? ENGINE_SRC_COLOR : ENGINE_SRC_DEPTH);
+
+    if (vr->is_dibr_preview_active()) {
+        const auto source_desc = backbuffer.Get() != nullptr ? backbuffer->GetDesc() : D3D12_RESOURCE_DESC{};
+        note_dibr_single_view_preview_result(dibr_preview_succeeded, dibr_preview_succeeded ? &source_desc : nullptr);
+    }
+
+    if (dibr_preview_succeeded) {
         if (m_dibr_active_present_tex != nullptr) {
             backbuffer = m_dibr_active_present_tex->texture;
         }

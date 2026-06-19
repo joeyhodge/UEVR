@@ -1,6 +1,7 @@
 #pragma once
 
 #include <span>
+#include <atomic>
 #include <chrono>
 
 #include <d3d12.h>
@@ -93,6 +94,16 @@ public:
     std::string get_dibr_preview_failure_reason() const { return m_dibr_slots[0].preview.failure_reason(); }
     std::string get_dibr_preview_depth_trace_summary() const { return m_dibr_depth_capture.depth_trace_summary(); }
 
+    struct DIBRSingleViewReadiness {
+        uint64_t generation{};
+        uint32_t consecutive_ready_frames{};
+        uint32_t source_width{};
+        uint32_t source_height{};
+        bool preview_ready{};
+    };
+
+    DIBRSingleViewReadiness get_dibr_single_view_readiness() const;
+
 private:
     friend class render::FrameResourceInspector;
 
@@ -132,6 +143,7 @@ private:
         D3D12_RESOURCE_STATES scene_depth_state);
     bool ensure_dibr_present_texture(d3d12::TextureContext& texture, ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
     void reset_dibr_preview();
+    void note_dibr_single_view_preview_result(bool success, const D3D12_RESOURCE_DESC* source_desc = nullptr);
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -194,6 +206,12 @@ private:
     std::array<DIBRFrameSlot, DIBR_FRAME_SLOT_COUNT> m_dibr_slots{};
     uint32_t m_dibr_slot_cursor{};
     d3d12::TextureContext* m_dibr_active_present_tex{};
+    std::atomic<uint64_t> m_dibr_single_view_generation{1};
+    std::atomic<uint64_t> m_dibr_single_view_source_signature{};
+    std::atomic<uint32_t> m_dibr_single_view_ready_frames{};
+    std::atomic<uint32_t> m_dibr_single_view_source_width{};
+    std::atomic<uint32_t> m_dibr_single_view_source_height{};
+    std::atomic<bool> m_dibr_single_view_preview_ready{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
     uint64_t m_shf_mono_scene_width{};

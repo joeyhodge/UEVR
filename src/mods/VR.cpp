@@ -12031,8 +12031,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         const ImVec4 fallback_color{1.0f, 0.82f, 0.20f, 1.0f};
 
         if (is_dibr_rendering_method_selected()) {
+            const auto dibr_single_view = is_dibr_single_view_requested();
             ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
-            if (ImGui::TreeNode("Synthetic Stereo (DIBR, Experimental)")) {
+            if (ImGui::TreeNode(dibr_single_view ?
+                    "Synthetic Stereo (DIBR Single View, Experimental)" :
+                    "Synthetic Stereo (DIBR, Experimental)")) {
                 m_dibr_disparity_pixels->draw("Disparity (Pixels)");
                 m_dibr_reprojection_strength->draw("True Reprojection Strength");
                 m_dibr_reversed_depth->draw("Use Reversed-Z Depth");
@@ -12087,9 +12090,33 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     }
                 }
 
-                ImGui::TextWrapped(
-                    "Default off and isolated to this rendering method. The verified preview path synthesizes the "
-                    "right eye from the left color image plus SceneDepthZ, then uses the normal OpenXR submit path.");
+                if (dibr_single_view) {
+                    if (m_fake_stereo_hook == nullptr) {
+                        draw_status_badge("Single-view status:", "blocked: renderer hook unavailable", blocked_color);
+                    } else {
+                        const auto single_view_status = m_fake_stereo_hook->get_dibr_single_view_status_text();
+                        const ImVec4& single_view_color =
+                            std::string_view{single_view_status} == "active" ? active_color :
+                            std::string_view{single_view_status}.starts_with("blocked") ? blocked_color :
+                            std::string_view{single_view_status}.starts_with("fallback") ? fallback_color : skipped_color;
+                        draw_status_badge("Single-view status:", single_view_status, single_view_color);
+                        ImGui::Text(
+                            "Suppressed engine-view frames: %u | fallback frames: %u",
+                            m_fake_stereo_hook->get_dibr_single_view_suppressed_frames(),
+                            m_fake_stereo_hook->get_dibr_single_view_fallback_frames());
+                    }
+                }
+
+                if (dibr_single_view) {
+                    ImGui::TextWrapped(
+                        "Default off and isolated to this rendering method. It first proves the ordinary two-view DIBR "
+                        "path, then temporarily renders only the validated left main scene view and synthesizes the right eye. "
+                        "Any unsafe frame immediately renders both engine views again.");
+                } else {
+                    ImGui::TextWrapped(
+                        "Default off and isolated to this rendering method. The verified preview path synthesizes the "
+                        "right eye from the left color image plus SceneDepthZ, then uses the normal OpenXR submit path.");
+                }
                 ImGui::TextWrapped(
                     "True Reprojection Strength defaults to 1.0, which is the physical runtime projection solve. The Disparity slider "
                     "is retained for the guarded legacy fallback and no longer distorts validated runtime geometry.");
