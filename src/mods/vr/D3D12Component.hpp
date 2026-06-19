@@ -3,6 +3,7 @@
 #include <span>
 #include <atomic>
 #include <chrono>
+#include <optional>
 
 #include <d3d12.h>
 #include <dxgi.h>
@@ -114,7 +115,12 @@ private:
         std::optional<DirectX::SpriteBatchPipelineStateDescription> pd = std::nullopt
     );
 
-    void draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override = nullptr);
+    void draw_spectator_view(
+        ID3D12GraphicsCommandList* command_list,
+        bool is_right_eye_frame,
+        d3d12::TextureContext* game_tex_override = nullptr,
+        std::optional<D3D12_RESOURCE_STATES> game_tex_state = std::nullopt,
+        bool prefer_left_eye = false);
     void clear_backbuffer();
     bool ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc);
 

@@ -1478,6 +1478,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_game_tex.texture.Get() != nullptr &&
         m_game_tex.srv_heap != nullptr;
     const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen;
+    const auto defer_dibr_single_view_spectator =
+        vr->is_dibr_single_view_projection_configured() &&
+        vr->m_desktop_fix->value() &&
+        !use_2d_screen;
 
     if (shf_auto_2d_screen) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -1514,7 +1518,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 invert_alpha_tint);
         }
 
-        draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame, &view_game_tex);
+        // Single-view DIBR leaves the engine's second half intentionally
+        // empty. Draw its desktop mirror after synthesis instead, from the
+        // packed DIBR output that the HMD submits.
+        if (!defer_dibr_single_view_spectator) {
+            draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame, &view_game_tex);
+        }
 
         const auto has_2d_screen_textures =
             m_2d_screen_tex[0].texture.Get() != nullptr &&
@@ -1671,6 +1680,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     // Draws the spectator view
     auto clear_rt = [&](d3d12::CommandContext& commands) {
+		if (defer_dibr_single_view_spectator) {
+            // The deferred mirror consumes this UI source after DIBR finishes.
+            return;
+        }
+
 		if (m_game_ui_tex.texture.Get() == nullptr) {
             return;
         }
@@ -1863,6 +1877,39 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
         scene_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
         SPDLOG_INFO_ONCE("[DIBR] Preview scene source is active. The engine still renders both views in this safety-first phase.");
+    }
+
+    if (defer_dibr_single_view_spectator) {
+        auto& spectator_commands = m_generic_commands[frame_count % m_generic_commands.size()];
+        if (spectator_commands.ready()) {
+            spectator_commands.wait(INFINITE);
+
+            auto* spectator_source = effective_game_tex;
+            auto spectator_source_state = scene_source_state;
+            if (dibr_preview_succeeded && m_dibr_active_present_tex != nullptr) {
+                spectator_source = m_dibr_active_present_tex;
+                spectator_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+            }
+
+            if (spectator_source != nullptr && spectator_source->texture != nullptr) {
+                draw_spectator_view(
+                    spectator_commands.cmd_list.Get(),
+                    is_right_eye_frame,
+                    spectator_source,
+                    spectator_source_state,
+                    true);
+
+                if (m_game_ui_tex.texture != nullptr) {
+                    const float ui_clear_color[] = {0.0f, 0.0f, 0.0f, ui_invert_alpha};
+                    spectator_commands.clear_rtv(m_game_ui_tex, ui_clear_color, ENGINE_SRC_COLOR);
+                }
+
+                spectator_commands.execute();
+                SPDLOG_INFO_ONCE("[DIBR][spectator] Mirroring the synthesized packed scene after DIBR instead of the intentionally empty engine eye");
+            }
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[DIBR][spectator] Deferred mirror command context is unavailable");
+        }
     }
 
     // If m_frame_count is even, we're rendering the left eye.
@@ -2540,7 +2587,13 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
     return batch;
 }
 
-void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override) {
+void D3D12Component::draw_spectator_view(
+    ID3D12GraphicsCommandList* command_list,
+    bool is_right_eye_frame,
+    d3d12::TextureContext* game_tex_override,
+    std::optional<D3D12_RESOURCE_STATES> game_tex_state,
+    bool prefer_left_eye)
+{
     if (command_list == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(5, "[D3D12][spectator] disabled: command list is null");
         return;
@@ -2587,6 +2640,16 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
             game_tex.srv_heap != nullptr && game_tex.srv_heap->Heap() != nullptr,
             (int)mirror_mode,
             vr->m_desktop_fix->value());
+        return;
+    }
+
+    const auto game_desc = game_tex.texture->GetDesc();
+    if (game_desc.Width < 2 || game_desc.Height == 0) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[D3D12][spectator] disabled: game source has invalid packed size {}x{}",
+            game_desc.Width,
+            game_desc.Height);
         return;
     }
 
@@ -2700,14 +2763,32 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     command_list->RSSetViewports(1, &viewport);
     command_list->RSSetScissorRects(1, &scissor_rect);
 
+    // The packed DIBR presentation image stays render-target writable for
+    // OpenXR's later copy. Sample it for the desktop mirror, then restore the
+    // exact state so the HMD path remains untouched.
+    const auto transition_game_tex_for_sampling =
+        game_tex_state.has_value() &&
+        *game_tex_state != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE &&
+        game_tex.texture.Get() != backbuffer.Get();
+    D3D12_RESOURCE_BARRIER game_tex_barrier{};
+    if (transition_game_tex_for_sampling) {
+        game_tex_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        game_tex_barrier.Transition.pResource = game_tex.texture.Get();
+        game_tex_barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        game_tex_barrier.Transition.StateBefore = *game_tex_state;
+        game_tex_barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+        render::D3D12Diagnostics::get().record_resource_barriers("VR::D3D12Component::draw_spectator_view/GameToSRV", 1, &game_tex_barrier);
+        command_list->ResourceBarrier(1, &game_tex_barrier);
+    }
+
     batch->Begin(command_list, DirectX::DX12::SpriteSortMode::SpriteSortMode_Immediate);
 
     RECT dest_rect{ 0, 0, (LONG)desc.Width, (LONG)desc.Height };
 
     const auto aspect_ratio = (float)desc.Width / (float)desc.Height;
 
-    const auto eye_width = ((float)m_backbuffer_size[0] / 2.0f);
-    const auto eye_height = (float)m_backbuffer_size[1];
+    const auto eye_width = static_cast<float>(game_desc.Width / 2);
+    const auto eye_height = static_cast<float>(game_desc.Height);
     const auto eye_aspect_ratio = eye_width / eye_height;
 
     const auto original_centerw = (float)eye_width / 2.0f;
@@ -2720,16 +2801,16 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     RECT source_rect{};
 
     // Show left side when using AFR or native stereo fix
-    if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+    if (prefer_left_eye || vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
         source_rect.left = 0;
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0] / 2;
-        source_rect.bottom = m_backbuffer_size[1];
+        source_rect.right = static_cast<LONG>(game_desc.Width / 2);
+        source_rect.bottom = static_cast<LONG>(game_desc.Height);
     } else {
-        source_rect.left = (LONG)m_backbuffer_size[0] / 2;
+        source_rect.left = static_cast<LONG>(game_desc.Width / 2);
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0];
-        source_rect.bottom = m_backbuffer_size[1];
+        source_rect.right = static_cast<LONG>(game_desc.Width);
+        source_rect.bottom = static_cast<LONG>(game_desc.Height);
     }
 
     // Correct left/top/right/bottom to match the aspect ratio of the game
@@ -2751,7 +2832,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     command_list->SetDescriptorHeaps(1, game_heaps);
 
     batch->Draw(game_tex.get_srv_gpu(),
-        DirectX::XMUINT2{ (uint32_t)m_backbuffer_size[0], (uint32_t)m_backbuffer_size[1] },
+        DirectX::XMUINT2{ static_cast<uint32_t>(game_desc.Width), game_desc.Height },
         dest_rect,
         &source_rect, 
         DirectX::Colors::White);
@@ -2769,6 +2850,12 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     }
 
     batch->End();
+
+    if (transition_game_tex_for_sampling) {
+        std::swap(game_tex_barrier.Transition.StateBefore, game_tex_barrier.Transition.StateAfter);
+        render::D3D12Diagnostics::get().record_resource_barriers("VR::D3D12Component::draw_spectator_view/GameFromSRV", 1, &game_tex_barrier);
+        command_list->ResourceBarrier(1, &game_tex_barrier);
+    }
 
     // Transition backbuffer to D3D12_RESOURCE_STATE_PRESENT
     barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;

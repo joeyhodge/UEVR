@@ -7877,7 +7877,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
     }
 
     if (selected_page == PAGE_UNREAL) {
-        m_rendering_method->draw("Rendering Method");
+        const auto rendering_method_changed = m_rendering_method->draw("Rendering Method");
+        if (rendering_method_changed && get_runtime() != nullptr) {
+            // Method 4 owns a union projection while active. Rebuild the
+            // runtime matrices when users switch into or out of it instead of
+            // leaving a stale asymmetric/symmetric pair in flight.
+            get_runtime()->should_recalculate_eye_projections = true;
+        }
         m_synced_afr_method->draw("Synced Sequential Method");
 
         m_world_scale->draw("World Scale");
@@ -7984,6 +7990,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         "Default off and isolated to this rendering method. It first proves the ordinary two-view DIBR "
                         "path, then temporarily renders only the validated left main scene view and synthesizes the right eye. "
                         "Any unsafe frame immediately renders both engine views again.");
+                    ImGui::TextWrapped(
+                        "The reference view uses a union frustum and OpenXR crops it back to each eye. This preserves world scale "
+                        "and gives the synthesized eye valid outer-edge coverage.");
                 } else {
                     ImGui::TextWrapped(
                         "Default off and isolated to this rendering method. The verified preview path synthesizes the "
