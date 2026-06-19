@@ -8119,6 +8119,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             const auto previous = g_hook->m_dibr_single_view_status.exchange(status, std::memory_order_acq_rel);
             if (previous != status) {
                 SPDLOG_INFO("[DIBR][SingleView] {} ({})", dibr_single_view_status_name(status), detail);
+
+                // The one-view path changes the engine projection from the
+                // normal eye frusta to their union. Rebuild matrices exactly
+                // when the validated status flips so fallback frames retain
+                // the ordinary two-view projection.
+                if (const auto runtime = vr->get_runtime(); runtime != nullptr) {
+                    runtime->should_recalculate_eye_projections = true;
+                }
             }
         };
         const auto call_two_view_fallback = [&]() {
@@ -8625,6 +8633,10 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
 
 const char* FFakeStereoRenderingHook::get_dibr_single_view_status_text() const {
     return dibr_single_view_status_name(m_dibr_single_view_status.load(std::memory_order_acquire));
+}
+
+bool FFakeStereoRenderingHook::is_dibr_single_view_active() const {
+    return m_dibr_single_view_status.load(std::memory_order_acquire) == DIBR_SINGLE_VIEW_ACTIVE;
 }
 
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {

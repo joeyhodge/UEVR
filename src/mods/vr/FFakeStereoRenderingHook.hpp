@@ -633,6 +633,7 @@ public:
 
     const char* get_ghosting_fix_status_text();
     const char* get_dibr_single_view_status_text() const;
+    bool is_dibr_single_view_active() const;
     uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
     uint32_t get_dibr_single_view_fallback_frames() const { return m_dibr_single_view_fallback_frames.load(std::memory_order_acquire); }
 

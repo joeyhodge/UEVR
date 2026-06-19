@@ -645,6 +645,18 @@ public:
         return m_rendering_method->value() == RenderingMethod::SYNTHETIC_DIBR_SINGLE_VIEW;
     }
 
+    // A lone DIBR reference view must cover the union of both eye frusta. The
+    // runtime crops that union back to each eye at submission. Keep the
+    // ordinary projection until the renderer has validated and activated the
+    // one-view path, so fallback frames remain indistinguishable from normal
+    // two-view DIBR.
+    bool is_dibr_single_view_projection_configured() const {
+        return is_dibr_single_view_requested() &&
+            is_dibr_preview_active() &&
+            m_fake_stereo_hook != nullptr &&
+            m_fake_stereo_hook->is_dibr_single_view_active();
+    }
+
     // UE5.5+ creates SceneDepthZ through RDG rather than the legacy pooled
     // render-target path. The capture remains separately opt-in because it
     // inserts a self-contained copy on the game's command list.
@@ -857,11 +869,19 @@ public:
         return m_extreme_compat_mode->value();
     }
 
-    auto get_horizontal_projection_override() const {
+    int32_t get_horizontal_projection_override() const {
+        if (is_dibr_single_view_projection_configured()) {
+            return static_cast<int32_t>(HORIZONTAL_SYMMETRIC);
+        }
+
         return m_horizontal_projection_override->value();
     }
 
-    auto get_vertical_projection_override() const {
+    int32_t get_vertical_projection_override() const {
+        if (is_dibr_single_view_projection_configured()) {
+            return static_cast<int32_t>(VERTICAL_SYMMETRIC);
+        }
+
         return m_vertical_projection_override->value();
     }
 
