@@ -12030,6 +12030,52 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         const ImVec4 blocked_color{1.0f, 0.64f, 0.25f, 1.0f};
         const ImVec4 fallback_color{1.0f, 0.82f, 0.20f, 1.0f};
 
+        if (is_dibr_rendering_method_selected()) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
+            if (ImGui::TreeNode("Synthetic Stereo (DIBR, Experimental)")) {
+                m_dibr_disparity_pixels->draw("Disparity (Pixels)");
+                m_dibr_reversed_depth->draw("Use Reversed-Z Depth");
+                m_dibr_ue5_rdg_depth_capture->draw("Enable UE5 RDG Depth Capture (Experimental)");
+
+                if (!m_is_d3d12) {
+                    draw_status_badge("DIBR status:", "blocked: D3D12 required", blocked_color);
+                } else if (get_runtime() == nullptr || !get_runtime()->is_openxr()) {
+                    draw_status_badge("DIBR status:", "blocked: OpenXR required", blocked_color);
+                } else if (!is_dibr_preview_engine_supported()) {
+                    draw_status_badge("DIBR status:", "blocked: tracing UE5 RDG depth candidates", blocked_color);
+                    ImGui::TextWrapped("Trace: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
+                } else if (m_native_stereo_fix->value()) {
+                    draw_status_badge("DIBR status:", "blocked: disable Native Stereo Fix", blocked_color);
+                } else if (m_extreme_compat_mode->value() || m_sceneview_compatibility_mode->value() || m_splitscreen_compatibility_mode->value()) {
+                    draw_status_badge("DIBR status:", "blocked: compatibility mode is active", blocked_color);
+                } else if (is_using_2d_screen()) {
+                    draw_status_badge("DIBR status:", "blocked: disable 2D Screen Mode", blocked_color);
+                } else {
+                    const auto status = m_d3d12.get_dibr_preview_status();
+                    const auto reason = m_d3d12.get_dibr_preview_failure_reason();
+                    const ImVec4& status_color =
+                        std::string_view{status} == "ready" ? active_color :
+                        std::string_view{status} == "blocked" ? blocked_color : fallback_color;
+                    draw_status_badge("DIBR status:", status, status_color);
+                    if (!reason.empty()) {
+                        ImGui::TextWrapped("Detail: %s", reason.c_str());
+                    }
+                    if (is_dibr_ue5_rdg_depth_capture_enabled()) {
+                        ImGui::TextWrapped("RDG capture: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
+                    }
+                }
+
+                ImGui::TextWrapped(
+                    "Default off and isolated to this rendering method. The verified preview path synthesizes the "
+                    "right eye from the left color image plus SceneDepthZ, then uses the normal OpenXR submit path.");
+                ImGui::TextWrapped(
+                    "UE5.5+ uses an RDG SceneDepthZ producer, not the legacy pooled target. This mode only observes "
+                    "real DSV allocations until you enable the explicit RDG capture toggle. When enabled, it copies only a "
+                    "verified D32 resource during its already shader-readable command-list window and restores the exact game state.");
+                ImGui::TreePop();
+            }
+        }
+
         m_ghosting_fix->draw("Ghosting Fix");
         if (!m_ghosting_fix->value()) {
             draw_status_badge("Ghosting status:", "skipped: disabled", skipped_color);

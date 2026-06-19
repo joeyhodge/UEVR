@@ -7,6 +7,8 @@
 #include <utility/Logging.hpp>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <cstring>
 #include <DirectXMath.h>
 #include <mutex>
 #include <sstream>
@@ -719,6 +721,246 @@ d3d12::TextureContext* D3D12Component::render_shf_mono_scene_texture(ID3D12Devic
     return &m_shf_mono_scene_tex;
 }
 
+bool D3D12Component::ensure_dibr_present_texture(
+    d3d12::TextureContext& texture,
+    ID3D12Device* device,
+    const D3D12_RESOURCE_DESC& source_desc)
+{
+    const auto existing = texture.texture.Get();
+    if (existing != nullptr) {
+        const auto existing_desc = existing->GetDesc();
+        if (existing_desc.Width == source_desc.Width && existing_desc.Height == source_desc.Height) {
+            return true;
+        }
+    }
+
+    texture.reset();
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    auto present_desc = source_desc;
+    present_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    present_desc.DepthOrArraySize = 1;
+    present_desc.MipLevels = 1;
+    present_desc.SampleDesc.Count = 1;
+    present_desc.SampleDesc.Quality = 0;
+    present_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    present_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    present_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    ComPtr<ID3D12Resource> present{};
+    if (FAILED(device->CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &present_desc,
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            nullptr,
+            IID_PPV_ARGS(&present)))) {
+        SPDLOG_WARN("[DIBR] Could not create a compatible presentation texture");
+        return false;
+    }
+
+    if (!texture.setup(
+            device,
+            present.Get(),
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            L"DIBR Preview Presentation")) {
+        SPDLOG_WARN("[DIBR] Could not create presentation texture views");
+        texture.reset();
+        return false;
+    }
+
+    return true;
+}
+
+bool D3D12Component::run_dibr_preview(
+    VR* vr,
+    ID3D12Device* device,
+    ID3D12Resource* scene_color,
+    D3D12_RESOURCE_STATES scene_color_state,
+    ID3D12Resource* scene_depth,
+    D3D12_RESOURCE_STATES scene_depth_state)
+{
+    if (vr == nullptr || !vr->is_dibr_preview_active() || device == nullptr || scene_color == nullptr || m_game_batch == nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DIBR] Waiting for a usable scene path: vr={} active={} device={} color={} game_batch={}",
+            vr != nullptr,
+            vr != nullptr && vr->is_dibr_preview_active(),
+            device != nullptr,
+            scene_color != nullptr,
+            m_game_batch != nullptr);
+        return false;
+    }
+
+    DIBRFrameSlot* slot{};
+    for (uint32_t offset = 0; offset < DIBR_FRAME_SLOT_COUNT; ++offset) {
+        const auto index = (m_dibr_slot_cursor + offset) % DIBR_FRAME_SLOT_COUNT;
+        auto& candidate = m_dibr_slots[index];
+
+        if (!candidate.commands.ready() && !candidate.commands.setup(L"DIBR Preview Commands")) {
+            continue;
+        }
+
+        if (candidate.commands.try_wait()) {
+            slot = &candidate;
+            m_dibr_slot_cursor = (index + 1) % DIBR_FRAME_SLOT_COUNT;
+            break;
+        }
+    }
+
+    if (slot == nullptr) {
+        // A ring miss is rare and means the GPU is genuinely more than three
+        // DIBR frames behind. Preserve the known-good path rather than
+        // resetting an in-flight allocator or presenting a stale texture.
+        slot = &m_dibr_slots[m_dibr_slot_cursor];
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[DIBR] All in-flight slots are busy; waiting for slot {}", m_dibr_slot_cursor);
+        slot->commands.wait(INFINITE);
+        if (!slot->commands.ready()) {
+            SPDLOG_WARN("[DIBR] Could not reclaim the fallback command context");
+            return false;
+        }
+        m_dibr_slot_cursor = (m_dibr_slot_cursor + 1) % DIBR_FRAME_SLOT_COUNT;
+    }
+
+    SPDLOG_INFO_ONCE("[DIBR] Using a {}-slot nonblocking command and resource ring", DIBR_FRAME_SLOT_COUNT);
+
+    auto parameters = d3d12::DIBRPreview::Parameters{
+        .disparity_pixels = vr->get_dibr_disparity_pixels(),
+        .reversed_depth = vr->is_dibr_reversed_depth_enabled(),
+    };
+
+    // DIBR's first safety phase preserves the engine's two views, but its
+    // synthesized right eye can still use the exact runtime projection pair.
+    // Do not enable it unless every input is finite; the legacy shift remains
+    // the fallback for unusual runtimes and titles.
+    const auto runtime = vr->get_runtime();
+    if (runtime != nullptr && runtime->is_openxr()) {
+        const auto projection_left = vr->get_projection_matrix(VRRuntime::Eye::LEFT);
+        const auto projection_right = vr->get_projection_matrix(VRRuntime::Eye::RIGHT);
+        const auto offset_left = glm::vec3{vr->get_eye_offset(VRRuntime::Eye::LEFT)};
+        const auto offset_right = glm::vec3{vr->get_eye_offset(VRRuntime::Eye::RIGHT)};
+        const auto world_to_meters = vr->get_world_to_meters();
+        const auto ipd_ue = glm::length(offset_right - offset_left) * world_to_meters;
+
+        const auto matrix_is_finite = [](const Matrix4x4f& matrix) {
+            for (uint32_t column = 0; column < 4; ++column) {
+                for (uint32_t row = 0; row < 4; ++row) {
+                    if (!std::isfinite(matrix[column][row])) {
+                        return false;
+                    }
+                }
+            }
+
+            return true;
+        };
+
+        if (std::isfinite(world_to_meters) && world_to_meters > 0.0f && world_to_meters <= 100000.0f &&
+            std::isfinite(ipd_ue) && ipd_ue > 0.0001f && ipd_ue < 10000.0f &&
+            matrix_is_finite(projection_left) && matrix_is_finite(projection_right)) {
+            // World points shift opposite the camera translation in the target
+            // view. GLM memory layout matches HLSL's default column-major
+            // float4x4, so the matrix can be copied directly to the CBV.
+            const auto source_to_right = projection_right *
+                glm::translate(Matrix4x4f{1.0f}, glm::vec3{-ipd_ue, 0.0f, 0.0f}) *
+                glm::inverse(projection_left);
+
+            if (matrix_is_finite(source_to_right)) {
+                std::memcpy(parameters.source_to_right.data(), &source_to_right[0][0], sizeof(source_to_right));
+                parameters.use_true_reprojection = true;
+                SPDLOG_INFO_ONCE(
+                    "[DIBR] Using true left-to-right projection reprojection (IPD={:.4f} UE units)",
+                    ipd_ue);
+            }
+        }
+    }
+
+    if (!slot->preview.synthesize(
+            device,
+            slot->commands.cmd_list.Get(),
+            scene_color,
+            scene_color_state,
+            scene_depth,
+            scene_depth_state,
+            parameters)) {
+        return false;
+    }
+
+    const auto output = slot->preview.output().texture.Get();
+    if (output == nullptr || !ensure_dibr_present_texture(slot->present_tex, device, output->GetDesc())) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[DIBR] Synthesis completed but the packed presentation texture is unavailable");
+        return false;
+    }
+
+    const auto output_desc = output->GetDesc();
+    const auto present_desc = slot->present_tex.texture->GetDesc();
+    if (output_desc.Width != present_desc.Width || output_desc.Height != present_desc.Height ||
+        output_desc.Format != present_desc.Format) {
+        SPDLOG_WARN(
+            "[DIBR] Packed output [{}x{} fmt={}] cannot be copied directly into presentation [{}x{} fmt={}]; normal scene path retained",
+            output_desc.Width,
+            output_desc.Height,
+            static_cast<uint32_t>(output_desc.Format),
+            present_desc.Width,
+            present_desc.Height,
+            static_cast<uint32_t>(present_desc.Format));
+        return false;
+    }
+
+    // Do not route a synthesized B8 scene through SpriteBatch. Subnautica 2's
+    // scene alpha is not presentation alpha, and that conversion can produce
+    // an opaque white frame. The DIBR output and presentation texture share a
+    // typed format, so an exact copy preserves the scene bits.
+    D3D12_RESOURCE_BARRIER copy_barriers[2]{};
+    for (auto& barrier : copy_barriers) {
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    }
+    copy_barriers[0].Transition.pResource = output;
+    copy_barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    copy_barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    copy_barriers[1].Transition.pResource = slot->present_tex.texture.Get();
+    copy_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    copy_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+    slot->commands.cmd_list->ResourceBarrier(static_cast<UINT>(std::size(copy_barriers)), copy_barriers);
+
+    slot->commands.cmd_list->CopyResource(slot->present_tex.texture.Get(), output);
+
+    copy_barriers[0].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_SOURCE;
+    copy_barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    copy_barriers[1].Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+    copy_barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    slot->commands.cmd_list->ResourceBarrier(static_cast<UINT>(std::size(copy_barriers)), copy_barriers);
+
+    // DIBR records directly into this context rather than through one of its
+    // copy helpers, so mark it for submission explicitly.
+    slot->commands.has_commands = true;
+    slot->commands.execute();
+    m_dibr_active_present_tex = &slot->present_tex;
+    return true;
+}
+
+void D3D12Component::reset_dibr_preview() {
+    if (auto& hook = g_framework->get_d3d12_hook(); hook != nullptr) {
+        hook->set_depth_stencil_observer(nullptr);
+    }
+
+    // Keep each slot's producer resources alive until its last dispatch has
+    // completed before returning to an untouched rendering path.
+    for (auto& slot : m_dibr_slots) {
+        slot.commands.wait(INFINITE);
+        slot.commands.reset();
+        slot.present_tex.reset();
+        slot.preview.reset();
+    }
+    m_dibr_depth_capture.reset();
+    m_dibr_slot_cursor = 0;
+    m_dibr_active_present_tex = nullptr;
+    m_dibr_was_active = false;
+}
+
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto on_frame_start = std::chrono::steady_clock::now();
     utility::ScopeGuard frame_timing_guard{[&]() {
@@ -741,6 +983,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     };
 
+    if (!vr->is_dibr_preview_active() && m_dibr_was_active) {
+        reset_dibr_preview();
+    }
+
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Could not set up, trying again next frame");
@@ -753,6 +999,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     auto& hook = g_framework->get_d3d12_hook();
+    if (hook != nullptr) {
+        m_dibr_depth_capture.set_ue5_rdg_depth_capture_enabled(vr->is_dibr_ue5_rdg_depth_capture_enabled());
+        hook->set_depth_stencil_observer(vr->is_dibr_depth_trace_requested() ? &m_dibr_depth_capture : nullptr);
+    }
 
     hook->set_next_present_interval(0); // disable vsync for vr
     
@@ -1457,15 +1707,36 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }*/
 
     ComPtr<ID3D12Resource> scene_depth_tex{};
+    ComPtr<ID3D12Resource> dibr_depth_tex{};
 
-    if (vr->is_depth_enabled() && runtime->is_depth_allowed()) {
+    // UE5 SceneDepthZ is RDG-owned. The DIBR trace uses the actual scene
+    // source extent to select a matching DSV candidate, without retaining or
+    // submitting that candidate yet.
+    if (vr->is_dibr_depth_trace_requested() && backbuffer.Get() != nullptr) {
+        const auto source_desc = backbuffer->GetDesc();
+        m_dibr_depth_capture.set_depth_trace_expected_extent(
+            static_cast<uint32_t>(source_desc.Width),
+            source_desc.Height);
+    }
+
+    // DIBR consumes SceneDepthZ internally even when compositor depth submit
+    // is disabled. UE5 uses its separately owned RDG copy for DIBR, leaving
+    // the pooled SceneDepthZ lookup untouched for normal OpenXR depth submit.
+    const auto needs_dibr_depth = vr->is_dibr_preview_active();
+    const auto dibr_uses_ue5_rdg_capture = needs_dibr_depth && vr->is_dibr_ue5_rdg_depth_capture_enabled();
+    if (dibr_uses_ue5_rdg_capture) {
+        dibr_depth_tex = m_dibr_depth_capture.captured_depth_snapshot();
+    }
+
+    const auto should_submit_depth = vr->is_depth_enabled() && runtime->is_depth_allowed();
+    if (should_submit_depth || (needs_dibr_depth && !dibr_uses_ue5_rdg_capture)) {
         auto& rt_pool = vr->get_render_target_pool_hook();
         scene_depth_tex = rt_pool->get_texture<ID3D12Resource>(L"SceneDepthZ");
 
         if (scene_depth_tex != nullptr) {
             const auto desc = scene_depth_tex->GetDesc();
 
-            if (runtime->is_openxr()) {
+            if (should_submit_depth && runtime->is_openxr()) {
                 if (vr->m_openxr->needs_depth_resize(desc.Width, desc.Height) || m_openxr.made_depth_with_null_defaults) {
                     uint32_t reasons = SWAPCHAIN_RECREATE_DEPTH_EXTENT;
                     if (m_openxr.made_depth_with_null_defaults) {
@@ -1485,6 +1756,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     #endif
     }
 
+    if (!dibr_uses_ue5_rdg_capture) {
+        dibr_depth_tex = scene_depth_tex;
+    }
+
     if (shf_using_mono_expansion && scene_depth_tex != nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Suppressing depth submit while mono cutscene expansion is active");
         scene_depth_tex.Reset();
@@ -1493,6 +1768,29 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if ((debug_disable_depth_submit || debug_submit_empty_frame || debug_skip_scene_copy) && scene_depth_tex != nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Suppressing depth submit for perf isolation");
         scene_depth_tex.Reset();
+    }
+
+    // DIBR is a self-contained scene-source replacement. It deliberately runs
+    // before the existing copy/submission code so OpenXR consumes it through
+    // the normal double-wide path; UI, spectator, timing, and swapchains stay
+    // exactly as they are for Native/Synced/AFR.
+    if (vr->is_dibr_preview_active()) {
+        m_dibr_was_active = true;
+    }
+
+    if (vr->is_dibr_preview_active() &&
+        run_dibr_preview(
+            vr,
+            device,
+            backbuffer.Get(),
+            scene_source_state,
+            dibr_depth_tex.Get(),
+            dibr_uses_ue5_rdg_capture ? ENGINE_SRC_COLOR : ENGINE_SRC_DEPTH)) {
+        if (m_dibr_active_present_tex != nullptr) {
+            backbuffer = m_dibr_active_present_tex->texture;
+        }
+        scene_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        SPDLOG_INFO_ONCE("[DIBR] Preview scene source is active. The engine still renders both views in this safety-first phase.");
     }
 
     // If m_frame_count is even, we're rendering the left eye.
@@ -2548,6 +2846,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_scene_capture_tex.reset();
     m_shf_mono_scene_tex.reset();
     m_shf_mono_scene_commands.reset();
+    reset_dibr_preview();
     m_shf_mono_scene_width = 0;
     m_shf_mono_scene_height = 0;
     m_shf_mono_scene_format = DXGI_FORMAT_UNKNOWN;

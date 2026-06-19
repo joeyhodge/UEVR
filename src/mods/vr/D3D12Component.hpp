@@ -19,6 +19,7 @@
 #include <../../directxtk12-src/Inc/DescriptorHeap.h>
 
 #include "d3d12/CommandContext.hpp"
+#include "d3d12/DIBRPreview.hpp"
 #include "d3d12/TextureContext.hpp"
 
 class VR;
@@ -88,6 +89,9 @@ public:
 
     HitchFrameSnapshot get_hitch_frame_snapshot(VR* vr) const;
     bool has_game_and_ui_textures() const;
+    const char* get_dibr_preview_status() const { return m_dibr_slots[0].preview.status_name(); }
+    std::string get_dibr_preview_failure_reason() const { return m_dibr_slots[0].preview.failure_reason(); }
+    std::string get_dibr_preview_depth_trace_summary() const { return m_dibr_depth_capture.depth_trace_summary(); }
 
 private:
     friend class render::FrameResourceInspector;
@@ -119,6 +123,15 @@ private:
         bool using_mono_expansion);
     bool ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
     d3d12::TextureContext* render_shf_mono_scene_texture(ID3D12Device* device);
+    bool run_dibr_preview(
+        VR* vr,
+        ID3D12Device* device,
+        ID3D12Resource* scene_color,
+        D3D12_RESOURCE_STATES scene_color_state,
+        ID3D12Resource* scene_depth,
+        D3D12_RESOURCE_STATES scene_depth_state);
+    bool ensure_dibr_present_texture(d3d12::TextureContext& texture, ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    void reset_dibr_preview();
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -167,6 +180,20 @@ private:
     d3d12::TextureContext m_game_tex{};
     d3d12::TextureContext m_scene_capture_tex{};
     d3d12::TextureContext m_shf_mono_scene_tex{};
+    static constexpr uint32_t DIBR_FRAME_SLOT_COUNT = 3;
+    struct DIBRFrameSlot {
+        d3d12::TextureContext present_tex{};
+        d3d12::DIBRPreview preview{};
+        d3d12::CommandContext commands{};
+    };
+
+    // Capture runs every frame. Each frame slot has independent source,
+    // output, descriptors and command allocator so one slow DIBR dispatch
+    // cannot stall the CPU before the next frame is recorded.
+    d3d12::DIBRPreview m_dibr_depth_capture{};
+    std::array<DIBRFrameSlot, DIBR_FRAME_SLOT_COUNT> m_dibr_slots{};
+    uint32_t m_dibr_slot_cursor{};
+    d3d12::TextureContext* m_dibr_active_present_tex{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
     uint64_t m_shf_mono_scene_width{};
@@ -347,6 +374,7 @@ private:
     bool m_force_reset{true};
     bool m_last_afr_state{false};
     bool m_submitted_left_eye{false};
+    bool m_dibr_was_active{};
     uint64_t m_swapchain_recreate_count{};
     uint32_t m_last_swapchain_recreate_reasons{};
 };

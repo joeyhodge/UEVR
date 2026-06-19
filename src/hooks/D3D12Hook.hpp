@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <functional>
 #include <iostream>
 #include <memory>
@@ -16,6 +17,25 @@
 
 #include "utility/PointerHook.hpp"
 #include "utility/VtableHook.hpp"
+
+// Consumers may observe DSV creation without taking ownership of the resource.
+// Resource-barrier callbacks run immediately before the original barrier so an
+// opt-in consumer can make a short, self-contained copy while the game still
+// owns the command-list state.
+class D3D12DepthStencilObserver {
+public:
+    virtual ~D3D12DepthStencilObserver() = default;
+
+    virtual void on_depth_stencil_view_created(
+        ID3D12Resource* resource,
+        const D3D12_DEPTH_STENCIL_VIEW_DESC* desc,
+        D3D12_CPU_DESCRIPTOR_HANDLE descriptor) = 0;
+
+    virtual void on_resource_barriers(
+        ID3D12GraphicsCommandList* command_list,
+        UINT count,
+        const D3D12_RESOURCE_BARRIER* barriers) = 0;
+};
 
 class D3D12Hook
 {
@@ -106,6 +126,10 @@ public:
         m_next_present_interval = interval;
     }
 
+    void set_depth_stencil_observer(D3D12DepthStencilObserver* observer) {
+        m_depth_stencil_observer.store(observer, std::memory_order_release);
+    }
+
 protected:
     ID3D12Device4* m_device{ nullptr };
     IDXGISwapChain3* m_swap_chain{ nullptr };
@@ -129,6 +153,7 @@ protected:
     bool m_is_phase_1{ true };
     bool m_inside_present{false};
     bool m_ignore_next_present{false};
+    std::atomic<D3D12DepthStencilObserver*> m_depth_stencil_observer{nullptr};
     std::unordered_set<uintptr_t> m_swapchains_requiring_original_present_params{};
     std::unordered_set<uintptr_t> m_original_present_param_skip_logged_swapchains{};
 
@@ -139,11 +164,13 @@ protected:
     std::vector<std::unique_ptr<PointerHook>> m_create_render_target_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_create_depth_stencil_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_set_pipeline_state_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_resource_barrier_hooks{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_graphics_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_render_target_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_depth_stencil_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_set_pipeline_state_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_resource_barrier_hook_lookup{};
     std::unique_ptr<VtableHook> m_swapchain_hook{};
     //std::unique_ptr<FunctionHook> m_create_swap_chain_hook{};
 
@@ -162,6 +189,7 @@ protected:
     static void WINAPI create_render_target_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RENDER_TARGET_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI create_depth_stencil_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state);
+    static void WINAPI resource_barrier(ID3D12GraphicsCommandList* command_list, UINT count, const D3D12_RESOURCE_BARRIER* barriers);
     static HRESULT WINAPI resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static HRESULT WINAPI resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters);
     //static HRESULT WINAPI create_swap_chain(IDXGIFactory4* factory, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* p_fullscreen_desc, IDXGIOutput* p_restrict_to_output, IDXGISwapChain** swap_chain);
@@ -171,5 +199,6 @@ protected:
     PointerHook* find_create_render_target_view_hook(void* slot) const;
     PointerHook* find_create_depth_stencil_view_hook(void* slot) const;
     PointerHook* find_set_pipeline_state_hook(void* slot) const;
+    PointerHook* find_resource_barrier_hook(void* slot) const;
 };
 
