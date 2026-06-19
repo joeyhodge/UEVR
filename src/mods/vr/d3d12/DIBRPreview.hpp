@@ -28,6 +28,15 @@ public:
         // screen-space shift remains the fail-closed fallback.
         bool use_true_reprojection{false};
         std::array<float, 16> source_to_right{};
+
+        // This remains independent from the legacy disparity slider so a title
+        // can tune the real projection solve without changing fallback behavior.
+        float reprojection_strength{1.0f};
+        float legacy_depth_curve{1.0f};
+        float legacy_near_depth_cap{1.0f};
+        bool depth_edge_stabilization{};
+        float depth_edge_threshold{0.01f};
+        float depth_edge_stabilization_strength{0.75f};
     };
 
     ~DIBRPreview();
@@ -91,8 +100,15 @@ private:
         uint32_t use_true_reprojection{};
         float true_reprojection_strength{};
         float source_to_right[16]{};
-        float padding[36]{};
+        float legacy_depth_curve{1.0f};
+        float legacy_near_depth_cap{1.0f};
+        uint32_t enable_depth_edge_stabilization{};
+        float depth_edge_threshold{0.01f};
+        float depth_edge_stabilization_strength{0.75f};
+        float quality_padding[2]{};
+        float padding[28]{};
     };
+    static_assert(sizeof(Constants) == 256, "DIBR constants must remain one CBV-aligned block");
 
     bool ensure_pipeline(ID3D12Device* device);
     bool ensure_output(ID3D12Device* device, uint32_t width, uint32_t height, DXGI_FORMAT format);
