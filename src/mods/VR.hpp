@@ -44,6 +44,7 @@ public:
         NATIVE_STEREO = 0,
         SYNCHRONIZED = 1,
         ALTERNATING = 2,
+        SYNTHETIC_DIBR = 3,
     };
 
     enum SynchronizeStage {
@@ -660,6 +661,65 @@ public:
             runtime->is_openxr();
     }
 
+    bool is_dibr_rendering_method_selected() const {
+        return m_rendering_method->value() == RenderingMethod::SYNTHETIC_DIBR;
+    }
+
+    // UE5.5+ creates SceneDepthZ through RDG rather than the legacy pooled
+    // render-target path. The capture remains separately opt-in because it
+    // inserts a self-contained copy on the game's command list.
+    bool is_dibr_preview_engine_supported() const {
+        return m_fake_stereo_hook != nullptr &&
+            (!m_fake_stereo_hook->has_double_precision() || m_dibr_ue5_rdg_depth_capture->value());
+    }
+
+    // The UE5 path currently observes DSV allocation only. It never borrows a
+    // resource until a matching RDG producer and state have been verified.
+    bool is_dibr_depth_trace_requested() const {
+        const auto runtime = get_runtime();
+        return is_dibr_rendering_method_selected() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->is_openxr() &&
+            !m_native_stereo_fix->value() &&
+            !m_extreme_compat_mode->value() &&
+            !m_sceneview_compatibility_mode->value() &&
+            !m_splitscreen_compatibility_mode->value() &&
+            !is_using_2d_screen() &&
+            !m_stereo_emulation_mode;
+    }
+
+    bool is_dibr_ue5_rdg_depth_capture_enabled() const {
+        return m_fake_stereo_hook != nullptr &&
+            m_fake_stereo_hook->has_double_precision() &&
+            m_dibr_ue5_rdg_depth_capture->value();
+    }
+
+    // DIBR is intentionally isolated from the existing rendering paths. The
+    // preview does not alter view counts, OpenXR timing, UI, or spectator work.
+    bool is_dibr_preview_active() const {
+        const auto runtime = get_runtime();
+        return is_dibr_rendering_method_selected() &&
+            is_dibr_preview_engine_supported() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->is_openxr() &&
+            !m_native_stereo_fix->value() &&
+            !m_extreme_compat_mode->value() &&
+            !m_sceneview_compatibility_mode->value() &&
+            !m_splitscreen_compatibility_mode->value() &&
+            !is_using_2d_screen() &&
+            !m_stereo_emulation_mode;
+    }
+
+    float get_dibr_disparity_pixels() const {
+        return m_dibr_disparity_pixels->value();
+    }
+
+    bool is_dibr_reversed_depth_enabled() const {
+        return m_dibr_reversed_depth->value();
+    }
+
     bool is_hitch_diagnostics_enabled() const {
         return m_enable_hitch_diagnostics->value();
     }
@@ -1222,6 +1282,7 @@ private:
         "Native Stereo",
         "Synchronized Sequential",
         "Alternating/AFR",
+        "Synthetic Stereo (DIBR, Experimental)",
     };
 
     static const inline std::vector<std::string> s_sync_mode_names{
@@ -1313,6 +1374,9 @@ private:
     const ModCombo::Ptr m_vertical_projection_override{ModCombo::create(generate_name("VerticalProjectionOverride"), s_vertical_projection_override_names)};
     const ModToggle::Ptr m_grow_rectangle_for_projection_cropping{ModToggle::create(generate_name("GrowRectangleForProjectionCropping"), false)};
     const ModCombo::Ptr m_sync_mode{ ModCombo::create(generate_name("SynchronizationMode"), s_sync_mode_names, 2) };
+    const ModSlider::Ptr m_dibr_disparity_pixels{ ModSlider::create(generate_name("DIBRDisparityPixels"), 0.0f, 64.0f, 18.0f) };
+    const ModToggle::Ptr m_dibr_reversed_depth{ ModToggle::create(generate_name("DIBRReversedDepth"), true) };
+    const ModToggle::Ptr m_dibr_ue5_rdg_depth_capture{ ModToggle::create(generate_name("DIBRUE5RDGDepthCapture"), false) };
 
     // Snap turn settings and globals
     void gamepad_snapturn(XINPUT_STATE& state);
@@ -1654,6 +1718,9 @@ public:
             *m_horizontal_projection_override,
             *m_vertical_projection_override,
             *m_grow_rectangle_for_projection_cropping,
+            *m_dibr_disparity_pixels,
+            *m_dibr_reversed_depth,
+            *m_dibr_ue5_rdg_depth_capture,
             *m_snapturn,
             *m_snapturn_joystick_deadzone,
             *m_snapturn_angle,

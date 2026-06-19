@@ -37,7 +37,9 @@ RenderTargetPoolHook::RenderTargetPoolHook() {
 }
 
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
-    if (!m_attempted_hook && VR::get()->is_depth_enabled()) {
+    // DIBR needs SceneDepthZ as a private synthesis input even when users
+    // intentionally leave compositor depth submission disabled.
+    if (!m_attempted_hook && (VR::get()->is_depth_enabled() || VR::get()->is_dibr_preview_active())) {
         m_wants_activate = true;
     }
 
