@@ -830,6 +830,12 @@ bool D3D12Component::run_dibr_preview(
     auto parameters = d3d12::DIBRPreview::Parameters{
         .disparity_pixels = vr->get_dibr_disparity_pixels(),
         .reversed_depth = vr->is_dibr_reversed_depth_enabled(),
+        .reprojection_strength = vr->get_dibr_reprojection_strength(),
+        .legacy_depth_curve = vr->get_dibr_legacy_depth_curve(),
+        .legacy_near_depth_cap = vr->get_dibr_legacy_near_depth_cap(),
+        .depth_edge_stabilization = vr->is_dibr_depth_edge_stabilization_enabled(),
+        .depth_edge_threshold = vr->get_dibr_depth_edge_threshold(),
+        .depth_edge_stabilization_strength = vr->get_dibr_depth_edge_stabilization_strength(),
     };
 
     // DIBR's first safety phase preserves the engine's two views, but its

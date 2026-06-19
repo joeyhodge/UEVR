@@ -25,6 +25,12 @@ cbuffer DIBRConstants : register(b0) {
     uint UseTrueReprojection;
     float TrueReprojectionStrength;
     float4x4 SourceToRight;
+    float LegacyDepthCurve;
+    float LegacyNearDepthCap;
+    uint EnableDepthEdgeStabilization;
+    float DepthEdgeThreshold;
+    float DepthEdgeStabilizationStrength;
+    float2 QualityPadding;
 };
 
 Texture2D<float4> SourceColor : register(t0);
@@ -40,6 +46,23 @@ float2 ReprojectSourceUv(float2 source_uv, float raw_depth) {
     return float2(target_ndc.x * 0.5f + 0.5f, 0.5f - target_ndc.y * 0.5f);
 }
 
+float LegacyDepthResponse(float raw_depth) {
+    const float near_depth = ReversedDepth != 0 ? raw_depth : 1.0f - raw_depth;
+    const float capped_depth = min(saturate(near_depth), max(LegacyNearDepthCap, 1e-4f));
+    return pow(capped_depth, max(LegacyDepthCurve, 0.05f));
+}
+
+float DepthDiscontinuity(float2 uv, float raw_depth) {
+    if (EnableDepthEdgeStabilization == 0 || DepthWidth == 0 || DepthHeight == 0) {
+        return 0.0f;
+    }
+
+    const float2 texel = 1.0f / float2((float)DepthWidth, (float)DepthHeight);
+    const float x_neighbor = SourceDepth.SampleLevel(LinearClamp, saturate(uv + float2(texel.x, 0.0f)), 0);
+    const float y_neighbor = SourceDepth.SampleLevel(LinearClamp, saturate(uv + float2(0.0f, texel.y)), 0);
+    return max(abs(raw_depth - x_neighbor), abs(raw_depth - y_neighbor));
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 dispatch_id : SV_DispatchThreadID) {
     if (dispatch_id.x >= OutputWidth || dispatch_id.y >= OutputHeight || SourceEyeWidth == 0) {
@@ -51,9 +74,8 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
     const float v = (float)(dispatch_id.y + 0.5) / (float)OutputHeight;
     const float2 target_uv = float2(target_u, v);
     const float raw_depth = saturate(SourceDepth.SampleLevel(LinearClamp, target_uv, 0));
-    const float near_depth = ReversedDepth != 0 ? raw_depth : 1.0 - raw_depth;
     const float edge = smoothstep(0.0, EdgeFeather, target_u) * (1.0 - smoothstep(1.0 - EdgeFeather, 1.0, target_u));
-    const float disparity_uv = (DisparityPixels * saturate(near_depth) * edge) / (float)SourceEyeWidth;
+    const float disparity_uv = (DisparityPixels * LegacyDepthResponse(raw_depth) * edge) / (float)SourceEyeWidth;
 
     float2 source_uv = target_uv;
     if (target_right && UseTrueReprojection != 0) {
@@ -71,6 +93,18 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
         // The left eye is the reference. A right-eye pixel lands leftward from
         // its left-eye source, so reconstructing it samples toward +U.
         source_uv.x = saturate(target_u + disparity_uv);
+    }
+
+    if (target_right && EnableDepthEdgeStabilization != 0) {
+        // A single left-eye image cannot reveal data behind a foreground edge.
+        // Pull only high-confidence discontinuities back toward the stable left
+        // sample instead of allowing foreground color to smear across a hole.
+        const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, source_uv, 0));
+        const float discontinuity = max(DepthDiscontinuity(target_uv, raw_depth), abs(raw_depth - source_depth));
+        const float threshold = max(DepthEdgeThreshold, 1e-5f);
+        const float stabilization = smoothstep(threshold, threshold * 4.0f, discontinuity) *
+            saturate(DepthEdgeStabilizationStrength);
+        source_uv = lerp(source_uv, target_uv, stabilization);
     }
 
     Output[dispatch_id.xy] = SourceColor.SampleLevel(LinearClamp, source_uv, 0);
@@ -1125,9 +1159,13 @@ bool DIBRPreview::synthesize(
     constants.reversed_depth = parameters.reversed_depth ? 1 : 0;
     constants.disparity_pixels = std::clamp(parameters.disparity_pixels, 0.0f, 64.0f);
     constants.use_true_reprojection = parameters.use_true_reprojection ? 1 : 0;
-    // Preserve the existing 18px slider default as 100% of the actual IPD.
-    constants.true_reprojection_strength = std::clamp(parameters.disparity_pixels / 18.0f, 0.0f, 2.0f);
+    constants.true_reprojection_strength = std::clamp(parameters.reprojection_strength, 0.0f, 2.0f);
     memcpy(constants.source_to_right, parameters.source_to_right.data(), sizeof(constants.source_to_right));
+    constants.legacy_depth_curve = std::clamp(parameters.legacy_depth_curve, 0.05f, 4.0f);
+    constants.legacy_near_depth_cap = std::clamp(parameters.legacy_near_depth_cap, 0.01f, 1.0f);
+    constants.enable_depth_edge_stabilization = parameters.depth_edge_stabilization ? 1 : 0;
+    constants.depth_edge_threshold = std::clamp(parameters.depth_edge_threshold, 0.0001f, 0.25f);
+    constants.depth_edge_stabilization_strength = std::clamp(parameters.depth_edge_stabilization_strength, 0.0f, 1.0f);
     memcpy(m_constants_cpu, &constants, sizeof(constants));
 
     std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};

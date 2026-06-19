@@ -686,6 +686,30 @@ public:
         return m_dibr_disparity_pixels->value();
     }
 
+    float get_dibr_reprojection_strength() const {
+        return m_dibr_reprojection_strength->value();
+    }
+
+    float get_dibr_legacy_depth_curve() const {
+        return m_dibr_legacy_depth_curve->value();
+    }
+
+    float get_dibr_legacy_near_depth_cap() const {
+        return m_dibr_legacy_near_depth_cap->value();
+    }
+
+    bool is_dibr_depth_edge_stabilization_enabled() const {
+        return m_dibr_depth_edge_stabilization->value();
+    }
+
+    float get_dibr_depth_edge_threshold() const {
+        return m_dibr_depth_edge_threshold->value();
+    }
+
+    float get_dibr_depth_edge_stabilization_strength() const {
+        return m_dibr_depth_edge_stabilization_strength->value();
+    }
+
     bool is_dibr_reversed_depth_enabled() const {
         return m_dibr_reversed_depth->value();
     }
@@ -1334,6 +1358,12 @@ private:
     const ModToggle::Ptr m_grow_rectangle_for_projection_cropping{ModToggle::create(generate_name("GrowRectangleForProjectionCropping"), false)};
     const ModCombo::Ptr m_sync_mode{ ModCombo::create(generate_name("SynchronizationMode"), s_sync_mode_names, 2) };
     const ModSlider::Ptr m_dibr_disparity_pixels{ ModSlider::create(generate_name("DIBRDisparityPixels"), 0.0f, 64.0f, 18.0f) };
+    const ModSlider::Ptr m_dibr_reprojection_strength{ ModSlider::create(generate_name("DIBRReprojectionStrength"), 0.0f, 2.0f, 1.0f) };
+    const ModSlider::Ptr m_dibr_legacy_depth_curve{ ModSlider::create(generate_name("DIBRLegacyDepthCurve"), 0.05f, 4.0f, 1.0f) };
+    const ModSlider::Ptr m_dibr_legacy_near_depth_cap{ ModSlider::create(generate_name("DIBRLegacyNearDepthCap"), 0.01f, 1.0f, 1.0f) };
+    const ModToggle::Ptr m_dibr_depth_edge_stabilization{ ModToggle::create(generate_name("DIBRDepthEdgeStabilization"), false) };
+    const ModSlider::Ptr m_dibr_depth_edge_threshold{ ModSlider::create(generate_name("DIBRDepthEdgeThreshold"), 0.0001f, 0.25f, 0.01f) };
+    const ModSlider::Ptr m_dibr_depth_edge_stabilization_strength{ ModSlider::create(generate_name("DIBRDepthEdgeStabilizationStrength"), 0.0f, 1.0f, 0.75f) };
     const ModToggle::Ptr m_dibr_reversed_depth{ ModToggle::create(generate_name("DIBRReversedDepth"), true) };
     const ModToggle::Ptr m_dibr_ue5_rdg_depth_capture{ ModToggle::create(generate_name("DIBRUE5RDGDepthCapture"), false) };
 
@@ -1822,6 +1852,12 @@ public:
             *m_vertical_projection_override,
             *m_grow_rectangle_for_projection_cropping,
             *m_dibr_disparity_pixels,
+            *m_dibr_reprojection_strength,
+            *m_dibr_legacy_depth_curve,
+            *m_dibr_legacy_near_depth_cap,
+            *m_dibr_depth_edge_stabilization,
+            *m_dibr_depth_edge_threshold,
+            *m_dibr_depth_edge_stabilization_strength,
             *m_dibr_reversed_depth,
             *m_dibr_ue5_rdg_depth_capture,
             *m_snapturn,

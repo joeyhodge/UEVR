@@ -12034,8 +12034,30 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
             if (ImGui::TreeNode("Synthetic Stereo (DIBR, Experimental)")) {
                 m_dibr_disparity_pixels->draw("Disparity (Pixels)");
+                m_dibr_reprojection_strength->draw("True Reprojection Strength");
                 m_dibr_reversed_depth->draw("Use Reversed-Z Depth");
                 m_dibr_ue5_rdg_depth_capture->draw("Enable UE5 RDG Depth Capture (Experimental)");
+
+                if (ImGui::TreeNode("DIBR quality tuning")) {
+                    m_dibr_depth_edge_stabilization->draw("Enable Depth-Edge Stabilization");
+                    if (m_dibr_depth_edge_stabilization->value()) {
+                        m_dibr_depth_edge_threshold->draw("Depth-Edge Threshold");
+                        m_dibr_depth_edge_stabilization_strength->draw("Depth-Edge Stabilization Strength");
+                        ImGui::TextWrapped(
+                            "Only affects synthesized right-eye pixels at depth discontinuities. It favors the stable left-eye sample "
+                            "when hidden background data is unavailable, reducing foreground smearing at the cost of local parallax.");
+                    }
+
+                    if (ImGui::TreeNode("Legacy fallback tuning")) {
+                        m_dibr_legacy_depth_curve->draw("Legacy Depth Response Curve");
+                        m_dibr_legacy_near_depth_cap->draw("Legacy Near-Depth Cap");
+                        ImGui::TextWrapped(
+                            "Used only when runtime projection matrices cannot be validated. These controls do not alter the normal true-projection path.");
+                        ImGui::TreePop();
+                    }
+
+                    ImGui::TreePop();
+                }
 
                 if (!m_is_d3d12) {
                     draw_status_badge("DIBR status:", "blocked: D3D12 required", blocked_color);
@@ -12068,6 +12090,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 ImGui::TextWrapped(
                     "Default off and isolated to this rendering method. The verified preview path synthesizes the "
                     "right eye from the left color image plus SceneDepthZ, then uses the normal OpenXR submit path.");
+                ImGui::TextWrapped(
+                    "True Reprojection Strength defaults to 1.0, which is the physical runtime projection solve. The Disparity slider "
+                    "is retained for the guarded legacy fallback and no longer distorts validated runtime geometry.");
                 ImGui::TextWrapped(
                     "UE5.5+ uses an RDG SceneDepthZ producer, not the legacy pooled target. This mode only observes "
                     "real DSV allocations until you enable the explicit RDG capture toggle. When enabled, it copies only a "
