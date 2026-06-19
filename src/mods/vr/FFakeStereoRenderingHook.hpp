@@ -632,6 +632,9 @@ public:
     static void pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family);
 
     const char* get_ghosting_fix_status_text();
+    const char* get_dibr_single_view_status_text() const;
+    uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
+    uint32_t get_dibr_single_view_fallback_frames() const { return m_dibr_single_view_fallback_frames.load(std::memory_order_acquire); }
 
 private:
     bool hook();
@@ -778,6 +781,19 @@ private:
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
+
+    // DIBR single-view state is separate from Native Stereo Fix. It only
+    // controls the temporary renderer-visible view count after D3D12 has
+    // proven a matching DIBR scene/depth source is stable.
+    std::atomic<uint32_t> m_dibr_single_view_status{};
+    std::atomic<uint32_t> m_dibr_single_view_suppressed_frames{};
+    std::atomic<uint32_t> m_dibr_single_view_fallback_frames{};
+    uint64_t m_dibr_single_view_generation{};
+    uint64_t m_dibr_single_view_latched_generation{};
+    uintptr_t m_dibr_single_view_family{};
+    uintptr_t m_dibr_single_view_target{};
+    uint32_t m_dibr_single_view_stable_frames{};
+    uint32_t m_dibr_single_view_failure_frames{};
 
     // both of these are used to figure out where the localplayer is, they aren't actively
     // used for anything else, the second one is an alternative hook if the first one

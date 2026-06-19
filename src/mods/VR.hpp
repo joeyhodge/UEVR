@@ -45,6 +45,7 @@ public:
         SYNCHRONIZED = 1,
         ALTERNATING = 2,
         SYNTHETIC_DIBR = 3,
+        SYNTHETIC_DIBR_SINGLE_VIEW = 4,
     };
 
     enum SynchronizeStage {
@@ -662,7 +663,16 @@ public:
     }
 
     bool is_dibr_rendering_method_selected() const {
-        return m_rendering_method->value() == RenderingMethod::SYNTHETIC_DIBR;
+        const auto method = m_rendering_method->value();
+        return method == RenderingMethod::SYNTHETIC_DIBR ||
+            method == RenderingMethod::SYNTHETIC_DIBR_SINGLE_VIEW;
+    }
+
+    // This high-risk mode keeps the existing DIBR output path, but asks the
+    // renderer hook to omit the second engine scene view only after runtime
+    // validation has proven the main view family and depth source are stable.
+    bool is_dibr_single_view_requested() const {
+        return m_rendering_method->value() == RenderingMethod::SYNTHETIC_DIBR_SINGLE_VIEW;
     }
 
     // UE5.5+ creates SceneDepthZ through RDG rather than the legacy pooled
@@ -1307,6 +1317,7 @@ private:
         "Synchronized Sequential",
         "Alternating/AFR",
         "Synthetic Stereo (DIBR, Experimental)",
+        "Synthetic Stereo (DIBR Single View, Experimental)",
     };
 
     static const inline std::vector<std::string> s_sync_mode_names{

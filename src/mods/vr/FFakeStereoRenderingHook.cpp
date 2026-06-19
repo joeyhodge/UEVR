@@ -100,6 +100,30 @@ constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
 constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD = std::chrono::milliseconds(1500);
 constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING = std::chrono::seconds(60);
+constexpr uint32_t DIBR_SINGLE_VIEW_WARMUP_FRAMES = 60;
+constexpr uint32_t DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES = 60;
+constexpr uint32_t DIBR_SINGLE_VIEW_MAX_CONSECUTIVE_FAILURES = 3;
+
+enum DIBRSingleViewStatus : uint32_t {
+    DIBR_SINGLE_VIEW_DISABLED,
+    DIBR_SINGLE_VIEW_WARMING_UP,
+    DIBR_SINGLE_VIEW_LEARNING_FAMILY,
+    DIBR_SINGLE_VIEW_ACTIVE,
+    DIBR_SINGLE_VIEW_FALLBACK,
+    DIBR_SINGLE_VIEW_BLOCKED,
+};
+
+const char* dibr_single_view_status_name(uint32_t status) {
+    switch (status) {
+    case DIBR_SINGLE_VIEW_WARMING_UP: return "warming up two-view DIBR";
+    case DIBR_SINGLE_VIEW_LEARNING_FAMILY: return "learning main scene family";
+    case DIBR_SINGLE_VIEW_ACTIVE: return "active";
+    case DIBR_SINGLE_VIEW_FALLBACK: return "fallback: rendering both engine views";
+    case DIBR_SINGLE_VIEW_BLOCKED: return "blocked for current scene generation";
+    case DIBR_SINGLE_VIEW_DISABLED:
+    default: return "disabled";
+    }
+}
 
 bool is_deadzone_ue56_executable() {
     static const bool result = []() {
@@ -8021,10 +8045,33 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     auto& vr = VR::get();
     auto rtm = g_hook->get_render_target_manager();
+    const auto dibr_single_view_requested = vr->is_dibr_single_view_requested();
+    const auto native_stereo_fix_enabled = vr->is_native_stereo_fix_enabled();
 
-    if (!vr->is_hmd_active() || !vr->is_native_stereo_fix_enabled()) {
+    const auto reset_dibr_single_view_state = [&]() {
+        g_hook->m_dibr_single_view_status.store(DIBR_SINGLE_VIEW_DISABLED, std::memory_order_release);
+        g_hook->m_dibr_single_view_generation = 0;
+        g_hook->m_dibr_single_view_latched_generation = 0;
+        g_hook->m_dibr_single_view_family = 0;
+        g_hook->m_dibr_single_view_target = 0;
+        g_hook->m_dibr_single_view_stable_frames = 0;
+        g_hook->m_dibr_single_view_failure_frames = 0;
+        g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
+        g_hook->m_dibr_single_view_fallback_frames.store(0, std::memory_order_release);
+    };
+
+    if (!dibr_single_view_requested &&
+        (g_hook->m_dibr_single_view_status.load(std::memory_order_acquire) != DIBR_SINGLE_VIEW_DISABLED ||
+            g_hook->m_dibr_single_view_generation != 0))
+    {
+        reset_dibr_single_view_state();
+    }
+
+    if (!vr->is_hmd_active() || (!native_stereo_fix_enabled && !dibr_single_view_requested)) {
         avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
-        rtm->destroy_scene_capture();
+        if (!dibr_single_view_requested) {
+            rtm->destroy_scene_capture();
+        }
 
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
@@ -8035,16 +8082,31 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         uint32_t count;
     };
 
+    if (view_family_candidate == nullptr || IsBadReadPtr(view_family_candidate, sizeof(void*))) {
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        return;
+    }
+
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && *(void**)view_family_candidate != sdk::FSceneViewFamily::get_vtable_ptr();
     const auto ue5_view_family_array = (TArrayViewViewFamily*)view_family_candidate;
 
-    if (uses_tarrayview && ue5_view_family_array->data == nullptr) {
+    if (uses_tarrayview &&
+        (ue5_view_family_array->data == nullptr ||
+            (dibr_single_view_requested &&
+                (ue5_view_family_array->count != 1 ||
+                    IsBadReadPtr(ue5_view_family_array->data, sizeof(sdk::FSceneViewFamily*))))))
+    {
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
         return;
     }
 
     // UE5 passes an TArrayView of ViewFamily pointers instead of a single ViewFamily
     sdk::FSceneViewFamily* view_family = uses_tarrayview ? ue5_view_family_array->data[0] : view_family_candidate;
+
+    if (view_family == nullptr || IsBadReadPtr(view_family, sizeof(void*))) {
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        return;
+    }
 
     auto views_ptr = view_family->get_views();
     if (views_ptr == nullptr) {
@@ -8059,6 +8121,115 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_hook->try_adopt_scene_viewport_render_target(
             reinterpret_cast<sdk::FViewport*>(view_family_target),
             "BeginRenderingViewFamily RenderTarget");
+    }
+
+    if (dibr_single_view_requested) {
+        const auto set_dibr_status = [&](uint32_t status, const char* detail) {
+            const auto previous = g_hook->m_dibr_single_view_status.exchange(status, std::memory_order_acq_rel);
+            if (previous != status) {
+                SPDLOG_INFO("[DIBR][SingleView] {} ({})", dibr_single_view_status_name(status), detail);
+            }
+        };
+        const auto call_two_view_fallback = [&]() {
+            g_hook->m_dibr_single_view_fallback_frames.fetch_add(1, std::memory_order_relaxed);
+            g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        };
+
+        const auto readiness = vr->d3d12().get_dibr_single_view_readiness();
+        if (readiness.generation == 0) {
+            set_dibr_status(DIBR_SINGLE_VIEW_WARMING_UP, "D3D12 readiness reset in progress");
+            call_two_view_fallback();
+            return;
+        }
+
+        if (g_hook->m_dibr_single_view_generation != readiness.generation) {
+            g_hook->m_dibr_single_view_generation = readiness.generation;
+            g_hook->m_dibr_single_view_latched_generation = 0;
+            g_hook->m_dibr_single_view_family = 0;
+            g_hook->m_dibr_single_view_target = 0;
+            g_hook->m_dibr_single_view_stable_frames = 0;
+            g_hook->m_dibr_single_view_failure_frames = 0;
+            g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
+            g_hook->m_dibr_single_view_fallback_frames.store(0, std::memory_order_release);
+            set_dibr_status(DIBR_SINGLE_VIEW_WARMING_UP, "new DIBR resource generation");
+        }
+
+        if (g_hook->m_dibr_single_view_latched_generation == readiness.generation) {
+            set_dibr_status(DIBR_SINGLE_VIEW_BLOCKED, "three DIBR output failures in this generation");
+            call_two_view_fallback();
+            return;
+        }
+
+        if (!readiness.preview_ready || readiness.consecutive_ready_frames < DIBR_SINGLE_VIEW_WARMUP_FRAMES) {
+            if (g_hook->m_dibr_single_view_family != 0 &&
+                g_hook->m_dibr_single_view_stable_frames >= DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES)
+            {
+                ++g_hook->m_dibr_single_view_failure_frames;
+                if (g_hook->m_dibr_single_view_failure_frames >= DIBR_SINGLE_VIEW_MAX_CONSECUTIVE_FAILURES) {
+                    g_hook->m_dibr_single_view_latched_generation = readiness.generation;
+                    set_dibr_status(DIBR_SINGLE_VIEW_BLOCKED, "DIBR output stopped after activation");
+                } else {
+                    set_dibr_status(DIBR_SINGLE_VIEW_FALLBACK, "DIBR output unavailable for this frame");
+                }
+            } else {
+                set_dibr_status(DIBR_SINGLE_VIEW_WARMING_UP, "waiting for stable two-view DIBR output");
+            }
+
+            call_two_view_fallback();
+            return;
+        }
+
+        const auto view_family_target = view_family->get_render_target();
+        const auto expected_viewport = rtm->get_viewport();
+        const auto family_is_main_scene =
+            g_hook->has_scene_view_family_offsets_ready() &&
+            view_family_target != nullptr &&
+            expected_viewport != nullptr &&
+            view_family_target == expected_viewport &&
+            view_family->get_scene_interface() != nullptr &&
+            prev_count == 2 &&
+            sdk::FSceneViewFamily::validate_views(view_family, views_ptr, 2) &&
+            views.data[0] != views.data[1];
+
+        if (!family_is_main_scene) {
+            if (g_hook->m_dibr_single_view_status.load(std::memory_order_acquire) != DIBR_SINGLE_VIEW_ACTIVE) {
+                set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "waiting for the validated main viewport family");
+            }
+            g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+            return;
+        }
+
+        const auto family_address = reinterpret_cast<uintptr_t>(view_family);
+        const auto target_address = reinterpret_cast<uintptr_t>(view_family_target);
+        if (g_hook->m_dibr_single_view_family != family_address ||
+            g_hook->m_dibr_single_view_target != target_address)
+        {
+            g_hook->m_dibr_single_view_family = family_address;
+            g_hook->m_dibr_single_view_target = target_address;
+            g_hook->m_dibr_single_view_stable_frames = 1;
+            g_hook->m_dibr_single_view_failure_frames = 0;
+            set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "main view family changed");
+            call_two_view_fallback();
+            return;
+        }
+
+        if (g_hook->m_dibr_single_view_stable_frames < DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES) {
+            ++g_hook->m_dibr_single_view_stable_frames;
+            set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "validating stable main view family");
+            call_two_view_fallback();
+            return;
+        }
+
+        // The engine keeps both views alive; only this call observes the left
+        // primary view. The scope guard restores the exact engine array count
+        // before any later renderer or UI work can inspect the family.
+        views.count = 1;
+        utility::ScopeGuard restore_views{[&]() { views.count = prev_count; }};
+        g_hook->m_dibr_single_view_failure_frames = 0;
+        g_hook->m_dibr_single_view_suppressed_frames.fetch_add(1, std::memory_order_relaxed);
+        set_dibr_status(DIBR_SINGLE_VIEW_ACTIVE, "rendering one engine view and synthesizing the right eye");
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        return;
     }
 
     const auto rt = rtm->get_scene_capture_utexture();
@@ -8403,7 +8574,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     static uint32_t resolver_attempts = 0;
     static uint32_t calls_until_retry = 0;
 
-    if (begin_rendering_view_family_real_fn == nullptr && vr->is_native_stereo_fix_enabled()) {
+    if (begin_rendering_view_family_real_fn == nullptr &&
+        (vr->is_native_stereo_fix_enabled() || vr->is_dibr_single_view_requested()))
+    {
         if (calls_until_retry > 0) {
             --calls_until_retry;
         } else {
@@ -8413,7 +8586,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             const auto candidate = resolve_begin_rendering_viewfamilies_from_stack();
             if (!candidate) {
                 SPDLOG_WARN(
-                    "[NativeStereoFix] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
+                "[RendererViewFamily] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
                     "will retry in {} callbacks",
                     resolver_attempts,
                     calls_until_retry);
@@ -8423,7 +8596,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             begin_rendering_view_family_real_fn =
                 reinterpret_cast<BeginRenderViewFamilyRealFn>(*candidate);
             SPDLOG_INFO(
-                "[NativeStereoFix] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
+                "[RendererViewFamily] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
                 reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn),
                 resolver_attempts);
 
@@ -8432,9 +8605,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 reinterpret_cast<uintptr_t>(&begin_render_viewfamily_real));
 
             if (g_hook->m_render_module_begin_render_viewfamily_hook) {
-                SPDLOG_INFO("[NativeStereoFix] Hooked BeginRenderingViewFamilies real function");
+                SPDLOG_INFO("[RendererViewFamily] Hooked BeginRenderingViewFamilies real function");
             } else {
-                SPDLOG_ERROR("[NativeStereoFix] Failed to hook BeginRenderingViewFamilies real function");
+                SPDLOG_ERROR("[RendererViewFamily] Failed to hook BeginRenderingViewFamilies real function");
                 begin_rendering_view_family_real_fn = nullptr;
             }
         }
@@ -8457,6 +8630,10 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
     default:
         return "off";
     }
+}
+
+const char* FFakeStereoRenderingHook::get_dibr_single_view_status_text() const {
+    return dibr_single_view_status_name(m_dibr_single_view_status.load(std::memory_order_acquire));
 }
 
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
