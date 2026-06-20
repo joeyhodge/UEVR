@@ -33,6 +33,9 @@ jobs:
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           repository: joeyhodge/uevr-frontend
+          # The DIBR backend adds methods 3 and 4. Build the paired frontend
+          # branch so the released injector exposes those enum choices.
+          ref: uevr-dibr-optin-safe
           path: frontend
 
       - name: Set up dotnet
