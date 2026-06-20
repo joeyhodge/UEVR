@@ -37,6 +37,10 @@ public:
         bool depth_edge_stabilization{};
         float depth_edge_threshold{0.01f};
         float depth_edge_stabilization_strength{0.75f};
+        // Current-frame only. This never retains scene data or changes the
+        // engine's view count; it repairs only low-confidence synthetic pixels.
+        bool spatial_repair{};
+        bool show_spatial_repair_mask{};
     };
 
     ~DIBRPreview();
@@ -105,8 +109,11 @@ private:
         uint32_t enable_depth_edge_stabilization{};
         float depth_edge_threshold{0.01f};
         float depth_edge_stabilization_strength{0.75f};
-        float quality_padding[2]{};
-        float padding[28]{};
+        uint32_t enable_spatial_repair{};
+        uint32_t show_spatial_repair_mask{};
+        float repair_residual_pixels{1.5f};
+        float repair_depth_threshold{0.01f};
+        float padding[27]{};
     };
     static_assert(sizeof(Constants) == 256, "DIBR constants must remain one CBV-aligned block");
 

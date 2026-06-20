@@ -7929,6 +7929,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             "when hidden background data is unavailable, reducing foreground smearing at the cost of local parallax.");
                     }
 
+                    m_dibr_spatial_repair->draw("Enable Depth-Aware Spatial Repair (Experimental)");
+                    if (m_dibr_spatial_repair->value()) {
+                        m_dibr_spatial_repair_debug_mask->draw("Show Spatial Repair Mask");
+                        ImGui::TextWrapped(
+                            "DIBR only: repairs current-frame low-confidence right-eye pixels from a depth-compatible background "
+                            "neighbor. It keeps the normal DIBR sample when no safe repair exists and never uses temporal history. "
+                            "The debug overlay is mirrored in both eyes: red = repaired, amber = rejected candidate.");
+                    }
+
                     if (ImGui::TreeNode("Legacy fallback tuning")) {
                         m_dibr_legacy_depth_curve->draw("Legacy Depth Response Curve");
                         m_dibr_legacy_near_depth_cap->draw("Legacy Near-Depth Cap");
