@@ -732,6 +732,14 @@ public:
         return m_dibr_depth_edge_stabilization_strength->value();
     }
 
+    bool is_dibr_spatial_repair_enabled() const {
+        return m_dibr_spatial_repair->value();
+    }
+
+    bool is_dibr_spatial_repair_debug_mask_enabled() const {
+        return is_dibr_spatial_repair_enabled() && m_dibr_spatial_repair_debug_mask->value();
+    }
+
     bool is_dibr_reversed_depth_enabled() const {
         return m_dibr_reversed_depth->value();
     }
@@ -1395,6 +1403,8 @@ private:
     const ModToggle::Ptr m_dibr_depth_edge_stabilization{ ModToggle::create(generate_name("DIBRDepthEdgeStabilization"), false) };
     const ModSlider::Ptr m_dibr_depth_edge_threshold{ ModSlider::create(generate_name("DIBRDepthEdgeThreshold"), 0.0001f, 0.25f, 0.01f) };
     const ModSlider::Ptr m_dibr_depth_edge_stabilization_strength{ ModSlider::create(generate_name("DIBRDepthEdgeStabilizationStrength"), 0.0f, 1.0f, 0.75f) };
+    const ModToggle::Ptr m_dibr_spatial_repair{ ModToggle::create(generate_name("DIBRSpatialRepair"), false) };
+    const ModToggle::Ptr m_dibr_spatial_repair_debug_mask{ ModToggle::create(generate_name("DIBRSpatialRepairDebugMask"), false) };
     const ModToggle::Ptr m_dibr_reversed_depth{ ModToggle::create(generate_name("DIBRReversedDepth"), true) };
     const ModToggle::Ptr m_dibr_ue5_rdg_depth_capture{ ModToggle::create(generate_name("DIBRUE5RDGDepthCapture"), false) };
 
@@ -1889,6 +1899,8 @@ public:
             *m_dibr_depth_edge_stabilization,
             *m_dibr_depth_edge_threshold,
             *m_dibr_depth_edge_stabilization_strength,
+            *m_dibr_spatial_repair,
+            *m_dibr_spatial_repair_debug_mask,
             *m_dibr_reversed_depth,
             *m_dibr_ue5_rdg_depth_capture,
             *m_snapturn,

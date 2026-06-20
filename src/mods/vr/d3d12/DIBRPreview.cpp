@@ -30,7 +30,10 @@ cbuffer DIBRConstants : register(b0) {
     uint EnableDepthEdgeStabilization;
     float DepthEdgeThreshold;
     float DepthEdgeStabilizationStrength;
-    float2 QualityPadding;
+    uint EnableSpatialRepair;
+    uint ShowSpatialRepairMask;
+    float RepairResidualPixels;
+    float RepairDepthThreshold;
 };
 
 Texture2D<float4> SourceColor : register(t0);
@@ -52,8 +55,8 @@ float LegacyDepthResponse(float raw_depth) {
     return pow(capped_depth, max(LegacyDepthCurve, 0.05f));
 }
 
-float DepthDiscontinuity(float2 uv, float raw_depth) {
-    if (EnableDepthEdgeStabilization == 0 || DepthWidth == 0 || DepthHeight == 0) {
+float DepthGradient(float2 uv, float raw_depth) {
+    if (DepthWidth == 0 || DepthHeight == 0) {
         return 0.0f;
     }
 
@@ -61,6 +64,126 @@ float DepthDiscontinuity(float2 uv, float raw_depth) {
     const float x_neighbor = SourceDepth.SampleLevel(LinearClamp, saturate(uv + float2(texel.x, 0.0f)), 0);
     const float y_neighbor = SourceDepth.SampleLevel(LinearClamp, saturate(uv + float2(0.0f, texel.y)), 0);
     return max(abs(raw_depth - x_neighbor), abs(raw_depth - y_neighbor));
+}
+
+float2 ResolveSyntheticRightSourceUv(float2 target_uv, float disparity_uv, out uint source_clamped) {
+    float2 source_uv = target_uv;
+    source_clamped = 0;
+
+    if (UseTrueReprojection != 0) {
+        // Match the ordinary DIBR solve exactly. The clamp bit is retained
+        // only as confidence information for the optional repair pass.
+        [unroll]
+        for (uint i = 0; i < 2; ++i) {
+            const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, source_uv, 0));
+            const float2 projected_target = ReprojectSourceUv(source_uv, source_depth);
+            const float2 correction = clamp(target_uv - projected_target, -0.125f, 0.125f);
+            const float2 candidate = source_uv + correction * TrueReprojectionStrength;
+            source_clamped |= (any(candidate < float2(0.0f, 0.0f) || candidate > float2(1.0f, 1.0f)) ? 1u : 0u);
+            source_uv = saturate(candidate);
+        }
+    } else {
+        const float desired_u = target_uv.x + disparity_uv;
+        source_clamped = desired_u < 0.0f || desired_u > 1.0f ? 1u : 0u;
+        source_uv.x = saturate(desired_u);
+    }
+
+    return source_uv;
+}
+
+bool IsFartherDepth(float candidate, float near_depth, float tolerance) {
+    return ReversedDepth != 0 ? candidate + tolerance < near_depth : candidate > near_depth + tolerance;
+}
+
+bool IsDepthRunCompatible(float first, float second, float tolerance) {
+    return abs(first - second) <= max(tolerance, 0.025f * max(abs(first), abs(second)));
+}
+
+uint AnalyzeSpatialRepair(
+    float2 target_uv,
+    float raw_depth,
+    float2 synthesized_source_uv,
+    uint source_clamped,
+    out float2 repaired_source_uv)
+{
+    repaired_source_uv = synthesized_source_uv;
+
+    const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, synthesized_source_uv, 0));
+    const float local_gradient = DepthGradient(target_uv, raw_depth);
+    const float depth_tolerance = max(RepairDepthThreshold, local_gradient * 4.0f);
+    float residual_pixels = 0.0f;
+
+    if (UseTrueReprojection != 0) {
+        const float2 projected_target = ReprojectSourceUv(synthesized_source_uv, source_depth);
+        residual_pixels = length((projected_target - target_uv) * float2((float)SourceEyeWidth, (float)OutputHeight));
+    }
+
+    const bool low_confidence = source_clamped != 0 ||
+        (UseTrueReprojection != 0 && residual_pixels > RepairResidualPixels) ||
+        abs(raw_depth - source_depth) > depth_tolerance;
+    if (!low_confidence) {
+        return 0u;
+    }
+
+    // The resolved target-to-source displacement points toward the source-side
+    // background for this right-eye synthesis. No displacement means there is
+    // no reliable side to search, so retain the ordinary DIBR result.
+    const float displacement = synthesized_source_uv.x - target_uv.x;
+    const float source_texel = 1.0f / max((float)SourceEyeWidth, 1.0f);
+    if (abs(displacement) < source_texel * 0.25f) {
+        return 1u;
+    }
+
+    const float direction = displacement > 0.0f ? 1.0f : -1.0f;
+    const float near_depth = ReversedDepth != 0 ? max(raw_depth, source_depth) : min(raw_depth, source_depth);
+
+    // Require a stable three-sample run. That rejects thin foreground strands
+    // and keeps this current-frame repair from copying an isolated occluder.
+    [loop]
+    for (uint step = 1; step <= 8; ++step) {
+        const float2 candidate_uv = synthesized_source_uv + float2(direction * source_texel * (float)step, 0.0f);
+        const float2 next_uv = candidate_uv + float2(direction * source_texel, 0.0f);
+        const float2 after_next_uv = next_uv + float2(direction * source_texel, 0.0f);
+        if (candidate_uv.x < 0.0f || candidate_uv.x > 1.0f ||
+            next_uv.x < 0.0f || next_uv.x > 1.0f ||
+            after_next_uv.x < 0.0f || after_next_uv.x > 1.0f) {
+            break;
+        }
+
+        const float candidate_depth = saturate(SourceDepth.SampleLevel(LinearClamp, candidate_uv, 0));
+        const float next_depth = saturate(SourceDepth.SampleLevel(LinearClamp, next_uv, 0));
+        const float after_next_depth = saturate(SourceDepth.SampleLevel(LinearClamp, after_next_uv, 0));
+        if (!IsFartherDepth(candidate_depth, near_depth, depth_tolerance) ||
+            !IsDepthRunCompatible(candidate_depth, next_depth, depth_tolerance) ||
+            !IsDepthRunCompatible(candidate_depth, after_next_depth, depth_tolerance)) {
+            continue;
+        }
+
+        // Pick the farthest point inside the first stable background run, but
+        // never jump beyond it into unrelated distant geometry.
+        repaired_source_uv = candidate_uv;
+        float selected_depth = candidate_depth;
+        if (IsFartherDepth(next_depth, selected_depth, depth_tolerance * 0.25f)) {
+            repaired_source_uv = next_uv;
+            selected_depth = next_depth;
+        }
+        if (IsFartherDepth(after_next_depth, selected_depth, depth_tolerance * 0.25f)) {
+            repaired_source_uv = after_next_uv;
+        }
+        return 2u;
+    }
+
+    return 1u;
+}
+
+float4 ApplySpatialRepairMask(float4 color, uint repair_state) {
+    if (repair_state == 2u) {
+        color.rgb = lerp(color.rgb, float3(1.0f, 0.10f, 0.02f), 0.65f);
+    } else if (repair_state == 1u) {
+        color.rgb = lerp(color.rgb, float3(1.0f, 0.62f, 0.02f), 0.45f);
+    }
+
+    return color;
 }
 
 [numthreads(8, 8, 1)]
@@ -77,37 +200,50 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
     const float edge = smoothstep(0.0, EdgeFeather, target_u) * (1.0 - smoothstep(1.0 - EdgeFeather, 1.0, target_u));
     const float disparity_uv = (DisparityPixels * LegacyDepthResponse(raw_depth) * edge) / (float)SourceEyeWidth;
 
-    float2 source_uv = target_uv;
-    if (target_right && UseTrueReprojection != 0) {
-        // Two bounded inverse iterations solve target->source while keeping
-        // the cost close to the legacy single-tap path. This also captures
-        // asymmetric eye frusta and the real runtime IPD.
-        [unroll]
-        for (uint i = 0; i < 2; ++i) {
-            const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, source_uv, 0));
-            const float2 projected_target = ReprojectSourceUv(source_uv, source_depth);
-            const float2 correction = clamp(target_uv - projected_target, -0.125f, 0.125f);
-            source_uv = saturate(source_uv + correction * TrueReprojectionStrength);
-        }
-    } else if (target_right) {
-        // The left eye is the reference. A right-eye pixel lands leftward from
-        // its left-eye source, so reconstructing it samples toward +U.
-        source_uv.x = saturate(target_u + disparity_uv);
+    uint source_clamped = 0u;
+    float2 synthesized_source_uv = target_uv;
+    // Keep the ordinary left-eye path untouched unless the optional binocular
+    // diagnostic overlay needs the matching right-eye classification.
+    if (target_right || (EnableSpatialRepair != 0 && ShowSpatialRepairMask != 0)) {
+        synthesized_source_uv = ResolveSyntheticRightSourceUv(target_uv, disparity_uv, source_clamped);
     }
+    float2 source_uv = target_right ? synthesized_source_uv : target_uv;
 
     if (target_right && EnableDepthEdgeStabilization != 0) {
         // A single left-eye image cannot reveal data behind a foreground edge.
         // Pull only high-confidence discontinuities back toward the stable left
         // sample instead of allowing foreground color to smear across a hole.
         const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, source_uv, 0));
-        const float discontinuity = max(DepthDiscontinuity(target_uv, raw_depth), abs(raw_depth - source_depth));
+        const float discontinuity = max(DepthGradient(target_uv, raw_depth), abs(raw_depth - source_depth));
         const float threshold = max(DepthEdgeThreshold, 1e-5f);
         const float stabilization = smoothstep(threshold, threshold * 4.0f, discontinuity) *
             saturate(DepthEdgeStabilizationStrength);
         source_uv = lerp(source_uv, target_uv, stabilization);
     }
 
-    Output[dispatch_id.xy] = SourceColor.SampleLevel(LinearClamp, source_uv, 0);
+    uint repair_state = 0u;
+    float2 repaired_source_uv = synthesized_source_uv;
+    // The debug overlay mirrors the right-eye analysis into the left eye so it
+    // stays comfortable to inspect without creating a binocular mismatch.
+    if (EnableSpatialRepair != 0 && (target_right || ShowSpatialRepairMask != 0)) {
+        repair_state = AnalyzeSpatialRepair(
+            target_uv,
+            raw_depth,
+            synthesized_source_uv,
+            source_clamped,
+            repaired_source_uv);
+    }
+
+    if (target_right && repair_state == 2u) {
+        source_uv = repaired_source_uv;
+    }
+
+    float4 output_color = SourceColor.SampleLevel(LinearClamp, source_uv, 0);
+    if (EnableSpatialRepair != 0 && ShowSpatialRepairMask != 0) {
+        output_color = ApplySpatialRepairMask(output_color, repair_state);
+    }
+
+    Output[dispatch_id.xy] = output_color;
 }
 )DIBR";
 
@@ -1166,6 +1302,10 @@ bool DIBRPreview::synthesize(
     constants.enable_depth_edge_stabilization = parameters.depth_edge_stabilization ? 1 : 0;
     constants.depth_edge_threshold = std::clamp(parameters.depth_edge_threshold, 0.0001f, 0.25f);
     constants.depth_edge_stabilization_strength = std::clamp(parameters.depth_edge_stabilization_strength, 0.0f, 1.0f);
+    constants.enable_spatial_repair = parameters.spatial_repair ? 1 : 0;
+    constants.show_spatial_repair_mask = parameters.spatial_repair && parameters.show_spatial_repair_mask ? 1 : 0;
+    constants.repair_residual_pixels = 1.5f;
+    constants.repair_depth_threshold = 0.01f;
     memcpy(m_constants_cpu, &constants, sizeof(constants));
 
     std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};

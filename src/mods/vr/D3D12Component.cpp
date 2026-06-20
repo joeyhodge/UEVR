@@ -837,7 +837,16 @@ bool D3D12Component::run_dibr_preview(
         .depth_edge_stabilization = vr->is_dibr_depth_edge_stabilization_enabled(),
         .depth_edge_threshold = vr->get_dibr_depth_edge_threshold(),
         .depth_edge_stabilization_strength = vr->get_dibr_depth_edge_stabilization_strength(),
+        .spatial_repair = vr->is_dibr_spatial_repair_enabled(),
+        .show_spatial_repair_mask = vr->is_dibr_spatial_repair_debug_mask_enabled(),
     };
+
+    if (parameters.spatial_repair) {
+        SPDLOG_INFO_ONCE("[DIBR] Current-frame depth-aware spatial repair enabled; no temporal history is retained");
+        if (parameters.show_spatial_repair_mask) {
+            SPDLOG_INFO_ONCE("[DIBR] Spatial repair diagnostic overlay enabled (red=repaired, amber=rejected)");
+        }
+    }
 
     // DIBR's first safety phase preserves the engine's two views, but its
     // synthesized right eye can still use the exact runtime projection pair.
