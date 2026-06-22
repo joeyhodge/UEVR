@@ -343,6 +343,9 @@ void DIBRPreview::set_depth_trace_expected_extent(uint32_t width, uint32_t heigh
         m_capture_success_logged = false;
         m_capture_failure_logged = false;
         m_capture_failure_reason.clear();
+        m_ue5_rdg_depth_capture_requested.store(
+            m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire),
+            std::memory_order_release);
         SPDLOG_INFO("[DIBR][RDG trace] presentation source is {}x{}; accepting matching full-size or per-eye DSV depth", width, height);
     }
 }
@@ -354,6 +357,7 @@ void DIBRPreview::set_ue5_rdg_depth_capture_enabled(bool enabled) {
     }
 
     if (!enabled) {
+        m_ue5_rdg_depth_capture_requested.store(false, std::memory_order_release);
         std::scoped_lock _{m_capture_mutex};
         m_captured_depth.Reset();
         m_captured_depth_width = 0;
@@ -367,7 +371,14 @@ void DIBRPreview::set_ue5_rdg_depth_capture_enabled(bool enabled) {
         return;
     }
 
-    SPDLOG_INFO("[DIBR][RDG capture] enabled; waiting for the verified DSV to become compute-readable");
+    m_ue5_rdg_depth_capture_requested.store(true, std::memory_order_release);
+    SPDLOG_INFO("[DIBR][RDG capture] enabled; pacing capture to one verified depth copy per DIBR frame");
+}
+
+void DIBRPreview::request_ue5_rdg_depth_capture() {
+    if (m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire)) {
+        m_ue5_rdg_depth_capture_requested.store(true, std::memory_order_release);
+    }
 }
 
 Microsoft::WRL::ComPtr<ID3D12Resource> DIBRPreview::captured_depth_snapshot() const {
@@ -437,6 +448,9 @@ void DIBRPreview::refresh_depth_trace_candidate_locked() {
 
     if (selected != previous && selected_candidate != nullptr) {
         m_depth_trace_candidate_array_slice.store(selected_candidate->array_slice, std::memory_order_release);
+        m_ue5_rdg_depth_capture_requested.store(
+            m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire),
+            std::memory_order_release);
         std::ostringstream summary{};
         summary << "selected DSV 0x" << std::hex << std::uppercase << selected << std::dec
                 << " for scene " << m_depth_trace_expected_width << "x" << m_depth_trace_expected_height
@@ -609,7 +623,8 @@ bool DIBRPreview::capture_depth_before_restore_locked(
     ID3D12GraphicsCommandList* command_list,
     ID3D12Resource* source,
     D3D12_RESOURCE_STATES source_state,
-    uint32_t source_array_slice)
+    uint32_t source_array_slice,
+    UINT source_transition_subresource)
 {
     if (command_list == nullptr || source == nullptr ||
         source_state != D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) {
@@ -632,6 +647,17 @@ bool DIBRPreview::capture_depth_before_restore_locked(
         return false;
     }
 
+    // The RDG depth capture only supports plane zero and one mip. Keep the
+    // D3D12 subresource calculation explicit so this code does not depend on
+    // D3DX helper headers being available in the injected build.
+    const auto source_subresource = static_cast<UINT>(source_array_slice * source_desc.MipLevels);
+    if (source_transition_subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES &&
+        source_transition_subresource != source_subresource)
+    {
+        m_capture_failure_reason = "selected DSV slice did not match the engine transition subresource";
+        return false;
+    }
+
     std::string allocation_reason{};
     if (!ensure_captured_depth_locked(device.Get(), source_desc, allocation_reason)) {
         m_capture_failure_reason = std::move(allocation_reason);
@@ -639,17 +665,19 @@ bool DIBRPreview::capture_depth_before_restore_locked(
     }
 
     // This is recorded immediately before the engine's NPSR -> DEPTH_WRITE
-    // transition. Source state is restored to the exact value expected by that
-    // original barrier, so the game sees no externally retained RDG resource.
+    // transition. UE5.7 can transition one array slice at a time, so preserve
+    // the original subresource exactly instead of changing both eyes' state.
+    // The source state is restored before the original barrier runs.
     D3D12_RESOURCE_BARRIER barriers[2]{};
     for (auto& barrier : barriers) {
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-        barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     }
     barriers[0].Transition.pResource = source;
+    barriers[0].Transition.Subresource = source_transition_subresource;
     barriers[0].Transition.StateBefore = source_state;
     barriers[0].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
     barriers[1].Transition.pResource = m_captured_depth.Get();
+    barriers[1].Transition.Subresource = 0;
     barriers[1].Transition.StateBefore = CAPTURED_DEPTH_SHADER_READ;
     barriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
     command_list->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
@@ -657,7 +685,7 @@ bool DIBRPreview::capture_depth_before_restore_locked(
     D3D12_TEXTURE_COPY_LOCATION source_location{};
     source_location.pResource = source;
     source_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-    source_location.SubresourceIndex = source_array_slice * source_desc.MipLevels;
+    source_location.SubresourceIndex = source_subresource;
     D3D12_TEXTURE_COPY_LOCATION destination_location{};
     destination_location.pResource = m_captured_depth.Get();
     destination_location.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -683,6 +711,17 @@ void DIBRPreview::on_resource_barriers(
         return;
     }
 
+    // The DSV selection happens when its descriptor is created. ResourceBarrier
+    // is a renderer hot path, so do not take the diagnostic map lock for every
+    // unrelated transition. A selected candidate is already compatibility-checked.
+    const auto candidate = m_depth_trace_candidate.load(std::memory_order_acquire);
+    if (candidate == 0) {
+        return;
+    }
+
+    const auto capture_enabled = m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire);
+    const auto candidate_slice = m_depth_trace_candidate_array_slice.load(std::memory_order_acquire);
+
     for (UINT i = 0; i < count; ++i) {
         const auto& barrier = barriers[i];
         if (barrier.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION) {
@@ -690,21 +729,7 @@ void DIBRPreview::on_resource_barriers(
         }
 
         const auto resource_key = reinterpret_cast<uintptr_t>(barrier.Transition.pResource);
-        const auto capture_enabled = m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire);
-        const auto candidate = m_depth_trace_candidate.load(std::memory_order_acquire);
-        bool compatible{};
-        uint32_t candidate_slice{};
-        {
-            std::scoped_lock _{m_status_mutex};
-            compatible = is_trace_candidate_compatible_locked(resource_key);
-            if (resource_key == candidate) {
-                candidate_slice = m_depth_trace_candidate_array_slice.load(std::memory_order_acquire);
-            } else if (const auto it = m_traced_depth_resources.find(resource_key); it != m_traced_depth_resources.end()) {
-                candidate_slice = it->second.array_slice;
-            }
-        }
-
-        if (!compatible || (!capture_enabled && resource_key != candidate)) {
+        if (resource_key != candidate) {
             continue;
         }
 
@@ -716,6 +741,28 @@ void DIBRPreview::on_resource_barriers(
             barrier.Transition.StateAfter == D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
         if (capture_enabled && closing_capture_window) {
+            const auto source_desc = barrier.Transition.pResource->GetDesc();
+            if (candidate_slice >= source_desc.DepthOrArraySize) {
+                continue;
+            }
+
+            const auto selected_subresource = static_cast<UINT>(candidate_slice * source_desc.MipLevels);
+            if (barrier.Transition.Subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES &&
+                barrier.Transition.Subresource != selected_subresource)
+            {
+                // The selected eye was not the one the engine is about to
+                // overwrite. Leave its state entirely to the game.
+                continue;
+            }
+
+            // UE5.7 can cycle the same RDG depth resource through several
+            // shader-read/write windows before Present. Each capture is a full
+            // depth copy plus four barriers, so keep only the next window the
+            // DIBR consumer explicitly requested.
+            if (!m_ue5_rdg_depth_capture_requested.exchange(false, std::memory_order_acq_rel)) {
+                continue;
+            }
+
             bool captured{};
             uint64_t generation{};
             bool log_success{};
@@ -727,7 +774,8 @@ void DIBRPreview::on_resource_barriers(
                     command_list,
                     barrier.Transition.pResource,
                     before,
-                    candidate_slice);
+                    candidate_slice,
+                    barrier.Transition.Subresource);
                 generation = m_captured_depth_generation;
                 if (captured && !m_capture_success_logged) {
                     m_capture_success_logged = true;
@@ -755,6 +803,13 @@ void DIBRPreview::on_resource_barriers(
                 SPDLOG_WARN(
                     "[DIBR][RDG capture] verified depth window could not be copied; reason={}; falling back to the normal scene path",
                     capture_failure);
+            }
+
+            // Do not permanently lose the first capture because a resource
+            // resize or transient command-list failure made this window
+            // unsuitable. A later verified transition may still be valid.
+            if (!captured) {
+                m_ue5_rdg_depth_capture_requested.store(true, std::memory_order_release);
             }
             continue;
         }
@@ -832,6 +887,7 @@ void DIBRPreview::reset() {
     m_depth_trace_candidate_array_slice.store(0, std::memory_order_release);
     m_depth_trace_last_state.store(D3D12_RESOURCE_STATE_COMMON, std::memory_order_release);
     m_ue5_rdg_depth_capture_enabled.store(false, std::memory_order_release);
+    m_ue5_rdg_depth_capture_requested.store(false, std::memory_order_release);
     m_status.store(Status::Idle, std::memory_order_release);
 }
 
