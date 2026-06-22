@@ -100,8 +100,11 @@ constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
 constexpr auto AVOWED_NATIVE_FIX_TRANSITION_HOLD = std::chrono::seconds(10);
 constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_HOLD = std::chrono::milliseconds(1500);
 constexpr auto AVOWED_NATIVE_FIX_FAST_REACQUIRE_MAX_MISSING = std::chrono::seconds(60);
-constexpr uint32_t DIBR_SINGLE_VIEW_WARMUP_FRAMES = 60;
-constexpr uint32_t DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES = 60;
+// DIBR is explicitly opt-in and still falls back immediately when its output
+// stops being valid. A short verified warmup avoids keeping slow UE5.7 titles
+// in the expensive two-view preview path long enough to prevent activation.
+constexpr uint32_t DIBR_SINGLE_VIEW_WARMUP_FRAMES = 3;
+constexpr uint32_t DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES = 3;
 constexpr uint32_t DIBR_SINGLE_VIEW_MAX_CONSECUTIVE_FAILURES = 3;
 
 enum DIBRSingleViewStatus : uint32_t {
@@ -8054,6 +8057,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_hook->m_dibr_single_view_latched_generation = 0;
         g_hook->m_dibr_single_view_family = 0;
         g_hook->m_dibr_single_view_target = 0;
+        g_hook->m_dibr_single_view_scene = 0;
         g_hook->m_dibr_single_view_stable_frames = 0;
         g_hook->m_dibr_single_view_failure_frames = 0;
         g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
@@ -8079,7 +8083,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     struct TArrayViewViewFamily {
         sdk::FSceneViewFamily** data;
-        uint32_t count;
+        int32_t count;
     };
 
     if (view_family_candidate == nullptr || IsBadReadPtr(view_family_candidate, sizeof(void*))) {
@@ -8155,6 +8159,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             g_hook->m_dibr_single_view_latched_generation = 0;
             g_hook->m_dibr_single_view_family = 0;
             g_hook->m_dibr_single_view_target = 0;
+            g_hook->m_dibr_single_view_scene = 0;
             g_hook->m_dibr_single_view_stable_frames = 0;
             g_hook->m_dibr_single_view_failure_frames = 0;
             g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
@@ -8209,17 +8214,28 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
         const auto family_address = reinterpret_cast<uintptr_t>(view_family);
         const auto target_address = reinterpret_cast<uintptr_t>(view_family_target);
-        if (g_hook->m_dibr_single_view_family != family_address ||
-            g_hook->m_dibr_single_view_target != target_address)
+        const auto scene_address = reinterpret_cast<uintptr_t>(view_family->get_scene_interface());
+
+        // UE5.7 commonly constructs a new FSceneViewFamily every frame. The
+        // main viewport and scene interface are the persistent identities; a
+        // fresh family allocation alone must not hold DIBR in two-view fallback
+        // forever. The structural validation above still runs every call.
+        if (g_hook->m_dibr_single_view_target != target_address ||
+            g_hook->m_dibr_single_view_scene != scene_address)
         {
             g_hook->m_dibr_single_view_family = family_address;
             g_hook->m_dibr_single_view_target = target_address;
+            g_hook->m_dibr_single_view_scene = scene_address;
             g_hook->m_dibr_single_view_stable_frames = 1;
             g_hook->m_dibr_single_view_failure_frames = 0;
-            set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "main view family changed");
+            set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "main viewport or scene changed");
             call_two_view_fallback();
             return;
         }
+
+        // Retain the latest pointer for diagnostics only. It is intentionally
+        // not a stability key on UE5 where the family can be frame-local.
+        g_hook->m_dibr_single_view_family = family_address;
 
         if (g_hook->m_dibr_single_view_stable_frames < DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES) {
             ++g_hook->m_dibr_single_view_stable_frames;

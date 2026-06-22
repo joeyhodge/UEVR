@@ -793,6 +793,7 @@ private:
     uint64_t m_dibr_single_view_latched_generation{};
     uintptr_t m_dibr_single_view_family{};
     uintptr_t m_dibr_single_view_target{};
+    uintptr_t m_dibr_single_view_scene{};
     uint32_t m_dibr_single_view_stable_frames{};
     uint32_t m_dibr_single_view_failure_frames{};
 

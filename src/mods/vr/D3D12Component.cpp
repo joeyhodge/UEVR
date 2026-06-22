@@ -970,11 +970,13 @@ void D3D12Component::note_dibr_single_view_preview_result(bool success, const D3
 
     const auto width = static_cast<uint32_t>(std::min<uint64_t>(source_desc->Width, std::numeric_limits<uint32_t>::max()));
     const auto height = source_desc->Height;
+    // A DIBR resource generation is about output geometry, not the exact DXGI
+    // alias used by this frame. UE5.7 can alternate compatible typeless/typed
+    // scene-color aliases without changing the image layout; preview success
+    // still validates the actual resource before single-view is considered.
     const auto signature =
-        (static_cast<uint64_t>(width) << 32) ^
-        static_cast<uint64_t>(height) ^
-        (static_cast<uint64_t>(source_desc->Format) << 48) ^
-        (static_cast<uint64_t>(source_desc->SampleDesc.Count) << 56);
+        (static_cast<uint64_t>(width) << 32) |
+        static_cast<uint64_t>(height);
     const auto previous_signature = m_dibr_single_view_source_signature.exchange(signature, std::memory_order_acq_rel);
 
     if (previous_signature != 0 && previous_signature != signature) {
@@ -1881,6 +1883,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (dibr_preview_succeeded) {
+        // The UE5 RDG observer captures before the engine overwrites the next
+        // scene depth. Re-arm exactly once after consuming this snapshot rather
+        // than copying every matching RDG transition in the current frame.
+        if (dibr_uses_ue5_rdg_capture) {
+            m_dibr_depth_capture.request_ue5_rdg_depth_capture();
+        }
         if (m_dibr_active_present_tex != nullptr) {
             backbuffer = m_dibr_active_present_tex->texture;
         }

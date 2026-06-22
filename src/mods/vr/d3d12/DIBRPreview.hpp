@@ -70,6 +70,10 @@ public:
 
     void set_depth_trace_expected_extent(uint32_t width, uint32_t height);
     void set_ue5_rdg_depth_capture_enabled(bool enabled);
+    // UE5 RDG can present several matching depth transitions inside one frame.
+    // Capture only the next verified window; the DIBR consumer re-arms this
+    // after it has used the snapshot for a synthesized frame.
+    void request_ue5_rdg_depth_capture();
 
     void on_depth_stencil_view_created(
         ID3D12Resource* resource,
@@ -130,7 +134,8 @@ private:
         ID3D12GraphicsCommandList* command_list,
         ID3D12Resource* source,
         D3D12_RESOURCE_STATES source_state,
-        uint32_t source_array_slice);
+        uint32_t source_array_slice,
+        UINT source_transition_subresource);
     bool ensure_captured_depth_locked(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc, std::string& reason);
     bool is_trace_candidate_compatible_locked(uintptr_t resource) const;
     void fail(std::string reason);
@@ -163,6 +168,7 @@ private:
     std::atomic<uint32_t> m_depth_trace_candidate_array_slice{};
     std::atomic<uint32_t> m_depth_trace_last_state{D3D12_RESOURCE_STATE_COMMON};
     std::atomic<bool> m_ue5_rdg_depth_capture_enabled{false};
+    std::atomic<bool> m_ue5_rdg_depth_capture_requested{false};
     mutable std::mutex m_capture_mutex{};
     ComPtr m_captured_depth{};
     uint64_t m_captured_depth_width{};
