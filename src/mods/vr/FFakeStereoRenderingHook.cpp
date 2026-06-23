@@ -8040,6 +8040,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     auto& vr = VR::get();
     auto rtm = g_hook->get_render_target_manager();
     const auto dibr_single_view_requested = vr->is_dibr_single_view_requested();
+    // Never suppress the engine's second view until the DIBR presentation path
+    // itself is eligible. A stale Native Stereo Fix or compatibility toggle must
+    // leave the renderer on its normal path rather than create a hybrid frame.
+    const auto dibr_single_view_eligible = dibr_single_view_requested && vr->is_dibr_preview_active();
     const auto native_stereo_fix_enabled = vr->is_native_stereo_fix_enabled();
 
     const auto reset_dibr_single_view_state = [&]() {
@@ -8055,16 +8059,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_hook->m_dibr_single_view_fallback_frames.store(0, std::memory_order_release);
     };
 
-    if (!dibr_single_view_requested &&
+    if (!dibr_single_view_eligible &&
         (g_hook->m_dibr_single_view_status.load(std::memory_order_acquire) != DIBR_SINGLE_VIEW_DISABLED ||
             g_hook->m_dibr_single_view_generation != 0))
     {
         reset_dibr_single_view_state();
     }
 
-    if (!vr->is_hmd_active() || (!native_stereo_fix_enabled && !dibr_single_view_requested)) {
+    if (!vr->is_hmd_active() || (!native_stereo_fix_enabled && !dibr_single_view_eligible)) {
         avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
-        if (!dibr_single_view_requested) {
+        if (!dibr_single_view_eligible) {
             rtm->destroy_scene_capture();
         }
 
@@ -8087,7 +8091,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     if (uses_tarrayview &&
         (ue5_view_family_array->data == nullptr ||
-            (dibr_single_view_requested &&
+            (dibr_single_view_eligible &&
                 (ue5_view_family_array->count != 1 ||
                     IsBadReadPtr(ue5_view_family_array->data, sizeof(sdk::FSceneViewFamily*))))))
     {
@@ -8118,7 +8122,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             "BeginRenderingViewFamily RenderTarget");
     }
 
-    if (dibr_single_view_requested) {
+    if (dibr_single_view_eligible) {
         const auto set_dibr_status = [&](uint32_t status, const char* detail) {
             const auto previous = g_hook->m_dibr_single_view_status.exchange(status, std::memory_order_acq_rel);
             if (previous != status) {

@@ -12042,6 +12042,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             if (ImGui::TreeNode(dibr_single_view ?
                     "Synthetic Stereo (DIBR Single View, Experimental)" :
                     "Synthetic Stereo (DIBR, Experimental)")) {
+                ImGui::TextWrapped(
+                    "Requirement: disable Native Stereo Fix and Same Stereo Pass before using DIBR. "
+                    "DIBR is intentionally isolated and never combines with Native Stereo Fix.");
                 m_dibr_disparity_pixels->draw("Disparity (Pixels)");
                 m_dibr_reprojection_strength->draw("True Reprojection Strength");
                 m_dibr_reversed_depth->draw("Use Reversed-Z Depth");
