@@ -7941,6 +7941,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             "The debug overlay is mirrored in both eyes: red = repaired, amber = rejected candidate.");
                     }
 
+                    if (dibr_single_view) {
+                        m_dibr_single_view_ui_edge_guard->draw("Stabilize UI Alpha Edges (Experimental)");
+                        if (m_dibr_single_view_ui_edge_guard->value()) {
+                            m_dibr_single_view_ui_edge_guard_debug_mask->draw("Show UI Alpha Edge Mask");
+                            ImGui::TextWrapped(
+                                "Single-view DIBR only: captures the submitted UI alpha into an isolated texture and blends only "
+                                "the 2-pixel scene transition band toward the stable left-eye scene. UI pixels, UI alpha, "
+                                "normal DIBR, Native, Synced, AFR, and OpenXR alpha behavior are unchanged.");
+                        }
+                    }
+
                     if (ImGui::TreeNode("Legacy fallback tuning")) {
                         m_dibr_legacy_depth_curve->draw("Legacy Depth Response Curve");
                         m_dibr_legacy_near_depth_cap->draw("Legacy Near-Depth Cap");

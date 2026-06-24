@@ -41,6 +41,11 @@ public:
         // engine's view count; it repairs only low-confidence synthetic pixels.
         bool spatial_repair{};
         bool show_spatial_repair_mask{};
+        // Single-view DIBR can optionally stabilize the synthesized scene only
+        // under a narrow UI-alpha boundary. The submitted UI texture itself is
+        // never sampled for color or modified by this path.
+        bool ui_edge_guard{};
+        bool show_ui_edge_guard_mask{};
     };
 
     ~DIBRPreview();
@@ -55,6 +60,7 @@ public:
         D3D12_RESOURCE_STATES color_state,
         ID3D12Resource* depth,
         D3D12_RESOURCE_STATES depth_state,
+        ID3D12Resource* ui_alpha,
         Parameters parameters);
 
     void reset();
@@ -117,7 +123,10 @@ private:
         uint32_t show_spatial_repair_mask{};
         float repair_residual_pixels{1.5f};
         float repair_depth_threshold{0.01f};
-        float padding[27]{};
+        uint32_t enable_ui_edge_guard{};
+        uint32_t show_ui_edge_guard_mask{};
+        float ui_edge_guard_strength{0.75f};
+        float padding[24]{};
     };
     static_assert(sizeof(Constants) == 256, "DIBR constants must remain one CBV-aligned block");
 
@@ -129,7 +138,7 @@ private:
         ID3D12Resource* color,
         D3D12_RESOURCE_STATES color_state);
     bool validate_inputs(ID3D12Resource* color, ID3D12Resource* depth, std::string& reason) const;
-    bool create_descriptors(ID3D12Device* device, ID3D12Resource* depth);
+    bool create_descriptors(ID3D12Device* device, ID3D12Resource* depth, ID3D12Resource* ui_alpha);
     bool capture_depth_before_restore_locked(
         ID3D12GraphicsCommandList* command_list,
         ID3D12Resource* source,

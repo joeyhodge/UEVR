@@ -43,6 +43,22 @@ constexpr auto FRAME_TIMING_LOG_INTERVAL = std::chrono::seconds(5);
 constexpr bool SHF_AUTO_MONO_CINEMATIC = true;
 constexpr bool SHF_AUTO_2D_SCREEN_FROM_MONO_CINEMATIC = true;
 
+bool dibr_ui_alpha_format_supported(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_R16G16B16A16_UNORM:
+        return true;
+    default:
+        return false;
+    }
+}
+
 enum SwapchainRecreateReason : uint32_t {
     SWAPCHAIN_RECREATE_NONE = 0,
     SWAPCHAIN_RECREATE_HMD_RESOLUTION = 1 << 0,
@@ -760,6 +776,103 @@ bool D3D12Component::ensure_dibr_present_texture(
     return true;
 }
 
+bool D3D12Component::capture_dibr_ui_alpha_snapshot(
+    ID3D12Device* device,
+    d3d12::CommandContext& commands,
+    ID3D12Resource* submitted_ui_texture)
+{
+    if (device == nullptr || submitted_ui_texture == nullptr) {
+        return false;
+    }
+
+    const auto source_desc = submitted_ui_texture->GetDesc();
+    const auto valid_source =
+        source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        source_desc.Width > 0 && source_desc.Width <= 32768 &&
+        source_desc.Height > 0 && source_desc.Height <= 32768 &&
+        source_desc.DepthOrArraySize == 1 &&
+        source_desc.MipLevels == 1 &&
+        source_desc.SampleDesc.Count == 1 &&
+        (source_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0 &&
+        dibr_ui_alpha_format_supported(source_desc.Format);
+    if (!valid_source) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DIBR][UI edge guard] Skipping UI alpha capture for unsupported UI target {}x{} fmt={} samples={} array={} mips={} flags=0x{:X}",
+            source_desc.Width,
+            source_desc.Height,
+            static_cast<uint32_t>(source_desc.Format),
+            source_desc.SampleDesc.Count,
+            source_desc.DepthOrArraySize,
+            source_desc.MipLevels,
+            static_cast<uint32_t>(source_desc.Flags));
+        return false;
+    }
+
+    const auto snapshot_matches =
+        m_dibr_ui_alpha_snapshot != nullptr &&
+        m_dibr_ui_alpha_snapshot_width == source_desc.Width &&
+        m_dibr_ui_alpha_snapshot_height == source_desc.Height &&
+        m_dibr_ui_alpha_snapshot_format == source_desc.Format;
+    if (!snapshot_matches) {
+        if (m_dibr_ui_alpha_snapshot != nullptr) {
+            m_dibr_retired_ui_alpha_snapshots.emplace_back(std::move(m_dibr_ui_alpha_snapshot));
+        }
+        m_dibr_ui_alpha_snapshot_width = 0;
+        m_dibr_ui_alpha_snapshot_height = 0;
+        m_dibr_ui_alpha_snapshot_format = DXGI_FORMAT_UNKNOWN;
+
+        D3D12_HEAP_PROPERTIES heap_props{};
+        heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+        auto snapshot_desc = source_desc;
+        snapshot_desc.Flags &= ~(
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET |
+            D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL |
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS |
+            D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE);
+        snapshot_desc.Alignment = 0;
+
+        ComPtr<ID3D12Resource> snapshot{};
+        const auto result = device->CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &snapshot_desc,
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            nullptr,
+            IID_PPV_ARGS(&snapshot));
+        if (FAILED(result) || snapshot == nullptr) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[DIBR][UI edge guard] Could not allocate isolated UI alpha snapshot: 0x{:08X}",
+                static_cast<uint32_t>(result));
+            return false;
+        }
+
+        snapshot->SetName(L"DIBR Single View UI Alpha Snapshot");
+        m_dibr_ui_alpha_snapshot = std::move(snapshot);
+        m_dibr_ui_alpha_snapshot_width = source_desc.Width;
+        m_dibr_ui_alpha_snapshot_height = source_desc.Height;
+        m_dibr_ui_alpha_snapshot_format = source_desc.Format;
+        SPDLOG_INFO(
+            "[DIBR][UI edge guard] Created isolated UI alpha snapshot {}x{} format={}",
+            m_dibr_ui_alpha_snapshot_width,
+            m_dibr_ui_alpha_snapshot_height,
+            static_cast<uint32_t>(m_dibr_ui_alpha_snapshot_format));
+    }
+
+    // This is recorded after the ordinary OpenXR UI copy, so the snapshot is
+    // exact submitted UI alpha. The OpenXR texture returns to RENDER_TARGET;
+    // only the DIBR-owned copy stays shader-readable for the later synthesis.
+    commands.copy(
+        submitted_ui_texture,
+        m_dibr_ui_alpha_snapshot.Get(),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    m_dibr_ui_alpha_captured_this_frame = true;
+    return true;
+}
+
 bool D3D12Component::run_dibr_preview(
     VR* vr,
     ID3D12Device* device,
@@ -823,12 +936,24 @@ bool D3D12Component::run_dibr_preview(
         .depth_edge_stabilization_strength = vr->get_dibr_depth_edge_stabilization_strength(),
         .spatial_repair = vr->is_dibr_spatial_repair_enabled(),
         .show_spatial_repair_mask = vr->is_dibr_spatial_repair_debug_mask_enabled(),
+        .ui_edge_guard = vr->is_dibr_single_view_ui_edge_guard_enabled() &&
+            m_dibr_ui_alpha_captured_this_frame && m_dibr_ui_alpha_snapshot != nullptr,
+        .show_ui_edge_guard_mask = vr->is_dibr_single_view_ui_edge_guard_debug_mask_enabled() &&
+            m_dibr_ui_alpha_captured_this_frame && m_dibr_ui_alpha_snapshot != nullptr,
     };
 
     if (parameters.spatial_repair) {
         SPDLOG_INFO_ONCE("[DIBR] Current-frame depth-aware spatial repair enabled; no temporal history is retained");
         if (parameters.show_spatial_repair_mask) {
             SPDLOG_INFO_ONCE("[DIBR] Spatial repair diagnostic overlay enabled (red=repaired, amber=rejected)");
+        }
+    }
+
+    if (parameters.ui_edge_guard) {
+        SPDLOG_INFO_ONCE(
+            "[DIBR][UI edge guard] Active for DIBR Single View only; a 2-pixel submitted-UI alpha transition band is stabilized against the left scene");
+        if (parameters.show_ui_edge_guard_mask) {
+            SPDLOG_INFO_ONCE("[DIBR][UI edge guard] Diagnostic mask enabled (cyan = UI alpha transition band)");
         }
     }
 
@@ -884,6 +1009,7 @@ bool D3D12Component::run_dibr_preview(
             scene_color_state,
             scene_depth,
             scene_depth_state,
+            parameters.ui_edge_guard ? m_dibr_ui_alpha_snapshot.Get() : nullptr,
             parameters)) {
         return false;
     }
@@ -1015,6 +1141,12 @@ void D3D12Component::reset_dibr_preview() {
     m_dibr_depth_capture.reset();
     m_dibr_slot_cursor = 0;
     m_dibr_active_present_tex = nullptr;
+    m_dibr_ui_alpha_snapshot.Reset();
+    m_dibr_retired_ui_alpha_snapshots.clear();
+    m_dibr_ui_alpha_snapshot_width = 0;
+    m_dibr_ui_alpha_snapshot_height = 0;
+    m_dibr_ui_alpha_snapshot_format = DXGI_FORMAT_UNKNOWN;
+    m_dibr_ui_alpha_captured_this_frame = false;
     m_dibr_single_view_source_signature.store(0, std::memory_order_release);
     m_dibr_single_view_ready_frames.store(0, std::memory_order_release);
     m_dibr_single_view_source_width.store(0, std::memory_order_release);
@@ -1032,6 +1164,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }};
 
     m_last_on_frame = std::chrono::steady_clock::now();
+    // Never use a prior UI snapshot if this frame did not submit a fresh UI
+    // swapchain image. The optional edge guard simply skips that frame.
+    m_dibr_ui_alpha_captured_this_frame = false;
     bool defer_stalker2_transition_openxr = false;
 
     auto close_openxr_setup_failure_frame = [&]() {
@@ -1493,6 +1628,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         vr->is_dibr_single_view_projection_configured() &&
         vr->m_desktop_fix->value() &&
         !use_2d_screen;
+    const auto capture_dibr_single_view_ui_alpha =
+        vr->is_dibr_single_view_ui_edge_guard_enabled() &&
+        !use_2d_screen;
 
     if (shf_auto_2d_screen) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -1771,7 +1909,29 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, clear_rt, ENGINE_SRC_COLOR);
                     }
                 } else if (ui_target != nullptr) {
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, (ID3D12Resource*)ui_target->get_native_resource(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
+                    if (capture_dibr_single_view_ui_alpha) {
+                        m_openxr.copy(
+                            (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
+                            (ID3D12Resource*)ui_target->get_native_resource(),
+                            draw_2d_view,
+                            clear_rt,
+                            ENGINE_SRC_COLOR,
+                            nullptr,
+                            [this, device](d3d12::CommandContext& commands, ID3D12Resource* submitted_ui_texture) {
+                                // The normal UI copy is complete at this point.
+                                // Keep a private alpha source for DIBR only;
+                                // the original UI swapchain content and state
+                                // are restored before OpenXR receives it.
+                                capture_dibr_ui_alpha_snapshot(device, commands, submitted_ui_texture);
+                            });
+                    } else {
+                        m_openxr.copy(
+                            (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
+                            (ID3D12Resource*)ui_target->get_native_resource(),
+                            draw_2d_view,
+                            clear_rt,
+                            ENGINE_SRC_COLOR);
+                    }
                 }
 
                 auto fw_rt = g_framework->get_rendertarget_d3d12();
@@ -3803,7 +3963,8 @@ void D3D12Component::OpenXR::copy(
     std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands,
     std::optional<std::function<void(d3d12::CommandContext&)>> additional_commands,
     D3D12_RESOURCE_STATES src_state,
-    D3D12_BOX* src_box)
+    D3D12_BOX* src_box,
+    std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands)
 {
     std::scoped_lock _{this->mtx};
 
@@ -3929,6 +4090,10 @@ void D3D12Component::OpenXR::copy(
 
     if (additional_commands) {
         (*additional_commands)(texture_ctx->commands);
+    }
+
+    if (post_copy_commands) {
+        (*post_copy_commands)(texture_ctx->commands, ctx.textures[texture_index].texture);
     }
 
     texture_ctx->commands.execute();

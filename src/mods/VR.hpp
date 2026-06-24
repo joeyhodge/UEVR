@@ -770,6 +770,19 @@ public:
         return is_dibr_spatial_repair_enabled() && m_dibr_spatial_repair_debug_mask->value();
     }
 
+    // This narrow quality pass is valid only after the guarded one-view path
+    // is live. Two-view DIBR and every non-DIBR rendering method stay exactly
+    // on their existing paths.
+    bool is_dibr_single_view_ui_edge_guard_enabled() const {
+        return is_dibr_single_view_projection_configured() &&
+            m_dibr_single_view_ui_edge_guard->value();
+    }
+
+    bool is_dibr_single_view_ui_edge_guard_debug_mask_enabled() const {
+        return is_dibr_single_view_ui_edge_guard_enabled() &&
+            m_dibr_single_view_ui_edge_guard_debug_mask->value();
+    }
+
     bool is_dibr_reversed_depth_enabled() const {
         return m_dibr_reversed_depth->value();
     }
@@ -1446,6 +1459,8 @@ private:
     const ModSlider::Ptr m_dibr_depth_edge_stabilization_strength{ ModSlider::create(generate_name("DIBRDepthEdgeStabilizationStrength"), 0.0f, 1.0f, 0.75f) };
     const ModToggle::Ptr m_dibr_spatial_repair{ ModToggle::create(generate_name("DIBRSpatialRepair"), false) };
     const ModToggle::Ptr m_dibr_spatial_repair_debug_mask{ ModToggle::create(generate_name("DIBRSpatialRepairDebugMask"), false) };
+    const ModToggle::Ptr m_dibr_single_view_ui_edge_guard{ ModToggle::create(generate_name("DIBRSingleViewUIEdgeGuard"), false) };
+    const ModToggle::Ptr m_dibr_single_view_ui_edge_guard_debug_mask{ ModToggle::create(generate_name("DIBRSingleViewUIEdgeGuardDebugMask"), false) };
     const ModToggle::Ptr m_dibr_reversed_depth{ ModToggle::create(generate_name("DIBRReversedDepth"), true) };
     const ModToggle::Ptr m_dibr_ue5_rdg_depth_capture{ ModToggle::create(generate_name("DIBRUE5RDGDepthCapture"), false) };
 
@@ -1798,6 +1813,8 @@ public:
             *m_dibr_depth_edge_stabilization_strength,
             *m_dibr_spatial_repair,
             *m_dibr_spatial_repair_debug_mask,
+            *m_dibr_single_view_ui_edge_guard,
+            *m_dibr_single_view_ui_edge_guard_debug_mask,
             *m_dibr_reversed_depth,
             *m_dibr_ue5_rdg_depth_capture,
             *m_snapturn,
