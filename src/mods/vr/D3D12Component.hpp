@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <optional>
+#include <vector>
 
 #include <d3d12.h>
 #include <dxgi.h>
@@ -148,6 +149,10 @@ private:
         ID3D12Resource* scene_depth,
         D3D12_RESOURCE_STATES scene_depth_state);
     bool ensure_dibr_present_texture(d3d12::TextureContext& texture, ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    bool capture_dibr_ui_alpha_snapshot(
+        ID3D12Device* device,
+        d3d12::CommandContext& commands,
+        ID3D12Resource* submitted_ui_texture);
     void reset_dibr_preview();
     void note_dibr_single_view_preview_result(bool success, const D3D12_RESOURCE_DESC* source_desc = nullptr);
 
@@ -212,6 +217,17 @@ private:
     std::array<DIBRFrameSlot, DIBR_FRAME_SLOT_COUNT> m_dibr_slots{};
     uint32_t m_dibr_slot_cursor{};
     d3d12::TextureContext* m_dibr_active_present_tex{};
+    // Owned copy of the OpenXR UI swapchain image. It exists solely for the
+    // opt-in DIBR Single View UI-edge guard and is never submitted or rendered
+    // back into the UI path.
+    ComPtr<ID3D12Resource> m_dibr_ui_alpha_snapshot{};
+    // A resize can replace the snapshot while an older DIBR command list is
+    // still queued. Retain replaced resources until the DIBR ring is drained.
+    std::vector<ComPtr<ID3D12Resource>> m_dibr_retired_ui_alpha_snapshots{};
+    uint64_t m_dibr_ui_alpha_snapshot_width{};
+    uint32_t m_dibr_ui_alpha_snapshot_height{};
+    DXGI_FORMAT m_dibr_ui_alpha_snapshot_format{DXGI_FORMAT_UNKNOWN};
+    bool m_dibr_ui_alpha_captured_this_frame{};
     std::atomic<uint64_t> m_dibr_single_view_generation{1};
     std::atomic<uint64_t> m_dibr_single_view_source_signature{};
     std::atomic<uint32_t> m_dibr_single_view_ready_frames{};
@@ -329,7 +345,9 @@ private:
         void copy(uint32_t swapchain_idx, ID3D12Resource* src,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands = std::nullopt,
             std::optional<std::function<void(d3d12::CommandContext&)>> additional_commands = std::nullopt,
-            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr);
+            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_BOX* src_box = nullptr,
+            std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands = std::nullopt);
 
         void copy(uint32_t swapchain_idx, ID3D12Resource* src,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr)

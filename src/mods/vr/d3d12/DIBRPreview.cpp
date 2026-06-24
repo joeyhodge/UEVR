@@ -34,10 +34,14 @@ cbuffer DIBRConstants : register(b0) {
     uint ShowSpatialRepairMask;
     float RepairResidualPixels;
     float RepairDepthThreshold;
+    uint EnableUiEdgeGuard;
+    uint ShowUiEdgeGuardMask;
+    float UiEdgeGuardStrength;
 };
 
 Texture2D<float4> SourceColor : register(t0);
 Texture2D<float> SourceDepth : register(t1);
+Texture2D<float4> UIAlpha : register(t2);
 RWTexture2D<float4> Output : register(u0);
 SamplerState LinearClamp : register(s0);
 
@@ -186,6 +190,53 @@ float4 ApplySpatialRepairMask(float4 color, uint repair_state) {
     return color;
 }
 
+float UIAlphaEdgeMask(float2 uv) {
+    if (EnableUiEdgeGuard == 0) {
+        return 0.0f;
+    }
+
+    uint width = 0;
+    uint height = 0;
+    UIAlpha.GetDimensions(width, height);
+    if (width == 0 || height == 0) {
+        return 0.0f;
+    }
+
+    const int2 max_coord = int2((int)width - 1, (int)height - 1);
+    const int2 center = clamp(
+        int2(uv * float2((float)width, (float)height)),
+        int2(0, 0),
+        max_coord);
+
+    // A two-pixel Manhattan dilation is deliberately sparse: nine alpha
+    // loads instead of a 5x5 filter. It still catches horizontal, vertical,
+    // and antialiased UI edges while keeping this optional compute pass light.
+    const float center_alpha = saturate(UIAlpha.Load(int3(center, 0)).a);
+    float min_alpha = center_alpha;
+    float max_alpha = center_alpha;
+    [unroll]
+    for (int step = 1; step <= 2; ++step) {
+        const int2 horizontal = int2(step, 0);
+        const int2 vertical = int2(0, step);
+        const float left = saturate(UIAlpha.Load(int3(clamp(center - horizontal, int2(0, 0), max_coord), 0)).a);
+        const float right = saturate(UIAlpha.Load(int3(clamp(center + horizontal, int2(0, 0), max_coord), 0)).a);
+        const float up = saturate(UIAlpha.Load(int3(clamp(center - vertical, int2(0, 0), max_coord), 0)).a);
+        const float down = saturate(UIAlpha.Load(int3(clamp(center + vertical, int2(0, 0), max_coord), 0)).a);
+        min_alpha = min(min_alpha, min(min(left, right), min(up, down)));
+        max_alpha = max(max_alpha, max(max(left, right), max(up, down)));
+    }
+
+    const float has_ui = smoothstep(0.01f, 0.12f, max_alpha);
+    const float is_not_ui_interior = 1.0f - smoothstep(0.98f, 0.999f, min_alpha);
+    const float transition = smoothstep(0.005f, 0.12f, max_alpha - min_alpha);
+    return saturate(has_ui * is_not_ui_interior * transition);
+}
+
+float4 ApplyUIAlphaEdgeMask(float4 color, float edge_mask) {
+    color.rgb = lerp(color.rgb, float3(0.05f, 0.90f, 1.0f), 0.60f * edge_mask);
+    return color;
+}
+
 [numthreads(8, 8, 1)]
 void main(uint3 dispatch_id : SV_DispatchThreadID) {
     if (dispatch_id.x >= OutputWidth || dispatch_id.y >= OutputHeight || SourceEyeWidth == 0) {
@@ -241,6 +292,26 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
     float4 output_color = SourceColor.SampleLevel(LinearClamp, source_uv, 0);
     if (EnableSpatialRepair != 0 && ShowSpatialRepairMask != 0) {
         output_color = ApplySpatialRepairMask(output_color, repair_state);
+    }
+
+    // The normal pass computes the mask only for the synthesized eye. The
+    // debug overlay additionally mirrors it into the left eye for comfort.
+    const float ui_edge_mask = (target_right || ShowUiEdgeGuardMask != 0) ? UIAlphaEdgeMask(target_uv) : 0.0f;
+    if (target_right && ui_edge_mask > 0.0f) {
+        // Hold only the synthesized scene under the alpha transition against
+        // the stable left-eye source. The real UI RGBA is submitted separately
+        // by OpenXR and remains completely untouched.
+        const float3 stable_left_scene = SourceColor.SampleLevel(LinearClamp, target_uv, 0).rgb;
+        output_color.rgb = lerp(
+            output_color.rgb,
+            stable_left_scene,
+            saturate(UiEdgeGuardStrength) * ui_edge_mask);
+    }
+
+    // Mirror the diagnostic overlay into both eyes so it is comfortable to
+    // inspect without creating a binocular mismatch.
+    if (ShowUiEdgeGuardMask != 0) {
+        output_color = ApplyUIAlphaEdgeMask(output_color, ui_edge_mask);
     }
 
     Output[dispatch_id.xy] = output_color;
@@ -1013,7 +1084,7 @@ bool DIBRPreview::ensure_pipeline(ID3D12Device* device) {
 
     D3D12_DESCRIPTOR_RANGE descriptor_ranges[2]{};
     descriptor_ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    descriptor_ranges[0].NumDescriptors = 2;
+    descriptor_ranges[0].NumDescriptors = 3;
     descriptor_ranges[0].BaseShaderRegister = 0;
     descriptor_ranges[0].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
     descriptor_ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
@@ -1077,7 +1148,7 @@ bool DIBRPreview::ensure_pipeline(ID3D12Device* device) {
 
     D3D12_DESCRIPTOR_HEAP_DESC heap_desc{};
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-    heap_desc.NumDescriptors = 3;
+    heap_desc.NumDescriptors = 4;
     heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(device->CreateDescriptorHeap(&heap_desc, IID_PPV_ARGS(&m_descriptor_heap)))) {
         fail("DIBR descriptor heap creation failed");
@@ -1254,7 +1325,7 @@ void DIBRPreview::stage_left_eye(
     command_list->ResourceBarrier(static_cast<UINT>(std::size(barriers)), barriers);
 }
 
-bool DIBRPreview::create_descriptors(ID3D12Device* device, ID3D12Resource* depth) {
+bool DIBRPreview::create_descriptors(ID3D12Device* device, ID3D12Resource* depth, ID3D12Resource* ui_alpha) {
     if (m_descriptor_heap == nullptr || m_output.texture == nullptr || m_source_staging == nullptr) {
         return false;
     }
@@ -1279,6 +1350,19 @@ bool DIBRPreview::create_descriptors(ID3D12Device* device, ID3D12Resource* depth
     device->CreateShaderResourceView(depth, &depth_srv, cpu);
 
     cpu.ptr += m_descriptor_increment;
+    // Bind the owned UI-alpha snapshot only when the caller verified it for
+    // this frame. The source staging texture is a harmless fallback because
+    // the shader never reads this slot unless the UI guard constant is set.
+    auto* ui_resource = ui_alpha != nullptr ? ui_alpha : m_source_staging.Get();
+    const auto ui_desc = ui_resource->GetDesc();
+    D3D12_SHADER_RESOURCE_VIEW_DESC ui_srv{};
+    ui_srv.Format = color_srv_format(ui_desc.Format);
+    ui_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    ui_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ui_srv.Texture2D.MipLevels = 1;
+    device->CreateShaderResourceView(ui_resource, &ui_srv, cpu);
+
+    cpu.ptr += m_descriptor_increment;
     D3D12_UNORDERED_ACCESS_VIEW_DESC output_uav{};
     output_uav.Format = m_output_format;
     output_uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
@@ -1293,6 +1377,7 @@ bool DIBRPreview::synthesize(
     D3D12_RESOURCE_STATES color_state,
     ID3D12Resource* depth,
     D3D12_RESOURCE_STATES depth_state,
+    ID3D12Resource* ui_alpha,
     Parameters parameters)
 {
     std::string validation_reason{};
@@ -1334,9 +1419,25 @@ bool DIBRPreview::synthesize(
         return false;
     }
 
+    // Missing or incompatible UI input merely disables this optional quality
+    // pass for the frame. It must never block or alter normal DIBR synthesis.
+    if (parameters.ui_edge_guard) {
+        const auto ui_valid = ui_alpha != nullptr && [&]() {
+            const auto ui_desc = ui_alpha->GetDesc();
+            return valid_2d_non_msaa_desc(ui_desc) && ui_desc.MipLevels == 1 &&
+                color_srv_format(ui_desc.Format) != DXGI_FORMAT_UNKNOWN &&
+                (ui_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0;
+        }();
+        if (!ui_valid) {
+            parameters.ui_edge_guard = false;
+            parameters.show_ui_edge_guard_mask = false;
+        }
+    }
+
     stage_left_eye(command_list, color, color_state);
 
-    if (!ensure_output(device, output_width, output_height, output_format) || !create_descriptors(device, depth)) {
+    if (!ensure_output(device, output_width, output_height, output_format) ||
+        !create_descriptors(device, depth, parameters.ui_edge_guard ? ui_alpha : nullptr)) {
         return false;
     }
 
@@ -1362,6 +1463,9 @@ bool DIBRPreview::synthesize(
     constants.show_spatial_repair_mask = parameters.spatial_repair && parameters.show_spatial_repair_mask ? 1 : 0;
     constants.repair_residual_pixels = 1.5f;
     constants.repair_depth_threshold = 0.01f;
+    constants.enable_ui_edge_guard = parameters.ui_edge_guard ? 1 : 0;
+    constants.show_ui_edge_guard_mask = parameters.ui_edge_guard && parameters.show_ui_edge_guard_mask ? 1 : 0;
+    constants.ui_edge_guard_strength = 0.75f;
     memcpy(m_constants_cpu, &constants, sizeof(constants));
 
     std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};
@@ -1388,7 +1492,7 @@ bool DIBRPreview::synthesize(
     const auto gpu = m_descriptor_heap->GetGPUDescriptorHandleForHeapStart();
     command_list->SetComputeRootDescriptorTable(0, gpu);
     auto uav_gpu = gpu;
-    uav_gpu.ptr += static_cast<UINT64>(m_descriptor_increment) * 2;
+    uav_gpu.ptr += static_cast<UINT64>(m_descriptor_increment) * 3;
     command_list->SetComputeRootDescriptorTable(1, uav_gpu);
     command_list->SetComputeRootConstantBufferView(2, m_constants->GetGPUVirtualAddress());
     command_list->Dispatch((output_width + 7) / 8, (output_height + 7) / 8, 1);
