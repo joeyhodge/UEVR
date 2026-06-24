@@ -169,6 +169,18 @@ AvowedNativeFixGateState g_avowed_native_fix_gate{};
 std::mutex g_ue56_rt_probe_mutex{};
 std::unordered_map<uintptr_t, bool> g_ue56_native_resource_probe_cache{};
 
+struct Subnautica2UE56SceneTargetBootstrapState {
+    uintptr_t texture{};
+    uintptr_t vtable{};
+    std::chrono::steady_clock::time_point last_attempt{};
+    uint32_t attempts{};
+};
+
+std::mutex g_subnautica2_ue56_scene_target_bootstrap_mutex{};
+Subnautica2UE56SceneTargetBootstrapState g_subnautica2_ue56_scene_target_bootstrap{};
+constexpr auto SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_RETRY = std::chrono::milliseconds(250);
+constexpr uint32_t SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS = 24;
+
 struct UE51RenderTargetChurnStats {
     uint64_t allocate_seen{};
     uint64_t ui_created{};
@@ -2349,6 +2361,123 @@ bool ue55_dx12_try_get_native_resource_direct(
         (uintptr_t)texture);
 
     return false;
+}
+
+bool subnautica2_ue56_try_bootstrap_scene_target(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native,
+    D3D12_RESOURCE_DESC* out_desc)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    // UE5.6's general fallback deliberately refuses to probe unknown texture
+    // vtables. Subnautica 2 can reach its first present before the normal
+    // texture hooks have observed a scene target, so use only the source-backed
+    // direct slots on the known FSceneViewport target and validate the result.
+    if (!subnautica2_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        texture == nullptr ||
+        IsBadReadPtr(texture, sizeof(void*)))
+    {
+        return false;
+    }
+
+    void* vtable = nullptr;
+
+    try {
+        vtable = *(void**)texture;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 6)) {
+        return false;
+    }
+
+    uint32_t attempt{};
+    bool should_probe{};
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::scoped_lock _{g_subnautica2_ue56_scene_target_bootstrap_mutex};
+        auto& state = g_subnautica2_ue56_scene_target_bootstrap;
+
+        if (state.texture != (uintptr_t)texture || state.vtable != (uintptr_t)vtable) {
+            state = {
+                .texture = (uintptr_t)texture,
+                .vtable = (uintptr_t)vtable,
+            };
+        }
+
+        if (state.attempts < SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS &&
+            (state.last_attempt.time_since_epoch().count() == 0 ||
+             now - state.last_attempt >= SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_RETRY))
+        {
+            state.last_attempt = now;
+            attempt = ++state.attempts;
+            should_probe = true;
+        }
+    }
+
+    if (!should_probe) {
+        return false;
+    }
+
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+
+    if (!ue55_dx12_try_get_native_resource_direct(texture, source, &native, &desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Subnautica2][UE5.6][RT bootstrap] Attempt {}/{} did not yield a validated native scene target; retaining the strict fallback",
+            attempt,
+            SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS);
+        return false;
+    }
+
+    if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0)
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Subnautica2][UE5.6][RT bootstrap] Rejected validated native candidate {:x}: dim={} size={}x{} flags=0x{:x}",
+            (uintptr_t)native,
+            (uint32_t)desc.Dimension,
+            desc.Width,
+            desc.Height,
+            (uint32_t)desc.Flags);
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Subnautica2][UE5.6][RT bootstrap] Accepted FSceneViewport target on attempt {}/{}: rhi={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
+        attempt,
+        SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS,
+        (uintptr_t)texture,
+        (uintptr_t)native,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        (uint32_t)desc.Flags);
+
+    if (out_native != nullptr) {
+        *out_native = native;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = desc;
+    }
+
+    return true;
 }
 
 std::optional<D3D12_RESOURCE_DESC> ue55_try_get_d3d12_desc(FRHITexture2D* texture, const char* source) {
@@ -6707,7 +6836,15 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (everspace2_candidate) {
         desc = everspace2_candidate->desc;
     } else if (is_ue_5_6_dx12_backend()) {
-        if (!ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc)) {
+        const bool is_subnautica2_viewport_bootstrap =
+            subnautica2_is_current_game() &&
+            source != nullptr &&
+            std::string_view{source} == "UGameViewportClient::Draw viewport";
+        const bool discovered = is_subnautica2_viewport_bootstrap
+            ? subnautica2_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
+            : ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc);
+
+        if (!discovered) {
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
             return;
         }
