@@ -327,6 +327,15 @@ bool strikers_club_is_current_game() {
     return result;
 }
 
+bool g1r_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"G1R-Win64-Shipping.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 std::atomic<uintptr_t> g_strikers_club_shadow_object{};
 std::atomic<uintptr_t> g_strikers_club_shadow_vtable{};
 
@@ -8198,17 +8207,102 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
         const auto view_family_target = view_family->get_render_target();
         const auto expected_viewport = rtm->get_viewport();
-        const auto family_is_main_scene =
-            g_hook->has_scene_view_family_offsets_ready() &&
-            view_family_target != nullptr &&
-            expected_viewport != nullptr &&
-            view_family_target == expected_viewport &&
-            view_family->get_scene_interface() != nullptr &&
-            prev_count == 2 &&
-            sdk::FSceneViewFamily::validate_views(view_family, views_ptr, 2) &&
-            views.data[0] != views.data[1];
+        const auto offsets_ready = g_hook->has_scene_view_family_offsets_ready();
+        const auto has_target = view_family_target != nullptr;
+        const auto has_expected_viewport = expected_viewport != nullptr;
+        const auto target_matches_viewport = has_target &&
+            has_expected_viewport &&
+            view_family_target == expected_viewport;
+        const auto has_two_views = prev_count == 2;
+        const auto view_storage_readable = views.data != nullptr &&
+            views.capacity >= views.count &&
+            !IsBadReadPtr(views.data, sizeof(void*) * views.count);
+        const auto view0 = view_storage_readable ? views.data[0] : nullptr;
+        const auto view1 = view_storage_readable && views.count > 1 ? views.data[1] : nullptr;
+        const auto view0_readable = view0 != nullptr && !IsBadReadPtr(view0, sizeof(void*) * 2);
+        const auto view1_readable = view1 != nullptr && !IsBadReadPtr(view1, sizeof(void*) * 2);
+        const auto view0_vtable = view0_readable ? *reinterpret_cast<uintptr_t*>(view0) : 0;
+        const auto view1_vtable = view1_readable ? *reinterpret_cast<uintptr_t*>(view1) : 0;
+        const auto view0_vtable_valid = view0_vtable != 0 &&
+            !IsBadReadPtr(reinterpret_cast<void*>(view0_vtable), sizeof(void*)) &&
+            utility::get_module_within(view0_vtable).has_value();
+        const auto view1_vtable_valid = view1_vtable != 0 &&
+            !IsBadReadPtr(reinterpret_cast<void*>(view1_vtable), sizeof(void*)) &&
+            utility::get_module_within(view1_vtable).has_value();
+        const auto view0_family = view0_readable ? view0->get_view_family() : nullptr;
+        const auto view1_family = view1_readable ? view1->get_view_family() : nullptr;
+        const auto structurally_distinct_views = view0_readable && view1_readable && view0 != view1;
+
+        // Preserve the old short-circuit validation order. Some non-scene view
+        // families have a valid-looking view array but are not safe to inspect.
+        bool has_scene_interface{};
+        bool views_valid{};
+        bool views_are_distinct{};
+        if (offsets_ready &&
+            has_target &&
+            has_expected_viewport &&
+            target_matches_viewport)
+        {
+            has_scene_interface = view_family->get_scene_interface() != nullptr;
+            if (has_scene_interface && has_two_views) {
+                views_valid = sdk::FSceneViewFamily::validate_views(view_family, views_ptr, 2);
+                views_are_distinct = views_valid && views.data[0] != views.data[1];
+            }
+        }
+
+        // Gothic 1 Remake's UE5.4 renderer puts two regular, vtable-backed
+        // views in the main family but leaves both optional Family back-links
+        // null. Keep this exception exact and only enable it after all of the
+        // outer scene-family checks succeeded.
+        const auto g1r_familyless_main_views = g1r_is_current_game() &&
+            has_two_views &&
+            view_storage_readable &&
+            structurally_distinct_views &&
+            view0_vtable_valid &&
+            view1_vtable_valid &&
+            view0_family == nullptr &&
+            view1_family == nullptr;
+        const auto accepted_views = views_valid || g1r_familyless_main_views;
+        const auto accepted_distinct_views = views_are_distinct || g1r_familyless_main_views;
+
+        if (g1r_familyless_main_views) {
+            SPDLOG_INFO_ONCE("[G1R][DIBR] Accepting validated familyless scene views for the experimental single-view path");
+        }
+
+        const auto family_is_main_scene = offsets_ready &&
+            has_target &&
+            has_expected_viewport &&
+            target_matches_viewport &&
+            has_scene_interface &&
+            has_two_views &&
+            accepted_views &&
+            accepted_distinct_views;
 
         if (!family_is_main_scene) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[DIBR][SingleView] main-family gate offsets={} target={:x} viewport={:x} match={} scene={} views={} valid={} distinct={}",
+                offsets_ready,
+                reinterpret_cast<uintptr_t>(view_family_target),
+                reinterpret_cast<uintptr_t>(expected_viewport),
+                target_matches_viewport,
+                has_scene_interface,
+                prev_count,
+                views_valid,
+                views_are_distinct);
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[DIBR][SingleView] view-array data={:x} capacity={} readable={} view0={:x} family0={:x} readable0={} view1={:x} family1={:x} readable1={} expected_family={:x}",
+                reinterpret_cast<uintptr_t>(views.data),
+                views.capacity,
+                view_storage_readable,
+                reinterpret_cast<uintptr_t>(view0),
+                reinterpret_cast<uintptr_t>(view0_family),
+                view0_readable,
+                reinterpret_cast<uintptr_t>(view1),
+                reinterpret_cast<uintptr_t>(view1_family),
+                view1_readable,
+                reinterpret_cast<uintptr_t>(view_family));
             if (g_hook->m_dibr_single_view_status.load(std::memory_order_acquire) != DIBR_SINGLE_VIEW_ACTIVE) {
                 set_dibr_status(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "waiting for the validated main viewport family");
             }
