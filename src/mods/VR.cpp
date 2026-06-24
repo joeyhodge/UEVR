@@ -8014,7 +8014,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     "True Reprojection Strength defaults to 1.0, which is the physical runtime projection solve. The Disparity slider "
                     "is retained for the guarded legacy fallback and no longer distorts validated runtime geometry.");
                 ImGui::TextWrapped(
-                    "UE5.5+ uses an RDG SceneDepthZ producer, not the legacy pooled target. This mode only observes "
+                    "UE5.4+ can use an RDG SceneDepthZ producer instead of the legacy pooled target. This mode only observes "
                     "real DSV allocations until you enable the explicit RDG capture toggle. When enabled, it copies only a "
                     "verified D32 resource during its already shader-readable command-list window and restores the exact game state.");
                 ImGui::TreePop();
