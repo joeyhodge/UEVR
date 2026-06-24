@@ -416,7 +416,7 @@ void DIBRPreview::refresh_depth_trace_candidate_locked() {
             break;
         }
 
-        // UE5.5+ RDG commonly keeps SceneDepthZ as a two-slice texture array:
+        // UE5.4+ RDG commonly keeps SceneDepthZ as a two-slice texture array:
         // the scene colour is packed stereo, but each DSV is one eye wide.
         // That is the intended source for DIBR, not an arbitrary fallback.
         if (expected_eye_width != 0 && candidate.width == expected_eye_width &&

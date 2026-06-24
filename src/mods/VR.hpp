@@ -657,7 +657,7 @@ public:
             m_fake_stereo_hook->is_dibr_single_view_active();
     }
 
-    // UE5.5+ creates SceneDepthZ through RDG rather than the legacy pooled
+    // UE5.4+ can create SceneDepthZ through RDG rather than the legacy pooled
     // render-target path. The capture remains separately opt-in because it
     // inserts a self-contained copy on the game's command list.
     bool is_dibr_preview_engine_supported() const {
