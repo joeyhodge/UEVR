@@ -12048,7 +12048,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 m_dibr_disparity_pixels->draw("Disparity (Pixels)");
                 m_dibr_reprojection_strength->draw("True Reprojection Strength");
                 m_dibr_reversed_depth->draw("Use Reversed-Z Depth");
-                m_dibr_ue5_rdg_depth_capture->draw("Enable UE5 RDG Depth Capture (Experimental)");
+                m_dibr_ue5_rdg_depth_capture->draw("Enable DSV/RDG Depth Capture (Experimental)");
+                if (m_dibr_ue5_rdg_depth_capture->value()) {
+                    ImGui::TextWrapped(
+                        "DIBR only: copies a verified depth-stencil transition into a private shader-readable depth texture. "
+                        "This can unblock UE4/UE5 games where SceneDepthZ is DSV-only or RDG-owned.");
+                }
 
                 if (ImGui::TreeNode("DIBR quality tuning")) {
                     m_dibr_depth_edge_stabilization->draw("Enable Depth-Edge Stabilization");
@@ -12096,7 +12101,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 } else if (get_runtime() == nullptr || !get_runtime()->is_openxr()) {
                     draw_status_badge("DIBR status:", "blocked: OpenXR required", blocked_color);
                 } else if (!is_dibr_preview_engine_supported()) {
-                    draw_status_badge("DIBR status:", "blocked: tracing UE5 RDG depth candidates", blocked_color);
+                    draw_status_badge("DIBR status:", "blocked: tracing DSV/RDG depth candidates", blocked_color);
                     ImGui::TextWrapped("Trace: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
                 } else if (m_native_stereo_fix->value()) {
                     draw_status_badge("DIBR status:", "blocked: disable Native Stereo Fix", blocked_color);
@@ -12115,7 +12120,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         ImGui::TextWrapped("Detail: %s", reason.c_str());
                     }
                     if (is_dibr_ue5_rdg_depth_capture_enabled()) {
-                        ImGui::TextWrapped("RDG capture: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
+                        ImGui::TextWrapped("Depth capture: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
+                    } else if (reason.find("SceneDepthZ format is not shader-readable") != std::string::npos ||
+                        reason.find("SceneDepthZ denies shader-resource views") != std::string::npos) {
+                        ImGui::TextWrapped("Hint: try Enable DSV/RDG Depth Capture for DSV-only or RDG-owned depth.");
                     }
                 }
 
@@ -12153,9 +12161,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     "True Reprojection Strength defaults to 1.0, which is the physical runtime projection solve. The Disparity slider "
                     "is retained for the guarded legacy fallback and no longer distorts validated runtime geometry.");
                 ImGui::TextWrapped(
-                    "UE5.4+ can use an RDG SceneDepthZ producer instead of the legacy pooled target. This mode only observes "
-                    "real DSV allocations until you enable the explicit RDG capture toggle. When enabled, it copies only a "
-                    "verified D32 resource during its already shader-readable command-list window and restores the exact game state.");
+                    "Some UE4/UE5 games expose SceneDepthZ as a DSV-only or RDG-owned depth producer. This mode only observes "
+                    "real DSV allocations until you enable the explicit DSV/RDG capture toggle. When enabled, it copies only a "
+                    "verified depth resource during its already shader-readable command-list window and restores the exact game state.");
                 ImGui::TreePop();
             }
         }

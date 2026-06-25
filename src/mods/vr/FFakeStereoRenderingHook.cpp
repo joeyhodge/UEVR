@@ -8655,6 +8655,161 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
 
+    // UE4.27 calls ISceneViewExtension::BeginRenderViewFamily inside
+    // FRendererModule::BeginRenderingViewFamily before FSceneRenderer copies
+    // the view array. If the outer renderer-function hook is not reached, this
+    // is the safe UE4-only place to suppress the second engine view for DIBR.
+    const auto dibr_single_view_ue4_fallback =
+        !g_hook->has_double_precision() &&
+        vr->is_dibr_single_view_requested() &&
+        vr->is_dibr_preview_active() &&
+        views_ptr != nullptr;
+
+    if (!dibr_single_view_ue4_fallback &&
+        !g_hook->has_double_precision() &&
+        g_hook->m_dibr_single_view_status.load(std::memory_order_acquire) != DIBR_SINGLE_VIEW_DISABLED)
+    {
+        g_hook->m_dibr_single_view_status.store(DIBR_SINGLE_VIEW_DISABLED, std::memory_order_release);
+        g_hook->m_dibr_single_view_generation = 0;
+        g_hook->m_dibr_single_view_latched_generation = 0;
+        g_hook->m_dibr_single_view_target = 0;
+        g_hook->m_dibr_single_view_scene = 0;
+        g_hook->m_dibr_single_view_stable_frames = 0;
+        g_hook->m_dibr_single_view_failure_frames = 0;
+        g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
+        g_hook->m_dibr_single_view_fallback_frames.store(0, std::memory_order_release);
+    }
+
+    if (dibr_single_view_ue4_fallback) {
+        auto& views = *views_ptr;
+        const auto set_dibr_status = [&](uint32_t status, const char* detail) {
+            const auto previous = g_hook->m_dibr_single_view_status.exchange(status, std::memory_order_acq_rel);
+            if (previous != status) {
+                SPDLOG_INFO("[DIBR][SingleView][UE4] {} ({})", dibr_single_view_status_name(status), detail);
+
+                if (const auto current_runtime = vr->get_runtime(); current_runtime != nullptr) {
+                    current_runtime->should_recalculate_eye_projections = true;
+                }
+            }
+        };
+
+        const auto use_two_view_fallback = [&](uint32_t status, const char* detail) {
+            set_dibr_status(status, detail);
+            g_hook->m_dibr_single_view_fallback_frames.fetch_add(1, std::memory_order_relaxed);
+        };
+
+        const auto readiness = vr->d3d12().get_dibr_single_view_readiness();
+        if (readiness.generation == 0) {
+            use_two_view_fallback(DIBR_SINGLE_VIEW_WARMING_UP, "D3D12 readiness reset in progress");
+        } else {
+            if (g_hook->m_dibr_single_view_generation != readiness.generation) {
+                g_hook->m_dibr_single_view_generation = readiness.generation;
+                g_hook->m_dibr_single_view_latched_generation = 0;
+                g_hook->m_dibr_single_view_family = 0;
+                g_hook->m_dibr_single_view_target = 0;
+                g_hook->m_dibr_single_view_scene = 0;
+                g_hook->m_dibr_single_view_stable_frames = 0;
+                g_hook->m_dibr_single_view_failure_frames = 0;
+                g_hook->m_dibr_single_view_suppressed_frames.store(0, std::memory_order_release);
+                g_hook->m_dibr_single_view_fallback_frames.store(0, std::memory_order_release);
+                set_dibr_status(DIBR_SINGLE_VIEW_WARMING_UP, "new DIBR resource generation");
+            }
+
+            if (g_hook->m_dibr_single_view_latched_generation == readiness.generation) {
+                use_two_view_fallback(DIBR_SINGLE_VIEW_BLOCKED, "three DIBR output failures in this generation");
+            } else if (!readiness.preview_ready || readiness.consecutive_ready_frames < DIBR_SINGLE_VIEW_WARMUP_FRAMES) {
+                if (g_hook->m_dibr_single_view_stable_frames >= DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES) {
+                    ++g_hook->m_dibr_single_view_failure_frames;
+                    if (g_hook->m_dibr_single_view_failure_frames >= DIBR_SINGLE_VIEW_MAX_CONSECUTIVE_FAILURES) {
+                        g_hook->m_dibr_single_view_latched_generation = readiness.generation;
+                        use_two_view_fallback(DIBR_SINGLE_VIEW_BLOCKED, "DIBR output stopped after activation");
+                    } else {
+                        use_two_view_fallback(DIBR_SINGLE_VIEW_FALLBACK, "DIBR output unavailable for this frame");
+                    }
+                } else {
+                    use_two_view_fallback(DIBR_SINGLE_VIEW_WARMING_UP, "waiting for stable two-view DIBR output");
+                }
+            } else {
+                const auto view_family_target = view_family.get_render_target();
+                const auto expected_viewport = g_hook->get_render_target_manager()->get_viewport();
+                const auto offsets_ready = g_hook->has_scene_view_family_offsets_ready();
+                const auto scene_interface = view_family.get_scene_interface();
+                const auto views_count_two = views.count == 2;
+                const auto views_storage_readable =
+                    views.data != nullptr &&
+                    views.count >= 0 &&
+                    views.capacity >= views.count &&
+                    views.count <= 8 &&
+                    !IsBadReadPtr(views.data, sizeof(void*) * static_cast<size_t>(views.count));
+                const auto view0 = views_storage_readable && views.count > 0 ? views.data[0] : nullptr;
+                const auto view1 = views_storage_readable && views.count > 1 ? views.data[1] : nullptr;
+                const auto views_valid =
+                    views_count_two &&
+                    sdk::FSceneViewFamily::validate_views(&view_family, views_ptr, 2);
+                const auto views_distinct =
+                    views_storage_readable &&
+                    views.count > 1 &&
+                    view0 != nullptr &&
+                    view1 != nullptr &&
+                    view0 != view1;
+                const auto target_matches =
+                    view_family_target != nullptr &&
+                    expected_viewport != nullptr &&
+                    view_family_target == expected_viewport;
+                const auto family_is_main_scene =
+                    offsets_ready &&
+                    target_matches &&
+                    scene_interface != nullptr &&
+                    views_valid &&
+                    views_distinct;
+
+                if (!family_is_main_scene) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        1,
+                        "[DIBR][SingleView][UE4] learning detail offsets={} target={:x} expected={:x} target_match={} scene={:x} views_count={} views_capacity={} views_data={:x} view0={:x} view1={:x} views_valid={} views_distinct={} ready_frames={} generation={}",
+                        offsets_ready,
+                        reinterpret_cast<uintptr_t>(view_family_target),
+                        reinterpret_cast<uintptr_t>(expected_viewport),
+                        target_matches,
+                        reinterpret_cast<uintptr_t>(scene_interface),
+                        views.count,
+                        views.capacity,
+                        reinterpret_cast<uintptr_t>(views.data),
+                        reinterpret_cast<uintptr_t>(view0),
+                        reinterpret_cast<uintptr_t>(view1),
+                        views_valid,
+                        views_distinct,
+                        readiness.consecutive_ready_frames,
+                        readiness.generation);
+                    use_two_view_fallback(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "waiting for the validated main viewport family");
+                } else {
+                    const auto target_address = reinterpret_cast<uintptr_t>(view_family_target);
+                    const auto scene_address = reinterpret_cast<uintptr_t>(scene_interface);
+
+                    if (g_hook->m_dibr_single_view_target != target_address ||
+                        g_hook->m_dibr_single_view_scene != scene_address)
+                    {
+                        g_hook->m_dibr_single_view_family = reinterpret_cast<uintptr_t>(&view_family);
+                        g_hook->m_dibr_single_view_target = target_address;
+                        g_hook->m_dibr_single_view_scene = scene_address;
+                        g_hook->m_dibr_single_view_stable_frames = 1;
+                        g_hook->m_dibr_single_view_failure_frames = 0;
+                        use_two_view_fallback(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "main viewport or scene changed");
+                    } else if (g_hook->m_dibr_single_view_stable_frames < DIBR_SINGLE_VIEW_FAMILY_STABLE_FRAMES) {
+                        ++g_hook->m_dibr_single_view_stable_frames;
+                        use_two_view_fallback(DIBR_SINGLE_VIEW_LEARNING_FAMILY, "validating stable main view family");
+                    } else {
+                        views.count = 1;
+                        g_hook->m_dibr_single_view_family = reinterpret_cast<uintptr_t>(&view_family);
+                        g_hook->m_dibr_single_view_failure_frames = 0;
+                        g_hook->m_dibr_single_view_suppressed_frames.fetch_add(1, std::memory_order_relaxed);
+                        set_dibr_status(DIBR_SINGLE_VIEW_ACTIVE, "UE4 BeginRenderViewFamily suppressed the second engine view");
+                    }
+                }
+            }
+        }
+    }
+
     if (everspace2_is_current_game()) {
         // SetupViewPoint runs before this callback. Publish a stable token for
         // the next frame so all of its viewpoint calls share one tracking pose.

@@ -76,9 +76,10 @@ public:
 
     void set_depth_trace_expected_extent(uint32_t width, uint32_t height);
     void set_ue5_rdg_depth_capture_enabled(bool enabled);
-    // UE5 RDG can present several matching depth transitions inside one frame.
-    // Capture only the next verified window; the DIBR consumer re-arms this
-    // after it has used the snapshot for a synthesized frame.
+    // UE4/UE5 DSV/RDG producers can present several matching depth transitions
+    // inside one frame. Capture only the next verified window; the DIBR
+    // consumer re-arms this after it has used the snapshot for a synthesized
+    // frame.
     void request_ue5_rdg_depth_capture();
 
     void on_depth_stencil_view_created(

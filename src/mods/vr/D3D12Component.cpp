@@ -1962,9 +1962,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     ComPtr<ID3D12Resource> scene_depth_tex{};
     ComPtr<ID3D12Resource> dibr_depth_tex{};
 
-    // UE5 SceneDepthZ is RDG-owned. The DIBR trace uses the actual scene
-    // source extent to select a matching DSV candidate, without retaining or
-    // submitting that candidate yet.
+    // DIBR depth tracing uses the actual scene source extent to select a
+    // matching DSV/RDG candidate, without retaining or submitting that
+    // candidate yet.
     if (vr->is_dibr_depth_trace_requested() && backbuffer.Get() != nullptr) {
         const auto source_desc = backbuffer->GetDesc();
         m_dibr_depth_capture.set_depth_trace_expected_extent(
@@ -1973,16 +1973,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     // DIBR consumes SceneDepthZ internally even when compositor depth submit
-    // is disabled. UE5 uses its separately owned RDG copy for DIBR, leaving
-    // the pooled SceneDepthZ lookup untouched for normal OpenXR depth submit.
+    // is disabled. The opt-in DSV/RDG depth-copy path uses a separately owned
+    // shader-readable copy for DIBR, leaving pooled SceneDepthZ untouched for
+    // normal OpenXR depth submit.
     const auto needs_dibr_depth = vr->is_dibr_preview_active();
-    const auto dibr_uses_ue5_rdg_capture = needs_dibr_depth && vr->is_dibr_ue5_rdg_depth_capture_enabled();
-    if (dibr_uses_ue5_rdg_capture) {
+    const auto dibr_uses_dsv_depth_capture = needs_dibr_depth && vr->is_dibr_ue5_rdg_depth_capture_enabled();
+    if (dibr_uses_dsv_depth_capture) {
         dibr_depth_tex = m_dibr_depth_capture.captured_depth_snapshot();
     }
 
     const auto should_submit_depth = vr->is_depth_enabled() && runtime->is_depth_allowed();
-    if (should_submit_depth || (needs_dibr_depth && !dibr_uses_ue5_rdg_capture)) {
+    if (should_submit_depth || (needs_dibr_depth && !dibr_uses_dsv_depth_capture)) {
         auto& rt_pool = vr->get_render_target_pool_hook();
         scene_depth_tex = rt_pool->get_texture<ID3D12Resource>(L"SceneDepthZ");
 
@@ -2009,7 +2010,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     #endif
     }
 
-    if (!dibr_uses_ue5_rdg_capture) {
+    if (!dibr_uses_dsv_depth_capture) {
         dibr_depth_tex = scene_depth_tex;
     }
 
@@ -2038,7 +2039,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             backbuffer.Get(),
             scene_source_state,
             dibr_depth_tex.Get(),
-            dibr_uses_ue5_rdg_capture ? ENGINE_SRC_COLOR : ENGINE_SRC_DEPTH);
+            dibr_uses_dsv_depth_capture ? ENGINE_SRC_COLOR : ENGINE_SRC_DEPTH);
 
     if (vr->is_dibr_preview_active()) {
         const auto source_desc = backbuffer.Get() != nullptr ? backbuffer->GetDesc() : D3D12_RESOURCE_DESC{};
@@ -2046,10 +2047,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (dibr_preview_succeeded) {
-        // The UE5 RDG observer captures before the engine overwrites the next
+        // The DSV/RDG observer captures before the engine overwrites the next
         // scene depth. Re-arm exactly once after consuming this snapshot rather
-        // than copying every matching RDG transition in the current frame.
-        if (dibr_uses_ue5_rdg_capture) {
+        // than copying every matching depth transition in the current frame.
+        if (dibr_uses_dsv_depth_capture) {
             m_dibr_depth_capture.request_ue5_rdg_depth_capture();
         }
         if (m_dibr_active_present_tex != nullptr) {
