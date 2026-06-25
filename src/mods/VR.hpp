@@ -687,16 +687,17 @@ public:
             m_fake_stereo_hook->is_dibr_single_view_active();
     }
 
-    // UE5.4+ can create SceneDepthZ through RDG rather than the legacy pooled
-    // render-target path. The capture remains separately opt-in because it
+    // UE5.4+ can create SceneDepthZ through RDG, and some UE4 stereo paths
+    // expose a DSV-only depth texture even though the renderer later samples
+    // a depth SRV. The depth-copy capture remains separately opt-in because it
     // inserts a self-contained copy on the game's command list.
     bool is_dibr_preview_engine_supported() const {
         return m_fake_stereo_hook != nullptr &&
             (!m_fake_stereo_hook->has_double_precision() || m_dibr_ue5_rdg_depth_capture->value());
     }
 
-    // The UE5 path currently observes DSV allocation only. It never borrows a
-    // resource until a matching RDG producer and state have been verified.
+    // DIBR depth tracing observes DSV allocation only. It never borrows a
+    // resource until a matching producer and state have been verified.
     bool is_dibr_depth_trace_requested() const {
         const auto runtime = get_runtime();
         return is_dibr_rendering_method_selected() &&
@@ -713,7 +714,6 @@ public:
 
     bool is_dibr_ue5_rdg_depth_capture_enabled() const {
         return m_fake_stereo_hook != nullptr &&
-            m_fake_stereo_hook->has_double_precision() &&
             m_dibr_ue5_rdg_depth_capture->value();
     }
 

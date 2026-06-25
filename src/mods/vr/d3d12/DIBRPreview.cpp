@@ -438,12 +438,12 @@ void DIBRPreview::set_ue5_rdg_depth_capture_enabled(bool enabled) {
         m_capture_success_logged = false;
         m_capture_failure_logged = false;
         m_capture_failure_reason.clear();
-        SPDLOG_INFO("[DIBR][RDG capture] disabled; released the owned depth copy");
+        SPDLOG_INFO("[DIBR][DSV/RDG capture] disabled; released the owned depth copy");
         return;
     }
 
     m_ue5_rdg_depth_capture_requested.store(true, std::memory_order_release);
-    SPDLOG_INFO("[DIBR][RDG capture] enabled; pacing capture to one verified depth copy per DIBR frame");
+    SPDLOG_INFO("[DIBR][DSV/RDG capture] enabled; pacing capture to one verified depth copy per DIBR frame");
 }
 
 void DIBRPreview::request_ue5_rdg_depth_capture() {
@@ -682,7 +682,7 @@ bool DIBRPreview::ensure_captured_depth_locked(
         return false;
     }
 
-    captured->SetName(L"DIBR UE5 RDG Depth Copy");
+    captured->SetName(L"DIBR DSV/RDG Depth Copy");
     m_captured_depth = std::move(captured);
     m_captured_depth_width = source_desc.Width;
     m_captured_depth_height = source_desc.Height;
@@ -868,11 +868,11 @@ void DIBRPreview::on_resource_barriers(
                     m_depth_trace_summary = summary.str();
                 }
                 if (log_success) {
-                    SPDLOG_INFO("[DIBR][RDG capture] {}", summary.str());
+                    SPDLOG_INFO("[DIBR][DSV/RDG capture] {}", summary.str());
                 }
             } else if (log_failure) {
                 SPDLOG_WARN(
-                    "[DIBR][RDG capture] verified depth window could not be copied; reason={}; falling back to the normal scene path",
+                    "[DIBR][DSV/RDG capture] verified depth window could not be copied; reason={}; falling back to the normal scene path",
                     capture_failure);
             }
 
