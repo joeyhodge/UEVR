@@ -12074,6 +12074,16 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             "The debug overlay is mirrored in both eyes: red = repaired, amber = rejected candidate.");
                     }
 
+                    m_dibr_ui_footprint_reprojection->draw("Use Separate UI Footprint Reprojection");
+                    if (m_dibr_ui_footprint_reprojection->value()) {
+                        m_dibr_ui_footprint_reprojection_strength->draw("UI Footprint Reprojection Strength");
+                        m_dibr_ui_footprint_reprojection_debug_mask->draw("Show UI Footprint Reprojection Mask");
+                        ImGui::TextWrapped(
+                            "DIBR only: uses the submitted OpenXR UI alpha footprint as a mask so the normal scene can keep "
+                            "a stronger true-reprojection solve while AHUD/UI-covered pixels and their visible edge band use a gentler strength. "
+                            "The UI layer itself remains separate and untouched.");
+                    }
+
                     if (dibr_single_view) {
                         m_dibr_single_view_ui_edge_guard->draw("Stabilize UI Alpha Edges (Experimental)");
                         if (m_dibr_single_view_ui_edge_guard->value()) {

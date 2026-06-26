@@ -37,6 +37,9 @@ cbuffer DIBRConstants : register(b0) {
     uint EnableUiEdgeGuard;
     uint ShowUiEdgeGuardMask;
     float UiEdgeGuardStrength;
+    uint EnableUiFootprintReprojection;
+    uint ShowUiFootprintReprojectionMask;
+    float UiFootprintReprojectionStrength;
 };
 
 Texture2D<float4> SourceColor : register(t0);
@@ -70,7 +73,7 @@ float DepthGradient(float2 uv, float raw_depth) {
     return max(abs(raw_depth - x_neighbor), abs(raw_depth - y_neighbor));
 }
 
-float2 ResolveSyntheticRightSourceUv(float2 target_uv, float disparity_uv, out uint source_clamped) {
+float2 ResolveSyntheticRightSourceUv(float2 target_uv, float disparity_uv, float reprojection_strength, out uint source_clamped) {
     float2 source_uv = target_uv;
     source_clamped = 0;
 
@@ -82,7 +85,7 @@ float2 ResolveSyntheticRightSourceUv(float2 target_uv, float disparity_uv, out u
             const float source_depth = saturate(SourceDepth.SampleLevel(LinearClamp, source_uv, 0));
             const float2 projected_target = ReprojectSourceUv(source_uv, source_depth);
             const float2 correction = clamp(target_uv - projected_target, -0.125f, 0.125f);
-            const float2 candidate = source_uv + correction * TrueReprojectionStrength;
+            const float2 candidate = source_uv + correction * reprojection_strength;
             source_clamped |= (any(candidate < float2(0.0f, 0.0f) || candidate > float2(1.0f, 1.0f)) ? 1u : 0u);
             source_uv = saturate(candidate);
         }
@@ -190,6 +193,8 @@ float4 ApplySpatialRepairMask(float4 color, uint repair_state) {
     return color;
 }
 
+)DIBR"
+R"DIBR(
 float UIAlphaEdgeMask(float2 uv) {
     if (EnableUiEdgeGuard == 0) {
         return 0.0f;
@@ -237,6 +242,63 @@ float4 ApplyUIAlphaEdgeMask(float4 color, float edge_mask) {
     return color;
 }
 
+float SampleUIAlpha(int2 coord, int2 max_coord) {
+    return saturate(UIAlpha.Load(int3(clamp(coord, int2(0, 0), max_coord), 0)).a);
+}
+
+float UIAlphaFootprintMask(float2 uv, out float visible_edge_mask) {
+    visible_edge_mask = 0.0f;
+    if (EnableUiFootprintReprojection == 0 && ShowUiFootprintReprojectionMask == 0) {
+        return 0.0f;
+    }
+
+    uint width = 0;
+    uint height = 0;
+    UIAlpha.GetDimensions(width, height);
+    if (width == 0 || height == 0) {
+        return 0.0f;
+    }
+
+    const int2 max_coord = int2((int)width - 1, (int)height - 1);
+    const int2 center = clamp(
+        int2(uv * float2((float)width, (float)height)),
+        int2(0, 0),
+        max_coord);
+
+    const float center_alpha = SampleUIAlpha(center, max_coord);
+    float max_alpha = center_alpha;
+    [unroll]
+    for (int ring = 0; ring < 5; ++ring) {
+        const int step = (1 << ring) * 2;
+        const int2 horizontal = int2(step, 0);
+        const int2 vertical = int2(0, step);
+        const int2 diagonal = int2(step, step);
+        const float left = SampleUIAlpha(center - horizontal, max_coord);
+        const float right = SampleUIAlpha(center + horizontal, max_coord);
+        const float up = SampleUIAlpha(center - vertical, max_coord);
+        const float down = SampleUIAlpha(center + vertical, max_coord);
+        const float up_left = SampleUIAlpha(center - diagonal, max_coord);
+        const float up_right = SampleUIAlpha(center + int2(step, -step), max_coord);
+        const float down_left = SampleUIAlpha(center + int2(-step, step), max_coord);
+        const float down_right = SampleUIAlpha(center + diagonal, max_coord);
+        max_alpha = max(max_alpha, max(max(left, right), max(up, down)));
+        max_alpha = max(max_alpha, max(max(up_left, up_right), max(down_left, down_right)));
+    }
+
+    const float covered = smoothstep(0.01f, 0.20f, center_alpha);
+    const float dilated = smoothstep(0.01f, 0.20f, max_alpha);
+    visible_edge_mask = saturate(dilated - covered);
+    return dilated;
+}
+
+float4 ApplyUIFootprintMask(float4 color, float footprint_mask, float visible_edge_mask) {
+    const float debug_mask = max(visible_edge_mask, 0.20f * footprint_mask);
+    color.rgb = lerp(color.rgb, float3(0.15f, 1.0f, 0.15f), 0.70f * debug_mask);
+    return color;
+}
+
+)DIBR"
+R"DIBR(
 [numthreads(8, 8, 1)]
 void main(uint3 dispatch_id : SV_DispatchThreadID) {
     if (dispatch_id.x >= OutputWidth || dispatch_id.y >= OutputHeight || SourceEyeWidth == 0) {
@@ -250,13 +312,22 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
     const float raw_depth = saturate(SourceDepth.SampleLevel(LinearClamp, target_uv, 0));
     const float edge = smoothstep(0.0, EdgeFeather, target_u) * (1.0 - smoothstep(1.0 - EdgeFeather, 1.0, target_u));
     const float disparity_uv = (DisparityPixels * LegacyDepthResponse(raw_depth) * edge) / (float)SourceEyeWidth;
+    float ui_visible_edge_mask = 0.0f;
+    const float ui_footprint_mask =
+        (target_right || ShowUiFootprintReprojectionMask != 0) ?
+            UIAlphaFootprintMask(target_uv, ui_visible_edge_mask) :
+            0.0f;
+    const float reprojection_strength = lerp(
+        TrueReprojectionStrength,
+        UiFootprintReprojectionStrength,
+        EnableUiFootprintReprojection != 0 ? ui_footprint_mask : 0.0f);
 
     uint source_clamped = 0u;
     float2 synthesized_source_uv = target_uv;
     // Keep the ordinary left-eye path untouched unless the optional binocular
     // diagnostic overlay needs the matching right-eye classification.
     if (target_right || (EnableSpatialRepair != 0 && ShowSpatialRepairMask != 0)) {
-        synthesized_source_uv = ResolveSyntheticRightSourceUv(target_uv, disparity_uv, source_clamped);
+        synthesized_source_uv = ResolveSyntheticRightSourceUv(target_uv, disparity_uv, reprojection_strength, source_clamped);
     }
     float2 source_uv = target_right ? synthesized_source_uv : target_uv;
 
@@ -312,6 +383,10 @@ void main(uint3 dispatch_id : SV_DispatchThreadID) {
     // inspect without creating a binocular mismatch.
     if (ShowUiEdgeGuardMask != 0) {
         output_color = ApplyUIAlphaEdgeMask(output_color, ui_edge_mask);
+    }
+
+    if (ShowUiFootprintReprojectionMask != 0) {
+        output_color = ApplyUIFootprintMask(output_color, ui_footprint_mask, ui_visible_edge_mask);
     }
 
     Output[dispatch_id.xy] = output_color;
@@ -1421,7 +1496,12 @@ bool DIBRPreview::synthesize(
 
     // Missing or incompatible UI input merely disables this optional quality
     // pass for the frame. It must never block or alter normal DIBR synthesis.
-    if (parameters.ui_edge_guard) {
+    const auto needs_ui_alpha =
+        parameters.ui_edge_guard ||
+        parameters.ui_footprint_reprojection ||
+        parameters.show_ui_footprint_reprojection_mask;
+
+    if (needs_ui_alpha) {
         const auto ui_valid = ui_alpha != nullptr && [&]() {
             const auto ui_desc = ui_alpha->GetDesc();
             return valid_2d_non_msaa_desc(ui_desc) && ui_desc.MipLevels == 1 &&
@@ -1431,13 +1511,19 @@ bool DIBRPreview::synthesize(
         if (!ui_valid) {
             parameters.ui_edge_guard = false;
             parameters.show_ui_edge_guard_mask = false;
+            parameters.ui_footprint_reprojection = false;
+            parameters.show_ui_footprint_reprojection_mask = false;
         }
     }
+    const auto use_ui_alpha =
+        parameters.ui_edge_guard ||
+        parameters.ui_footprint_reprojection ||
+        parameters.show_ui_footprint_reprojection_mask;
 
     stage_left_eye(command_list, color, color_state);
 
     if (!ensure_output(device, output_width, output_height, output_format) ||
-        !create_descriptors(device, depth, parameters.ui_edge_guard ? ui_alpha : nullptr)) {
+        !create_descriptors(device, depth, use_ui_alpha ? ui_alpha : nullptr)) {
         return false;
     }
 
@@ -1466,6 +1552,11 @@ bool DIBRPreview::synthesize(
     constants.enable_ui_edge_guard = parameters.ui_edge_guard ? 1 : 0;
     constants.show_ui_edge_guard_mask = parameters.ui_edge_guard && parameters.show_ui_edge_guard_mask ? 1 : 0;
     constants.ui_edge_guard_strength = 0.75f;
+    constants.enable_ui_footprint_reprojection = parameters.ui_footprint_reprojection ? 1 : 0;
+    constants.show_ui_footprint_reprojection_mask =
+        (parameters.ui_footprint_reprojection || parameters.show_ui_footprint_reprojection_mask) &&
+        parameters.show_ui_footprint_reprojection_mask ? 1 : 0;
+    constants.ui_footprint_reprojection_strength = std::clamp(parameters.ui_footprint_reprojection_strength, 0.0f, 2.0f);
     memcpy(m_constants_cpu, &constants, sizeof(constants));
 
     std::array<D3D12_RESOURCE_BARRIER, 2> barriers{};

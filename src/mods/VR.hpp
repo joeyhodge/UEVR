@@ -712,6 +712,20 @@ public:
         return m_dibr_reprojection_strength->value();
     }
 
+    bool is_dibr_ui_footprint_reprojection_enabled() const {
+        return is_dibr_rendering_method_selected() &&
+            m_dibr_ui_footprint_reprojection->value();
+    }
+
+    bool is_dibr_ui_footprint_reprojection_debug_mask_enabled() const {
+        return is_dibr_ui_footprint_reprojection_enabled() &&
+            m_dibr_ui_footprint_reprojection_debug_mask->value();
+    }
+
+    float get_dibr_ui_footprint_reprojection_strength() const {
+        return m_dibr_ui_footprint_reprojection_strength->value();
+    }
+
     float get_dibr_legacy_depth_curve() const {
         return m_dibr_legacy_depth_curve->value();
     }
@@ -1418,6 +1432,9 @@ private:
     const ModSlider::Ptr m_dibr_depth_edge_stabilization_strength{ ModSlider::create(generate_name("DIBRDepthEdgeStabilizationStrength"), 0.0f, 1.0f, 0.75f) };
     const ModToggle::Ptr m_dibr_spatial_repair{ ModToggle::create(generate_name("DIBRSpatialRepair"), false) };
     const ModToggle::Ptr m_dibr_spatial_repair_debug_mask{ ModToggle::create(generate_name("DIBRSpatialRepairDebugMask"), false) };
+    const ModToggle::Ptr m_dibr_ui_footprint_reprojection{ ModToggle::create(generate_name("DIBRUIFootprintReprojection"), false) };
+    const ModSlider::Ptr m_dibr_ui_footprint_reprojection_strength{ ModSlider::create(generate_name("DIBRUIFootprintReprojectionStrength"), 0.0f, 2.0f, 0.25f) };
+    const ModToggle::Ptr m_dibr_ui_footprint_reprojection_debug_mask{ ModToggle::create(generate_name("DIBRUIFootprintReprojectionDebugMask"), false) };
     const ModToggle::Ptr m_dibr_single_view_ui_edge_guard{ ModToggle::create(generate_name("DIBRSingleViewUIEdgeGuard"), false) };
     const ModToggle::Ptr m_dibr_single_view_ui_edge_guard_debug_mask{ ModToggle::create(generate_name("DIBRSingleViewUIEdgeGuardDebugMask"), false) };
     const ModToggle::Ptr m_dibr_reversed_depth{ ModToggle::create(generate_name("DIBRReversedDepth"), true) };
@@ -1916,6 +1933,9 @@ public:
             *m_dibr_depth_edge_stabilization_strength,
             *m_dibr_spatial_repair,
             *m_dibr_spatial_repair_debug_mask,
+            *m_dibr_ui_footprint_reprojection,
+            *m_dibr_ui_footprint_reprojection_strength,
+            *m_dibr_ui_footprint_reprojection_debug_mask,
             *m_dibr_single_view_ui_edge_guard,
             *m_dibr_single_view_ui_edge_guard_debug_mask,
             *m_dibr_reversed_depth,

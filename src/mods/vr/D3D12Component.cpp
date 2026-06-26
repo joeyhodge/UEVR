@@ -945,6 +945,11 @@ bool D3D12Component::run_dibr_preview(
         .disparity_pixels = vr->get_dibr_disparity_pixels(),
         .reversed_depth = vr->is_dibr_reversed_depth_enabled(),
         .reprojection_strength = vr->get_dibr_reprojection_strength(),
+        .ui_footprint_reprojection = vr->is_dibr_ui_footprint_reprojection_enabled() &&
+            m_dibr_ui_alpha_captured_this_frame && m_dibr_ui_alpha_snapshot != nullptr,
+        .show_ui_footprint_reprojection_mask = vr->is_dibr_ui_footprint_reprojection_debug_mask_enabled() &&
+            m_dibr_ui_alpha_captured_this_frame && m_dibr_ui_alpha_snapshot != nullptr,
+        .ui_footprint_reprojection_strength = vr->get_dibr_ui_footprint_reprojection_strength(),
         .legacy_depth_curve = vr->get_dibr_legacy_depth_curve(),
         .legacy_near_depth_cap = vr->get_dibr_legacy_near_depth_cap(),
         .depth_edge_stabilization = vr->is_dibr_depth_edge_stabilization_enabled(),
@@ -962,6 +967,15 @@ bool D3D12Component::run_dibr_preview(
         SPDLOG_INFO_ONCE("[DIBR] Current-frame depth-aware spatial repair enabled; no temporal history is retained");
         if (parameters.show_spatial_repair_mask) {
             SPDLOG_INFO_ONCE("[DIBR] Spatial repair diagnostic overlay enabled (red=repaired, amber=rejected)");
+        }
+    }
+
+    if (parameters.ui_footprint_reprojection) {
+        SPDLOG_INFO_ONCE(
+            "[DIBR][UI footprint reprojection] Active; submitted UI footprint uses separate true-reprojection strength={:.3f}",
+            parameters.ui_footprint_reprojection_strength);
+        if (parameters.show_ui_footprint_reprojection_mask) {
+            SPDLOG_INFO_ONCE("[DIBR][UI footprint reprojection] Diagnostic mask enabled (green = softened visible UI edge band)");
         }
     }
 
@@ -1625,7 +1639,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         vr->m_desktop_fix->value() &&
         !use_2d_screen;
     const auto capture_dibr_single_view_ui_alpha =
-        vr->is_dibr_single_view_ui_edge_guard_enabled() &&
+        (vr->is_dibr_single_view_ui_edge_guard_enabled() ||
+            vr->is_dibr_ui_footprint_reprojection_enabled() ||
+            vr->is_dibr_ui_footprint_reprojection_debug_mask_enabled()) &&
         !use_2d_screen;
 
     if (shf_auto_2d_screen) {
