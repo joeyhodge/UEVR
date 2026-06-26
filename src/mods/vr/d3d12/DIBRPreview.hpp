@@ -32,6 +32,12 @@ public:
         // This remains independent from the legacy disparity slider so a title
         // can tune the real projection solve without changing fallback behavior.
         float reprojection_strength{1.0f};
+        // Optional DIBR-only per-footprint reprojection override. This lets
+        // games keep stronger scene reprojection while using a gentler solve
+        // under the submitted OpenXR UI footprint.
+        bool ui_footprint_reprojection{};
+        bool show_ui_footprint_reprojection_mask{};
+        float ui_footprint_reprojection_strength{0.25f};
         float legacy_depth_curve{1.0f};
         float legacy_near_depth_cap{1.0f};
         bool depth_edge_stabilization{};
@@ -127,7 +133,10 @@ private:
         uint32_t enable_ui_edge_guard{};
         uint32_t show_ui_edge_guard_mask{};
         float ui_edge_guard_strength{0.75f};
-        float padding[24]{};
+        uint32_t enable_ui_footprint_reprojection{};
+        uint32_t show_ui_footprint_reprojection_mask{};
+        float ui_footprint_reprojection_strength{0.25f};
+        float padding[21]{};
     };
     static_assert(sizeof(Constants) == 256, "DIBR constants must remain one CBV-aligned block");
 
