@@ -493,6 +493,10 @@ public:
                (m_extreme_compat_mode->value() && m_rendering_method->value() == RenderingMethod::NATIVE_STEREO);
     }
 
+    bool is_using_strict_synchronized_afr() const {
+        return m_rendering_method->value() == RenderingMethod::SYNCHRONIZED;
+    }
+
     bool should_ignore_native_stereo_fix_for_avowed_sync() const;
     bool should_force_native_stereo_fix_same_pass() const;
 
@@ -827,6 +831,18 @@ public:
 
     bool is_ui_layer_pose_stabilizer_enabled() const {
         return m_compatibility_ui_layer_pose_stabilizer->value();
+    }
+
+    bool is_dune_true_stereo_enabled() const {
+        const auto runtime = get_runtime();
+        return m_compatibility_dune_true_stereo->value() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->ready() &&
+            runtime->is_openxr() &&
+            is_hmd_active() &&
+            is_using_strict_synchronized_afr() &&
+            !is_using_2d_screen();
     }
 
     bool is_daysgone_bend_ui_placement_fix_enabled() const {
@@ -1648,6 +1664,7 @@ private:
     const ModToggle::Ptr m_compatibility_daysgone_bend_ui_placement_fix{ ModToggle::create(generate_name("Compatibility_DaysGoneBendUIPlacementFix"), false, true) };
     const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
     const ModToggle::Ptr m_compatibility_everspace2_remove_cinematic_bars{ ModToggle::create(generate_name("Compatibility_Everspace2RemoveCinematicBars"), false, true) };
+    const ModToggle::Ptr m_compatibility_dune_true_stereo{ ModToggle::create(generate_name("Compatibility_DuneTrueStereo"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1970,6 +1987,7 @@ public:
             *m_compatibility_daysgone_bend_ui_placement_fix,
             *m_compatibility_daysgone_gbuffer_safe_mode,
             *m_compatibility_everspace2_remove_cinematic_bars,
+            *m_compatibility_dune_true_stereo,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
