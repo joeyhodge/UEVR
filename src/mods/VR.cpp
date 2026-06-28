@@ -8583,6 +8583,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     ImGui::TextWrapped("Everspace 2 only: removes the exact WG_Ingame_HUD top and bottom cinematic-bar Image widgets once per HUD instance. Disabling does not restore bars already removed from the current HUD.");
                 }
             }
+            if (is_dune_awakening_executable_cached()) {
+                m_compatibility_dune_true_stereo->draw("Dune: Awakening True Stereo (Experimental)");
+                if (m_compatibility_dune_true_stereo->value()) {
+                    ImGui::TextWrapped(
+                        "Dune only: applies per-eye position and OpenXR lens terms while preserving the game's depth projection through its verified "
+                        "view-extension callbacks. Requires DX12 + OpenXR + Synchronized Sequential. Other modes "
+                        "and unsafe frames fall back to the existing head-tracked mono path.");
+                }
+            }
             if (is_windrose_executable()) {
                 ImGui::SeparatorText("Windrose");
                 const auto windrose_meta_ui_status = get_windrose_meta_ui_2d_status_text();
