@@ -155,6 +155,10 @@ private:
         ID3D12Resource* submitted_ui_texture);
     void reset_dibr_preview();
     void note_dibr_single_view_preview_result(bool success, const D3D12_RESOURCE_DESC* source_desc = nullptr);
+    bool ensure_dune_hmd_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    d3d12::TextureContext* render_dune_hmd_mono_scene_texture(
+        ID3D12Device* device,
+        D3D12_RESOURCE_STATES source_state);
 
     template <typename T> using ComPtr = Microsoft::WRL::ComPtr<T>;
 
@@ -234,11 +238,16 @@ private:
     std::atomic<uint32_t> m_dibr_single_view_source_width{};
     std::atomic<uint32_t> m_dibr_single_view_source_height{};
     std::atomic<bool> m_dibr_single_view_preview_ready{};
+    d3d12::TextureContext m_dune_hmd_mono_scene_tex{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
+    d3d12::CommandContext m_dune_hmd_mono_scene_commands{};
     uint64_t m_shf_mono_scene_width{};
     uint32_t m_shf_mono_scene_height{};
     DXGI_FORMAT m_shf_mono_scene_format{DXGI_FORMAT_UNKNOWN};
+    uint64_t m_dune_hmd_mono_scene_width{};
+    uint32_t m_dune_hmd_mono_scene_height{};
+    DXGI_FORMAT m_dune_hmd_mono_scene_format{DXGI_FORMAT_UNKNOWN};
     std::array<d3d12::TextureContext, 2> m_2d_screen_tex{};
     std::vector<std::unique_ptr<d3d12::TextureContext>> m_backbuffer_textures{};
     bool m_skip_spectator_view_for_volatile_external_rt{};

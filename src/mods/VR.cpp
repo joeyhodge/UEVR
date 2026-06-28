@@ -52,6 +52,7 @@
 
 namespace {
 bool is_stalker2_executable_cached();
+bool is_dune_awakening_executable_cached();
 }
 
 std::shared_ptr<VR>& VR::get() {
@@ -308,6 +309,15 @@ bool is_stalker2_executable_cached() {
     return is_stalker2;
 }
 
+bool is_dune_awakening_executable_cached() {
+    static const bool is_dune = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
+    }();
+
+    return is_dune;
+}
+
 bool is_everspace2_executable_cached() {
     static const bool is_everspace2 = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -335,15 +345,22 @@ bool is_directive8020_executable_cached() {
     return is_directive8020;
 }
 
-bool should_defer_stalker2_very_late_openxr_wait(const VRRuntime* runtime, bool is_d3d12) {
-    if (runtime == nullptr || !is_d3d12 || !runtime->is_openxr() || !is_stalker2_executable_cached()) {
+bool should_defer_game_specific_very_late_openxr_wait(const VRRuntime* runtime, bool is_d3d12) {
+    if (runtime == nullptr || !is_d3d12 || !runtime->is_openxr()) {
         return false;
     }
 
-    // Stalker2 can stall for seconds if a VERY_LATE xrWaitFrame is held across
-    // the UE5.1 gameplay-load/render handoff. After initial valid poses, let
-    // the D3D12 submit path own wait/begin/end so the frame loop stays local to
-    // the copy/submit that actually presents to the HMD.
+    const auto game_needs_deferred_wait =
+        is_stalker2_executable_cached() ||
+        is_dune_awakening_executable_cached();
+
+    if (!game_needs_deferred_wait) {
+        return false;
+    }
+
+    // Some D3D12 titles stall if VERY_LATE xrWaitFrame is held across a
+    // gameplay-load/render handoff. After valid poses exist, let D3D12 copy/submit
+    // own wait/begin/end so the frame loop stays local to the actual HMD submit.
     return runtime->got_first_sync && runtime->got_first_valid_poses;
 }
 
@@ -11864,7 +11881,7 @@ void VR::on_post_present() {
     if (is_left_eye_frame) {
         const auto should_defer_very_late_wait =
             get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE &&
-            should_defer_stalker2_very_late_openxr_wait(runtime, m_is_d3d12);
+            should_defer_game_specific_very_late_openxr_wait(runtime, m_is_d3d12);
 
         if (!native_openxr_async_wait_requested && !should_defer_very_late_wait && (get_synchronize_stage() == VR::SynchronizeStage::VERY_LATE || !runtime->got_first_sync)) {
             const auto had_sync = runtime->got_first_sync;
