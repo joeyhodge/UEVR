@@ -1,6 +1,7 @@
 #include <array>
 #include <thread>
 #include <future>
+#include <optional>
 #include <unordered_set>
 
 #include <spdlog/spdlog.h>
@@ -8,6 +9,7 @@
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
 #include <utility/RTTI.hpp>
+#include <utility/String.hpp>
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
@@ -21,9 +23,22 @@ static D3D12Hook* g_d3d12_hook = nullptr;
 namespace {
 constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
 constexpr size_t CREATE_PIPELINE_STATE_VTABLE_INDEX = 47;
+constexpr size_t CREATE_DESCRIPTOR_HEAP_VTABLE_INDEX = 14;
+constexpr size_t CREATE_SHADER_RESOURCE_VIEW_VTABLE_INDEX = 18;
 constexpr size_t CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX = 20;
 constexpr size_t CREATE_DEPTH_STENCIL_VIEW_VTABLE_INDEX = 21;
+constexpr size_t COPY_DESCRIPTORS_VTABLE_INDEX = 23;
+constexpr size_t COPY_DESCRIPTORS_SIMPLE_VTABLE_INDEX = 24;
+constexpr size_t DRAW_INSTANCED_VTABLE_INDEX = 12;
+constexpr size_t DRAW_INDEXED_INSTANCED_VTABLE_INDEX = 13;
+constexpr size_t DISPATCH_VTABLE_INDEX = 14;
+constexpr size_t RS_SET_VIEWPORTS_VTABLE_INDEX = 21;
 constexpr size_t SET_PIPELINE_STATE_VTABLE_INDEX = 25;
+constexpr size_t RESOURCE_BARRIER_VTABLE_INDEX = 26;
+constexpr size_t SET_DESCRIPTOR_HEAPS_VTABLE_INDEX = 28;
+constexpr size_t SET_COMPUTE_ROOT_DESCRIPTOR_TABLE_VTABLE_INDEX = 31;
+constexpr size_t SET_GRAPHICS_ROOT_DESCRIPTOR_TABLE_VTABLE_INDEX = 32;
+constexpr size_t OM_SET_RENDER_TARGETS_VTABLE_INDEX = 46;
 
 bool should_preserve_present_params_for_current_game() {
     static const bool result = []() {
@@ -32,6 +47,72 @@ bool should_preserve_present_params_for_current_game() {
     }();
 
     return result;
+}
+
+bool is_dune_awakening_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"DuneSandbox-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+std::optional<std::wstring> get_d3d12_debug_name(ID3D12Object* object) {
+    if (object == nullptr) {
+        return std::nullopt;
+    }
+
+    UINT byte_count = 0;
+    if (FAILED(object->GetPrivateData(WKPDID_D3DDebugObjectNameW, &byte_count, nullptr)) ||
+        byte_count <= sizeof(wchar_t)) {
+        return std::nullopt;
+    }
+
+    std::wstring name((byte_count + sizeof(wchar_t) - 1) / sizeof(wchar_t), L'\0');
+    if (FAILED(object->GetPrivateData(WKPDID_D3DDebugObjectNameW, &byte_count, name.data()))) {
+        return std::nullopt;
+    }
+
+    name.resize(byte_count / sizeof(wchar_t));
+    while (!name.empty() && name.back() == L'\0') {
+        name.pop_back();
+    }
+
+    return name.empty() ? std::nullopt : std::optional<std::wstring>{std::move(name)};
+}
+
+void log_dune_present_path_once(IDXGISwapChain3* swapchain, ID3D12CommandQueue* command_queue) {
+    static bool logged = false;
+
+    if (logged || !is_dune_awakening_current_game() || swapchain == nullptr) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> buffer{};
+    const auto index = swapchain->GetCurrentBackBufferIndex();
+    if (FAILED(swapchain->GetBuffer(index, IID_PPV_ARGS(&buffer))) || buffer == nullptr) {
+        return;
+    }
+
+    const auto buffer_name = get_d3d12_debug_name(buffer.Get());
+    const auto queue_name = get_d3d12_debug_name(command_queue);
+    const auto desc = buffer->GetDesc();
+
+    spdlog::info(
+        "[Dune][FSR] Real Present path swapchain={:x} index={} buffer={:x} name='{}' [{}x{} fmt={}] queue={:x} name='{}'. "
+        "Dune uses one DXGI swapchain with an FFX custom-present pipeline; no nested swapchain will be selected.",
+        reinterpret_cast<uintptr_t>(swapchain),
+        index,
+        reinterpret_cast<uintptr_t>(buffer.Get()),
+        buffer_name ? utility::narrow(*buffer_name) : "<unnamed>",
+        desc.Width,
+        desc.Height,
+        static_cast<uint32_t>(desc.Format),
+        reinterpret_cast<uintptr_t>(command_queue),
+        queue_name ? utility::narrow(*queue_name) : "<unnamed>");
+
+    logged = true;
 }
 
 template <typename TInterface>
@@ -280,6 +361,16 @@ bool D3D12Hook::hook() {
     if (FAILED(swap_chain1->QueryInterface(IID_PPV_ARGS(&swap_chain)))) {
         spdlog::error("Failed to retrieve D3D12 DXGI SwapChain");
         return false;
+    }
+
+    if (is_dune_awakening_current_game()) {
+        // This object is UEVR's startup dummy, not Dune's later FFX custom
+        // present. DXGI COM implementations are not required to expose MSVC
+        // RTTI, so probing vtable[-1] cannot identify Dune's FSR path.
+        m_skip_dummy_swapchain_type_info_probe = true;
+        spdlog::info(
+            "[Dune][FSR] Skipping MSVC RTTI on UEVR's dummy DXGI swapchain; "
+            "the real single-swapchain FFX custom-present path will be identified at Present");
     }
 
     if (!m_skip_dummy_swapchain_type_info_probe) {
@@ -740,6 +831,8 @@ HRESULT D3D12Hook::present_internal(IDXGISwapChain3* swap_chain, UINT sync_inter
             d3d12->m_using_proton_swapchain,
             d3d12->m_using_frame_generation_swapchain
         );
+
+        log_dune_present_path_once(swap_chain, d3d12->m_command_queue);
     }
 
     if (d3d12->m_swapchain_0 == nullptr) {
