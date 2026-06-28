@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <DirectXMath.h>
+#include <limits>
 #include <mutex>
 #include <limits>
 #include <sstream>
@@ -1721,8 +1722,54 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto is_actually_afr = vr->is_using_afr();
     const auto is_afr = !is_same_frame && vr->is_using_afr();
-    const auto is_left_eye_frame = is_afr && vr->m_render_frame_count % 2 == vr->m_left_eye_interval;
-    const auto is_right_eye_frame = !is_afr || vr->m_render_frame_count % 2 == vr->m_right_eye_interval;
+    auto is_left_eye_frame = is_afr && vr->m_render_frame_count % 2 == vr->m_left_eye_interval;
+    auto is_right_eye_frame = !is_afr || vr->m_render_frame_count % 2 == vr->m_right_eye_interval;
+    bool dune_true_stereo_submit_active = false;
+
+    if (is_dune_awakening_current_game() &&
+        vr->is_dune_true_stereo_enabled() &&
+        is_afr &&
+        vr->m_fake_stereo_hook != nullptr)
+    {
+        const auto snapshot =
+            vr->m_fake_stereo_hook->get_dune_true_stereo_frame_snapshot();
+        const auto submit_frame = static_cast<uint32_t>(vr->m_render_frame_count);
+        const auto snapshot_is_current_or_previous =
+            snapshot &&
+            submit_frame >= snapshot->render_frame &&
+            (submit_frame - snapshot->render_frame) <= 1u;
+
+        if (snapshot_is_current_or_previous &&
+            snapshot->eye <= static_cast<uint8_t>(VRRuntime::Eye::RIGHT))
+        {
+            const auto snapshot_age = submit_frame - snapshot->render_frame;
+            is_left_eye_frame =
+                snapshot->eye == static_cast<uint8_t>(VRRuntime::Eye::LEFT);
+            is_right_eye_frame = !is_left_eye_frame;
+            dune_true_stereo_submit_active = true;
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[Dune][TrueStereo] Matched D3D12 submit frame={} view_frame={} age={} eye={}",
+                submit_frame,
+                snapshot->render_frame,
+                snapshot_age,
+                is_left_eye_frame ? "left" : "right");
+        } else {
+            const auto snapshot_age =
+                snapshot && submit_frame >= snapshot->render_frame
+                    ? submit_frame - snapshot->render_frame
+                    : std::numeric_limits<uint32_t>::max();
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Dune][TrueStereo] No matching view for D3D12 submit frame={} snapshot_frame={} snapshot_age={} snapshot_eye={}; "
+                "using existing AFR fallback",
+                submit_frame,
+                snapshot ? snapshot->render_frame : 0u,
+                snapshot_age,
+                snapshot ? snapshot->eye : 0xffu);
+        }
+    }
     bool native_stereo_array_submit_active = false;
 
     // Sometimes this can happen if pipeline execution does not go exactly as planned
@@ -2076,6 +2123,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 backbuffer = dune_scene->texture;
                 scene_source_state = ENGINE_SRC_COLOR;
                 dune_using_hmd_mono_expansion = true;
+                if (dune_true_stereo_submit_active) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Dune][TrueStereo] Scaling verified per-eye scene into the HMD eye target");
+                }
             } else {
                 SPDLOG_ERROR_EVERY_N_SEC(
                     1,
