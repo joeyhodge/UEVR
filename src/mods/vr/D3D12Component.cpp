@@ -1309,6 +1309,8 @@ void D3D12Component::reset_dibr_preview() {
     m_dibr_single_view_preview_ready.store(false, std::memory_order_release);
     m_dibr_single_view_generation.fetch_add(1, std::memory_order_acq_rel);
     m_dibr_was_active = false;
+}
+
 bool D3D12Component::ensure_dune_hmd_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc) {
     auto vr = VR::get();
 
