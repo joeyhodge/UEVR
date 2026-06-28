@@ -68,7 +68,7 @@ public:
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
 
-    bool should_use_separate_render_target() const { return true; }
+    bool should_use_separate_render_target() const;
 
     void update_viewport(bool use_separate_rt, const sdk::FViewport& vp, class SViewport* vp_widget = nullptr);
 
@@ -444,6 +444,22 @@ public:
         return m_has_scene_view_family_offsets_ready;
     }
 
+    bool set_dune_character_creation_active(bool active) {
+        return m_dune_character_creation_active.exchange(active, std::memory_order_acq_rel);
+    }
+
+    bool is_dune_character_creation_active() const {
+        return m_dune_character_creation_active.load(std::memory_order_acquire);
+    }
+
+    void set_dune_has_live_pawn(bool active) {
+        m_dune_has_live_pawn.store(active, std::memory_order_release);
+    }
+
+    bool dune_has_live_pawn() const {
+        return m_dune_has_live_pawn.load(std::memory_order_acquire);
+    }
+
     void note_stable_slate_draw() {
         if (!m_has_seen_stable_slate_draw) {
             m_has_seen_stable_slate_draw = true;
@@ -624,7 +640,9 @@ public:
     }
 
     // Do not call these directly
+    static void setup_view(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family, sdk::FSceneView& view);
     static void setup_viewpoint(ISceneViewExtension* extension, void* player_controller, void* view_info);
+    static void setup_view_projection_matrix(ISceneViewExtension* extension, void* projection_data);
     static void localplayer_setup_viewpoint(void* localplayer, void* view_info, void* pass);
     static void setup_view_family(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family);
     static void begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family);
@@ -634,6 +652,9 @@ public:
     const char* get_ghosting_fix_status_text();
 
 private:
+    std::atomic_bool m_dune_character_creation_active{false};
+    std::atomic_bool m_dune_has_live_pawn{false};
+
     bool hook();
     bool standard_fake_stereo_hook(uintptr_t vtable);
     bool nonstandard_create_stereo_device_hook();
