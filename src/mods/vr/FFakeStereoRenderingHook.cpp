@@ -96,6 +96,17 @@ uint64_t g_shf_rtm_candidate_suppressed{};
 std::atomic_bool g_dune_force_viewport_rhi_once{false};
 std::atomic_uint64_t g_dune_rejected_flat_viewport_rts{0};
 
+struct DunePendingTrueStereoView {
+    bool valid{false};
+    uint32_t render_frame{};
+    uint8_t eye{};
+    uintptr_t player_controller{};
+    uintptr_t view_info{};
+    glm::quat adjusted_quaternion{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+thread_local DunePendingTrueStereoView g_dune_pending_true_stereo_view{};
+
 constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
 constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
@@ -8429,6 +8440,11 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
     auto& vr = VR::get();
 
     if (dune_awakening_is_current_game() && g_hook != nullptr) {
+        g_dune_pending_true_stereo_view.valid = false;
+        if (vr == nullptr || !vr->is_dune_true_stereo_enabled()) {
+            g_hook->invalidate_dune_true_stereo_frame();
+        }
+
         struct DuneMinimalViewInfoPrefix {
             Vector3d location;
             Rotator<double> rotation;
@@ -8550,6 +8566,23 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
                             reinterpret_cast<void*>(rotation_address),
                             &adjusted_rotation,
                             sizeof(adjusted_rotation));
+
+                        if (vr->is_dune_true_stereo_enabled()) {
+                            const auto frame = static_cast<uint32_t>(render_frame);
+                            const auto eye =
+                                (frame % 2u) == vr->m_left_eye_interval
+                                    ? static_cast<uint8_t>(VRRuntime::Eye::LEFT)
+                                    : static_cast<uint8_t>(VRRuntime::Eye::RIGHT);
+
+                            g_dune_pending_true_stereo_view = DunePendingTrueStereoView{
+                                .valid = true,
+                                .render_frame = frame,
+                                .eye = eye,
+                                .player_controller = reinterpret_cast<uintptr_t>(player_controller),
+                                .view_info = reinterpret_cast<uintptr_t>(view_info),
+                                .adjusted_quaternion = adjusted_quaternion,
+                            };
+                        }
 
                         SPDLOG_INFO_EVERY_N_SEC(
                             1,
@@ -8721,6 +8754,187 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         data.projection_matrix[2][2],
         data.projection_matrix[3][2],
         reinterpret_cast<uintptr_t>(_ReturnAddress()));
+
+    const auto pending_view = g_dune_pending_true_stereo_view;
+    g_dune_pending_true_stereo_view.valid = false;
+
+    if (vr != nullptr && vr->is_dune_true_stereo_enabled()) {
+        const auto frame = static_cast<uint32_t>(render_frame);
+        const auto rect_width = data.view_rect[2] - data.view_rect[0];
+        const auto rect_height = data.view_rect[3] - data.view_rect[1];
+        const auto valid_rect =
+            rect_width > 0 &&
+            rect_height > 0 &&
+            rect_width <= 16384 &&
+            rect_height <= 16384;
+        const auto finite_origin =
+            std::isfinite(data.view_origin.x) &&
+            std::isfinite(data.view_origin.y) &&
+            std::isfinite(data.view_origin.z);
+        const auto matching_main_view =
+            pending_view.valid &&
+            pending_view.render_frame == frame &&
+            pending_view.player_controller != 0 &&
+            pending_view.view_info != 0 &&
+            g_hook->dune_has_live_pawn() &&
+            g_hook->is_in_viewport_client_draw() &&
+            valid_rect &&
+            finite_origin;
+
+        if (matching_main_view) {
+            const auto eye = static_cast<VRRuntime::Eye>(pending_view.eye);
+            const auto eye_offset = glm::vec3{vr->get_eye_offset(eye)};
+            const auto finite_eye_offset =
+                std::isfinite(eye_offset.x) &&
+                std::isfinite(eye_offset.y) &&
+                std::isfinite(eye_offset.z) &&
+                glm::length(eye_offset) >= 0.001f &&
+                glm::length(eye_offset) <= 1.0f;
+
+            auto world_to_meters = vr->get_world_to_meters();
+            if (!std::isfinite(world_to_meters) ||
+                world_to_meters < 10.0f ||
+                world_to_meters > 100000.0f)
+            {
+                world_to_meters = 100.0f * vr->get_world_scale();
+            }
+
+            const auto eye_rotation =
+                glm::normalize(glm::quat{vr->get_eye_transform(pending_view.eye)});
+            const auto eye_quaternion =
+                glm::normalize(pending_view.adjusted_quaternion * eye_rotation);
+            const auto quat_converter = glm::quat{Matrix4x4f{
+                0, 0, -1, 0,
+                1, 0, 0, 0,
+                0, 1, 0, 0,
+                0, 0, 0, 1,
+            }};
+            const auto eye_separation =
+                quat_converter * (eye_quaternion * (eye_offset * world_to_meters));
+            const auto finite_eye_separation =
+                std::isfinite(eye_separation.x) &&
+                std::isfinite(eye_separation.y) &&
+                std::isfinite(eye_separation.z) &&
+                glm::length(eye_separation) <= 1000.0f;
+
+            auto adjusted_origin = data.view_origin;
+            adjusted_origin -= glm::dvec3{eye_separation};
+
+            const auto projection_f = vr->get_projection_matrix(eye);
+            const glm::dmat4 openxr_projection{projection_f};
+            bool finite_projection = true;
+            for (glm::length_t column = 0; column < 4 && finite_projection; ++column) {
+                for (glm::length_t row = 0; row < 4; ++row) {
+                    if (!std::isfinite(openxr_projection[column][row])) {
+                        finite_projection = false;
+                        break;
+                    }
+                }
+            }
+
+            const auto sane_projection =
+                finite_projection &&
+                std::abs(openxr_projection[0][0]) >= 0.01 &&
+                std::abs(openxr_projection[0][0]) <= 1000.0 &&
+                std::abs(openxr_projection[1][1]) >= 0.01 &&
+                std::abs(openxr_projection[1][1]) <= 1000.0 &&
+                std::abs(openxr_projection[2][0]) <= 2.0 &&
+                std::abs(openxr_projection[2][1]) <= 2.0;
+            const auto sane_origin =
+                std::isfinite(adjusted_origin.x) &&
+                std::isfinite(adjusted_origin.y) &&
+                std::isfinite(adjusted_origin.z);
+
+            // Dune's AMD presentation path reconstructs scene depth using the
+            // game's projection conventions. Preserve those depth/clip terms
+            // and only import the per-eye OpenXR lens terms.
+            auto projection = data.projection_matrix;
+            projection[0][0] = openxr_projection[0][0];
+            projection[1][1] = openxr_projection[1][1];
+            projection[2][0] = openxr_projection[2][0];
+            projection[2][1] = openxr_projection[2][1];
+
+            auto* writable_data = reinterpret_cast<ProjectionData*>(projection_data);
+            const auto origin_address =
+                reinterpret_cast<uintptr_t>(&writable_data->view_origin);
+            const auto projection_address =
+                reinterpret_cast<uintptr_t>(&writable_data->projection_matrix);
+            const auto writable =
+                is_writable_process_range(origin_address, sizeof(adjusted_origin)) &&
+                is_writable_process_range(projection_address, sizeof(projection));
+
+            if (finite_eye_offset &&
+                std::isfinite(world_to_meters) &&
+                world_to_meters > 0.0f &&
+                finite_eye_separation &&
+                sane_origin &&
+                sane_projection &&
+                writable)
+            {
+                memcpy(
+                    reinterpret_cast<void*>(origin_address),
+                    &adjusted_origin,
+                    sizeof(adjusted_origin));
+                memcpy(
+                    reinterpret_cast<void*>(projection_address),
+                    &projection,
+                    sizeof(projection));
+
+                g_hook->publish_dune_true_stereo_frame(frame, pending_view.eye);
+
+                SPDLOG_INFO_EVERY_N_SEC(
+                    1,
+                    "[Dune][TrueStereo] Applied synchronized eye={} frame={} origin=[{:.3f},{:.3f},{:.3f}] "
+                    "eye_delta=[{:.4f},{:.4f},{:.4f}] world_to_meters={:.3f} "
+                    "lens=[{:.5f},{:.5f},{:.5f},{:.5f}] preserved_depth=[{:.5f},{:.5f},{:.5f},{:.5f}]",
+                    pending_view.eye == static_cast<uint8_t>(VRRuntime::Eye::LEFT) ? "left" : "right",
+                    frame,
+                    adjusted_origin.x,
+                    adjusted_origin.y,
+                    adjusted_origin.z,
+                    eye_separation.x,
+                    eye_separation.y,
+                    eye_separation.z,
+                    world_to_meters,
+                    projection[0][0],
+                    projection[1][1],
+                    projection[2][0],
+                    projection[2][1],
+                    projection[2][2],
+                    projection[2][3],
+                    projection[3][2],
+                    projection[3][3]);
+            } else {
+                g_hook->invalidate_dune_true_stereo_frame();
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[Dune][TrueStereo] Rejected unsafe eye view frame={} eye={} offset_ok={} separation_ok={} "
+                    "origin_ok={} projection_ok={} writable={}; using head-tracked mono fallback",
+                    frame,
+                    pending_view.eye,
+                    finite_eye_offset,
+                    finite_eye_separation,
+                    sane_origin,
+                    sane_projection,
+                    writable);
+            }
+        } else {
+            // SetupViewProjectionMatrix also runs for auxiliary scene families
+            // after the gameplay view. Those calls must not erase a verified
+            // main-view token before D3D12 consumes it.
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][TrueStereo] Ignoring unpaired auxiliary projection frame={} pending_valid={} pending_frame={} "
+                "viewport_draw={} live_pawn={} rect={}x{}",
+                frame,
+                pending_view.valid,
+                pending_view.render_frame,
+                g_hook->is_in_viewport_client_draw(),
+                g_hook->dune_has_live_pawn(),
+                rect_width,
+                rect_height);
+        }
+    }
 
     static bool logged_gameplay_stack = false;
     if (g_hook->dune_has_live_pawn() && !logged_gameplay_stack) {
