@@ -93,6 +93,8 @@ std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_
 std::unordered_set<uintptr_t> g_shf_logged_rtm_candidate_natives{};
 uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
+std::atomic_bool g_dune_force_viewport_rhi_once{false};
+std::atomic_uint64_t g_dune_rejected_flat_viewport_rts{0};
 
 constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
 constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
@@ -304,6 +306,66 @@ bool avowed_is_current_game() {
     }();
 
     return result;
+}
+
+bool dune_awakening_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+bool dune_should_preserve_native_viewport_target() {
+    return dune_awakening_is_current_game() &&
+        g_hook != nullptr &&
+        (g_hook->is_dune_character_creation_active() || g_hook->dune_has_live_pawn());
+}
+
+bool dune_is_auxiliary_view_family(sdk::FSceneViewFamily* view_family, const char* source) {
+    if (!dune_awakening_is_current_game() || view_family == nullptr) {
+        return false;
+    }
+
+    if (g_hook == nullptr) {
+        return false;
+    }
+
+    // A different render-target pointer is not sufficient to identify a
+    // showroom family once Dune has entered a playable world. Its custom
+    // FidelityFX pipeline legitimately replaces the main family target.
+    if (g_hook->dune_has_live_pawn()) {
+        return false;
+    }
+
+    try {
+        auto* rtm = g_hook->get_render_target_manager();
+        auto* main_viewport = rtm != nullptr ? rtm->get_viewport() : nullptr;
+        auto* family_target = view_family->get_render_target();
+
+        if (main_viewport == nullptr || family_target == nullptr) {
+            return false;
+        }
+
+        if (reinterpret_cast<void*>(family_target) == reinterpret_cast<void*>(main_viewport)) {
+            return false;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][Showroom] Isolating auxiliary view family at {} target={:x} main_viewport={:x}",
+            source != nullptr ? source : "<unknown>",
+            reinterpret_cast<uintptr_t>(family_target),
+            reinterpret_cast<uintptr_t>(main_viewport));
+        return true;
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Dune][Showroom] Failed to classify view family at {}; preserving normal UEVR behavior",
+            source != nullptr ? source : "<unknown>");
+        return false;
+    }
 }
 
 bool subnautica2_is_current_game() {
@@ -2858,7 +2920,9 @@ void shf_probe_scene_viewport_memory(sdk::FViewport* viewport, const char* sourc
 }
 
 void shf_force_scene_viewport_separate_rt(const sdk::FViewport& viewport, const char* source) {
-    if (!shf_is_current_game() || g_framework == nullptr || !g_framework->is_game_data_intialized()) {
+    const bool should_force_scene_viewport_rt = shf_is_current_game() || dune_awakening_is_current_game();
+
+    if (!should_force_scene_viewport_rt || g_framework == nullptr || !g_framework->is_game_data_intialized()) {
         return;
     }
 
@@ -2892,19 +2956,46 @@ void shf_force_scene_viewport_separate_rt(const sdk::FViewport& viewport, const 
     auto* use_separate_rt = reinterpret_cast<uint8_t*>(viewport_base + b_use_separate_rt_fviewport_offset);
     auto* force_separate_rt = reinterpret_cast<uint8_t*>(viewport_base + b_force_separate_rt_fviewport_offset);
 
+    const bool is_dune = dune_awakening_is_current_game();
+    const char* log_prefix = is_dune ? "[Dune][RT]" : "[SHf]";
+
     if (*use_separate_rt > 1 || *force_separate_rt > 1) {
-        SPDLOG_WARN_ONCE("[SHf] Refusing to force separate RT from {}; unexpected FSceneViewport bool bytes use={} force={}",
-            source, *use_separate_rt, *force_separate_rt);
+        SPDLOG_WARN_ONCE("{} Refusing to force separate RT from {}; unexpected FSceneViewport bool bytes use={} force={}",
+            log_prefix, source, *use_separate_rt, *force_separate_rt);
         return;
     }
 
-    if (*use_separate_rt == 0 || *force_separate_rt == 0) {
-        SPDLOG_WARN_ONCE("[SHf] Forcing FSceneViewport separate RT from {} at viewport {:x} use+0x{:x} force+0x{:x}",
-            source, viewport_base, b_use_separate_rt_fviewport_offset, b_force_separate_rt_fviewport_offset);
+    if (is_dune && dune_should_preserve_native_viewport_target()) {
+        const bool was_separate = *use_separate_rt != 0 || *force_separate_rt != 0;
+        *use_separate_rt = 0;
+        *force_separate_rt = 0;
+
+        if (was_separate) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][CustomPresent] Restored Dune's native viewport target from {} mode={}",
+                source,
+                g_hook->is_dune_character_creation_active() ? "character_creation" : "gameplay");
+        }
+
+        return;
+    }
+
+    const bool was_missing_separate_rt = *use_separate_rt == 0 || *force_separate_rt == 0;
+
+    if (was_missing_separate_rt) {
+        SPDLOG_WARN_ONCE("{} Forcing FSceneViewport separate RT from {} at viewport {:x} use+0x{:x} force+0x{:x}",
+            log_prefix, source, viewport_base, b_use_separate_rt_fviewport_offset, b_force_separate_rt_fviewport_offset);
     }
 
     *use_separate_rt = 1;
     *force_separate_rt = 1;
+
+    if (is_dune && was_missing_separate_rt && g_hook != nullptr) {
+        SPDLOG_WARN_ONCE("[Dune][RT] Requesting one viewport texture recreate after forcing separate RT");
+        g_dune_force_viewport_rhi_once.store(true);
+        g_hook->set_should_recreate_textures(true);
+    }
 }
 
 constexpr auto UE57_SLATE_THREAD_PREFERENCE_CACHE_KEY = "ue57_prefer_slate_thread";
@@ -3570,6 +3661,167 @@ bool avowed_is_live_uobject(uintptr_t object, uintptr_t* out_vtable = nullptr, u
     }
 
     return true;
+}
+
+bool dune_is_live_uobject(uintptr_t object, uintptr_t* out_class = nullptr) {
+    if (!dune_awakening_is_current_game() || object == 0) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    if (!safe_read_value(object, vtable) || !looks_like_virtual_function_table(vtable)) {
+        return false;
+    }
+
+    uintptr_t cls{};
+    if (!safe_read_value(object + sdk::UObjectBase::get_class_private_offset(), cls) || cls == 0) {
+        return false;
+    }
+
+    uint32_t internal_index{};
+    if (!safe_read_value(object + sdk::UObjectBase::get_internal_index_offset(), internal_index)) {
+        return false;
+    }
+
+    auto* object_array = sdk::FUObjectArray::get();
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto object_count = object_array->get_object_count();
+    if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
+        return false;
+    }
+
+    auto* item = object_array->get_object((int32_t)internal_index);
+    if (item == nullptr || !is_readable_process_range((uintptr_t)item, sizeof(sdk::FUObjectItem))) {
+        return false;
+    }
+
+    uintptr_t item_object{};
+    if (!safe_read_value((uintptr_t)item + sdk::FUObjectArray::get_item_object_offset(), item_object) || item_object != object) {
+        return false;
+    }
+
+    if (out_class != nullptr) {
+        *out_class = cls;
+    }
+
+    return true;
+}
+
+struct DunePlayerState {
+    sdk::UObjectBase* object{};
+    sdk::UClass* object_class{};
+    bool character_creation{};
+    bool playable_world{};
+    bool from_tracked_objects{};
+    std::string full_name{};
+};
+
+DunePlayerState classify_dune_player_object(
+    sdk::UObjectBase* object,
+    sdk::UClass* player_character_class,
+    sdk::UClass* character_creation_class,
+    bool from_tracked_objects)
+{
+    DunePlayerState result{};
+    uintptr_t object_class{};
+
+    if (object == nullptr ||
+        !dune_is_live_uobject(reinterpret_cast<uintptr_t>(object), &object_class) ||
+        object_class == 0)
+    {
+        return result;
+    }
+
+    auto* const uclass = reinterpret_cast<sdk::UClass*>(object_class);
+    if (player_character_class != nullptr && !uclass->is_a(player_character_class)) {
+        return result;
+    }
+
+    try {
+        result.full_name = utility::narrow(object->get_full_name());
+    } catch (...) {
+        return {};
+    }
+
+    if (result.full_name.empty() ||
+        result.full_name.find("Default__") != std::string::npos)
+    {
+        return {};
+    }
+
+    result.object = object;
+    result.object_class = uclass;
+    result.from_tracked_objects = from_tracked_objects;
+    result.character_creation =
+        character_creation_class != nullptr &&
+        uclass->is_a(character_creation_class);
+
+    // Runtime actors include a map/level path. This excludes class defaults,
+    // preview assets, and other persistent metadata tracked under the same
+    // native DunePlayerCharacter base class.
+    const bool is_runtime_actor =
+        result.full_name.find("PersistentLevel.") != std::string::npos ||
+        result.full_name.find("/Game/Dune/Maps/") != std::string::npos;
+    result.playable_world = is_runtime_actor && !result.character_creation;
+    return result;
+}
+
+DunePlayerState detect_dune_player_state() {
+    static sdk::UClass* player_character_class = nullptr;
+    static sdk::UClass* character_creation_class = nullptr;
+
+    if (player_character_class == nullptr) {
+        player_character_class =
+            sdk::find_uobject<sdk::UClass>(L"Class /Script/DuneSandbox.DunePlayerCharacter", false);
+    }
+
+    if (character_creation_class == nullptr) {
+        character_creation_class =
+            sdk::find_uobject<sdk::UClass>(L"Class /Script/DuneSandbox.DuneCharacterCreationCharacter", false);
+    }
+
+    auto* const engine = sdk::UEngine::get();
+    auto* const local_pawn = engine != nullptr ? engine->get_localpawn(0) : nullptr;
+    auto state = classify_dune_player_object(
+        reinterpret_cast<sdk::UObjectBase*>(local_pawn),
+        player_character_class,
+        character_creation_class,
+        false);
+
+    if (state.character_creation || state.playable_world) {
+        return state;
+    }
+
+    // Dune keeps a Cartography showroom world visible to UEngine while the
+    // actual NPE/gameplay pawn lives in another world. UObjectHook already
+    // tracks derived instances by every superclass, so use that authoritative
+    // set instead of sweeping GUObjectArray on the game thread.
+    auto& object_hook = UObjectHook::get();
+    if (object_hook == nullptr || object_hook->is_disabled() || player_character_class == nullptr) {
+        return {};
+    }
+
+    DunePlayerState character_creation_state{};
+    for (auto* const object : object_hook->get_objects_by_class(player_character_class)) {
+        auto candidate = classify_dune_player_object(
+            object,
+            player_character_class,
+            character_creation_class,
+            true);
+
+        if (candidate.playable_world) {
+            return candidate;
+        }
+
+        if (candidate.character_creation && character_creation_state.object == nullptr) {
+            character_creation_state = std::move(candidate);
+        }
+    }
+
+    return character_creation_state;
 }
 
 std::optional<uintptr_t> locate_vtable_from_constructor_rip_references(uintptr_t constructor) {
@@ -5697,18 +5949,22 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 return g_hook->get_render_target_manager()->allocate_render_target_texture((uintptr_t)_ReturnAddress(), &out_texture, &out_shader_resource);
             }
         );
-    
-        m_embedded_rtm.should_use_separate_render_target_hook = 
+
+        m_embedded_rtm.should_use_separate_render_target_hook =
             std::make_unique<PointerHook>((void**)should_use_separate_render_target_func_ptr, +[](void* self) -> bool {
             #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
                 SPDLOG_INFO("ShouldUseSeparateRenderTarget (embedded): {:x}", (uintptr_t)_ReturnAddress());
             #else
                 SPDLOG_INFO_ONCE("ShouldUseSeparateRenderTarget (embedded): {:x}", (uintptr_t)_ReturnAddress());
             #endif
-            
+
                 auto vr = VR::get();
 
                 if (vr->is_extreme_compatibility_mode_enabled()) {
+                    return false;
+                }
+
+                if (dune_should_preserve_native_viewport_target()) {
                     return false;
                 }
 
@@ -5722,7 +5978,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         );
 
         if (!need_reallocate_viewport_render_target_is_bad) {
-            m_embedded_rtm.need_reallocate_viewport_render_target_hook = 
+            m_embedded_rtm.need_reallocate_viewport_render_target_hook =
                 std::make_unique<PointerHook>((void**)need_reallocate_viewport_render_target_func_ptr, +[](void* self, sdk::FViewport* viewport) -> bool {
                 #ifdef FFAKE_STEREO_RENDERING_LOG_ALL_CALLS
                     SPDLOG_INFO("NeedReallocateViewportRenderTarget (embedded): {:x}", (uintptr_t)_ReturnAddress());
@@ -6795,23 +7051,46 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 }
 
 void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
-    constexpr bool allow_scene_viewport_rt_adoption = false;
+    if (g_framework == nullptr || is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+        return;
+    }
+
+    const auto allow_scene_viewport_rt_adoption = dune_awakening_is_current_game();
+    const auto log_prefix = allow_scene_viewport_rt_adoption ? "[Dune][RT]" : "[SHf]";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
 
-    if (is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+    if (allow_scene_viewport_rt_adoption && dune_should_preserve_native_viewport_target()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[Dune][CustomPresent] Ignoring rotating FSceneViewport RT from {}; final AMD swapchain output owns the visible scene",
+            source != nullptr ? source : "<unknown>");
         return;
     }
 
     auto vr = VR::get();
 
-    if (!vr->is_hmd_active() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+    if (vr == nullptr || !vr->is_hmd_active() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
         return;
     }
 
     auto rtm = get_render_target_manager();
 
-    if (rtm == nullptr || (!everspace2_direct_observation && rtm->get_render_target() != nullptr)) {
+    if (rtm == nullptr) {
+        return;
+    }
+
+    auto current_target = rtm->get_render_target();
+    const bool is_dune_viewport_refresh =
+        allow_scene_viewport_rt_adoption &&
+        current_target != nullptr &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
+
+    if (!everspace2_direct_observation &&
+        current_target != nullptr &&
+        !is_dune_viewport_refresh)
+    {
         return;
     }
 
@@ -6835,7 +7114,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
 
         shf_probe_scene_viewport_memory(viewport, source, nullptr);
-        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target is not available yet from {}", source);
+        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target is not available yet from {}", log_prefix, source);
         return;
     }
 
@@ -6861,10 +7140,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         try {
             native_resource = (ID3D12Resource*)candidate->get_native_resource();
         } catch (const std::exception& e) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", source, e.what());
+            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", log_prefix, source, e.what());
             return;
         } catch (...) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf] Rejected FSceneViewport render target from {} because GetNativeResource threw", source);
+            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource threw", log_prefix, source);
             return;
         }
 
@@ -6874,14 +7153,14 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] FSceneViewport render target from {} has no native D3D12 resource yet", source);
+        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target from {} has no native D3D12 resource yet", log_prefix, source);
         return;
     }
 
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) {
         SPDLOG_WARNING_EVERY_N_SEC(2,
-            "[SHf] Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
-            source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+            "{} Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
+            log_prefix, source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
         return;
     }
 
@@ -6915,22 +7194,142 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
+    if (allow_scene_viewport_rt_adoption) {
+        const auto expected_width = (uint64_t)vr->get_hmd_width() * (vr->is_using_afr() ? 1ull : 2ull);
+        const auto expected_height = (uint64_t)vr->get_hmd_height();
+        const auto is_flat_desktop_rt =
+            expected_width != 0 &&
+            expected_height != 0 &&
+            (desc.Width < expected_width || desc.Height < expected_height);
+        const auto allow_native_custom_present_rt =
+            is_flat_desktop_rt &&
+            dune_should_preserve_native_viewport_target();
+
+        if (is_flat_desktop_rt && !allow_native_custom_present_rt) {
+            const auto rejected = g_dune_rejected_flat_viewport_rts.fetch_add(1) + 1;
+
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Rejected desktop-sized FSceneViewport RT from {} at {:x} [{}x{} fmt={}] while waiting for stereo RT [{}x{}]; rejected_count={}",
+                log_prefix,
+                source,
+                (uintptr_t)candidate,
+                desc.Width,
+                desc.Height,
+                (uint32_t)desc.Format,
+                expected_width,
+                expected_height,
+                rejected);
+
+            if (g_hook != nullptr && (rejected <= 3 || rejected % 120 == 0)) {
+                SPDLOG_WARN(
+                    "[Dune][RT] Requesting viewport RHI recreate after rejecting flat viewport RT [{}x{}]",
+                    desc.Width,
+                    desc.Height);
+                g_dune_force_viewport_rhi_once.store(true);
+                g_hook->set_should_recreate_textures(true);
+            }
+
+            return;
+        }
+
+        if (allow_native_custom_present_rt) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][CustomPresent] Accepting native desktop FSceneViewport RT from {} at {:x} [{}x{} fmt={}]; "
+                "Synced can consume alternating frames and Native will use guarded HMD expansion",
+                source,
+                (uintptr_t)candidate,
+                desc.Width,
+                desc.Height,
+                (uint32_t)desc.Format);
+        }
+    }
+
+    if (candidate == current_target) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[Dune][RT] Verified current FSceneViewport RT from {} at {:x} [{}x{} fmt={}]",
+            source,
+            (uintptr_t)candidate,
+            desc.Width,
+            desc.Height,
+            (uint32_t)desc.Format);
+        return;
+    }
+
     if (!allow_scene_viewport_rt_adoption) {
         shf_probe_scene_viewport_memory(viewport, source, candidate);
         SPDLOG_WARNING_EVERY_N_SEC(2,
-            "[SHf] Found FSceneViewport render target candidate from {} at {:x} [{}x{} fmt={}] but not adopting it yet",
-            source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+            "{} Found FSceneViewport render target candidate from {} at {:x} [{}x{} fmt={}] but not adopting it yet",
+            log_prefix, source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
         return;
     }
 
     rtm->set_render_target(candidate);
 
-    SPDLOG_WARN_ONCE("[SHf] Adopted real FSceneViewport render target from {} at {:x} [{}x{} fmt={}]",
-        source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+    if (current_target != nullptr) {
+        SPDLOG_WARN(
+            "[Dune][RT] Re-adopted changed FSceneViewport RT after viewport/world transition from {:x} to {:x} [{}x{} fmt={}]",
+            (uintptr_t)current_target,
+            (uintptr_t)candidate,
+            desc.Width,
+            desc.Height,
+            (uint32_t)desc.Format);
+    } else {
+        SPDLOG_WARN_ONCE("{} Adopted real FSceneViewport render target from {} at {:x} [{}x{} fmt={}]",
+            log_prefix, source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+    }
 }
 
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
+
+    if (dune_awakening_is_current_game() && g_framework->is_game_data_intialized()) {
+        static auto last_playable_pawn_seen = std::chrono::steady_clock::time_point{};
+        static bool saw_playable_pawn = false;
+
+        const auto state = detect_dune_player_state();
+        const auto now = std::chrono::steady_clock::now();
+        bool has_live_pawn = state.playable_world;
+
+        if (state.playable_world) {
+            last_playable_pawn_seen = now;
+            saw_playable_pawn = true;
+        } else if (!state.character_creation &&
+                   saw_playable_pawn &&
+                   now - last_playable_pawn_seen < std::chrono::seconds(10))
+        {
+            has_live_pawn = true;
+        }
+
+        const auto previous_live_pawn = g_hook->dune_has_live_pawn();
+        g_hook->set_dune_has_live_pawn(has_live_pawn);
+        const auto previous_character_creation =
+            g_hook->set_dune_character_creation_active(state.character_creation);
+
+        if (previous_live_pawn != has_live_pawn) {
+            SPDLOG_WARN(
+                "[Dune][World] Playable-world classification {} object={:x} class={:x} source={} name='{}'",
+                has_live_pawn ? "enabled" : "disabled",
+                reinterpret_cast<uintptr_t>(state.object),
+                reinterpret_cast<uintptr_t>(state.object_class),
+                state.from_tracked_objects ? "UObjectHook" : "UEngine",
+                state.full_name.empty() ? "<none>" : state.full_name);
+            g_dune_force_viewport_rhi_once.store(true);
+            g_hook->set_should_recreate_textures(true);
+        }
+
+        if (previous_character_creation != state.character_creation) {
+            SPDLOG_WARN(
+                "[Dune][CharacterCreation] Validated mode {} pawn={:x} class={:x}; requesting viewport recreation",
+                state.character_creation ? "enabled" : "disabled",
+                reinterpret_cast<uintptr_t>(state.object),
+                reinterpret_cast<uintptr_t>(state.object_class));
+            g_dune_force_viewport_rhi_once.store(true);
+            g_hook->set_should_recreate_textures(true);
+        }
+    }
 
     // UI compatibility mode
     // Tries to redirect calls to GetRenderTargetTexture to point towards our UI
@@ -7363,6 +7762,24 @@ struct SceneViewExtensionAnalyzer {
             g_view_extension_vtable[setup_view_family_index + 2] = (uintptr_t)&FFakeStereoRenderingHook::setup_viewpoint;
         }
 
+        if (dune_awakening_is_current_game() && !index_0_called) {
+            if ((setup_view_family_index + 1) != begin_render_viewfamily_index) {
+                g_view_extension_vtable[setup_view_family_index + 1] =
+                    (uintptr_t)&FFakeStereoRenderingHook::setup_view;
+            }
+
+            if ((setup_view_family_index + 3) != begin_render_viewfamily_index) {
+                g_view_extension_vtable[setup_view_family_index + 3] =
+                    (uintptr_t)&FFakeStereoRenderingHook::setup_view_projection_matrix;
+            }
+
+            SPDLOG_INFO(
+                "[Dune][ViewTrace] Installed read-only callbacks SetupView={} SetupViewPoint={} SetupViewProjectionMatrix={}",
+                setup_view_family_index + 1,
+                setup_view_family_index + 2,
+                setup_view_family_index + 3);
+        }
+
         // PreRenderViewFamily_RenderThread
         g_view_extension_vtable[pre_render_viewfamily_renderthread_index] = (uintptr_t)&FFakeStereoRenderingHook::pre_render_viewfamily_renderthread;
 
@@ -7715,13 +8132,42 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto& vr = VR::get();
 
+    if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
+        return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
     if (!g_hook->is_in_viewport_client_draw() || !vr->is_hmd_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
-    if (g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) {
+    const auto dune_manual_custom_present_pose =
+        dune_awakening_is_current_game() &&
+        g_hook->dune_has_live_pawn();
+
+    if ((g_hook->m_analyzing_view_extensions || !g_hook->m_has_view_extensions_installed) &&
+        !dune_manual_custom_present_pose) {
         SPDLOG_INFO_ONCE("FSceneView constructor was called before view extensions were installed, aborting");
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+    }
+
+    // Dune renders showroom/menu characters through independent scene-capture
+    // families during UGameViewportClient::Draw. Those views must retain the
+    // game's own projection, frame state, and cached render-target lifetime.
+    if (dune_awakening_is_current_game()) {
+        sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+
+        if (auto* view_family = init_options->get_view_family(); view_family != nullptr) {
+            if (sdk::FSceneViewFamily::update_offsets(
+                    view_family,
+                    g_hook->get_render_target_manager()->get_viewport()))
+            {
+                g_hook->note_scene_view_family_offsets_ready();
+            }
+
+            if (dune_is_auxiliary_view_family(view_family, "FSceneView constructor")) {
+                return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+            }
+        }
     }
 
     std::scoped_lock ___{g_hook->m_sceneview_data.mtx};
@@ -7783,9 +8229,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     last_frame_count = g_frame_count;
 
-    const auto true_index = vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index;
+    const auto true_index =
+        dune_manual_custom_present_pose
+            ? (vr->is_using_afr() ? g_frame_count % 2 : 0)
+            : (vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index);
 
-    if (vr->is_splitscreen_compatibility_enabled() || vr->is_sceneview_compatibility_enabled()) {
+    if (vr->is_splitscreen_compatibility_enabled() ||
+        vr->is_sceneview_compatibility_enabled() ||
+        dune_manual_custom_present_pose) {
         int32_t w = vr->get_hmd_width();
         int32_t h = vr->get_hmd_height();
 
@@ -7854,8 +8305,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
 
-        *(FIntRect*)&init_options_view_rect = view_rect;
-        *(FIntRect*)&init_options_constrained_view_rect = view_rect;
+        if (!dune_manual_custom_present_pose) {
+            *(FIntRect*)&init_options_view_rect = view_rect;
+            *(FIntRect*)&init_options_constrained_view_rect = view_rect;
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][CustomPresent] Applied manual HMD pose/projection mode={} eye={} view_index={} rect=[{},{} -> {},{}]",
+                vr->is_using_afr() ? "synced" : "native_mono",
+                true_index,
+                last_index,
+                init_options_view_rect[0],
+                init_options_view_rect[1],
+                init_options_view_rect[2],
+                init_options_view_rect[3]);
+        }
 
         if (is_ue5) {
             init_options_view_rotation_matrix_ue5 = view_rot_mat;
@@ -8090,6 +8554,43 @@ void FFakeStereoRenderingHook::setup_view_family(ISceneViewExtension* extension,
 
 }
 
+void FFakeStereoRenderingHook::setup_view(
+    ISceneViewExtension* extension,
+    sdk::FSceneViewFamily& view_family,
+    sdk::FSceneView& view)
+{
+    if (!dune_awakening_is_current_game() ||
+        g_hook == nullptr ||
+        !g_framework->is_game_data_intialized())
+    {
+        return;
+    }
+
+    const auto view_family_target = view_family.get_render_target();
+    const auto view_family_scene = view_family.get_scene_interface();
+    const auto auxiliary = dune_is_auxiliary_view_family(&view_family, "SetupView trace");
+    const auto vr = VR::get();
+    const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
+    const auto runtime_frame =
+        vr != nullptr && vr->get_runtime() != nullptr ? vr->get_runtime()->internal_frame_count : 0;
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        1,
+        "[Dune][ViewTrace] SetupView view={:x} family={:x} target={:x} scene={:x} auxiliary={} live_pawn={} "
+        "viewport_draw={} render_frame={} runtime_frame={} global_frame={} caller={:x}",
+        reinterpret_cast<uintptr_t>(&view),
+        reinterpret_cast<uintptr_t>(&view_family),
+        reinterpret_cast<uintptr_t>(view_family_target),
+        reinterpret_cast<uintptr_t>(view_family_scene),
+        auxiliary,
+        g_hook->dune_has_live_pawn(),
+        g_hook->is_in_viewport_client_draw(),
+        render_frame,
+        runtime_frame,
+        g_frame_count,
+        reinterpret_cast<uintptr_t>(_ReturnAddress()));
+}
+
 void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, void* player_controller, void* view_info) {
     ZoneScopedN("SetupViewPoint");
     SPDLOG_INFO_ONCE("Called SetupViewPoint for the first time");
@@ -8099,6 +8600,192 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
     }
 
     auto& vr = VR::get();
+
+    if (dune_awakening_is_current_game() && g_hook != nullptr) {
+        struct DuneMinimalViewInfoPrefix {
+            Vector3d location;
+            Rotator<double> rotation;
+            float fov;
+            float desired_fov;
+        };
+
+        DuneMinimalViewInfoPrefix info{};
+        const auto readable =
+            view_info != nullptr &&
+            safe_read_value(reinterpret_cast<uintptr_t>(view_info), info);
+        const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
+        const auto runtime_frame =
+            vr != nullptr && vr->get_runtime() != nullptr ? vr->get_runtime()->internal_frame_count : 0;
+
+        if (readable) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[Dune][ViewTrace] SetupViewPoint player={:x} view_info={:x} live_pawn={} viewport_draw={} "
+                "render_frame={} runtime_frame={} global_frame={} location=[{:.3f},{:.3f},{:.3f}] "
+                "rotation=[{:.3f},{:.3f},{:.3f}] fov={:.3f} desired_fov={:.3f} caller={:x}",
+                reinterpret_cast<uintptr_t>(player_controller),
+                reinterpret_cast<uintptr_t>(view_info),
+                g_hook->dune_has_live_pawn(),
+                g_hook->is_in_viewport_client_draw(),
+                render_frame,
+                runtime_frame,
+                g_frame_count,
+                info.location.x,
+                info.location.y,
+                info.location.z,
+                info.rotation.pitch,
+                info.rotation.yaw,
+                info.rotation.roll,
+                info.fov,
+                info.desired_fov,
+                reinterpret_cast<uintptr_t>(_ReturnAddress()));
+
+            const auto is_main_gameplay_view =
+                g_hook->dune_has_live_pawn() &&
+                g_hook->is_in_viewport_client_draw() &&
+                vr != nullptr &&
+                vr->get_runtime() != nullptr &&
+                !vr->is_using_2d_screen();
+
+            if (is_main_gameplay_view) {
+                sdk::APlayerController* local_player_controller = nullptr;
+
+                try {
+                    auto* const engine = sdk::UEngine::get();
+                    auto* const local_player =
+                        engine != nullptr
+                            ? reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0))
+                            : nullptr;
+
+                    if (local_player != nullptr) {
+                        local_player_controller =
+                            local_player->get_property<sdk::APlayerController*>(L"PlayerController");
+                    }
+                } catch (...) {
+                    SPDLOG_WARNING_EVERY_N_SEC(
+                        2,
+                        "[Dune][ViewPose] Failed to resolve the local player controller; leaving the transient view unchanged");
+                }
+
+                const auto finite_rotation = [](const Rotator<double>& rotation) {
+                    return std::isfinite(rotation.pitch) &&
+                           std::isfinite(rotation.yaw) &&
+                           std::isfinite(rotation.roll);
+                };
+
+                if (local_player_controller != nullptr &&
+                    local_player_controller == player_controller &&
+                    finite_rotation(info.rotation))
+                {
+                    const auto view_mat_inverse = glm::yawPitchRoll(
+                        glm::radians(static_cast<float>(-info.rotation.yaw)),
+                        glm::radians(static_cast<float>(info.rotation.pitch)),
+                        glm::radians(static_cast<float>(-info.rotation.roll)));
+                    const auto base_inverse = glm::normalize(glm::quat{view_mat_inverse});
+                    const auto rotation_offset = vr->get_rotation_offset();
+                    const auto current_hmd_rotation =
+                        glm::normalize(rotation_offset * glm::quat{vr->get_rotation(0)});
+                    const auto adjusted_quaternion =
+                        glm::normalize(base_inverse * current_hmd_rotation);
+                    const auto adjusted_euler =
+                        glm::degrees(utility::math::euler_angles_from_steamvr(adjusted_quaternion));
+
+                    auto adjusted_rotation = info.rotation;
+                    adjusted_rotation.pitch = adjusted_euler.x;
+                    adjusted_rotation.yaw = adjusted_euler.y;
+                    adjusted_rotation.roll = adjusted_euler.z;
+
+                    const auto pitch_delta =
+                        std::remainder(adjusted_rotation.pitch - info.rotation.pitch, 360.0);
+                    const auto yaw_delta =
+                        std::remainder(adjusted_rotation.yaw - info.rotation.yaw, 360.0);
+                    const auto roll_delta =
+                        std::remainder(adjusted_rotation.roll - info.rotation.roll, 360.0);
+                    const auto sane_rotation =
+                        finite_rotation(adjusted_rotation) &&
+                        std::isfinite(pitch_delta) &&
+                        std::isfinite(yaw_delta) &&
+                        std::isfinite(roll_delta) &&
+                        std::abs(adjusted_rotation.pitch) <= 360.0 &&
+                        std::abs(adjusted_rotation.yaw) <= 360.0 &&
+                        std::abs(adjusted_rotation.roll) <= 360.0 &&
+                        std::abs(pitch_delta) <= 180.001 &&
+                        std::abs(yaw_delta) <= 180.001 &&
+                        std::abs(roll_delta) <= 180.001;
+                    const auto rotation_address =
+                        reinterpret_cast<uintptr_t>(view_info) +
+                        offsetof(DuneMinimalViewInfoPrefix, rotation);
+
+                    if (sane_rotation &&
+                        is_writable_process_range(rotation_address, sizeof(adjusted_rotation)))
+                    {
+                        memcpy(
+                            reinterpret_cast<void*>(rotation_address),
+                            &adjusted_rotation,
+                            sizeof(adjusted_rotation));
+
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            1,
+                            "[Dune][ViewPose] Applied transient HMD rotation player={:x} view_info={:x} "
+                            "original=[{:.3f},{:.3f},{:.3f}] adjusted=[{:.3f},{:.3f},{:.3f}] "
+                            "delta=[{:.3f},{:.3f},{:.3f}] render_frame={} runtime_frame={}",
+                            reinterpret_cast<uintptr_t>(player_controller),
+                            reinterpret_cast<uintptr_t>(view_info),
+                            info.rotation.pitch,
+                            info.rotation.yaw,
+                            info.rotation.roll,
+                            adjusted_rotation.pitch,
+                            adjusted_rotation.yaw,
+                            adjusted_rotation.roll,
+                            pitch_delta,
+                            yaw_delta,
+                            roll_delta,
+                            render_frame,
+                            runtime_frame);
+                    } else {
+                        SPDLOG_WARNING_EVERY_N_SEC(
+                            2,
+                            "[Dune][ViewPose] Rejected unsafe transient rotation view_info={:x} "
+                            "adjusted=[{:.3f},{:.3f},{:.3f}] delta=[{:.3f},{:.3f},{:.3f}] writable={}",
+                            reinterpret_cast<uintptr_t>(view_info),
+                            adjusted_rotation.pitch,
+                            adjusted_rotation.yaw,
+                            adjusted_rotation.roll,
+                            pitch_delta,
+                            yaw_delta,
+                            roll_delta,
+                            is_writable_process_range(rotation_address, sizeof(adjusted_rotation)));
+                    }
+                }
+            }
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Dune][ViewTrace] SetupViewPoint received unreadable view_info={:x} player={:x}",
+                reinterpret_cast<uintptr_t>(view_info),
+                reinterpret_cast<uintptr_t>(player_controller));
+        }
+
+        static bool logged_gameplay_stack = false;
+        static bool logged_non_gameplay_stack = false;
+        auto& logged_stack =
+            g_hook->dune_has_live_pawn() ? logged_gameplay_stack : logged_non_gameplay_stack;
+
+        if (!logged_stack) {
+            logged_stack = true;
+            std::array<void*, 12> stack{};
+            const auto depth =
+                RtlCaptureStackBackTrace(0, static_cast<DWORD>(stack.size()), stack.data(), nullptr);
+
+            for (USHORT i = 0; i < depth; ++i) {
+                SPDLOG_INFO(
+                    "[Dune][ViewTrace] SetupViewPoint {} stack[{}]={:x}",
+                    g_hook->dune_has_live_pawn() ? "gameplay" : "non_gameplay",
+                    i,
+                    reinterpret_cast<uintptr_t>(stack[i]));
+            }
+        }
+    }
 
     if (everspace2_is_current_game() && view_info != nullptr && vr->is_hmd_active()) {
         const auto runtime = vr->get_runtime();
@@ -8140,13 +8827,87 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
 
         // No need to StartDisabled on this because we're on the same thread.
         g_hook->m_localplayer_get_viewpoint_hook = safetyhook::create_inline(*caller, (uintptr_t)&localplayer_setup_viewpoint);
-        
+
         if (!g_hook->m_localplayer_get_viewpoint_hook) {
             SPDLOG_ERROR("Failed to hook ISceneViewExtension::SetupViewPoint");
             return;
         }
 
         SPDLOG_INFO("Hooked ISceneViewExtension::SetupViewPoint");
+    }
+}
+
+void FFakeStereoRenderingHook::setup_view_projection_matrix(
+    ISceneViewExtension* extension,
+    void* projection_data)
+{
+    if (!dune_awakening_is_current_game() ||
+        g_hook == nullptr ||
+        !g_framework->is_game_data_intialized())
+    {
+        return;
+    }
+
+    using ProjectionData = sdk::FSceneViewProjectionDataUE5T<double>;
+    ProjectionData data{};
+    const auto readable =
+        projection_data != nullptr &&
+        safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data);
+    const auto vr = VR::get();
+    const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
+    const auto runtime_frame =
+        vr != nullptr && vr->get_runtime() != nullptr ? vr->get_runtime()->internal_frame_count : 0;
+
+    if (!readable) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Dune][ViewTrace] SetupViewProjectionMatrix received unreadable data={:x}",
+            reinterpret_cast<uintptr_t>(projection_data));
+        return;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        1,
+        "[Dune][ViewTrace] SetupViewProjectionMatrix data={:x} live_pawn={} viewport_draw={} "
+        "render_frame={} runtime_frame={} global_frame={} origin=[{:.3f},{:.3f},{:.3f}] "
+        "rect=[{},{} -> {},{}] constrained=[{},{} -> {},{}] "
+        "projection=[{:.5f},{:.5f},{:.5f},{:.5f}] caller={:x}",
+        reinterpret_cast<uintptr_t>(projection_data),
+        g_hook->dune_has_live_pawn(),
+        g_hook->is_in_viewport_client_draw(),
+        render_frame,
+        runtime_frame,
+        g_frame_count,
+        data.view_origin.x,
+        data.view_origin.y,
+        data.view_origin.z,
+        data.view_rect[0],
+        data.view_rect[1],
+        data.view_rect[2],
+        data.view_rect[3],
+        data.constrained_view_rect[0],
+        data.constrained_view_rect[1],
+        data.constrained_view_rect[2],
+        data.constrained_view_rect[3],
+        data.projection_matrix[0][0],
+        data.projection_matrix[1][1],
+        data.projection_matrix[2][2],
+        data.projection_matrix[3][2],
+        reinterpret_cast<uintptr_t>(_ReturnAddress()));
+
+    static bool logged_gameplay_stack = false;
+    if (g_hook->dune_has_live_pawn() && !logged_gameplay_stack) {
+        logged_gameplay_stack = true;
+        std::array<void*, 12> stack{};
+        const auto depth =
+            RtlCaptureStackBackTrace(0, static_cast<DWORD>(stack.size()), stack.data(), nullptr);
+
+        for (USHORT i = 0; i < depth; ++i) {
+            SPDLOG_INFO(
+                "[Dune][ViewTrace] SetupViewProjectionMatrix gameplay stack[{}]={:x}",
+                i,
+                reinterpret_cast<uintptr_t>(stack[i]));
+        }
     }
 }
 
@@ -8628,10 +9389,18 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         return;
     }
 
+    if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
+        return;
+    }
+
     if (!g_hook->has_scene_view_family_offsets_ready() &&
         sdk::FSceneViewFamily::update_offsets(&view_family, g_hook->get_render_target_manager()->get_viewport()))
     {
         g_hook->note_scene_view_family_offsets_ready();
+    }
+
+    if (dune_is_auxiliary_view_family(&view_family, "BeginRenderViewFamily")) {
+        return;
     }
 
     if (auto view_family_target = view_family.get_render_target(); view_family_target != nullptr) {
@@ -9038,9 +9807,9 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     utility::ScopeGuard _{[]() {
         RenderThreadWorker::get().execute();
     }};
-    
+
     SPDLOG_INFO_ONCE("Called PreRenderViewFamily_RenderThread for the first time");
-    
+
     if (!g_framework->is_game_data_intialized()) {
         return;
     }
@@ -9048,6 +9817,14 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     auto& vr = VR::get();
 
     if (!vr->is_hmd_active()) {
+        return;
+    }
+
+    if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
+        return;
+    }
+
+    if (dune_is_auxiliary_view_family(&view_family, "PreRenderViewFamily_RenderThread")) {
         return;
     }
 
@@ -10487,7 +11264,14 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
         g_hook->set_should_recreate_textures(true);
         return true;
     }
-    
+
+    if (dune_should_preserve_native_viewport_target()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][CustomPresent] Temporarily disabling engine stereo while the native AMD presentation path owns the scene");
+        return false;
+    }
+
     /*if (g_hook->m_analyzing_view_extensions) {
         const auto now = std::chrono::high_resolution_clock::now();
 
@@ -15162,7 +15946,19 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     bool skip_ue56_viewport_provider = false;
 
     if (viewport_info != nullptr && !a4_is_ue_5_5_variant && !is_ue_5_7_or_newer()) {
-        const auto known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
+        FRHITexture2D* known_texture = nullptr;
+
+        if (g_framework != nullptr && g_framework->is_dx12() && dune_awakening_is_current_game() && slate_resource != nullptr) {
+            // Dune's adopted scene RT and Slate provider resource can differ during startup.
+            // Prefer the actual Slate resource when resolving FViewportInfo so the provider
+            // scan is not poisoned by a known scene texture that the UI provider never owns.
+            known_texture = slate_resource->get_mutable_resource();
+        }
+
+        if (known_texture == nullptr) {
+            known_texture = rtm->get_render_target() != nullptr ? rtm->get_render_target() : (slate_resource != nullptr ? slate_resource->get_mutable_resource() : nullptr);
+        }
+
         const auto known_texture_is_safe =
             known_texture == nullptr ||
             !is_ue_5_6_dx12_backend() ||
@@ -15399,6 +16195,14 @@ __declspec(noinline) bool VRRenderTargetManager::NeedReAllocateShadingRateTextur
     return false;
 }
 
+bool VRRenderTargetManager_Base::should_use_separate_render_target() const {
+    if (dune_should_preserve_native_viewport_target()) {
+        return false;
+    }
+
+    return true;
+}
+
 void VRRenderTargetManager_Base::update_viewport(bool use_separate_rt, const sdk::FViewport& vp, class SViewport* vp_widget) {
     SPDLOG_INFO_ONCE("VRRenderTargetManager_Base::update_viewport called! {} {:x} {:x}", use_separate_rt, (uintptr_t)&vp, (uintptr_t)vp_widget);
 
@@ -15481,6 +16285,15 @@ void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewpo
         return;
     }
 
+    if (dune_should_preserve_native_viewport_target()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][CustomPresent] Preserving the game's native viewport extent {}x{}",
+            x,
+            y);
+        return;
+    }
+
     if (is_ue_5_7_or_newer() && x > 0 && y > 0) {
         // UE 5.7 still reports the pre-VR Slate/window size here before we overwrite it
         // with the stereo render target size. Keep it so the UI path can stay full-width.
@@ -15497,6 +16310,17 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
     SPDLOG_INFO_ONCE("VRRenderTargetManager_Base::need_reallocate_view_target called!");
 
     if (!g_framework->is_game_data_intialized()) {
+        return false;
+    }
+
+    if (dune_should_preserve_native_viewport_target()) {
+        if (g_hook->should_recreate_textures()) {
+            SPDLOG_WARN("[Dune][CustomPresent] Reallocating the viewport once for Dune's native custom-present target");
+            this->destroy_scene_capture();
+            g_hook->set_should_recreate_textures(false);
+            return true;
+        }
+
         return false;
     }
 
@@ -15630,6 +16454,12 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
     }
 
     auto rtm = g_hook->get_render_target_manager();
+
+    if (g_framework->is_dx12() && dune_awakening_is_current_game()) {
+        SPDLOG_WARN_ONCE(
+            "[Dune][RT] Allowing separate render-target texture creation; "
+            "D3D12 descriptor-cache guard remains responsible for the old SetRenderTargets crash path");
+    }
 
     if (g_framework->is_dx12() && pitpanic_is_current_game() && is_ue_5_7_or_newer()) {
         // Pit Panic 5.7.2's resolved texture-desc helper copies an internal
@@ -17792,11 +18622,16 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
                         should_force_separate_rt = true;
                         use_separate_rt = true;
                         modified_use_separate_rt = true;
+                        if (dune_awakening_is_current_game() && g_dune_force_viewport_rhi_once.exchange(false)) {
+                            SPDLOG_WARN_ONCE("[Dune][RT] Allowing one UpdateViewportRHI call after forcing separate RT bools");
+                            call_orig();
+                            return;
+                        }
                         return; // NO!!!!!!!!!!!!!!!!!!!
                     }
                 }
             }
-        } else {      
+        } else {
             // We only want the last function to be called.
             // We don't need to call the original here because it will get called by the last function.
             // if we call the original here, it will cause performance issues.
@@ -17806,7 +18641,7 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
         }
     }
 
-    
+
     if (!g_hook->m_rendertarget_manager_embedded_in_stereo_device) {
         call_orig();
         return;
@@ -17839,6 +18674,14 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
     }
 
     if (!rtm.should_use_separate_rt_called) {
+        if (dune_awakening_is_current_game() && g_dune_force_viewport_rhi_once.exchange(false)) {
+            SPDLOG_WARN_ONCE("[Dune][RT] Allowing one embedded UpdateViewportRHI call without ShouldUseSeparateRenderTarget after forced separate RT");
+            call_orig();
+            rtm.should_use_separate_rt_called = false;
+            rtm.need_reallocate_viewport_render_target_called = false;
+            return;
+        }
+
         SPDLOG_INFO_ONCE("Skipping UpdateViewportRHI (embedded) because ShouldUseSeparateRenderTarget() was not called!");
         return; // Do not call at all.
     }
@@ -17847,6 +18690,14 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
         const auto need_reallocate = g_hook->get_render_target_manager()->need_reallocate_view_target(*(sdk::FViewport*)viewport);
 
         if (!need_reallocate) {
+            if (dune_awakening_is_current_game() && g_dune_force_viewport_rhi_once.exchange(false)) {
+                SPDLOG_WARN_ONCE("[Dune][RT] Allowing one embedded UpdateViewportRHI call despite missing NeedReallocate after forced separate RT");
+                call_orig();
+                rtm.should_use_separate_rt_called = false;
+                rtm.need_reallocate_viewport_render_target_called = false;
+                return;
+            }
+
             SPDLOG_INFO_ONCE("Skipping UpdateViewportRHI (embedded) because NeedReallocateViewportRenderTarget() was not called and we don't need to reallocate anyway!");
             rtm.should_use_separate_rt_called = false;
             return; // Do not call at all.
