@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -460,6 +461,23 @@ public:
         return m_dune_has_live_pawn.load(std::memory_order_acquire);
     }
 
+    struct DuneTrueStereoFrameSnapshot {
+        uint32_t render_frame{};
+        uint8_t eye{};
+    };
+
+    std::optional<DuneTrueStereoFrameSnapshot> get_dune_true_stereo_frame_snapshot() const {
+        const auto packed = m_dune_true_stereo_frame.load(std::memory_order_acquire);
+        if ((packed & 0x2ull) == 0) {
+            return std::nullopt;
+        }
+
+        return DuneTrueStereoFrameSnapshot{
+            .render_frame = static_cast<uint32_t>(packed >> 2),
+            .eye = static_cast<uint8_t>(packed & 0x1ull),
+        };
+    }
+
     void note_stable_slate_draw() {
         if (!m_has_seen_stable_slate_draw) {
             m_has_seen_stable_slate_draw = true;
@@ -654,6 +672,17 @@ public:
 private:
     std::atomic_bool m_dune_character_creation_active{false};
     std::atomic_bool m_dune_has_live_pawn{false};
+    std::atomic_uint64_t m_dune_true_stereo_frame{0};
+
+    void publish_dune_true_stereo_frame(uint32_t render_frame, uint8_t eye) {
+        m_dune_true_stereo_frame.store(
+            (static_cast<uint64_t>(render_frame) << 2) | 0x2ull | (eye & 0x1u),
+            std::memory_order_release);
+    }
+
+    void invalidate_dune_true_stereo_frame() {
+        m_dune_true_stereo_frame.store(0, std::memory_order_release);
+    }
 
     bool hook();
     bool standard_fake_stereo_hook(uintptr_t vtable);
