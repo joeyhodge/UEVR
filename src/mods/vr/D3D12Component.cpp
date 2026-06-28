@@ -252,6 +252,130 @@ bool is_avowed_current_game() {
     return result;
 }
 
+bool is_dune_awakening_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+std::array<uintptr_t, 2> g_dune_null_residency_reference{};
+std::atomic_uint64_t g_dune_null_residency_reference_count{};
+safetyhook::MidHook g_dune_descriptor_cache_null_guard{};
+
+void dune_descriptor_cache_null_guard(safetyhook::Context& ctx) {
+    if (ctx.rdx != 0) {
+        return;
+    }
+
+    // Dune added residency-reference tracking after OMSetRenderTargets, but
+    // unlike stock UE5.2 it dereferences optional null RTV/DSV references.
+    // Preserve the null semantics by supplying readable zero storage only for
+    // that tracking check; the actual render-target binding already happened.
+    ctx.rdx = reinterpret_cast<uintptr_t>(g_dune_null_residency_reference.data());
+
+    const auto count = g_dune_null_residency_reference_count.fetch_add(1) + 1;
+    if (count == 1) {
+        SPDLOG_WARN("[Dune][D3D12] Guarded the first null SetRenderTargets residency reference");
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][D3D12] Guarded null SetRenderTargets residency references count={}",
+            count);
+    }
+}
+
+void apply_dune_descriptor_cache_guard() {
+    if (!is_dune_awakening_current_game()) {
+        return;
+    }
+
+    // Dune's custom UE5.2 residency-reference loop lacks the null check present
+    // in the surrounding render-target logic. Guard only that dereference,
+    // leaving residency tracking enabled for every valid offscreen target.
+    constexpr uintptr_t DUNE_DESCRIPTOR_TRACKING_LOAD_RVA = 0x5516c47;
+    constexpr uintptr_t DUNE_NULL_REFERENCE_DEREFERENCE_RVA = 0x5516c5d;
+    constexpr uintptr_t DUNE_DESCRIPTOR_TRACKING_GUARD_RVA = 0xb4fc7b4;
+    constexpr std::array<uint8_t, 29> EXPECTED_DESCRIPTOR_TRACKING_BYTES{
+        0x0f, 0xb6, 0x0d, 0x66, 0x5b, 0xfe, 0x05,
+        0x48, 0x89, 0x7c, 0x24, 0x20,
+        0x48, 0x8b, 0x13,
+        0x48, 0x8b, 0xf8,
+        0x84, 0xc9,
+        0x74, 0x1e,
+        0x48, 0x83, 0x7a, 0x08, 0x00,
+        0x74, 0x17,
+    };
+
+    static bool s_attempted = false;
+    if (s_attempted) {
+        return;
+    }
+    s_attempted = true;
+
+    const auto module = utility::get_executable();
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_size = utility::get_module_size(module).value_or(0);
+
+    if (module_base == 0 || module_size <= DUNE_DESCRIPTOR_TRACKING_GUARD_RVA) {
+        SPDLOG_WARN(
+            "[Dune][D3D12] Descriptor-cache guard skipped because executable image is smaller than expected base={:x} size=0x{:x}",
+            module_base,
+            module_size);
+        return;
+    }
+
+    const auto signature_address = reinterpret_cast<const uint8_t*>(module_base + DUNE_DESCRIPTOR_TRACKING_LOAD_RVA);
+    if (std::memcmp(signature_address, EXPECTED_DESCRIPTOR_TRACKING_BYTES.data(), EXPECTED_DESCRIPTOR_TRACKING_BYTES.size()) != 0) {
+        SPDLOG_WARN(
+            "[Dune][D3D12] Descriptor-cache null guard signature mismatch at {:x}; leaving Dune D3D12 code untouched",
+            module_base + DUNE_DESCRIPTOR_TRACKING_LOAD_RVA);
+        return;
+    }
+
+    auto* const guard_byte = reinterpret_cast<uint8_t*>(module_base + DUNE_DESCRIPTOR_TRACKING_GUARD_RVA);
+    const auto hook_address = module_base + DUNE_NULL_REFERENCE_DEREFERENCE_RVA;
+    auto hook_result = safetyhook::create_mid(
+        reinterpret_cast<void*>(hook_address),
+        &dune_descriptor_cache_null_guard);
+    if (!hook_result) {
+        SPDLOG_ERROR(
+            "[Dune][D3D12] Failed to install narrow SetRenderTargets null guard at {:x}; retaining disabled residency tracking fallback",
+            hook_address);
+
+        DWORD old_protect{};
+        if (VirtualProtect(guard_byte, sizeof(*guard_byte), PAGE_READWRITE, &old_protect)) {
+            *guard_byte = 0;
+            DWORD ignored{};
+            VirtualProtect(guard_byte, sizeof(*guard_byte), old_protect, &ignored);
+        }
+        return;
+    }
+
+    g_dune_descriptor_cache_null_guard = std::move(hook_result);
+
+    DWORD old_protect{};
+    if (!VirtualProtect(guard_byte, sizeof(*guard_byte), PAGE_READWRITE, &old_protect)) {
+        SPDLOG_ERROR(
+            "[Dune][D3D12] Narrow null guard installed, but descriptor tracking could not be restored at {:x}; last_error={}",
+            reinterpret_cast<uintptr_t>(guard_byte),
+            GetLastError());
+        return;
+    }
+
+    *guard_byte = 1;
+
+    DWORD ignored{};
+    VirtualProtect(guard_byte, sizeof(*guard_byte), old_protect, &ignored);
+
+    SPDLOG_WARN(
+        "[Dune][D3D12] Installed narrow SetRenderTargets null guard at {:x}; restored valid descriptor residency tracking byte {:x}",
+        hook_address,
+        reinterpret_cast<uintptr_t>(guard_byte));
+}
+
 bool is_ue_5_1_dx12_backend() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -353,6 +477,23 @@ bool shf_texture_desc_matches(const D3D12_RESOURCE_DESC& a, const D3D12_RESOURCE
            a.Format == b.Format &&
            a.SampleDesc.Count == b.SampleDesc.Count &&
            a.SampleDesc.Quality == b.SampleDesc.Quality;
+}
+
+std::optional<DXGI_FORMAT> dune_view_format_for_resource(DXGI_FORMAT format) {
+    switch (format) {
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return DXGI_FORMAT_B8G8R8A8_UNORM;
+    case DXGI_FORMAT_B8G8R8X8_TYPELESS:
+        return DXGI_FORMAT_B8G8R8X8_UNORM;
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+        return DXGI_FORMAT_R10G10B10A2_UNORM;
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+        return DXGI_FORMAT_R16G16B16A16_FLOAT;
+    default:
+        return std::nullopt;
+    }
 }
 
 }
@@ -703,6 +844,208 @@ d3d12::TextureContext* D3D12Component::render_shf_mono_scene_texture(ID3D12Devic
     return &m_shf_mono_scene_tex;
 }
 
+bool D3D12Component::ensure_dune_hmd_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc) {
+    auto vr = VR::get();
+
+    if (device == nullptr || vr == nullptr || vr->get_hmd_width() == 0 || vr->get_hmd_height() == 0) {
+        return false;
+    }
+
+    const auto width_multiplier = vr->is_using_afr() ? 1u : 2u;
+    const auto target_width = (uint64_t)vr->get_hmd_width() * width_multiplier;
+    const auto target_height = vr->get_hmd_height();
+
+    auto mono_desc = source_desc;
+    mono_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    mono_desc.Alignment = 0;
+    mono_desc.Width = target_width;
+    mono_desc.Height = target_height;
+    mono_desc.DepthOrArraySize = 1;
+    mono_desc.MipLevels = 1;
+    mono_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    mono_desc.SampleDesc.Count = 1;
+    mono_desc.SampleDesc.Quality = 0;
+    mono_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    mono_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    mono_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    const auto needs_create =
+        m_dune_hmd_mono_scene_tex.texture.Get() == nullptr ||
+        m_dune_hmd_mono_scene_width != mono_desc.Width ||
+        m_dune_hmd_mono_scene_height != mono_desc.Height ||
+        m_dune_hmd_mono_scene_format != mono_desc.Format;
+
+    if (!needs_create) {
+        return m_dune_hmd_mono_scene_tex.srv_heap != nullptr && m_dune_hmd_mono_scene_tex.rtv_heap != nullptr;
+    }
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+    heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+    heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+    m_dune_hmd_mono_scene_tex.reset();
+
+    ComPtr<ID3D12Resource> mono_tex{};
+    if (FAILED(device->CreateCommittedResource(
+            &heap_props,
+            D3D12_HEAP_FLAG_NONE,
+            &mono_desc,
+            ENGINE_SRC_COLOR,
+            nullptr,
+            IID_PPV_ARGS(&mono_tex)))) {
+        SPDLOG_ERROR_EVERY_N_SEC(
+            1,
+            "[Dune][D3D12] Failed to create HMD mono scene texture [{}x{} fmt={} flags=0x{:x}]",
+            mono_desc.Width,
+            mono_desc.Height,
+            (uint32_t)mono_desc.Format,
+            (uint32_t)mono_desc.Flags);
+        return false;
+    }
+
+    mono_tex->SetName(L"Dune HMD Mono Scene");
+
+    if (!m_dune_hmd_mono_scene_tex.setup(device, mono_tex.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Dune HMD Mono Scene")) {
+        spdlog::error("[Dune][D3D12] Failed to setup HMD mono scene texture.");
+        m_dune_hmd_mono_scene_tex.reset();
+        m_dune_hmd_mono_scene_width = 0;
+        m_dune_hmd_mono_scene_height = 0;
+        m_dune_hmd_mono_scene_format = DXGI_FORMAT_UNKNOWN;
+        return false;
+    }
+
+    m_dune_hmd_mono_scene_width = mono_desc.Width;
+    m_dune_hmd_mono_scene_height = mono_desc.Height;
+    m_dune_hmd_mono_scene_format = mono_desc.Format;
+
+    if (!m_dune_hmd_mono_scene_commands.ready()) {
+        m_dune_hmd_mono_scene_commands.setup(L"Dune HMD Mono Scene Commands");
+    }
+
+    SPDLOG_WARN(
+        "[Dune][D3D12] Created HMD mono scene texture [{}x{}] from desktop source [{}x{}] afr={}",
+        mono_desc.Width,
+        mono_desc.Height,
+        source_desc.Width,
+        source_desc.Height,
+        vr->is_using_afr());
+
+    return true;
+}
+
+d3d12::TextureContext* D3D12Component::render_dune_hmd_mono_scene_texture(
+    ID3D12Device* device,
+    D3D12_RESOURCE_STATES source_state)
+{
+    if (!is_dune_awakening_current_game() ||
+        m_game_batch == nullptr ||
+        m_game_tex.texture.Get() == nullptr ||
+        m_game_tex.srv_heap == nullptr ||
+        m_game_tex.srv_heap->Heap() == nullptr) {
+        return nullptr;
+    }
+
+    auto vr = VR::get();
+    const auto source_desc = m_game_tex.texture->GetDesc();
+
+    if (vr == nullptr ||
+        !ensure_dune_hmd_mono_scene_texture(device, source_desc) ||
+        m_dune_hmd_mono_scene_tex.texture.Get() == nullptr ||
+        m_dune_hmd_mono_scene_tex.rtv_heap == nullptr) {
+        return nullptr;
+    }
+
+    auto& command_ctx = m_dune_hmd_mono_scene_commands;
+
+    if (!command_ctx.ready()) {
+        command_ctx.setup(L"Dune HMD Mono Scene Commands");
+    }
+
+    if (!command_ctx.ready()) {
+        return nullptr;
+    }
+
+    command_ctx.wait(INFINITE);
+
+    const auto transition_source = source_state != ENGINE_SRC_COLOR;
+    D3D12_RESOURCE_BARRIER source_to_srv{};
+    if (transition_source) {
+        source_to_srv.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        source_to_srv.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+        source_to_srv.Transition.pResource = m_game_tex.texture.Get();
+        source_to_srv.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        source_to_srv.Transition.StateBefore = source_state;
+        source_to_srv.Transition.StateAfter = ENGINE_SRC_COLOR;
+        command_ctx.cmd_list->ResourceBarrier(1, &source_to_srv);
+    }
+
+    const float clear_color[] = {0.0f, 0.0f, 0.0f, 0.0f};
+    command_ctx.clear_rtv(m_dune_hmd_mono_scene_tex, clear_color, ENGINE_SRC_COLOR);
+
+    const auto target_desc = m_dune_hmd_mono_scene_tex.texture->GetDesc();
+    const auto target_width = (LONG)target_desc.Width;
+    const auto target_height = (LONG)target_desc.Height;
+    const RECT source_rect{0, 0, (LONG)source_desc.Width, (LONG)source_desc.Height};
+
+    if (vr->is_using_afr()) {
+        const RECT dest_rect{0, 0, target_width, target_height};
+        d3d12::render_srv_to_rtv(
+            m_game_batch.get(),
+            command_ctx.cmd_list.Get(),
+            m_game_tex,
+            m_dune_hmd_mono_scene_tex,
+            source_rect,
+            dest_rect,
+            ENGINE_SRC_COLOR,
+            ENGINE_SRC_COLOR);
+    } else {
+        const auto half_width = target_width / 2;
+        const RECT left_dest{0, 0, half_width, target_height};
+        const RECT right_dest{half_width, 0, target_width, target_height};
+
+        d3d12::render_srv_to_rtv(
+            m_game_batch.get(),
+            command_ctx.cmd_list.Get(),
+            m_game_tex,
+            m_dune_hmd_mono_scene_tex,
+            source_rect,
+            left_dest,
+            ENGINE_SRC_COLOR,
+            ENGINE_SRC_COLOR);
+
+        d3d12::render_srv_to_rtv(
+            m_game_batch.get(),
+            command_ctx.cmd_list.Get(),
+            m_game_tex,
+            m_dune_hmd_mono_scene_tex,
+            source_rect,
+            right_dest,
+            ENGINE_SRC_COLOR,
+            ENGINE_SRC_COLOR);
+    }
+
+    if (transition_source) {
+        source_to_srv.Transition.StateBefore = ENGINE_SRC_COLOR;
+        source_to_srv.Transition.StateAfter = source_state;
+        command_ctx.cmd_list->ResourceBarrier(1, &source_to_srv);
+    }
+
+    command_ctx.execute();
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[Dune][D3D12] Expanded desktop scene [{}x{}] into HMD mono scene [{}x{}] afr={} source_state=0x{:x}",
+        source_desc.Width,
+        source_desc.Height,
+        target_desc.Width,
+        target_desc.Height,
+        vr->is_using_afr(),
+        (uint32_t)source_state);
+
+    return &m_dune_hmd_mono_scene_tex;
+}
+
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto on_frame_start = std::chrono::steady_clock::now();
     utility::ScopeGuard frame_timing_guard{[&]() {
@@ -711,6 +1054,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }};
 
     m_last_on_frame = std::chrono::steady_clock::now();
+    apply_dune_descriptor_cache_guard();
     bool defer_stalker2_transition_openxr = false;
 
     auto close_openxr_setup_failure_frame = [&]() {
@@ -759,6 +1103,25 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return vr::VRCompositorError_None;
     }
 
+    const auto dune_use_final_present_backbuffer =
+        is_dune_awakening_current_game() &&
+        vr->m_fake_stereo_hook != nullptr &&
+        (vr->m_fake_stereo_hook->is_dune_character_creation_active() ||
+         vr->m_fake_stereo_hook->dune_has_live_pawn());
+
+    if (dune_use_final_present_backbuffer) {
+        backbuffer = real_backbuffer;
+
+        const auto desc = real_backbuffer->GetDesc();
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][CustomPresent] Using final AMD replacement-swapchain output as scene source [{}x{} fmt={} flags=0x{:x}] state=COMMON",
+            desc.Width,
+            desc.Height,
+            (uint32_t)desc.Format,
+            (uint32_t)desc.Flags);
+    }
+
     if (vr->is_extreme_compatibility_mode_enabled()) {
         backbuffer = real_backbuffer;
     }
@@ -788,16 +1151,33 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    bool is_dune_external_backbuffer =
+        is_dune_awakening_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
+    // Dune's adopted viewport RT can churn and may be typeless, so never bind it
+    // directly as UEVR's game texture. Copy it into an owned stable texture first.
     const auto use_stable_external_backbuffer_copy =
-        is_shf_external_backbuffer || is_stalker2_ue51_external_backbuffer;
+        is_shf_external_backbuffer || is_stalker2_ue51_external_backbuffer || is_dune_external_backbuffer;
+    // FSceneViewport::EndRenderFrame transitions a separate stereo target to
+    // SRVMask before Present. Dune reaches us after that transition; declaring
+    // the source as RENDER_TARGET creates an invalid barrier and can leave the
+    // showroom/cinematic frame white while starving the render loop.
     const auto volatile_external_source_state =
-        is_shf_external_backbuffer ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
+        (is_shf_external_backbuffer || is_dune_external_backbuffer)
+            ? ENGINE_SRC_COLOR
+            : D3D12_RESOURCE_STATE_RENDER_TARGET;
     const char* stable_external_copy_label =
+        is_dune_external_backbuffer ? "Dune" :
         is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
     const wchar_t* stable_external_copy_name =
+        is_dune_external_backbuffer ? L"Dune Stable Scene Copy" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
     const auto skip_in_place_ui_invert = false;
-    m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer;
+    m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer || is_dune_external_backbuffer;
     auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     if (is_stalker2_ue51_external_backbuffer) {
@@ -824,6 +1204,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto debug_disable_depth_submit = openxr_runtime != nullptr && openxr_runtime->debug_disable_depth_submit->value();
     const auto suppress_scene_copy = debug_submit_empty_frame || debug_skip_scene_copy;
     const auto suppress_ui_copy = debug_submit_empty_frame || debug_skip_ui_copy;
+
+    if (is_dune_external_backbuffer && runtime->is_openxr()) {
+        const auto adopted_desc = backbuffer->GetDesc();
+        const auto real_desc = real_backbuffer->GetDesc();
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Dune][D3D12] Using adopted viewport RT as the VR scene source [{}x{} fmt={} flags=0x{:x}], real backbuffer [{}x{} fmt={}] remains the desktop destination",
+            adopted_desc.Width,
+            adopted_desc.Height,
+            (uint32_t)adopted_desc.Format,
+            (uint32_t)adopted_desc.Flags,
+            real_desc.Width,
+            real_desc.Height,
+            (uint32_t)real_desc.Format);
+        scene_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    }
 
     const auto is_same_frame = m_last_rendered_frame > 0 && m_last_rendered_frame == vr->m_render_frame_count;
     m_last_rendered_frame = vr->m_render_frame_count;
@@ -856,8 +1253,37 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto frame_count = vr->m_render_frame_count;
 
-    if (m_game_tex.texture.Get() == nullptr && backbuffer.Get() == real_backbuffer.Get()) {
+    const auto real_backbuffer_copy_needs_setup = [&]() {
+        if (backbuffer.Get() != real_backbuffer.Get() ||
+            m_game_tex.texture.Get() == nullptr ||
+            m_backbuffer_copy.texture.Get() == nullptr) {
+            return backbuffer.Get() == real_backbuffer.Get();
+        }
+
+        const auto real_desc = real_backbuffer->GetDesc();
+        const auto copy_desc = m_backbuffer_copy.texture->GetDesc();
+        const auto game_desc = m_game_tex.texture->GetDesc();
+        return copy_desc.Width != real_desc.Width ||
+            copy_desc.Height != real_desc.Height ||
+            copy_desc.Format != real_desc.Format ||
+            game_desc.Width != real_desc.Width ||
+            game_desc.Height != real_desc.Height;
+    }();
+
+    if (real_backbuffer_copy_needs_setup) {
         spdlog::info("[VR] Setting up game texture as copy of backbuffer");
+
+        if (dune_use_final_present_backbuffer && m_game_tex.texture.Get() != nullptr) {
+            for (auto& commands : m_game_tex_commands) {
+                commands.wait(INFINITE);
+            }
+
+            if (runtime->is_openxr()) {
+                m_openxr.wait_for_all_copies();
+            }
+
+            m_game_tex.reset();
+        }
         
         ComPtr<ID3D12Resource> backbuffer_copy{};
         D3D12_HEAP_PROPERTIES heap_props{};
@@ -908,6 +1334,30 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc);
 
             if (needs_copy_texture) {
+                if (is_dune_external_backbuffer && m_game_tex.texture.Get() != nullptr) {
+                    // Character creation uses a desktop-sized stable copy, then
+                    // gameplay replaces it with the stereo viewport target.
+                    // Drain every queue that may still reference the old copy
+                    // before TextureContext::setup releases its resource and
+                    // descriptor heaps.
+                    for (auto& commands : m_game_tex_commands) {
+                        commands.wait(INFINITE);
+                    }
+
+                    if (runtime->is_openxr()) {
+                        m_openxr.wait_for_all_copies();
+                    }
+
+                    SPDLOG_WARN(
+                        "[Dune][D3D12] Drained stable-scene GPU users before RT transition [{}x{} fmt={}] -> [{}x{} fmt={}]",
+                        m_game_tex.texture->GetDesc().Width,
+                        m_game_tex.texture->GetDesc().Height,
+                        (uint32_t)m_game_tex.texture->GetDesc().Format,
+                        source_desc.Width,
+                        source_desc.Height,
+                        (uint32_t)source_desc.Format);
+                }
+
                 SPDLOG_WARN("[{}][D3D12] Creating owned stable scene copy for volatile external RT [{}x{} fmt={} flags=0x{:x}]",
                     stable_external_copy_label, source_desc.Width, source_desc.Height, (uint32_t)source_desc.Format, (uint32_t)source_desc.Flags);
 
@@ -921,13 +1371,24 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 copy_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
                 ComPtr<ID3D12Resource> stable_copy{};
+                const auto dune_view_format = is_dune_external_backbuffer ? dune_view_format_for_resource(copy_desc.Format) : std::optional<DXGI_FORMAT>{};
+                const auto stable_rtv_format = is_dune_external_backbuffer ? dune_view_format : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+                const auto stable_srv_format = is_dune_external_backbuffer ? dune_view_format : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+
+                if (is_dune_external_backbuffer && dune_view_format) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Dune][D3D12] Using concrete view format {} for typeless stable scene copy format {}",
+                        (uint32_t)*dune_view_format,
+                        (uint32_t)copy_desc.Format);
+                }
 
                 if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &copy_desc, ENGINE_SRC_COLOR, nullptr, IID_PPV_ARGS(&stable_copy)))) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
                         "[{}][D3D12] Failed to create owned stable scene copy [{}x{} fmt={} flags=0x{:x}]; falling back to volatile RT path",
                         stable_external_copy_label, copy_desc.Width, copy_desc.Height, (uint32_t)copy_desc.Format, (uint32_t)copy_desc.Flags);
                     m_game_tex.reset();
-                } else if (!m_game_tex.setup(device, stable_copy.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, stable_external_copy_name)) {
+                } else if (!m_game_tex.setup(device, stable_copy.Get(), stable_rtv_format, stable_srv_format, stable_external_copy_name)) {
                     spdlog::error("[{}][D3D12] Failed to setup owned stable scene copy.", stable_external_copy_label);
                     m_game_tex.reset();
                 } else {
@@ -953,9 +1414,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     command_ctx.execute();
 
                     SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD/mirror/2D",
-                        stable_external_copy_label);
+                        "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
+                        stable_external_copy_label,
+                        is_dune_external_backbuffer ? "/mirror/2D using SRVMask source state" : "/mirror/2D");
 
+                    // The spectator reads the owned texture, never Dune's volatile
+                    // typeless viewport target, so descriptor creation is safe here.
                     m_skip_spectator_view_for_volatile_external_rt = false;
                     backbuffer = m_game_tex.texture;
                     scene_source_state = ENGINE_SRC_COLOR;
@@ -963,6 +1427,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (m_game_tex.texture.Get() == nullptr) {
+                if (is_dune_external_backbuffer) {
+                    SPDLOG_ERROR_EVERY_N_SEC(
+                        1,
+                        "[Dune][D3D12] Stable scene copy unavailable; refusing volatile viewport RT reference to avoid descriptor-cache crashes");
+                    return vr::VRCompositorError_None;
+                }
+
                 SPDLOG_WARNING_EVERY_N_SEC(
                     1,
                     "[{}][D3D12] Stable scene copy unavailable; falling back to volatile external RT reference",
@@ -977,7 +1448,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         } else {
             spdlog::info("[VR] Setting up game texture as reference to original");
 
-            if (!m_game_tex.setup(device, backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Game Texture")) {
+            // Dune's current UE5.2 render target is R10G10B10A2. Forcing a BGRA view
+            // on the adopted engine RT can poison D3D12 setup, so let D3D infer the
+            // resource's native view format for this borrowed texture.
+            const auto borrowed_rtv_format = is_dune_external_backbuffer ? std::optional<DXGI_FORMAT>{} : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+            const auto borrowed_srv_format = is_dune_external_backbuffer ? std::optional<DXGI_FORMAT>{} : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+
+            if (is_dune_external_backbuffer) {
+                const auto borrowed_desc = backbuffer->GetDesc();
+                SPDLOG_WARN_ONCE(
+                    "[Dune][D3D12] Borrowed viewport RT uses native view format [{}x{} fmt={} flags=0x{:x}]",
+                    borrowed_desc.Width,
+                    borrowed_desc.Height,
+                    (uint32_t)borrowed_desc.Format,
+                    (uint32_t)borrowed_desc.Flags);
+            }
+
+            if (!m_game_tex.setup(device, backbuffer.Get(), borrowed_rtv_format, borrowed_srv_format, L"Game Texture")) {
                 spdlog::error("[VR] Failed to fully setup game texture.");
                 m_game_tex.reset();
             }
@@ -1049,7 +1536,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             command_ctx.wait(INFINITE);
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             command_ctx.clear_rtv(m_game_tex, (float*)&clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
-            command_ctx.copy(real_backbuffer.Get(), m_backbuffer_copy.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            const auto real_backbuffer_source_state =
+                dune_use_final_present_backbuffer
+                    ? D3D12_RESOURCE_STATE_COMMON
+                    : D3D12_RESOURCE_STATE_PRESENT;
+            command_ctx.copy(real_backbuffer.Get(), m_backbuffer_copy.texture.Get(), real_backbuffer_source_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
             //m_game_tex_commands[idx].copy(backbuffer.Get(), m_game_tex.texture.Get(), D3D12_RESOURCE_STATE_PRESENT, ENGINE_SRC_COLOR);
             d3d12::render_srv_to_rtv(
                 m_game_batch.get(),
@@ -1063,11 +1554,47 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         backbuffer = m_game_tex.texture;
+        scene_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     }
 
     auto* effective_game_tex = &m_game_tex;
+    bool dune_using_hmd_mono_expansion = false;
     bool shf_using_mono_expansion = false;
     auto shf_scene_mode = ShfSceneMode::Unknown;
+
+    if (is_dune_awakening_current_game() &&
+        runtime->is_openxr() &&
+        m_game_tex.texture.Get() != nullptr) {
+        const auto source_desc = m_game_tex.texture->GetDesc();
+        const auto expected_hmd_width =
+            (uint64_t)vr->get_hmd_width() * (vr->is_using_afr() ? 1ull : 2ull);
+        const auto hmd_height = vr->get_hmd_height();
+        const auto dune_source_is_flat_desktop =
+            expected_hmd_width > 0 &&
+            hmd_height > 0 &&
+            (source_desc.Width < expected_hmd_width || source_desc.Height < hmd_height);
+
+        if (dune_source_is_flat_desktop) {
+            if (auto* dune_scene = render_dune_hmd_mono_scene_texture(device, scene_source_state);
+                dune_scene != nullptr && dune_scene->texture.Get() != nullptr)
+            {
+                effective_game_tex = dune_scene;
+                backbuffer = dune_scene->texture;
+                scene_source_state = ENGINE_SRC_COLOR;
+                dune_using_hmd_mono_expansion = true;
+            } else {
+                SPDLOG_ERROR_EVERY_N_SEC(
+                    1,
+                    "[Dune][D3D12] HMD mono scene expansion unavailable; leaving desktop source path active");
+            }
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][D3D12] Source already matches HMD scene expectations [{}x{}], skipping mono desktop expansion",
+                source_desc.Width,
+                source_desc.Height);
+        }
+    }
 
     if (is_shf_external_backbuffer && m_game_tex.texture.Get() != nullptr && real_backbuffer.Get() != nullptr) {
         const auto source_desc = m_game_tex.texture->GetDesc();
@@ -1388,6 +1915,25 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return true;
     };
 
+    auto allow_openxr_scene_copy = [&](const char* caller) -> bool {
+        if (!runtime->is_openxr() || !vr->m_openxr->can_run_frame_loop()) {
+            return false;
+        }
+
+        if (!is_dune_awakening_current_game()) {
+            return true;
+        }
+
+        if (ensure_openxr_frame_began(caller)) {
+            return true;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "[Dune][OpenXR] Deferring D3D12 scene copy because xrBeginFrame refused; avoiding stale command-list work this frame");
+        return false;
+    };
+
     if (runtime->is_openvr() && m_openvr.ui_tex.texture.Get() != nullptr) {
         const auto ui_copy_start = std::chrono::steady_clock::now();
         utility::ScopeGuard ui_copy_timing_guard{[&]() {
@@ -1487,6 +2033,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         scene_depth_tex.Reset();
     }
 
+    if (dune_using_hmd_mono_expansion && scene_depth_tex != nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[Dune][D3D12] Suppressing depth submit while HMD mono scene expansion is active");
+        scene_depth_tex.Reset();
+    }
+
     if ((debug_disable_depth_submit || debug_submit_empty_frame || debug_skip_scene_copy) && scene_depth_tex != nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[OpenXR][debug] Suppressing depth submit for perf isolation");
         scene_depth_tex.Reset();
@@ -1497,7 +2048,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_submitted_left_eye = true;
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && allow_openxr_scene_copy("dune_d3d12_left_scene_copy")) {
             const auto swapchain_copy_start = std::chrono::steady_clock::now();
             utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
                 m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
@@ -1510,7 +2061,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             src_box.front = 0;
             src_box.back = 1;
 
-            if (vr->is_extreme_compatibility_mode_enabled()) {
+            if (dune_using_hmd_mono_expansion && backbuffer.Get() != nullptr) {
+                const auto source_desc = backbuffer->GetDesc();
+                src_box.right = (UINT)source_desc.Width;
+                src_box.bottom = source_desc.Height;
+            } else if (vr->is_extreme_compatibility_mode_enabled()) {
                 src_box.right = m_backbuffer_size[0];
             } else {
                 src_box.right = m_backbuffer_size[0] / 2;
@@ -1563,7 +2118,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }};
 
         // OpenXR texture
-        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop()) {
+        if (runtime->is_openxr() && vr->m_openxr->can_run_frame_loop() && allow_openxr_scene_copy("dune_d3d12_right_scene_copy")) {
             const auto swapchain_copy_start = std::chrono::steady_clock::now();
             utility::ScopeGuard swapchain_copy_timing_guard{[&]() {
                 m_perf_swapchain_copy.add(std::chrono::steady_clock::now() - swapchain_copy_start);
@@ -1577,7 +2132,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 src_box.front = 0;
                 src_box.back = 1;
 
-                if (vr->is_extreme_compatibility_mode_enabled()) {
+                if (dune_using_hmd_mono_expansion && backbuffer.Get() != nullptr) {
+                    const auto source_desc = backbuffer->GetDesc();
+                    src_box.right = (UINT)source_desc.Width;
+                    src_box.bottom = source_desc.Height;
+                } else if (vr->is_extreme_compatibility_mode_enabled()) {
                     src_box.right = m_backbuffer_size[0];
                 } else {
                     src_box.right = m_backbuffer_size[0] / 2;
@@ -1600,7 +2159,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             if (is_actually_afr) {
                 D3D12_BOX src_box{};
 
-                if (!vr->is_extreme_compatibility_mode_enabled()) {
+                if (dune_using_hmd_mono_expansion && backbuffer.Get() != nullptr) {
+                    const auto source_desc = backbuffer->GetDesc();
+                    src_box.left = 0;
+                    src_box.right = (UINT)source_desc.Width;
+                    src_box.top = 0;
+                    src_box.bottom = source_desc.Height;
+                    src_box.front = 0;
+                    src_box.back = 1;
+                } else if (!vr->is_extreme_compatibility_mode_enabled()) {
                     if (!is_afr) {
                         src_box.left = m_backbuffer_size[0] / 2;
                         src_box.right = m_backbuffer_size[0];
@@ -1717,7 +2284,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                             std::nullopt,
                             D3D12_RESOURCE_STATE_RENDER_TARGET,
                             nullptr);
-                    } else if (m_scene_capture_tex.texture.Get() == nullptr || shf_using_mono_expansion) {
+                    } else if (m_scene_capture_tex.texture.Get() == nullptr ||
+                               shf_using_mono_expansion ||
+                               dune_using_hmd_mono_expansion) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
                     } else {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, pre_render, std::nullopt, D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr);
@@ -2535,6 +3104,11 @@ void D3D12Component::on_reset(VR* vr) {
     m_shf_mono_scene_width = 0;
     m_shf_mono_scene_height = 0;
     m_shf_mono_scene_format = DXGI_FORMAT_UNKNOWN;
+    m_dune_hmd_mono_scene_tex.reset();
+    m_dune_hmd_mono_scene_commands.reset();
+    m_dune_hmd_mono_scene_width = 0;
+    m_dune_hmd_mono_scene_height = 0;
+    m_dune_hmd_mono_scene_format = DXGI_FORMAT_UNKNOWN;
     m_skip_spectator_view_for_volatile_external_rt = false;
     m_shf_scene_mode = ShfSceneMode::Unknown;
     m_backbuffer_batch.reset();
