@@ -1068,6 +1068,74 @@ bool is_prospi_dugout_celebration_tracking_camera(const glm::vec3& location, con
     return first_base_dugout_facing || first_base_reverse_celebration || third_base_dugout_facing;
 }
 
+bool is_prospi_pre_celebration_line_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (raw_fov > 18.5f ||
+        std::abs(location.z) > 900.0f ||
+        location.y < -1500.0f ||
+        location.y > 900.0f ||
+        rotation.x < -12.0f ||
+        rotation.x > 12.0f) {
+        return false;
+    }
+
+    const auto first_base_line =
+        location.x >= 1700.0f &&
+        location.x <= 3200.0f &&
+        ((rotation.y >= -175.0f && rotation.y <= -145.0f) ||
+         (rotation.y >= -100.0f && rotation.y <= -70.0f) ||
+         (rotation.y >= 75.0f && rotation.y <= 110.0f));
+    const auto third_base_line =
+        location.x >= -3200.0f &&
+        location.x <= -1700.0f &&
+        raw_fov <= 9.0f &&
+        rotation.y >= -115.0f &&
+        rotation.y <= -50.0f;
+
+    return first_base_line || third_base_line;
+}
+
+bool is_prospi_close_cutscene_focus_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    if (raw_fov < 8.0f ||
+        raw_fov > 36.0f ||
+        std::abs(location.z) > 1200.0f ||
+        rotation.x < -30.0f ||
+        rotation.x > 16.0f) {
+        return false;
+    }
+
+    const auto home_side_close =
+        std::abs(location.x) <= 1800.0f &&
+        location.y >= -2800.0f &&
+        location.y <= 1800.0f &&
+        rotation.y >= 25.0f &&
+        rotation.y <= 65.0f;
+    const auto infield_reverse_close =
+        location.x >= 500.0f &&
+        location.x <= 2200.0f &&
+        location.y >= -200.0f &&
+        location.y <= 1700.0f &&
+        rotation.y >= -155.0f &&
+        rotation.y <= -125.0f &&
+        raw_fov >= 26.0f;
+
+    return home_side_close || infield_reverse_close;
+}
+
+bool is_prospi_upper_deck_crowd_overshoot_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        location.x >= -4400.0f &&
+        location.x <= -2600.0f &&
+        location.y >= 2000.0f &&
+        location.y <= 4000.0f &&
+        location.z >= 1000.0f &&
+        location.z <= 2200.0f &&
+        rotation.x >= -20.0f &&
+        rotation.x <= -12.0f &&
+        rotation.y >= -70.0f &&
+        rotation.y <= -45.0f &&
+        raw_fov <= 6.0f;
+}
+
 bool is_prospi_outfield_facing_home_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
     if (location.y < -14000.0f ||
         location.y > -4500.0f ||
@@ -8357,6 +8425,18 @@ void VR::update_game_fov() {
             prospi_preset = ProSpiCameraPreset::FirstBaseWideTelephoto;
         }
 
+        if (!prospi_calibration_applied &&
+            is_prospi_pre_celebration_line_camera(*location, *rotation, raw_fov)) {
+            prospi_preset = location->x >= 0.0f
+                ? ProSpiCameraPreset::FirstBaseTelephoto
+                : ProSpiCameraPreset::ThirdBaseTelephoto;
+        }
+
+        if (!prospi_calibration_applied &&
+            is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov)) {
+            prospi_preset = ProSpiCameraPreset::LowInfieldSideCloseUp;
+        }
+
         if (!prospi_calibration_applied && m_match_game_fov_dolly->value()) {
             switch (prospi_preset) {
             case ProSpiCameraPreset::GameplayBehindPlate:
@@ -8702,16 +8782,38 @@ void VR::update_game_fov() {
         if (!is_prospi ||
             !m_match_game_fov_dolly->value() ||
             !location.has_value() ||
-            !rotation.has_value() ||
-            !is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov)) {
+            !rotation.has_value()) {
             return;
         }
 
         constexpr auto celebration_max_focus_distance = 1250.0f;
+        constexpr auto upper_deck_crowd_max_focus_distance = 2400.0f;
+        const auto celebration_tracking_camera =
+            is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
+        const auto pre_celebration_line_camera =
+            is_prospi_pre_celebration_line_camera(*location, *rotation, raw_fov);
+        const auto close_cutscene_focus_camera =
+            is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
+        const auto upper_deck_crowd_overshoot_camera =
+            is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
 
-        if (active_dolly_distance > celebration_max_focus_distance) {
+        if (pre_celebration_line_camera && !prospi_calibration_applied) {
             active_dolly_distance = celebration_max_focus_distance;
-            prospi_dolly_source = "DugoutCelebrationTracking";
+            prospi_dolly_source = "PreCelebrationLineStable";
+        } else if ((celebration_tracking_camera ||
+                    (close_cutscene_focus_camera && !prospi_calibration_applied)) &&
+                   active_dolly_distance > celebration_max_focus_distance) {
+            active_dolly_distance = celebration_max_focus_distance;
+            prospi_dolly_source = celebration_tracking_camera
+                ? "DugoutCelebrationTracking"
+                : "CloseCutsceneFocusCap";
+        }
+
+        if (upper_deck_crowd_overshoot_camera &&
+            !prospi_calibration_applied &&
+            active_dolly_distance > upper_deck_crowd_max_focus_distance) {
+            active_dolly_distance = upper_deck_crowd_max_focus_distance;
+            prospi_dolly_source = "UpperDeckCrowdBackstop";
         }
     };
 
@@ -8805,6 +8907,12 @@ void VR::update_game_fov() {
             is_prospi_low_outfield_under_stands_camera(*location, *rotation, raw_fov);
         const auto center_field_pitch_up_under_stands_camera =
             is_prospi_center_field_pitch_up_under_stands_camera(*location, *rotation, raw_fov);
+        const auto pre_celebration_line_camera =
+            is_prospi_pre_celebration_line_camera(*location, *rotation, raw_fov);
+        const auto close_cutscene_focus_camera =
+            is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
+        const auto upper_deck_crowd_overshoot_camera =
+            is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
         const auto is_baseline =
             (abs_x >= baseline_x_min &&
              camera_y >= baseline_y_min &&
@@ -8881,6 +8989,9 @@ void VR::update_game_fov() {
             (is_baseline ||
              forced_third_base_line_camera ||
              close_home_line_tracking_camera ||
+             pre_celebration_line_camera ||
+             close_cutscene_focus_camera ||
+             upper_deck_crowd_overshoot_camera ||
              left_field_stadium_back_risk_camera ||
              elevated_transition_sweep_camera ||
              near_home_side_tracking_camera) &&
@@ -8891,7 +9002,11 @@ void VR::update_game_fov() {
 
         if (camera_z >= 7000.0f || std::abs(location->x) >= 50000.0f || std::abs(location->y) >= 25000.0f) {
             play_mode = ProSpiPlayCameraMode::AerialEstablishing;
-        } else if (elevated_transition_sweep_camera || near_home_side_tracking_camera) {
+        } else if (pre_celebration_line_camera ||
+                   close_cutscene_focus_camera ||
+                   upper_deck_crowd_overshoot_camera ||
+                   elevated_transition_sweep_camera ||
+                   near_home_side_tracking_camera) {
             play_mode = ProSpiPlayCameraMode::ReplayCutscene;
         } else if (((follow_pan_like || recent_ball_follow) && !baseline_cutscene_like) ||
                    outfield_home_plate_pan ||
@@ -8946,6 +9061,14 @@ void VR::update_game_fov() {
             ((is_outfield && low_camera) || outfield_corner_camera || outfield_home_plate_pan || recent_outfield_follow)) {
             sequence_zone = ProSpiCameraSafetyZone::OutfieldLow;
             sequence_cap = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap->value(), 10.0f, 15000.0f);
+        }
+        if (pre_celebration_line_camera || close_cutscene_focus_camera) {
+            sequence_zone = ProSpiCameraSafetyZone::FieldFloor;
+            sequence_cap = 1250.0f;
+        }
+        if (upper_deck_crowd_overshoot_camera) {
+            sequence_zone = ProSpiCameraSafetyZone::StandCrowd;
+            sequence_cap = 2400.0f;
         }
 
         struct LearnedCandidate {
@@ -9206,7 +9329,14 @@ void VR::update_game_fov() {
             sequence_cap > 0.0f) {
             auto target_dolly = std::clamp(sequence_cap * fov_scale, 10.0f, 15000.0f);
             auto allow_dolly_increase = false;
-            if (left_field_stadium_back_risk_camera) {
+            if (pre_celebration_line_camera) {
+                target_dolly = 1250.0f;
+                allow_dolly_increase = true;
+            } else if (close_cutscene_focus_camera) {
+                target_dolly = std::min(active_dolly_distance, 1250.0f);
+            } else if (upper_deck_crowd_overshoot_camera) {
+                target_dolly = std::min(active_dolly_distance, 2400.0f);
+            } else if (left_field_stadium_back_risk_camera) {
                 target_dolly = std::min(target_dolly, 1400.0f);
             } else if (close_home_line_tracking_camera) {
                 target_dolly = std::min(target_dolly, 1250.0f);
@@ -9834,6 +9964,12 @@ void VR::update_game_fov() {
                 is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
             const auto dugout_celebration_tracking_camera =
                 is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
+            const auto pre_celebration_line_camera =
+                is_prospi_pre_celebration_line_camera(*location, *rotation, raw_fov);
+            const auto close_cutscene_focus_camera =
+                is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
+            const auto upper_deck_crowd_overshoot_camera =
+                is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
             const auto outfield_facing_home_camera =
                 is_prospi_outfield_facing_home_camera(*location, *rotation, raw_fov);
             const auto close_home_line_tracking_camera =
@@ -9888,6 +10024,13 @@ void VR::update_game_fov() {
                 safety_min_z = field_min_z;
             }
 
+            if (pre_celebration_line_camera || close_cutscene_focus_camera) {
+                // These short cinematic cameras track a player near field level. A dugout/stand-height
+                // correction moves the view above the subject and makes adjacent cut IDs appear to jump.
+                safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                safety_min_z = field_min_z;
+            }
+
             if (elevated_transition_sweep_camera) {
                 // The pre/post celebration sweeps cross the shallow-outfield threshold while pointed at home.
                 // Keep them on the field rule so the view does not snap between outfield and neutral handling.
@@ -9913,7 +10056,9 @@ void VR::update_game_fov() {
                 camera_y >= stand_y_min &&
                 camera_y <= stand_y_max &&
                 raw_fov <= telephoto_fov &&
-                !baseline_line_telephoto_camera) {
+                !baseline_line_telephoto_camera &&
+                !pre_celebration_line_camera &&
+                !close_cutscene_focus_camera) {
                 safety_zone = ProSpiCameraSafetyZone::StandCrowd;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_stand_min_z->value(), -500.0f, 4000.0f);
             }
@@ -9924,7 +10069,10 @@ void VR::update_game_fov() {
                 !close_home_line_tracking_camera &&
                 !left_field_stadium_back_risk_camera &&
                 !elevated_transition_sweep_camera &&
-                !near_home_side_tracking_camera) {
+                !near_home_side_tracking_camera &&
+                !pre_celebration_line_camera &&
+                !close_cutscene_focus_camera &&
+                !upper_deck_crowd_overshoot_camera) {
                 safety_zone = ProSpiCameraSafetyZone::OutfieldLow;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_min_z->value(), -500.0f, 3000.0f);
             }
@@ -9946,7 +10094,11 @@ void VR::update_game_fov() {
                         const auto max_safe_dolly = std::max(0.0f, (base_z - safety_min_z) / vertical_factor);
                         auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
 
-                        if (dugout_celebration_tracking_camera || close_home_line_tracking_camera || near_home_side_tracking_camera) {
+                        if (dugout_celebration_tracking_camera ||
+                            pre_celebration_line_camera ||
+                            close_cutscene_focus_camera ||
+                            close_home_line_tracking_camera ||
+                            near_home_side_tracking_camera) {
                             // Preserve the stable celebration tracking distance and satisfy the small
                             // field-floor correction with the temporary up offset.
                             capped_dolly = dolly_offset;
