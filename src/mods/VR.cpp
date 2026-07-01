@@ -1175,6 +1175,75 @@ bool is_prospi_upper_deck_crowd_overshoot_camera(const glm::vec3& location, cons
     return upper_deck_location && (third_base_crowd || first_base_crowd);
 }
 
+bool is_prospi_home_dugout_wide_cutscene_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    const auto home_first_base_pan =
+        location.x >= 900.0f &&
+        location.x <= 1900.0f &&
+        location.y >= -600.0f &&
+        location.y <= 600.0f &&
+        std::abs(location.z) <= 600.0f &&
+        rotation.x >= 0.0f &&
+        rotation.x <= 10.0f &&
+        rotation.y >= 70.0f &&
+        rotation.y <= 105.0f &&
+        raw_fov >= 16.0f &&
+        raw_fov <= 28.0f;
+    const auto first_base_dugout_reverse =
+        location.x >= 1400.0f &&
+        location.x <= 2600.0f &&
+        location.y >= -1200.0f &&
+        location.y <= 200.0f &&
+        std::abs(location.z) <= 600.0f &&
+        rotation.x >= -5.0f &&
+        rotation.x <= 8.0f &&
+        rotation.y >= 158.0f &&
+        rotation.y <= 180.0f &&
+        raw_fov >= 28.0f &&
+        raw_fov <= 42.0f;
+    const auto first_base_dugout_high_reverse =
+        location.x >= 1400.0f &&
+        location.x <= 2600.0f &&
+        location.y >= 500.0f &&
+        location.y <= 1500.0f &&
+        std::abs(location.z) <= 600.0f &&
+        rotation.x >= 8.0f &&
+        rotation.x <= 20.0f &&
+        rotation.y >= -150.0f &&
+        rotation.y <= -130.0f &&
+        raw_fov >= 45.0f &&
+        raw_fov <= 60.0f;
+    const auto home_reverse_pan =
+        std::abs(location.x) <= 750.0f &&
+        location.y >= -250.0f &&
+        location.y <= 750.0f &&
+        location.z >= 250.0f &&
+        location.z <= 750.0f &&
+        rotation.x >= -20.0f &&
+        rotation.x <= -10.0f &&
+        std::abs(rotation.y) >= 160.0f &&
+        raw_fov >= 28.0f &&
+        raw_fov <= 42.0f;
+
+    return home_first_base_pan ||
+        first_base_dugout_reverse ||
+        first_base_dugout_high_reverse ||
+        home_reverse_pan;
+}
+
+bool is_prospi_home_backstop_crowd_overshoot_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
+    return
+        std::abs(location.x) <= 1000.0f &&
+        location.y >= 2500.0f &&
+        location.y <= 3500.0f &&
+        location.z >= 250.0f &&
+        location.z <= 1000.0f &&
+        rotation.x >= -15.0f &&
+        rotation.x <= -5.0f &&
+        rotation.y >= -120.0f &&
+        rotation.y <= -90.0f &&
+        raw_fov <= 20.0f;
+}
+
 bool is_prospi_outfield_facing_home_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
     if (location.y < -14000.0f ||
         location.y > -4500.0f ||
@@ -8839,24 +8908,34 @@ void VR::update_game_fov() {
             is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
         const auto upper_deck_crowd_overshoot_camera =
             is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
+        const auto home_dugout_wide_cutscene_camera =
+            is_prospi_home_dugout_wide_cutscene_camera(*location, *rotation, raw_fov);
+        const auto home_backstop_crowd_overshoot_camera =
+            is_prospi_home_backstop_crowd_overshoot_camera(*location, *rotation, raw_fov);
 
         if (pre_celebration_line_camera && !prospi_calibration_applied) {
             active_dolly_distance = celebration_max_focus_distance;
             prospi_dolly_source = "PreCelebrationLineStable";
         } else if ((celebration_tracking_camera ||
+                    home_dugout_wide_cutscene_camera ||
                     (close_cutscene_focus_camera && !prospi_calibration_applied)) &&
                    active_dolly_distance > celebration_max_focus_distance) {
             active_dolly_distance = celebration_max_focus_distance;
-            prospi_dolly_source = celebration_tracking_camera
-                ? "DugoutCelebrationTracking"
-                : "CloseCutsceneFocusCap";
+            prospi_dolly_source = home_dugout_wide_cutscene_camera
+                ? "HomeDugoutWideCutsceneCap"
+                : celebration_tracking_camera
+                    ? "DugoutCelebrationTracking"
+                    : "CloseCutsceneFocusCap";
         }
 
-        if (upper_deck_crowd_overshoot_camera &&
+        if ((upper_deck_crowd_overshoot_camera ||
+             home_backstop_crowd_overshoot_camera) &&
             !prospi_calibration_applied &&
             active_dolly_distance > upper_deck_crowd_max_focus_distance) {
             active_dolly_distance = upper_deck_crowd_max_focus_distance;
-            prospi_dolly_source = "UpperDeckCrowdBackstop";
+            prospi_dolly_source = home_backstop_crowd_overshoot_camera
+                ? "HomeBackstopCrowdCap"
+                : "UpperDeckCrowdBackstop";
         }
     };
 
@@ -8956,6 +9035,10 @@ void VR::update_game_fov() {
             is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
         const auto upper_deck_crowd_overshoot_camera =
             is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
+        const auto home_dugout_wide_cutscene_camera =
+            is_prospi_home_dugout_wide_cutscene_camera(*location, *rotation, raw_fov);
+        const auto home_backstop_crowd_overshoot_camera =
+            is_prospi_home_backstop_crowd_overshoot_camera(*location, *rotation, raw_fov);
         const auto dugout_celebration_tracking_camera =
             is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
         const auto known_good_pickoff_camera =
@@ -9464,7 +9547,9 @@ void VR::update_game_fov() {
             dugout_celebration_tracking_camera ||
             pre_celebration_line_camera ||
             close_cutscene_focus_camera ||
-            upper_deck_crowd_overshoot_camera;
+            upper_deck_crowd_overshoot_camera ||
+            home_dugout_wide_cutscene_camera ||
+            home_backstop_crowd_overshoot_camera;
         const auto protected_gameplay_camera =
             !coordinate_cutscene_camera &&
             (known_good_pickoff_camera ||
