@@ -2433,6 +2433,10 @@ private:
     glm::vec3 m_prospi_auto_camera_observation_rotation{};
     float m_prospi_auto_camera_observation_raw_fov{0.0f};
     std::chrono::steady_clock::time_point m_prospi_auto_camera_observation_time{};
+    bool m_prospi_cutscene_segment_active{false};
+    float m_prospi_cutscene_segment_focus_distance{0.0f};
+    int32_t m_prospi_cutscene_segment_safety_zone{0};
+    std::chrono::steady_clock::time_point m_prospi_cutscene_segment_started_at{};
     std::mutex m_prospi_auto_camera_sequencer_mtx{};
     std::string m_prospi_auto_camera_sequencer_match_label{};
     std::mutex m_generic_camera_preset_mtx{};

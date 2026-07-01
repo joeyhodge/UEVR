@@ -1069,27 +1069,27 @@ bool is_prospi_dugout_celebration_tracking_camera(const glm::vec3& location, con
 }
 
 bool is_prospi_pre_celebration_line_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
-    if (raw_fov > 18.5f ||
+    if (raw_fov > 24.0f ||
         std::abs(location.z) > 900.0f ||
-        location.y < -1500.0f ||
-        location.y > 900.0f ||
+        location.y < -2200.0f ||
+        location.y > 1200.0f ||
         rotation.x < -12.0f ||
         rotation.x > 12.0f) {
         return false;
     }
 
     const auto first_base_line =
-        location.x >= 1700.0f &&
+        location.x >= 1300.0f &&
         location.x <= 3200.0f &&
-        ((rotation.y >= -175.0f && rotation.y <= -145.0f) ||
-         (rotation.y >= -100.0f && rotation.y <= -70.0f) ||
+        ((rotation.y >= -175.0f && rotation.y <= -120.0f) ||
+         (rotation.y >= -115.0f && rotation.y <= -70.0f) ||
          (rotation.y >= 75.0f && rotation.y <= 110.0f));
     const auto third_base_line =
         location.x >= -3200.0f &&
-        location.x <= -1700.0f &&
-        raw_fov <= 9.0f &&
+        location.x <= -1300.0f &&
+        raw_fov <= 12.0f &&
         rotation.y >= -115.0f &&
-        rotation.y <= -50.0f;
+        rotation.y <= -45.0f;
 
     return first_base_line || third_base_line;
 }
@@ -1117,23 +1117,62 @@ bool is_prospi_close_cutscene_focus_camera(const glm::vec3& location, const glm:
         rotation.y >= -155.0f &&
         rotation.y <= -125.0f &&
         raw_fov >= 26.0f;
+    const auto home_reverse_close =
+        std::abs(location.x) <= 1000.0f &&
+        location.y >= -1200.0f &&
+        location.y <= 500.0f &&
+        rotation.x >= -5.0f &&
+        rotation.x <= 12.0f &&
+        raw_fov <= 24.0f &&
+        rotation.y >= 115.0f &&
+        rotation.y <= 140.0f;
+    const auto first_base_short_pan =
+        location.x >= 1300.0f &&
+        location.x <= 1800.0f &&
+        location.y >= -1800.0f &&
+        location.y <= 1200.0f &&
+        std::abs(location.z) <= 500.0f &&
+        rotation.x >= -10.0f &&
+        rotation.x <= 12.0f &&
+        raw_fov >= 12.0f &&
+        raw_fov <= 26.0f &&
+        ((rotation.y >= -5.0f && rotation.y <= 15.0f) ||
+         (rotation.y >= 45.0f && rotation.y <= 70.0f));
+    const auto third_base_short_pan =
+        location.x >= -2200.0f &&
+        location.x <= -1300.0f &&
+        location.y >= -2200.0f &&
+        location.y <= 500.0f &&
+        std::abs(location.z) <= 500.0f &&
+        rotation.x >= -10.0f &&
+        rotation.x <= 12.0f &&
+        raw_fov >= 12.0f &&
+        raw_fov <= 30.0f &&
+        rotation.y >= 15.0f &&
+        rotation.y <= 45.0f;
 
-    return home_side_close || infield_reverse_close;
+    return home_side_close ||
+        infield_reverse_close ||
+        home_reverse_close ||
+        first_base_short_pan ||
+        third_base_short_pan;
 }
 
 bool is_prospi_upper_deck_crowd_overshoot_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
-    return
-        location.x >= -4400.0f &&
-        location.x <= -2600.0f &&
+    const auto upper_deck_location =
+        std::abs(location.x) >= 2600.0f &&
+        std::abs(location.x) <= 4400.0f &&
         location.y >= 2000.0f &&
         location.y <= 4000.0f &&
         location.z >= 1000.0f &&
         location.z <= 2200.0f &&
         rotation.x >= -20.0f &&
         rotation.x <= -12.0f &&
-        rotation.y >= -70.0f &&
-        rotation.y <= -45.0f &&
-        raw_fov <= 6.0f;
+        raw_fov <= 18.0f;
+    const auto third_base_crowd = location.x < 0.0f && rotation.y >= -70.0f && rotation.y <= -45.0f;
+    const auto first_base_crowd = location.x > 0.0f && rotation.y >= -145.0f && rotation.y <= -110.0f;
+
+    return upper_deck_location && (third_base_crowd || first_base_crowd);
 }
 
 bool is_prospi_outfield_facing_home_camera(const glm::vec3& location, const glm::vec3& rotation, float raw_fov) {
@@ -8233,6 +8272,10 @@ void VR::update_game_fov() {
         m_prospi_auto_camera_observation_rotation = {};
         m_prospi_auto_camera_observation_raw_fov = 0.0f;
         m_prospi_auto_camera_observation_time = {};
+        m_prospi_cutscene_segment_active = false;
+        m_prospi_cutscene_segment_focus_distance = 0.0f;
+        m_prospi_cutscene_segment_safety_zone = (int32_t)ProSpiCameraSafetyZone::None;
+        m_prospi_cutscene_segment_started_at = {};
         {
             std::scoped_lock seq_lock{m_prospi_auto_camera_sequencer_mtx};
             m_prospi_auto_camera_sequencer_match_label.clear();
@@ -8913,6 +8956,11 @@ void VR::update_game_fov() {
             is_prospi_close_cutscene_focus_camera(*location, *rotation, raw_fov);
         const auto upper_deck_crowd_overshoot_camera =
             is_prospi_upper_deck_crowd_overshoot_camera(*location, *rotation, raw_fov);
+        const auto dugout_celebration_tracking_camera =
+            is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov);
+        const auto known_good_pickoff_camera =
+            prospi_preset == ProSpiCameraPreset::FirstBaseCornerLow ||
+            prospi_preset == ProSpiCameraPreset::ThirdBaseRelayLow;
         const auto is_baseline =
             (abs_x >= baseline_x_min &&
              camera_y >= baseline_y_min &&
@@ -9405,6 +9453,69 @@ void VR::update_game_fov() {
         apply_ebaseball_camera_tuning();
         apply_prospi_dugout_celebration_tuning();
 
+        constexpr auto prospi_cutscene_segment_max_duration = std::chrono::seconds{8};
+        const auto hard_camera_cut =
+            !m_prospi_auto_camera_observation_valid ||
+            location_delta >= 2500.0f ||
+            yaw_delta >= 30.0f ||
+            pitch_delta >= 20.0f ||
+            fov_delta >= 7.5f;
+        const auto coordinate_cutscene_camera =
+            dugout_celebration_tracking_camera ||
+            pre_celebration_line_camera ||
+            close_cutscene_focus_camera ||
+            upper_deck_crowd_overshoot_camera;
+        const auto protected_gameplay_camera =
+            !coordinate_cutscene_camera &&
+            (known_good_pickoff_camera ||
+             home_plate_pitch_view ||
+             play_mode == ProSpiPlayCameraMode::PitchBatterView ||
+             play_mode == ProSpiPlayCameraMode::BallFollow);
+        const auto cutscene_segment_candidate =
+            !protected_gameplay_camera &&
+            (play_mode == ProSpiPlayCameraMode::ReplayCutscene ||
+             coordinate_cutscene_camera);
+        const auto cutscene_segment_expired =
+            m_prospi_cutscene_segment_active &&
+            observation_now - m_prospi_cutscene_segment_started_at > prospi_cutscene_segment_max_duration;
+        const auto cutscene_segment_forced_exit =
+            m_prospi_cutscene_segment_active && protected_gameplay_camera;
+
+        if ((hard_camera_cut || cutscene_segment_expired || cutscene_segment_forced_exit) &&
+            m_prospi_cutscene_segment_active) {
+            const auto* exit_reason = hard_camera_cut
+                ? "hard-cut"
+                : cutscene_segment_expired
+                    ? "timeout"
+                    : "protected-gameplay";
+            spdlog::info(
+                "[PROSPI_CUTSCENE_SEGMENT] active=false reason={} camera={} held_dolly={:.1f}",
+                exit_reason,
+                prospi_camera_id,
+                m_prospi_cutscene_segment_focus_distance);
+            m_prospi_cutscene_segment_active = false;
+        }
+
+        if (!m_prospi_cutscene_segment_active && cutscene_segment_candidate) {
+            m_prospi_cutscene_segment_active = true;
+            m_prospi_cutscene_segment_focus_distance = active_dolly_distance;
+            m_prospi_cutscene_segment_safety_zone = (int32_t)(
+                upper_deck_crowd_overshoot_camera
+                    ? ProSpiCameraSafetyZone::StandCrowd
+                    : ProSpiCameraSafetyZone::FieldFloor);
+            m_prospi_cutscene_segment_started_at = observation_now;
+            spdlog::info(
+                "[PROSPI_CUTSCENE_SEGMENT] active=true camera={} dolly={:.1f} zone={}",
+                prospi_camera_id,
+                m_prospi_cutscene_segment_focus_distance,
+                get_prospi_camera_safety_zone_name(m_prospi_cutscene_segment_safety_zone));
+        } else if (m_prospi_cutscene_segment_active && !hard_camera_cut) {
+            active_dolly_distance = m_prospi_cutscene_segment_focus_distance;
+            sequence_zone = (ProSpiCameraSafetyZone)m_prospi_cutscene_segment_safety_zone;
+            play_mode = ProSpiPlayCameraMode::ReplayCutscene;
+            prospi_dolly_source = "CutsceneSegmentLatch";
+        }
+
         const auto fov_after = game_fov_for_matching * active_fov_multiplier;
         const auto sequencer_changed =
             std::abs(active_dolly_distance - dolly_before) > 0.25f ||
@@ -9444,6 +9555,7 @@ void VR::update_game_fov() {
     } else {
         m_prospi_auto_camera_sequencer_last_valid = false;
         m_prospi_auto_camera_observation_valid = false;
+        m_prospi_cutscene_segment_active = false;
         update_prospi_auto_camera_sequencer_state(false);
         apply_ebaseball_camera_tuning();
         apply_prospi_dugout_celebration_tuning();
@@ -10077,6 +10189,23 @@ void VR::update_game_fov() {
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_min_z->value(), -500.0f, 3000.0f);
             }
 
+            if (m_prospi_cutscene_segment_active) {
+                safety_zone = (ProSpiCameraSafetyZone)m_prospi_cutscene_segment_safety_zone;
+                switch (safety_zone) {
+                case ProSpiCameraSafetyZone::StandCrowd:
+                    safety_min_z = std::clamp(
+                        m_match_game_fov_prospi_camera_safety_stand_min_z->value(),
+                        -500.0f,
+                        4000.0f);
+                    break;
+                case ProSpiCameraSafetyZone::FieldFloor:
+                default:
+                    safety_zone = ProSpiCameraSafetyZone::FieldFloor;
+                    safety_min_z = field_min_z;
+                    break;
+                }
+            }
+
             auto dolly_before = dolly_offset;
             auto safety_up_offset = 0.0f;
             auto predicted_z = location->z + m_camera_up_offset->value();
@@ -10095,6 +10224,7 @@ void VR::update_game_fov() {
                         auto capped_dolly = std::min(dolly_offset, max_safe_dolly);
 
                         if (dugout_celebration_tracking_camera ||
+                            m_prospi_cutscene_segment_active ||
                             pre_celebration_line_camera ||
                             close_cutscene_focus_camera ||
                             close_home_line_tracking_camera ||
