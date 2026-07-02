@@ -773,15 +773,21 @@ private:
         Off,
         WaitingForHooks,
         LearningViewStates,
+        PairReady,
         Active,
         FailedClosed,
     };
 
     struct GhostingFixPair {
         sdk::FSceneViewStateInterface* eye_state[2]{};
+        sdk::FSceneViewStateInterface* pending_eye_state[2]{};
+        uint8_t pending_eye_observations[2]{};
         uintptr_t scene{};
-        uint32_t first_seen_frame{};
-        uint32_t last_seen_frame{};
+        uintptr_t pending_scene{};
+        uint8_t pending_scene_observations[2]{};
+        uint64_t first_seen_observation{};
+        uint64_t last_seen_observation{};
+        uint32_t generation{};
     };
 
     struct {
@@ -795,8 +801,12 @@ private:
 
         GhostingFixPair ghosting_pair{};
         GhostingFixState ghosting_state{GhostingFixState::Off};
-        uint32_t ghosting_learning_start_frame{};
-        uint32_t ghosting_fail_frame{};
+        uint64_t ghosting_observation_serial{};
+        uint64_t ghosting_learning_start_observation{};
+        uint64_t ghosting_fail_observation{};
+        uint64_t ghosting_last_right_eye_remap_observation{};
+        uint64_t ghosting_right_eye_remap_count{};
+        std::chrono::steady_clock::time_point ghosting_last_right_eye_remap_time{};
         bool ghosting_logged_bootstrap_disabled{};
 
         // For keeping track of what the states were before our modifications.
