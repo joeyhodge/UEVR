@@ -8287,6 +8287,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto& ghosting_pair = g_hook->m_sceneview_data.ghosting_pair;
     auto& ghosting_state = g_hook->m_sceneview_data.ghosting_state;
+    auto& ghosting_observation_serial = g_hook->m_sceneview_data.ghosting_observation_serial;
 
     const auto is_valid_scene_state = [](sdk::FSceneViewStateInterface* state) {
         if (state == nullptr || !is_readable_process_range((uintptr_t)state, sizeof(uintptr_t))) {
@@ -8313,36 +8314,142 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         ghosting_pair = {};
         ghosting_state = GhostingFixState::Off;
-        g_hook->m_sceneview_data.ghosting_learning_start_frame = 0;
-        g_hook->m_sceneview_data.ghosting_fail_frame = 0;
+        g_hook->m_sceneview_data.ghosting_learning_start_observation = 0;
+        g_hook->m_sceneview_data.ghosting_fail_observation = 0;
+        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = 0;
+        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = {};
         g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = false;
     } else if (!g_hook->m_has_view_extensions_installed || !g_hook->m_sceneview_data.constructor_hook) {
-        ghosting_state = GhostingFixState::WaitingForHooks;
-    } else if (init_options_scene == nullptr || !is_valid_scene_state(init_options_scene_state)) {
-        if (ghosting_state != GhostingFixState::WaitingForHooks) {
-            SPDLOG_INFO_ONCE("[GhostingFix] Waiting for a valid FSceneView scene/state before remapping");
+        if (ghosting_pair.scene == 0) {
+            ghosting_state = GhostingFixState::WaitingForHooks;
         }
-
-        ghosting_state = GhostingFixState::WaitingForHooks;
+    } else if (init_options_scene == nullptr || !is_valid_scene_state(init_options_scene_state)) {
+        // Null-state scene captures and loading-screen views are auxiliary.
+        // They must not erase a verified pair or unlock a FailedClosed scene.
+        if (ghosting_pair.scene == 0 && ghosting_state != GhostingFixState::WaitingForHooks) {
+            SPDLOG_INFO_ONCE("[GhostingFix] Waiting for a valid FSceneView scene/state before remapping");
+            ghosting_state = GhostingFixState::WaitingForHooks;
+        }
     } else {
+        constexpr uint64_t BOOTSTRAP_TIMEOUT_OBSERVATIONS = 600;
+        constexpr uint8_t GENERATION_CONFIRMATION_OBSERVATIONS = 3;
+
+        const auto now = std::chrono::steady_clock::now();
+        const auto observation = ++ghosting_observation_serial;
         const auto scene_id = (uintptr_t)init_options_scene;
-        if (ghosting_pair.scene != scene_id) {
+        const auto eye_index = true_index & 1;
+        const auto other_eye_index = eye_index ^ 1;
+
+        const auto begin_learning = [&](const char* reason) {
+            auto next_generation = ghosting_pair.generation + 1;
+            if (next_generation == 0) {
+                next_generation = 1;
+            }
+
             ghosting_pair = {};
             ghosting_pair.scene = scene_id;
-            ghosting_pair.first_seen_frame = g_frame_count;
-            g_hook->m_sceneview_data.ghosting_learning_start_frame = g_frame_count;
-            g_hook->m_sceneview_data.ghosting_fail_frame = 0;
+            ghosting_pair.generation = next_generation;
+            ghosting_pair.first_seen_observation = observation;
+            ghosting_pair.last_seen_observation = observation;
+            ghosting_pair.eye_state[eye_index] = init_options_scene_state;
+            g_hook->m_sceneview_data.ghosting_learning_start_observation = observation;
+            g_hook->m_sceneview_data.ghosting_fail_observation = 0;
+            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = 0;
+            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = {};
             g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = false;
             ghosting_state = GhostingFixState::LearningViewStates;
 
-            SPDLOG_INFO("[GhostingFix] Learning scene-state pair for scene={:x}", scene_id);
+            SPDLOG_INFO(
+                "[GhostingFix] Learning scene-state pair for scene={:x} generation={} reason={} seed_eye={} state={:x}",
+                scene_id,
+                ghosting_pair.generation,
+                reason,
+                eye_index,
+                (uintptr_t)init_options_scene_state);
+        };
+
+        bool began_new_generation = false;
+        bool skip_current_view = false;
+        if (ghosting_pair.scene == 0) {
+            begin_learning("scene changed");
+            began_new_generation = true;
+        } else if (ghosting_pair.scene != scene_id) {
+            if (ghosting_pair.pending_scene == scene_id) {
+                if (ghosting_pair.pending_scene_observations[eye_index] < std::numeric_limits<uint8_t>::max()) {
+                    ++ghosting_pair.pending_scene_observations[eye_index];
+                }
+            } else {
+                ghosting_pair.pending_scene = scene_id;
+                ghosting_pair.pending_scene_observations[0] = 0;
+                ghosting_pair.pending_scene_observations[1] = 0;
+                ghosting_pair.pending_scene_observations[eye_index] = 1;
+            }
+
+            const bool scene_change_confirmed =
+                ghosting_pair.pending_scene_observations[0] >= GENERATION_CONFIRMATION_OBSERVATIONS &&
+                ghosting_pair.pending_scene_observations[1] >= GENERATION_CONFIRMATION_OBSERVATIONS;
+
+            if (scene_change_confirmed) {
+                begin_learning("confirmed scene change");
+                began_new_generation = true;
+            } else {
+                // A single valid capture/reflection family must not evict
+                // the established gameplay pair, even after a loading pause.
+                skip_current_view = true;
+            }
+        } else {
+            ghosting_pair.pending_scene = 0;
+            ghosting_pair.pending_scene_observations[0] = 0;
+            ghosting_pair.pending_scene_observations[1] = 0;
         }
 
-        if (ghosting_state != GhostingFixState::FailedClosed) {
-            ghosting_pair.last_seen_frame = g_frame_count;
+        if (!skip_current_view &&
+            !began_new_generation &&
+            (ghosting_state == GhostingFixState::Active ||
+             ghosting_state == GhostingFixState::PairReady ||
+             ghosting_state == GhostingFixState::FailedClosed))
+        {
+            const bool is_known_state =
+                init_options_scene_state == ghosting_pair.eye_state[0] ||
+                init_options_scene_state == ghosting_pair.eye_state[1];
 
-            const auto eye_index = true_index & 1;
-            const auto other_eye_index = eye_index ^ 1;
+            if (is_known_state) {
+                // Seeing either established state proves the current
+                // generation is still alive. Do not combine stale auxiliary
+                // candidates observed at unrelated times into a new pair.
+                ghosting_pair.pending_eye_state[0] = nullptr;
+                ghosting_pair.pending_eye_state[1] = nullptr;
+                ghosting_pair.pending_eye_observations[0] = 0;
+                ghosting_pair.pending_eye_observations[1] = 0;
+            } else {
+                if (ghosting_pair.pending_eye_state[eye_index] == init_options_scene_state) {
+                    if (ghosting_pair.pending_eye_observations[eye_index] < std::numeric_limits<uint8_t>::max()) {
+                        ++ghosting_pair.pending_eye_observations[eye_index];
+                    }
+                } else {
+                    ghosting_pair.pending_eye_state[eye_index] = init_options_scene_state;
+                    ghosting_pair.pending_eye_observations[eye_index] = 1;
+                }
+
+                const bool generation_change_confirmed =
+                    ghosting_pair.pending_eye_state[0] != nullptr &&
+                    ghosting_pair.pending_eye_state[1] != nullptr &&
+                    ghosting_pair.pending_eye_observations[0] >= GENERATION_CONFIRMATION_OBSERVATIONS &&
+                    ghosting_pair.pending_eye_observations[1] >= GENERATION_CONFIRMATION_OBSERVATIONS;
+
+                if (generation_change_confirmed) {
+                    begin_learning("confirmed scene-state generation change");
+                    began_new_generation = true;
+                } else {
+                    // Do not feed a one-off capture/history state into the
+                    // established gameplay pair.
+                    skip_current_view = true;
+                }
+            }
+        }
+
+        if (!skip_current_view && ghosting_state != GhostingFixState::FailedClosed) {
+            ghosting_pair.last_seen_observation = observation;
 
             if (ghosting_pair.eye_state[eye_index] == nullptr ||
                 !is_valid_scene_state(ghosting_pair.eye_state[eye_index]) ||
@@ -8362,9 +8469,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1];
 
             if (has_valid_pair) {
-                ghosting_state = GhostingFixState::Active;
-
                 if (eye_index == 1) {
+                    const bool first_remap_for_generation =
+                        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation == 0;
+
                     init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
 
                     if (init_options_scene_state != ghosting_pair.eye_state[1]) {
@@ -8372,9 +8480,25 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     }
 
                     restore_init_options_after_constructor = true;
+                    ghosting_state = GhostingFixState::Active;
+                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = observation;
+                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = now;
+                    ++g_hook->m_sceneview_data.ghosting_right_eye_remap_count;
 
-                    SPDLOG_INFO_ONCE(
-                        "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state");
+                    if (first_remap_for_generation) {
+                        SPDLOG_INFO(
+                            "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state "
+                            "scene={:x} generation={} left={:x} right={:x}",
+                            scene_id,
+                            ghosting_pair.generation,
+                            (uintptr_t)ghosting_pair.eye_state[0],
+                            (uintptr_t)ghosting_pair.eye_state[1]);
+                    }
+                } else if (
+                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
+                    now - g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time > std::chrono::milliseconds{500})
+                {
+                    ghosting_state = GhostingFixState::PairReady;
                 }
             } else {
                 ghosting_state = GhostingFixState::LearningViewStates;
@@ -8388,16 +8512,19 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 }
 
                 if (vr->is_ghosting_fix_bootstrap_enabled()) {
-                    constexpr uint32_t BOOTSTRAP_TIMEOUT_FRAMES = 600;
-
-                    if (g_hook->m_sceneview_data.ghosting_learning_start_frame != 0 &&
-                        g_frame_count - g_hook->m_sceneview_data.ghosting_learning_start_frame > BOOTSTRAP_TIMEOUT_FRAMES)
+                    const auto learning_start = g_hook->m_sceneview_data.ghosting_learning_start_observation;
+                    if (learning_start != 0 &&
+                        observation >= learning_start &&
+                        observation - learning_start > BOOTSTRAP_TIMEOUT_OBSERVATIONS)
                     {
                         ghosting_state = GhostingFixState::FailedClosed;
-                        g_hook->m_sceneview_data.ghosting_fail_frame = g_frame_count;
+                        g_hook->m_sceneview_data.ghosting_fail_observation = observation;
                         SPDLOG_WARN(
-                            "[GhostingFix] Failed to learn separate scene states within {} frames; failing closed for this scene",
-                            BOOTSTRAP_TIMEOUT_FRAMES);
+                            "[GhostingFix] Failed to learn separate scene states within {} eligible observations; "
+                            "failing closed for scene={:x} generation={}",
+                            BOOTSTRAP_TIMEOUT_OBSERVATIONS,
+                            scene_id,
+                            ghosting_pair.generation);
                     }
                 }
             }
@@ -9483,7 +9610,15 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
         return "waiting for SceneView hooks";
     case GhostingFixState::LearningViewStates:
         return "learning per-eye view states";
+    case GhostingFixState::PairReady:
+        return "paired; waiting for right-eye remap";
     case GhostingFixState::Active:
+        if (m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
+            std::chrono::steady_clock::now() - m_sceneview_data.ghosting_last_right_eye_remap_time >
+                std::chrono::milliseconds{500})
+        {
+            return "paired; right-eye remap stale";
+        }
         return "active";
     case GhostingFixState::FailedClosed:
         return "failed closed";
