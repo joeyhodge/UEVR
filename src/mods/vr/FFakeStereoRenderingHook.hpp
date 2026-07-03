@@ -773,7 +773,9 @@ private:
         Off,
         WaitingForHooks,
         LearningViewStates,
+        OrientingViewStates,
         PairReady,
+        NaturallySeparated,
         Active,
         FailedClosed,
     };
@@ -782,12 +784,18 @@ private:
         sdk::FSceneViewStateInterface* eye_state[2]{};
         sdk::FSceneViewStateInterface* pending_eye_state[2]{};
         uint8_t pending_eye_observations[2]{};
+        sdk::FSceneViewStateInterface* pending_left_source_state{};
+        uint8_t pending_left_source_observations{};
+        uint32_t pending_left_source_frame{};
+        bool pending_left_source_frame_valid{};
         uintptr_t scene{};
         uintptr_t pending_scene{};
         uint8_t pending_scene_observations[2]{};
         uint64_t first_seen_observation{};
         uint64_t last_seen_observation{};
         uint32_t generation{};
+        bool orientation_confirmed{};
+        bool logged_naturally_separated{};
     };
 
     struct {
