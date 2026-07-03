@@ -452,6 +452,26 @@ void OpenXR::on_config_save(utility::Config& cfg) {
 void OpenXR::on_pre_render_game_thread(uint32_t frame_count) {
     if (this->is_everspace2_coherent_submit_active()) {
         std::scoped_lock _{this->sync_assignment_mtx};
+
+        if (this->everspace2_last_scene_frame_count != (std::numeric_limits<uint32_t>::max)() &&
+            frame_count < this->everspace2_last_scene_frame_count)
+        {
+            const auto previous_frame_count = this->everspace2_last_scene_frame_count;
+            for (auto& state : this->pipeline_states) {
+                state = {};
+            }
+
+            this->last_submit_state = {};
+            this->has_render_frame_count = false;
+            this->everspace2_single_frame_hold_used = false;
+            SPDLOG_INFO(
+                "[Everspace2][OpenXR][coherent-submit] Scene frame counter reset {} -> {}; "
+                "cleared the previous world's pose snapshots",
+                previous_frame_count,
+                frame_count);
+        }
+
+        this->everspace2_last_scene_frame_count = frame_count;
         auto& pipeline_state = this->pipeline_states[frame_count % OpenXR::QUEUE_SIZE];
 
         if (pipeline_state.frame_count != frame_count) {
@@ -2049,9 +2069,10 @@ void OpenXR::log_everspace2_coherent_submit_summary_if_needed() {
 
     this->everspace2_last_summary_log = now;
     spdlog::info(
-        "[Everspace2][OpenXR][coherent-submit] summary exact={} nearby={} fresh={} one_frame_hold={} "
+        "[Everspace2][OpenXR][coherent-submit] summary exact={} retimed={} nearby={} fresh={} one_frame_hold={} "
         "rejected={} max_pose_age_ms={} real_projection_submitted={}",
         this->everspace2_exact_submit_count,
+        this->everspace2_retimed_submit_count,
         this->everspace2_nearby_submit_count,
         this->everspace2_fresh_capture_submit_count,
         this->everspace2_single_frame_hold_submit_count,
@@ -2074,10 +2095,12 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
 
         uint32_t requested_frame{};
         XrTime current_display_time{};
+        XrFrameState current_frame_state{XR_TYPE_FRAME_STATE};
         {
             std::scoped_lock assignment_lock{this->sync_assignment_mtx};
             requested_frame = this->internal_render_frame_count;
             current_display_time = this->frame_state.predictedDisplayTime;
+            current_frame_state = this->frame_state;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -2098,6 +2121,28 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
                 selected = exact;
                 selected_age_ms = elapsed_ms_since(now, exact.coherent_capture_time);
                 reason = "exact";
+
+                const auto current_period = std::max<XrDuration>(
+                    1,
+                    current_frame_state.predictedDisplayPeriod);
+                const auto display_time_delta =
+                    selected.frame_state.predictedDisplayTime -
+                    current_frame_state.predictedDisplayTime;
+                const auto absolute_display_time_delta =
+                    display_time_delta >= 0 ? display_time_delta : -display_time_delta;
+
+                if (current_frame_state.predictedDisplayTime > 1000 &&
+                    absolute_display_time_delta > current_period * 2)
+                {
+                    // The game can hold a cutscene frame while OpenXR keeps
+                    // advancing. Preserve the render-matched views, but submit
+                    // them on the current runtime timeline so the compositor
+                    // can reproject instead of blocking on an expired time.
+                    selected.frame_state = current_frame_state;
+                    selected.coherent_display_time =
+                        current_frame_state.predictedDisplayTime;
+                    reason = "exact_retimed";
+                }
             } else {
                 for (uint32_t delta = 1; delta <= 2 && requested_frame >= delta; ++delta) {
                     const auto candidate_frame = requested_frame - delta;
@@ -2145,6 +2190,9 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
             std::scoped_lock assignment_lock{this->sync_assignment_mtx};
             if (std::string_view{reason} == "exact") {
                 ++this->everspace2_exact_submit_count;
+                this->everspace2_single_frame_hold_used = false;
+            } else if (std::string_view{reason} == "exact_retimed") {
+                ++this->everspace2_retimed_submit_count;
                 this->everspace2_single_frame_hold_used = false;
             } else if (std::string_view{reason} == "nearby") {
                 ++this->everspace2_nearby_submit_count;

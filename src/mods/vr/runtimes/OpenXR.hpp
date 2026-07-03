@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <deque>
 #include <chrono>
+#include <limits>
 #include <mutex>
 
 #include <d3d11.h>
@@ -402,12 +403,14 @@ public:
     std::atomic_bool everspace2_has_real_projection_submit{false};
     uint64_t everspace2_snapshot_sequence{};
     uint64_t everspace2_exact_submit_count{};
+    uint64_t everspace2_retimed_submit_count{};
     uint64_t everspace2_nearby_submit_count{};
     uint64_t everspace2_fresh_capture_submit_count{};
     uint64_t everspace2_single_frame_hold_submit_count{};
     uint64_t everspace2_rejected_submit_count{};
     int64_t everspace2_max_submit_pose_age_ms{};
     bool everspace2_single_frame_hold_used{};
+    uint32_t everspace2_last_scene_frame_count{(std::numeric_limits<uint32_t>::max)()};
     std::chrono::steady_clock::time_point everspace2_last_submit_log{};
     std::chrono::steady_clock::time_point everspace2_last_summary_log{};
     uint64_t last_wait_trace_sequence{};

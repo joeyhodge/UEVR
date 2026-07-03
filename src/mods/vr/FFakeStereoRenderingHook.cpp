@@ -717,6 +717,17 @@ void everspace2_world_cleanup_hook(void* scene) {
     constexpr uintptr_t uniform_buffers_offset = 0x30;
     constexpr size_t uniform_buffer_count = 5;
     size_t sanitized{};
+    std::shared_ptr<const VRRenderTargetManager_Base::Everspace2D3D12SceneTargetSnapshot>
+        retired_scene_target{};
+
+    if (g_hook != nullptr) {
+        if (auto* rtm = g_hook->get_render_target_manager(); rtm != nullptr) {
+            // Stop new D3D12 frames from acquiring the outgoing world's target.
+            // Keep the COM reference alive until the engine cleanup call returns.
+            retired_scene_target =
+                rtm->retire_everspace2_scene_target_snapshot("FScene::OnWorldCleanup");
+        }
+    }
 
     if (scene != nullptr && !IsBadWritePtr(
             reinterpret_cast<void*>(reinterpret_cast<uintptr_t>(scene) + uniform_buffers_offset),
@@ -9511,7 +9522,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         return;
     }
 
-    const auto frame_count = *(uint32_t*)((uintptr_t)&view_family + SceneViewExtensionAnalyzer::frame_count_offset);
+    const auto frame_count =
+        *(uint32_t*)((uintptr_t)&view_family + SceneViewExtensionAnalyzer::frame_count_offset);
     auto views_ptr = view_family.get_views();
 
     auto runtime = vr->get_runtime();
@@ -16204,6 +16216,27 @@ bool VRRenderTargetManager_Base::publish_everspace2_scene_target_snapshot(
         (uint32_t)desc.Flags);
 
     return true;
+}
+
+std::shared_ptr<const VRRenderTargetManager_Base::Everspace2D3D12SceneTargetSnapshot>
+VRRenderTargetManager_Base::retire_everspace2_scene_target_snapshot(const char* reason) {
+    const auto previous =
+        everspace2_scene_target_snapshot.exchange(nullptr, std::memory_order_acq_rel);
+    render_target = nullptr;
+
+    if (previous != nullptr) {
+        SPDLOG_INFO(
+            "[Everspace2][SceneTargetSnapshot] retire generation={} reason={} "
+            "frhi={:x} native={:x} size={}x{}",
+            previous->generation,
+            reason != nullptr ? reason : "<unknown>",
+            previous->source_texture,
+            reinterpret_cast<uintptr_t>(previous->resource.Get()),
+            previous->desc.Width,
+            previous->desc.Height);
+    }
+
+    return previous;
 }
 
 void VRRenderTargetManager_Base::calculate_render_target_size(const sdk::FViewport& viewport, uint32_t& x, uint32_t& y) {

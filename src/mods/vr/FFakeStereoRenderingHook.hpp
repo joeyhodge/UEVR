@@ -131,6 +131,8 @@ public:
         ID3D12Resource* resource,
         const D3D12_RESOURCE_DESC& desc,
         const char* source);
+    std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>
+        retire_everspace2_scene_target_snapshot(const char* reason);
 
     FRHITexture2D* get_scene_capture_render_target();
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
