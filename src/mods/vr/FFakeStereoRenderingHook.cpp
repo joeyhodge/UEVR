@@ -8455,6 +8455,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     } else {
         constexpr uint64_t BOOTSTRAP_TIMEOUT_OBSERVATIONS = 600;
         constexpr uint8_t GENERATION_CONFIRMATION_OBSERVATIONS = 3;
+        constexpr uint8_t ORIENTATION_CONFIRMATION_LEFT_OBSERVATIONS = 3;
 
         const auto now = std::chrono::steady_clock::now();
         const auto observation = ++ghosting_observation_serial;
@@ -8488,6 +8489,30 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 reason,
                 eye_index,
                 (uintptr_t)init_options_scene_state);
+        };
+
+        const auto fail_closed_if_timed_out = [&]() {
+            if (!vr->is_ghosting_fix_bootstrap_enabled()) {
+                return false;
+            }
+
+            const auto learning_start = g_hook->m_sceneview_data.ghosting_learning_start_observation;
+            if (learning_start == 0 ||
+                observation < learning_start ||
+                observation - learning_start <= BOOTSTRAP_TIMEOUT_OBSERVATIONS)
+            {
+                return false;
+            }
+
+            ghosting_state = GhostingFixState::FailedClosed;
+            g_hook->m_sceneview_data.ghosting_fail_observation = observation;
+            SPDLOG_WARN(
+                "[GhostingFix] Failed to establish a stable per-eye scene-state mapping within {} eligible observations; "
+                "failing closed for scene={:x} generation={}",
+                BOOTSTRAP_TIMEOUT_OBSERVATIONS,
+                scene_id,
+                ghosting_pair.generation);
+            return true;
         };
 
         bool began_new_generation = false;
@@ -8529,6 +8554,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             !began_new_generation &&
             (ghosting_state == GhostingFixState::Active ||
              ghosting_state == GhostingFixState::PairReady ||
+             ghosting_state == GhostingFixState::NaturallySeparated ||
              ghosting_state == GhostingFixState::FailedClosed))
         {
             const bool is_known_state =
@@ -8579,6 +8605,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     ghosting_pair.eye_state[other_eye_index] != init_options_scene_state))
             {
                 ghosting_pair.eye_state[eye_index] = init_options_scene_state;
+                ghosting_pair.pending_left_source_state = nullptr;
+                ghosting_pair.pending_left_source_observations = 0;
+                ghosting_pair.pending_left_source_frame = 0;
+                ghosting_pair.pending_left_source_frame_valid = false;
+                ghosting_pair.orientation_confirmed = false;
+                ghosting_pair.logged_naturally_separated = false;
+                g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = 0;
+                g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = {};
                 SPDLOG_INFO(
                     "[GhostingFix] Learned eye {} scene state {:x}",
                     eye_index,
@@ -8591,34 +8625,105 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1];
 
             if (has_valid_pair) {
-                if (eye_index == 1) {
+                // Bootstrap can construct both candidate states in one engine
+                // frame, before AFR eye ownership is stable. Treat the pair as
+                // unordered until the same raw state is observed repeatedly
+                // on later left-eye frames.
+                if (eye_index == 0) {
+                    if (ghosting_pair.pending_left_source_state == init_options_scene_state) {
+                        const bool is_new_engine_frame =
+                            !ghosting_pair.pending_left_source_frame_valid ||
+                            ghosting_pair.pending_left_source_frame != g_frame_count;
+
+                        if (is_new_engine_frame &&
+                            ghosting_pair.pending_left_source_observations < std::numeric_limits<uint8_t>::max())
+                        {
+                            ++ghosting_pair.pending_left_source_observations;
+                        }
+                    } else {
+                        ghosting_pair.pending_left_source_state = init_options_scene_state;
+                        ghosting_pair.pending_left_source_observations = 1;
+                    }
+                    ghosting_pair.pending_left_source_frame = g_frame_count;
+                    ghosting_pair.pending_left_source_frame_valid = true;
+
+                    if (ghosting_pair.pending_left_source_observations >= ORIENTATION_CONFIRMATION_LEFT_OBSERVATIONS) {
+                        const bool swapped = ghosting_pair.eye_state[0] != init_options_scene_state;
+
+                        if (swapped) {
+                            std::swap(ghosting_pair.eye_state[0], ghosting_pair.eye_state[1]);
+                            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = 0;
+                            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = {};
+                            ghosting_pair.logged_naturally_separated = false;
+                            ghosting_state = GhostingFixState::PairReady;
+                        }
+
+                        if (!ghosting_pair.orientation_confirmed || swapped) {
+                            SPDLOG_INFO(
+                                "[GhostingFix] Confirmed stable AFR eye ownership scene={:x} generation={} "
+                                "left={:x} right={:x} swapped={}",
+                                scene_id,
+                                ghosting_pair.generation,
+                                (uintptr_t)ghosting_pair.eye_state[0],
+                                (uintptr_t)ghosting_pair.eye_state[1],
+                                swapped);
+                        }
+
+                        ghosting_pair.orientation_confirmed = true;
+                    }
+                }
+
+                if (!ghosting_pair.orientation_confirmed) {
+                    ghosting_state = GhostingFixState::OrientingViewStates;
+                    fail_closed_if_timed_out();
+                } else if (eye_index == 1) {
                     const bool first_remap_for_generation =
                         g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation == 0;
+                    const bool replaced_scene_state =
+                        init_options_scene_state != ghosting_pair.eye_state[1];
 
                     init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
 
-                    if (init_options_scene_state != ghosting_pair.eye_state[1]) {
+                    if (replaced_scene_state) {
                         init_options->set_scene_state(ghosting_pair.eye_state[1]);
                     }
 
                     restore_init_options_after_constructor = true;
-                    ghosting_state = GhostingFixState::Active;
-                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = observation;
-                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = now;
-                    ++g_hook->m_sceneview_data.ghosting_right_eye_remap_count;
 
-                    if (first_remap_for_generation) {
-                        SPDLOG_INFO(
-                            "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state "
-                            "scene={:x} generation={} left={:x} right={:x}",
-                            scene_id,
-                            ghosting_pair.generation,
-                            (uintptr_t)ghosting_pair.eye_state[0],
-                            (uintptr_t)ghosting_pair.eye_state[1]);
+                    if (replaced_scene_state) {
+                        ghosting_state = GhostingFixState::Active;
+                        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = observation;
+                        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = now;
+                        ++g_hook->m_sceneview_data.ghosting_right_eye_remap_count;
+
+                        if (first_remap_for_generation) {
+                            SPDLOG_INFO(
+                                "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state "
+                                "scene={:x} generation={} source={:x} left={:x} right={:x}",
+                                scene_id,
+                                ghosting_pair.generation,
+                                (uintptr_t)init_options_scene_state,
+                                (uintptr_t)ghosting_pair.eye_state[0],
+                                (uintptr_t)ghosting_pair.eye_state[1]);
+                        }
+                    } else {
+                        ghosting_state = GhostingFixState::NaturallySeparated;
+
+                        if (!ghosting_pair.logged_naturally_separated) {
+                            ghosting_pair.logged_naturally_separated = true;
+                            SPDLOG_INFO(
+                                "[GhostingFix] AFR right eye already owns its dedicated scene state "
+                                "scene={:x} generation={} left={:x} right={:x}; no pointer replacement needed",
+                                scene_id,
+                                ghosting_pair.generation,
+                                (uintptr_t)ghosting_pair.eye_state[0],
+                                (uintptr_t)ghosting_pair.eye_state[1]);
+                        }
                     }
                 } else if (
-                    g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
-                    now - g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time > std::chrono::milliseconds{500})
+                    ghosting_state != GhostingFixState::NaturallySeparated &&
+                    (g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
+                     now - g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time > std::chrono::milliseconds{500}))
                 {
                     ghosting_state = GhostingFixState::PairReady;
                 }
@@ -8633,22 +8738,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                         "[GhostingFix] Remap-only mode has not seen a second scene state yet; enable Bootstrap Separate View States if this game needs UEVR to force one");
                 }
 
-                if (vr->is_ghosting_fix_bootstrap_enabled()) {
-                    const auto learning_start = g_hook->m_sceneview_data.ghosting_learning_start_observation;
-                    if (learning_start != 0 &&
-                        observation >= learning_start &&
-                        observation - learning_start > BOOTSTRAP_TIMEOUT_OBSERVATIONS)
-                    {
-                        ghosting_state = GhostingFixState::FailedClosed;
-                        g_hook->m_sceneview_data.ghosting_fail_observation = observation;
-                        SPDLOG_WARN(
-                            "[GhostingFix] Failed to learn separate scene states within {} eligible observations; "
-                            "failing closed for scene={:x} generation={}",
-                            BOOTSTRAP_TIMEOUT_OBSERVATIONS,
-                            scene_id,
-                            ghosting_pair.generation);
-                    }
-                }
+                fail_closed_if_timed_out();
             }
         }
     }
@@ -10113,8 +10203,12 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
         return "waiting for SceneView hooks";
     case GhostingFixState::LearningViewStates:
         return "learning per-eye view states";
+    case GhostingFixState::OrientingViewStates:
+        return "pair found; confirming AFR eye ownership";
     case GhostingFixState::PairReady:
         return "paired; waiting for right-eye remap";
+    case GhostingFixState::NaturallySeparated:
+        return "paired; engine histories already separate";
     case GhostingFixState::Active:
         if (m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
             std::chrono::steady_clock::now() - m_sceneview_data.ghosting_last_right_eye_remap_time >
