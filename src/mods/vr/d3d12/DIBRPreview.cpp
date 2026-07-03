@@ -473,6 +473,7 @@ void DIBRPreview::set_depth_trace_expected_extent(uint32_t width, uint32_t heigh
 
         m_depth_trace_expected_width = width;
         m_depth_trace_expected_height = height;
+        m_barrier_discovery_logged = false;
         refresh_depth_trace_candidate_locked();
         changed = true;
     }
@@ -538,6 +539,14 @@ bool DIBRPreview::has_captured_depth() const {
 }
 
 void DIBRPreview::refresh_depth_trace_candidate_locked() {
+    // Once a live barrier has identified the rotating RDG depth pool, its
+    // transition is more authoritative than later descriptor creation. Keep
+    // the UI summary stable and let the barrier callback follow the active
+    // resource internally.
+    if (m_barrier_discovery_logged) {
+        return;
+    }
+
     uintptr_t selected{};
     const DepthTraceCandidate* selected_candidate{};
     enum class MatchKind : uint8_t {
@@ -629,6 +638,110 @@ bool DIBRPreview::is_trace_candidate_compatible_locked(uintptr_t resource) const
     return it->second.height == m_depth_trace_expected_height &&
         (it->second.width == m_depth_trace_expected_width ||
          (expected_eye_width != 0 && it->second.width == expected_eye_width));
+}
+
+bool DIBRPreview::try_adopt_depth_candidate_from_barrier(
+    ID3D12Resource* resource,
+    UINT transition_subresource,
+    uint32_t& selected_array_slice)
+{
+    if (resource == nullptr) {
+        return false;
+    }
+
+    const auto resource_desc = resource->GetDesc();
+    if (resource_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        resource_desc.Width == 0 || resource_desc.Height == 0 ||
+        resource_desc.SampleDesc.Count != 1 || resource_desc.MipLevels != 1 ||
+        resource_desc.DepthOrArraySize == 0 ||
+        depth_srv_format(resource_desc.Format) == DXGI_FORMAT_UNKNOWN ||
+        (resource_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0) {
+        return false;
+    }
+
+    uint32_t array_slice{};
+    if (transition_subresource != D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES) {
+        const auto plane_zero_subresource_count =
+            static_cast<UINT>(resource_desc.MipLevels) * resource_desc.DepthOrArraySize;
+        if (transition_subresource >= plane_zero_subresource_count) {
+            return false;
+        }
+
+        array_slice = transition_subresource / resource_desc.MipLevels;
+        // DIBR synthesizes from the left-eye scene color. Wait for the matching
+        // left depth slice instead of silently pairing it with the right eye.
+        if (array_slice != 0) {
+            return false;
+        }
+    }
+
+    const auto resource_key = reinterpret_cast<uintptr_t>(resource);
+    bool log_discovery{};
+    std::string summary{};
+    {
+        std::scoped_lock _{m_status_mutex};
+        if (m_depth_trace_expected_width == 0 || m_depth_trace_expected_height == 0 ||
+            resource_desc.Height != m_depth_trace_expected_height) {
+            return false;
+        }
+
+        const auto expected_eye_width = m_depth_trace_expected_width / 2;
+        const auto full_size = resource_desc.Width == m_depth_trace_expected_width;
+        const auto per_eye =
+            expected_eye_width != 0 && resource_desc.Width == expected_eye_width;
+        if (!full_size && !per_eye) {
+            return false;
+        }
+
+        auto& candidate = m_traced_depth_resources[resource_key];
+        candidate = DepthTraceCandidate{
+            .resource = resource_key,
+            .width = resource_desc.Width,
+            .height = resource_desc.Height,
+            .resource_format = resource_desc.Format,
+            .flags = resource_desc.Flags,
+            .sample_count = resource_desc.SampleDesc.Count,
+            .view_format = DXGI_FORMAT_UNKNOWN,
+            .array_size = resource_desc.DepthOrArraySize,
+            .array_slice = array_slice,
+        };
+
+        m_depth_trace_candidate.store(resource_key, std::memory_order_release);
+        m_depth_trace_candidate_array_slice.store(array_slice, std::memory_order_release);
+        m_depth_trace_last_state.store(
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+            std::memory_order_release);
+
+        if (!m_barrier_discovery_logged) {
+            std::ostringstream stream{};
+            stream << "adopted live barrier depth 0x" << std::hex << std::uppercase
+                   << resource_key << std::dec
+                   << " for scene " << m_depth_trace_expected_width << "x"
+                   << m_depth_trace_expected_height
+                   << (full_size ? " (full-size exact)" : " (per-eye exact)")
+                   << " candidate=" << resource_desc.Width << "x"
+                   << resource_desc.Height
+                   << " format=" << static_cast<uint32_t>(resource_desc.Format)
+                   << " array=" << resource_desc.DepthOrArraySize
+                   << " slice=" << array_slice
+                   << "; discovered from NPSR -> DEPTH_WRITE";
+            summary = stream.str();
+            m_depth_trace_summary =
+                "live barrier depth pool active for scene " +
+                std::to_string(m_depth_trace_expected_width) + "x" +
+                std::to_string(m_depth_trace_expected_height) +
+                (full_size ? " (full-size exact)" : " (per-eye exact)") +
+                "; following the current RDG resource";
+            m_barrier_discovery_logged = true;
+            log_discovery = true;
+        }
+    }
+
+    selected_array_slice = array_slice;
+    if (log_discovery) {
+        SPDLOG_INFO("[DIBR][barrier discovery] {}", summary);
+    }
+    return true;
 }
 
 void DIBRPreview::on_depth_stencil_view_created(
@@ -857,16 +970,17 @@ void DIBRPreview::on_resource_barriers(
         return;
     }
 
-    // The DSV selection happens when its descriptor is created. ResourceBarrier
-    // is a renderer hot path, so do not take the diagnostic map lock for every
-    // unrelated transition. A selected candidate is already compatibility-checked.
-    const auto candidate = m_depth_trace_candidate.load(std::memory_order_acquire);
-    if (candidate == 0) {
+    // ResourceBarrier is a renderer hot path. The ordinary path remains an
+    // atomic pointer comparison. If injection happened after SceneDepthZ's DSV
+    // was created, inspect only the exact NPSR -> DEPTH_WRITE window requested
+    // by DIBR and recover the already-live depth resource from that barrier.
+    auto candidate = m_depth_trace_candidate.load(std::memory_order_acquire);
+    const auto capture_enabled = m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire);
+    if (candidate == 0 && !capture_enabled) {
         return;
     }
 
-    const auto capture_enabled = m_ue5_rdg_depth_capture_enabled.load(std::memory_order_acquire);
-    const auto candidate_slice = m_depth_trace_candidate_array_slice.load(std::memory_order_acquire);
+    auto candidate_slice = m_depth_trace_candidate_array_slice.load(std::memory_order_acquire);
 
     for (UINT i = 0; i < count; ++i) {
         const auto& barrier = barriers[i];
@@ -874,18 +988,34 @@ void DIBRPreview::on_resource_barriers(
             continue;
         }
 
-        const auto resource_key = reinterpret_cast<uintptr_t>(barrier.Transition.pResource);
-        if (resource_key != candidate) {
-            continue;
-        }
-
         const auto before = barrier.Transition.StateBefore;
         const auto after = static_cast<uint32_t>(barrier.Transition.StateAfter);
-        const auto previous = m_depth_trace_last_state.exchange(after, std::memory_order_acq_rel);
         const auto closing_capture_window =
             before == D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE &&
             barrier.Transition.StateAfter == D3D12_RESOURCE_STATE_DEPTH_WRITE;
 
+        const auto resource_key = reinterpret_cast<uintptr_t>(barrier.Transition.pResource);
+        if (resource_key != candidate) {
+            if (!capture_enabled || !closing_capture_window ||
+                !m_ue5_rdg_depth_capture_requested.load(std::memory_order_acquire) ||
+                !try_adopt_depth_candidate_from_barrier(
+                    barrier.Transition.pResource,
+                    barrier.Transition.Subresource,
+                    candidate_slice)) {
+                continue;
+            }
+
+            candidate = resource_key;
+        } else if (capture_enabled && closing_capture_window) {
+            // Fallback DSVs are retained only for diagnostics. Revalidate the
+            // selected resource under the map lock before any game-state copy.
+            std::scoped_lock _{m_status_mutex};
+            if (!is_trace_candidate_compatible_locked(resource_key)) {
+                continue;
+            }
+        }
+
+        const auto previous = m_depth_trace_last_state.exchange(after, std::memory_order_acq_rel);
         if (capture_enabled && closing_capture_window) {
             const auto source_desc = barrier.Transition.pResource->GetDesc();
             if (candidate_slice >= source_desc.DepthOrArraySize) {
@@ -938,11 +1068,11 @@ void DIBRPreview::on_resource_barriers(
                 summary << "captured verified RDG depth 0x" << std::hex << std::uppercase << candidate << std::dec
                         << " generation=" << generation
                         << " during NPSR -> DEPTH_WRITE; source state restored before the original barrier";
-                {
-                    std::scoped_lock _{m_status_mutex};
-                    m_depth_trace_summary = summary.str();
-                }
                 if (log_success) {
+                    {
+                        std::scoped_lock _{m_status_mutex};
+                        m_depth_trace_summary = summary.str();
+                    }
                     SPDLOG_INFO("[DIBR][DSV/RDG capture] {}", summary.str());
                 }
             } else if (log_failure) {
@@ -1028,6 +1158,7 @@ void DIBRPreview::reset() {
         m_depth_trace_summary = "waiting for a DSV candidate";
         m_depth_trace_expected_width = 0;
         m_depth_trace_expected_height = 0;
+        m_barrier_discovery_logged = false;
     }
     m_depth_trace_candidate.store(0, std::memory_order_release);
     m_depth_trace_candidate_array_slice.store(0, std::memory_order_release);

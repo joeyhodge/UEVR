@@ -700,8 +700,9 @@ public:
             (!m_fake_stereo_hook->has_double_precision() || m_dibr_ue5_rdg_depth_capture->value());
     }
 
-    // DIBR depth tracing observes DSV allocation only. It never borrows a
-    // resource until a matching producer and state have been verified.
+    // DIBR depth tracing observes DSV allocation and, when injection happens
+    // later, exact live depth transitions. It never borrows a resource until a
+    // matching producer and state have been verified.
     bool is_dibr_depth_trace_requested() const {
         const auto runtime = get_runtime();
         return is_dibr_rendering_method_selected() &&

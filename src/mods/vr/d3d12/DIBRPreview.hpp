@@ -157,6 +157,10 @@ private:
         UINT source_transition_subresource);
     bool ensure_captured_depth_locked(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc, std::string& reason);
     bool is_trace_candidate_compatible_locked(uintptr_t resource) const;
+    bool try_adopt_depth_candidate_from_barrier(
+        ID3D12Resource* resource,
+        UINT transition_subresource,
+        uint32_t& selected_array_slice);
     void fail(std::string reason);
 
     static DXGI_FORMAT color_srv_format(DXGI_FORMAT format);
@@ -183,6 +187,7 @@ private:
     std::string m_depth_trace_summary{"waiting for a DSV candidate"};
     uint64_t m_depth_trace_expected_width{};
     uint32_t m_depth_trace_expected_height{};
+    bool m_barrier_discovery_logged{};
     std::atomic<uintptr_t> m_depth_trace_candidate{};
     std::atomic<uint32_t> m_depth_trace_candidate_array_slice{};
     std::atomic<uint32_t> m_depth_trace_last_state{D3D12_RESOURCE_STATE_COMMON};
