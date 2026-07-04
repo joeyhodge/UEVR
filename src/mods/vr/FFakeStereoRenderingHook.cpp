@@ -3751,6 +3751,12 @@ bool is_using_double_precision(uintptr_t addr) {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
+    m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
+
+    if (m_uses_ue58_rendertarget_manager) {
+        SPDLOG_INFO("[UE5.8] Using the UE5.8 IStereoRenderTargetManager ABI");
+    }
+
     m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
     setup_options();
 }
@@ -6908,20 +6914,30 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 }
 
 void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
-    if (g_framework == nullptr || is_ue_5_7_or_newer() || !g_framework->is_dx12()) {
+    const bool ue58_viewport_adoption = is_ue_5_8();
+
+    if (g_framework == nullptr ||
+        (is_ue_5_7_or_newer() && !ue58_viewport_adoption) ||
+        !g_framework->is_dx12())
+    {
         return;
     }
 
-    const auto allow_scene_viewport_rt_adoption = dune_awakening_is_current_game();
-    const auto log_prefix = allow_scene_viewport_rt_adoption ? "[Dune][RT]" : "[SHf]";
+    const bool dune_viewport_adoption = dune_awakening_is_current_game();
+    const bool allow_scene_viewport_rt_adoption =
+        dune_viewport_adoption || ue58_viewport_adoption;
+    const auto log_prefix = dune_viewport_adoption
+        ? "[Dune][RT]"
+        : (ue58_viewport_adoption ? "[UE5.8][RT]" : "[SHf]");
+    const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
 
-    if (allow_scene_viewport_rt_adoption && dune_should_preserve_native_viewport_target()) {
+    if (dune_viewport_adoption && dune_should_preserve_native_viewport_target()) {
         SPDLOG_INFO_EVERY_N_SEC(
             5,
             "[Dune][CustomPresent] Ignoring rotating FSceneViewport RT from {}; final AMD swapchain output owns the visible scene",
-            source != nullptr ? source : "<unknown>");
+            source_name);
         return;
     }
 
@@ -6937,16 +6953,33 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
+    const bool is_ue58_post_draw =
+        ue58_viewport_adoption &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw post") == 0;
+
+    // UE5.8 can still expose the desktop target before its pending
+    // NeedReAllocateViewportRenderTarget request has completed. Publishing
+    // that target lets the D3D12 copy path race its queued discard transition.
+    // Only observe candidates after the engine has completed Draw.
+    if (ue58_viewport_adoption && !is_ue58_post_draw) {
+        return;
+    }
+
     auto current_target = rtm->get_render_target();
     const bool is_dune_viewport_refresh =
-        allow_scene_viewport_rt_adoption &&
+        dune_viewport_adoption &&
         current_target != nullptr &&
         source != nullptr &&
         std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
+    const bool is_ue58_viewport_refresh =
+        ue58_viewport_adoption &&
+        is_ue58_post_draw;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
-        !is_dune_viewport_refresh)
+        !is_dune_viewport_refresh &&
+        !is_ue58_viewport_refresh)
     {
         return;
     }
@@ -6957,6 +6990,47 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (everspace2_direct_observation) {
         everspace2_candidate = everspace2_get_scene_viewport_texture(viewport);
         candidate = everspace2_candidate ? everspace2_candidate->texture : nullptr;
+    } else if (ue58_viewport_adoption) {
+        if (!sdk::FRenderTarget::update_get_render_target_texture_index(viewport)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Failed to resolve FRenderTarget::GetRenderTargetTexture from {}",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        FRHITexture2D** candidate_ref = nullptr;
+
+        try {
+            candidate_ref = viewport->get_render_target_texture();
+        } catch (const std::exception& e) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} GetRenderTargetTexture failed for {}: {}",
+                log_prefix,
+                source_name,
+                e.what());
+            return;
+        } catch (...) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} GetRenderTargetTexture threw for {}",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        if (candidate_ref == nullptr || IsBadReadPtr(candidate_ref, sizeof(*candidate_ref))) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "{} FSceneViewport texture storage is not available yet from {}",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        candidate = *candidate_ref;
     } else {
         candidate = viewport->get_scene_viewport_render_target_texture_direct();
     }
@@ -6966,13 +7040,43 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
                 "[Everspace2][ViewportRT] No valid engine-owned scene target available from {}",
-                source);
+                source_name);
             return;
         }
 
         shf_probe_scene_viewport_memory(viewport, source, nullptr);
-        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target is not available yet from {}", log_prefix, source);
+        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target is not available yet from {}", log_prefix, source_name);
         return;
+    }
+
+    if (ue58_viewport_adoption) {
+        if (IsBadReadPtr(candidate, sizeof(void*))) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Rejected unreadable FSceneViewport texture {:x} from {}",
+                log_prefix,
+                (uintptr_t)candidate,
+                source_name);
+            return;
+        }
+
+        const auto candidate_vtable = *(void**)candidate;
+
+        if (candidate_vtable == nullptr ||
+            IsBadReadPtr(candidate_vtable, sizeof(void*)) ||
+            !utility::get_module_within(candidate_vtable).has_value())
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Rejected FSceneViewport texture {:x} with invalid vtable {:x} from {}",
+                log_prefix,
+                (uintptr_t)candidate,
+                (uintptr_t)candidate_vtable,
+                source_name);
+            return;
+        }
+
+        FRHITexture2D::set_vtable(candidate_vtable);
     }
 
     ID3D12Resource* native_resource = nullptr;
@@ -6989,10 +7093,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         try {
             native_resource = (ID3D12Resource*)candidate->get_native_resource();
         } catch (const std::exception& e) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", log_prefix, source, e.what());
+            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource failed: {}", log_prefix, source_name, e.what());
             return;
         } catch (...) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource threw", log_prefix, source);
+            SPDLOG_WARNING_EVERY_N_SEC(2, "{} Rejected FSceneViewport render target from {} because GetNativeResource threw", log_prefix, source_name);
             return;
         }
 
@@ -7002,15 +7106,68 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target from {} has no native D3D12 resource yet", log_prefix, source);
+        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target from {} has no native D3D12 resource yet", log_prefix, source_name);
         return;
     }
 
     if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) {
         SPDLOG_WARNING_EVERY_N_SEC(2,
             "{} Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
-            log_prefix, source, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+            log_prefix, source_name, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
         return;
+    }
+
+    if (ue58_viewport_adoption) {
+        const auto expected_width = (uint64_t)vr->get_hmd_width() * 2ull;
+        const auto expected_height = (uint64_t)vr->get_hmd_height();
+
+        if (desc.Width != expected_width || desc.Height != expected_height) {
+            rtm->reset_ue58_scene_target_observation();
+
+            if (current_target != nullptr) {
+                rtm->set_render_target(nullptr);
+            }
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "{} Waiting for completed VR-sized FSceneViewport target from {}; observed {:x} native={:x} [{}x{} fmt={}], expected [{}x{}]",
+                log_prefix,
+                source_name,
+                (uintptr_t)candidate,
+                (uintptr_t)native_resource,
+                desc.Width,
+                desc.Height,
+                (uint32_t)desc.Format,
+                expected_width,
+                expected_height);
+            return;
+        }
+
+        const auto stable_observations =
+            rtm->observe_ue58_scene_target(candidate, native_resource);
+
+        if (stable_observations == 1) {
+            SPDLOG_INFO(
+                "{} Observed new completed VR-sized target from {} at {:x} native={:x} [{}x{} fmt={}]; waiting for one more completed draw",
+                log_prefix,
+                source_name,
+                (uintptr_t)candidate,
+                (uintptr_t)native_resource,
+                desc.Width,
+                desc.Height,
+                (uint32_t)desc.Format);
+            return;
+        }
+
+        if (stable_observations == 2 && current_target != candidate) {
+            SPDLOG_INFO(
+                "{} Confirmed stable VR-sized target from {} at {:x} native={:x} after {} completed draws",
+                log_prefix,
+                source_name,
+                (uintptr_t)candidate,
+                (uintptr_t)native_resource,
+                stable_observations);
+        }
     }
 
     if (everspace2_direct_observation) {
@@ -7043,7 +7200,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
-    if (allow_scene_viewport_rt_adoption) {
+    if (dune_viewport_adoption) {
         const auto expected_width = (uint64_t)vr->get_hmd_width() * (vr->is_using_afr() ? 1ull : 2ull);
         const auto expected_height = (uint64_t)vr->get_hmd_height();
         const auto is_flat_desktop_rt =
@@ -7098,9 +7255,11 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (candidate == current_target) {
         SPDLOG_INFO_EVERY_N_SEC(
             5,
-            "[Dune][RT] Verified current FSceneViewport RT from {} at {:x} [{}x{} fmt={}]",
-            source,
+            "{} Verified current FSceneViewport RT from {} at {:x} native={:x} [{}x{} fmt={}]",
+            log_prefix,
+            source_name,
             (uintptr_t)candidate,
+            (uintptr_t)native_resource,
             desc.Width,
             desc.Height,
             (uint32_t)desc.Format);
@@ -7111,7 +7270,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         shf_probe_scene_viewport_memory(viewport, source, candidate);
         SPDLOG_WARNING_EVERY_N_SEC(2,
             "{} Found FSceneViewport render target candidate from {} at {:x} [{}x{} fmt={}] but not adopting it yet",
-            log_prefix, source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+            log_prefix, source_name, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
         return;
     }
 
@@ -7119,15 +7278,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     if (current_target != nullptr) {
         SPDLOG_WARN(
-            "[Dune][RT] Re-adopted changed FSceneViewport RT after viewport/world transition from {:x} to {:x} [{}x{} fmt={}]",
+            "{} Re-adopted changed FSceneViewport RT from {} after viewport/world transition from {:x} to {:x} native={:x} [{}x{} fmt={}]",
+            log_prefix,
+            source_name,
             (uintptr_t)current_target,
             (uintptr_t)candidate,
+            (uintptr_t)native_resource,
             desc.Width,
             desc.Height,
             (uint32_t)desc.Format);
     } else {
-        SPDLOG_WARN_ONCE("{} Adopted real FSceneViewport render target from {} at {:x} [{}x{} fmt={}]",
-            log_prefix, source, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+        SPDLOG_WARN_ONCE("{} Adopted real FSceneViewport render target from {} at {:x} native={:x} [{}x{} fmt={}]",
+            log_prefix, source_name, (uintptr_t)candidate, (uintptr_t)native_resource, desc.Width, desc.Height, (uint32_t)desc.Format);
     }
 }
 
@@ -7189,8 +7351,16 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         if (g_hook->m_viewport_get_render_target_texture_hook == nullptr) {
             SPDLOG_INFO("Hooking FViewport::GetRenderTargetTexture...");
             void** vp_vtable = *(void***)viewport;
-            g_hook->m_viewport_get_render_target_texture_hook = std::make_unique<PointerHook>(&vp_vtable[1], &viewport_get_render_target_texture_hook);
-            SPDLOG_INFO("Hooked FViewport::GetRenderTargetTexture!");
+            sdk::FRenderTarget::update_offsets(viewport);
+            const auto render_target_texture_index = sdk::FRenderTarget::get_render_target_texture_index();
+
+            if (render_target_texture_index) {
+                g_hook->m_viewport_get_render_target_texture_hook =
+                    std::make_unique<PointerHook>(&vp_vtable[*render_target_texture_index], &viewport_get_render_target_texture_hook);
+                SPDLOG_INFO("Hooked FViewport::GetRenderTargetTexture at index {}!", *render_target_texture_index);
+            } else {
+                SPDLOG_ERROR("Refusing FViewport::GetRenderTargetTexture hook because its vtable index was not validated");
+            }
         }
     }
 
@@ -7201,7 +7371,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
-        if (everspace2_is_current_game()) {
+        if (everspace2_is_current_game() || is_ue_5_8()) {
             g_hook->try_adopt_scene_viewport_render_target(
                 viewport,
                 "UGameViewportClient::Draw post");
@@ -9782,6 +9952,50 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
 
             static size_t actual_offset = 0;
 
+            // UE5.8's FRHICommandListBase begins with a 0x28-byte FMemStackBase.
+            // Do not run the legacy speculative root scan here: a false positive
+            // corrupts an RDG command vtable and crashes later in SetupPassInternals.
+            if (is_ue_5_8()) {
+                constexpr size_t ue58_root_offset = 0x28;
+                const auto root_field = (uintptr_t)command_list + ue58_root_offset;
+
+                if (command_list == nullptr || IsBadReadPtr((void*)root_field, sizeof(void*))) {
+                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Command list/root field is unreadable; using direct pose enqueue");
+                    vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+                    return;
+                }
+
+                auto* root = *(sdk::FRHICommandBase_New**)root_field;
+
+                if (root == nullptr ||
+                    ((uintptr_t)root & (sizeof(void*) - 1)) != 0 ||
+                    IsBadReadPtr(root, sizeof(void*) * 2))
+                {
+                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Root is absent or unreadable; using direct pose enqueue");
+                    vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+                    return;
+                }
+
+                auto** vtable = *(void***)root;
+                const auto first_function =
+                    vtable != nullptr && !IsBadReadPtr(vtable, sizeof(void*)) ? vtable[0] : nullptr;
+
+                if (vtable == nullptr ||
+                    first_function == nullptr ||
+                    IsBadReadPtr(first_function, sizeof(void*)) ||
+                    !utility::get_module_within(vtable) ||
+                    !utility::get_module_within(first_function))
+                {
+                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Root vtable failed validation; using direct pose enqueue");
+                    vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+                    return;
+                }
+
+                SPDLOG_INFO_ONCE("[UE5.8][RHICommandList] Using source/PDB-validated Root offset 0x28");
+                SceneViewExtensionAnalyzer::hook_new_rhi_command(root, frame_count + compensation);
+                return;
+            }
+
             // ES2's private UE5.5.4 symbols place FMemStackBase at the start of
             // FRHICommandListBase and Root immediately after it at +0x28.
             if (is_ue_5_5_runtime() && everspace2_is_current_game()) {
@@ -12132,6 +12346,10 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
     }
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
+        if (g_hook->m_uses_ue58_rendertarget_manager) {
+            return (IStereoRenderTargetManager*)&g_hook->m_rtm_58;
+        }
+
         if (g_hook->m_uses_old_rendertarget_manager) {
             return (IStereoRenderTargetManager*)&g_hook->m_rtm_418;
         }
@@ -19228,6 +19446,41 @@ bool VRRenderTargetManager::AllocateRenderTargetTextures(uint32_t SizeX, uint32_
     // Keep the engine on the deprecated single-texture allocation path for now.
     // UEVR's 5.7 UI separation still depends on analyzing and midhooking the real
     // texture creation sequence that happens after this returns false.
+    return false;
+}
+
+bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
+    sdk::FRHICommandListBase& RHICmdList,
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    SPDLOG_INFO_ONCE("[UE5.8] AllocateRenderTargetTextures with RHI command list called");
+
+    // Returning false keeps allocation engine-owned. UEVR observes the
+    // resulting viewport texture without manufacturing FRHI references using
+    // an older render-target-manager ABI.
+    return false;
+}
+
+bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    SPDLOG_INFO_ONCE("[UE5.8] Deprecated AllocateRenderTargetTextures called");
     return false;
 }
 
