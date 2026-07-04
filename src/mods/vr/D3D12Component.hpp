@@ -99,7 +99,14 @@ private:
         std::optional<DirectX::SpriteBatchPipelineStateDescription> pd = std::nullopt
     );
 
-    void draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override = nullptr);
+    void draw_spectator_view(
+        ID3D12GraphicsCommandList* command_list,
+        bool is_right_eye_frame,
+        d3d12::TextureContext* game_tex_override = nullptr,
+        std::optional<D3D12_RESOURCE_STATES> game_tex_state = std::nullopt,
+        bool prefer_left_eye = false,
+        bool source_is_single_eye = false);
+    bool ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source);
     void clear_backbuffer();
     bool ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc);
 
@@ -169,6 +176,7 @@ private:
 
     d3d12::TextureContext m_game_ui_tex{};
     d3d12::TextureContext m_game_tex{};
+    d3d12::TextureContext m_ue58_spectator_tex{};
     d3d12::TextureContext m_scene_capture_tex{};
     d3d12::TextureContext m_shf_mono_scene_tex{};
     d3d12::TextureContext m_dune_hmd_mono_scene_tex{};
