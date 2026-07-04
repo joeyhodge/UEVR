@@ -2859,6 +2859,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     spectator_commands.clear_rtv(m_game_ui_tex, ui_clear_color, ENGINE_SRC_COLOR);
                 }
 
+                // This path records SpriteBatch commands directly rather than
+                // through a CommandContext helper, so explicitly submit them.
+                spectator_commands.has_commands = true;
                 spectator_commands.execute();
                 SPDLOG_INFO_ONCE("[DIBR][spectator] Mirroring the synthesized packed scene after DIBR instead of the intentionally empty engine eye");
             }
