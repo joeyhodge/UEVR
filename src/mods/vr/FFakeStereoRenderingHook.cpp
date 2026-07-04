@@ -16683,21 +16683,32 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         rtm->get_ui_target() != nullptr;
 
     if (engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*))) {
+        const auto engine_texture_object_ok = looks_like_vtable_object(engine_texture);
         engine_texture_native_ok =
-            !is_ue_5_6_dx12_backend() ||
-            ue56_dx12_try_get_native_resource(engine_texture, "Slate viewport texture");
+            engine_texture_object_ok &&
+            (!is_ue_5_6_dx12_backend() ||
+             ue56_dx12_try_get_native_resource(engine_texture, "Slate viewport texture"));
 
         if (engine_texture_native_ok) {
             FRHITexture2D::set_vtable(*(void**)engine_texture);
             g_hook->note_stable_slate_draw();
+        } else if (!engine_texture_object_ok) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SlateRHIRenderer::DrawWindow_RenderThread] Rejected Slate viewport texture {:x} because it is not a valid virtual object",
+                (uintptr_t)engine_texture);
         } else if (!ue56_d3d12_targets_ready) {
             SPDLOG_WARNING_EVERY_N_SEC(2,
                 "[UE5.6][RT] Not adopting Slate viewport texture because native-resource discovery failed; waiting for D3D12 texture/backbuffer hooks");
         }
 
-        if (engine_texture_native_ok && rtm->get_render_target() == nullptr) {
+        if (engine_texture_native_ok && rtm->get_render_target() == nullptr && !is_ue_5_8()) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
             rtm->set_render_target(engine_texture);
+        } else if (engine_texture_native_ok && rtm->get_render_target() == nullptr && is_ue_5_8()) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[UE5.8][RT] Deferring Slate viewport texture adoption until UGameViewportClient::Draw confirms the scene target");
         }
     }
 
