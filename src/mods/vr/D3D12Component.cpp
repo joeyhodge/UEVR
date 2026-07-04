@@ -3002,6 +3002,7 @@ void D3D12Component::draw_spectator_view(
         return;
     }
 
+    const auto game_desc = game_tex.texture->GetDesc();
     const auto spectator_mirror_start = std::chrono::steady_clock::now();
     utility::ScopeGuard spectator_mirror_timing_guard{[&]() {
         m_perf_spectator_mirror.add(std::chrono::steady_clock::now() - spectator_mirror_start);
