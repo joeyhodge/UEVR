@@ -78,6 +78,22 @@ std::string format_swapchain_recreate_reasons(uint32_t reasons) {
     return out;
 }
 
+bool is_ue58_runtime_cached() {
+    static const bool is_ue58 = []() {
+        const auto file_version = sdk::get_file_version_info();
+
+        if (file_version.dwFileVersionMS == 0x00050008) {
+            return true;
+        }
+
+        const auto embedded_version =
+            utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+        return embedded_version.starts_with("5.8");
+    }();
+
+    return is_ue58;
+}
+
 void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
     const auto cadence_sensitive_recreate =
         (reasons & (SWAPCHAIN_RECREATE_AFR_STATE | SWAPCHAIN_RECREATE_DEPTH_EXTENT | SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS)) != 0;
@@ -586,6 +602,95 @@ bool D3D12Component::ensure_2d_screen_textures(ID3D12Device* device, const D3D12
     }
 
     return all_ready;
+}
+
+bool D3D12Component::ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source) {
+    if (device == nullptr || source == nullptr) {
+        return false;
+    }
+
+    const auto source_desc = source->GetDesc();
+    if (source_desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        source_desc.Width < 2 ||
+        source_desc.Height == 0 ||
+        source_desc.SampleDesc.Count != 1)
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][spectator] Cannot stage unsupported scene resource dim={} extent={}x{} samples={}",
+            (uint32_t)source_desc.Dimension,
+            source_desc.Width,
+            source_desc.Height,
+            source_desc.SampleDesc.Count);
+        return false;
+    }
+
+    auto spectator_desc = source_desc;
+    spectator_desc.Width /= 2;
+    spectator_desc.DepthOrArraySize = 1;
+    spectator_desc.MipLevels = 1;
+    spectator_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    spectator_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+    if (m_ue58_spectator_tex.texture != nullptr &&
+        shf_texture_desc_matches(m_ue58_spectator_tex.texture->GetDesc(), spectator_desc) &&
+        texture_context_has_views(m_ue58_spectator_tex) &&
+        m_ue58_spectator_tex.commands.ready())
+    {
+        return true;
+    }
+
+    if (m_ue58_spectator_tex.commands.ready()) {
+        m_ue58_spectator_tex.commands.wait(INFINITE);
+    }
+    m_ue58_spectator_tex.reset();
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ComPtr<ID3D12Resource> spectator_texture{};
+    const auto create_result = device->CreateCommittedResource(
+        &heap_props,
+        D3D12_HEAP_FLAG_NONE,
+        &spectator_desc,
+        ENGINE_SRC_COLOR,
+        nullptr,
+        IID_PPV_ARGS(&spectator_texture));
+    if (FAILED(create_result)) {
+        SPDLOG_ERROR(
+            "[UE5.8][spectator] Failed to create owned eye texture hr=0x{:08x} [{}x{} fmt={} flags=0x{:x}]",
+            (uint32_t)create_result,
+            spectator_desc.Width,
+            spectator_desc.Height,
+            (uint32_t)spectator_desc.Format,
+            (uint32_t)spectator_desc.Flags);
+        return false;
+    }
+
+    auto view_format = dune_view_format_for_resource(spectator_desc.Format);
+    if (!view_format && spectator_desc.Format != DXGI_FORMAT_UNKNOWN) {
+        view_format = spectator_desc.Format;
+    }
+
+    if (!m_ue58_spectator_tex.setup(
+            device,
+            spectator_texture.Get(),
+            view_format,
+            view_format,
+            L"UE5.8 Spectator Eye Copy"))
+    {
+        SPDLOG_ERROR("[UE5.8][spectator] Failed to set up owned eye texture views");
+        m_ue58_spectator_tex.reset();
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[UE5.8][spectator] Created owned shader-readable eye texture [{}x{} resource_fmt={} view_fmt={}]",
+        spectator_desc.Width,
+        spectator_desc.Height,
+        (uint32_t)spectator_desc.Format,
+        view_format ? (uint32_t)*view_format : (uint32_t)DXGI_FORMAT_UNKNOWN);
+    return true;
 }
 
 D3D12Component::ShfSceneMode D3D12Component::classify_shf_scene_mode(
@@ -1739,6 +1844,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_game_tex.texture.Get() != nullptr &&
         m_game_tex.srv_heap != nullptr;
     const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen;
+    bool spectator_mirror_drawn = false;
 
     if (shf_auto_2d_screen) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -1776,6 +1882,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame, &view_game_tex);
+        spectator_mirror_drawn = true;
 
         const auto has_2d_screen_textures =
             m_2d_screen_tex[0].texture.Get() != nullptr &&
@@ -2050,6 +2157,56 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         draw_spectator_view(m_game_tex.commands.cmd_list.Get(), is_right_eye_frame);
         m_game_tex.commands.execute();
     }*/
+
+    // UE5.8 can render Slate directly into the scene without publishing a
+    // dedicated UI target. In that case draw_2d_view is never invoked and the
+    // desktop backbuffer remains cleared even though HMD submission succeeds.
+    // Mirror the already-validated scene texture only. EndRenderFrame has
+    // transitioned this separate stereo target to SRVMask before Present, so
+    // the spectator must not describe it as an active render target.
+    if (is_ue58_runtime_cached() &&
+        !spectator_mirror_drawn &&
+        !use_2d_screen &&
+        ui_target == nullptr &&
+        vr->m_desktop_fix->value() &&
+        effective_game_tex != nullptr &&
+        effective_game_tex->texture.Get() != nullptr &&
+        effective_game_tex->srv_heap != nullptr &&
+        ensure_ue58_spectator_texture(device, effective_game_tex->texture.Get()))
+    {
+        auto& spectator_commands = m_ue58_spectator_tex.commands;
+        spectator_commands.wait(INFINITE);
+        const auto spectator_desc = effective_game_tex->texture->GetDesc();
+        D3D12_BOX left_eye_box{};
+        left_eye_box.left = 0;
+        left_eye_box.top = 0;
+        left_eye_box.front = 0;
+        left_eye_box.right = static_cast<UINT>(spectator_desc.Width / 2);
+        left_eye_box.bottom = spectator_desc.Height;
+        left_eye_box.back = 1;
+        spectator_commands.copy_region(
+            effective_game_tex->texture.Get(),
+            m_ue58_spectator_tex.texture.Get(),
+            &left_eye_box,
+            scene_source_state,
+            ENGINE_SRC_COLOR);
+        draw_spectator_view(
+            spectator_commands.cmd_list.Get(),
+            is_right_eye_frame,
+            &m_ue58_spectator_tex,
+            ENGINE_SRC_COLOR,
+            true,
+            true);
+        spectator_commands.execute();
+        spectator_mirror_drawn = true;
+
+        SPDLOG_INFO_ONCE(
+            "[UE5.8][spectator] Mirroring owned left-eye copy from validated scene source={} [{}x{} fmt={}] because the borrowed engine SRV is not spectator-safe",
+            (uintptr_t)effective_game_tex->texture.Get(),
+            spectator_desc.Width,
+            spectator_desc.Height,
+            (uint32_t)spectator_desc.Format);
+    }
 
     ComPtr<ID3D12Resource> scene_depth_tex{};
 
@@ -2788,7 +2945,14 @@ std::unique_ptr<DirectX::DX12::SpriteBatch> D3D12Component::setup_sprite_batch_p
     return batch;
 }
 
-void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list, bool is_right_eye_frame, d3d12::TextureContext* game_tex_override) {
+void D3D12Component::draw_spectator_view(
+    ID3D12GraphicsCommandList* command_list,
+    bool is_right_eye_frame,
+    d3d12::TextureContext* game_tex_override,
+    std::optional<D3D12_RESOURCE_STATES> game_tex_state,
+    bool prefer_left_eye,
+    bool source_is_single_eye)
+{
     if (command_list == nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(5, "[D3D12][spectator] disabled: command list is null");
         return;
@@ -2954,8 +3118,8 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
 
     const auto aspect_ratio = (float)desc.Width / (float)desc.Height;
 
-    const auto eye_width = ((float)m_backbuffer_size[0] / 2.0f);
-    const auto eye_height = (float)m_backbuffer_size[1];
+    const auto eye_width = static_cast<float>(source_is_single_eye ? game_desc.Width : game_desc.Width / 2);
+    const auto eye_height = static_cast<float>(game_desc.Height);
     const auto eye_aspect_ratio = eye_width / eye_height;
 
     const auto original_centerw = (float)eye_width / 2.0f;
@@ -2967,17 +3131,22 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     // only show one half of the double wide texture (right side)
     RECT source_rect{};
 
-    // Show left side when using AFR or native stereo fix
-    if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+    if (source_is_single_eye) {
         source_rect.left = 0;
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0] / 2;
-        source_rect.bottom = m_backbuffer_size[1];
-    } else {
-        source_rect.left = (LONG)m_backbuffer_size[0] / 2;
+        source_rect.right = static_cast<LONG>(game_desc.Width);
+        source_rect.bottom = static_cast<LONG>(game_desc.Height);
+        // Show left side when using AFR or native stereo fix
+    } else if (prefer_left_eye || vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+        source_rect.left = 0;
         source_rect.top = 0;
-        source_rect.right = m_backbuffer_size[0];
-        source_rect.bottom = m_backbuffer_size[1];
+        source_rect.right = static_cast<LONG>(game_desc.Width / 2);
+        source_rect.bottom = static_cast<LONG>(game_desc.Height);
+    } else {
+        source_rect.left = static_cast<LONG>(game_desc.Width / 2);
+        source_rect.top = 0;
+        source_rect.right = static_cast<LONG>(game_desc.Width);
+        source_rect.bottom = static_cast<LONG>(game_desc.Height);
     }
 
     // Correct left/top/right/bottom to match the aspect ratio of the game
@@ -2999,7 +3168,7 @@ void D3D12Component::draw_spectator_view(ID3D12GraphicsCommandList* command_list
     command_list->SetDescriptorHeaps(1, game_heaps);
 
     batch->Draw(game_tex.get_srv_gpu(),
-        DirectX::XMUINT2{ (uint32_t)m_backbuffer_size[0], (uint32_t)m_backbuffer_size[1] },
+        DirectX::XMUINT2{ static_cast<uint32_t>(game_desc.Width), game_desc.Height },
         dest_rect,
         &source_rect, 
         DirectX::Colors::White);
@@ -3150,6 +3319,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_openvr.ui_tex.reset();
     m_game_ui_tex.reset();
     m_game_tex.reset();
+    m_ue58_spectator_tex.reset();
     m_scene_capture_tex.reset();
     m_shf_mono_scene_tex.reset();
     m_shf_mono_scene_commands.reset();
