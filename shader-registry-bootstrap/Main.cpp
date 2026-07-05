@@ -187,6 +187,9 @@ HRESULT WINAPI create_graphics_pipeline_state(
     }
 
     const auto result = original(device, desc, riid, pipeline_state);
+    if (g_registry.shutting_down.load(std::memory_order_acquire)) {
+        return result;
+    }
     if (SUCCEEDED(result) && desc != nullptr && pipeline_state != nullptr && *pipeline_state != nullptr &&
         riid == __uuidof(ID3D12PipelineState)) {
         UEVRShaderRegistryRecordV1 record{};
@@ -224,6 +227,9 @@ HRESULT WINAPI create_compute_pipeline_state(
     }
 
     const auto result = original(device, desc, riid, pipeline_state);
+    if (g_registry.shutting_down.load(std::memory_order_acquire)) {
+        return result;
+    }
     if (SUCCEEDED(result) && desc != nullptr && pipeline_state != nullptr && *pipeline_state != nullptr &&
         riid == __uuidof(ID3D12PipelineState)) {
         UEVRShaderRegistryRecordV1 record{};
@@ -258,6 +264,9 @@ HRESULT WINAPI create_pipeline_state(
     }
 
     const auto result = original(device, desc, riid, pipeline_state);
+    if (g_registry.shutting_down.load(std::memory_order_acquire)) {
+        return result;
+    }
     if (SUCCEEDED(result) && desc != nullptr && pipeline_state != nullptr && *pipeline_state != nullptr &&
         riid == __uuidof(ID3D12PipelineState)) {
         UEVRShaderRegistryRecordV1 record{};
@@ -367,24 +376,11 @@ HRESULT WINAPI d3d12_create_device(
 
 bool release_creation_hooks() {
     g_registry.shutting_down.store(true);
-    {
-        std::scoped_lock lock{g_registry.mutex};
-        if (g_registry.create_device_hook) {
-            (void)g_registry.create_device_hook.disable();
-        }
-        for (const auto& hook : g_registry.graphics_hooks) {
-            hook->remove();
-        }
-        for (const auto& hook : g_registry.compute_hooks) {
-            hook->remove();
-        }
-        for (const auto& hook : g_registry.stream_hooks) {
-            hook->remove();
-        }
-    }
 
-    // Let calls that entered before the slots were restored finish before the
-    // frontend injects UEVR and installs the backend's own D3D12 hooks.
+    // A later overlay may have chained above one of our vtable hooks. Removing
+    // the slot cannot remove our function from that chain, so keep the hook
+    // objects and original lookups alive as inert pass-throughs. UEVR can
+    // safely install its hooks above them without any failed PSO creations.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (g_registry.active_hook_calls.load(std::memory_order_acquire) != 0 &&
            std::chrono::steady_clock::now() < deadline) {
@@ -393,14 +389,6 @@ bool release_creation_hooks() {
 
     {
         std::scoped_lock lock{g_registry.mutex};
-        g_registry.create_device_hook.reset();
-        g_registry.graphics_hooks.clear();
-        g_registry.compute_hooks.clear();
-        g_registry.stream_hooks.clear();
-        g_registry.graphics_lookup.clear();
-        g_registry.compute_lookup.clear();
-        g_registry.stream_lookup.clear();
-        g_registry.hooked_slots.clear();
         if (g_registry.status != nullptr) {
             g_registry.status->hooks_active = 0;
             g_registry.status->state = UEVRShaderRegistryState_Disabled;

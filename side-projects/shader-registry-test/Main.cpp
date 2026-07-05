@@ -14,6 +14,24 @@
 
 using Microsoft::WRL::ComPtr;
 
+using CreateComputePipelineStateFn = HRESULT (WINAPI*)(
+    ID3D12Device*,
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC*,
+    REFIID,
+    void**);
+
+CreateComputePipelineStateFn g_chained_compute_original{};
+std::atomic<uint32_t> g_chained_compute_calls{};
+
+HRESULT WINAPI chained_create_compute_pipeline_state(
+    ID3D12Device* device,
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC* desc,
+    REFIID riid,
+    void** pipeline_state) {
+    g_chained_compute_calls.fetch_add(1, std::memory_order_relaxed);
+    return g_chained_compute_original(device, desc, riid, pipeline_state);
+}
+
 int main() {
     const auto helper = LoadLibraryW(L"UEVRShaderRegistryBootstrap.dll");
     if (helper == nullptr) {
@@ -104,6 +122,19 @@ int main() {
         return 9;
     }
 
+    auto** compute_slot = &(*reinterpret_cast<void***>(device.Get()))[11];
+    DWORD old_protection{};
+    if (!VirtualProtect(compute_slot, sizeof(void*), PAGE_EXECUTE_READWRITE, &old_protection)) {
+        std::cerr << "could not install chained-hook simulation\n";
+        return 10;
+    }
+    g_chained_compute_original = reinterpret_cast<CreateComputePipelineStateFn>(
+        InterlockedExchangePointer(
+            compute_slot,
+            reinterpret_cast<void*>(&chained_create_compute_pipeline_state)));
+    DWORD ignored_protection{};
+    VirtualProtect(compute_slot, sizeof(void*), old_protection, &ignored_protection);
+
     std::atomic<bool> start_handoff_stress{};
     std::atomic<uint32_t> handoff_failures{};
     workers.clear();
@@ -125,14 +156,14 @@ int main() {
 
     if (api->release_creation_hooks == nullptr || !api->release_creation_hooks()) {
         std::cerr << "hook handoff failed\n";
-        return 10;
+        return 11;
     }
     for (auto& worker : workers) {
         worker.join();
     }
     if (handoff_failures.load(std::memory_order_relaxed) != 0) {
         std::cerr << "pipeline creation failed during hook handoff\n";
-        return 11;
+        return 12;
     }
 
     api->get_status(&status);
@@ -141,14 +172,15 @@ int main() {
     ComPtr<ID3D12PipelineState> post_handoff_pipeline{};
     if (FAILED(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&post_handoff_pipeline)))) {
         std::cerr << "pipeline creation failed after hook handoff\n";
-        return 12;
+        return 13;
     }
 
     api->get_status(&status);
     if (status.hooks_active != 0 || status.state != UEVRShaderRegistryState_Disabled ||
-        status.compute_pipelines != captured_at_handoff) {
+        status.compute_pipelines != captured_at_handoff ||
+        g_chained_compute_calls.load(std::memory_order_relaxed) == 0) {
         std::cerr << "helper remained active after hook handoff\n";
-        return 13;
+        return 14;
     }
 
     std::cout << "shader registry bootstrap test passed\n";
