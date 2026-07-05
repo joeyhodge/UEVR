@@ -62,24 +62,11 @@ bool PreInjectionShaderRegistry::adopt() {
         return false;
     }
 
-    // Keep the callback active only while taking the startup snapshot so records
-    // created concurrently with enumeration are not lost.
-    if (m_api->set_record_callback != nullptr) {
-        m_api->set_record_callback(&PreInjectionShaderRegistry::on_record, this);
-    }
-    if (m_api->enumerate_records != nullptr) {
-        m_api->enumerate_records(&PreInjectionShaderRegistry::on_record, this);
-    }
-
     UEVRShaderRegistryStatusV1 helper_status{};
     const auto status_ok = m_api->get_status != nullptr && m_api->get_status(&helper_status);
     const auto helper_owns_hooks = status_ok && helper_status.hooks_active != 0 &&
         (helper_status.state == UEVRShaderRegistryState_Armed ||
          helper_status.state == UEVRShaderRegistryState_Capturing);
-
-    if (m_api->set_record_callback != nullptr) {
-        m_api->set_record_callback(nullptr, nullptr);
-    }
 
     // The bootstrap DLL is intentionally startup-only. Leaving its device
     // vtable hooks installed alongside UEVR's D3D12 hooks can delay discovery
@@ -96,7 +83,7 @@ bool PreInjectionShaderRegistry::adopt() {
 
     if (released_hooks) {
         spdlog::info(
-            "[PreInjectionShaderRegistry] Imported startup records and handed D3D12 creation back to backend hooks: "
+            "[PreInjectionShaderRegistry] Registered dormant startup records and handed D3D12 creation back to backend hooks: "
             "records={} graphics={} compute={} streams={} bytes={}",
             helper_status.records,
             helper_status.graphics_pipelines,
@@ -105,7 +92,7 @@ bool PreInjectionShaderRegistry::adopt() {
             helper_status.retained_bytes);
     } else {
         spdlog::warn(
-            "[PreInjectionShaderRegistry] Imported startup records but helper hook handoff failed; "
+            "[PreInjectionShaderRegistry] Registered dormant startup records but helper hook handoff failed; "
             "records={} hooks={}",
             helper_status.records,
             owns_hooks);
@@ -125,11 +112,67 @@ UEVRShaderRegistryStatusV1 PreInjectionShaderRegistry::status() const {
     return result;
 }
 
+void PreInjectionShaderRegistry::consume_for_diagnostics(size_t max_records) {
+    if (m_api == nullptr || max_records == 0) {
+        return;
+    }
+
+    bool expected = false;
+    if (m_snapshot_loaded.compare_exchange_strong(expected, true)) {
+        const auto loaded = m_api->enumerate_records != nullptr &&
+            m_api->enumerate_records(&PreInjectionShaderRegistry::on_record, this);
+        if (!loaded) {
+            m_snapshot_loaded.store(false);
+            return;
+        }
+
+        std::scoped_lock lock{m_records_mutex};
+        spdlog::info(
+            "[PreInjectionShaderRegistry] Shader diagnostics requested; queued {} startup records for bounded import",
+            m_records.size());
+    }
+
+    std::vector<UEVRShaderRegistryRecordV1> batch{};
+    bool finished = false;
+    {
+        std::scoped_lock lock{m_records_mutex};
+        const auto start = (std::min)(m_next_record, m_records.size());
+        const auto remaining = m_records.size() - start;
+        const auto count = (std::min)(remaining, max_records);
+        batch.insert(
+            batch.end(),
+            m_records.begin() + start,
+            m_records.begin() + start + count);
+        m_next_record = start + count;
+        finished = m_next_record == m_records.size() && count != 0;
+    }
+
+    for (const auto& record : batch) {
+        import_record(record);
+    }
+
+    if (finished) {
+        spdlog::info("[PreInjectionShaderRegistry] Finished bounded startup-record import");
+    }
+}
+
 void PreInjectionShaderRegistry::on_record(const UEVRShaderRegistryRecordV1* record, void* context) {
     if (record == nullptr || context == nullptr || record->size < sizeof(UEVRShaderRegistryRecordV1)) {
         return;
     }
-    static_cast<PreInjectionShaderRegistry*>(context)->import_record(*record);
+    static_cast<PreInjectionShaderRegistry*>(context)->queue_record(*record);
+}
+
+void PreInjectionShaderRegistry::queue_record(const UEVRShaderRegistryRecordV1& record) {
+    if (record.kind < UEVRShaderRegistryRecord_Graphics ||
+        record.kind > UEVRShaderRegistryRecord_PipelineStream ||
+        record.pipeline_state < 0x10000 ||
+        (record.pipeline_state & (alignof(void*) - 1)) != 0) {
+        return;
+    }
+
+    std::scoped_lock lock{m_records_mutex};
+    m_records.emplace_back(record);
 }
 
 void PreInjectionShaderRegistry::import_record(const UEVRShaderRegistryRecordV1& record) {

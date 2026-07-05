@@ -12,6 +12,7 @@
 
 #include "Framework.hpp"
 #include "mods/VR.hpp"
+#include "render/PreInjectionShaderRegistry.hpp"
 
 namespace {
 enum class ResourceColumn : ImGuiID {
@@ -447,6 +448,9 @@ void RenderInspector::on_present() {
 
     render::D3D12Diagnostics::get().set_enabled(dx12_diagnostics_active);
     render::ShaderOverrideRegistry::get().set_inspector_tracking_enabled(shader_tracking_active);
+    if (shader_tracking_active) {
+        render::PreInjectionShaderRegistry::get().consume_for_diagnostics();
+    }
     render::ShaderOverrideRegistry::get().on_present(*g_framework);
 
     if (resources_active) {
