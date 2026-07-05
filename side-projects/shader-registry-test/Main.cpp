@@ -203,6 +203,39 @@ int run_prospi_launcher_test() {
                   << " exit=" << exit_code << '\n';
         return 105;
     }
+
+    auto suspended_command_line = L"\"" + child_path.wstring() + L"\" prospi";
+    std::vector<wchar_t> mutable_suspended_command(
+        suspended_command_line.begin(), suspended_command_line.end());
+    mutable_suspended_command.push_back(L'\0');
+    process_info = {};
+    if (!CreateProcessW(
+            child_path.c_str(),
+            mutable_suspended_command.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CREATE_NO_WINDOW | CREATE_SUSPENDED,
+            nullptr,
+            child_path.parent_path().c_str(),
+            &startup_info,
+            &process_info)) {
+        std::cerr << "suspended launcher propagation CreateProcessW failed\n";
+        return 107;
+    }
+
+    const auto remained_suspended = WaitForSingleObject(process_info.hProcess, 100) == WAIT_TIMEOUT;
+    const auto resume_result = ResumeThread(process_info.hThread);
+    const auto suspended_wait = WaitForSingleObject(process_info.hProcess, 15000);
+    exit_code = 0;
+    const auto got_suspended_exit_code = GetExitCodeProcess(process_info.hProcess, &exit_code);
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    if (!remained_suspended || resume_result == static_cast<DWORD>(-1) ||
+        suspended_wait != WAIT_OBJECT_0 || !got_suspended_exit_code || exit_code != 0) {
+        std::cerr << "caller-requested suspension was not preserved\n";
+        return 108;
+    }
     return 0;
 }
 
