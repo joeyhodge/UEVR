@@ -1197,6 +1197,8 @@ void ShaderOverrideRegistry::register_preinjection_d3d12_pipeline(
     std::string_view compute_hash,
     std::string_view descriptor_hash
 ) {
+    (void)device;
+
     if (pipeline_state == nullptr) {
         return;
     }
@@ -1204,7 +1206,10 @@ void ShaderOverrideRegistry::register_preinjection_d3d12_pipeline(
     std::scoped_lock _{m_mutex};
     auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
     record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
-    record.device = device;
+    // Historical records may outlive transient device interfaces used during
+    // startup probes. Imported entries are metadata-only, so never AddRef an
+    // untrusted raw device pointer from the helper.
+    record.device.Reset();
     record.is_pipeline_stream = pipeline_stream;
     record.vertex_hash = normalize_hash(std::string{vertex_hash});
     record.pixel_hash = normalize_hash(std::string{pixel_hash});

@@ -2,11 +2,31 @@
 
 #include <Windows.h>
 
+#include <algorithm>
+#include <string>
+
 #include <spdlog/spdlog.h>
 
 #include "ShaderOverrideRegistry.hpp"
 
 namespace render {
+namespace {
+std::string bounded_hash(const char (&hash)[17]) {
+    const auto end = std::find(hash, hash + 17, '\0');
+    if (end == hash + 17 || end - hash > 16) {
+        return {};
+    }
+
+    std::string result{hash, end};
+    if (!std::all_of(result.begin(), result.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        })) {
+        return {};
+    }
+    return result;
+}
+}
+
 PreInjectionShaderRegistry& PreInjectionShaderRegistry::get() {
     static PreInjectionShaderRegistry instance{};
     return instance;
@@ -90,13 +110,20 @@ void PreInjectionShaderRegistry::on_record(const UEVRShaderRegistryRecordV1* rec
 }
 
 void PreInjectionShaderRegistry::import_record(const UEVRShaderRegistryRecordV1& record) {
+    if (record.kind < UEVRShaderRegistryRecord_Graphics ||
+        record.kind > UEVRShaderRegistryRecord_PipelineStream ||
+        record.pipeline_state < 0x10000 ||
+        (record.pipeline_state & (alignof(void*) - 1)) != 0) {
+        return;
+    }
+
     ShaderOverrideRegistry::get().register_preinjection_d3d12_pipeline(
-        reinterpret_cast<ID3D12Device*>(record.device),
+        nullptr,
         reinterpret_cast<ID3D12PipelineState*>(record.pipeline_state),
         record.kind == UEVRShaderRegistryRecord_PipelineStream,
-        record.vertex_hash,
-        record.pixel_hash,
-        record.compute_hash,
-        record.descriptor_hash);
+        bounded_hash(record.vertex_hash),
+        bounded_hash(record.pixel_hash),
+        bounded_hash(record.compute_hash),
+        bounded_hash(record.descriptor_hash));
 }
 }
