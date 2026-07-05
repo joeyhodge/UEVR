@@ -33,7 +33,7 @@ void FrameworkConfig::draw_main() {
     if (m_safe_uobject_mode->draw("Safe UObject Access")) {
         sdk::safe_uobject::set_mode(static_cast<sdk::UObjectAccessMode>(m_safe_uobject_mode->value()));
     }
-    ImGui::TextWrapped("Guarded Core preserves the legacy API while rejecting stale object slots and invalid reflected offsets.");
+    ImGui::TextWrapped("Legacy is the compatibility default. Guarded modes are opt-in and reject stale object slots and invalid reflected offsets.");
 }
 
 void FrameworkConfig::draw_themes() {
