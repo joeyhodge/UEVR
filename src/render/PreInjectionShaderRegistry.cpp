@@ -62,6 +62,8 @@ bool PreInjectionShaderRegistry::adopt() {
         return false;
     }
 
+    // Keep the callback active only while taking the startup snapshot so records
+    // created concurrently with enumeration are not lost.
     if (m_api->set_record_callback != nullptr) {
         m_api->set_record_callback(&PreInjectionShaderRegistry::on_record, this);
     }
@@ -71,22 +73,43 @@ bool PreInjectionShaderRegistry::adopt() {
 
     UEVRShaderRegistryStatusV1 helper_status{};
     const auto status_ok = m_api->get_status != nullptr && m_api->get_status(&helper_status);
-    const auto owns_hooks = status_ok && helper_status.hooks_active != 0 &&
+    const auto helper_owns_hooks = status_ok && helper_status.hooks_active != 0 &&
         (helper_status.state == UEVRShaderRegistryState_Armed ||
          helper_status.state == UEVRShaderRegistryState_Capturing);
-    if (!owns_hooks && m_api->release_creation_hooks != nullptr) {
-        m_api->release_creation_hooks();
+
+    if (m_api->set_record_callback != nullptr) {
+        m_api->set_record_callback(nullptr, nullptr);
+    }
+
+    // The bootstrap DLL is intentionally startup-only. Leaving its device
+    // vtable hooks installed alongside UEVR's D3D12 hooks can delay discovery
+    // of the real device/swapchain and prevent the backbuffer from stabilizing.
+    const auto released_hooks =
+        m_api->release_creation_hooks != nullptr && m_api->release_creation_hooks();
+    auto owns_hooks = helper_owns_hooks && !released_hooks;
+    if (owns_hooks && m_api->set_record_callback != nullptr) {
+        // Fall back to the old ownership model if an older helper cannot hand
+        // its hooks back safely.
+        m_api->set_record_callback(&PreInjectionShaderRegistry::on_record, this);
     }
     m_creation_hooks_owned.store(owns_hooks);
 
-    spdlog::info(
-        "[PreInjectionShaderRegistry] Adopted helper: records={} graphics={} compute={} streams={} bytes={} hooks={}",
-        helper_status.records,
-        helper_status.graphics_pipelines,
-        helper_status.compute_pipelines,
-        helper_status.pipeline_streams,
-        helper_status.retained_bytes,
-        owns_hooks);
+    if (released_hooks) {
+        spdlog::info(
+            "[PreInjectionShaderRegistry] Imported startup records and handed D3D12 creation back to backend hooks: "
+            "records={} graphics={} compute={} streams={} bytes={}",
+            helper_status.records,
+            helper_status.graphics_pipelines,
+            helper_status.compute_pipelines,
+            helper_status.pipeline_streams,
+            helper_status.retained_bytes);
+    } else {
+        spdlog::warn(
+            "[PreInjectionShaderRegistry] Imported startup records but helper hook handoff failed; "
+            "records={} hooks={}",
+            helper_status.records,
+            owns_hooks);
+    }
     return owns_hooks;
 }
 

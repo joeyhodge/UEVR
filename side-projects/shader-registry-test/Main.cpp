@@ -103,6 +103,24 @@ int main() {
         return 9;
     }
 
+    if (api->release_creation_hooks == nullptr || !api->release_creation_hooks()) {
+        std::cerr << "hook handoff failed\n";
+        return 10;
+    }
+
+    ComPtr<ID3D12PipelineState> post_handoff_pipeline{};
+    if (FAILED(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&post_handoff_pipeline)))) {
+        std::cerr << "pipeline creation failed after hook handoff\n";
+        return 11;
+    }
+
+    api->get_status(&status);
+    if (status.hooks_active != 0 || status.state != UEVRShaderRegistryState_Disabled ||
+        status.compute_pipelines != 8) {
+        std::cerr << "helper remained active after hook handoff\n";
+        return 12;
+    }
+
     std::cout << "shader registry bootstrap test passed\n";
     return 0;
 }
