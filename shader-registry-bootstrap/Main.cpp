@@ -49,10 +49,21 @@ struct RegistryState {
     HANDLE status_mapping{};
     UEVRShaderRegistryStatusV1* status{};
     std::atomic<bool> shutting_down{};
+    std::atomic<uint32_t> active_hook_calls{};
 };
 
 RegistryState g_registry{};
 HMODULE g_module{};
+
+struct ActiveHookCall {
+    ActiveHookCall() {
+        g_registry.active_hook_calls.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    ~ActiveHookCall() {
+        g_registry.active_hook_calls.fetch_sub(1, std::memory_order_acq_rel);
+    }
+};
 
 std::string fnv1a(const void* data, size_t size) {
     if (data == nullptr || size == 0) {
@@ -162,6 +173,7 @@ PointerHook* find_hook(std::unordered_map<uintptr_t, PointerHook*>& lookup, void
 
 HRESULT WINAPI create_graphics_pipeline_state(
     ID3D12Device* device, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc, REFIID riid, void** pipeline_state) {
+    const ActiveHookCall active_call{};
     auto* slot = &(*reinterpret_cast<void***>(device))[CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX];
     CreateGraphicsPipelineStateFn original{};
     {
@@ -198,6 +210,7 @@ HRESULT WINAPI create_graphics_pipeline_state(
 
 HRESULT WINAPI create_compute_pipeline_state(
     ID3D12Device* device, const D3D12_COMPUTE_PIPELINE_STATE_DESC* desc, REFIID riid, void** pipeline_state) {
+    const ActiveHookCall active_call{};
     auto* slot = &(*reinterpret_cast<void***>(device))[CREATE_COMPUTE_PIPELINE_STATE_VTABLE_INDEX];
     CreateComputePipelineStateFn original{};
     {
@@ -231,6 +244,7 @@ HRESULT WINAPI create_compute_pipeline_state(
 
 HRESULT WINAPI create_pipeline_state(
     ID3D12Device2* device, const D3D12_PIPELINE_STATE_STREAM_DESC* desc, REFIID riid, void** pipeline_state) {
+    const ActiveHookCall active_call{};
     auto* slot = &(*reinterpret_cast<void***>(device))[CREATE_PIPELINE_STATE_VTABLE_INDEX];
     CreatePipelineStateFn original{};
     {
@@ -339,6 +353,7 @@ void hook_device(ID3D12Device* device) {
 
 HRESULT WINAPI d3d12_create_device(
     IUnknown* adapter, D3D_FEATURE_LEVEL minimum_feature_level, REFIID riid, void** device) {
+    const ActiveHookCall active_call{};
     const auto original = g_registry.create_device_hook.original<D3D12CreateDeviceFn>();
     const auto result = original(adapter, minimum_feature_level, riid, device);
     if (SUCCEEDED(result) && device != nullptr && *device != nullptr) {
@@ -352,18 +367,47 @@ HRESULT WINAPI d3d12_create_device(
 
 bool release_creation_hooks() {
     g_registry.shutting_down.store(true);
-    std::scoped_lock lock{g_registry.mutex};
-    g_registry.create_device_hook.reset();
-    g_registry.graphics_hooks.clear();
-    g_registry.compute_hooks.clear();
-    g_registry.stream_hooks.clear();
-    g_registry.graphics_lookup.clear();
-    g_registry.compute_lookup.clear();
-    g_registry.stream_lookup.clear();
-    g_registry.hooked_slots.clear();
-    if (g_registry.status != nullptr) {
-        g_registry.status->hooks_active = 0;
-        g_registry.status->state = UEVRShaderRegistryState_Disabled;
+    {
+        std::scoped_lock lock{g_registry.mutex};
+        if (g_registry.create_device_hook) {
+            (void)g_registry.create_device_hook.disable();
+        }
+        for (const auto& hook : g_registry.graphics_hooks) {
+            hook->remove();
+        }
+        for (const auto& hook : g_registry.compute_hooks) {
+            hook->remove();
+        }
+        for (const auto& hook : g_registry.stream_hooks) {
+            hook->remove();
+        }
+    }
+
+    // Let calls that entered before the slots were restored finish before the
+    // frontend injects UEVR and installs the backend's own D3D12 hooks.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (g_registry.active_hook_calls.load(std::memory_order_acquire) != 0 &&
+           std::chrono::steady_clock::now() < deadline) {
+        Sleep(1);
+    }
+
+    {
+        std::scoped_lock lock{g_registry.mutex};
+        g_registry.create_device_hook.reset();
+        g_registry.graphics_hooks.clear();
+        g_registry.compute_hooks.clear();
+        g_registry.stream_hooks.clear();
+        g_registry.graphics_lookup.clear();
+        g_registry.compute_lookup.clear();
+        g_registry.stream_lookup.clear();
+        g_registry.hooked_slots.clear();
+        if (g_registry.status != nullptr) {
+            g_registry.status->hooks_active = 0;
+            g_registry.status->state = UEVRShaderRegistryState_Disabled;
+            if (g_registry.active_hook_calls.load(std::memory_order_acquire) != 0) {
+                g_registry.status->last_error = WAIT_TIMEOUT;
+            }
+        }
     }
     return true;
 }

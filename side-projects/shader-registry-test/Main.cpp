@@ -4,6 +4,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -103,22 +104,51 @@ int main() {
         return 9;
     }
 
+    std::atomic<bool> start_handoff_stress{};
+    std::atomic<uint32_t> handoff_failures{};
+    workers.clear();
+    for (size_t i = 0; i < 8; ++i) {
+        workers.emplace_back([&]() {
+            while (!start_handoff_stress.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (size_t j = 0; j < 64; ++j) {
+                ComPtr<ID3D12PipelineState> pipeline{};
+                if (FAILED(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline)))) {
+                    handoff_failures.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        });
+    }
+    start_handoff_stress.store(true, std::memory_order_release);
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+
     if (api->release_creation_hooks == nullptr || !api->release_creation_hooks()) {
         std::cerr << "hook handoff failed\n";
         return 10;
     }
-
-    ComPtr<ID3D12PipelineState> post_handoff_pipeline{};
-    if (FAILED(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&post_handoff_pipeline)))) {
-        std::cerr << "pipeline creation failed after hook handoff\n";
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    if (handoff_failures.load(std::memory_order_relaxed) != 0) {
+        std::cerr << "pipeline creation failed during hook handoff\n";
         return 11;
     }
 
     api->get_status(&status);
-    if (status.hooks_active != 0 || status.state != UEVRShaderRegistryState_Disabled ||
-        status.compute_pipelines != 8) {
-        std::cerr << "helper remained active after hook handoff\n";
+    const auto captured_at_handoff = status.compute_pipelines;
+
+    ComPtr<ID3D12PipelineState> post_handoff_pipeline{};
+    if (FAILED(device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&post_handoff_pipeline)))) {
+        std::cerr << "pipeline creation failed after hook handoff\n";
         return 12;
+    }
+
+    api->get_status(&status);
+    if (status.hooks_active != 0 || status.state != UEVRShaderRegistryState_Disabled ||
+        status.compute_pipelines != captured_at_handoff) {
+        std::cerr << "helper remained active after hook handoff\n";
+        return 13;
     }
 
     std::cout << "shader registry bootstrap test passed\n";
