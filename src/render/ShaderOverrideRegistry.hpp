@@ -133,6 +133,8 @@ public:
     void request_reload();
     void request_capture_next_d3d12_change();
     void clear_captured_d3d12_change();
+    void request_one_frame_d3d12_suppression(uintptr_t pipeline_state);
+    bool should_suppress_d3d12_draw(uintptr_t pipeline_state) const;
     bool export_d3d12_pairs_json(std::filesystem::path& out_path, std::string& error_out);
     bool export_d3d12_pairs_csv(std::filesystem::path& out_path, std::string& error_out);
     Snapshot snapshot() const;
@@ -144,6 +146,14 @@ public:
     void note_d3d11_shader_bound(Stage stage, IUnknown* original_shader, IUnknown* bound_shader);
     void register_d3d12_graphics_pipeline_state_creation(ID3D12Device* device, ID3D12PipelineState* pipeline_state, const D3D12_GRAPHICS_PIPELINE_STATE_DESC* desc);
     void register_d3d12_pipeline_state_stream_creation(ID3D12Device* device, ID3D12PipelineState* pipeline_state, const D3D12_PIPELINE_STATE_STREAM_DESC* desc);
+    void register_preinjection_d3d12_pipeline(
+        ID3D12Device* device,
+        ID3D12PipelineState* pipeline_state,
+        bool pipeline_stream,
+        std::string_view vertex_hash,
+        std::string_view pixel_hash,
+        std::string_view compute_hash,
+        std::string_view descriptor_hash);
     ID3D12PipelineState* resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state);
     void note_d3d12_pipeline_state_bound(ID3D12PipelineState* original_pipeline_state, ID3D12PipelineState* bound_pipeline_state);
 
@@ -324,6 +334,9 @@ private:
     std::chrono::steady_clock::time_point m_last_scan_time{};
     bool m_force_reload{};
     uint64_t m_frame{};
+    std::atomic<uint64_t> m_presented_frame{};
+    std::atomic<uint64_t> m_suppress_d3d12_frame{};
+    std::atomic<uintptr_t> m_suppress_d3d12_pipeline{};
     uint64_t m_override_revision{};
     CreateVertexShaderFn m_create_vertex_shader{};
     CreatePixelShaderFn m_create_pixel_shader{};

@@ -510,6 +510,170 @@ set_target_properties(vr-plugin-nullifier PROPERTIES
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
 
+# Target shader-registry-bootstrap
+set(CMKR_TARGET shader-registry-bootstrap)
+set(shader-registry-bootstrap_SOURCES "")
+
+list(APPEND shader-registry-bootstrap_SOURCES
+	"shader-registry-bootstrap/Main.cpp"
+	"include/uevr/PreInjectionShaderRegistry.hpp"
+)
+
+list(APPEND shader-registry-bootstrap_SOURCES
+	cmake.toml
+)
+
+set(CMKR_SOURCES ${shader-registry-bootstrap_SOURCES})
+add_library(shader-registry-bootstrap SHARED)
+
+if(shader-registry-bootstrap_SOURCES)
+	target_sources(shader-registry-bootstrap PRIVATE ${shader-registry-bootstrap_SOURCES})
+endif()
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${shader-registry-bootstrap_SOURCES})
+
+target_compile_features(shader-registry-bootstrap PUBLIC
+	cxx_std_23
+)
+
+target_compile_options(shader-registry-bootstrap PUBLIC
+	"/GS-"
+	"/EHa"
+	"/MP"
+)
+
+target_include_directories(shader-registry-bootstrap PUBLIC
+	"include/"
+)
+
+target_link_libraries(shader-registry-bootstrap PUBLIC
+	d3d12
+	safetyhook
+	kananlib
+)
+
+set_target_properties(shader-registry-bootstrap PROPERTIES
+	OUTPUT_NAME
+		UEVRShaderRegistryBootstrap
+	RUNTIME_OUTPUT_DIRECTORY_RELEASE
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+	RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+	LIBRARY_OUTPUT_DIRECTORY_RELEASE
+		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+	LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO
+		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+	ARCHIVE_OUTPUT_DIRECTORY_RELEASE
+		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+	ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO
+		"${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+)
+
+unset(CMKR_TARGET)
+unset(CMKR_SOURCES)
+
+# Target shader-registry-test
+set(CMKR_TARGET shader-registry-test)
+set(shader-registry-test_SOURCES "")
+
+list(APPEND shader-registry-test_SOURCES
+	"side-projects/shader-registry-test/Main.cpp"
+)
+
+list(APPEND shader-registry-test_SOURCES
+	cmake.toml
+)
+
+set(CMKR_SOURCES ${shader-registry-test_SOURCES})
+add_executable(shader-registry-test)
+
+if(shader-registry-test_SOURCES)
+	target_sources(shader-registry-test PRIVATE ${shader-registry-test_SOURCES})
+endif()
+
+get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+if(NOT CMKR_VS_STARTUP_PROJECT)
+	set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT shader-registry-test)
+endif()
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${shader-registry-test_SOURCES})
+
+target_compile_features(shader-registry-test PRIVATE
+	cxx_std_23
+)
+
+target_include_directories(shader-registry-test PRIVATE
+	"include/"
+)
+
+target_link_libraries(shader-registry-test PRIVATE
+	d3d12
+	d3dcompiler
+)
+
+set_target_properties(shader-registry-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY_RELEASE
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+	RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+)
+
+unset(CMKR_TARGET)
+unset(CMKR_SOURCES)
+
+# Target safe-uobject-test
+set(CMKR_TARGET safe-uobject-test)
+set(safe-uobject-test_SOURCES "")
+
+list(APPEND safe-uobject-test_SOURCES
+	"side-projects/safe-uobject-test/Main.cpp"
+)
+
+list(APPEND safe-uobject-test_SOURCES
+	cmake.toml
+)
+
+set(CMKR_SOURCES ${safe-uobject-test_SOURCES})
+add_executable(safe-uobject-test)
+
+if(safe-uobject-test_SOURCES)
+	target_sources(safe-uobject-test PRIVATE ${safe-uobject-test_SOURCES})
+endif()
+
+get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+if(NOT CMKR_VS_STARTUP_PROJECT)
+	set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT safe-uobject-test)
+endif()
+
+source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${safe-uobject-test_SOURCES})
+
+target_compile_features(safe-uobject-test PRIVATE
+	cxx_std_23
+)
+
+target_compile_options(safe-uobject-test PRIVATE
+	"/EHa"
+)
+
+target_include_directories(safe-uobject-test PRIVATE
+	"dependencies/submodules/UESDK/src/"
+)
+
+target_link_libraries(safe-uobject-test PRIVATE
+	uesdk
+	Version
+)
+
+set_target_properties(safe-uobject-test PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY_RELEASE
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+	RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO
+		"${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+)
+
+unset(CMKR_TARGET)
+unset(CMKR_SOURCES)
+
 # Target lua
 set(CMKR_TARGET lua)
 set(lua_SOURCES "")
@@ -757,6 +921,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/runtimes/OpenXR.cpp"
 	"src/render/D3D12Diagnostics.cpp"
 	"src/render/FrameResourceInspector.cpp"
+	"src/render/PreInjectionShaderRegistry.cpp"
 	"src/render/RenderAnalysisExport.cpp"
 	"src/render/ShaderCompiler.cpp"
 	"src/render/ShaderOverrideRegistry.cpp"
@@ -812,6 +977,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/shaders/vs.hpp"
 	"src/render/D3D12Diagnostics.hpp"
 	"src/render/FrameResourceInspector.hpp"
+	"src/render/PreInjectionShaderRegistry.hpp"
 	"src/render/RenderAnalysisExport.hpp"
 	"src/render/ShaderCompiler.hpp"
 	"src/render/ShaderOverrideRegistry.hpp"

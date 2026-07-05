@@ -165,12 +165,16 @@ protected:
     std::vector<std::unique_ptr<PointerHook>> m_create_depth_stencil_view_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_set_pipeline_state_hooks{};
     std::vector<std::unique_ptr<PointerHook>> m_resource_barrier_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_draw_instanced_hooks{};
+    std::vector<std::unique_ptr<PointerHook>> m_draw_indexed_instanced_hooks{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_graphics_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_render_target_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_create_depth_stencil_view_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_set_pipeline_state_hook_lookup{};
     std::unordered_map<uintptr_t, PointerHook*> m_resource_barrier_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_draw_instanced_hook_lookup{};
+    std::unordered_map<uintptr_t, PointerHook*> m_draw_indexed_instanced_hook_lookup{};
     std::unique_ptr<VtableHook> m_swapchain_hook{};
     //std::unique_ptr<FunctionHook> m_create_swap_chain_hook{};
 
@@ -190,6 +194,8 @@ protected:
     static void WINAPI create_depth_stencil_view(ID3D12Device* device, ID3D12Resource* resource, const D3D12_DEPTH_STENCIL_VIEW_DESC* desc, D3D12_CPU_DESCRIPTOR_HANDLE descriptor);
     static void WINAPI set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state);
     static void WINAPI resource_barrier(ID3D12GraphicsCommandList* command_list, UINT count, const D3D12_RESOURCE_BARRIER* barriers);
+    static void WINAPI draw_instanced(ID3D12GraphicsCommandList* command_list, UINT vertex_count, UINT instance_count, UINT start_vertex, UINT start_instance);
+    static void WINAPI draw_indexed_instanced(ID3D12GraphicsCommandList* command_list, UINT index_count, UINT instance_count, UINT start_index, INT base_vertex, UINT start_instance);
     static HRESULT WINAPI resize_buffers(IDXGISwapChain3* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
     static HRESULT WINAPI resize_target(IDXGISwapChain3* swap_chain, const DXGI_MODE_DESC* new_target_parameters);
     //static HRESULT WINAPI create_swap_chain(IDXGIFactory4* factory, IUnknown* device, HWND hwnd, const DXGI_SWAP_CHAIN_DESC* desc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* p_fullscreen_desc, IDXGIOutput* p_restrict_to_output, IDXGISwapChain** swap_chain);
@@ -200,5 +206,7 @@ protected:
     PointerHook* find_create_depth_stencil_view_hook(void* slot) const;
     PointerHook* find_set_pipeline_state_hook(void* slot) const;
     PointerHook* find_resource_barrier_hook(void* slot) const;
+    PointerHook* find_draw_instanced_hook(void* slot) const;
+    PointerHook* find_draw_indexed_instanced_hook(void* slot) const;
 };
 

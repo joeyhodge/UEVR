@@ -20,6 +20,7 @@ public:
             *m_advanced_mode,
             *m_imgui_theme,
             *m_log_level,
+            *m_safe_uobject_mode,
             *m_always_show_cursor,
             *m_font_size,
         };
@@ -113,6 +114,12 @@ private:
 
         return log_levels;
     };
+
+    static const inline std::vector<std::string> s_safe_uobject_modes{
+        "Legacy",
+        "Guarded Core",
+        "Strict Diagnostics",
+    };
     
     ModKey::Ptr m_menu_key{ ModKey::create(generate_name("MenuKey"), VK_INSERT) };
     ModToggle::Ptr m_menu_open{ ModToggle::create(generate_name("MenuOpen"), true) };
@@ -124,6 +131,7 @@ private:
     
     ModCombo::Ptr m_imgui_theme{ ModCombo::create(generate_name("ImGuiTheme"), s_imgui_themes, Framework::ImGuiThemes::DEFAULT_DARK) };
     ModCombo::Ptr m_log_level{ ModCombo::create(generate_name("LogLevel"), s_get_log_levels(), spdlog::level::info) };
+    ModCombo::Ptr m_safe_uobject_mode{ ModCombo::create(generate_name("SafeUObjectMode"), s_safe_uobject_modes, 1) };
     
     ModKey::Ptr m_show_cursor_key{ ModKey::create(generate_name("ShowCursorKey")) };
     ModInt32::Ptr m_font_size{ModInt32::create(generate_name("FontSize"), 16)};

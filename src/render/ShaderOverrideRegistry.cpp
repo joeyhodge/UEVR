@@ -620,6 +620,7 @@ ShaderOverrideRegistry& ShaderOverrideRegistry::get() {
 void ShaderOverrideRegistry::on_present(Framework&) {
     std::scoped_lock _{m_mutex};
     ++m_frame;
+    m_presented_frame.store(m_frame, std::memory_order_release);
 
     const auto now = std::chrono::steady_clock::now();
     const auto full_tracking_active = should_track_d3d11_shaders() || should_track_d3d12_pipelines();
@@ -1171,6 +1172,53 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
     }
 
     update_d3d12_override_pipeline_state(record);
+}
+
+void ShaderOverrideRegistry::request_one_frame_d3d12_suppression(uintptr_t pipeline_state) {
+    if (pipeline_state == 0) {
+        return;
+    }
+    m_suppress_d3d12_pipeline.store(pipeline_state, std::memory_order_release);
+    m_suppress_d3d12_frame.store(m_presented_frame.load(std::memory_order_acquire) + 1, std::memory_order_release);
+}
+
+bool ShaderOverrideRegistry::should_suppress_d3d12_draw(uintptr_t pipeline_state) const {
+    return pipeline_state != 0 &&
+        pipeline_state == m_suppress_d3d12_pipeline.load(std::memory_order_acquire) &&
+        m_presented_frame.load(std::memory_order_acquire) == m_suppress_d3d12_frame.load(std::memory_order_acquire);
+}
+
+void ShaderOverrideRegistry::register_preinjection_d3d12_pipeline(
+    ID3D12Device* device,
+    ID3D12PipelineState* pipeline_state,
+    bool pipeline_stream,
+    std::string_view vertex_hash,
+    std::string_view pixel_hash,
+    std::string_view compute_hash,
+    std::string_view descriptor_hash
+) {
+    if (pipeline_state == nullptr) {
+        return;
+    }
+
+    std::scoped_lock _{m_mutex};
+    auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
+    record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
+    record.device = device;
+    record.is_pipeline_stream = pipeline_stream;
+    record.vertex_hash = normalize_hash(std::string{vertex_hash});
+    record.pixel_hash = normalize_hash(std::string{pixel_hash});
+    record.first_seen_frame = m_frame;
+    record.last_seen_frame = m_frame;
+    record.seen_count = 1;
+    record.applied_override_revision = (std::numeric_limits<uint64_t>::max)();
+    record.tracking_note = "pre-injection registry";
+
+    if (!compute_hash.empty()) {
+        record.tracking_note += " (compute read-only)";
+    } else if (record.vertex_hash.empty() && record.pixel_hash.empty() && !descriptor_hash.empty()) {
+        record.tracking_note += " (pipeline stream metadata)";
+    }
 }
 
 ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state) {

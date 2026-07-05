@@ -1,4 +1,7 @@
+#include <algorithm>
+
 #include "Framework.hpp"
+#include <sdk/SafeUObjectAccess.hpp>
 
 #include "FrameworkConfig.hpp"
 
@@ -26,6 +29,11 @@ void FrameworkConfig::draw_main() {
             spdlog::set_level((spdlog::level::level_enum)m_log_level->value());   
         }
     }
+
+    if (m_safe_uobject_mode->draw("Safe UObject Access")) {
+        sdk::safe_uobject::set_mode(static_cast<sdk::UObjectAccessMode>(m_safe_uobject_mode->value()));
+    }
+    ImGui::TextWrapped("Guarded Core preserves the legacy API while rejecting stale object slots and invalid reflected offsets.");
 }
 
 void FrameworkConfig::draw_themes() {
@@ -67,6 +75,9 @@ void FrameworkConfig::on_config_load(const utility::Config& cfg, bool set_defaul
     if (m_log_level->value() >= 0 && m_log_level->value() <= spdlog::level::level_enum::n_levels) {
         spdlog::set_level((spdlog::level::level_enum)m_log_level->value());   
     }
+
+    const auto safe_mode = (std::clamp)(m_safe_uobject_mode->value(), 0, 2);
+    sdk::safe_uobject::set_mode(static_cast<sdk::UObjectAccessMode>(safe_mode));
 }
 
 void FrameworkConfig::on_config_save(utility::Config& cfg) {

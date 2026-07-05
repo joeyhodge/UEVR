@@ -14,12 +14,14 @@
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
 #include "render/D3D12Diagnostics.hpp"
+#include "render/PreInjectionShaderRegistry.hpp"
 #include "render/ShaderOverrideRegistry.hpp"
 
 #include "D3D12Hook.hpp"
 
 static D3D12Hook* g_d3d12_hook = nullptr;
 thread_local bool g_inside_depth_stencil_observer = false;
+thread_local ID3D12PipelineState* g_current_original_pipeline_state = nullptr;
 
 namespace {
 constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
@@ -496,11 +498,17 @@ bool D3D12Hook::hook() {
         m_create_render_target_view_hooks.clear();
         m_create_depth_stencil_view_hooks.clear();
         m_set_pipeline_state_hooks.clear();
+        m_resource_barrier_hooks.clear();
+        m_draw_instanced_hooks.clear();
+        m_draw_indexed_instanced_hooks.clear();
         m_create_graphics_pipeline_state_hook_lookup.clear();
         m_create_pipeline_state_hook_lookup.clear();
         m_create_render_target_view_hook_lookup.clear();
         m_create_depth_stencil_view_hook_lookup.clear();
         m_set_pipeline_state_hook_lookup.clear();
+        m_resource_barrier_hook_lookup.clear();
+        m_draw_instanced_hook_lookup.clear();
+        m_draw_indexed_instanced_hook_lookup.clear();
         m_swapchain_hook.reset();
 
         m_is_phase_1 = true;
@@ -516,15 +524,20 @@ bool D3D12Hook::hook() {
         std::unordered_set<uintptr_t> depth_stencil_view_slots{};
         std::unordered_set<uintptr_t> set_pipeline_state_slots{};
         std::unordered_set<uintptr_t> resource_barrier_slots{};
+        std::unordered_set<uintptr_t> draw_instanced_slots{};
+        std::unordered_set<uintptr_t> draw_indexed_instanced_slots{};
 
-        add_unique_pointer_hook(
-            device,
-            CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
-            reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
-            m_create_graphics_pipeline_state_hooks,
-            m_create_graphics_pipeline_state_hook_lookup,
-            graphics_pipeline_state_slots
-        );
+        const auto preinjection_owns_creation_hooks = render::PreInjectionShaderRegistry::get().adopt();
+        if (!preinjection_owns_creation_hooks) {
+            add_unique_pointer_hook(
+                device,
+                CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
+                m_create_graphics_pipeline_state_hooks,
+                m_create_graphics_pipeline_state_hook_lookup,
+                graphics_pipeline_state_slots
+            );
+        }
 
         Microsoft::WRL::ComPtr<ID3D12Device1> device1{};
         Microsoft::WRL::ComPtr<ID3D12Device2> device2{};
@@ -562,14 +575,16 @@ bool D3D12Hook::hook() {
         };
 
         for (auto* iface : device_interfaces) {
-            add_unique_pointer_hook(
-                iface,
-                CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
-                reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
-                m_create_graphics_pipeline_state_hooks,
-                m_create_graphics_pipeline_state_hook_lookup,
-                graphics_pipeline_state_slots
-            );
+            if (!preinjection_owns_creation_hooks) {
+                add_unique_pointer_hook(
+                    iface,
+                    CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX,
+                    reinterpret_cast<void*>(&D3D12Hook::create_graphics_pipeline_state),
+                    m_create_graphics_pipeline_state_hooks,
+                    m_create_graphics_pipeline_state_hook_lookup,
+                    graphics_pipeline_state_slots
+                );
+            }
 
             add_unique_pointer_hook(
                 iface,
@@ -603,14 +618,16 @@ bool D3D12Hook::hook() {
         };
 
         for (auto* iface : pipeline_stream_interfaces) {
-            add_unique_pointer_hook(
-                iface,
-                CREATE_PIPELINE_STATE_VTABLE_INDEX,
-                reinterpret_cast<void*>(&D3D12Hook::create_pipeline_state),
-                m_create_pipeline_state_hooks,
-                m_create_pipeline_state_hook_lookup,
-                pipeline_state_stream_slots
-            );
+            if (!preinjection_owns_creation_hooks) {
+                add_unique_pointer_hook(
+                    iface,
+                    CREATE_PIPELINE_STATE_VTABLE_INDEX,
+                    reinterpret_cast<void*>(&D3D12Hook::create_pipeline_state),
+                    m_create_pipeline_state_hooks,
+                    m_create_pipeline_state_hook_lookup,
+                    pipeline_state_stream_slots
+                );
+            }
         }
 
         add_unique_pointer_hook(
@@ -629,6 +646,24 @@ bool D3D12Hook::hook() {
             m_resource_barrier_hook_lookup,
             resource_barrier_slots
         );
+        if (preinjection_owns_creation_hooks) {
+            add_unique_pointer_hook(
+                command_list,
+                DRAW_INSTANCED_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::draw_instanced),
+                m_draw_instanced_hooks,
+                m_draw_instanced_hook_lookup,
+                draw_instanced_slots
+            );
+            add_unique_pointer_hook(
+                command_list,
+                DRAW_INDEXED_INSTANCED_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::draw_indexed_instanced),
+                m_draw_indexed_instanced_hooks,
+                m_draw_indexed_instanced_hook_lookup,
+                draw_indexed_instanced_slots
+            );
+        }
 
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> command_list1{};
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> command_list2{};
@@ -673,6 +708,24 @@ bool D3D12Hook::hook() {
                 m_resource_barrier_hook_lookup,
                 resource_barrier_slots
             );
+            if (preinjection_owns_creation_hooks) {
+                add_unique_pointer_hook(
+                    iface,
+                    DRAW_INSTANCED_VTABLE_INDEX,
+                    reinterpret_cast<void*>(&D3D12Hook::draw_instanced),
+                    m_draw_instanced_hooks,
+                    m_draw_instanced_hook_lookup,
+                    draw_instanced_slots
+                );
+                add_unique_pointer_hook(
+                    iface,
+                    DRAW_INDEXED_INSTANCED_VTABLE_INDEX,
+                    reinterpret_cast<void*>(&D3D12Hook::draw_indexed_instanced),
+                    m_draw_indexed_instanced_hooks,
+                    m_draw_indexed_instanced_hook_lookup,
+                    draw_indexed_instanced_slots
+                );
+            }
         }
 
         m_hooked = true;
@@ -723,12 +776,16 @@ bool D3D12Hook::unhook() {
     m_create_depth_stencil_view_hooks.clear();
     m_set_pipeline_state_hooks.clear();
     m_resource_barrier_hooks.clear();
+    m_draw_instanced_hooks.clear();
+    m_draw_indexed_instanced_hooks.clear();
     m_create_graphics_pipeline_state_hook_lookup.clear();
     m_create_pipeline_state_hook_lookup.clear();
     m_create_render_target_view_hook_lookup.clear();
     m_create_depth_stencil_view_hook_lookup.clear();
     m_set_pipeline_state_hook_lookup.clear();
     m_resource_barrier_hook_lookup.clear();
+    m_draw_instanced_hook_lookup.clear();
+    m_draw_indexed_instanced_hook_lookup.clear();
     m_swapchain_hook.reset();
 
     m_hooked = false;
@@ -783,6 +840,20 @@ PointerHook* D3D12Hook::find_resource_barrier_hook(void* slot) const {
     }
 
     return m_resource_barrier_hooks.empty() ? nullptr : m_resource_barrier_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_draw_instanced_hook(void* slot) const {
+    if (const auto it = m_draw_instanced_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_draw_instanced_hook_lookup.end()) {
+        return it->second;
+    }
+    return m_draw_instanced_hooks.empty() ? nullptr : m_draw_instanced_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_draw_indexed_instanced_hook(void* slot) const {
+    if (const auto it = m_draw_indexed_instanced_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_draw_indexed_instanced_hook_lookup.end()) {
+        return it->second;
+    }
+    return m_draw_indexed_instanced_hooks.empty() ? nullptr : m_draw_indexed_instanced_hooks.front().get();
 }
 
 thread_local int32_t g_present_depth = 0;
@@ -1130,6 +1201,7 @@ void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_lis
         return;
     }
 
+    g_current_original_pipeline_state = pipeline_state;
     auto& shader_registry = render::ShaderOverrideRegistry::get();
     if (!shader_registry.should_track_d3d12_pipelines()) {
         original(command_list, pipeline_state);
@@ -1139,6 +1211,41 @@ void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_lis
     auto bound_pipeline_state = shader_registry.resolve_d3d12_pipeline_state(pipeline_state);
     shader_registry.note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
     original(command_list, bound_pipeline_state);
+}
+
+void WINAPI D3D12Hook::draw_instanced(
+    ID3D12GraphicsCommandList* command_list,
+    UINT vertex_count,
+    UINT instance_count,
+    UINT start_vertex,
+    UINT start_instance
+) {
+    auto* d3d12 = g_d3d12_hook;
+    auto* slot = command_list != nullptr ? &(*(void***)command_list)[DRAW_INSTANCED_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_draw_instanced_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::draw_instanced)*>() : nullptr;
+    if (original != nullptr && !render::ShaderOverrideRegistry::get().should_suppress_d3d12_draw(
+            reinterpret_cast<uintptr_t>(g_current_original_pipeline_state))) {
+        original(command_list, vertex_count, instance_count, start_vertex, start_instance);
+    }
+}
+
+void WINAPI D3D12Hook::draw_indexed_instanced(
+    ID3D12GraphicsCommandList* command_list,
+    UINT index_count,
+    UINT instance_count,
+    UINT start_index,
+    INT base_vertex,
+    UINT start_instance
+) {
+    auto* d3d12 = g_d3d12_hook;
+    auto* slot = command_list != nullptr ? &(*(void***)command_list)[DRAW_INDEXED_INSTANCED_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_draw_indexed_instanced_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::draw_indexed_instanced)*>() : nullptr;
+    if (original != nullptr && !render::ShaderOverrideRegistry::get().should_suppress_d3d12_draw(
+            reinterpret_cast<uintptr_t>(g_current_original_pipeline_state))) {
+        original(command_list, index_count, instance_count, start_index, base_vertex, start_instance);
+    }
 }
 
 void WINAPI D3D12Hook::resource_barrier(

@@ -182,6 +182,51 @@ LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET
 ARCHIVE_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 
+[target.shader-registry-bootstrap]
+type = "shared"
+sources = ["shader-registry-bootstrap/**.cpp", "shader-registry-bootstrap/**.c"]
+headers = ["include/uevr/PreInjectionShaderRegistry.hpp"]
+include-directories = ["include/"]
+compile-options = ["/GS-", "/EHa", "/MP"]
+compile-features = ["cxx_std_23"]
+link-libraries = [
+    "d3d12",
+    "safetyhook",
+    "kananlib"
+]
+
+[target.shader-registry-bootstrap.properties]
+OUTPUT_NAME = "UEVRShaderRegistryBootstrap"
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+LIBRARY_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+ARCHIVE_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+
+[target.shader-registry-test]
+type = "executable"
+sources = ["side-projects/shader-registry-test/**.cpp"]
+include-directories = ["include/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "d3dcompiler"]
+
+[target.shader-registry-test.properties]
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+
+[target.safe-uobject-test]
+type = "executable"
+sources = ["side-projects/safe-uobject-test/**.cpp"]
+include-directories = ["dependencies/submodules/UESDK/src/"]
+compile-options = ["/EHa"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["uesdk", "Version"]
+
+[target.safe-uobject-test.properties]
+RUNTIME_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+RUNTIME_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/bin/${CMKR_TARGET}"
+
 [target.lua]
 type = "static"
 sources = ["dependencies/lua/src/*.c"]

@@ -1164,6 +1164,17 @@ void RenderInspector::draw_shaders() {
                 m_last_dx12_live_sample_frame = snapshot.frame;
             }
         }
+
+        if (snapshot.captured_d3d12_pair.has_value()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Suppress Captured PSO Next Frame")) {
+                render::ShaderOverrideRegistry::get().request_one_frame_d3d12_suppression(
+                    snapshot.captured_d3d12_pair->original_pipeline_state);
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Diagnostic only: skips graphics draws using this PSO for one frame. Compute dispatches are never suppressed.");
+            }
+        }
     }
 
     ImGui::Separator();
