@@ -871,6 +871,7 @@ private:
         uintptr_t scene{};
         uintptr_t pending_scene{};
         uint8_t pending_scene_observations[2]{};
+        bool pending_scene_has_unknown_state{};
         uint64_t first_seen_observation{};
         uint64_t last_seen_observation{};
         uint32_t generation{};
@@ -896,6 +897,14 @@ private:
         uint64_t ghosting_right_eye_remap_count{};
         std::chrono::steady_clock::time_point ghosting_last_right_eye_remap_time{};
         bool ghosting_logged_bootstrap_disabled{};
+        uintptr_t ghosting_bootstrap_scene{};
+        uint32_t ghosting_bootstrap_last_frame{};
+        uint32_t ghosting_bootstrap_stable_frames{};
+        uint32_t ghosting_bootstrap_next_attempt_frame{};
+        uint32_t ghosting_bootstrap_pulse_until_frame{};
+        uint8_t ghosting_bootstrap_attempts{};
+        bool ghosting_bootstrap_ready{};
+        bool ghosting_logged_bootstrap_deferred{};
 
         // For keeping track of what the states were before our modifications.
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE4> view_init_options_ue4{};
