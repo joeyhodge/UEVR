@@ -274,6 +274,21 @@ json to_json(const render::ShaderOverrideRegistry::OverrideEntryInfo& entry) {
     };
 }
 
+json to_json(const render::PreInjectionShaderRegistryCoverage& coverage) {
+    return {
+        {"helper_available", coverage.helper_available},
+        {"captured_records", coverage.captured_records},
+        {"imported_records", coverage.imported_records},
+        {"observed_psos", coverage.observed_psos},
+        {"matched_observed_psos", coverage.matched_observed_psos},
+        {"unmatched_observed_psos", coverage.unmatched_observed_psos},
+        {"matched_samples", coverage.matched_samples},
+        {"unmatched_samples", coverage.unmatched_samples},
+        {"dropped_records", coverage.dropped_records},
+        {"dropped_shader_bytes", coverage.dropped_shader_bytes}
+    };
+}
+
 void write_json_file(const std::filesystem::path& path, const json& value) {
     std::ofstream file{path, std::ios::binary | std::ios::trunc};
     file << value.dump(2);
@@ -292,10 +307,12 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
         const auto dx12_json_path = result.bundle_dir / "dx12_diagnostics.json";
         const auto shader_pairs_json_path = result.bundle_dir / "shader_pairs.json";
         const auto pso_profiler_json_path = result.bundle_dir / "pso_profiler.json";
+        const auto registry_coverage_json_path = result.bundle_dir / "shader_registry_coverage.json";
         const auto overrides_json_path = result.bundle_dir / "overrides.json";
         const auto resources_csv_path = result.bundle_dir / "resources.csv";
         const auto shader_pairs_csv_path = result.bundle_dir / "shader_pairs.csv";
         const auto pso_profiler_csv_path = result.bundle_dir / "pso_profiler.csv";
+        const auto registry_coverage_csv_path = result.bundle_dir / "shader_registry_coverage.csv";
         const auto manifest_json_path = result.bundle_dir / "bundle_manifest.json";
 
         json resources_json = json::array();
@@ -362,12 +379,14 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
         json pso_profiler_json{
             {"frame", input.shaders.frame},
             {"total_samples", input.shaders.total_d3d12_pso_samples},
+            {"preinjection_registry", to_json(input.preinjection_registry)},
             {"aggregates", json::array()}
         };
         for (const auto& aggregate : input.shaders.d3d12_pso_aggregates) {
             pso_profiler_json["aggregates"].push_back(to_json(aggregate));
         }
         write_json_file(pso_profiler_json_path, pso_profiler_json);
+        write_json_file(registry_coverage_json_path, to_json(input.preinjection_registry));
 
         json overrides_json = json::array();
         for (const auto& entry : input.shaders.overrides) {
@@ -449,20 +468,39 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
             }
         }
 
+        {
+            std::ofstream csv{registry_coverage_csv_path, std::ios::binary | std::ios::trunc};
+            csv << "helper_available,captured_records,imported_records,observed_psos,matched_observed_psos,unmatched_observed_psos,matched_samples,unmatched_samples,dropped_records,dropped_shader_bytes\n";
+            const auto& coverage = input.preinjection_registry;
+            csv << coverage.helper_available << ','
+                << coverage.captured_records << ','
+                << coverage.imported_records << ','
+                << coverage.observed_psos << ','
+                << coverage.matched_observed_psos << ','
+                << coverage.unmatched_observed_psos << ','
+                << coverage.matched_samples << ','
+                << coverage.unmatched_samples << ','
+                << coverage.dropped_records << ','
+                << coverage.dropped_shader_bytes << '\n';
+        }
+
         json manifest{
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"profile_name", input.profile_name},
             {"backend", input.backend},
             {"frame", input.frame},
+            {"preinjection_registry", to_json(input.preinjection_registry)},
             {"files", json::array({
                 "resources.json",
                 "dx12_diagnostics.json",
                 "shader_pairs.json",
                 "pso_profiler.json",
+                "shader_registry_coverage.json",
                 "overrides.json",
                 "resources.csv",
                 "shader_pairs.csv",
-                "pso_profiler.csv"
+                "pso_profiler.csv",
+                "shader_registry_coverage.csv"
             })}
         };
         write_json_file(manifest_json_path, manifest);
@@ -473,10 +511,12 @@ RenderAnalysisExportResult RenderAnalysisExport::export_bundle(const RenderAnaly
             dx12_json_path,
             shader_pairs_json_path,
             pso_profiler_json_path,
+            registry_coverage_json_path,
             overrides_json_path,
             resources_csv_path,
             shader_pairs_csv_path,
-            pso_profiler_csv_path
+            pso_profiler_csv_path,
+            registry_coverage_csv_path
         };
         result.succeeded = true;
 

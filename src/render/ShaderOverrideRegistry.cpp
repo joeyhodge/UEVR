@@ -1274,7 +1274,7 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
 
         const auto it = m_d3d12_graphics_pso_records.find(reinterpret_cast<uintptr_t>(original_pipeline_state));
         if (it == m_d3d12_graphics_pso_records.end()) {
-            info.note = "untracked pso (created before injection)";
+            info.note = "untracked PSO (possibly pipeline-library loaded)";
             return info;
         }
 
@@ -1321,7 +1321,7 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
             pair.pipeline_stream = it->second.is_pipeline_stream;
             pair.tracking_note = it->second.tracking_note;
         } else {
-            pair.tracking_note = "created before injection";
+            pair.tracking_note = "untracked PSO (possibly pipeline-library loaded)";
         }
     } else {
         pair.tracking_note = "null pso";

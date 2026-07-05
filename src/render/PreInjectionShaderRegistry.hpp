@@ -15,6 +15,7 @@ public:
     bool adopt();
     bool creation_hooks_owned() const;
     UEVRShaderRegistryStatusV1 status() const;
+    size_t imported_record_count() const;
     void consume_for_diagnostics(size_t max_records = 256);
 
 private:
@@ -25,6 +26,7 @@ private:
     std::atomic<bool> m_attempted{};
     std::atomic<bool> m_creation_hooks_owned{};
     std::atomic<bool> m_snapshot_loaded{};
+    std::atomic<size_t> m_imported_records{};
     std::mutex m_records_mutex{};
     std::vector<UEVRShaderRegistryRecordV1> m_records{};
     size_t m_next_record{};

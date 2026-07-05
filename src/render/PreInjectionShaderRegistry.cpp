@@ -112,6 +112,10 @@ UEVRShaderRegistryStatusV1 PreInjectionShaderRegistry::status() const {
     return result;
 }
 
+size_t PreInjectionShaderRegistry::imported_record_count() const {
+    return m_imported_records.load(std::memory_order_acquire);
+}
+
 void PreInjectionShaderRegistry::consume_for_diagnostics(size_t max_records) {
     if (m_api == nullptr || max_records == 0) {
         return;
@@ -191,5 +195,6 @@ void PreInjectionShaderRegistry::import_record(const UEVRShaderRegistryRecordV1&
         bounded_hash(record.pixel_hash),
         bounded_hash(record.compute_hash),
         bounded_hash(record.descriptor_hash));
+    m_imported_records.fetch_add(1, std::memory_order_release);
 }
 }

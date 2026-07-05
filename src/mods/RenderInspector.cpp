@@ -426,6 +426,32 @@ const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo* find_d3d12_pso(
 
     return it != aggregates.end() ? &*it : nullptr;
 }
+
+render::PreInjectionShaderRegistryCoverage make_preinjection_coverage(
+    const render::ShaderOverrideRegistry::Snapshot& snapshot) {
+    render::PreInjectionShaderRegistryCoverage coverage{};
+    auto& registry = render::PreInjectionShaderRegistry::get();
+    const auto status = registry.status();
+
+    coverage.helper_available = status.process_id != 0;
+    coverage.captured_records = status.records;
+    coverage.imported_records = registry.imported_record_count();
+    coverage.observed_psos = snapshot.d3d12_pso_aggregates.size();
+    coverage.dropped_records = status.dropped_records;
+    coverage.dropped_shader_bytes = status.dropped_shader_bytes;
+
+    for (const auto& aggregate : snapshot.d3d12_pso_aggregates) {
+        if (aggregate.tracking_note.starts_with("pre-injection registry")) {
+            ++coverage.matched_observed_psos;
+            coverage.matched_samples += aggregate.total_samples;
+        } else if (aggregate.tracking_note == "untracked PSO (possibly pipeline-library loaded)") {
+            ++coverage.unmatched_observed_psos;
+            coverage.unmatched_samples += aggregate.total_samples;
+        }
+    }
+
+    return coverage;
+}
 } // namespace
 
 std::shared_ptr<RenderInspector>& RenderInspector::get() {
@@ -930,6 +956,7 @@ void RenderInspector::draw_pso_profiler() {
     auto shader_snapshot = render::ShaderOverrideRegistry::get().snapshot();
     auto diagnostics_snapshot = render::D3D12Diagnostics::get().snapshot();
     auto resource_snapshot = m_inspector.snapshot();
+    const auto preinjection_coverage = make_preinjection_coverage(shader_snapshot);
 
     if (!g_framework->is_dx12()) {
         ImGui::TextUnformatted("PSO profiler is only available on DX12.");
@@ -954,6 +981,15 @@ void RenderInspector::draw_pso_profiler() {
     ImGui::TextDisabled("|");
     ImGui::SameLine();
     ImGui::Text("Tracked target sets: %zu", associated_target_count);
+    if (preinjection_coverage.helper_available) {
+        ImGui::Text(
+            "Startup registry: %" PRIu64 " captured | %" PRIu64 " imported | %" PRIu64
+            " matched | %" PRIu64 " untracked",
+            preinjection_coverage.captured_records,
+            preinjection_coverage.imported_records,
+            preinjection_coverage.matched_observed_psos,
+            preinjection_coverage.unmatched_observed_psos);
+    }
 
     ImGui::Checkbox("Overridden only", &m_pso_filter_overridden_only);
     ImGui::SameLine();
@@ -979,6 +1015,7 @@ void RenderInspector::draw_pso_profiler() {
         export_input.resources = resource_snapshot;
         export_input.d3d12 = diagnostics_snapshot;
         export_input.shaders = shader_snapshot;
+        export_input.preinjection_registry = preinjection_coverage;
 
         const auto export_result = render::RenderAnalysisExport::export_bundle(export_input);
         if (export_result.succeeded) {
