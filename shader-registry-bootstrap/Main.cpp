@@ -8,9 +8,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
@@ -32,8 +34,21 @@ constexpr size_t LOAD_PIPELINE_VTABLE_INDEX = 13;
 constexpr uint64_t MAX_RETAINED_SHADER_BYTES = 256ull * 1024ull * 1024ull;
 constexpr size_t MAX_PIPELINE_STREAM_BYTES = 16ull * 1024ull * 1024ull;
 constexpr size_t MAX_RECORDS = 1'000'000;
+constexpr std::wstring_view PROSPI_LAUNCHER_NAME = L"prospi.exe";
+constexpr std::wstring_view PROSPI_GAME_NAME = L"prospi-Win64-Shipping.exe";
 
 using D3D12CreateDeviceFn = HRESULT (WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
+using CreateProcessWFn = BOOL (WINAPI*)(
+    LPCWSTR,
+    LPWSTR,
+    LPSECURITY_ATTRIBUTES,
+    LPSECURITY_ATTRIBUTES,
+    BOOL,
+    DWORD,
+    LPVOID,
+    LPCWSTR,
+    LPSTARTUPINFOW,
+    LPPROCESS_INFORMATION);
 using CreateGraphicsPipelineStateFn = HRESULT (WINAPI*)(ID3D12Device*, const D3D12_GRAPHICS_PIPELINE_STATE_DESC*, REFIID, void**);
 using CreateComputePipelineStateFn = HRESULT (WINAPI*)(ID3D12Device*, const D3D12_COMPUTE_PIPELINE_STATE_DESC*, REFIID, void**);
 using CreatePipelineLibraryFn = HRESULT (WINAPI*)(ID3D12Device1*, const void*, SIZE_T, REFIID, void**);
@@ -65,6 +80,7 @@ struct RegistryState {
     std::unordered_map<uintptr_t, PointerHook*> load_stream_lookup{};
     std::unordered_set<uintptr_t> hooked_slots{};
     safetyhook::InlineHook create_device_hook{};
+    safetyhook::InlineHook create_process_hook{};
     UEVRShaderRegistryRecordCallbackV1 callback{};
     void* callback_context{};
     HANDLE status_mapping{};
@@ -817,8 +833,271 @@ void initialize_status_mapping() {
     }
 }
 
+std::wstring current_process_name() {
+    std::vector<wchar_t> path(32768);
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        return {};
+    }
+    return std::filesystem::path{std::wstring_view{path.data(), length}}.filename().wstring();
+}
+
+std::wstring child_executable_name(LPCWSTR application_name, LPCWSTR command_line) {
+    if (application_name != nullptr && *application_name != L'\0') {
+        return std::filesystem::path{application_name}.filename().wstring();
+    }
+    if (command_line == nullptr) {
+        return {};
+    }
+
+    std::wstring_view command{command_line};
+    const auto first = command.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring_view::npos) {
+        return {};
+    }
+
+    command.remove_prefix(first);
+    std::wstring executable{};
+    if (command.front() == L'"') {
+        command.remove_prefix(1);
+        const auto end = command.find(L'"');
+        executable.assign(command.substr(0, end));
+    } else {
+        const auto end = command.find_first_of(L" \t\r\n");
+        executable.assign(command.substr(0, end));
+    }
+    return std::filesystem::path{executable}.filename().wstring();
+}
+
+bool is_exact_name(std::wstring_view candidate, std::wstring_view expected) {
+    return candidate.size() == expected.size() &&
+        _wcsnicmp(candidate.data(), expected.data(), expected.size()) == 0;
+}
+
+bool wait_for_child_registry(DWORD process_id, DWORD timeout_ms) {
+    wchar_t mapping_name[96]{};
+    _snwprintf_s(
+        mapping_name,
+        _countof(mapping_name),
+        _TRUNCATE,
+        L"Local\\UEVRShaderRegistry-%lu",
+        process_id);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{timeout_ms};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (const auto mapping = OpenFileMappingW(FILE_MAP_READ, FALSE, mapping_name); mapping != nullptr) {
+            const auto* status = static_cast<const UEVRShaderRegistryStatusV1*>(
+                MapViewOfFile(mapping, FILE_MAP_READ, 0, 0, sizeof(UEVRShaderRegistryStatusV1)));
+            const auto armed = status != nullptr &&
+                status->magic == UEVR_SHADER_REGISTRY_STATUS_MAGIC &&
+                status->process_id == process_id &&
+                status->hooks_active != 0 &&
+                status->state == UEVRShaderRegistryState_Armed;
+            if (status != nullptr) {
+                UnmapViewOfFile(status);
+            }
+            CloseHandle(mapping);
+            if (armed) {
+                return true;
+            }
+        }
+        Sleep(10);
+    }
+    return false;
+}
+
+bool inject_self_into_child(HANDLE process, DWORD process_id, DWORD& error_out) {
+    error_out = ERROR_SUCCESS;
+    if (process == nullptr || process == INVALID_HANDLE_VALUE) {
+        error_out = ERROR_INVALID_HANDLE;
+        return false;
+    }
+
+    std::vector<wchar_t> module_path(32768);
+    const auto path_length =
+        GetModuleFileNameW(g_module, module_path.data(), static_cast<DWORD>(module_path.size()));
+    if (path_length == 0 || path_length >= module_path.size()) {
+        error_out = GetLastError();
+        return false;
+    }
+
+    const auto path_bytes = (path_length + 1) * sizeof(wchar_t);
+    auto* remote_path = VirtualAllocEx(
+        process, nullptr, path_bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (remote_path == nullptr) {
+        error_out = GetLastError();
+        return false;
+    }
+
+    bool succeeded = false;
+    HANDLE remote_thread{};
+    do {
+        SIZE_T bytes_written{};
+        if (!WriteProcessMemory(
+                process,
+                remote_path,
+                module_path.data(),
+                path_bytes,
+                &bytes_written) ||
+            bytes_written != path_bytes) {
+            error_out = GetLastError();
+            break;
+        }
+
+        const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+        const auto load_library =
+            kernel32 != nullptr ? GetProcAddress(kernel32, "LoadLibraryW") : nullptr;
+        if (load_library == nullptr) {
+            error_out = GetLastError();
+            break;
+        }
+
+        remote_thread = CreateRemoteThread(
+            process,
+            nullptr,
+            0,
+            reinterpret_cast<LPTHREAD_START_ROUTINE>(load_library),
+            remote_path,
+            0,
+            nullptr);
+        if (remote_thread == nullptr) {
+            error_out = GetLastError();
+            break;
+        }
+        if (WaitForSingleObject(remote_thread, 5000) != WAIT_OBJECT_0) {
+            error_out = WAIT_TIMEOUT;
+            break;
+        }
+        if (!wait_for_child_registry(process_id, 5000)) {
+            error_out = WAIT_TIMEOUT;
+            break;
+        }
+        succeeded = true;
+    } while (false);
+
+    if (remote_thread != nullptr) {
+        CloseHandle(remote_thread);
+    }
+    VirtualFreeEx(process, remote_path, 0, MEM_RELEASE);
+    return succeeded;
+}
+
+BOOL WINAPI create_process_w(
+    LPCWSTR application_name,
+    LPWSTR command_line,
+    LPSECURITY_ATTRIBUTES process_attributes,
+    LPSECURITY_ATTRIBUTES thread_attributes,
+    BOOL inherit_handles,
+    DWORD creation_flags,
+    LPVOID environment,
+    LPCWSTR current_directory,
+    LPSTARTUPINFOW startup_info,
+    LPPROCESS_INFORMATION process_information) {
+    const ActiveHookCall active_call{};
+    const auto original = g_registry.create_process_hook.original<CreateProcessWFn>();
+    if (original == nullptr) {
+        SetLastError(ERROR_INVALID_FUNCTION);
+        return FALSE;
+    }
+
+    const auto target_name = child_executable_name(application_name, command_line);
+    const auto propagate =
+        !g_registry.shutting_down.load(std::memory_order_acquire) &&
+        process_information != nullptr &&
+        is_exact_name(target_name, PROSPI_GAME_NAME);
+    if (!propagate) {
+        return original(
+            application_name,
+            command_line,
+            process_attributes,
+            thread_attributes,
+            inherit_handles,
+            creation_flags,
+            environment,
+            current_directory,
+            startup_info,
+            process_information);
+    }
+
+    const auto caller_requested_suspended = (creation_flags & CREATE_SUSPENDED) != 0;
+    const auto result = original(
+        application_name,
+        command_line,
+        process_attributes,
+        thread_attributes,
+        inherit_handles,
+        creation_flags | CREATE_SUSPENDED,
+        environment,
+        current_directory,
+        startup_info,
+        process_information);
+    const auto create_error = GetLastError();
+    if (!result) {
+        return result;
+    }
+
+    DWORD propagation_error{};
+    const auto propagated = inject_self_into_child(
+        process_information->hProcess,
+        process_information->dwProcessId,
+        propagation_error);
+    {
+        std::scoped_lock lock{g_registry.mutex};
+        if (g_registry.status != nullptr && propagated) {
+            // Launcher-only field: publish the exact child PID so the frontend
+            // hands hook ownership off in the shipping process, not here.
+            g_registry.status->reserved = process_information->dwProcessId;
+        } else if (g_registry.status != nullptr) {
+            g_registry.status->last_error =
+                propagation_error != ERROR_SUCCESS ? propagation_error : ERROR_DLL_INIT_FAILED;
+        }
+    }
+
+    if (!caller_requested_suspended) {
+        ResumeThread(process_information->hThread);
+    }
+    SetLastError(create_error);
+    return result;
+}
+
+bool initialize_prospi_launcher_hook() {
+    if (!is_exact_name(current_process_name(), PROSPI_LAUNCHER_NAME)) {
+        return false;
+    }
+
+    const auto kernel32 = GetModuleHandleW(L"kernel32.dll");
+    const auto create_process =
+        kernel32 != nullptr ? GetProcAddress(kernel32, "CreateProcessW") : nullptr;
+    if (create_process == nullptr) {
+        if (g_registry.status != nullptr) {
+            g_registry.status->state = UEVRShaderRegistryState_Error;
+            g_registry.status->last_error = GetLastError();
+        }
+        return true;
+    }
+
+    g_registry.create_process_hook = safetyhook::create_inline(create_process, &create_process_w);
+    if (!g_registry.create_process_hook) {
+        if (g_registry.status != nullptr) {
+            g_registry.status->state = UEVRShaderRegistryState_Error;
+            g_registry.status->last_error = ERROR_INVALID_HOOK_HANDLE;
+        }
+        return true;
+    }
+
+    if (g_registry.status != nullptr) {
+        g_registry.status->hooks_active = 1;
+        g_registry.status->state = UEVRShaderRegistryState_Armed;
+    }
+    return true;
+}
+
 DWORD WINAPI worker_thread(void*) {
     initialize_status_mapping();
+    if (initialize_prospi_launcher_hook()) {
+        return 0;
+    }
+
     // Explicitly loading D3D12 while the game is suspended removes the race
     // between a polling worker and the game's first D3D12CreateDevice call.
     const auto d3d12 = LoadLibraryW(L"d3d12.dll");

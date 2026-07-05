@@ -7,7 +7,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstring>
+#include <filesystem>
 #include <iostream>
+#include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -100,7 +103,118 @@ HRESULT WINAPI chained_create_compute_pipeline_state(
     return g_chained_compute_original(device, desc, riid, pipeline_state);
 }
 
+std::wstring executable_name() {
+    std::vector<wchar_t> path(32768);
+    const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size()) {
+        return {};
+    }
+    return std::filesystem::path{std::wstring_view{path.data(), length}}.filename().wstring();
+}
+
+const UEVRShaderRegistryApiV1* wait_for_helper_api(HMODULE helper) {
+    if (helper == nullptr) {
+        return nullptr;
+    }
+    const auto get_api = reinterpret_cast<UEVRShaderRegistryGetApiFn>(
+        GetProcAddress(helper, "UEVRShaderRegistry_GetApi"));
+    if (get_api == nullptr) {
+        return nullptr;
+    }
+
+    const auto* api = get_api(UEVR_SHADER_REGISTRY_ABI_V1);
+    UEVRShaderRegistryStatusV1 status{};
+    for (size_t i = 0; api != nullptr && i < 500; ++i) {
+        if (api->get_status(&status) &&
+            status.state == UEVRShaderRegistryState_Armed &&
+            status.hooks_active != 0) {
+            return api;
+        }
+        Sleep(10);
+    }
+    return nullptr;
+}
+
+int run_prospi_child_test() {
+    const auto helper = GetModuleHandleW(L"UEVRShaderRegistryBootstrap.dll");
+    if (wait_for_helper_api(helper) == nullptr) {
+        std::cerr << "shipping child did not inherit an armed shader helper\n";
+        return 101;
+    }
+    return 0;
+}
+
+int run_prospi_launcher_test() {
+    const auto helper = LoadLibraryW(L"UEVRShaderRegistryBootstrap.dll");
+    const auto* api = wait_for_helper_api(helper);
+    if (api == nullptr) {
+        std::cerr << "launcher propagation helper did not arm\n";
+        return 102;
+    }
+
+    std::vector<wchar_t> launcher_path(32768);
+    const auto length =
+        GetModuleFileNameW(nullptr, launcher_path.data(), static_cast<DWORD>(launcher_path.size()));
+    if (length == 0 || length >= launcher_path.size()) {
+        return 103;
+    }
+    const auto child_path =
+        std::filesystem::path{std::wstring_view{launcher_path.data(), length}}.parent_path() /
+        L"prospi-Win64-Shipping.exe";
+    auto command_line = L"\"" + child_path.wstring() + L"\" prospi";
+    std::vector<wchar_t> mutable_command(command_line.begin(), command_line.end());
+    mutable_command.push_back(L'\0');
+
+    STARTUPINFOW startup_info{};
+    startup_info.cb = sizeof(startup_info);
+    PROCESS_INFORMATION process_info{};
+    if (!CreateProcessW(
+            child_path.c_str(),
+            mutable_command.data(),
+            nullptr,
+            nullptr,
+            FALSE,
+            CREATE_NO_WINDOW,
+            nullptr,
+            child_path.parent_path().c_str(),
+            &startup_info,
+            &process_info)) {
+        std::cerr << "launcher propagation CreateProcessW failed: " << GetLastError() << '\n';
+        return 104;
+    }
+
+    UEVRShaderRegistryStatusV1 launcher_status{};
+    if (!api->get_status(&launcher_status) ||
+        launcher_status.reserved != process_info.dwProcessId) {
+        TerminateProcess(process_info.hProcess, 106);
+        CloseHandle(process_info.hThread);
+        CloseHandle(process_info.hProcess);
+        std::cerr << "launcher did not publish propagated child PID\n";
+        return 106;
+    }
+
+    const auto wait_result = WaitForSingleObject(process_info.hProcess, 15000);
+    DWORD exit_code{};
+    const auto got_exit_code = GetExitCodeProcess(process_info.hProcess, &exit_code);
+    CloseHandle(process_info.hThread);
+    CloseHandle(process_info.hProcess);
+    if (wait_result != WAIT_OBJECT_0 || !got_exit_code || exit_code != 0) {
+        std::cerr << "propagated child failed or remained suspended: wait=" << wait_result
+                  << " exit=" << exit_code << '\n';
+        return 105;
+    }
+    return 0;
+}
+
 int main() {
+    const auto process_name = executable_name();
+    if (_wcsicmp(process_name.c_str(), L"prospi-Win64-Shipping.exe") == 0) {
+        return run_prospi_child_test();
+    }
+    if (_wcsicmp(process_name.c_str(), L"prospi.exe") == 0) {
+        return run_prospi_launcher_test();
+    }
+
     const auto helper = LoadLibraryW(L"UEVRShaderRegistryBootstrap.dll");
     if (helper == nullptr) {
         std::cerr << "helper load failed: " << GetLastError() << '\n';
