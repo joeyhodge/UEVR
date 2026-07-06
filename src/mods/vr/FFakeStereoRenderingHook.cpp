@@ -328,6 +328,47 @@ bool dune_awakening_is_current_game() {
     return result;
 }
 
+bool dimension_shift_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"DimensionShift-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool dimension_shift_is_auxiliary_view_family(sdk::FSceneViewFamily* view_family, const char* source) {
+    if (!dimension_shift_is_current_game() || view_family == nullptr || g_hook == nullptr) {
+        return false;
+    }
+
+    try {
+        auto* rtm = g_hook->get_render_target_manager();
+        auto* main_viewport = rtm != nullptr ? rtm->get_viewport() : nullptr;
+        auto* family_target = view_family->get_render_target();
+
+        if (main_viewport == nullptr || family_target == nullptr ||
+            reinterpret_cast<void*>(family_target) == reinterpret_cast<void*>(main_viewport))
+        {
+            return false;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DimensionShift] Isolating auxiliary SceneCapture view family at {} target={:x} main_viewport={:x}",
+            source != nullptr ? source : "<unknown>",
+            reinterpret_cast<uintptr_t>(family_target),
+            reinterpret_cast<uintptr_t>(main_viewport));
+        return true;
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DimensionShift] Failed to classify view family at {}; preserving normal UEVR behavior",
+            source != nullptr ? source : "<unknown>");
+        return false;
+    }
+}
+
 bool dune_should_preserve_native_viewport_target() {
     return dune_awakening_is_current_game() &&
         g_hook != nullptr &&
@@ -3205,7 +3246,7 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     uint32_t slot,
     const char* source_note,
     bool require_inherited_uobject_slot,
-    bool allow_localplayer_callable_thunk = false)
+    bool allow_callable_thunk = false)
 {
     if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
         IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
@@ -3217,11 +3258,17 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     const auto object_fn = object_vtable[slot];
     const auto localplayer_fn = localplayer_vtable[slot];
 
-    const auto localplayer_looks_valid = allow_localplayer_callable_thunk
+    // Shipping builds can fold UObject::PostInitProperties to a bare RET.
+    // Accept that only at a source-verified slot; the broad fallback scan
+    // below must continue requiring a non-trivial function body.
+    const auto object_looks_valid = allow_callable_thunk
+        ? looks_like_callable_virtual(object_fn)
+        : looks_like_post_init_properties_virtual(object_fn);
+    const auto localplayer_looks_valid = allow_callable_thunk
         ? looks_like_callable_virtual(localplayer_fn)
         : looks_like_post_init_properties_virtual(localplayer_fn);
 
-    if (!looks_like_post_init_properties_virtual(object_fn) || !localplayer_looks_valid)
+    if (!object_looks_valid || !localplayer_looks_valid)
     {
         SPDLOG_WARN("[PostInitProperties] {} slot {} did not look callable object_fn={:x} localplayer_fn={:x}",
             source_note,
@@ -8362,6 +8409,27 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
+    if (dimension_shift_is_current_game()) {
+        sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+
+        if (auto* view_family = init_options->get_view_family(); view_family != nullptr) {
+            if (sdk::FSceneViewFamily::update_offsets(
+                    view_family,
+                    g_hook->get_render_target_manager()->get_viewport()))
+            {
+                g_hook->note_scene_view_family_offsets_ready();
+            }
+
+            // DimensionShift continuously renders FogOfWar and RealtimeMesh
+            // SceneCaptures. Treating those offscreen families as the main
+            // viewport changes their pose/target lifetime and can crash the
+            // render thread in mesh-pass setup.
+            if (dimension_shift_is_auxiliary_view_family(view_family, "FSceneView constructor")) {
+                return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+            }
+        }
+    }
+
     std::scoped_lock ___{g_hook->m_sceneview_data.mtx};
 
     const auto retaddr = (uintptr_t)_ReturnAddress();
@@ -10129,7 +10197,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         g_hook->note_scene_view_family_offsets_ready();
     }
 
-    if (dune_is_auxiliary_view_family(&view_family, "BeginRenderViewFamily")) {
+    if (dune_is_auxiliary_view_family(&view_family, "BeginRenderViewFamily") ||
+        dimension_shift_is_auxiliary_view_family(&view_family, "BeginRenderViewFamily"))
+    {
         return;
     }
 
@@ -10579,7 +10649,9 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         return;
     }
 
-    if (dune_is_auxiliary_view_family(&view_family, "PreRenderViewFamily_RenderThread")) {
+    if (dune_is_auxiliary_view_family(&view_family, "PreRenderViewFamily_RenderThread") ||
+        dimension_shift_is_auxiliary_view_family(&view_family, "PreRenderViewFamily_RenderThread"))
+    {
         return;
     }
 
@@ -10984,6 +11056,124 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
                 return EXCEPTION_CONTINUE_SEARCH;
             }
 
+            // DimensionShift's RealtimeMesh resource setup can leave a packed
+            // descriptor value in a TRefCountPtr output slot. Its helper has
+            // already produced a valid replacement at this point, so follow
+            // the native null-old-value path instead of decrementing the
+            // non-pointer. Keep this before the generic memory-source filter:
+            // the faulting instruction writes through its first operand.
+            if (dimension_shift_is_current_game()) {
+                constexpr uintptr_t DIMENSION_SHIFT_RESOURCE_REPLACE_FAULT_RVA = 0x4275BB2;
+                constexpr uintptr_t DIMENSION_SHIFT_RESOURCE_REPLACE_FUNCTION_RVA = 0x4275A90;
+                constexpr uintptr_t DIMENSION_SHIFT_RESOURCE_REPLACE_CONTINUE_RVA = 0x4275BC3;
+                constexpr uintptr_t DIMENSION_SHIFT_RESOURCE_REPLACE_CALLER_RVA = 0x429E4CB;
+                constexpr uintptr_t DIMENSION_SHIFT_RESOURCE_REPLACE_RETURN_RVA = 0x429E4DE;
+                constexpr size_t DIMENSION_SHIFT_IMAGE_SIZE = 0x9063000;
+                constexpr std::array<uint8_t, 25> EXPECTED_REPLACE_FUNCTION{
+                    0x48, 0x89, 0x5C, 0x24, 0x08,
+                    0x48, 0x89, 0x6C, 0x24, 0x10,
+                    0x48, 0x89, 0x74, 0x24, 0x18,
+                    0x57, 0x41, 0x56, 0x41, 0x57,
+                    0x48, 0x83, 0xEC, 0x20, 0x45
+                };
+                constexpr std::array<uint8_t, 17> EXPECTED_FAULT_AND_CONTINUE{
+                    0x4D, 0x8B, 0x06,
+                    0x4D, 0x85, 0xC0,
+                    0x74, 0x11,
+                    0x41, 0x83, 0x00, 0xFF,
+                    0x75, 0x0B,
+                    0x49, 0x8B, 0x40
+                };
+                constexpr std::array<uint8_t, 7> EXPECTED_CONTINUE{
+                    0x49, 0x89, 0x16,
+                    0xB0, 0x01,
+                    0xFF, 0x02
+                };
+                constexpr std::array<uint8_t, 19> EXPECTED_CALLER{
+                    0x46, 0x8D, 0x04, 0xAD, 0x00, 0x00, 0x00, 0x00,
+                    0x48, 0x8B, 0xD3,
+                    0x49, 0x8B, 0xC9,
+                    0xE8, 0xB2, 0x75, 0xFD, 0xFF
+                };
+
+                const auto executable = utility::get_executable();
+                const auto executable_base = reinterpret_cast<uintptr_t>(executable);
+                const auto executable_size = utility::get_module_size(executable).value_or(0);
+                const auto function = executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_FUNCTION_RVA;
+                const auto fault_prefix = executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_FAULT_RVA - 8;
+                const auto continuation = executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_CONTINUE_RVA;
+                const auto caller = executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_CALLER_RVA;
+                const auto expected_return = executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_RETURN_RVA;
+                const auto return_slot = exception->ContextRecord->Rsp + 0x38;
+
+                uintptr_t actual_return{};
+                uintptr_t old_resource{};
+                const bool return_slot_readable =
+                    !IsBadReadPtr(reinterpret_cast<void*>(return_slot), sizeof(actual_return));
+                const bool output_slot_readable =
+                    exception->ContextRecord->R14 != 0 &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(exception->ContextRecord->R14), sizeof(old_resource));
+                if (return_slot_readable) {
+                    std::memcpy(&actual_return, reinterpret_cast<void*>(return_slot), sizeof(actual_return));
+                }
+                if (output_slot_readable) {
+                    std::memcpy(
+                        &old_resource,
+                        reinterpret_cast<void*>(exception->ContextRecord->R14),
+                        sizeof(old_resource));
+                }
+
+                const auto new_resource = static_cast<uintptr_t>(exception->ContextRecord->Rdx);
+                const bool old_resource_is_packed_nonpointer =
+                    old_resource != 0 &&
+                    old_resource < 0x0000010000000000ULL;
+                const bool new_resource_is_valid =
+                    new_resource >= 0x0000010000000000ULL &&
+                    (new_resource & (alignof(uint32_t) - 1)) == 0 &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(new_resource), sizeof(uint32_t));
+                const bool image_matches =
+                    executable_base != 0 &&
+                    executable_size == DIMENSION_SHIFT_IMAGE_SIZE &&
+                    exception_address == executable_base + DIMENSION_SHIFT_RESOURCE_REPLACE_FAULT_RVA;
+                const bool signatures_match =
+                    image_matches &&
+                    return_slot_readable &&
+                    output_slot_readable &&
+                    actual_return == expected_return &&
+                    old_resource == exception->ContextRecord->R8 &&
+                    old_resource_is_packed_nonpointer &&
+                    new_resource_is_valid &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(function), EXPECTED_REPLACE_FUNCTION.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(fault_prefix), EXPECTED_FAULT_AND_CONTINUE.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(continuation), EXPECTED_CONTINUE.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(caller), EXPECTED_CALLER.size()) &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(function),
+                        EXPECTED_REPLACE_FUNCTION.data(),
+                        EXPECTED_REPLACE_FUNCTION.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(fault_prefix),
+                        EXPECTED_FAULT_AND_CONTINUE.data(),
+                        EXPECTED_FAULT_AND_CONTINUE.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(continuation),
+                        EXPECTED_CONTINUE.data(),
+                        EXPECTED_CONTINUE.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(caller),
+                        EXPECTED_CALLER.data(),
+                        EXPECTED_CALLER.size()) == 0;
+
+                if (signatures_match) {
+                    SPDLOG_WARN(
+                        "[DimensionShift] RealtimeMesh resource replacement found packed stale output 0x{:x}; "
+                        "continuing through the helper's validated null-old-resource path",
+                        old_resource);
+                    exception->ContextRecord->Rip = continuation;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+            }
+
             const auto& op2 = decoded->Operands[1];
 
             if (decoded->OperandsCount != 2 || 
@@ -10998,6 +11188,142 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             const auto fault_target = exception->ExceptionRecord->NumberParameters > 1
                 ? static_cast<uintptr_t>(exception->ExceptionRecord->ExceptionInformation[1])
                 : std::numeric_limits<uintptr_t>::max();
+
+            if (dimension_shift_is_current_game() &&
+                fault_target == 0 &&
+                exception->ContextRecord->Rbx == 0)
+            {
+                constexpr uintptr_t DIMENSION_SHIFT_MESH_FAULT_RVA = 0x42B3354;
+                constexpr uintptr_t DIMENSION_SHIFT_MESH_FAULT_PREFIX_RVA = 0x42B3348;
+                constexpr uintptr_t DIMENSION_SHIFT_MESH_CLEANUP_RVA = 0x42B3FDD;
+                constexpr size_t DIMENSION_SHIFT_IMAGE_SIZE = 0x9063000;
+                constexpr std::array<uint8_t, 19> EXPECTED_FAULT_PREFIX{
+                    0x40, 0x84, 0xFF, 0x74, 0x07,
+                    0x49, 0x8D, 0x9F, 0x90, 0x03, 0x00, 0x00,
+                    0x48, 0x8B, 0x0B, 0x48, 0x83, 0xC1, 0x08
+                };
+                constexpr std::array<uint8_t, 24> EXPECTED_CLEANUP{
+                    0x4C, 0x8B, 0xA4, 0x24, 0x38, 0x03, 0x00, 0x00,
+                    0x48, 0x8B, 0xBC, 0x24, 0x88, 0x03, 0x00, 0x00,
+                    0x4C, 0x8B, 0xB4, 0x24, 0x30, 0x03, 0x00, 0x00
+                };
+
+                const auto executable = utility::get_executable();
+                const auto executable_base = reinterpret_cast<uintptr_t>(executable);
+                const auto executable_size = utility::get_module_size(executable).value_or(0);
+                const auto fault_prefix = executable_base + DIMENSION_SHIFT_MESH_FAULT_PREFIX_RVA;
+                const auto cleanup = executable_base + DIMENSION_SHIFT_MESH_CLEANUP_RVA;
+
+                const bool image_matches =
+                    executable_base != 0 &&
+                    executable_size == DIMENSION_SHIFT_IMAGE_SIZE &&
+                    exception_address == executable_base + DIMENSION_SHIFT_MESH_FAULT_RVA;
+                const bool signatures_match =
+                    image_matches &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(fault_prefix), EXPECTED_FAULT_PREFIX.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(cleanup), EXPECTED_CLEANUP.size()) &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(fault_prefix),
+                        EXPECTED_FAULT_PREFIX.data(),
+                        EXPECTED_FAULT_PREFIX.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(cleanup),
+                        EXPECTED_CLEANUP.data(),
+                        EXPECTED_CLEANUP.size()) == 0;
+
+                if (signatures_match) {
+                    SPDLOG_WARN(
+                        "[DimensionShift] Rejecting malformed FogOfWar/RealtimeMesh dynamic mesh batch with no material or fallback; "
+                        "continuing through the engine function's validated cleanup exit");
+                    exception->ContextRecord->Rip = cleanup;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR_ONCE(
+                    "[DimensionShift] Null dynamic-mesh material matched the known fault, but image/signature validation failed "
+                    "(image_size=0x{:x}); refusing recovery",
+                    executable_size);
+            }
+
+            if (dimension_shift_is_current_game() &&
+                fault_target == 0 &&
+                exception->ContextRecord->Rcx == 0)
+            {
+                constexpr uintptr_t DIMENSION_SHIFT_LOOKUP_FAULT_RVA = 0x61F08D2;
+                constexpr uintptr_t DIMENSION_SHIFT_LOOKUP_FUNCTION_RVA = 0x61F08C0;
+                constexpr uintptr_t DIMENSION_SHIFT_LOOKUP_NULL_EXIT_RVA = 0x61F08F4;
+                constexpr uintptr_t DIMENSION_SHIFT_LOOKUP_CALLER_RETURN_RVA = 0x61F6A8A;
+                constexpr uintptr_t DIMENSION_SHIFT_LOOKUP_CALLER_RVA = 0x61F6A82;
+                constexpr size_t DIMENSION_SHIFT_IMAGE_SIZE = 0x9063000;
+                constexpr std::array<uint8_t, 21> EXPECTED_LOOKUP_FUNCTION{
+                    0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B,
+                    0xD9, 0x48, 0x8D, 0x54, 0x24, 0x30, 0x48, 0x8B,
+                    0x49, 0x08, 0x48, 0x8B, 0x01
+                };
+                constexpr std::array<uint8_t, 8> EXPECTED_NULL_EXIT{
+                    0x33, 0xC0, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3
+                };
+                constexpr std::array<uint8_t, 17> EXPECTED_CALLER{
+                    0x49, 0x8B, 0x0E,
+                    0xE8, 0x36, 0x9E, 0xFF, 0xFF,
+                    0x48, 0x85, 0xC0,
+                    0x0F, 0x84, 0x01, 0x01, 0x00, 0x00
+                };
+
+                const auto executable = utility::get_executable();
+                const auto executable_base = reinterpret_cast<uintptr_t>(executable);
+                const auto executable_size = utility::get_module_size(executable).value_or(0);
+                const auto lookup_function = executable_base + DIMENSION_SHIFT_LOOKUP_FUNCTION_RVA;
+                const auto null_exit = executable_base + DIMENSION_SHIFT_LOOKUP_NULL_EXIT_RVA;
+                const auto caller = executable_base + DIMENSION_SHIFT_LOOKUP_CALLER_RVA;
+                const auto expected_return = executable_base + DIMENSION_SHIFT_LOOKUP_CALLER_RETURN_RVA;
+                const auto return_slot = exception->ContextRecord->Rsp + 0x28;
+
+                uintptr_t actual_return{};
+                const bool return_slot_readable =
+                    !IsBadReadPtr(reinterpret_cast<void*>(return_slot), sizeof(actual_return));
+                if (return_slot_readable) {
+                    std::memcpy(&actual_return, reinterpret_cast<void*>(return_slot), sizeof(actual_return));
+                }
+
+                const bool image_matches =
+                    executable_base != 0 &&
+                    executable_size == DIMENSION_SHIFT_IMAGE_SIZE &&
+                    exception_address == executable_base + DIMENSION_SHIFT_LOOKUP_FAULT_RVA;
+                const bool signatures_match =
+                    image_matches &&
+                    return_slot_readable &&
+                    actual_return == expected_return &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(lookup_function), EXPECTED_LOOKUP_FUNCTION.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(null_exit), EXPECTED_NULL_EXIT.size()) &&
+                    !IsBadReadPtr(reinterpret_cast<void*>(caller), EXPECTED_CALLER.size()) &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(lookup_function),
+                        EXPECTED_LOOKUP_FUNCTION.data(),
+                        EXPECTED_LOOKUP_FUNCTION.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(null_exit),
+                        EXPECTED_NULL_EXIT.data(),
+                        EXPECTED_NULL_EXIT.size()) == 0 &&
+                    std::memcmp(
+                        reinterpret_cast<void*>(caller),
+                        EXPECTED_CALLER.data(),
+                        EXPECTED_CALLER.size()) == 0;
+
+                if (signatures_match) {
+                    SPDLOG_WARN(
+                        "[DimensionShift] RealtimeMesh lookup observed an expired inner object; "
+                        "returning through the engine helper's validated null-result exit");
+                    exception->ContextRecord->Rip = null_exit;
+                    return EXCEPTION_CONTINUE_EXECUTION;
+                }
+
+                SPDLOG_ERROR_ONCE(
+                    "[DimensionShift] Expired RealtimeMesh lookup matched the known fault, but image/caller/signature validation failed "
+                    "(image_size=0x{:x}, return=0x{:x}); refusing recovery",
+                    executable_size,
+                    actual_return);
+            }
 
             const auto is_rax_base = [](auto reg) {
                 return reg == NDR_RAX || reg == NDR_EAX;
@@ -13517,6 +13843,18 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
         static std::vector<Patch::Ptr> assert_patches{};
         const void (*post_init_properties)(uintptr_t) = (*(decltype(post_init_properties)**)localplayer)[*idx];
+
+        const auto post_init_instruction = utility::decode_one((uint8_t*)post_init_properties);
+        if (post_init_instruction &&
+            std::string_view{post_init_instruction->Mnemonic}.starts_with("RET"))
+        {
+            SPDLOG_INFO(
+                "[PostInitProperties] Source-verified slot {} is a no-op shipping thunk; no bootstrap call is required",
+                *idx);
+            g_hook->m_sceneview_data.known_scene_states.clear();
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
 
         // Scan through all of the branches of PostInitProperties to find any assertions
         // The assertion we're looking for is easily identified by a string that it loads in RCX, named "!Reference"
