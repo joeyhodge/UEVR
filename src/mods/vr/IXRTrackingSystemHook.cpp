@@ -19,8 +19,10 @@
 #include <sdk/FProperty.hpp>
 #include <sdk/ScriptVector.hpp>
 #include <sdk/UGameplayStatics.hpp>
+#include <sdk/UEngine.hpp>
 #include <sdk/APlayerController.hpp>
 #include <sdk/APlayerCameraManager.hpp>
+#include <sdk/APawn.hpp>
 
 #include "../VR.hpp"
 
@@ -64,8 +66,14 @@ bool is_daysgone_controller_aim_requested() {
     return is_daysgone_executable() && VR::get()->is_controller_aim_enabled();
 }
 
+bool is_payday3_aim_guard_enabled();
+
 bool is_direct_aim_compatibility_requested() {
     if (is_deadzone_ue56_executable()) {
+        return true;
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
         return true;
     }
 
@@ -98,6 +106,13 @@ bool is_direct_aim_compatibility_active() {
         return false;
     }
 
+    if (is_payday3_aim_guard_enabled()) {
+        // PAYDAY3 crashes inside its next UGameViewportClient::Draw when UEVR
+        // mutates the camera-manager ProcessViewRotation output directly.
+        // Route HMD/controller aim through the later reflected controller path.
+        return vr->is_headlocked_aim_enabled() || (vr->is_controller_aim_enabled() && vr->is_using_controllers());
+    }
+
     if (is_daysgone_controller_aim_requested()) {
         return vr->is_using_controllers();
     }
@@ -107,6 +122,93 @@ bool is_direct_aim_compatibility_active() {
     }
 
     return vr->is_controller_aim_enabled() && vr->is_using_controllers();
+}
+
+bool is_payday3_aim_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"PAYDAY3-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, sdk::UWorld* world) {
+    if (engine != nullptr) {
+        if (const auto local_player = reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0)); local_player != nullptr) {
+            if (const auto data = local_player->get_property_data(L"PlayerController"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
+                if (const auto controller = *(sdk::APlayerController**)data; controller != nullptr) {
+                    return controller;
+                }
+            }
+        }
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PAYDAY3][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
+        return nullptr;
+    }
+
+    if (world == nullptr || sdk::UGameplayStatics::static_class() == nullptr) {
+        return nullptr;
+    }
+
+    const auto gameplay = sdk::UGameplayStatics::get();
+    return gameplay != nullptr ? gameplay->get_player_controller(world, 0) : nullptr;
+}
+
+sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller) {
+    if (controller == nullptr) {
+        return nullptr;
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
+        const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
+
+        if (const auto data = controller_obj->get_property_data(L"AcknowledgedPawn"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
+            return *(sdk::APawn**)data;
+        }
+
+        return nullptr;
+    }
+
+    return controller->get_acknowledged_pawn();
+}
+
+bool read_payday3_control_rotation_property(sdk::APlayerController* controller, glm::vec3& out) {
+    if (!is_payday3_aim_guard_enabled() || controller == nullptr) {
+        return false;
+    }
+
+    const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
+    const auto data = controller_obj->get_property_data(L"ControlRotation");
+
+    if (data == nullptr || IsBadReadPtr(data, sizeof(glm::vec3))) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[PAYDAY3][Aim] ControlRotation property is unavailable for direct read");
+        return false;
+    }
+
+    out = *(glm::vec3*)data;
+    return true;
+}
+
+bool write_payday3_control_rotation_property(sdk::APlayerController* controller, const glm::vec3& value) {
+    if (!is_payday3_aim_guard_enabled() || controller == nullptr) {
+        return false;
+    }
+
+    const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
+    const auto data = controller_obj->get_property_data(L"ControlRotation");
+
+    if (data == nullptr || IsBadWritePtr(data, sizeof(glm::vec3))) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[PAYDAY3][Aim] ControlRotation property is unavailable for direct write");
+        return false;
+    }
+
+    *(glm::vec3*)data = value;
+    return true;
 }
 
 }
@@ -1111,20 +1213,28 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
-    controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+    controller = resolve_player_controller_for_aim(engine, world);
 
     if (controller == nullptr) {
         SPDLOG_WARN_ONCE("[AimCompat] Skipping direct aim until a PlayerController is available");
         return;
     }
 
-    const auto pawn = controller->get_acknowledged_pawn();
+    const auto pawn = resolve_acknowledged_pawn_for_aim(controller);
 
     if (pawn == nullptr) {
         return;
     }
 
-    auto control_rotation = controller->get_control_rotation();
+    glm::vec3 control_rotation{};
+
+    if (is_payday3_aim_guard_enabled()) {
+        if (!read_payday3_control_rotation_property(controller, control_rotation)) {
+            return;
+        }
+    } else {
+        control_rotation = controller->get_control_rotation();
+    }
     
     Rotator<double> ue5_rotation {
         (double)control_rotation.x,
@@ -1153,6 +1263,11 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
             control_rotation.y,
             control_rotation.z
         };
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
+        write_payday3_control_rotation_property(controller, final_rotation);
+        return;
     }
 
     controller->set_control_rotation(final_rotation);
@@ -2236,7 +2351,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
 
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
-    if (!is_deadzone_ue56_executable() && !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
+    if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();
 

@@ -22,6 +22,7 @@
 #include <sdk/FStructProperty.hpp>
 #include <sdk/USceneComponent.hpp>
 #include <sdk/UGameplayStatics.hpp>
+#include <sdk/UEngine.hpp>
 #include <sdk/APlayerController.hpp>
 #include <sdk/APawn.hpp>
 #include <sdk/APlayerCameraManager.hpp>
@@ -421,6 +422,110 @@ bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object, bool
     }
 
     return is_probably_uobject_layout(cls);
+}
+
+bool is_payday3_uobject_menu_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"PAYDAY3-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool is_safe_live_uobject_for_ui(sdk::UObjectBase* object) {
+    if (object == nullptr) {
+        return false;
+    }
+
+    return is_safe_uobject_candidate(*UObjectHook::get(), object, true);
+}
+
+template <typename T>
+T* read_live_object_property(sdk::UObject* object, std::wstring_view property_name, std::string_view context) try {
+    if (!is_safe_live_uobject_for_ui(object)) {
+        return nullptr;
+    }
+
+    const auto data = object->get_property_data(property_name);
+
+    if (data == nullptr || IsBadReadPtr(data, sizeof(void*))) {
+        return nullptr;
+    }
+
+    auto result = *(T**)data;
+
+    if (result != nullptr && !is_safe_live_uobject_for_ui((sdk::UObjectBase*)result)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PAYDAY3][UObjectHook] Ignoring unsafe {} pointer from {}: {:x}",
+            utility::narrow(std::wstring(property_name)),
+            context,
+            (uintptr_t)result);
+        return nullptr;
+    }
+
+    return result;
+} catch (...) {
+    SPDLOG_WARNING_EVERY_N_SEC(
+        2,
+        "[UObjectHook] Failed to read reflected pointer property {} from {}",
+        utility::narrow(std::wstring(property_name)),
+        context);
+    return nullptr;
+}
+
+sdk::APlayerController* get_local_player_controller_from_reflection(sdk::UEngine* engine) {
+    if (engine == nullptr) {
+        return nullptr;
+    }
+
+    const auto local_player = reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0));
+
+    if (local_player == nullptr) {
+        return nullptr;
+    }
+
+    return read_live_object_property<sdk::APlayerController>(
+        local_player,
+        L"PlayerController",
+        "LocalPlayer");
+}
+
+sdk::APlayerController* resolve_player_controller_for_ui(sdk::UEngine* engine, sdk::UWorld* world) {
+    if (const auto controller = get_local_player_controller_from_reflection(engine); controller != nullptr) {
+        return controller;
+    }
+
+    if (is_payday3_uobject_menu_guard_enabled()) {
+        // PAYDAY can fail-fast when the UObject browser calls GameplayStatics
+        // every frame. Prefer fail-closed browsing over ProcessEvent side effects.
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PAYDAY3][UObjectHook] PlayerController was not available through LocalPlayer reflection; skipping GameplayStatics fallback");
+        return nullptr;
+    }
+
+    if (world == nullptr || sdk::UGameplayStatics::static_class() == nullptr) {
+        return nullptr;
+    }
+
+    const auto gameplay = sdk::UGameplayStatics::get();
+    return gameplay != nullptr ? gameplay->get_player_controller(world, 0) : nullptr;
+}
+
+sdk::APawn* resolve_acknowledged_pawn_for_ui(sdk::APlayerController* controller) {
+    return read_live_object_property<sdk::APawn>(
+        reinterpret_cast<sdk::UObject*>(controller),
+        L"AcknowledgedPawn",
+        "PlayerController");
+}
+
+sdk::APlayerCameraManager* resolve_camera_manager_for_ui(sdk::APlayerController* controller) {
+    return read_live_object_property<sdk::APlayerCameraManager>(
+        reinterpret_cast<sdk::UObject*>(controller),
+        L"PlayerCameraManager",
+        "PlayerController");
 }
 }
 
@@ -1309,7 +1414,7 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
 
     if (engine != nullptr) {
         if (const auto world = engine->get_world(); world != nullptr) {
-            if (const auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0); player_controller != nullptr) {
+            if (const auto player_controller = resolve_player_controller_for_ui(engine, world); player_controller != nullptr) {
                 if (stalker2_on_demand_tracking && !exists((sdk::UObjectBase*)player_controller)) {
                     try_track_object(
                         (sdk::UObjectBase*)player_controller,
@@ -1318,7 +1423,7 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
                         false);
                 }
 
-                if (const auto pawn = player_controller->get_acknowledged_pawn(); pawn != nullptr && !exists(pawn)) {
+                if (const auto pawn = resolve_acknowledged_pawn_for_ui(player_controller); pawn != nullptr && !exists(pawn)) {
                     if (stalker2_on_demand_tracking) {
                         if (try_track_object(
                                 (sdk::UObjectBase*)pawn,
@@ -1346,7 +1451,7 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
                 }
 
                 if (stalker2_on_demand_tracking) {
-                    if (const auto camera_manager = player_controller->get_player_camera_manager();
+                    if (const auto camera_manager = resolve_camera_manager_for_ui(player_controller);
                         camera_manager != nullptr && !exists((sdk::UObjectBase*)camera_manager)) {
                         try_track_object(
                             (sdk::UObjectBase*)camera_manager,
@@ -2895,13 +3000,13 @@ sdk::UObject* UObjectHook::StatePath::resolve_base_object() const {
             return nullptr;
         }
 
-        auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+        auto player_controller = resolve_player_controller_for_ui(engine, world);
 
         if (player_controller == nullptr) {
             return nullptr;
         }
         
-        return player_controller->get_acknowledged_pawn();
+        return resolve_acknowledged_pawn_for_ui(player_controller);
         break;
     }
 
@@ -2912,7 +3017,7 @@ sdk::UObject* UObjectHook::StatePath::resolve_base_object() const {
             return nullptr;
         }
 
-        return sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+        return resolve_player_controller_for_ui(engine, world);
         break;
     }
 
@@ -2923,13 +3028,13 @@ sdk::UObject* UObjectHook::StatePath::resolve_base_object() const {
             return nullptr;
         }
 
-        auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+        auto player_controller = resolve_player_controller_for_ui(engine, world);
 
         if (player_controller == nullptr) {
             return nullptr;
         }
         
-        return player_controller->get_player_camera_manager();
+        return resolve_camera_manager_for_ui(player_controller);
         break;
     }
 
@@ -3725,7 +3830,7 @@ void UObjectHook::draw_main() {
         if (world != nullptr) {
             if (ImGui::TreeNode("PlayerController")) {
                 auto scope = m_path.enter_clean("Player Controller");
-                auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+                auto player_controller = resolve_player_controller_for_ui(engine, world);
 
                 if (player_controller != nullptr) {
                     ui_handle_object(player_controller);
@@ -3738,10 +3843,10 @@ void UObjectHook::draw_main() {
 
             if (ImGui::TreeNode("Acknowledged Pawn")) {
                 auto scope = m_path.enter_clean("Acknowledged Pawn");
-                auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+                auto player_controller = resolve_player_controller_for_ui(engine, world);
 
                 if (player_controller != nullptr) {
-                    auto pawn = player_controller->get_acknowledged_pawn();
+                    auto pawn = resolve_acknowledged_pawn_for_ui(player_controller);
 
                     if (pawn != nullptr) {
                         try_track_object((sdk::UObjectBase*)pawn, "Common Objects/Acknowledged Pawn", true);
@@ -3758,10 +3863,10 @@ void UObjectHook::draw_main() {
 
             if (ImGui::TreeNode("Camera Manager")) {
                 auto scope = m_path.enter_clean("Camera Manager");
-                auto player_controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0);
+                auto player_controller = resolve_player_controller_for_ui(engine, world);
 
                 if (player_controller != nullptr) {
-                    auto camera_manager = player_controller->get_player_camera_manager();
+                    auto camera_manager = resolve_camera_manager_for_ui(player_controller);
 
                     if (camera_manager != nullptr) {
                         ui_handle_object((sdk::UObject*)camera_manager);
