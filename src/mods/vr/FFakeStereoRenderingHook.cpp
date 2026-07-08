@@ -131,6 +131,59 @@ bool is_deadzone_ue56_executable() {
     return result;
 }
 
+bool is_payday3_aim_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"PAYDAY3-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, sdk::UWorld* world) {
+    if (engine != nullptr) {
+        if (const auto local_player = reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0)); local_player != nullptr) {
+            if (const auto data = local_player->get_property_data(L"PlayerController"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
+                if (const auto controller = *(sdk::APlayerController**)data; controller != nullptr) {
+                    return controller;
+                }
+            }
+        }
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PAYDAY3][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
+        return nullptr;
+    }
+
+    if (world == nullptr || sdk::UGameplayStatics::static_class() == nullptr) {
+        return nullptr;
+    }
+
+    const auto gameplay = sdk::UGameplayStatics::get();
+    return gameplay != nullptr ? gameplay->get_player_controller(world, 0) : nullptr;
+}
+
+sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller) {
+    if (controller == nullptr) {
+        return nullptr;
+    }
+
+    if (is_payday3_aim_guard_enabled()) {
+        const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
+
+        if (const auto data = controller_obj->get_property_data(L"AcknowledgedPawn"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
+            return *(sdk::APawn**)data;
+        }
+
+        return nullptr;
+    }
+
+    return controller->get_acknowledged_pawn();
+}
+
 struct AvowedNativeFixGateState {
     uintptr_t scene{};
     uintptr_t render_target{};
@@ -3174,6 +3227,25 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
 
         SPDLOG_WARN("[PostInitProperties] ProSpi UE4.27 slot 8 did not validate; skipping Ghosting Fix bootstrap for safety");
         return std::nullopt;
+    }
+
+    // UE4.27.2 source and shipping PDBs place UObject::PostInitProperties at
+    // slot 8. Validate that slot directly instead of trying the UE5 slots first.
+    if (is_ue_4_27_runtime()) {
+        constexpr uint32_t UE427_POST_INIT_PROPERTIES_SLOT = 8;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                UE427_POST_INIT_PROPERTIES_SLOT,
+                "UE4.27 UObject::PostInitProperties",
+                false,
+                true))
+        {
+            return UE427_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN("[PostInitProperties] UE4.27 slot 8 did not validate; falling back to guarded nearby scan");
     }
 
     // UE5.1 source plus Stalker2/SOE PDBs place UObject::PostInitProperties at
@@ -12220,15 +12292,17 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // Roomscale movement
         // only do it on the right eye pass
         // if we did it on the left, there would be eye desyncs when the right eye is rendered
-        if (true_index == 1 && (vr->is_roomscale_enabled() || vr->is_aim_pawn_control_rotation_enabled())) {
-            const auto world = sdk::UEngine::get()->get_world();
+        const auto payday3_aim_guard = is_payday3_aim_guard_enabled();
+        if (true_index == 1 && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
+            const auto engine = sdk::UEngine::get();
+            const auto world = engine != nullptr ? engine->get_world() : nullptr;
 
-            if (const auto controller = sdk::UGameplayStatics::get()->get_player_controller(world, 0); controller != nullptr) {
-                const auto pawn = controller->get_acknowledged_pawn();
+            if (const auto controller = resolve_player_controller_for_aim(engine, world); controller != nullptr) {
+                const auto pawn = resolve_acknowledged_pawn_for_aim(controller);
 
                 static bool was_pawn_rotation_enabled = false;
 
-                if (pawn != nullptr && vr->is_aim_pawn_control_rotation_enabled()) {
+                if (pawn != nullptr && !payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()) {
                     auto camera_component = (sdk::UObject*)pawn->get_camera_component();
 
                     if (camera_component != nullptr && camera_component->get_class() != nullptr) {
@@ -12293,7 +12367,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         const auto direct_aim_compatibility_fallback =
             vr->is_hmd_active() &&
             !controller_camera_guard_active &&
-            (is_deadzone_ue56_executable() || vr->is_direct_aim_compatibility_enabled()) &&
+            (is_deadzone_ue56_executable() || is_payday3_aim_guard_enabled() || vr->is_direct_aim_compatibility_enabled()) &&
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
