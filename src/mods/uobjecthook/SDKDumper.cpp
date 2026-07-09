@@ -1,8 +1,18 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+
+#include <windows.h>
+
+#include <unordered_set>
 #include <vector>
 #include <format>
 
+#include <spdlog/spdlog.h>
+
 #include <utility/String.hpp>
 #include <utility/Module.hpp>
+#include <utility/Logging.hpp>
 
 #include <sdkgenny/sdk.hpp>
 #include <sdkgenny/class.hpp>
@@ -12,6 +22,8 @@
 #include <sdkgenny/variable.hpp>
 
 #include <sdk/UObjectArray.hpp>
+#include <sdk/UObject.hpp>
+#include <sdk/UObjectBase.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/UFunction.hpp>
 #include <sdk/UEnum.hpp>
@@ -25,6 +37,95 @@
 #include "SDKDumper.hpp"
 
 namespace detail {
+bool is_readable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)mbi.BaseAddress;
+    if (address + size > base + mbi.RegionSize) {
+        return false;
+    }
+
+    if (mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_READONLY ||
+           protect == PAGE_READWRITE ||
+           protect == PAGE_WRITECOPY ||
+           protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE ||
+           protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool safe_read_uintptr(uintptr_t address, uintptr_t& value) {
+    if (!is_readable_process_range(address, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    __try {
+        value = *(uintptr_t*)address;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+
+    return true;
+}
+
+bool is_probably_uobject_pointer(uintptr_t address) {
+    uintptr_t vtable{};
+    if (!safe_read_uintptr(address, vtable) || !is_readable_process_range(vtable, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    uintptr_t first_vfunc{};
+    if (!safe_read_uintptr(vtable, first_vfunc) || !utility::get_module_within(first_vfunc).has_value()) {
+        return false;
+    }
+
+    uintptr_t class_ptr{};
+    if (!safe_read_uintptr(address + sdk::UObjectBase::get_class_private_offset(), class_ptr) || class_ptr == 0) {
+        return false;
+    }
+
+    uintptr_t class_vtable{};
+    if (!safe_read_uintptr(class_ptr, class_vtable) || !is_readable_process_range(class_vtable, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    uintptr_t class_first_vfunc{};
+    return safe_read_uintptr(class_vtable, class_first_vfunc) && utility::get_module_within(class_first_vfunc).has_value();
+}
+
+bool is_probably_ustruct_pointer(sdk::UStruct* ustruct) {
+    return ustruct != nullptr && is_probably_uobject_pointer((uintptr_t)ustruct);
+}
+
+sdk::UObject* safe_get_outer(sdk::UObjectBase* object) {
+    if (object == nullptr || !is_probably_uobject_pointer((uintptr_t)object)) {
+        return nullptr;
+    }
+
+    uintptr_t outer{};
+    if (!safe_read_uintptr((uintptr_t)object + sdk::UObjectBase::get_outer_private_offset(), outer) || outer == 0) {
+        return nullptr;
+    }
+
+    if (!is_probably_uobject_pointer(outer)) {
+        return nullptr;
+    }
+
+    return (sdk::UObject*)outer;
+}
+
 std::vector<sdk::UStruct*> get_all_structs() {
     std::vector<sdk::UStruct*> classes{};
 
@@ -57,7 +158,8 @@ std::vector<sdk::UStruct*> get_all_structs() {
             continue;
         }
 
-        if (object_class->is_a(struct_c) && !object_class->is_a(function_c) && !object_class->is_a(uenum_c)) {
+        if (object_class->is_a(struct_c) && !object_class->is_a(function_c) && !object_class->is_a(uenum_c) &&
+            is_probably_ustruct_pointer(reinterpret_cast<sdk::UStruct*>(object))) {
             classes.push_back(reinterpret_cast<sdk::UStruct*>(object));
         }
     }
@@ -439,6 +541,14 @@ void SDKDumper::write_sdk() {
 }
 
 sdkgenny::Struct* SDKDumper::get_or_generate_struct(sdk::UStruct* ustruct) {
+    if (!detail::is_probably_ustruct_pointer(ustruct)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SDKDumper] Skipping unsafe UStruct pointer {:x}",
+            (uintptr_t)ustruct);
+        return nullptr;
+    }
+
     auto g = m_sdk->global_ns();
     auto ns = get_or_generate_namespace_chain(ustruct);
 
@@ -485,10 +595,29 @@ sdkgenny::Struct* SDKDumper::get_or_generate_struct(sdk::UStruct* ustruct) {
 sdkgenny::Namespace* SDKDumper::get_or_generate_namespace_chain(sdk::UStruct* ustruct) {
     auto g = m_sdk->global_ns();
 
+    if (!detail::is_probably_ustruct_pointer(ustruct)) {
+        return g;
+    }
+
     std::vector<sdk::UObject*> outers{};
 
-    for (auto outer = ustruct->get_outer(); outer != nullptr; outer = outer->get_outer()) {
+    std::unordered_set<uintptr_t> seen{};
+    auto outer = detail::safe_get_outer(ustruct);
+
+    for (auto depth = 0u; outer != nullptr && depth < 64; ++depth) {
+        const auto outer_address = (uintptr_t)outer;
+
+        if (outer_address == (uintptr_t)ustruct || seen.contains(outer_address)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SDKDumper] Stopped cyclic outer chain while dumping UStruct {:x}",
+                (uintptr_t)ustruct);
+            break;
+        }
+
+        seen.insert(outer_address);
         outers.push_back(outer);
+        outer = detail::safe_get_outer(outer);
     }
 
     sdkgenny::Namespace* current = g;
@@ -497,6 +626,11 @@ sdkgenny::Namespace* SDKDumper::get_or_generate_namespace_chain(sdk::UStruct* us
 
     for (auto it = outers.rbegin(); it != outers.rend(); ++it) {
         const auto outer = *it;
+
+        if (!detail::is_probably_uobject_pointer((uintptr_t)outer)) {
+            continue;
+        }
+
         const auto name = utility::narrow(outer->get_fname().to_string());
 
         if (outer->is_a(ustruct_c)) {
@@ -516,13 +650,24 @@ sdkgenny::Namespace* SDKDumper::get_or_generate_namespace_chain(sdk::UStruct* us
 void SDKDumper::generate_inheritance(sdkgenny::Struct* s, sdk::UStruct* ustruct) {
     auto super = ustruct->get_super_struct();
 
-    if (super != nullptr && super != ustruct) {
-        s->parent(get_or_generate_struct(super)); // get_or_generate_struct will generate the inheritance chain for us.
+    if (super != nullptr && super != ustruct && detail::is_probably_ustruct_pointer(super)) {
+        if (auto parent = get_or_generate_struct(super); parent != nullptr) {
+            s->parent(parent); // get_or_generate_struct will generate the inheritance chain for us.
+        }
     }
 }
 
 void SDKDumper::generate_properties(sdkgenny::Struct* s, sdk::UStruct* ustruct) {
     for (auto prop = ustruct->get_child_properties(); prop != nullptr; prop = prop->get_next()) {
+        if (!detail::is_probably_uobject_pointer((uintptr_t)prop)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SDKDumper] Stopped property walk on unsafe property pointer {:x} for UStruct {:x}",
+                (uintptr_t)prop,
+                (uintptr_t)ustruct);
+            break;
+        }
+
         auto c = prop->get_class();
 
         if (c == nullptr) {
@@ -599,9 +744,17 @@ sdkgenny::Variable* SDKDumper::generate_property(sdkgenny::Struct* s, sdk::FProp
         const auto objprop = (sdk::FObjectProperty*)fprop;
         const auto objtype = objprop->get_property_class();
 
-        if (objtype != nullptr) {
+        if (objtype != nullptr && detail::is_probably_ustruct_pointer(objtype)) {
             auto obj_sdkgenny = get_or_generate_struct(objtype);
             auto obj_ns = get_or_generate_namespace_chain(objtype);
+
+            if (obj_sdkgenny == nullptr) {
+                getter->returns(g->type("void")->ptr()->ref());
+                getter->procedure(
+                    std::format("return *(void**)((uintptr_t)this + 0x{:x});", fprop->get_offset())
+                );
+                break;
+            }
 
             std::string ns_chain{obj_ns != nullptr ? obj_ns->usable_name() : ""};
 
@@ -650,6 +803,10 @@ void SDKDumper::generate_functions(sdkgenny::Struct* s, sdk::UStruct* ustruct) {
     auto sc_func = s->static_function("static_class");
 
     auto uclass_sdkgenny = get_or_generate_struct(uclass_c);
+
+    if (uclass_sdkgenny == nullptr) {
+        return;
+    }
 
     auto generate_full_name = [&](sdk::UStruct* target) {
         auto class_ns = get_or_generate_namespace_chain(target);
@@ -760,23 +917,37 @@ void SDKDumper::generate_functions(sdkgenny::Struct* s, sdk::UStruct* ustruct) {
                     param_sdkgenny->type(g->type(*builtin_type));
                 }
             } else if (param_ustruct != nullptr) {
+                auto generated_param_struct = detail::is_probably_ustruct_pointer(param_ustruct) ? get_or_generate_struct(param_ustruct) : nullptr;
+
+                if (generated_param_struct == nullptr) {
+                    if (is_ret) {
+                        func_sdkgenny->returns(g->type("void*"));
+                    } else if (is_ref || is_out) {
+                        param_sdkgenny->type(g->type("void*")->ref());
+                    } else {
+                        param_sdkgenny->type(g->type("void*"));
+                    }
+
+                    continue;
+                }
+
                 if (is_ret) {
                     if (is_ptr) {
-                        func_sdkgenny->returns(get_or_generate_struct(param_ustruct)->ptr());
+                        func_sdkgenny->returns(generated_param_struct->ptr());
                     } else {
-                        func_sdkgenny->returns(get_or_generate_struct(param_ustruct));
+                        func_sdkgenny->returns(generated_param_struct);
                     }
                 } else if (is_ref || is_out) {
                     if (is_ptr) {
-                        param_sdkgenny->type(get_or_generate_struct(param_ustruct)->ptr()->ref());
+                        param_sdkgenny->type(generated_param_struct->ptr()->ref());
                     } else {
-                        param_sdkgenny->type(get_or_generate_struct(param_ustruct)->ref());
+                        param_sdkgenny->type(generated_param_struct->ref());
                     }
                 } else {
                     if (is_ptr) {
-                        param_sdkgenny->type(get_or_generate_struct(param_ustruct)->ptr());
+                        param_sdkgenny->type(generated_param_struct->ptr());
                     } else {
-                        param_sdkgenny->type(get_or_generate_struct(param_ustruct));
+                        param_sdkgenny->type(generated_param_struct);
                     }
                 }
             } else {
