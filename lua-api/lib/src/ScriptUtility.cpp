@@ -11,6 +11,19 @@
 namespace lua::utility {
 sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API::UFunction* fn, sol::variadic_args args);
 
+uevr::API::UClass* as_uclass_object(uevr::API::UObject* object) {
+    if (object == nullptr) {
+        return nullptr;
+    }
+
+    const auto class_class = uevr::API::UClass::static_class();
+    if (class_class == nullptr || !object->is_a(class_class)) {
+        return nullptr;
+    }
+
+    return static_cast<uevr::API::UClass*>(object);
+}
+
 uevr::API::UScriptStruct* get_vector_struct() {
     static auto vector_struct = []() {
         const auto modern_class = uevr::API::get()->find_uobject<uevr::API::UScriptStruct>(L"ScriptStruct /Script/CoreUObject.Vector");
@@ -269,6 +282,12 @@ sol::object prop_to_object(sol::this_state s, uevr::API::UObject* self, const st
 
     if (c == nullptr) {
         return sol::make_object(s, sol::lua_nil);
+    }
+
+    if (auto class_object = as_uclass_object(self); class_object != nullptr) {
+        if (auto fn = class_object->find_function(name.c_str()); fn != nullptr) {
+            return sol::make_object(s, fn);
+        }
     }
 
     return prop_to_object(s, self, c, name);
@@ -550,10 +569,30 @@ void set_property(sol::this_state s, uevr::API::UObject* self, const std::wstrin
 }
 
 sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API::UFunction* fn, sol::variadic_args args) {
+    if (fn == nullptr) {
+        return sol::make_object(s, sol::lua_nil);
+    }
+
+    auto call_target = self;
+
+    // Static Blueprint function libraries are conventionally invoked on their CDO.
+    // Lua callers often discover the UClass first, so normalize that path here.
+    constexpr uint32_t func_static = 0x2000;
+    if ((fn->get_function_flags() & func_static) != 0) {
+        const auto class_class = uevr::API::UClass::static_class();
+        if (class_class != nullptr) {
+            if (auto outer = fn->get_outer(); outer != nullptr && outer->is_a(class_class)) {
+                if (auto cdo = static_cast<uevr::API::UClass*>(outer)->get_class_default_object(); cdo != nullptr) {
+                    call_target = cdo;
+                }
+            }
+        }
+    }
+
     const auto fn_args = fn->get_child_properties();
 
     if (fn_args == nullptr) {
-        fn->call(self, nullptr);
+        fn->call(call_target, nullptr);
         return sol::make_object(s, sol::lua_nil);
     }
 
@@ -592,12 +631,10 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
         }
 
         const auto prop_desc = (uevr::API::FProperty*)arg_desc;
+        const auto prop_name = prop_desc->get_fname()->to_string();
+        const auto is_return_value = prop_desc->is_return_param() || prop_name == L"ReturnValue";
 
-        if (!prop_desc->is_param()) {
-            continue;
-        }
-
-        if (prop_desc->is_return_param()) {
+        if (is_return_value) {
             return_prop = prop_desc;
 
             if (arg_c_name == L"BoolProperty") {
@@ -607,7 +644,13 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
             }
 
             continue;
-        } else if (prop_desc->is_out_param()) {
+        }
+
+        if (!prop_desc->is_param()) {
+            continue;
+        }
+
+        if (prop_desc->is_out_param()) {
             prop_to_arg_index[prop_desc] = args_index;
         }
 
@@ -716,7 +759,7 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, uevr::API
         }
     }
 
-    fn->call(self, params.data());
+    fn->call(call_target, params.data());
 
     // Handle out parameters
     for (const auto& [prop, arg_index] : prop_to_arg_index) {
@@ -826,7 +869,13 @@ sol::object call_function(sol::this_state s, uevr::API::UObject* self, const std
         return sol::make_object(s, sol::lua_nil);
     }
 
-    const auto fn = c->find_function(name.c_str());
+    auto fn = c->find_function(name.c_str());
+
+    if (fn == nullptr) {
+        if (auto class_object = as_uclass_object(self); class_object != nullptr) {
+            fn = class_object->find_function(name.c_str());
+        }
+    }
 
     if (fn == nullptr) {
         return sol::make_object(s, sol::lua_nil);
