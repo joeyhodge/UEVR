@@ -9941,6 +9941,20 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
 
+    if (is_ue_5_8() &&
+        runtime->is_openxr() &&
+        runtime->ready() &&
+        !g_hook->m_has_game_viewport_client_draw_hook)
+    {
+        // UE5.8 can strip the usual UGameViewportClient::Draw anchors while
+        // still reaching BeginRenderViewFamily. Publish a fresh pose here so
+        // OpenXR submit states keep stage views instead of reusing one stale
+        // startup pose forever.
+        vr->update_hmd_state(true, frame_count);
+        SPDLOG_INFO_ONCE(
+            "[UE5.8][OpenXR] Publishing HMD poses from BeginRenderViewFamily because UGameViewportClient::Draw was not resolved");
+    }
+
     if (everspace2_is_current_game()) {
         // SetupViewPoint runs before this callback. Publish a stable token for
         // the next frame so all of its viewpoint calls share one tracking pose.
@@ -13591,6 +13605,16 @@ struct UE55SlateDrawWindowPassInputs {
     float viewport_scale_ui;
 };
 
+struct UE58SlateDrawWindowPassInputs {
+    void* renderer;
+    void* window_element_list;
+    void* window;
+    sdk::FViewportInfo* viewport_info;
+    UE55FIntPoint cursor_position;
+    UE55FIntRect scene_view_rect;
+    float viewport_scale_ui;
+};
+
 struct UE55SlateDrawWindowPassOutputs {
     void* viewport_rhi;
     FRHITexture2D* viewport_texture_rhi;
@@ -13623,6 +13647,34 @@ bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateD
 }
 
 bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55SlateDrawWindowPassInputs& out) {
+    if (is_ue_5_8()) {
+        if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE58SlateDrawWindowPassInputs))) {
+            return false;
+        }
+
+        UE58SlateDrawWindowPassInputs ue58{};
+        memcpy(&ue58, candidate, sizeof(ue58));
+
+        if (ue58.renderer != renderer || ue58.window == nullptr) {
+            return false;
+        }
+
+        if (!is_readable_process_range((uintptr_t)ue58.window, sizeof(void*))) {
+            return false;
+        }
+
+        out = {};
+        out.renderer = ue58.renderer;
+        out.window_element_list = ue58.window_element_list;
+        out.window = ue58.window;
+        out.viewport_info = ue58.viewport_info;
+        out.cursor_position = ue58.cursor_position;
+        out.scene_view_rect = ue58.scene_view_rect;
+        out.viewport_scale_ui = ue58.viewport_scale_ui;
+        SPDLOG_INFO_ONCE("[UE5.8][SlateUI] Using UE5.8 FSlateDrawWindowPassInputs layout");
+        return true;
+    }
+
     if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputs))) {
         return false;
     }
@@ -13859,6 +13911,30 @@ bool ue55_try_promote_fallback_ui_target(
 
     return true;
 }
+
+bool ue58_slate_output_is_scene_target(
+    VRRenderTargetManager_Base* rtm,
+    FRHITexture2D* texture,
+    const D3D12_RESOURCE_DESC& desc)
+{
+    if (rtm != nullptr && texture != nullptr && texture == rtm->get_render_target()) {
+        return true;
+    }
+
+    auto vr = VR::get();
+
+    if (vr == nullptr || !vr->is_hmd_active()) {
+        return false;
+    }
+
+    const auto expected_scene_width = (uint64_t)vr->get_hmd_width() * 2ull;
+    const auto expected_scene_height = (uint64_t)vr->get_hmd_height();
+
+    return expected_scene_width != 0 &&
+           expected_scene_height != 0 &&
+           desc.Width == expected_scene_width &&
+           desc.Height == expected_scene_height;
+}
 }
 
 void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58) {
@@ -13919,7 +13995,16 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
             expected_height == 0 ||
             (original_desc->Width == expected_width && original_desc->Height == expected_height);
 
-        if (original_desc && extent_ok) {
+        if (original_desc && ue58_slate_output_is_scene_target(rtm, original, *original_desc)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "{} refusing original SlateOutputTexture promotion because it matches the VR scene target: original={:x} [{}x{} fmt={}]",
+                tag,
+                (uintptr_t)original,
+                original_desc->Width,
+                original_desc->Height,
+                (uint32_t)original_desc->Format);
+        } else if (original_desc && extent_ok) {
             rtm->set_dedicated_ui_target(original, original_desc->Width, original_desc->Height);
             rtm->get_fallback_ui_target_ref() = nullptr;
             rtm->cancel_dedicated_ui_creation_preserving_target("UE5.8 promoted SlateOutputTexture");
@@ -13979,6 +14064,30 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
         SPDLOG_INFO_EVERY_N_SEC(1, "{} refusing SlateOutputTexture replacement because the original RDX texture is not a valid D3D12 texture: {:x}",
             tag,
             (uintptr_t)original);
+        return;
+    }
+
+    if (ue58 && ue58_slate_output_is_scene_target(rtm, original, *original_desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "{} refusing SlateOutputTexture replacement because the original RDX texture is the VR scene target: original={:x} [{}x{} fmt={}]",
+            tag,
+            (uintptr_t)original,
+            original_desc->Width,
+            original_desc->Height,
+            (uint32_t)original_desc->Format);
+        return;
+    }
+
+    if (ue58 && (original_desc->Width != desc->Width || original_desc->Height != desc->Height)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "{} refusing SlateOutputTexture replacement because original extent [{}x{}] does not match dedicated UI extent [{}x{}]",
+            tag,
+            original_desc->Width,
+            original_desc->Height,
+            desc->Width,
+            desc->Height);
         return;
     }
 
