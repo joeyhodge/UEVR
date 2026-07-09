@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <span>
 #include <atomic>
 #include <chrono>
@@ -122,8 +123,10 @@ private:
         d3d12::TextureContext* game_tex_override = nullptr,
         std::optional<D3D12_RESOURCE_STATES> game_tex_state = std::nullopt,
         bool prefer_left_eye = false,
-        bool source_is_single_eye = false);
+        bool source_is_single_eye = false,
+        d3d12::TextureContext* ui_tex_override = nullptr);
     bool ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source);
+    void reset_ue58_converted_ui_textures();
     void clear_backbuffer();
     bool ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc);
 
@@ -206,6 +209,11 @@ private:
     d3d12::TextureContext m_backbuffer_copy{};
 
     d3d12::TextureContext m_game_ui_tex{};
+    d3d12::TextureContext m_ue58_ui_source_tex{};
+    static constexpr uint32_t UE58_CONVERTED_UI_SLOT_COUNT = 3;
+    std::array<d3d12::TextureContext, UE58_CONVERTED_UI_SLOT_COUNT> m_ue58_converted_ui_tex{};
+    uint32_t m_ue58_converted_ui_slot_cursor{};
+    d3d12::TextureContext* m_ue58_active_converted_ui_tex{};
     d3d12::TextureContext m_game_tex{};
     d3d12::TextureContext m_ue58_spectator_tex{};
     d3d12::TextureContext m_scene_capture_tex{};
