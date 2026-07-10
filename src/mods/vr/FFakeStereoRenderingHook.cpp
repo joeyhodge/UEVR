@@ -14070,12 +14070,17 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
     if (ue58 && ue58_slate_output_is_scene_target(rtm, original, *original_desc)) {
         SPDLOG_INFO_EVERY_N_SEC(
             1,
-            "{} refusing SlateOutputTexture replacement because the original RDX texture is the VR scene target: original={:x} [{}x{} fmt={}]",
+            "{} routing scene-target SlateOutputTexture to dedicated UI target: original={:x} [{}x{} fmt={}] -> dedicated={:x} [{}x{} fmt={}]",
             tag,
             (uintptr_t)original,
             original_desc->Width,
             original_desc->Height,
-            (uint32_t)original_desc->Format);
+            (uint32_t)original_desc->Format,
+            (uintptr_t)ui_target,
+            desc->Width,
+            desc->Height,
+            (uint32_t)desc->Format);
+        ctx.rdx = (uintptr_t)ui_target;
         return;
     }
 
