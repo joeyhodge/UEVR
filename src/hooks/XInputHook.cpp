@@ -15,39 +15,27 @@ XInputHook::XInputHook() {
     g_hook = this;
     spdlog::info("[XInputHook] Entry");
 
-    static auto find_dll = [](const std::string& name) -> HMODULE {
-        const auto start_time = std::chrono::system_clock::now();
-        auto found_dll = GetModuleHandleA(name.c_str());
+    static auto find_dll = [](std::stop_token stop_token, const std::string& name) -> HMODULE {
+        const auto start_time = std::chrono::steady_clock::now();
+        bool delayed_load_logged = false;
 
-        while (found_dll == nullptr) {
-            if (found_dll = GetModuleHandleA(name.c_str()); found_dll != nullptr) {
-                // Load it from the system directory instead, it might be hooked
-                /*wchar_t system_dir[MAX_PATH]{};
-                if (GetSystemDirectoryW(system_dir, MAX_PATH) != 0) {
-                    const auto new_dir = (std::wstring{system_dir} + L"\\" + utility::widen(name));
-
-                    spdlog::info("[XInputHook] Loading {} from {}", name, utility::narrow(new_dir));
-                    const auto new_dll = LoadLibraryW(new_dir.c_str());
-
-                    if (new_dll != nullptr) {
-                        found_dll = LoadLibraryW(new_dir.c_str());
-                    }
-                }*/
-
-                break;
+        while (!stop_token.stop_requested()) {
+            if (const auto found_dll = GetModuleHandleA(name.c_str()); found_dll != nullptr) {
+                return found_dll;
             }
 
-            const auto elapsed_time = std::chrono::system_clock::now() - start_time;
-
-            if (elapsed_time > std::chrono::seconds(10)) {
-                spdlog::error("[XInputHook] Failed to find {} after 10 seconds", name);
-                return nullptr;
+            if (!delayed_load_logged && std::chrono::steady_clock::now() - start_time >= std::chrono::seconds(10)) {
+                // Some games delay-load XInput only after the menu or first
+                // controller poll. Keep watching instead of permanently
+                // losing VR-controller and ImGui input for that session.
+                spdlog::info("[XInputHook] {} is delay-loaded; continuing to monitor for it", name);
+                delayed_load_logged = true;
             }
 
-            std::this_thread::yield();
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
 
-        return found_dll;
+        return nullptr;
     };
 
     auto recursive_resolve_jmp = [](this const auto& self, uint8_t* instr) -> uintptr_t {
@@ -82,8 +70,8 @@ XInputHook::XInputHook() {
         return (uintptr_t)instr;
     };
 
-    auto perform_hooks_1_4 = [&]() {
-        const auto xinput_1_4_dll = find_dll("xinput1_4.dll");
+    auto perform_hooks_1_4 = [this, recursive_resolve_jmp](std::stop_token stop_token) {
+        const auto xinput_1_4_dll = find_dll(stop_token, "xinput1_4.dll");
 
         if (xinput_1_4_dll != nullptr) {
             std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -141,8 +129,8 @@ XInputHook::XInputHook() {
          spdlog::info("[XInputHook] Done (1_4)");
     };
 
-    auto perform_hooks_1_3 = [&]() {
-        const auto xinput_1_3_dll = find_dll("xinput1_3.dll");
+    auto perform_hooks_1_3 = [this, recursive_resolve_jmp](std::stop_token stop_token) {
+        const auto xinput_1_3_dll = find_dll(stop_token, "xinput1_3.dll");
 
         if (xinput_1_3_dll != nullptr) {
             std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
