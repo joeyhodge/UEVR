@@ -258,6 +258,36 @@ void CommandContext::wait(uint32_t ms) {
     }
 }
 
+bool CommandContext::try_wait() {
+    std::scoped_lock _{this->mtx};
+
+    if (!this->waiting_for_fence) {
+        return this->ready();
+    }
+
+    if (this->fence == nullptr || this->cmd_allocator == nullptr || this->cmd_list == nullptr ||
+        this->fence->GetCompletedValue() < this->fence_value) {
+        return false;
+    }
+
+    if (this->fence_event != nullptr) {
+        ResetEvent(this->fence_event);
+    }
+
+    if (FAILED(this->cmd_allocator->Reset())) {
+        spdlog::error("[VR] Failed to reset completed command allocator for {}", utility::narrow(this->internal_name));
+        return false;
+    }
+
+    if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
+        spdlog::error("[VR] Failed to reset completed command list for {}", utility::narrow(this->internal_name));
+        return false;
+    }
+
+    this->waiting_for_fence = false;
+    this->has_commands = false;
+    return true;
+}
 void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
     std::scoped_lock _{this->mtx};
 
