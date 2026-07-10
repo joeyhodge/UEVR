@@ -2931,7 +2931,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 auto fw_rt = g_framework->get_rendertarget_d3d12();
 
                 if (fw_rt && g_framework->is_drawing_anything()) {
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, g_framework->get_rendertarget_d3d12().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                 }
             } else if (use_2d_screen) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
@@ -4100,13 +4100,16 @@ void D3D12Component::draw_spectator_view(
         &source_rect, 
         DirectX::Colors::White);
 
-    if (mirror_mode == VR::DESKTOP_MIRROR_FULL && has_ui_tex) {
+    const auto draw_ui_overlay = mirror_mode == VR::DESKTOP_MIRROR_FULL && has_ui_tex && !is_ue58_runtime_cached();
+
+    if (draw_ui_overlay) {
         const auto ui_desc = ui_tex.texture->GetDesc();
         ID3D12DescriptorHeap* ui_heaps[] = { ui_tex.srv_heap->Heap() };
         render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);
         command_list->SetDescriptorHeaps(1, ui_heaps);
 
-        batch->Draw(ui_tex.get_srv_gpu(),`r`n            DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height },
+        batch->Draw(ui_tex.get_srv_gpu(),
+            DirectX::XMUINT2{ (uint32_t)ui_desc.Width, (uint32_t)ui_desc.Height },
             dest_rect, 
             DirectX::Colors::White);
     }
@@ -5194,11 +5197,9 @@ void D3D12Component::OpenXR::copy(
     if (is_ue58_runtime_cached() &&
         swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)
     {
-        // UE5.8 Slate/scene submission is stable now, but the framework ImGui
-        // layer is thin alpha geometry. Releasing it before its small D3D12
-        // copy has retired can show up as cursor duplication and shimmering
-        // window borders in some runtimes. Scope the synchronization to the
-        // framework overlay only so scene and game UI cadence stay unchanged.
+        // UE5.8 framework/ImGui alpha is visibly racy if the OpenXR image is
+        // released before the copy retires. Scope the synchronization to this
+        // overlay swapchain so scene and game UI cadence stay unchanged.
         SPDLOG_INFO_ONCE("[UE5.8][FrameworkUI] Waiting for FRAMEWORK_UI copy before releasing the OpenXR overlay image");
         texture_ctx->commands.wait(INFINITE);
     }
