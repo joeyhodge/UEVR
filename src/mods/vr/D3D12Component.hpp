@@ -310,6 +310,8 @@ private:
         {
             this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
         }
+        void retire_framework_ui_delayed_release(bool force_wait = false);
+        void copy_framework_ui_ue58(ID3D12Resource* src, D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT);
         void wait_for_all_copies() {
             std::scoped_lock _{this->mtx};
 
@@ -356,6 +358,15 @@ private:
             uint32_t last_acquired_frame{0};
             bool ever_acquired{false};
             bool pre_acquired{false};
+            bool framework_ui_pending_release{false};
+            uint32_t framework_ui_pending_texture{0};
+            uint32_t framework_ui_pending_frame{0};
+            uint64_t framework_ui_stale_reuse_count{0};
+            uint64_t framework_ui_recovery_wait_count{0};
+            bool framework_ui_has_released_texture{false};
+            uint32_t framework_ui_last_released_texture{0};
+            uint32_t framework_ui_last_release_frame{0};
+            uint64_t framework_ui_front_buffer_skip_count{0};
         };
 
         std::unordered_map<uint32_t, SwapchainContext> contexts{};
