@@ -903,6 +903,7 @@ private:
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
     void update_windrose_meta_ui_auto_2d_mode();
+    void update_imgui_state_from_vr_controller_fallback();
     void update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine);
     void update_subnautica2_native_water_compatibility(sdk::UGameEngine* engine);
     void restore_subnautica2_native_water_cvars();
@@ -1087,6 +1088,7 @@ private:
     std::chrono::steady_clock::time_point m_last_engine_tick{};
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
+    std::atomic_bool m_has_observed_xinput{false};
 
     struct UILayerPoseTelemetrySnapshot {
         uint64_t sample_count{};
