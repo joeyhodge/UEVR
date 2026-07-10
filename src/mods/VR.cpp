@@ -2908,6 +2908,8 @@ bool VR::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
 void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE* state) {
     ZoneScopedN(__FUNCTION__);
 
+    m_has_observed_xinput.store(true, std::memory_order_relaxed);
+
     const auto now = std::chrono::steady_clock::now();
 
     if (now - m_last_engine_tick > std::chrono::seconds(1)) {
@@ -4514,7 +4516,96 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     // TODO: fix this for actual AFR, but we dont really care about pure AFR since synced beats it most of the time
     if (m_fake_stereo_hook != nullptr && !m_fake_stereo_hook->is_ignoring_next_viewport_draw()) {
         update_action_states();
+        update_imgui_state_from_vr_controller_fallback();
     }
+}
+
+void VR::update_imgui_state_from_vr_controller_fallback() {
+    // A few games only delay-load XInput when a physical gamepad is first
+    // queried. Their normal VR controller path therefore never reaches
+    // on_xinput_get_state. Feed UEVR's ImGui navigation directly from the
+    // already-synchronized OpenXR actions until a real XInput callback arrives.
+    if (m_has_observed_xinput.load(std::memory_order_relaxed) ||
+        g_framework == nullptr ||
+        !is_using_controllers())
+    {
+        return;
+    }
+
+    XINPUT_STATE state{};
+    const auto left_joystick = get_left_joystick();
+    const auto right_joystick = get_right_joystick();
+    const auto wants_swap = m_swap_controllers->value();
+
+    const auto& a_button_left = !wants_swap ? m_action_a_button_left : m_action_a_button_right;
+    const auto& a_button_right = !wants_swap ? m_action_a_button_right : m_action_a_button_left;
+    const auto& b_button_left = !wants_swap ? m_action_b_button_left : m_action_b_button_right;
+    const auto& b_button_right = !wants_swap ? m_action_b_button_right : m_action_b_button_left;
+
+    if (is_action_active_any_joystick(a_button_right)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_A;
+    }
+
+    if (is_action_active_any_joystick(a_button_left)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_B;
+    }
+
+    if (is_action_active_any_joystick(b_button_right)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_X;
+    }
+
+    if (is_action_active_any_joystick(b_button_left)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_Y;
+    }
+
+    if (is_action_active(m_action_joystick_click, left_joystick)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
+    }
+
+    if (is_action_active(m_action_joystick_click, right_joystick)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_RIGHT_THUMB;
+    }
+
+    if (is_action_active(m_action_trigger, left_joystick)) {
+        state.Gamepad.bLeftTrigger = 255;
+    }
+
+    if (is_action_active(m_action_trigger, right_joystick)) {
+        state.Gamepad.bRightTrigger = 255;
+    }
+
+    if (is_action_active(m_action_grip, left_joystick)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_LEFT_SHOULDER;
+    }
+
+    if (is_action_active(m_action_grip, right_joystick)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    }
+
+    if (is_action_active_any_joystick(m_action_dpad_up)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_DPAD_UP;
+    }
+
+    if (is_action_active_any_joystick(m_action_dpad_right)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_DPAD_RIGHT;
+    }
+
+    if (is_action_active_any_joystick(m_action_dpad_down)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_DPAD_DOWN;
+    }
+
+    if (is_action_active_any_joystick(m_action_dpad_left)) {
+        state.Gamepad.wButtons |= XINPUT_GAMEPAD_DPAD_LEFT;
+    }
+
+    const auto left_axis = get_joystick_axis(left_joystick);
+    const auto right_axis = get_joystick_axis(right_joystick);
+    state.Gamepad.sThumbLX = (int16_t)std::clamp(left_axis.x * 32767.0f, -32767.0f, 32767.0f);
+    state.Gamepad.sThumbLY = (int16_t)std::clamp(left_axis.y * 32767.0f, -32767.0f, 32767.0f);
+    state.Gamepad.sThumbRX = (int16_t)std::clamp(right_axis.x * 32767.0f, -32767.0f, 32767.0f);
+    state.Gamepad.sThumbRY = (int16_t)std::clamp(right_axis.y * 32767.0f, -32767.0f, 32767.0f);
+
+    update_imgui_state_from_xinput_state(state, true);
 }
 
 void VR::update_subnautica2_save_thumbnail_guard(sdk::UGameEngine* engine) {
