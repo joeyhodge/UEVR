@@ -777,13 +777,205 @@ bool D3D12Component::ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12R
     return true;
 }
 
-void D3D12Component::reset_ue58_converted_ui_textures() {
-    for (auto& converted_ui : m_ue58_converted_ui_tex) {
+bool D3D12Component::ensure_ue58_slate_ui_consumer_fence(ID3D12Device* device) {
+    if (m_ue58_converted_ui_consumer_fence != nullptr) {
+        return true;
+    }
+
+    if (device == nullptr || FAILED(device->CreateFence(
+        0,
+        D3D12_FENCE_FLAG_NONE,
+        IID_PPV_ARGS(&m_ue58_converted_ui_consumer_fence))))
+    {
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[UE5.8][SlateUI] failed to create converted UI consumer fence");
+        m_ue58_converted_ui_consumer_fence.Reset();
+        return false;
+    }
+
+    m_ue58_converted_ui_consumer_fence->SetName(L"UE5.8 Slate UI Consumer Fence");
+    return true;
+}
+
+void D3D12Component::wait_for_ue58_slate_ui_consumers() {
+    if (m_ue58_converted_ui_consumer_fence == nullptr ||
+        m_ue58_converted_ui_consumer_fence_value == 0 ||
+        m_ue58_converted_ui_consumer_fence->GetCompletedValue() >= m_ue58_converted_ui_consumer_fence_value)
+    {
+        return;
+    }
+
+    const auto event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+
+    if (event == nullptr) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] failed to create a consumer-fence wait event during reset");
+        return;
+    }
+
+    const auto result = m_ue58_converted_ui_consumer_fence->SetEventOnCompletion(
+        m_ue58_converted_ui_consumer_fence_value,
+        event);
+
+    if (FAILED(result)) {
+        SPDLOG_ERROR("[UE5.8][SlateUI] failed to arm consumer-fence wait during reset");
+        CloseHandle(event);
+        return;
+    }
+
+    WaitForSingleObject(event, INFINITE);
+    CloseHandle(event);
+}
+
+void D3D12Component::release_ue58_converted_ui_source_slot(uint32_t converted_slot_index) {
+    if (converted_slot_index >= UE58_CONVERTED_UI_SLOT_COUNT) {
+        return;
+    }
+
+    auto& source_slot_index = m_ue58_converted_ui_source_slots[converted_slot_index];
+
+    if (source_slot_index < 0 || source_slot_index >= (int32_t)UE58_SLATE_UI_SOURCE_SLOT_COUNT) {
+        source_slot_index = -1;
+        return;
+    }
+
+    auto& source_slot = m_ue58_ui_source_slots[source_slot_index];
+
+    if (source_slot.conversion_references > 0) {
+        --source_slot.conversion_references;
+    } else {
+        SPDLOG_WARN("[UE5.8][SlateUI] converted UI source-slot reference underflow");
+    }
+
+    source_slot_index = -1;
+}
+
+bool D3D12Component::is_ue58_converted_ui_slot_reusable(uint32_t slot_index) {
+    if (slot_index >= UE58_CONVERTED_UI_SLOT_COUNT) {
+        return false;
+    }
+
+    auto& slot = m_ue58_converted_ui_tex[slot_index];
+
+    // The source SRV remains valid until the conversion command list retires.
+    if (slot.commands.ready() && !slot.commands.try_wait()) {
+        return false;
+    }
+
+    const auto consumer_fence_value = m_ue58_converted_ui_consumer_fence_values[slot_index];
+
+    // The converted output also stays immutable until the OpenXR UI copy that
+    // reads it has retired on the same graphics queue.
+    if (consumer_fence_value != 0 &&
+        (m_ue58_converted_ui_consumer_fence == nullptr ||
+         m_ue58_converted_ui_consumer_fence->GetCompletedValue() < consumer_fence_value))
+    {
+        return false;
+    }
+
+    release_ue58_converted_ui_source_slot(slot_index);
+    m_ue58_converted_ui_consumer_fence_values[slot_index] = 0;
+    return true;
+}
+
+d3d12::TextureContext* D3D12Component::acquire_ue58_slate_ui_source_slot(
+    ID3D12Device* device,
+    ID3D12Resource* resource,
+    DXGI_FORMAT view_format)
+{
+    if (device == nullptr || resource == nullptr) {
+        return nullptr;
+    }
+
+    for (auto& source_slot : m_ue58_ui_source_slots) {
+        if (source_slot.texture.texture.Get() == resource && source_slot.texture.srv_heap != nullptr) {
+            return &source_slot.texture;
+        }
+    }
+
+    for (auto& source_slot : m_ue58_ui_source_slots) {
+        if (source_slot.conversion_references != 0) {
+            continue;
+        }
+
+        if (!source_slot.texture.setup(
+                device,
+                resource,
+                view_format,
+                view_format,
+                L"UE5.8 Slate UI Source Texture"))
+        {
+            source_slot.texture.reset();
+            return nullptr;
+        }
+
+        return &source_slot.texture;
+    }
+
+    SPDLOG_WARNING_EVERY_N_SEC(
+        1,
+        "[UE5.8][SlateUI] all source descriptor slots are still referenced; preserving the last completed converted UI frame");
+    return nullptr;
+}
+
+void D3D12Component::mark_ue58_converted_ui_slot_consumed(uint32_t slot_index) {
+    if (slot_index >= UE58_CONVERTED_UI_SLOT_COUNT ||
+        m_ue58_converted_ui_consumer_fence == nullptr ||
+        g_framework == nullptr)
+    {
+        return;
+    }
+
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+
+    if (d3d12_hook == nullptr) {
+        return;
+    }
+
+    const auto command_queue = d3d12_hook->get_command_queue();
+
+    if (command_queue == nullptr) {
+        return;
+    }
+
+    const auto fence_value = ++m_ue58_converted_ui_consumer_fence_value;
+
+    if (FAILED(command_queue->Signal(m_ue58_converted_ui_consumer_fence.Get(), fence_value))) {
+        --m_ue58_converted_ui_consumer_fence_value;
+        SPDLOG_ERROR_EVERY_N_SEC(1, "[UE5.8][SlateUI] failed to signal converted UI consumer fence");
+        return;
+    }
+
+    m_ue58_converted_ui_consumer_fence_values[slot_index] = fence_value;
+}
+
+void D3D12Component::reset_ue58_converted_ui_textures(bool reset_sources) {
+    // Reset is exceptional (resize/device reset). Wait here rather than on the
+    // frame path so an OpenXR UI copy never observes a released ring resource.
+    wait_for_ue58_slate_ui_consumers();
+
+    for (uint32_t slot_index = 0; slot_index < UE58_CONVERTED_UI_SLOT_COUNT; ++slot_index) {
+        auto& converted_ui = m_ue58_converted_ui_tex[slot_index];
+
+        if (converted_ui.commands.ready()) {
+            converted_ui.commands.wait(INFINITE);
+        }
+
+        release_ue58_converted_ui_source_slot(slot_index);
         converted_ui.reset();
+        m_ue58_converted_ui_consumer_fence_values[slot_index] = 0;
     }
 
     m_ue58_active_converted_ui_tex = nullptr;
+    m_ue58_active_converted_ui_slot = UE58_CONVERTED_UI_SLOT_COUNT;
     m_ue58_converted_ui_slot_cursor = 0;
+    m_ue58_converted_ui_consumer_fence.Reset();
+    m_ue58_converted_ui_consumer_fence_value = 0;
+
+    if (reset_sources) {
+        for (auto& source_slot : m_ue58_ui_source_slots) {
+            source_slot.texture.reset();
+            source_slot.conversion_references = 0;
+        }
+    }
 }
 
 D3D12Component::ShfSceneMode D3D12Component::classify_shf_scene_mode(
@@ -1869,7 +2061,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     bool ue58_ui_uses_shader_conversion = false;
     bool ue58_ui_copy_blocked = false;
+    bool ue58_ui_reuse_last_converted_frame = false;
+    d3d12::TextureContext* ue58_ui_source_context = nullptr;
+    std::optional<uint32_t> ue58_ui_source_slot_index{};
     d3d12::TextureContext* ue58_ui_submit_context = nullptr;
+    uint32_t ue58_ui_submit_slot = UE58_CONVERTED_UI_SLOT_COUNT;
 
     if (ui_target != nullptr) {
         const auto native_ui = (ID3D12Resource*)ui_target->get_native_resource();
@@ -1886,37 +2082,50 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         1,
                         "[UE5.8][SlateUI] blocking dedicated UI copy because source format {} cannot be safely viewed or copied to the OpenXR UI swapchain",
                         (uint32_t)native_desc.Format);
-                    m_ue58_ui_source_tex.reset();
                     m_game_ui_tex.reset();
                     reset_ue58_converted_ui_textures();
                     ue58_ui_copy_blocked = true;
                 } else {
-                    if (m_ue58_ui_source_tex.texture.Get() != native_ui) {
-                        if (!m_ue58_ui_source_tex.setup(
-                                device,
-                                native_ui,
-                                *native_view_format,
-                                *native_view_format,
-                                L"UE5.8 Slate UI Source Texture"))
-                        {
-                            SPDLOG_ERROR_EVERY_N_SEC(
-                                1,
-                                "[UE5.8][SlateUI] failed to setup Slate UI source texture [{}x{} fmt={} view_fmt={}]; blocking UI layer this frame",
-                                native_desc.Width,
-                                native_desc.Height,
-                                (uint32_t)native_desc.Format,
-                                (uint32_t)*native_view_format);
-                            m_ue58_ui_source_tex.reset();
-                            m_game_ui_tex.reset();
-                            reset_ue58_converted_ui_textures();
-                            ue58_ui_copy_blocked = true;
+                    ue58_ui_source_context = acquire_ue58_slate_ui_source_slot(device, native_ui, *native_view_format);
+
+                    if (ue58_ui_source_context != nullptr) {
+                        for (uint32_t source_slot_index = 0; source_slot_index < UE58_SLATE_UI_SOURCE_SLOT_COUNT; ++source_slot_index) {
+                            if (&m_ue58_ui_source_slots[source_slot_index].texture == ue58_ui_source_context) {
+                                ue58_ui_source_slot_index = source_slot_index;
+                                break;
+                            }
                         }
                     }
 
                     ue58_ui_uses_shader_conversion =
-                        !ue58_ui_copy_blocked &&
-                        m_ue58_ui_source_tex.texture.Get() == native_ui &&
-                        m_ue58_ui_source_tex.srv_heap != nullptr;
+                        ue58_ui_source_context != nullptr &&
+                        ue58_ui_source_context->texture.Get() == native_ui &&
+                        ue58_ui_source_context->srv_heap != nullptr &&
+                        ue58_ui_source_slot_index.has_value();
+
+                    if (!ue58_ui_uses_shader_conversion) {
+                        if (m_ue58_active_converted_ui_tex != nullptr &&
+                            m_ue58_active_converted_ui_tex->texture.Get() != nullptr &&
+                            m_ue58_active_converted_ui_slot < UE58_CONVERTED_UI_SLOT_COUNT)
+                        {
+                            // All source slots are still referenced by queued
+                            // conversions. Reuse a completed output instead of
+                            // destroying a descriptor heap the GPU may read.
+                            ue58_ui_uses_shader_conversion = true;
+                            ue58_ui_reuse_last_converted_frame = true;
+                            ue58_ui_submit_context = m_ue58_active_converted_ui_tex;
+                            ue58_ui_submit_slot = m_ue58_active_converted_ui_slot;
+                        } else {
+                            SPDLOG_ERROR_EVERY_N_SEC(
+                                1,
+                                "[UE5.8][SlateUI] no safe Slate UI source descriptor is available [{}x{} fmt={}]; blocking UI layer this frame",
+                                native_desc.Width,
+                                native_desc.Height,
+                                (uint32_t)native_desc.Format);
+                            m_game_ui_tex.reset();
+                            ue58_ui_copy_blocked = true;
+                        }
+                    }
 
                     if (ue58_ui_uses_shader_conversion && m_game_ui_tex.texture.Get() != nullptr) {
                         // The converted UE5.8 UI path uses its own ring below.
@@ -1927,15 +2136,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     }
                 }
             } else {
-                m_ue58_ui_source_tex.reset();
                 reset_ue58_converted_ui_textures();
             }
         } else {
-            m_ue58_ui_source_tex.reset();
             reset_ue58_converted_ui_textures();
         }
 
-        if (!ue58_ui_uses_shader_conversion && !ue58_ui_copy_blocked && m_game_ui_tex.texture.Get() != native_ui) {
+        if (!ue58_ui_uses_shader_conversion &&
+            !ue58_ui_copy_blocked &&
+            native_ui != nullptr &&
+            m_game_ui_tex.texture.Get() != native_ui)
+        {
             if (!m_game_ui_tex.setup(device,
                 native_ui,
                 DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -1981,7 +2192,6 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
         }
     } else {
-        m_ue58_ui_source_tex.reset();
         reset_ue58_converted_ui_textures();
 
         const bool keep_pending_ue57_ui =
@@ -1996,12 +2206,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
-    if (ue58_ui_uses_shader_conversion) {
+    if (ue58_ui_uses_shader_conversion && !ue58_ui_reuse_last_converted_frame) {
         if (m_game_batch != nullptr &&
-            m_ue58_ui_source_tex.texture.Get() != nullptr &&
-            m_ue58_ui_source_tex.srv_heap != nullptr)
+            ue58_ui_source_context != nullptr &&
+            ue58_ui_source_context->texture.Get() != nullptr &&
+            ue58_ui_source_context->srv_heap != nullptr &&
+            ue58_ui_source_slot_index.has_value() &&
+            ensure_ue58_slate_ui_consumer_fence(device))
         {
-            const auto native_desc = m_ue58_ui_source_tex.texture->GetDesc();
+            const auto native_desc = ue58_ui_source_context->texture->GetDesc();
             auto converted_desc = native_desc;
             converted_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
             converted_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
@@ -2011,7 +2224,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 m_ue58_active_converted_ui_tex->texture.Get() != nullptr &&
                 !shf_texture_desc_matches(m_ue58_active_converted_ui_tex->texture->GetDesc(), converted_desc))
             {
-                reset_ue58_converted_ui_textures();
+                // Keep source descriptors alive; only the owned BGRA output
+                // ring changes with the destination description.
+                reset_ue58_converted_ui_textures(false);
             }
 
             const auto setup_converted_slot = [&](d3d12::TextureContext& slot) -> bool {
@@ -2083,7 +2298,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 const auto slot_index = (m_ue58_converted_ui_slot_cursor + attempt) % UE58_CONVERTED_UI_SLOT_COUNT;
                 auto& slot = m_ue58_converted_ui_tex[slot_index];
 
-                if (slot.commands.ready() && !slot.commands.try_wait()) {
+                if (!is_ue58_converted_ui_slot_reusable(slot_index)) {
                     continue;
                 }
 
@@ -2096,30 +2311,36 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 d3d12::render_srv_to_rtv(
                     m_game_batch.get(),
                     slot.commands.cmd_list.Get(),
-                    m_ue58_ui_source_tex,
+                    *ue58_ui_source_context,
                     slot,
                     ENGINE_SRC_COLOR,
                     ENGINE_SRC_COLOR);
                 slot.commands.execute();
 
+                m_ue58_converted_ui_source_slots[slot_index] = (int32_t)*ue58_ui_source_slot_index;
+                ++m_ue58_ui_source_slots[*ue58_ui_source_slot_index].conversion_references;
                 m_ue58_active_converted_ui_tex = &slot;
+                m_ue58_active_converted_ui_slot = slot_index;
                 m_ue58_converted_ui_slot_cursor = (slot_index + 1) % UE58_CONVERTED_UI_SLOT_COUNT;
                 ue58_ui_submit_context = &slot;
+                ue58_ui_submit_slot = slot_index;
                 break;
             }
 
             if (!ue58_ui_copy_blocked && ue58_ui_submit_context == nullptr) {
                 if (m_ue58_active_converted_ui_tex != nullptr &&
-                    m_ue58_active_converted_ui_tex->texture.Get() != nullptr)
+                    m_ue58_active_converted_ui_tex->texture.Get() != nullptr &&
+                    m_ue58_active_converted_ui_slot < UE58_CONVERTED_UI_SLOT_COUNT)
                 {
                     ue58_ui_submit_context = m_ue58_active_converted_ui_tex;
+                    ue58_ui_submit_slot = m_ue58_active_converted_ui_slot;
                     SPDLOG_INFO_EVERY_N_SEC(
                         1,
-                        "[UE5.8][SlateUI] all shader-converted UI ring slots are busy; reusing the most recent converted UI texture");
+                        "[UE5.8][SlateUI] all shader-converted UI output slots are still consumed; reusing the most recent stable UI texture");
                 } else {
                     SPDLOG_WARNING_EVERY_N_SEC(
                         1,
-                        "[UE5.8][SlateUI] blocking shader-converted UI copy because no converted UI ring slot is ready yet");
+                        "[UE5.8][SlateUI] blocking shader-converted UI copy because no converted UI ring slot is safe to reuse yet");
                     ue58_ui_copy_blocked = true;
                 }
             }
@@ -2442,6 +2663,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT, m_2d_screen_tex[1].texture.Get(), std::nullopt, clear_rt, ENGINE_SRC_COLOR);
                     }
                 } else if (ui_target != nullptr && !ue58_ui_copy_blocked) {
+                    bool ue58_converted_ui_copied = false;
                     auto* ui_submit_texture = ue58_ui_uses_shader_conversion
                         ? (ue58_ui_submit_context != nullptr ? ue58_ui_submit_context->texture.Get() : nullptr)
                         : (ID3D12Resource*)ui_target->get_native_resource();
@@ -2457,6 +2679,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                             draw_2d_view,
                             clear_rt,
                             ENGINE_SRC_COLOR);
+                        ue58_converted_ui_copied = ue58_ui_uses_shader_conversion;
+                    }
+
+                    if (ue58_converted_ui_copied &&
+                        ue58_ui_submit_slot < UE58_CONVERTED_UI_SLOT_COUNT)
+                    {
+                        // This signal follows the OpenXR UI copy on the
+                        // graphics queue, so the converted output stays
+                        // immutable until the runtime-facing read retires.
+                        mark_ue58_converted_ui_slot_consumed(ue58_ui_submit_slot);
                     }
                 } else if (ui_target != nullptr && ue58_ui_copy_blocked) {
                     SPDLOG_INFO_EVERY_N_SEC(
@@ -3665,7 +3897,6 @@ void D3D12Component::on_reset(VR* vr) {
 
     m_openvr.ui_tex.reset();
     m_game_ui_tex.reset();
-    m_ue58_ui_source_tex.reset();
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
     m_ue58_spectator_tex.reset();
