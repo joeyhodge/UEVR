@@ -2467,7 +2467,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 auto fw_rt = g_framework->get_rendertarget_d3d12();
 
                 if (fw_rt && g_framework->is_drawing_anything()) {
-                    m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    if (is_ue58_runtime_cached()) {
+                        m_openxr.copy_framework_ui_ue58(fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    } else {
+                        m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    }
                 }
             } else if (use_2d_screen) {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::UI, m_2d_screen_tex[0].texture.Get(), draw_2d_view, clear_rt, ENGINE_SRC_COLOR);
@@ -2977,6 +2981,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }   
             }
             
+            if (is_ue58_runtime_cached()) {
+                m_openxr.retire_framework_ui_delayed_release(true);
+            }
+
             if (!suppress_ui_copy && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
                 const auto framework_quad = openxr_overlay.generate_framework_ui_quad();
                 if (framework_quad) {
@@ -4454,6 +4462,246 @@ void D3D12Component::OpenXR::release_acquired(uint32_t swapchain_idx) {
     ctx.pre_acquired = false;
     ctx.last_acquired_frame = vr->get_frame_count();
     ctx.ever_acquired = true;
+
+    if (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI) {
+        ctx.framework_ui_pending_release = false;
+        ctx.framework_ui_pending_texture = 0;
+        ctx.framework_ui_pending_frame = 0;
+        ctx.framework_ui_has_released_texture = true;
+        ctx.framework_ui_last_released_texture = texture_index;
+        ctx.framework_ui_last_release_frame = ctx.last_acquired_frame;
+    }
+}
+
+void D3D12Component::OpenXR::retire_framework_ui_delayed_release(bool force_wait) {
+    if (!is_ue58_runtime_cached()) {
+        return;
+    }
+
+    std::scoped_lock _{this->mtx};
+
+    auto vr = VR::get();
+
+    if (vr == nullptr || vr->m_openxr == nullptr) {
+        return;
+    }
+
+    constexpr auto framework_ui_idx = (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI;
+
+    auto ctx_it = this->contexts.find(framework_ui_idx);
+    auto swapchain_it = vr->m_openxr->swapchains.find(framework_ui_idx);
+
+    if (ctx_it == this->contexts.end() || swapchain_it == vr->m_openxr->swapchains.end()) {
+        return;
+    }
+
+    auto& ctx = ctx_it->second;
+
+    if (!ctx.framework_ui_pending_release) {
+        return;
+    }
+
+    const auto texture_index = ctx.framework_ui_pending_texture;
+
+    if (texture_index >= ctx.texture_contexts.size() || ctx.texture_contexts[texture_index] == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] Pending FRAMEWORK_UI image {} is invalid; forcing stale acquisition release",
+            texture_index);
+
+        XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        const auto result = xrReleaseSwapchainImage(swapchain_it->second.handle, &release_info);
+
+        if (result == XR_SUCCESS && ctx.num_textures_acquired > 0) {
+            ctx.num_textures_acquired--;
+        } else if (result != XR_SUCCESS) {
+            spdlog::error("[UE5.8][FrameworkUI] Failed to release invalid pending FRAMEWORK_UI image: {}", vr->m_openxr->get_result_string(result));
+        }
+
+        ctx.pre_acquired = false;
+        ctx.framework_ui_pending_release = false;
+        ctx.framework_ui_pending_texture = 0;
+        ctx.framework_ui_pending_frame = 0;
+        return;
+    }
+
+    auto& texture_ctx = ctx.texture_contexts[texture_index];
+    const auto current_frame = vr->get_frame_count();
+    const auto pending_age = current_frame >= ctx.framework_ui_pending_frame
+        ? current_frame - ctx.framework_ui_pending_frame
+        : 0u;
+    constexpr uint32_t max_pending_frames = 8;
+    const auto use_recovery_wait = force_wait || pending_age > max_pending_frames;
+
+    if (use_recovery_wait) {
+        ++ctx.framework_ui_recovery_wait_count;
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] Waiting for delayed FRAMEWORK_UI copy before release (force={} age={} recoveries={})",
+            force_wait,
+            pending_age,
+            ctx.framework_ui_recovery_wait_count);
+        texture_ctx->commands.wait(INFINITE);
+    } else if (!texture_ctx->commands.try_wait()) {
+        ++ctx.framework_ui_stale_reuse_count;
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "[UE5.8][FrameworkUI] Reusing last completed FRAMEWORK_UI image while copy is pending (texture={} age={} stale_reuse={})",
+            texture_index,
+            pending_age,
+            ctx.framework_ui_stale_reuse_count);
+        return;
+    }
+
+    XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+    auto result = xrReleaseSwapchainImage(swapchain_it->second.handle, &release_info);
+
+    if (result == XR_ERROR_RUNTIME_FAILURE) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] xrReleaseSwapchainImage failed during delayed release; waiting all UI contexts and retrying");
+
+        for (auto& pending_ctx : ctx.texture_contexts) {
+            if (pending_ctx != nullptr) {
+                pending_ctx->commands.wait(INFINITE);
+            }
+        }
+
+        result = xrReleaseSwapchainImage(swapchain_it->second.handle, &release_info);
+    }
+
+    if (result != XR_SUCCESS) {
+        spdlog::error("[UE5.8][FrameworkUI] Delayed xrReleaseSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
+        return;
+    }
+
+    if (ctx.num_textures_acquired > 0) {
+        ctx.num_textures_acquired--;
+    } else {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.8][FrameworkUI] Delayed release completed with no tracked acquired images");
+    }
+
+    ctx.pre_acquired = false;
+    ctx.last_acquired_texture = texture_index;
+    ctx.last_acquired_frame = current_frame;
+    ctx.ever_acquired = true;
+    ctx.framework_ui_pending_release = false;
+    ctx.framework_ui_pending_texture = 0;
+    ctx.framework_ui_pending_frame = 0;
+    ctx.framework_ui_has_released_texture = true;
+    ctx.framework_ui_last_released_texture = texture_index;
+    ctx.framework_ui_last_release_frame = current_frame;
+}
+
+void D3D12Component::OpenXR::copy_framework_ui_ue58(ID3D12Resource* resource, D3D12_RESOURCE_STATES src_state) {
+    constexpr auto framework_ui_idx = (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI;
+
+    if (!is_ue58_runtime_cached()) {
+        copy(framework_ui_idx, resource, src_state);
+        return;
+    }
+
+    // Give the previous UI copy until the next UI draw to finish before we
+    // acquire a fresh image. This keeps the visible UI layer current without
+    // doing the older immediate wait directly after recording the copy.
+    retire_framework_ui_delayed_release(true);
+
+    std::scoped_lock _{this->mtx};
+
+    auto vr = VR::get();
+
+    if (vr == nullptr || vr->m_openxr == nullptr || resource == nullptr) {
+        return;
+    }
+
+    if (vr->m_openxr->frame_state.shouldRender != XR_TRUE) {
+        return;
+    }
+
+    if (!vr->m_openxr->frame_began) {
+        if (vr->get_synchronize_stage() != VR::SynchronizeStage::VERY_LATE) {
+            spdlog::error("[UE5.8][FrameworkUI] OpenXR frame not begun when trying to copy FRAMEWORK_UI.");
+            return;
+        }
+    }
+
+    auto ctx_it = this->contexts.find(framework_ui_idx);
+    auto swapchain_it = vr->m_openxr->swapchains.find(framework_ui_idx);
+
+    if (ctx_it == this->contexts.end() || swapchain_it == vr->m_openxr->swapchains.end()) {
+        SPDLOG_INFO_EVERY_N_SEC(1, "[UE5.8][FrameworkUI] FRAMEWORK_UI swapchain is not available yet");
+        return;
+    }
+
+    auto& ctx = ctx_it->second;
+
+    if (ctx.framework_ui_pending_release) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] FRAMEWORK_UI copy is still pending after forced retirement; skipping this UI update");
+        return;
+    }
+
+    if (ctx.num_textures_acquired > 0) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] Releasing unexpected stale FRAMEWORK_UI acquisition before non-blocking copy");
+        release_acquired(framework_ui_idx);
+
+        if (ctx.num_textures_acquired > 0) {
+            return;
+        }
+    }
+
+    uint32_t texture_index{};
+    XrSwapchainImageAcquireInfo acquire_info{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    auto result = xrAcquireSwapchainImage(swapchain_it->second.handle, &acquire_info, &texture_index);
+
+    if (result != XR_SUCCESS) {
+        spdlog::error("[UE5.8][FrameworkUI] xrAcquireSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
+        return;
+    }
+
+    ctx.num_textures_acquired++;
+    ctx.last_acquired_texture = texture_index;
+
+    XrSwapchainImageWaitInfo wait_info{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wait_info.timeout = XR_INFINITE_DURATION;
+    result = xrWaitSwapchainImage(swapchain_it->second.handle, &wait_info);
+
+    if (result != XR_SUCCESS) {
+        spdlog::error("[UE5.8][FrameworkUI] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
+        release_acquired(framework_ui_idx);
+        return;
+    }
+
+    if (texture_index >= ctx.texture_contexts.size() || texture_index >= ctx.textures.size() || ctx.texture_contexts[texture_index] == nullptr) {
+        spdlog::error("[UE5.8][FrameworkUI] Invalid FRAMEWORK_UI texture index {}", texture_index);
+        release_acquired(framework_ui_idx);
+        return;
+    }
+
+    auto& texture_ctx = ctx.texture_contexts[texture_index];
+
+    if (!texture_ctx->commands.try_wait()) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE5.8][FrameworkUI] FRAMEWORK_UI texture {} was re-acquired before its command context retired; waiting once to preserve swapchain ownership",
+            texture_index);
+        texture_ctx->commands.wait(INFINITE);
+    }
+
+    texture_ctx->commands.copy(
+        resource,
+        ctx.textures[texture_index].texture,
+        src_state,
+        D3D12_RESOURCE_STATE_RENDER_TARGET);
+    texture_ctx->commands.execute();
+
+    ctx.pre_acquired = false;
+    ctx.framework_ui_pending_release = true;
+    ctx.framework_ui_pending_texture = texture_index;
+    ctx.framework_ui_pending_frame = vr->get_frame_count();
 }
 
 void D3D12Component::OpenXR::copy(
@@ -4608,16 +4856,6 @@ void D3D12Component::OpenXR::copy(
     }
 
     texture_ctx->commands.execute();
-
-    if (is_ue58_runtime_cached() &&
-        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)
-    {
-        // UE5.8 framework/ImGui alpha is visibly racy if the OpenXR image is
-        // released before the copy retires. Scope the synchronization to this
-        // overlay swapchain so scene and game UI cadence stay unchanged.
-        SPDLOG_INFO_ONCE("[UE5.8][FrameworkUI] Waiting for FRAMEWORK_UI copy before releasing the OpenXR overlay image");
-        texture_ctx->commands.wait(INFINITE);
-    }
 
     XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     auto result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
