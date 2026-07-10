@@ -15,6 +15,9 @@ struct CommandContext {
     bool setup(const wchar_t* name = L"CommandContext object");
     void reset();
     void wait(uint32_t ms);
+    // Reclaims an already-completed command allocator without blocking the
+    // caller. Consumers that need a hard synchronization still use wait().
+    bool try_wait();
     void copy(ID3D12Resource* src, ID3D12Resource* dst, 
         D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
         D3D12_RESOURCE_STATES dst_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
