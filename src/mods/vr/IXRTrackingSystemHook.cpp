@@ -94,8 +94,12 @@ bool is_ue4_14_through_4_17() {
     return result;
 }
 
+bool is_guarded_legacy_aim_path() {
+    return is_ue4_14_through_4_17() || is_daysgone_executable();
+}
+
 bool is_live_legacy_aim_object(sdk::UObjectBase* object) try {
-    if (!is_ue4_14_through_4_17() || object == nullptr ||
+    if (!is_guarded_legacy_aim_path() || object == nullptr ||
         IsBadReadPtr(object, sdk::UObjectBase::get_class_size())) {
         return false;
     }
@@ -125,7 +129,7 @@ bool is_live_legacy_aim_object(sdk::UObjectBase* object) try {
 }
 
 bool is_legacy_aim_reflection_ready() try {
-    if (!is_ue4_14_through_4_17()) {
+    if (!is_guarded_legacy_aim_path()) {
         return true;
     }
 
@@ -160,7 +164,11 @@ bool is_legacy_aim_reflection_ready() try {
     ready = control_rotation != nullptr;
 
     if (ready) {
-        SPDLOG_INFO("[UE4.14-4.17][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for direct aim");
+        if (is_daysgone_executable()) {
+            SPDLOG_INFO("[DaysGone][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for guarded ProcessEvent aim");
+        } else {
+            SPDLOG_INFO("[UE4.14-4.17][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for direct aim");
+        }
     }
 
     return ready;
@@ -249,6 +257,11 @@ bool is_payday3_aim_guard_enabled() {
 sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, sdk::UWorld* world) {
     if (engine != nullptr) {
         if (const auto local_player = reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0)); local_player != nullptr) {
+            if (is_daysgone_executable() && !is_live_legacy_aim_object(local_player)) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][Aim] Refusing a stale or invalid LocalPlayer during controller resolution");
+                return nullptr;
+            }
+
             if (const auto data = local_player->get_property_data(L"PlayerController"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
                 if (const auto controller = *(sdk::APlayerController**)data; controller != nullptr) {
                     return controller;
@@ -261,6 +274,12 @@ sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, 
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[PAYDAY3][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
+        return nullptr;
+    }
+    if (is_daysgone_executable()) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DaysGone][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
         return nullptr;
     }
     if (is_ue4_14_through_4_17()) {
@@ -283,7 +302,7 @@ sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller
         return nullptr;
     }
 
-    if (is_payday3_aim_guard_enabled() || is_ue4_14_through_4_17()) {
+    if (is_payday3_aim_guard_enabled() || is_ue4_14_through_4_17() || is_daysgone_executable()) {
         const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
 
         if (const auto data = controller_obj->get_property_data(L"AcknowledgedPawn"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
@@ -1332,15 +1351,19 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
     }
 
     const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
+    const auto daysgone_aim_guard = is_daysgone_executable();
+    const auto guarded_legacy_aim = legacy_ue4_direct_aim || daysgone_aim_guard;
+    const auto guarded_aim_name = daysgone_aim_guard ? "DaysGone" : "UE4.14-4.17";
 
-    if (legacy_ue4_direct_aim) {
+    if (guarded_legacy_aim) {
         const auto& vr = VR::get();
 
         if ((vr->is_controller_aim_enabled() && !vr->is_using_controllers()) ||
             !is_legacy_aim_reflection_ready()) {
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
-                "[UE4.14-4.17][Aim] Direct aim is fail-closed while controller tracking or UObject reflection is unavailable");
+                "[{}][Aim] Direct aim is fail-closed while controller tracking or UObject reflection is unavailable",
+                guarded_aim_name);
             return;
         }
     }
@@ -1365,8 +1388,8 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
     try {
         controller = resolve_player_controller_for_aim(engine, world);
     } catch (...) {
-        if (legacy_ue4_direct_aim) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Failed to resolve a safe PlayerController");
+        if (guarded_legacy_aim) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] Failed to resolve a safe PlayerController", guarded_aim_name);
             return;
         }
 
@@ -1378,8 +1401,8 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
-    if (legacy_ue4_direct_aim && !is_live_legacy_aim_object(controller)) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Refusing a stale or invalid PlayerController");
+    if (guarded_legacy_aim && !is_live_legacy_aim_object(controller)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] Refusing a stale or invalid PlayerController", guarded_aim_name);
         return;
     }
 
@@ -1388,15 +1411,15 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
     try {
         pawn = resolve_acknowledged_pawn_for_aim(controller);
     } catch (...) {
-        if (legacy_ue4_direct_aim) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Failed to resolve a safe acknowledged pawn");
+        if (guarded_legacy_aim) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] Failed to resolve a safe acknowledged pawn", guarded_aim_name);
             return;
         }
 
         throw;
     }
 
-    if (pawn == nullptr || (legacy_ue4_direct_aim && !is_live_legacy_aim_object(pawn))) {
+    if (pawn == nullptr || (guarded_legacy_aim && !is_live_legacy_aim_object(pawn))) {
         return;
     }
 
@@ -1410,8 +1433,8 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         try {
             control_rotation = controller->get_control_rotation();
         } catch (...) {
-            if (legacy_ue4_direct_aim) {
-                SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] GetControlRotation failed; skipping this update");
+            if (guarded_legacy_aim) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] GetControlRotation failed; skipping this update", guarded_aim_name);
                 return;
             }
 
@@ -1419,8 +1442,8 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         }
     }
 
-    if (legacy_ue4_direct_aim && !detail::finite_euler(control_rotation)) {
-        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Ignoring non-finite ControlRotation");
+    if (guarded_legacy_aim && !detail::finite_euler(control_rotation)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] Ignoring non-finite ControlRotation", guarded_aim_name);
         return;
     }
     
@@ -1458,11 +1481,14 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
-    if (legacy_ue4_direct_aim) {
+    if (guarded_legacy_aim) {
         try {
+            // UE4.14-4.17 use UESDK's reflected direct property path. Days Gone
+            // remains on its validated SetControlRotation ProcessEvent path so
+            // the native root-component rotation side effect is preserved.
             controller->set_control_rotation(final_rotation);
         } catch (...) {
-            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] SetControlRotation failed; skipping this update");
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[{}][Aim] SetControlRotation failed; skipping this update", guarded_aim_name);
         }
     } else {
         controller->set_control_rotation(final_rotation);
@@ -2548,6 +2574,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
     if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !is_ue4_14_through_4_17() &&
+        !is_daysgone_executable() &&
         !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();

@@ -99,7 +99,7 @@ bool is_ue4_14_through_4_17_uobjecthook_guard_enabled() {
     return result;
 }
 
-bool is_ue4_14_motion_controller_source() {
+bool is_ue4_11_through_4_17_motion_controller_source() {
     static const bool result = []() {
         const auto disk_version = sdk::get_file_version_info();
         const auto found_version = sdk::search_for_version(utility::get_executable());
@@ -110,12 +110,13 @@ bool is_ue4_14_motion_controller_source() {
             int minor = 0;
 
             if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
-                return major == 4 && minor == 14;
+                return major == 4 && minor >= 11 && minor <= 17;
             }
         }
 
-        return HIWORD(disk_version.dwFileVersionMS) == 4 &&
-            LOWORD(disk_version.dwFileVersionMS) == 14;
+        const auto major = HIWORD(disk_version.dwFileVersionMS);
+        const auto minor = LOWORD(disk_version.dwFileVersionMS);
+        return major == 4 && minor >= 11 && minor <= 17;
     }();
 
     return result;
@@ -3053,13 +3054,13 @@ void UObjectHook::update_motion_controller_components(
             continue;
         }
 
-        const auto legacy_hand_only_source = is_ue4_14_motion_controller_source();
+        const auto legacy_hand_only_source = is_ue4_11_through_4_17_motion_controller_source();
 
         if (legacy_hand_only_source) {
-            // UE4.14's UMotionControllerComponent exposes PlayerIndex and Hand;
-            // MotionSource does not exist yet. Force the source-accurate path so
-            // a bad reflection result cannot redirect an old component.
-            SPDLOG_INFO_ONCE("[UE4.14][MotionController] Using legacy PlayerIndex/Hand component routing");
+            // UE4.11-4.17 expose PlayerIndex and Hand; MotionSource does not
+            // exist yet. Force the source-accurate path so a bad reflection
+            // result cannot redirect an old component.
+            SPDLOG_INFO_ONCE("[UE4.11-4.17][MotionController] Using legacy PlayerIndex/Hand component routing");
             const auto hand = mc->get_hand();
 
             if (hand == sdk::EControllerHand::Left) {
