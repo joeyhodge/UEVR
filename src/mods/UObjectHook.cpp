@@ -76,6 +76,51 @@ bool is_ue_5_1_uobjecthook_guard_enabled() {
     return is_ue_5_1;
 }
 
+bool is_ue4_14_through_4_17_uobjecthook_guard_enabled() {
+    static const bool result = []() {
+        const auto disk_version = sdk::get_file_version_info();
+        const auto found_version = sdk::search_for_version(utility::get_executable());
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            int major = 0;
+            int minor = 0;
+
+            if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
+                return major == 4 && minor >= 14 && minor <= 17;
+            }
+        }
+
+        const auto major = HIWORD(disk_version.dwFileVersionMS);
+        const auto minor = LOWORD(disk_version.dwFileVersionMS);
+        return major == 4 && minor >= 14 && minor <= 17;
+    }();
+
+    return result;
+}
+
+bool is_ue4_14_motion_controller_source() {
+    static const bool result = []() {
+        const auto disk_version = sdk::get_file_version_info();
+        const auto found_version = sdk::search_for_version(utility::get_executable());
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            int major = 0;
+            int minor = 0;
+
+            if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
+                return major == 4 && minor == 14;
+            }
+        }
+
+        return HIWORD(disk_version.dwFileVersionMS) == 4 &&
+            LOWORD(disk_version.dwFileVersionMS) == 14;
+    }();
+
+    return result;
+}
+
 bool is_avowed_uobjecthook_guard_enabled() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -149,7 +194,8 @@ bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool
 }
 
 bool use_dynamic_uobjecthook_candidate_guard() {
-    return is_ue_5_1_uobjecthook_guard_enabled() ||
+    return is_ue4_14_through_4_17_uobjecthook_guard_enabled() ||
+        is_ue_5_1_uobjecthook_guard_enabled() ||
         is_avowed_uobjecthook_guard_enabled() ||
         is_stalker2_uobjecthook_guard_enabled() ||
         is_everwind_uobjecthook_guard_enabled();
@@ -424,6 +470,47 @@ bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object, bool
     return is_probably_uobject_layout(cls);
 }
 
+bool validate_ue4_14_through_4_17_uobject_layout(UObjectHook& hook, sdk::FUObjectArray* object_array) try {
+    if (!is_ue4_14_through_4_17_uobjecthook_guard_enabled()) {
+        return true;
+    }
+
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0) {
+        return false;
+    }
+
+    constexpr int32_t required_valid_objects = 3;
+    const auto sample_count = std::min<int32_t>(object_count, 256);
+    int32_t valid_objects = 0;
+
+    for (int32_t i = 0; i < sample_count; ++i) {
+        const auto item = object_array->get_object(i);
+        const auto object = item != nullptr ? item->get_object() : nullptr;
+
+        if (object != nullptr && is_safe_uobject_candidate(hook, object, true) &&
+            ++valid_objects >= required_valid_objects) {
+            SPDLOG_INFO(
+                "[UE4.14-4.17][UObjectHook] Validated runtime UObject layout flags=0x{:x} index=0x{:x} class=0x{:x} name=0x{:x} outer=0x{:x}",
+                sdk::UObjectBase::get_object_flags_offset(),
+                sdk::UObjectBase::get_internal_index_offset(),
+                sdk::UObjectBase::get_class_private_offset(),
+                sdk::UObjectBase::get_fname_offset(),
+                sdk::UObjectBase::get_outer_private_offset());
+            return true;
+        }
+    }
+
+    return false;
+} catch (...) {
+    return false;
+}
+
 bool is_payday3_uobject_menu_guard_enabled() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -592,6 +679,17 @@ void UObjectHook::hook() {
     }
 
     SPDLOG_INFO("[UObjectHook] Hooking UObjectBase");
+
+    if (is_ue4_14_through_4_17_uobjecthook_guard_enabled()) {
+        const auto object_array = sdk::FUObjectArray::get();
+
+        if (!validate_ue4_14_through_4_17_uobject_layout(*this, object_array)) {
+            m_wants_activate = false;
+            SPDLOG_ERROR(
+                "[UE4.14-4.17][UObjectHook] Runtime UObject layout validation failed; refusing destructor/AddObject hooks");
+            return;
+        }
+    }
 
     if (should_use_everwind_lazy_uobjecthook_startup()) {
         // Everwind's shipped UE5.5 build can stall inside UObjectBase AddObject/
@@ -2955,7 +3053,23 @@ void UObjectHook::update_motion_controller_components(
             continue;
         }
 
-        if (mc->has_motion_source()) {
+        const auto legacy_hand_only_source = is_ue4_14_motion_controller_source();
+
+        if (legacy_hand_only_source) {
+            // UE4.14's UMotionControllerComponent exposes PlayerIndex and Hand;
+            // MotionSource does not exist yet. Force the source-accurate path so
+            // a bad reflection result cannot redirect an old component.
+            SPDLOG_INFO_ONCE("[UE4.14][MotionController] Using legacy PlayerIndex/Hand component routing");
+            const auto hand = mc->get_hand();
+
+            if (hand == sdk::EControllerHand::Left) {
+                mc->set_world_location(left_hand_location, false, false);
+                mc->set_world_rotation(left_hand_euler, false);
+            } else if (hand == sdk::EControllerHand::Right) {
+                mc->set_world_location(right_hand_location, false, false);
+                mc->set_world_rotation(right_hand_euler, false);
+            }
+        } else if (mc->has_motion_source()) {
             const auto& motion_source = mc->get_motion_source();
             const auto motion_source_str = motion_source.to_string();
 

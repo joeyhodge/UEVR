@@ -17,6 +17,7 @@
 #include <sdk/UObjectArray.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FProperty.hpp>
+#include <sdk/ScriptRotator.hpp>
 #include <sdk/ScriptVector.hpp>
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/UEngine.hpp>
@@ -66,6 +67,107 @@ bool is_daysgone_controller_aim_requested() {
     return is_daysgone_executable() && VR::get()->is_controller_aim_enabled();
 }
 
+bool is_ue4_14_through_4_17() {
+    static const bool result = []() {
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+
+            try {
+                const auto separator = version.find('.');
+
+                if (separator != std::string::npos) {
+                    const auto major = std::stoi(version.substr(0, separator));
+                    const auto minor = std::stoi(version.substr(separator + 1));
+                    return major == 4 && minor >= 14 && minor <= 17;
+                }
+            } catch (...) {
+                // Fall through to the executable's file version.
+            }
+        }
+
+        const auto file_version = sdk::get_file_version_info();
+        const auto major = HIWORD(file_version.dwFileVersionMS);
+        const auto minor = LOWORD(file_version.dwFileVersionMS);
+        return major == 4 && minor >= 14 && minor <= 17;
+    }();
+
+    return result;
+}
+
+bool is_live_legacy_aim_object(sdk::UObjectBase* object) try {
+    if (!is_ue4_14_through_4_17() || object == nullptr ||
+        IsBadReadPtr(object, sdk::UObjectBase::get_class_size())) {
+        return false;
+    }
+
+    const auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto index = object->get_internal_index();
+
+    if (index < 0 || index >= object_array->get_object_count()) {
+        return false;
+    }
+
+    const auto item = object_array->get_object(index);
+
+    if (item == nullptr || item->get_object() != object) {
+        return false;
+    }
+
+    const auto object_class = object->get_class();
+    return object_class != nullptr && !IsBadReadPtr(object_class, sdk::UObjectBase::get_class_size());
+} catch (...) {
+    return false;
+}
+
+bool is_legacy_aim_reflection_ready() try {
+    if (!is_ue4_14_through_4_17()) {
+        return true;
+    }
+
+    static bool ready = false;
+    static auto next_retry = std::chrono::steady_clock::time_point{};
+
+    if (ready) {
+        return true;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (now < next_retry) {
+        return false;
+    }
+
+    next_retry = now + std::chrono::seconds(1);
+
+    if (sdk::FUObjectArray::get() == nullptr) {
+        return false;
+    }
+
+    const auto controller_class = sdk::AController::static_class();
+    const auto rotator = sdk::ScriptRotator::static_struct();
+
+    if (controller_class == nullptr || rotator == nullptr ||
+        rotator->get_struct_size() != sizeof(glm::vec3)) {
+        return false;
+    }
+
+    const auto control_rotation = controller_class->find_property(L"ControlRotation");
+    ready = control_rotation != nullptr;
+
+    if (ready) {
+        SPDLOG_INFO("[UE4.14-4.17][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for direct aim");
+    }
+
+    return ready;
+} catch (...) {
+    return false;
+}
+
 bool is_payday3_aim_guard_enabled();
 
 bool is_direct_aim_compatibility_requested() {
@@ -78,6 +180,10 @@ bool is_direct_aim_compatibility_requested() {
     }
 
     if (is_daysgone_controller_aim_requested()) {
+        return true;
+    }
+
+    if (is_ue4_14_through_4_17()) {
         return true;
     }
 
@@ -117,6 +223,13 @@ bool is_direct_aim_compatibility_active() {
         return vr->is_using_controllers();
     }
 
+    if (is_ue4_14_through_4_17()) {
+        // UE4.14-4.17 exposes only the legacy IHeadMountedDisplay interface.
+        // Keep its incomplete fake-HMD vtable out of the aim path even while a
+        // configured motion controller is still becoming available.
+        return vr->is_headlocked_aim_enabled() || vr->is_controller_aim_enabled();
+    }
+
     if (vr->is_headlocked_aim_enabled()) {
         return true;
     }
@@ -150,6 +263,12 @@ sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, 
             "[PAYDAY3][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
         return nullptr;
     }
+    if (is_ue4_14_through_4_17()) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[UE4.14-4.17][Aim] PlayerController unavailable through LocalPlayer reflection; skipping ProcessEvent fallback");
+        return nullptr;
+    }
 
     if (world == nullptr || sdk::UGameplayStatics::static_class() == nullptr) {
         return nullptr;
@@ -164,7 +283,7 @@ sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller
         return nullptr;
     }
 
-    if (is_payday3_aim_guard_enabled()) {
+    if (is_payday3_aim_guard_enabled() || is_ue4_14_through_4_17()) {
         const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
 
         if (const auto data = controller_obj->get_property_data(L"AcknowledgedPawn"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
@@ -718,32 +837,44 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
     const auto daysgone_controller_aim = is_daysgone_controller_aim_requested();
+    const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
+    const auto suppress_legacy_fake_hmd_for_aim = legacy_ue4_direct_aim && vr->is_any_aim_method_active();
 
     if (direct_aim_compat_requested && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
-        if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
+        if (legacy_ue4_direct_aim && vr->is_controller_camera_conflict_guard_active()) {
+            SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Direct aim is blocked by Controller-Camera Conflict Guard; legacy fake HMD remains disabled");
+        } else if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
             SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because Controller-Camera Conflict Guard blocks the safe direct controller-aim path");
             vr->set_aim_method(VR::AimMethod::GAME);
             return;
         } else if (aim_method == VR::AimMethod::HEAD) {
-            if (deadzone_direct_aim) {
+            if (legacy_ue4_direct_aim) {
+                SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct HMD aim without installing the legacy fake IHeadMountedDisplay");
+            } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing HMD aim on UE5.6 through ProcessViewRotation; unsafe direct UObject/FName fallback is disabled");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Allowing experimental HMD aim through direct control rotation updates");
             }
         } else if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
-            if (daysgone_controller_aim) {
+            if (legacy_ue4_direct_aim && vr->is_controller_aim_enabled()) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Waiting for motion-controller tracking; legacy fake HMD remains disabled");
+            } else if (daysgone_controller_aim) {
                 SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because controller tracking is not actively available");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             } else {
                 SPDLOG_WARN_ONCE("[AimCompat] Falling back to game aim because controller aim is not actively available");
             }
-            vr->set_aim_method(VR::AimMethod::GAME);
-            return;
+            if (!legacy_ue4_direct_aim) {
+                vr->set_aim_method(VR::AimMethod::GAME);
+                return;
+            }
         } else {
-            if (daysgone_controller_aim) {
+            if (legacy_ue4_direct_aim) {
+                SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct controller aim without installing the legacy fake IHeadMountedDisplay");
+            } else if (daysgone_controller_aim) {
                 SPDLOG_WARN_ONCE("[DaysGone][Aim] Using direct controller-aim fallback; skipping legacy UE4.11 HMD/ProcessViewRotation controller aim hooks");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
@@ -753,14 +884,18 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         }
     }
 
-    if (!m_initialized && (((vr->is_any_aim_method_active() && !direct_aim_compat_active) || vr->wants_blueprint_load()))) {
+    if (!m_initialized &&
+        ((vr->is_any_aim_method_active() && !direct_aim_compat_active && !suppress_legacy_fake_hmd_for_aim) ||
+         vr->wants_blueprint_load())) {
         if (!m_initialized) {
             initialize();
         }
     }
 
     if (direct_aim_compat_active) {
-        if (daysgone_controller_aim) {
+        if (legacy_ue4_direct_aim) {
+            SPDLOG_INFO_ONCE("[UE4.14-4.17][Aim] Driving guarded direct control-rotation updates");
+        } else if (daysgone_controller_aim) {
             SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving Days Gone controller aim through direct control rotation updates");
         } else if (deadzone_direct_aim) {
             SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
@@ -1196,6 +1331,20 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
+    const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
+
+    if (legacy_ue4_direct_aim) {
+        const auto& vr = VR::get();
+
+        if ((vr->is_controller_aim_enabled() && !vr->is_using_controllers()) ||
+            !is_legacy_aim_reflection_ready()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[UE4.14-4.17][Aim] Direct aim is fail-closed while controller tracking or UObject reflection is unavailable");
+            return;
+        }
+    }
+
     sdk::APlayerController* controller = nullptr;
 
     auto engine = (sdk::UEngine*)engine_override;
@@ -1213,16 +1362,41 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
-    controller = resolve_player_controller_for_aim(engine, world);
+    try {
+        controller = resolve_player_controller_for_aim(engine, world);
+    } catch (...) {
+        if (legacy_ue4_direct_aim) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Failed to resolve a safe PlayerController");
+            return;
+        }
+
+        throw;
+    }
 
     if (controller == nullptr) {
         SPDLOG_WARN_ONCE("[AimCompat] Skipping direct aim until a PlayerController is available");
         return;
     }
 
-    const auto pawn = resolve_acknowledged_pawn_for_aim(controller);
+    if (legacy_ue4_direct_aim && !is_live_legacy_aim_object(controller)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Refusing a stale or invalid PlayerController");
+        return;
+    }
 
-    if (pawn == nullptr) {
+    sdk::APawn* pawn = nullptr;
+
+    try {
+        pawn = resolve_acknowledged_pawn_for_aim(controller);
+    } catch (...) {
+        if (legacy_ue4_direct_aim) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Failed to resolve a safe acknowledged pawn");
+            return;
+        }
+
+        throw;
+    }
+
+    if (pawn == nullptr || (legacy_ue4_direct_aim && !is_live_legacy_aim_object(pawn))) {
         return;
     }
 
@@ -1233,7 +1407,21 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
             return;
         }
     } else {
-        control_rotation = controller->get_control_rotation();
+        try {
+            control_rotation = controller->get_control_rotation();
+        } catch (...) {
+            if (legacy_ue4_direct_aim) {
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] GetControlRotation failed; skipping this update");
+                return;
+            }
+
+            throw;
+        }
+    }
+
+    if (legacy_ue4_direct_aim && !detail::finite_euler(control_rotation)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Ignoring non-finite ControlRotation");
+        return;
     }
     
     Rotator<double> ue5_rotation {
@@ -1270,7 +1458,15 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
         return;
     }
 
-    controller->set_control_rotation(final_rotation);
+    if (legacy_ue4_direct_aim) {
+        try {
+            controller->set_control_rotation(final_rotation);
+        } catch (...) {
+            SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] SetControlRotation failed; skipping this update");
+        }
+    } else {
+        controller->set_control_rotation(final_rotation);
+    }
 }
 
 bool IXRTrackingSystemHook::analyze_head_tracking_allowed(uintptr_t return_address) {
@@ -2351,7 +2547,8 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
 
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
-    if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
+    if (!is_payday3_aim_guard_enabled() && !is_deadzone_ue56_executable() && !is_ue4_14_through_4_17() &&
+        !had_detection_error && vr->is_aim_multiplayer_support_enabled()) try {
         if (reference_obj != nullptr && sdk::FUObjectArray::get() != nullptr) {
             const auto reference_obj_c = reference_obj->get_class();
 
