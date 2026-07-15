@@ -2425,6 +2425,7 @@ private:
     bool m_prospi_auto_camera_sequencer_logged_active{false};
     int32_t m_prospi_auto_camera_sequencer_logged_zone{0};
     std::string m_prospi_auto_camera_sequencer_logged_camera_id{};
+    std::chrono::steady_clock::time_point m_prospi_auto_camera_sequencer_last_log_time{};
     std::string m_prospi_auto_camera_sequencer_last_camera_id{};
     int32_t m_prospi_auto_camera_sequencer_last_zone{0};
     int32_t m_prospi_auto_camera_sequencer_last_play_mode{0};

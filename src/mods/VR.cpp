@@ -5623,7 +5623,9 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
 
     const auto now_ms = steady_clock_ms();
     auto last_ms = vr->m_prospi_spectator_world_cull_last_log_ms.load(std::memory_order_relaxed);
-    if ((last_ms == 0 || now_ms - last_ms >= 1000) &&
+    // This callback runs on a render hot path. Keep diagnostics available
+    // without forcing a synchronous file write every second during gameplay.
+    if ((last_ms == 0 || now_ms - last_ms >= 5000) &&
         vr->m_prospi_spectator_world_cull_last_log_ms.compare_exchange_strong(last_ms, now_ms, std::memory_order_relaxed))
     {
         SPDLOG_INFO(
@@ -8359,10 +8361,15 @@ void VR::update_game_fov() {
             m_prospi_auto_camera_sequencer_match_label = match_label;
         }
 
+        const auto now = std::chrono::steady_clock::now();
+        const auto state_changed = active != m_prospi_auto_camera_sequencer_logged_active ||
+            zone_i != m_prospi_auto_camera_sequencer_logged_zone;
         const auto camera_changed = camera_id != m_prospi_auto_camera_sequencer_logged_camera_id;
-        if (active != m_prospi_auto_camera_sequencer_logged_active ||
-            zone_i != m_prospi_auto_camera_sequencer_logged_zone ||
-            camera_changed) {
+        const auto camera_log_due = camera_changed &&
+            (m_prospi_auto_camera_sequencer_last_log_time.time_since_epoch().count() == 0 ||
+             now - m_prospi_auto_camera_sequencer_last_log_time >= std::chrono::milliseconds{750});
+
+        if (state_changed || camera_log_due) {
             spdlog::info(
                 "[PROSPI_AUTO_SEQUENCER] active={} source={} mode={} zone={} camera={} match={} confidence={:.2f} preset={} raw_fov={:.2f} fov={:.1f}->{:.1f} dolly={:.1f}->{:.1f}",
                 active,
@@ -8382,6 +8389,7 @@ void VR::update_game_fov() {
             m_prospi_auto_camera_sequencer_logged_active = active;
             m_prospi_auto_camera_sequencer_logged_zone = zone_i;
             m_prospi_auto_camera_sequencer_logged_camera_id = camera_id;
+            m_prospi_auto_camera_sequencer_last_log_time = now;
         }
     };
 
@@ -8421,7 +8429,11 @@ void VR::update_game_fov() {
         m_prospi_sticky_camera_id.clear();
         m_prospi_line_telephoto_perf_hold_until = {};
         m_prospi_crowd_visibility_hold_until = {};
+        m_prospi_auto_camera_sequencer_logged_active = false;
+        m_prospi_auto_camera_sequencer_logged_zone = 0;
+        m_prospi_auto_camera_sequencer_logged_camera_id.clear();
         m_prospi_auto_camera_sequencer_last_camera_id.clear();
+        m_prospi_auto_camera_sequencer_last_log_time = {};
         m_prospi_auto_camera_sequencer_last_zone = 0;
         m_prospi_auto_camera_sequencer_last_play_mode = 0;
         m_prospi_auto_camera_sequencer_last_dolly = 0.0f;
@@ -8954,6 +8966,7 @@ void VR::update_game_fov() {
 
     const auto apply_ebaseball_camera_tuning = [&]() {
         if (!is_ebaseball_pro_spirit ||
+            prospi_calibration_applied ||
             !m_match_game_fov_dolly->value() ||
             !location.has_value() ||
             !rotation.has_value()) {
@@ -9500,15 +9513,9 @@ void VR::update_game_fov() {
             }
         }
 
-        if (prospi_calibration_applied && outfield_facing_home_camera && active_dolly_distance < 7000.0f) {
-            const auto calibration_floor = std::clamp(get_prospi_outfield_ball_follow_min_dolly(raw_fov), 10.0f, 15000.0f);
-            if (active_dolly_distance < calibration_floor) {
-                active_dolly_distance = calibration_floor;
-                prospi_dolly_source = "CalibrationOutfieldHomeFloor";
-            }
-        }
-
-        if (outfield_facing_home_camera) {
+        // Exact field-map calibration is an explicit user override. Keep the
+        // automatic outfield envelope for presets and learned matches only.
+        if (!prospi_calibration_applied && outfield_facing_home_camera) {
             const auto outfield_home_ceiling = std::clamp(get_prospi_outfield_ball_follow_min_dolly(raw_fov), 10.0f, 15000.0f);
             if (active_dolly_distance > outfield_home_ceiling) {
                 active_dolly_distance = outfield_home_ceiling;
