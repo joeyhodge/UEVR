@@ -273,7 +273,7 @@ public:
     /*std::array<std::vector<XrView>, 3> stage_view_queue{};
     std::array<XrSpaceLocation, 3> view_space_location_queue{};
     std::array<XrFrameState, 3> frame_state_queue{};*/
-    
+
     // Reusable scratch for end-frame (so we don't use thread_local)
     // Should be cleared on every call to end_frame.
     struct EndFrameData {
