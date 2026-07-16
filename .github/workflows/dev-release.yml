@@ -33,6 +33,7 @@ jobs:
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           repository: joeyhodge/uevr-frontend
+          ref: main
           path: frontend
 
       - name: Set up dotnet
