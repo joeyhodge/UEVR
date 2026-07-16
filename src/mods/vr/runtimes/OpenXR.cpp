@@ -3565,7 +3565,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto submitted_real_projection =
         this->is_everspace2_coherent_submit_active() &&
         !projection_layer_views.empty() &&
-        !this->projection_layer_cache.empty();
+        !projection_layer_cache.empty();
 
     //spdlog::info("[VR] display time diff: {}", pipelined_frame_state.predictedDisplayTime - this->frame_state.predictedDisplayTime);
     //spdlog::info("[VR] Ending frame, {} layers", frame_end_info.layerCount);
