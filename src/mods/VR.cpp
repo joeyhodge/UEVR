@@ -7305,7 +7305,9 @@ void VR::update_game_fov() {
             );
         };
 
-        if (!is_prospi_executable() || !m_match_game_fov_prospi_telephoto_perf_override->value()) {
+        if (!is_prospi_executable() ||
+            !m_match_game_fov_prospi_telephoto_perf_override->value() ||
+            !m_match_game_fov_prospi_runtime_lod_cvar_switching->value()) {
             restore();
             return;
         }
@@ -8365,11 +8367,14 @@ void VR::update_game_fov() {
         const auto state_changed = active != m_prospi_auto_camera_sequencer_logged_active ||
             zone_i != m_prospi_auto_camera_sequencer_logged_zone;
         const auto camera_changed = camera_id != m_prospi_auto_camera_sequencer_logged_camera_id;
+        const auto first_log = m_prospi_auto_camera_sequencer_last_log_time.time_since_epoch().count() == 0;
+        const auto state_log_due = state_changed &&
+            (first_log || now - m_prospi_auto_camera_sequencer_last_log_time >= std::chrono::seconds{2});
         const auto camera_log_due = camera_changed &&
-            (m_prospi_auto_camera_sequencer_last_log_time.time_since_epoch().count() == 0 ||
-             now - m_prospi_auto_camera_sequencer_last_log_time >= std::chrono::milliseconds{750});
+            (first_log ||
+             now - m_prospi_auto_camera_sequencer_last_log_time >= std::chrono::seconds{5});
 
-        if (state_changed || camera_log_due) {
+        if (state_log_due || camera_log_due) {
             spdlog::info(
                 "[PROSPI_AUTO_SEQUENCER] active={} source={} mode={} zone={} camera={} match={} confidence={:.2f} preset={} raw_fov={:.2f} fov={:.1f}->{:.1f} dolly={:.1f}->{:.1f}",
                 active,
@@ -8964,8 +8969,12 @@ void VR::update_game_fov() {
         m_active_generic_camera_preset = {};
     }
 
+    const auto cinematic_camera_assist_enabled =
+        is_prospi && m_match_game_fov_prospi_cinematic_camera_assist->value();
+
     const auto apply_ebaseball_camera_tuning = [&]() {
         if (!is_ebaseball_pro_spirit ||
+            !cinematic_camera_assist_enabled ||
             prospi_calibration_applied ||
             !m_match_game_fov_dolly->value() ||
             !location.has_value() ||
@@ -8996,6 +9005,7 @@ void VR::update_game_fov() {
 
     const auto apply_prospi_dugout_celebration_tuning = [&]() {
         if (!is_prospi ||
+            !cinematic_camera_assist_enabled ||
             !m_match_game_fov_dolly->value() ||
             !location.has_value() ||
             !rotation.has_value()) {
@@ -9515,7 +9525,9 @@ void VR::update_game_fov() {
 
         // Exact field-map calibration is an explicit user override. Keep the
         // automatic outfield envelope for presets and learned matches only.
-        if (!prospi_calibration_applied && outfield_facing_home_camera) {
+        if (!prospi_calibration_applied &&
+            (cinematic_camera_assist_enabled || play_mode == ProSpiPlayCameraMode::BallFollow) &&
+            outfield_facing_home_camera) {
             const auto outfield_home_ceiling = std::clamp(get_prospi_outfield_ball_follow_min_dolly(raw_fov), 10.0f, 15000.0f);
             if (active_dolly_distance > outfield_home_ceiling) {
                 active_dolly_distance = outfield_home_ceiling;
@@ -9523,17 +9535,20 @@ void VR::update_game_fov() {
             }
         }
 
-        if (low_outfield_under_stands_camera && active_dolly_distance > 7600.0f) {
+        if (cinematic_camera_assist_enabled &&
+            low_outfield_under_stands_camera && active_dolly_distance > 7600.0f) {
             active_dolly_distance = 7600.0f;
             prospi_dolly_source = "LowOutfieldUnderStandCap";
         }
 
-        if (center_field_pitch_up_under_stands_camera && active_dolly_distance > 5600.0f) {
+        if (cinematic_camera_assist_enabled &&
+            center_field_pitch_up_under_stands_camera && active_dolly_distance > 5600.0f) {
             active_dolly_distance = 5600.0f;
             prospi_dolly_source = "CenterFieldPitchUpUnderStandCap";
         }
 
-        if (near_home_side_tracking_camera && active_dolly_distance > 2600.0f) {
+        if (cinematic_camera_assist_enabled &&
+            near_home_side_tracking_camera && active_dolly_distance > 2600.0f) {
             active_dolly_distance = 2600.0f;
             prospi_dolly_source = "NearHomeSideTrackingCap";
         }
@@ -9554,6 +9569,7 @@ void VR::update_game_fov() {
             source != ProSpiAutoCameraSource::LearnedNearest &&
             (sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST ||
              sequencer_mode == PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST) &&
+            (cinematic_camera_assist_enabled || play_mode == ProSpiPlayCameraMode::BallFollow) &&
             sequence_zone != ProSpiCameraSafetyZone::None &&
             sequence_cap > 0.0f) {
             auto target_dolly = std::clamp(sequence_cap * fov_scale, 10.0f, 15000.0f);
@@ -9664,9 +9680,11 @@ void VR::update_game_fov() {
         const auto cutscene_segment_forced_exit =
             m_prospi_cutscene_segment_active && protected_gameplay_camera;
 
-        if ((hard_camera_cut || cutscene_segment_expired || cutscene_segment_forced_exit) &&
+        if ((!cinematic_camera_assist_enabled || hard_camera_cut || cutscene_segment_expired || cutscene_segment_forced_exit) &&
             m_prospi_cutscene_segment_active) {
-            const auto* exit_reason = hard_camera_cut
+            const auto* exit_reason = !cinematic_camera_assist_enabled
+                ? "disabled"
+                : hard_camera_cut
                 ? "hard-cut"
                 : cutscene_segment_expired
                     ? "timeout"
@@ -9679,7 +9697,8 @@ void VR::update_game_fov() {
             m_prospi_cutscene_segment_active = false;
         }
 
-        if (!m_prospi_cutscene_segment_active && cutscene_segment_candidate) {
+        if (cinematic_camera_assist_enabled &&
+            !m_prospi_cutscene_segment_active && cutscene_segment_candidate) {
             m_prospi_cutscene_segment_active = true;
             m_prospi_cutscene_segment_focus_distance = active_dolly_distance;
             m_prospi_cutscene_segment_safety_zone = (int32_t)(
@@ -9933,6 +9952,7 @@ void VR::update_game_fov() {
     auto telephoto_perf_should_apply =
         is_prospi &&
         m_match_game_fov_prospi_telephoto_perf_override->value() &&
+        m_match_game_fov_prospi_runtime_lod_cvar_switching->value() &&
         (line_telephoto_perf_active ||
          (!is_prospi_nontelephoto_preset(prospi_preset) &&
           (raw_fov <= telephoto_perf_trigger_fov || game_fov_for_matching <= telephoto_perf_trigger_fov)));
@@ -13020,12 +13040,19 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                 if (is_prospi_executable() &&
                     ImGui::CollapsingHeader("ProSpi Telephoto Performance", ImGuiTreeNodeFlags_DefaultOpen)) {
-                    m_match_game_fov_prospi_telephoto_perf_override->draw("Enable Telephoto Performance Override");
+                    m_match_game_fov_prospi_telephoto_perf_override->draw("Enable Telephoto Performance Profile");
                     if (m_match_game_fov_prospi_telephoto_perf_override->value()) {
-                        m_match_game_fov_prospi_telephoto_perf_trigger_fov->draw("Telephoto Trigger FOV");
-                        m_match_game_fov_prospi_telephoto_perf_view_distance_scale->draw("Telephoto View Distance Scale");
-                        m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale->draw("Telephoto Static Mesh LOD Distance Scale");
-                        m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias->draw("Telephoto Skeletal Mesh LOD Bias");
+                        m_match_game_fov_prospi_runtime_lod_cvar_switching->draw("Allow Runtime LOD CVar Switching (May Hitch)");
+                        ImGui::TextWrapped(
+                            "Default-off safety gate. Runtime LOD changes can trigger streaming/render-state work at camera cuts. "
+                            "Leave this disabled for stable gameplay; the profile will not mutate game cvars."
+                        );
+                        if (m_match_game_fov_prospi_runtime_lod_cvar_switching->value()) {
+                            m_match_game_fov_prospi_telephoto_perf_trigger_fov->draw("Telephoto Trigger FOV");
+                            m_match_game_fov_prospi_telephoto_perf_view_distance_scale->draw("Telephoto View Distance Scale");
+                            m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale->draw("Telephoto Static Mesh LOD Distance Scale");
+                            m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias->draw("Telephoto Skeletal Mesh LOD Bias");
+                        }
                     }
 
                     ImGui::SeparatorText("Crowd Visibility Guard");
@@ -13261,6 +13288,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     );
                     m_match_game_fov_prospi_auto_camera_sequencer->draw("Enable Auto Camera Sequencer");
                     if (m_match_game_fov_prospi_auto_camera_sequencer->value()) {
+                        m_match_game_fov_prospi_cinematic_camera_assist->draw("Enable Broad Cinematic Camera Assist (Legacy)");
+                        ImGui::TextWrapped(
+                            "Default Assist modifies only confirmed ball-follow shots and explicit saved calibrations. "
+                            "Enable this legacy option only if you want coordinate rules to alter replay, aerial, dugout, crowd, and unknown cinematic cameras."
+                        );
                         m_match_game_fov_prospi_auto_camera_sequencer_mode->draw("Sequencer Mode");
                         m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov->draw("Sequencer Telephoto Trigger FOV");
                         m_match_game_fov_prospi_auto_camera_sequencer_low_camera_max_z->draw("Low Camera Max Z");

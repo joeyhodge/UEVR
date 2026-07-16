@@ -1523,7 +1523,8 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_upper_deck_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiUpperDeckActualMin"), 10.0f, 60.0f, 17.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_plate_high_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiPlateHighActualMin"), 10.0f, 60.0f, 15.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_deep_outfield_actual_min{ ModSlider::create(generate_name("MatchGameFOVProSpiDeepOutfieldActualMin"), 10.0f, 60.0f, 18.0f) };
-    const ModToggle::Ptr m_match_game_fov_prospi_telephoto_perf_override{ ModToggle::create(generate_name("MatchGameFOVProSpiTelephotoPerfOverride"), true) };
+    const ModToggle::Ptr m_match_game_fov_prospi_telephoto_perf_override{ ModToggle::create(generate_name("MatchGameFOVProSpiTelephotoPerfOverride"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_runtime_lod_cvar_switching{ ModToggle::create(generate_name("MatchGameFOVProSpiRuntimeLODCVarSwitching"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfTriggerFOV"), 10.0f, 40.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfViewDistanceScale"), 0.10f, 2.0f, 0.50f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfStaticMeshLODDistanceScale"), 0.10f, 4.0f, 2.00f) };
@@ -1605,6 +1606,7 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyTelephotoTriggerFOV"), 5.0f, 60.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldYMax"), -20000.0f, 5000.0f, -6000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_cinematic_camera_assist{ ModToggle::create(generate_name("MatchGameFOVProSpiCinematicCameraAssist"), false) };
     const ModCombo::Ptr m_match_game_fov_prospi_auto_camera_sequencer_mode{ ModCombo::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMode"), s_prospi_auto_camera_sequencer_mode_names, PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST) };
     const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerTriggerFOV"), 5.0f, 60.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_low_camera_max_z{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerLowCameraMaxZ"), -500.0f, 5000.0f, 1400.0f) };
@@ -1999,6 +2001,7 @@ public:
             *m_match_game_fov_prospi_plate_high_actual_min,
             *m_match_game_fov_prospi_deep_outfield_actual_min,
             *m_match_game_fov_prospi_telephoto_perf_override,
+            *m_match_game_fov_prospi_runtime_lod_cvar_switching,
             *m_match_game_fov_prospi_telephoto_perf_trigger_fov,
             *m_match_game_fov_prospi_telephoto_perf_view_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale,
@@ -2057,6 +2060,7 @@ public:
             *m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov,
             *m_match_game_fov_prospi_camera_safety_outfield_y_max,
             *m_match_game_fov_prospi_auto_camera_sequencer,
+            *m_match_game_fov_prospi_cinematic_camera_assist,
             *m_match_game_fov_prospi_auto_camera_sequencer_mode,
             *m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov,
             *m_match_game_fov_prospi_auto_camera_sequencer_low_camera_max_z,
