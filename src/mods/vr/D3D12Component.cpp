@@ -106,6 +106,50 @@ bool is_prospi_executable_cached() {
     return is_prospi;
 }
 
+bool is_prospi_depth_stability_guard_active(VR* vr) {
+    return is_prospi_executable_cached() &&
+           vr != nullptr &&
+           vr->get_runtime() != nullptr &&
+           vr->get_runtime()->is_openxr() &&
+           vr->is_using_afr();
+}
+
+bool is_prospi_depth_aspect_compatible(VR* vr, uint32_t width, uint32_t height) {
+    if (vr == nullptr || width == 0 || height == 0 || vr->get_hmd_width() == 0 || vr->get_hmd_height() == 0) {
+        return false;
+    }
+
+    const uint64_t candidate_cross = (uint64_t)width * vr->get_hmd_height();
+    const uint64_t expected_cross = (uint64_t)height * vr->get_hmd_width();
+    const uint64_t difference = candidate_cross > expected_cross
+        ? candidate_cross - expected_cross
+        : expected_cross - candidate_cross;
+    const uint64_t scale = (std::max)(candidate_cross, expected_cross);
+
+    // ProSpi's actual per-eye depth follows the HMD aspect ratio even when
+    // dynamic resolution changes its extent. Desktop and cutscene depths do not.
+    return scale > 0 && difference * 100 <= scale * 3;
+}
+
+std::pair<uint32_t, uint32_t> get_openxr_depth_extent(VR* vr) {
+    if (vr == nullptr || vr->get_openxr_runtime() == nullptr) {
+        return {};
+    }
+
+    const auto openxr = vr->get_openxr_runtime();
+    const auto index = vr->is_using_afr()
+        ? runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE
+        : runtimes::OpenXR::SwapchainIndex::DEPTH;
+    std::scoped_lock _{openxr->swapchain_mtx};
+    const auto it = openxr->swapchains.find((uint32_t)index);
+
+    if (it == openxr->swapchains.end()) {
+        return {};
+    }
+
+    return {(uint32_t)it->second.width, (uint32_t)it->second.height};
+}
+
 bool is_ue58_runtime_cached() {
     static const bool is_ue58 = []() {
         const auto file_version = sdk::get_file_version_info();
@@ -1872,6 +1916,83 @@ d3d12::TextureContext* D3D12Component::render_dune_hmd_mono_scene_texture(
     return &m_dune_hmd_mono_scene_tex;
 }
 
+D3D12Component::ProspiDepthCandidateDecision D3D12Component::evaluate_prospi_depth_candidate(
+    VR* vr,
+    const D3D12_RESOURCE_DESC& desc)
+{
+    if (!is_prospi_depth_stability_guard_active(vr)) {
+        return ProspiDepthCandidateDecision::Use;
+    }
+
+    const auto width = (uint32_t)desc.Width;
+    const auto height = desc.Height;
+
+    if (!is_prospi_depth_aspect_compatible(vr, width, height)) {
+        m_prospi_pending_depth_width = 0;
+        m_prospi_pending_depth_height = 0;
+        m_prospi_pending_depth_frames = 0;
+        m_prospi_pending_depth_since = {};
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[PROSPI_DEPTH_STABILITY] Ignoring auxiliary SceneDepthZ {}x{}; expected per-eye aspect near {}x{}",
+            width,
+            height,
+            vr->get_hmd_width(),
+            vr->get_hmd_height());
+        return ProspiDepthCandidateDecision::Reject;
+    }
+
+    const auto [active_width, active_height] = get_openxr_depth_extent(vr);
+    if (active_width == width && active_height == height) {
+        m_openxr.prospi_stable_depth_desc = desc;
+        m_openxr.has_prospi_stable_depth_desc = true;
+        m_prospi_pending_depth_width = 0;
+        m_prospi_pending_depth_height = 0;
+        m_prospi_pending_depth_frames = 0;
+        m_prospi_pending_depth_since = {};
+        return ProspiDepthCandidateDecision::Use;
+    }
+
+    if (m_openxr.has_prospi_stable_depth_desc &&
+        m_openxr.prospi_stable_depth_desc.Width == width &&
+        m_openxr.prospi_stable_depth_desc.Height == height)
+    {
+        return ProspiDepthCandidateDecision::ResizeReady;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_prospi_pending_depth_width != width || m_prospi_pending_depth_height != height) {
+        m_prospi_pending_depth_width = width;
+        m_prospi_pending_depth_height = height;
+        m_prospi_pending_depth_frames = 1;
+        m_prospi_pending_depth_since = now;
+        SPDLOG_INFO(
+            "[PROSPI_DEPTH_STABILITY] Observing new scene-compatible depth candidate {}x{} before resize",
+            width,
+            height);
+        return ProspiDepthCandidateDecision::Defer;
+    }
+
+    ++m_prospi_pending_depth_frames;
+    constexpr uint32_t MIN_STABLE_FRAMES = 12;
+    constexpr auto MIN_STABLE_TIME = std::chrono::milliseconds{500};
+    if (m_prospi_pending_depth_frames < MIN_STABLE_FRAMES || now - m_prospi_pending_depth_since < MIN_STABLE_TIME) {
+        return ProspiDepthCandidateDecision::Defer;
+    }
+
+    m_openxr.prospi_stable_depth_desc = desc;
+    m_openxr.has_prospi_stable_depth_desc = true;
+    m_prospi_pending_depth_width = 0;
+    m_prospi_pending_depth_height = 0;
+    m_prospi_pending_depth_frames = 0;
+    m_prospi_pending_depth_since = {};
+    SPDLOG_INFO(
+        "[PROSPI_DEPTH_STABILITY] Accepted stable SceneDepthZ {}x{} after bounded confirmation",
+        width,
+        height);
+    return ProspiDepthCandidateDecision::ResizeReady;
+}
+
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto on_frame_start = std::chrono::steady_clock::now();
     utility::ScopeGuard frame_timing_guard{[&]() {
@@ -3293,7 +3414,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto desc = scene_depth_tex->GetDesc();
 
             if (should_submit_depth && runtime->is_openxr()) {
-                if (vr->m_openxr->needs_depth_resize(desc.Width, desc.Height) || m_openxr.made_depth_with_null_defaults) {
+                const auto prospi_depth_decision = evaluate_prospi_depth_candidate(vr, desc);
+                if (prospi_depth_decision == ProspiDepthCandidateDecision::Reject ||
+                    prospi_depth_decision == ProspiDepthCandidateDecision::Defer)
+                {
+                    scene_depth_tex.Reset();
+                } else if (vr->m_openxr->needs_depth_resize(desc.Width, desc.Height) || m_openxr.made_depth_with_null_defaults) {
                     uint32_t reasons = SWAPCHAIN_RECREATE_DEPTH_EXTENT;
                     if (m_openxr.made_depth_with_null_defaults) {
                         reasons |= SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS;
@@ -4560,9 +4686,17 @@ void D3D12Component::on_reset(VR* vr) {
         ComPtr<ID3D12Resource> scene_depth_tex{rt_pool->get_texture<ID3D12Resource>(L"SceneDepthZ")};
 
         bool needs_depth_resize = false;
+        uint32_t selected_depth_width = 0;
+        uint32_t selected_depth_height = 0;
 
-        if (scene_depth_tex != nullptr) {
+        if (is_prospi_depth_stability_guard_active(vr) && m_openxr.has_prospi_stable_depth_desc) {
+            selected_depth_width = (uint32_t)m_openxr.prospi_stable_depth_desc.Width;
+            selected_depth_height = m_openxr.prospi_stable_depth_desc.Height;
+            needs_depth_resize = vr->m_openxr->needs_depth_resize(selected_depth_width, selected_depth_height);
+        } else if (!is_prospi_depth_stability_guard_active(vr) && scene_depth_tex != nullptr) {
             const auto desc = scene_depth_tex->GetDesc();
+            selected_depth_width = (uint32_t)desc.Width;
+            selected_depth_height = desc.Height;
             needs_depth_resize = vr->m_openxr->needs_depth_resize(desc.Width, desc.Height);
 
             if (needs_depth_resize) {
@@ -4610,11 +4744,8 @@ void D3D12Component::on_reset(VR* vr) {
             uint32_t new_depth_width = 0;
             uint32_t new_depth_height = 0;
 
-            if (scene_depth_tex != nullptr) {
-                const auto desc = scene_depth_tex->GetDesc();
-                new_depth_width = (uint32_t)desc.Width;
-                new_depth_height = (uint32_t)desc.Height;
-            }
+            new_depth_width = selected_depth_width;
+            new_depth_height = selected_depth_height;
 
             const auto defer_prospi_afr_recreate =
                 is_prospi_executable_cached() &&
@@ -5090,10 +5221,32 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
         auto& rt_pool = vr->get_render_target_pool_hook();
         auto depth_tex = rt_pool->get_texture<ID3D12Resource>(L"SceneDepthZ");
+        const auto use_prospi_stable_depth =
+            is_prospi_depth_stability_guard_active(vr.get()) && this->has_prospi_stable_depth_desc;
 
-        if (depth_tex != nullptr) {
+        if (use_prospi_stable_depth) {
+            this->made_depth_with_null_defaults = false;
+            depth_desc = this->prospi_stable_depth_desc;
+
+            SPDLOG_INFO(
+                "[PROSPI_DEPTH_STABILITY] Reusing accepted depth swapchain extent {}x{}",
+                depth_desc.Width,
+                depth_desc.Height);
+        } else if (!is_prospi_depth_stability_guard_active(vr.get()) && depth_tex != nullptr) {
             this->made_depth_with_null_defaults = false;
             depth_desc = depth_tex->GetDesc();
+        } else {
+            this->made_depth_with_null_defaults = true;
+            if (is_prospi_depth_stability_guard_active(vr.get())) {
+                SPDLOG_INFO("[PROSPI_DEPTH_STABILITY] No accepted depth extent yet; using temporary defaults");
+            } else {
+                spdlog::error("[VR] Depth texture is null! Using default values");
+            }
+            depth_desc.Width = vr->get_hmd_width() * 2;
+            depth_desc.Height = vr->get_hmd_height();
+        }
+
+        if (!this->made_depth_with_null_defaults) {
 
             if (depth_desc.Format == DXGI_FORMAT_R24G8_TYPELESS) {
                 depth_swapchain_create_info.format = DXGI_FORMAT_D24_UNORM_S8_UINT;
@@ -5114,11 +5267,6 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
 
             depth_swapchain_create_info.width = depth_desc.Width;
             depth_swapchain_create_info.height = depth_desc.Height;
-        } else {
-            this->made_depth_with_null_defaults = true;
-            spdlog::error("[VR] Depth texture is null! Using default values");
-            depth_desc.Width = vr->get_hmd_width() * 2;
-            depth_desc.Height = vr->get_hmd_height();
         }
 
         if (!vr->is_using_afr()) {
