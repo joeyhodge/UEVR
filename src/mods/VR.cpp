@@ -62,7 +62,6 @@ std::shared_ptr<VR>& VR::get() {
 
 VR::~VR() {
     stop_native_openxr_async_wait_worker();
-    restore_prospi_player_mask_override();
     restore_prospi_frame_pace_override();
     restore_1666amsterdam_native_postprocess_cvars();
     restore_daysgone_gbuffer_cvar();
@@ -5661,172 +5660,149 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
     }
 }
 
-void VR::restore_prospi_player_mask_override() {
-    m_prospi_player_mask_active.store(false, std::memory_order_relaxed);
-
-    if (!m_prospi_player_mask_baseline_valid) {
-        m_prospi_player_mask_last_forced = -1;
-        m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
-        m_prospi_player_mask_next_check = {};
+void VR::attempt_hook_prospi_player_visibility() {
+    if (m_prospi_player_visibility_hook_attempted || !is_prospi_executable()) {
         return;
     }
 
-    if (m_prospi_player_mask_cvar == nullptr ||
-        IsBadReadPtr(m_prospi_player_mask_cvar, sizeof(void*)) != FALSE)
-    {
+    m_prospi_player_visibility_hook_attempted = true;
+
+    // ProSpi's player renderer computes a visibility bit in R12B, then passes
+    // it to the renderer backend in R8D. The adjacent object-enabled flag at
+    // +0x6e0 lets the guard preserve intentional PLAYEROFF transitions.
+    constexpr const char* PLAYER_VISIBILITY_HANDOFF_PATTERN =
+        "E8 ? ? ? ? 4C 8B 08 45 0F B6 C4 48 8B 57 08 48 8B C8 "
+        "41 FF 91 E8 00 00 00 F3 0F 10 8F 70 07 00 00";
+    constexpr uintptr_t HOOK_OFFSET = 0x8;
+    constexpr std::array<uint8_t, 4> EXPECTED_HOOK_BYTES{0x45, 0x0F, 0xB6, 0xC4};
+
+    const auto module = utility::get_executable();
+    const auto module_size = utility::get_module_size(module);
+    const auto sequence = utility::scan(module, PLAYER_VISIBILITY_HANDOFF_PATTERN);
+    if (!module_size || !sequence) {
+        m_prospi_player_visibility_hook_status.store(-1, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_PLAYER_VISIBILITY] Failed to find the guarded player-renderer visibility handoff");
         return;
     }
 
-    const auto current = m_prospi_player_mask_cvar->GetInt();
-    m_prospi_player_mask_current.store(current, std::memory_order_relaxed);
-
-    // Do not overwrite a value the game changed after our last write.
-    if (current != m_prospi_player_mask_last_forced) {
-        SPDLOG_INFO(
-            "[PROSPI_PLAYER_MASK] Disabled without restoring because the game changed r.PlayerMask.Mode: current={} forced={} baseline={}",
-            current,
-            m_prospi_player_mask_last_forced,
-            m_prospi_player_mask_baseline);
-        m_prospi_player_mask_baseline_valid = false;
-        m_prospi_player_mask_baseline_status.store(-1, std::memory_order_relaxed);
-        m_prospi_player_mask_last_forced = -1;
-        m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
-        m_prospi_player_mask_next_check = {};
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_end = module_base + *module_size;
+    if (*sequence < module_base || *sequence + HOOK_OFFSET + EXPECTED_HOOK_BYTES.size() > module_end) {
+        m_prospi_player_visibility_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_PLAYER_VISIBILITY] Rejected out-of-range signature at 0x{:x}", *sequence);
         return;
     }
 
-    const auto restored = m_prospi_player_mask_cvar->Set(std::to_wstring(m_prospi_player_mask_baseline).c_str());
-    const auto after = m_prospi_player_mask_cvar->GetInt();
-    m_prospi_player_mask_current.store(after, std::memory_order_relaxed);
+    const auto second_start = *sequence + 1;
+    if (second_start < module_end) {
+        const auto second = utility::scan(second_start, module_end - second_start, PLAYER_VISIBILITY_HANDOFF_PATTERN);
+        if (second) {
+            m_prospi_player_visibility_hook_status.store(-2, std::memory_order_relaxed);
+            SPDLOG_WARN(
+                "[PROSPI_PLAYER_VISIBILITY] Refusing ambiguous signature matches at 0x{:x} and 0x{:x}",
+                *sequence,
+                *second);
+            return;
+        }
+    }
 
-    if (!restored || after != m_prospi_player_mask_baseline) {
-        SPDLOG_WARN(
-            "[PROSPI_PLAYER_MASK] Failed to restore r.PlayerMask.Mode: requested={} after={} set_ok={}",
-            m_prospi_player_mask_baseline,
-            after,
-            restored);
-        m_prospi_player_mask_next_check = {};
+    const auto hook_address = *sequence + HOOK_OFFSET;
+    const auto* hook_bytes = reinterpret_cast<const uint8_t*>(hook_address);
+    if (!std::equal(EXPECTED_HOOK_BYTES.begin(), EXPECTED_HOOK_BYTES.end(), hook_bytes)) {
+        m_prospi_player_visibility_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_PLAYER_VISIBILITY] Rejected unexpected instruction bytes at 0x{:x}", hook_address);
         return;
     }
 
+    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_player_visibility_hook);
+    if (!hook) {
+        m_prospi_player_visibility_hook_status.store(-4, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_PLAYER_VISIBILITY] Failed to install guarded hook at 0x{:x}", hook_address);
+        return;
+    }
+
+    m_prospi_player_visibility_hook = std::move(hook);
+    m_prospi_player_visibility_hook_address.store(hook_address, std::memory_order_relaxed);
+    m_prospi_player_visibility_hook_status.store(1, std::memory_order_relaxed);
     SPDLOG_INFO(
-        "[PROSPI_PLAYER_MASK] Restored r.PlayerMask.Mode={} from forced={}",
-        after,
-        m_prospi_player_mask_last_forced);
-
-    m_prospi_player_mask_baseline_valid = false;
-    m_prospi_player_mask_baseline_status.store(-1, std::memory_order_relaxed);
-    m_prospi_player_mask_last_forced = -1;
-    m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
-    m_prospi_player_mask_next_check = {};
+        "[PROSPI_PLAYER_VISIBILITY] Hooked player-renderer visibility handoff for {} at 0x{:x} (RVA 0x{:x})",
+        get_prospi_game_variant_name(),
+        hook_address,
+        hook_address - module_base);
 }
 
-void VR::update_prospi_player_mask_override() {
-    if (!is_prospi_executable()) {
+void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
+    if (g_framework == nullptr || g_framework->vr() == nullptr) {
         return;
     }
 
-    const auto requested_mode =
-        std::clamp(m_prospi_player_mask_mode->value(), (int32_t)PROSPI_PLAYER_MASK_GAME_DEFAULT, (int32_t)PROSPI_PLAYER_MASK_DISABLED);
-
-    if (requested_mode == PROSPI_PLAYER_MASK_GAME_DEFAULT) {
-        restore_prospi_player_mask_override();
+    auto* vr = g_framework->vr().get();
+    if (!vr->m_prospi_player_visibility_guard_enabled.load(std::memory_order_relaxed)) {
         return;
     }
 
-    const auto now = std::chrono::steady_clock::now();
-    const auto requested_changed = requested_mode != m_prospi_player_mask_last_requested;
-    if (!requested_changed &&
-        m_prospi_player_mask_next_check.time_since_epoch().count() != 0 &&
-        now < m_prospi_player_mask_next_check)
+    const auto visible = static_cast<uint8_t>(ctx.r12 & 0xff);
+    vr->m_prospi_player_visibility_call_count.fetch_add(1, std::memory_order_relaxed);
+
+    if (visible > 1) {
+        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (visible != 0) {
+        return;
+    }
+
+    constexpr uintptr_t PLAYER_ENABLED_OFFSET = 0x6e0;
+    const auto state_address = static_cast<uintptr_t>(ctx.rdi);
+    if (state_address < 0x10000 ||
+        (state_address & (alignof(void*) - 1)) != 0 ||
+        IsBadReadPtr(reinterpret_cast<const void*>(state_address + PLAYER_ENABLED_OFFSET), sizeof(uint8_t)) != FALSE)
     {
+        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
         return;
     }
 
-    m_prospi_player_mask_next_check = now + std::chrono::seconds(1);
+    const auto player_enabled = *reinterpret_cast<const uint8_t*>(state_address + PLAYER_ENABLED_OFFSET);
+    if (player_enabled > 1) {
+        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
-    if (m_prospi_player_mask_cvar == nullptr ||
-        IsBadReadPtr(m_prospi_player_mask_cvar, sizeof(void*)) != FALSE)
+    if (player_enabled == 0) {
+        vr->m_prospi_player_visibility_intentional_off_count.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
+    ctx.r12 = (ctx.r12 & ~uint64_t{0xff}) | uint64_t{1};
+    const auto forced = vr->m_prospi_player_visibility_forced_count.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    const auto now_ms = steady_clock_ms();
+    auto last_ms = vr->m_prospi_player_visibility_last_log_ms.load(std::memory_order_relaxed);
+    if ((last_ms == 0 || now_ms - last_ms >= 5000) &&
+        vr->m_prospi_player_visibility_last_log_ms.compare_exchange_strong(
+            last_ms,
+            now_ms,
+            std::memory_order_relaxed))
     {
-        const auto console_manager = sdk::FConsoleManager::get();
-        if (console_manager == nullptr) {
-            m_prospi_player_mask_cvar_status.store(-1, std::memory_order_relaxed);
-            return;
-        }
-
-        auto* object = console_manager->find(L"r.PlayerMask.Mode");
-        if (object == nullptr || object->AsCommand() != nullptr) {
-            m_prospi_player_mask_cvar_status.store(-1, std::memory_order_relaxed);
-            SPDLOG_WARNING_EVERY_N_SEC(5, "[PROSPI_PLAYER_MASK] r.PlayerMask.Mode is unavailable; override remains fail-closed");
-            return;
-        }
-
-        m_prospi_player_mask_cvar = (sdk::IConsoleVariable*)object;
-        m_prospi_player_mask_cvar_status.store(1, std::memory_order_relaxed);
-    }
-
-    const auto before = m_prospi_player_mask_cvar->GetInt();
-    m_prospi_player_mask_current.store(before, std::memory_order_relaxed);
-
-    if (!m_prospi_player_mask_baseline_valid) {
-        if (before < 0 || before > 2) {
-            m_prospi_player_mask_cvar_status.store(-2, std::memory_order_relaxed);
-            SPDLOG_WARNING_EVERY_N_SEC(
-                5,
-                "[PROSPI_PLAYER_MASK] Rejected implausible r.PlayerMask.Mode={} before write; override remains fail-closed",
-                before);
-            return;
-        }
-
-        m_prospi_player_mask_baseline = before;
-        m_prospi_player_mask_baseline_valid = true;
-        m_prospi_player_mask_baseline_status.store(before, std::memory_order_relaxed);
-    }
-
-    const int32_t target =
-        requested_mode == PROSPI_PLAYER_MASK_GRADATION_ONLY ? 1 : 0;
-    const auto was_active = m_prospi_player_mask_active.load(std::memory_order_relaxed);
-    bool set_ok = true;
-
-    if (before != target) {
-        set_ok = m_prospi_player_mask_cvar->Set(std::to_wstring(target).c_str());
-    }
-
-    const auto after = m_prospi_player_mask_cvar->GetInt();
-    // The readback is authoritative; some game CVars report a failed Set even
-    // when their sink accepted and applied the requested value.
-    const auto active = after == target;
-    m_prospi_player_mask_current.store(after, std::memory_order_relaxed);
-    m_prospi_player_mask_active.store(active, std::memory_order_relaxed);
-
-    if (active && (before != target || requested_changed)) {
-        m_prospi_player_mask_apply_count.fetch_add(1, std::memory_order_relaxed);
-        if (was_active && !requested_changed && before != target) {
-            m_prospi_player_mask_reassert_count.fetch_add(1, std::memory_order_relaxed);
-        }
-
         SPDLOG_INFO(
-            "[PROSPI_PLAYER_MASK] mode={} baseline={} before={} target={} after={} set_ok={} reassert={}",
-            requested_mode,
-            m_prospi_player_mask_baseline,
-            before,
-            target,
-            after,
-            set_ok,
-            was_active && !requested_changed && before != target);
-    } else if (!active) {
-        SPDLOG_WARNING_EVERY_N_SEC(
-            5,
-            "[PROSPI_PLAYER_MASK] Failed to apply mode={}: before={} target={} after={} set_ok={}",
-            requested_mode,
-            before,
-            target,
-            after,
-            set_ok);
+            "[PROSPI_PLAYER_VISIBILITY] restored={} observed={} intentional_off={} rejected={} state=0x{:x}",
+            forced,
+            vr->m_prospi_player_visibility_call_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed),
+            state_address);
     }
+}
 
-    m_prospi_player_mask_last_forced = active ? target : -1;
-    m_prospi_player_mask_last_requested = requested_mode;
+void VR::update_prospi_player_visibility_guard() {
+    const auto enabled =
+        is_prospi_executable() && m_prospi_preserve_enabled_player_models->value();
+    m_prospi_player_visibility_guard_enabled.store(enabled, std::memory_order_relaxed);
+
+    if (enabled) {
+        attempt_hook_prospi_player_visibility();
+    }
 }
 
 void VR::attempt_hook_prospi_frame_pace() {
@@ -6348,7 +6324,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_everspace2_cinematic_bars(engine);
 
     update_statistics_overlay(engine);
-    update_prospi_player_mask_override();
+    update_prospi_player_visibility_guard();
     update_prospi_frame_pace_override();
 
     const auto prospi_world_cull_override =
@@ -13509,28 +13485,32 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     "the HMD camera, projection, or any other game."
                 );
 
-                ImGui::SeparatorText("Player Mask / Visibility");
+                ImGui::SeparatorText("Player Model Visibility");
                 ImGui::TextWrapped(
-                    "Gradation Only disables the mode-2 player stencil pass while preserving the gradation mask. "
-                    "Disable Player Mask is the stronger diagnostic fallback. Game Default restores the captured value."
+                    "Preserves only player models that ProSpi still marks enabled but its custom camera test rejects. "
+                    "Intentional PLAYEROFF transitions remain hidden and the game keeps control of player LOD."
                 );
-                m_prospi_player_mask_mode->draw("Player Mask Override");
-                const auto player_mask_status = m_prospi_player_mask_cvar_status.load(std::memory_order_relaxed);
-                const auto player_mask_status_text =
-                    player_mask_status == 1 ? "ready" :
-                    player_mask_status == -1 ? "missing" :
-                    player_mask_status == -2 ? "rejected" :
+                m_prospi_preserve_enabled_player_models->draw("Preserve Enabled Player Models");
+                const auto player_visibility_status =
+                    m_prospi_player_visibility_hook_status.load(std::memory_order_relaxed);
+                const auto player_visibility_status_text =
+                    player_visibility_status == 1 ? "active" :
+                    player_visibility_status == -1 ? "signature missing" :
+                    player_visibility_status == -2 ? "ambiguous signature" :
+                    player_visibility_status == -3 ? "validation failed" :
+                    player_visibility_status == -4 ? "install failed" :
                     "idle";
                 ImGui::Text(
-                    "Status: %s | Active: %s | Current: %d | Baseline: %d",
-                    player_mask_status_text,
-                    m_prospi_player_mask_active.load(std::memory_order_relaxed) ? "yes" : "no",
-                    m_prospi_player_mask_current.load(std::memory_order_relaxed),
-                    m_prospi_player_mask_baseline_status.load(std::memory_order_relaxed));
+                    "Status: %s | Hook: 0x%llx | Enabled: %s",
+                    player_visibility_status_text,
+                    (unsigned long long)m_prospi_player_visibility_hook_address.load(std::memory_order_relaxed),
+                    m_prospi_player_visibility_guard_enabled.load(std::memory_order_relaxed) ? "yes" : "no");
                 ImGui::Text(
-                    "Writes: %llu | Reassertions: %llu",
-                    (unsigned long long)m_prospi_player_mask_apply_count.load(std::memory_order_relaxed),
-                    (unsigned long long)m_prospi_player_mask_reassert_count.load(std::memory_order_relaxed));
+                    "Observed: %llu | Restored: %llu | Intentional off: %llu | Rejected: %llu",
+                    (unsigned long long)m_prospi_player_visibility_call_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_forced_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed));
 
                 ImGui::SeparatorText("30/60 Frame-Pace Unlock");
                 ImGui::TextWrapped(
