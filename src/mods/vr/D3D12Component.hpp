@@ -204,14 +204,16 @@ private:
     void log_frame_timing_stats_if_needed(VR* vr);
     void log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width = 0, uint32_t new_depth_height = 0);
 
-    enum class ProspiDepthCandidateDecision {
+    enum class DepthCandidateDecision {
         Use,
         Defer,
         Reject,
         ResizeReady,
     };
 
-    ProspiDepthCandidateDecision evaluate_prospi_depth_candidate(VR* vr, const D3D12_RESOURCE_DESC& desc);
+    void sync_depth_target_stability_guard_state(VR* vr);
+    void clear_depth_target_stability_candidates(bool clear_stable);
+    DepthCandidateDecision evaluate_depth_candidate(VR* vr, const D3D12_RESOURCE_DESC& desc);
 
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
@@ -467,8 +469,8 @@ private:
         std::recursive_mutex mtx{};
         std::array<uint32_t, 2> last_resolution{};
         bool made_depth_with_null_defaults{false};
-        D3D12_RESOURCE_DESC prospi_stable_depth_desc{};
-        bool has_prospi_stable_depth_desc{};
+        D3D12_RESOURCE_DESC stable_depth_desc{};
+        bool has_stable_depth_desc{};
 
         friend class D3D12Component;
     } m_openxr;
@@ -482,9 +484,10 @@ private:
     bool m_dibr_was_active{};
     uint64_t m_swapchain_recreate_count{};
     uint32_t m_last_swapchain_recreate_reasons{};
-    uint32_t m_prospi_pending_depth_width{};
-    uint32_t m_prospi_pending_depth_height{};
-    uint32_t m_prospi_pending_depth_frames{};
-    std::chrono::steady_clock::time_point m_prospi_pending_depth_since{};
+    D3D12_RESOURCE_DESC m_pending_depth_desc{};
+    bool m_has_pending_depth_desc{};
+    uint32_t m_pending_depth_frames{};
+    std::chrono::steady_clock::time_point m_pending_depth_since{};
+    bool m_depth_target_stability_guard_was_active{};
 };
 } // namespace vrmod

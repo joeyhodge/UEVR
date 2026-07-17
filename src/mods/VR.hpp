@@ -502,6 +502,16 @@ public:
         return m_enable_depth->value();
     }
 
+    bool is_openxr_afr_depth_target_stability_enabled() const {
+        const auto runtime = get_runtime();
+        return m_openxr_afr_depth_target_stability->value() &&
+            m_enable_depth->value() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->is_openxr() &&
+            is_using_afr();
+    }
+
     bool is_decoupled_pitch_enabled() const {
         return m_decoupled_pitch->value();
     }
@@ -1430,6 +1440,7 @@ private:
     const ModCombo::Ptr m_desktop_mirror_mode{ ModCombo::create(generate_name("DesktopSpectatorViewMode"), s_desktop_mirror_mode_names, DESKTOP_MIRROR_FULL) };
     const ModToggle::Ptr m_enable_gui{ ModToggle::create(generate_name("EnableGUI"), true) };
     const ModToggle::Ptr m_enable_depth{ ModToggle::create(generate_name("PassDepthToRuntime"), false, true) };
+    const ModToggle::Ptr m_openxr_afr_depth_target_stability{ ModToggle::create(generate_name("OpenXRAFRDepthTargetStability"), false, true) };
     const ModToggle::Ptr m_enable_hitch_diagnostics{ ModToggle::create(generate_name("EnableHitchDiagnostics"), false, true) };
     const ModToggle::Ptr m_decoupled_pitch{ ModToggle::create(generate_name("DecoupledPitch"), false) };
     const ModToggle::Ptr m_decoupled_pitch_ui_adjust{ ModToggle::create(generate_name("DecoupledPitchUIAdjust"), true) };
@@ -1935,6 +1946,7 @@ public:
             *m_desktop_mirror_mode,
             *m_enable_gui,
             *m_enable_depth,
+            *m_openxr_afr_depth_target_stability,
             *m_enable_hitch_diagnostics,
             *m_decoupled_pitch,
             *m_decoupled_pitch_ui_adjust,

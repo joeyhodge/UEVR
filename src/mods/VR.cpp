@@ -13889,6 +13889,20 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::TreePop();
         }
 
+        if (ImGui::TreeNode("Advanced Rendering Compatibility")) {
+            m_openxr_afr_depth_target_stability->draw("Stabilize D3D12 OpenXR AFR Depth Targets");
+            if (m_openxr_afr_depth_target_stability->value()) {
+                ImGui::TextWrapped(
+                    "D3D12 + OpenXR + AFR only, with Pass Depth to Runtime enabled. Rejects invalid or auxiliary SceneDepthZ candidates and "
+                    "requires a compatible candidate to remain stable before rebuilding depth swapchains. Unconfirmed frames omit depth instead of "
+                    "resizing or submitting an unsafe target. Other renderers, runtimes, and rendering methods retain their original path.");
+                if (!is_openxr_afr_depth_target_stability_enabled()) {
+                    ImGui::TextWrapped("Currently inactive because one or more runtime requirements are not met.");
+                }
+            }
+            ImGui::TreePop();
+        }
+
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Splitscreen Compatibility")) {
             m_splitscreen_compatibility_mode->draw("Enabled");
