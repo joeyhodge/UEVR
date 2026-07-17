@@ -7,6 +7,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string_view>
@@ -5741,43 +5742,192 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
         return;
     }
 
-    const auto visible = static_cast<uint8_t>(ctx.r12 & 0xff);
-    vr->m_prospi_player_visibility_call_count.fetch_add(1, std::memory_order_relaxed);
-
-    if (visible > 1) {
-        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
+    const auto mode = static_cast<ProSpiPlayerVisibilityMode>(
+        vr->m_prospi_player_visibility_mode.load(std::memory_order_relaxed));
+    if (mode == ProSpiPlayerVisibilityMode::OFF) {
         return;
     }
 
-    if (visible != 0) {
+    struct PendingCounters {
+        uint64_t observed{};
+        uint64_t forced{};
+        uint64_t intentional_off{};
+        uint64_t rejected{};
+        uint64_t learned{};
+        uint64_t evicted{};
+        uint64_t expired{};
+        uint64_t skipped{};
+    };
+    static thread_local PendingCounters pending{};
+    static thread_local ProSpiPlayerVisibilityMode cached_mode{ProSpiPlayerVisibilityMode::OFF};
+    static thread_local std::array<uintptr_t, 8> aggressive_validated_states{};
+    static thread_local size_t aggressive_validated_state_next{};
+
+    const auto flush_pending_counters = [&]() {
+        const auto flush = [](std::atomic<uint64_t>& target, uint64_t& value) {
+            if (value != 0) {
+                target.fetch_add(value, std::memory_order_relaxed);
+                value = 0;
+            }
+        };
+
+        flush(vr->m_prospi_player_visibility_call_count, pending.observed);
+        flush(vr->m_prospi_player_visibility_forced_count, pending.forced);
+        flush(vr->m_prospi_player_visibility_intentional_off_count, pending.intentional_off);
+        flush(vr->m_prospi_player_visibility_rejected_count, pending.rejected);
+        flush(vr->m_prospi_player_visibility_balanced_learned_count, pending.learned);
+        flush(vr->m_prospi_player_visibility_balanced_evicted_count, pending.evicted);
+        flush(vr->m_prospi_player_visibility_balanced_expired_count, pending.expired);
+        flush(vr->m_prospi_player_visibility_balanced_skipped_count, pending.skipped);
+    };
+
+    if (cached_mode != mode) {
+        flush_pending_counters();
+        aggressive_validated_states.fill(0);
+        aggressive_validated_state_next = 0;
+        cached_mode = mode;
+    }
+
+    ++pending.observed;
+    if (pending.observed >= 256) {
+        flush_pending_counters();
+    }
+
+    const auto visible = static_cast<uint8_t>(ctx.r12 & 0xff);
+    if (visible > 1) {
+        ++pending.rejected;
         return;
     }
 
     constexpr uintptr_t PLAYER_ENABLED_OFFSET = 0x6e0;
     const auto state_address = static_cast<uintptr_t>(ctx.rdi);
-    if (state_address < 0x10000 ||
-        (state_address & (alignof(void*) - 1)) != 0 ||
-        IsBadReadPtr(reinterpret_cast<const void*>(state_address + PLAYER_ENABLED_OFFSET), sizeof(uint8_t)) != FALSE)
-    {
-        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
+    if (state_address < 0x10000 || (state_address & (alignof(void*) - 1)) != 0) {
+        ++pending.rejected;
         return;
+    }
+
+    const auto now_ms = vr->m_prospi_player_visibility_now_ms.load(std::memory_order_relaxed);
+    const auto generation =
+        vr->m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire);
+    ProSpiBalancedPlayerVisibilitySlot* balanced_slot = nullptr;
+
+    if (mode == ProSpiPlayerVisibilityMode::BALANCED) {
+        size_t empty_slot = PROSPI_BALANCED_PLAYER_SLOT_COUNT;
+        size_t oldest_slot = 0;
+        int64_t oldest_visible_ms = (std::numeric_limits<int64_t>::max)();
+
+        for (size_t i = 0; i < vr->m_prospi_balanced_player_visibility_slots.size(); ++i) {
+            auto& slot = vr->m_prospi_balanced_player_visibility_slots[i];
+            const auto cached_state = slot.state_address.load(std::memory_order_acquire);
+            if (cached_state == state_address) {
+                balanced_slot = &slot;
+                break;
+            }
+
+            if (cached_state == 0 && empty_slot == PROSPI_BALANCED_PLAYER_SLOT_COUNT) {
+                empty_slot = i;
+            }
+
+            const auto natural_ms = slot.last_naturally_visible_ms.load(std::memory_order_relaxed);
+            if (cached_state != 0 && natural_ms < oldest_visible_ms) {
+                oldest_visible_ms = natural_ms;
+                oldest_slot = i;
+            }
+        }
+
+        if (visible != 0) {
+            if (balanced_slot == nullptr) {
+                const auto target_index =
+                    empty_slot != PROSPI_BALANCED_PLAYER_SLOT_COUNT ? empty_slot : oldest_slot;
+                balanced_slot = &vr->m_prospi_balanced_player_visibility_slots[target_index];
+
+                if (balanced_slot->state_address.load(std::memory_order_acquire) != 0) {
+                    ++pending.evicted;
+                }
+
+                balanced_slot->state_address.store(0, std::memory_order_release);
+                balanced_slot->generation.store(generation, std::memory_order_relaxed);
+                balanced_slot->last_naturally_visible_ms.store(now_ms, std::memory_order_relaxed);
+                balanced_slot->state_address.store(state_address, std::memory_order_release);
+                ++pending.learned;
+            } else {
+                balanced_slot->generation.store(generation, std::memory_order_relaxed);
+                balanced_slot->last_naturally_visible_ms.store(now_ms, std::memory_order_relaxed);
+            }
+
+            return;
+        }
+
+        if (balanced_slot == nullptr) {
+            ++pending.skipped;
+            return;
+        }
+
+        const auto slot_generation = balanced_slot->generation.load(std::memory_order_relaxed);
+        const auto natural_ms =
+            balanced_slot->last_naturally_visible_ms.load(std::memory_order_relaxed);
+        const auto expired =
+            slot_generation != generation ||
+            now_ms <= 0 ||
+            natural_ms <= 0 ||
+            now_ms - natural_ms > PROSPI_BALANCED_PLAYER_HOLD_MS;
+        if (expired) {
+            auto expected_state = state_address;
+            balanced_slot->state_address.compare_exchange_strong(
+                expected_state,
+                0,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed);
+            ++pending.expired;
+            return;
+        }
+    } else if (visible != 0) {
+        return;
+    }
+
+    if (mode == ProSpiPlayerVisibilityMode::AGGRESSIVE) {
+        const auto validated = std::find(
+            aggressive_validated_states.begin(),
+            aggressive_validated_states.end(),
+            state_address) != aggressive_validated_states.end();
+        if (!validated) {
+            if (IsBadReadPtr(
+                    reinterpret_cast<const void*>(state_address + PLAYER_ENABLED_OFFSET),
+                    sizeof(uint8_t)) != FALSE)
+            {
+                ++pending.rejected;
+                return;
+            }
+
+            aggressive_validated_states[aggressive_validated_state_next] = state_address;
+            aggressive_validated_state_next =
+                (aggressive_validated_state_next + 1) % aggressive_validated_states.size();
+        }
     }
 
     const auto player_enabled = *reinterpret_cast<const uint8_t*>(state_address + PLAYER_ENABLED_OFFSET);
     if (player_enabled > 1) {
-        vr->m_prospi_player_visibility_rejected_count.fetch_add(1, std::memory_order_relaxed);
+        ++pending.rejected;
         return;
     }
 
     if (player_enabled == 0) {
-        vr->m_prospi_player_visibility_intentional_off_count.fetch_add(1, std::memory_order_relaxed);
+        if (balanced_slot != nullptr) {
+            auto expected_state = state_address;
+            balanced_slot->state_address.compare_exchange_strong(
+                expected_state,
+                0,
+                std::memory_order_acq_rel,
+                std::memory_order_relaxed);
+        }
+
+        ++pending.intentional_off;
         return;
     }
 
     ctx.r12 = (ctx.r12 & ~uint64_t{0xff}) | uint64_t{1};
-    const auto forced = vr->m_prospi_player_visibility_forced_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    ++pending.forced;
 
-    const auto now_ms = steady_clock_ms();
     auto last_ms = vr->m_prospi_player_visibility_last_log_ms.load(std::memory_order_relaxed);
     if ((last_ms == 0 || now_ms - last_ms >= 5000) &&
         vr->m_prospi_player_visibility_last_log_ms.compare_exchange_strong(
@@ -5785,20 +5935,129 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
             now_ms,
             std::memory_order_relaxed))
     {
+        flush_pending_counters();
         SPDLOG_INFO(
-            "[PROSPI_PLAYER_VISIBILITY] restored={} observed={} intentional_off={} rejected={} state=0x{:x}",
-            forced,
+            "[PROSPI_PLAYER_VISIBILITY] mode={} restored={} observed={} intentional_off={} rejected={} "
+            "learned={} evicted={} expired={} skipped={} state=0x{:x}",
+            mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced" : "aggressive_heavy",
+            vr->m_prospi_player_visibility_forced_count.load(std::memory_order_relaxed),
             vr->m_prospi_player_visibility_call_count.load(std::memory_order_relaxed),
             vr->m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
             vr->m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_balanced_learned_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_balanced_evicted_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_balanced_expired_count.load(std::memory_order_relaxed),
+            vr->m_prospi_player_visibility_balanced_skipped_count.load(std::memory_order_relaxed),
             state_address);
     }
 }
 
+void VR::clear_prospi_balanced_player_visibility_cache() {
+    for (auto& slot : m_prospi_balanced_player_visibility_slots) {
+        slot.state_address.store(0, std::memory_order_release);
+        slot.last_naturally_visible_ms.store(0, std::memory_order_relaxed);
+        slot.generation.store(0, std::memory_order_relaxed);
+    }
+
+    m_prospi_player_visibility_balanced_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
 void VR::update_prospi_player_visibility_guard() {
-    const auto enabled =
-        is_prospi_executable() && m_prospi_preserve_enabled_player_models->value();
+    auto mode = ProSpiPlayerVisibilityMode::OFF;
+    if (is_prospi_executable()) {
+        // Preserve the existing config key and behavior as the explicit heavy
+        // fallback. It wins if both default-off controls are selected.
+        if (m_prospi_preserve_enabled_player_models->value()) {
+            mode = ProSpiPlayerVisibilityMode::AGGRESSIVE;
+        } else if (m_prospi_balanced_player_preservation->value()) {
+            mode = ProSpiPlayerVisibilityMode::BALANCED;
+        }
+    }
+
+    const auto mode_value = static_cast<uint8_t>(mode);
+    const auto previous_mode = static_cast<ProSpiPlayerVisibilityMode>(
+        m_prospi_player_visibility_mode.exchange(mode_value, std::memory_order_acq_rel));
+    const auto enabled = mode != ProSpiPlayerVisibilityMode::OFF;
     m_prospi_player_visibility_guard_enabled.store(enabled, std::memory_order_relaxed);
+
+    if (enabled) {
+        m_prospi_player_visibility_now_ms.store(steady_clock_ms(), std::memory_order_relaxed);
+    }
+
+    if (previous_mode != mode) {
+        if (previous_mode == ProSpiPlayerVisibilityMode::BALANCED ||
+            mode == ProSpiPlayerVisibilityMode::BALANCED)
+        {
+            clear_prospi_balanced_player_visibility_cache();
+        }
+
+        m_prospi_player_visibility_last_cut_generation =
+            m_prospi_cut_cadence_guard_generation.load(std::memory_order_relaxed);
+        m_prospi_player_visibility_last_camera_sample =
+            mode == ProSpiPlayerVisibilityMode::BALANCED ?
+                get_last_detected_prospi_camera_sample() :
+                ProSpiFieldMapSample{};
+        m_prospi_player_visibility_last_log_ms.store(0, std::memory_order_relaxed);
+        SPDLOG_INFO(
+            "[PROSPI_PLAYER_VISIBILITY] mode={} balanced_slots={} hold_ms={}",
+            mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced" :
+            mode == ProSpiPlayerVisibilityMode::AGGRESSIVE ? "aggressive_heavy" :
+            "off",
+            PROSPI_BALANCED_PLAYER_SLOT_COUNT,
+            PROSPI_BALANCED_PLAYER_HOLD_MS);
+    }
+
+    if (mode == ProSpiPlayerVisibilityMode::BALANCED) {
+        bool camera_cut = false;
+        const auto cut_generation =
+            m_prospi_cut_cadence_guard_generation.load(std::memory_order_relaxed);
+        if (cut_generation != m_prospi_player_visibility_last_cut_generation) {
+            camera_cut = true;
+            m_prospi_player_visibility_last_cut_generation = cut_generation;
+        }
+
+        const auto camera_sample = get_last_detected_prospi_camera_sample();
+        if (camera_sample.valid) {
+            if (m_prospi_player_visibility_last_camera_sample.valid &&
+                camera_sample.timestamp_ms != m_prospi_player_visibility_last_camera_sample.timestamp_ms)
+            {
+                const auto& previous = m_prospi_player_visibility_last_camera_sample;
+                const auto location_delta = glm::distance(camera_sample.location, previous.location);
+                const auto pitch_delta = normalize_angle_delta(camera_sample.rotation.x, previous.rotation.x);
+                const auto yaw_delta = normalize_angle_delta(camera_sample.rotation.y, previous.rotation.y);
+                const auto roll_delta = normalize_angle_delta(camera_sample.rotation.z, previous.rotation.z);
+                const auto rotation_delta =
+                    (std::max)(pitch_delta, (std::max)(yaw_delta, roll_delta));
+                const auto fov_delta = std::abs(camera_sample.raw_fov - previous.raw_fov);
+
+                camera_cut =
+                    camera_cut ||
+                    location_delta >= std::clamp(
+                        m_match_game_fov_camera_cut_stabilizer_location_delta->value(),
+                        25.0f,
+                        10000.0f) ||
+                    rotation_delta >= std::clamp(
+                        m_match_game_fov_camera_cut_stabilizer_rotation_delta->value(),
+                        1.0f,
+                        90.0f) ||
+                    fov_delta >= std::clamp(
+                        m_match_game_fov_camera_cut_stabilizer_fov_delta->value(),
+                        1.0f,
+                        45.0f);
+            }
+
+            m_prospi_player_visibility_last_camera_sample = camera_sample;
+        }
+
+        if (camera_cut) {
+            clear_prospi_balanced_player_visibility_cache();
+            const auto resets =
+                m_prospi_player_visibility_camera_reset_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            SPDLOG_INFO(
+                "[PROSPI_PLAYER_VISIBILITY] balanced cache reset for camera cut (count={})",
+                resets);
+        }
+    }
 
     if (enabled) {
         attempt_hook_prospi_player_visibility();
@@ -13487,10 +13746,16 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                 ImGui::SeparatorText("Player Model Visibility");
                 ImGui::TextWrapped(
-                    "Preserves only player models that ProSpi still marks enabled but its custom camera test rejects. "
-                    "Intentional PLAYEROFF transitions remain hidden and the game keeps control of player LOD."
+                    "Balanced caches at most four player states that were naturally visible in the current shot, "
+                    "preserves them for two seconds through transient custom-camera rejection, and clears them on "
+                    "camera cuts or PLAYEROFF. It is substantially lighter than the fallback below."
                 );
-                m_prospi_preserve_enabled_player_models->draw("Preserve Enabled Player Models");
+                m_prospi_balanced_player_preservation->draw("Balanced Player Preservation");
+                ImGui::TextWrapped(
+                    "Aggressive / Heavy preserves every enabled player rejected by the custom camera test. "
+                    "It is the original high-cost fallback and takes precedence if both options are checked."
+                );
+                m_prospi_preserve_enabled_player_models->draw("Aggressive / Heavy Player Preservation");
                 const auto player_visibility_status =
                     m_prospi_player_visibility_hook_status.load(std::memory_order_relaxed);
                 const auto player_visibility_status_text =
@@ -13500,17 +13765,38 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     player_visibility_status == -3 ? "validation failed" :
                     player_visibility_status == -4 ? "install failed" :
                     "idle";
+                const auto player_visibility_mode = static_cast<ProSpiPlayerVisibilityMode>(
+                    m_prospi_player_visibility_mode.load(std::memory_order_relaxed));
+                const auto player_visibility_mode_text =
+                    player_visibility_mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced" :
+                    player_visibility_mode == ProSpiPlayerVisibilityMode::AGGRESSIVE ? "aggressive / heavy" :
+                    "off";
+                uint32_t tracked_players = 0;
+                for (const auto& slot : m_prospi_balanced_player_visibility_slots) {
+                    tracked_players +=
+                        slot.state_address.load(std::memory_order_relaxed) != 0 ? 1U : 0U;
+                }
                 ImGui::Text(
-                    "Status: %s | Hook: 0x%llx | Enabled: %s",
+                    "Status: %s | Hook: 0x%llx | Mode: %s",
                     player_visibility_status_text,
                     (unsigned long long)m_prospi_player_visibility_hook_address.load(std::memory_order_relaxed),
-                    m_prospi_player_visibility_guard_enabled.load(std::memory_order_relaxed) ? "yes" : "no");
+                    player_visibility_mode_text);
                 ImGui::Text(
                     "Observed: %llu | Restored: %llu | Intentional off: %llu | Rejected: %llu",
                     (unsigned long long)m_prospi_player_visibility_call_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_forced_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Balanced tracked: %u/4 | Learned: %llu | Evicted: %llu | Expired: %llu",
+                    tracked_players,
+                    (unsigned long long)m_prospi_player_visibility_balanced_learned_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_balanced_evicted_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_balanced_expired_count.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Balanced skipped: %llu | Camera resets: %llu",
+                    (unsigned long long)m_prospi_player_visibility_balanced_skipped_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_camera_reset_count.load(std::memory_order_relaxed));
 
                 ImGui::SeparatorText("30/60 Frame-Pace Unlock");
                 ImGui::TextWrapped(

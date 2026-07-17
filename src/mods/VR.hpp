@@ -1540,6 +1540,9 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfViewDistanceScale"), 0.10f, 2.0f, 0.50f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfStaticMeshLODDistanceScale"), 0.10f, 4.0f, 2.00f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfSkeletalMeshLODBias"), 0.0f, 4.0f, 1.0f) };
+    const ModToggle::Ptr m_prospi_balanced_player_preservation{
+        ModToggle::create(generate_name("ProSpiBalancedPlayerPreservation"), false)
+    };
     const ModToggle::Ptr m_prospi_preserve_enabled_player_models{
         ModToggle::create(generate_name("ProSpiPreserveEnabledPlayerModels"), false)
     };
@@ -1931,6 +1934,7 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void clear_prospi_balanced_player_visibility_cache();
     void update_prospi_player_visibility_guard();
     void attempt_hook_prospi_player_visibility();
     static void prospi_player_visibility_hook(safetyhook::Context& ctx);
@@ -2031,6 +2035,7 @@ public:
             *m_match_game_fov_prospi_telephoto_perf_view_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias,
+            *m_prospi_balanced_player_preservation,
             *m_prospi_preserve_enabled_player_models,
             *m_prospi_remove_frame_pace,
             *m_match_game_fov_prospi_crowd_visibility_guard,
@@ -2405,15 +2410,41 @@ private:
     std::atomic<int32_t> m_prospi_spectator_line_mesh_missing_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_attempt_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_write_count{0};
+    enum class ProSpiPlayerVisibilityMode : uint8_t {
+        OFF = 0,
+        BALANCED = 1,
+        AGGRESSIVE = 2,
+    };
+    struct ProSpiBalancedPlayerVisibilitySlot {
+        std::atomic<uintptr_t> state_address{0};
+        std::atomic<int64_t> last_naturally_visible_ms{0};
+        std::atomic<uint64_t> generation{0};
+    };
+    static constexpr size_t PROSPI_BALANCED_PLAYER_SLOT_COUNT = 4;
+    static constexpr int64_t PROSPI_BALANCED_PLAYER_HOLD_MS = 2000;
     safetyhook::MidHook m_prospi_player_visibility_hook{};
     bool m_prospi_player_visibility_hook_attempted{false};
     std::atomic<bool> m_prospi_player_visibility_guard_enabled{false};
+    std::atomic<uint8_t> m_prospi_player_visibility_mode{
+        static_cast<uint8_t>(ProSpiPlayerVisibilityMode::OFF)
+    };
     std::atomic<int32_t> m_prospi_player_visibility_hook_status{0};
     std::atomic<uintptr_t> m_prospi_player_visibility_hook_address{0};
+    std::atomic<int64_t> m_prospi_player_visibility_now_ms{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_balanced_generation{1};
+    std::array<ProSpiBalancedPlayerVisibilitySlot, PROSPI_BALANCED_PLAYER_SLOT_COUNT>
+        m_prospi_balanced_player_visibility_slots{};
+    uint64_t m_prospi_player_visibility_last_cut_generation{0};
+    ProSpiFieldMapSample m_prospi_player_visibility_last_camera_sample{};
     std::atomic<uint64_t> m_prospi_player_visibility_call_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_forced_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_intentional_off_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_rejected_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_balanced_learned_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_balanced_evicted_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_balanced_expired_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_balanced_skipped_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_camera_reset_count{0};
     std::atomic<int64_t> m_prospi_player_visibility_last_log_ms{0};
     safetyhook::MidHook m_prospi_frame_pace_hook{};
     bool m_prospi_frame_pace_hook_attempted{false};
