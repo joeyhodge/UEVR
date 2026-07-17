@@ -62,6 +62,8 @@ std::shared_ptr<VR>& VR::get() {
 
 VR::~VR() {
     stop_native_openxr_async_wait_worker();
+    restore_prospi_player_mask_override();
+    restore_prospi_frame_pace_override();
     restore_1666amsterdam_native_postprocess_cvars();
     restore_daysgone_gbuffer_cvar();
     stop_hitch_snapshot_writer();
@@ -5659,6 +5661,522 @@ void VR::prospi_spectator_world_cull_hook(safetyhook::Context& ctx) {
     }
 }
 
+void VR::restore_prospi_player_mask_override() {
+    m_prospi_player_mask_active.store(false, std::memory_order_relaxed);
+
+    if (!m_prospi_player_mask_baseline_valid) {
+        m_prospi_player_mask_last_forced = -1;
+        m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
+        m_prospi_player_mask_next_check = {};
+        return;
+    }
+
+    if (m_prospi_player_mask_cvar == nullptr ||
+        IsBadReadPtr(m_prospi_player_mask_cvar, sizeof(void*)) != FALSE)
+    {
+        return;
+    }
+
+    const auto current = m_prospi_player_mask_cvar->GetInt();
+    m_prospi_player_mask_current.store(current, std::memory_order_relaxed);
+
+    // Do not overwrite a value the game changed after our last write.
+    if (current != m_prospi_player_mask_last_forced) {
+        SPDLOG_INFO(
+            "[PROSPI_PLAYER_MASK] Disabled without restoring because the game changed r.PlayerMask.Mode: current={} forced={} baseline={}",
+            current,
+            m_prospi_player_mask_last_forced,
+            m_prospi_player_mask_baseline);
+        m_prospi_player_mask_baseline_valid = false;
+        m_prospi_player_mask_baseline_status.store(-1, std::memory_order_relaxed);
+        m_prospi_player_mask_last_forced = -1;
+        m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
+        m_prospi_player_mask_next_check = {};
+        return;
+    }
+
+    const auto restored = m_prospi_player_mask_cvar->Set(std::to_wstring(m_prospi_player_mask_baseline).c_str());
+    const auto after = m_prospi_player_mask_cvar->GetInt();
+    m_prospi_player_mask_current.store(after, std::memory_order_relaxed);
+
+    if (!restored || after != m_prospi_player_mask_baseline) {
+        SPDLOG_WARN(
+            "[PROSPI_PLAYER_MASK] Failed to restore r.PlayerMask.Mode: requested={} after={} set_ok={}",
+            m_prospi_player_mask_baseline,
+            after,
+            restored);
+        m_prospi_player_mask_next_check = {};
+        return;
+    }
+
+    SPDLOG_INFO(
+        "[PROSPI_PLAYER_MASK] Restored r.PlayerMask.Mode={} from forced={}",
+        after,
+        m_prospi_player_mask_last_forced);
+
+    m_prospi_player_mask_baseline_valid = false;
+    m_prospi_player_mask_baseline_status.store(-1, std::memory_order_relaxed);
+    m_prospi_player_mask_last_forced = -1;
+    m_prospi_player_mask_last_requested = PROSPI_PLAYER_MASK_GAME_DEFAULT;
+    m_prospi_player_mask_next_check = {};
+}
+
+void VR::update_prospi_player_mask_override() {
+    if (!is_prospi_executable()) {
+        return;
+    }
+
+    const auto requested_mode =
+        std::clamp(m_prospi_player_mask_mode->value(), (int32_t)PROSPI_PLAYER_MASK_GAME_DEFAULT, (int32_t)PROSPI_PLAYER_MASK_DISABLED);
+
+    if (requested_mode == PROSPI_PLAYER_MASK_GAME_DEFAULT) {
+        restore_prospi_player_mask_override();
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto requested_changed = requested_mode != m_prospi_player_mask_last_requested;
+    if (!requested_changed &&
+        m_prospi_player_mask_next_check.time_since_epoch().count() != 0 &&
+        now < m_prospi_player_mask_next_check)
+    {
+        return;
+    }
+
+    m_prospi_player_mask_next_check = now + std::chrono::seconds(1);
+
+    if (m_prospi_player_mask_cvar == nullptr ||
+        IsBadReadPtr(m_prospi_player_mask_cvar, sizeof(void*)) != FALSE)
+    {
+        const auto console_manager = sdk::FConsoleManager::get();
+        if (console_manager == nullptr) {
+            m_prospi_player_mask_cvar_status.store(-1, std::memory_order_relaxed);
+            return;
+        }
+
+        auto* object = console_manager->find(L"r.PlayerMask.Mode");
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            m_prospi_player_mask_cvar_status.store(-1, std::memory_order_relaxed);
+            SPDLOG_WARNING_EVERY_N_SEC(5, "[PROSPI_PLAYER_MASK] r.PlayerMask.Mode is unavailable; override remains fail-closed");
+            return;
+        }
+
+        m_prospi_player_mask_cvar = (sdk::IConsoleVariable*)object;
+        m_prospi_player_mask_cvar_status.store(1, std::memory_order_relaxed);
+    }
+
+    const auto before = m_prospi_player_mask_cvar->GetInt();
+    m_prospi_player_mask_current.store(before, std::memory_order_relaxed);
+
+    if (!m_prospi_player_mask_baseline_valid) {
+        if (before < 0 || before > 2) {
+            m_prospi_player_mask_cvar_status.store(-2, std::memory_order_relaxed);
+            SPDLOG_WARNING_EVERY_N_SEC(
+                5,
+                "[PROSPI_PLAYER_MASK] Rejected implausible r.PlayerMask.Mode={} before write; override remains fail-closed",
+                before);
+            return;
+        }
+
+        m_prospi_player_mask_baseline = before;
+        m_prospi_player_mask_baseline_valid = true;
+        m_prospi_player_mask_baseline_status.store(before, std::memory_order_relaxed);
+    }
+
+    const int32_t target =
+        requested_mode == PROSPI_PLAYER_MASK_GRADATION_ONLY ? 1 : 0;
+    const auto was_active = m_prospi_player_mask_active.load(std::memory_order_relaxed);
+    bool set_ok = true;
+
+    if (before != target) {
+        set_ok = m_prospi_player_mask_cvar->Set(std::to_wstring(target).c_str());
+    }
+
+    const auto after = m_prospi_player_mask_cvar->GetInt();
+    // The readback is authoritative; some game CVars report a failed Set even
+    // when their sink accepted and applied the requested value.
+    const auto active = after == target;
+    m_prospi_player_mask_current.store(after, std::memory_order_relaxed);
+    m_prospi_player_mask_active.store(active, std::memory_order_relaxed);
+
+    if (active && (before != target || requested_changed)) {
+        m_prospi_player_mask_apply_count.fetch_add(1, std::memory_order_relaxed);
+        if (was_active && !requested_changed && before != target) {
+            m_prospi_player_mask_reassert_count.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        SPDLOG_INFO(
+            "[PROSPI_PLAYER_MASK] mode={} baseline={} before={} target={} after={} set_ok={} reassert={}",
+            requested_mode,
+            m_prospi_player_mask_baseline,
+            before,
+            target,
+            after,
+            set_ok,
+            was_active && !requested_changed && before != target);
+    } else if (!active) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            5,
+            "[PROSPI_PLAYER_MASK] Failed to apply mode={}: before={} target={} after={} set_ok={}",
+            requested_mode,
+            before,
+            target,
+            after,
+            set_ok);
+    }
+
+    m_prospi_player_mask_last_forced = active ? target : -1;
+    m_prospi_player_mask_last_requested = requested_mode;
+}
+
+void VR::attempt_hook_prospi_frame_pace() {
+    if (m_prospi_frame_pace_hook_attempted || !is_prospi_executable()) {
+        return;
+    }
+
+    m_prospi_frame_pace_hook_attempted = true;
+
+    // r.SetFramePace parses its requested rate into RBX immediately before
+    // validating that it is zero or a divisor of 60.
+    constexpr const char* FRAME_PACE_PARSE_PATTERN =
+        "65 48 8B 04 25 58 00 00 00 8B 0D ? ? ? ? BA 08 01 00 00 "
+        "F2 48 0F 2C D8 48 8B 0C C8 8B 04 0A 39 05 ? ? ? ? "
+        "0F 8F ? ? ? ? 85 DB";
+    constexpr uintptr_t HOOK_OFFSET = 0x19;
+    constexpr std::array<uint8_t, 7> EXPECTED_HOOK_BYTES{0x48, 0x8B, 0x0C, 0xC8, 0x8B, 0x04, 0x0A};
+
+    const auto module = utility::get_executable();
+    const auto module_size = utility::get_module_size(module);
+    const auto sequence = utility::scan(module, FRAME_PACE_PARSE_PATTERN);
+    if (!module_size || !sequence) {
+        m_prospi_frame_pace_hook_status.store(-1, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to find the guarded r.SetFramePace parse sequence");
+        return;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_end = module_base + *module_size;
+    if (*sequence < module_base || *sequence + HOOK_OFFSET + EXPECTED_HOOK_BYTES.size() > module_end) {
+        m_prospi_frame_pace_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected out-of-range r.SetFramePace signature at 0x{:x}", *sequence);
+        return;
+    }
+
+    const auto second_start = *sequence + 1;
+    if (second_start < module_end) {
+        const auto second = utility::scan(second_start, module_end - second_start, FRAME_PACE_PARSE_PATTERN);
+        if (second) {
+            m_prospi_frame_pace_hook_status.store(-2, std::memory_order_relaxed);
+            SPDLOG_WARN(
+                "[PROSPI_FRAME_PACE] Refusing ambiguous r.SetFramePace signature matches at 0x{:x} and 0x{:x}",
+                *sequence,
+                *second);
+            return;
+        }
+    }
+
+    const auto hook_address = *sequence + HOOK_OFFSET;
+    const auto* hook_bytes = reinterpret_cast<const uint8_t*>(hook_address);
+    if (!std::equal(EXPECTED_HOOK_BYTES.begin(), EXPECTED_HOOK_BYTES.end(), hook_bytes)) {
+        m_prospi_frame_pace_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected unexpected instruction bytes at 0x{:x}", hook_address);
+        return;
+    }
+
+    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_frame_pace_hook);
+    if (!hook) {
+        m_prospi_frame_pace_hook_status.store(-4, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to install guarded hook at 0x{:x}", hook_address);
+        return;
+    }
+
+    m_prospi_frame_pace_hook = std::move(hook);
+    m_prospi_frame_pace_hook_address.store(hook_address, std::memory_order_relaxed);
+    m_prospi_frame_pace_hook_status.store(1, std::memory_order_relaxed);
+    SPDLOG_INFO(
+        "[PROSPI_FRAME_PACE] Hooked r.SetFramePace parsed-rate handoff at 0x{:x} (RVA 0x{:x})",
+        hook_address,
+        hook_address - module_base);
+}
+
+void VR::prospi_frame_pace_hook(safetyhook::Context& ctx) {
+    if (g_framework == nullptr || g_framework->vr() == nullptr) {
+        return;
+    }
+
+    auto* vr = g_framework->vr().get();
+    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    const auto requested = static_cast<int64_t>(ctx.rbx);
+    vr->m_prospi_frame_pace_last_native_request.store(requested, std::memory_order_relaxed);
+    if (requested != 0) {
+        ctx.rbx = 0;
+        vr->m_prospi_frame_pace_native_override_count.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void VR::restore_prospi_frame_pace_override() {
+    m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+    m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+
+    if (!m_prospi_frame_pace_baselines_valid) {
+        m_prospi_frame_pace_next_check = {};
+        return;
+    }
+
+    if (m_prospi_sync_interval_cvar == nullptr ||
+        IsBadReadPtr(m_prospi_sync_interval_cvar, sizeof(void*)) != FALSE ||
+        m_prospi_vsync_cvar == nullptr ||
+        IsBadReadPtr(m_prospi_vsync_cvar, sizeof(void*)) != FALSE ||
+        m_prospi_max_fps_cvar == nullptr ||
+        IsBadReadPtr(m_prospi_max_fps_cvar, sizeof(void*)) != FALSE)
+    {
+        return;
+    }
+
+    auto sync_before = m_prospi_sync_interval_cvar->GetInt();
+    const auto vsync_before = m_prospi_vsync_cvar->GetInt();
+    const auto max_fps_before = m_prospi_max_fps_cvar->GetFloat();
+    bool sync_restored = sync_before != 0;
+    bool vsync_restored = vsync_before != 0;
+    bool max_fps_restored = std::abs(max_fps_before - 500.0f) > 0.01f;
+
+    if (sync_before == 0) {
+        bool command_restored = false;
+        if (m_prospi_set_frame_pace_command != nullptr &&
+            m_prospi_sync_interval_baseline >= 0 &&
+            (m_prospi_sync_interval_baseline == 0 ||
+                (m_prospi_sync_interval_baseline > 0 && 60 % m_prospi_sync_interval_baseline == 0)))
+        {
+            const auto baseline_rate = m_prospi_sync_interval_baseline == 0
+                ? 0
+                : 60 / m_prospi_sync_interval_baseline;
+            command_restored = m_prospi_set_frame_pace_command->Execute(std::to_wstring(baseline_rate));
+        }
+
+        sync_before = m_prospi_sync_interval_cvar->GetInt();
+        if (sync_before != m_prospi_sync_interval_baseline) {
+            command_restored =
+                m_prospi_sync_interval_cvar->Set(std::to_wstring(m_prospi_sync_interval_baseline).c_str()) &&
+                m_prospi_sync_interval_cvar->GetInt() == m_prospi_sync_interval_baseline;
+        }
+
+        sync_restored = command_restored || m_prospi_sync_interval_cvar->GetInt() == m_prospi_sync_interval_baseline;
+    }
+
+    if (vsync_before == 0) {
+        vsync_restored =
+            m_prospi_vsync_cvar->Set(std::to_wstring(m_prospi_vsync_baseline).c_str()) &&
+            m_prospi_vsync_cvar->GetInt() == m_prospi_vsync_baseline;
+    }
+
+    if (std::abs(max_fps_before - 500.0f) <= 0.01f) {
+        max_fps_restored =
+            m_prospi_max_fps_cvar->Set(std::to_wstring(m_prospi_max_fps_baseline).c_str()) &&
+            std::abs(m_prospi_max_fps_cvar->GetFloat() - m_prospi_max_fps_baseline) <= 0.01f;
+    }
+
+    m_prospi_frame_pace_current_sync_interval.store(m_prospi_sync_interval_cvar->GetInt(), std::memory_order_relaxed);
+    m_prospi_frame_pace_current_vsync.store(m_prospi_vsync_cvar->GetInt(), std::memory_order_relaxed);
+    m_prospi_frame_pace_current_max_fps.store(m_prospi_max_fps_cvar->GetFloat(), std::memory_order_relaxed);
+
+    if (!sync_restored || !vsync_restored || !max_fps_restored) {
+        SPDLOG_WARN(
+            "[PROSPI_FRAME_PACE] Restore incomplete: sync={} vsync={} max_fps={} baselines={}/{}/{:.2f}",
+            sync_restored,
+            vsync_restored,
+            max_fps_restored,
+            m_prospi_sync_interval_baseline,
+            m_prospi_vsync_baseline,
+            m_prospi_max_fps_baseline);
+        m_prospi_frame_pace_next_check = {};
+        return;
+    }
+
+    SPDLOG_INFO(
+        "[PROSPI_FRAME_PACE] Restored baselines sync_interval={} vsync={} max_fps={:.2f}",
+        m_prospi_sync_interval_baseline,
+        m_prospi_vsync_baseline,
+        m_prospi_max_fps_baseline);
+
+    m_prospi_frame_pace_baselines_valid = false;
+    m_prospi_frame_pace_next_check = {};
+}
+
+void VR::update_prospi_frame_pace_override() {
+    if (!is_prospi_executable()) {
+        return;
+    }
+
+    const auto requested = m_prospi_remove_frame_pace->value();
+    if (!requested) {
+        restore_prospi_frame_pace_override();
+        return;
+    }
+
+    attempt_hook_prospi_frame_pace();
+    if (m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed) != 1) {
+        m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_prospi_frame_pace_next_check.time_since_epoch().count() != 0 &&
+        now < m_prospi_frame_pace_next_check)
+    {
+        return;
+    }
+    m_prospi_frame_pace_next_check = now + std::chrono::seconds(1);
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_command_status.store(-1, std::memory_order_relaxed);
+        return;
+    }
+
+    if (m_prospi_set_frame_pace_command == nullptr) {
+        if (auto* object = console_manager->find(L"r.SetFramePace"); object != nullptr) {
+            m_prospi_set_frame_pace_command = object->AsCommand();
+        }
+        m_prospi_frame_pace_command_status.store(
+            m_prospi_set_frame_pace_command != nullptr ? 1 : -1,
+            std::memory_order_relaxed);
+    }
+
+    const auto resolve_variable = [&](sdk::IConsoleVariable*& destination, const wchar_t* name) {
+        if (destination != nullptr && IsBadReadPtr(destination, sizeof(void*)) == FALSE) {
+            return true;
+        }
+
+        destination = nullptr;
+        auto* object = console_manager->find(name);
+        if (object == nullptr || object->AsCommand() != nullptr) {
+            return false;
+        }
+
+        destination = (sdk::IConsoleVariable*)object;
+        return true;
+    };
+
+    const auto have_sync = resolve_variable(m_prospi_sync_interval_cvar, L"rhi.SyncInterval");
+    const auto have_vsync = resolve_variable(m_prospi_vsync_cvar, L"r.VSync");
+    const auto have_max_fps = resolve_variable(m_prospi_max_fps_cvar, L"t.MaxFPS");
+    if (m_prospi_set_frame_pace_command == nullptr || !have_sync || !have_vsync || !have_max_fps) {
+        m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+        SPDLOG_WARNING_EVERY_N_SEC(
+            5,
+            "[PROSPI_FRAME_PACE] Missing runtime controls: command={} sync={} vsync={} max_fps={}; override remains fail-closed",
+            m_prospi_set_frame_pace_command != nullptr,
+            have_sync,
+            have_vsync,
+            have_max_fps);
+        return;
+    }
+
+    const auto sync_before = m_prospi_sync_interval_cvar->GetInt();
+    const auto vsync_before = m_prospi_vsync_cvar->GetInt();
+    const auto max_fps_before = m_prospi_max_fps_cvar->GetFloat();
+    m_prospi_frame_pace_current_sync_interval.store(sync_before, std::memory_order_relaxed);
+    m_prospi_frame_pace_current_vsync.store(vsync_before, std::memory_order_relaxed);
+    m_prospi_frame_pace_current_max_fps.store(max_fps_before, std::memory_order_relaxed);
+
+    if (!m_prospi_frame_pace_baselines_valid) {
+        if (sync_before < 0 || sync_before > 60 ||
+            vsync_before < 0 || vsync_before > 4 ||
+            !std::isfinite(max_fps_before) ||
+            max_fps_before < 0.0f ||
+            max_fps_before > 10000.0f)
+        {
+            m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+            m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+            SPDLOG_WARNING_EVERY_N_SEC(
+                5,
+                "[PROSPI_FRAME_PACE] Rejected implausible baselines sync={} vsync={} max_fps={}; override remains fail-closed",
+                sync_before,
+                vsync_before,
+                max_fps_before);
+            return;
+        }
+
+        m_prospi_sync_interval_baseline = sync_before;
+        m_prospi_vsync_baseline = vsync_before;
+        m_prospi_max_fps_baseline = max_fps_before;
+        m_prospi_frame_pace_baselines_valid = true;
+    }
+
+    m_prospi_frame_pace_override_enabled.store(true, std::memory_order_relaxed);
+    const auto was_active = m_prospi_frame_pace_active.load(std::memory_order_relaxed);
+    const auto drifted =
+        sync_before != 0 ||
+        vsync_before != 0 ||
+        std::abs(max_fps_before - 500.0f) > 0.01f;
+    if (was_active && !drifted) {
+        return;
+    }
+
+    const auto command_ok = m_prospi_set_frame_pace_command->Execute(L"0");
+    m_prospi_frame_pace_command_count.fetch_add(1, std::memory_order_relaxed);
+    if (!command_ok) {
+        m_prospi_frame_pace_command_status.store(-2, std::memory_order_relaxed);
+    } else {
+        m_prospi_frame_pace_command_status.store(1, std::memory_order_relaxed);
+    }
+
+    bool vsync_ok = true;
+    if (vsync_before != 0) {
+        vsync_ok = m_prospi_vsync_cvar->Set(L"0");
+    }
+
+    bool max_fps_ok = true;
+    if (std::abs(max_fps_before - 500.0f) > 0.01f) {
+        max_fps_ok = m_prospi_max_fps_cvar->Set(L"500");
+    }
+
+    const auto sync_after = m_prospi_sync_interval_cvar->GetInt();
+    const auto vsync_after = m_prospi_vsync_cvar->GetInt();
+    const auto max_fps_after = m_prospi_max_fps_cvar->GetFloat();
+    const auto active =
+        command_ok &&
+        vsync_ok &&
+        max_fps_ok &&
+        sync_after == 0 &&
+        vsync_after == 0 &&
+        std::abs(max_fps_after - 500.0f) <= 0.01f;
+
+    m_prospi_frame_pace_current_sync_interval.store(sync_after, std::memory_order_relaxed);
+    m_prospi_frame_pace_current_vsync.store(vsync_after, std::memory_order_relaxed);
+    m_prospi_frame_pace_current_max_fps.store(max_fps_after, std::memory_order_relaxed);
+    m_prospi_frame_pace_active.store(active, std::memory_order_relaxed);
+    if (!active) {
+        m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+        restore_prospi_frame_pace_override();
+        m_prospi_frame_pace_next_check = now + std::chrono::seconds(1);
+    }
+
+    if (was_active && drifted) {
+        m_prospi_frame_pace_reassert_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    SPDLOG_INFO(
+        "[PROSPI_FRAME_PACE] apply={} reassert={} hook_status={} command={} sync={}->{} vsync={}->{} max_fps={:.2f}->{:.2f}",
+        active,
+        was_active && drifted,
+        m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed),
+        command_ok,
+        sync_before,
+        sync_after,
+        vsync_before,
+        vsync_after,
+        max_fps_before,
+        max_fps_after);
+}
+
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
@@ -5830,6 +6348,8 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_everspace2_cinematic_bars(engine);
 
     update_statistics_overlay(engine);
+    update_prospi_player_mask_override();
+    update_prospi_frame_pace_override();
 
     const auto prospi_world_cull_override =
         is_prospi_executable() && m_match_game_fov_prospi_spectator_world_cull_override->value();
@@ -12981,6 +13501,91 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Game FOV")) {
             m_match_game_fov->draw("Match Game FOV");
+
+            if (is_prospi_executable() &&
+                ImGui::CollapsingHeader("ProSpi Runtime Overrides", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::TextWrapped(
+                    "Default-off ProSpi-only controls. These do not alter the existing crowd world-cull hook, "
+                    "the HMD camera, projection, or any other game."
+                );
+
+                ImGui::SeparatorText("Player Mask / Visibility");
+                ImGui::TextWrapped(
+                    "Gradation Only disables the mode-2 player stencil pass while preserving the gradation mask. "
+                    "Disable Player Mask is the stronger diagnostic fallback. Game Default restores the captured value."
+                );
+                m_prospi_player_mask_mode->draw("Player Mask Override");
+                const auto player_mask_status = m_prospi_player_mask_cvar_status.load(std::memory_order_relaxed);
+                const auto player_mask_status_text =
+                    player_mask_status == 1 ? "ready" :
+                    player_mask_status == -1 ? "missing" :
+                    player_mask_status == -2 ? "rejected" :
+                    "idle";
+                ImGui::Text(
+                    "Status: %s | Active: %s | Current: %d | Baseline: %d",
+                    player_mask_status_text,
+                    m_prospi_player_mask_active.load(std::memory_order_relaxed) ? "yes" : "no",
+                    m_prospi_player_mask_current.load(std::memory_order_relaxed),
+                    m_prospi_player_mask_baseline_status.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Writes: %llu | Reassertions: %llu",
+                    (unsigned long long)m_prospi_player_mask_apply_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_mask_reassert_count.load(std::memory_order_relaxed));
+
+                ImGui::SeparatorText("30/60 Frame-Pace Unlock");
+                ImGui::TextWrapped(
+                    "Runs r.SetFramePace 0, disables engine VSync, and maintains t.MaxFPS=500. "
+                    "A unique signature-validated native guard prevents later ProSpi 30/60 requests from restoring the cap. "
+                    "This removes engine-side pacing only; GPU load and the OpenXR runtime still limit delivered FPS."
+                );
+                m_prospi_remove_frame_pace->draw("Remove ProSpi 30/60 Frame Pace");
+
+                const auto hook_status = m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed);
+                const auto hook_status_text =
+                    hook_status == 1 ? "active" :
+                    hook_status == -1 ? "signature missing" :
+                    hook_status == -2 ? "ambiguous signature" :
+                    hook_status == -3 ? "validation failed" :
+                    hook_status == -4 ? "install failed" :
+                    "idle";
+                const auto command_status = m_prospi_frame_pace_command_status.load(std::memory_order_relaxed);
+                const auto command_status_text =
+                    command_status == 1 ? "ready" :
+                    command_status == -1 ? "missing" :
+                    command_status == -2 ? "execute failed" :
+                    "idle";
+                const auto sync_interval =
+                    m_prospi_frame_pace_current_sync_interval.load(std::memory_order_relaxed);
+                const auto derived_frame_pace =
+                    sync_interval == 0 ? 0 :
+                    sync_interval > 0 && (60 % sync_interval) == 0 ? 60 / sync_interval :
+                    -1;
+                const auto derived_frame_pace_text =
+                    derived_frame_pace == 0
+                        ? std::string{"unlocked"}
+                        : derived_frame_pace > 0
+                            ? std::format("{} FPS", derived_frame_pace)
+                            : std::string{"unknown"};
+
+                ImGui::Text(
+                    "Status: %s | Command: %s | Hook: %s at 0x%llx",
+                    m_prospi_frame_pace_active.load(std::memory_order_relaxed) ? "active" : "inactive",
+                    command_status_text,
+                    hook_status_text,
+                    (unsigned long long)m_prospi_frame_pace_hook_address.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Sync interval: %d | Native pace: %s | VSync: %d | t.MaxFPS: %.2f",
+                    sync_interval,
+                    derived_frame_pace_text.c_str(),
+                    m_prospi_frame_pace_current_vsync.load(std::memory_order_relaxed),
+                    m_prospi_frame_pace_current_max_fps.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Commands: %llu | Native overrides: %llu | Reassertions: %llu | Last native request: %lld",
+                    (unsigned long long)m_prospi_frame_pace_command_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_frame_pace_native_override_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_frame_pace_reassert_count.load(std::memory_order_relaxed),
+                    (long long)m_prospi_frame_pace_last_native_request.load(std::memory_order_relaxed));
+            }
 
             if (m_match_game_fov->value()) {
                 if (ImGui::CollapsingHeader("General", ImGuiTreeNodeFlags_DefaultOpen)) {

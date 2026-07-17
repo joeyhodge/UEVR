@@ -1416,6 +1416,18 @@ private:
         "Combined UE4 Conservative",
     };
 
+    enum ProSpiPlayerMaskMode : int32_t {
+        PROSPI_PLAYER_MASK_GAME_DEFAULT = 0,
+        PROSPI_PLAYER_MASK_GRADATION_ONLY = 1,
+        PROSPI_PLAYER_MASK_DISABLED = 2,
+    };
+
+    static const inline std::vector<std::string> s_prospi_player_mask_mode_names{
+        "Game Default",
+        "Gradation Only",
+        "Disable Player Mask",
+    };
+
     enum ProSpiAutoCameraSequencerMode : int32_t {
         PROSPI_AUTO_CAMERA_SEQUENCER_OBSERVE = 0,
         PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST = 1,
@@ -1540,6 +1552,12 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_view_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfViewDistanceScale"), 0.10f, 2.0f, 0.50f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfStaticMeshLODDistanceScale"), 0.10f, 4.0f, 2.00f) };
     const ModSlider::Ptr m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias{ ModSlider::create(generate_name("MatchGameFOVProSpiTelephotoPerfSkeletalMeshLODBias"), 0.0f, 4.0f, 1.0f) };
+    const ModCombo::Ptr m_prospi_player_mask_mode{
+        ModCombo::create(generate_name("ProSpiPlayerMaskMode"), s_prospi_player_mask_mode_names, PROSPI_PLAYER_MASK_GAME_DEFAULT)
+    };
+    const ModToggle::Ptr m_prospi_remove_frame_pace{
+        ModToggle::create(generate_name("ProSpiRemoveFramePace"), false)
+    };
     const ModToggle::Ptr m_match_game_fov_prospi_crowd_visibility_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdVisibilityGuard"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityTriggerFOV"), 10.0f, 40.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityHoldSeconds"), 0.5f, 15.0f, 4.0f) };
@@ -1925,6 +1943,12 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void update_prospi_player_mask_override();
+    void restore_prospi_player_mask_override();
+    void update_prospi_frame_pace_override();
+    void restore_prospi_frame_pace_override();
+    void attempt_hook_prospi_frame_pace();
+    static void prospi_frame_pace_hook(safetyhook::Context& ctx);
     void attempt_hook_prospi_spectator_world_cull();
     static void prospi_spectator_world_cull_hook(safetyhook::Context& ctx);
     float get_game_fov() const;
@@ -2018,6 +2042,8 @@ public:
             *m_match_game_fov_prospi_telephoto_perf_view_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_static_mesh_lod_distance_scale,
             *m_match_game_fov_prospi_telephoto_perf_skeletal_mesh_lod_bias,
+            *m_prospi_player_mask_mode,
+            *m_prospi_remove_frame_pace,
             *m_match_game_fov_prospi_crowd_visibility_guard,
             *m_match_game_fov_prospi_crowd_visibility_trigger_fov,
             *m_match_game_fov_prospi_crowd_visibility_hold_seconds,
@@ -2390,6 +2416,41 @@ private:
     std::atomic<int32_t> m_prospi_spectator_line_mesh_missing_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_attempt_count{0};
     std::atomic<int32_t> m_prospi_spectator_material_param_write_count{0};
+    sdk::IConsoleVariable* m_prospi_player_mask_cvar{nullptr};
+    bool m_prospi_player_mask_baseline_valid{false};
+    int32_t m_prospi_player_mask_baseline{2};
+    int32_t m_prospi_player_mask_last_forced{-1};
+    int32_t m_prospi_player_mask_last_requested{PROSPI_PLAYER_MASK_GAME_DEFAULT};
+    std::chrono::steady_clock::time_point m_prospi_player_mask_next_check{};
+    std::atomic<int32_t> m_prospi_player_mask_cvar_status{0};
+    std::atomic<int32_t> m_prospi_player_mask_current{-1};
+    std::atomic<int32_t> m_prospi_player_mask_baseline_status{-1};
+    std::atomic<bool> m_prospi_player_mask_active{false};
+    std::atomic<uint64_t> m_prospi_player_mask_apply_count{0};
+    std::atomic<uint64_t> m_prospi_player_mask_reassert_count{0};
+    safetyhook::MidHook m_prospi_frame_pace_hook{};
+    bool m_prospi_frame_pace_hook_attempted{false};
+    sdk::IConsoleCommand* m_prospi_set_frame_pace_command{nullptr};
+    sdk::IConsoleVariable* m_prospi_sync_interval_cvar{nullptr};
+    sdk::IConsoleVariable* m_prospi_vsync_cvar{nullptr};
+    sdk::IConsoleVariable* m_prospi_max_fps_cvar{nullptr};
+    bool m_prospi_frame_pace_baselines_valid{false};
+    int32_t m_prospi_sync_interval_baseline{1};
+    int32_t m_prospi_vsync_baseline{0};
+    float m_prospi_max_fps_baseline{0.0f};
+    std::chrono::steady_clock::time_point m_prospi_frame_pace_next_check{};
+    std::atomic<bool> m_prospi_frame_pace_override_enabled{false};
+    std::atomic<bool> m_prospi_frame_pace_active{false};
+    std::atomic<int32_t> m_prospi_frame_pace_hook_status{0};
+    std::atomic<int32_t> m_prospi_frame_pace_command_status{0};
+    std::atomic<uintptr_t> m_prospi_frame_pace_hook_address{0};
+    std::atomic<int32_t> m_prospi_frame_pace_current_sync_interval{-1};
+    std::atomic<int32_t> m_prospi_frame_pace_current_vsync{-1};
+    std::atomic<float> m_prospi_frame_pace_current_max_fps{-1.0f};
+    std::atomic<int64_t> m_prospi_frame_pace_last_native_request{-1};
+    std::atomic<uint64_t> m_prospi_frame_pace_native_override_count{0};
+    std::atomic<uint64_t> m_prospi_frame_pace_command_count{0};
+    std::atomic<uint64_t> m_prospi_frame_pace_reassert_count{0};
     safetyhook::MidHook m_prospi_spectator_world_cull_hook{};
     bool m_prospi_spectator_world_cull_hook_attempted{false};
     std::atomic<bool> m_prospi_spectator_world_cull_hooked{false};
