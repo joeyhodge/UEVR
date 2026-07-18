@@ -553,6 +553,8 @@ public:
         };
     }
 
+    std::string get_dune_final_output_probe_status_text() const;
+
     void note_stable_slate_draw() {
         if (!m_has_seen_stable_slate_draw) {
             m_has_seen_stable_slate_draw = true;
@@ -779,6 +781,8 @@ private:
     bool patch_vtable_checks();
     bool attempt_runtime_inject_stereo();
     bool hook_ue418_oculus_pixel_density_sink();
+    bool attempt_hook_dune_dlss_output();
+    bool attempt_hook_dune_ffx_frame_resources();
     void post_init_properties(uintptr_t localplayer);
     void try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source);
     void update_daysgone_ui_telemetry();
@@ -806,6 +810,16 @@ private:
     static uint32_t get_desired_number_of_views_hook(FFakeStereoRendering* stereo, bool is_stereo_enabled);
     static EStereoscopicPass get_view_pass_for_index_hook(FFakeStereoRendering* stereo, bool stereo_requested, int32_t view_index);
     static bool ue418_oculus_update_pixel_density_hook(void* settings);
+    static void* dune_dlss_add_passes_hook(
+        void* upscaler,
+        void* outputs,
+        void* graph_builder,
+        void* view,
+        void* pass_inputs);
+    static void dune_ffx_register_frame_resources_hook(
+        void* backend,
+        void* resource,
+        uint64_t frame_id);
 
     static IStereoRenderTargetManager* get_render_target_manager_hook(FFakeStereoRendering* stereo);
     static IStereoLayers* get_stereo_layers_hook(FFakeStereoRendering* stereo);
@@ -903,6 +917,7 @@ private:
 
         // For keeping track of what the states were before our modifications.
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE4> view_init_options_ue4{};
+        std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE50To53> view_init_options_ue50_to_53{};
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE5> view_init_options_ue5{};
         std::unordered_set<uintptr_t> seen_retaddrs{};
     } m_sceneview_data;
@@ -915,6 +930,8 @@ private:
     safetyhook::InlineHook m_calculate_stereo_projection_matrix_hook{};
     safetyhook::InlineHook m_render_texture_render_thread_hook{};
     safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
+    safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
+    safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
