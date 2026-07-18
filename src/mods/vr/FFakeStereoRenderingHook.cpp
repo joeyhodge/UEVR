@@ -107,6 +107,331 @@ struct DunePendingTrueStereoView {
 
 thread_local DunePendingTrueStereoView g_dune_pending_true_stereo_view{};
 
+struct DuneTemporalUpscalerOutputsPrefix {
+    uintptr_t full_res_texture{};
+    int32_t min_x{};
+    int32_t min_y{};
+    int32_t max_x{};
+    int32_t max_y{};
+};
+
+static_assert(sizeof(DuneTemporalUpscalerOutputsPrefix) == 0x18);
+
+struct DuneTemporalUpscalerInputsPrefix {
+    uint8_t generation_flags[4]{};
+    int32_t downsample_override_format{};
+    uintptr_t scene_color{};
+    uintptr_t scene_depth{};
+    uintptr_t scene_velocity{};
+};
+
+static_assert(sizeof(DuneTemporalUpscalerInputsPrefix) == 0x20);
+
+enum class DuneFinalOutputVerdict : uint8_t {
+    Disabled,
+    Collecting,
+    NativePairVerified,
+    SingleFinalOutput,
+    UnsafeOrAmbiguous,
+};
+
+struct DuneFinalViewObservation {
+    uint64_t sequence{};
+    uint32_t global_frame{};
+    uint32_t render_frame{};
+    uintptr_t view{};
+    uintptr_t family{};
+    uintptr_t scene_state{};
+    uintptr_t full_res_texture{};
+    uint32_t stereo_pass{};
+    int32_t width{};
+    int32_t height{};
+    bool eligible{};
+};
+
+struct DuneFinalFrameRecord {
+    bool occupied{};
+    uint64_t frame_id{};
+    uint32_t first_global_frame{};
+    uint32_t last_global_frame{};
+    std::array<uintptr_t, 4> native_resources{};
+    std::array<D3D12_RESOURCE_DESC, 4> native_descs{};
+    uint8_t native_count{};
+    uint8_t eligible_views{};
+    uint32_t stereo_pass_mask{};
+};
+
+struct DuneFinalOutputTraceState {
+    std::mutex mutex{};
+    bool armed{};
+    bool collection_started{};
+    uint64_t session{};
+    uint64_t view_sequence{};
+    std::array<DuneFinalViewObservation, 96> views{};
+    size_t next_view{};
+    std::array<DuneFinalFrameRecord, 64> frames{};
+    std::array<uint8_t, 300> outcomes{};
+    size_t next_outcome{};
+    size_t outcome_count{};
+    uint32_t pair_frames{};
+    uint32_t single_frames{};
+    uint32_t ambiguous_frames{};
+    uint64_t add_pass_calls{};
+    uint64_t eligible_add_pass_calls{};
+    uint64_t register_calls{};
+    uint64_t native_resource_failures{};
+    uint32_t start_global_frame{};
+    uint64_t last_frame_id{};
+    uintptr_t last_native_resource{};
+    D3D12_RESOURCE_DESC last_native_desc{};
+    std::chrono::steady_clock::time_point last_log{};
+};
+
+std::atomic<DuneFinalOutputVerdict> g_dune_final_output_verdict{DuneFinalOutputVerdict::Disabled};
+std::atomic_bool g_dune_final_output_probe_armed{false};
+std::atomic_uintptr_t g_dune_get_native_resource_fn{};
+DuneFinalOutputTraceState g_dune_final_output_trace{};
+
+const char* dune_final_output_verdict_name(DuneFinalOutputVerdict verdict) {
+    switch (verdict) {
+    case DuneFinalOutputVerdict::Disabled:
+        return "disabled";
+    case DuneFinalOutputVerdict::Collecting:
+        return "collecting";
+    case DuneFinalOutputVerdict::NativePairVerified:
+        return "native pair verified";
+    case DuneFinalOutputVerdict::SingleFinalOutput:
+        return "single final output";
+    case DuneFinalOutputVerdict::UnsafeOrAmbiguous:
+        return "unsafe or ambiguous";
+    default:
+        return "unknown";
+    }
+}
+
+void dune_reset_final_output_trace_locked(bool armed) {
+    auto& state = g_dune_final_output_trace;
+    state.armed = armed;
+    state.collection_started = false;
+    ++state.session;
+    state.view_sequence = 0;
+    state.views = {};
+    state.next_view = 0;
+    state.frames = {};
+    state.outcomes = {};
+    state.next_outcome = 0;
+    state.outcome_count = 0;
+    state.pair_frames = 0;
+    state.single_frames = 0;
+    state.ambiguous_frames = 0;
+    state.add_pass_calls = 0;
+    state.eligible_add_pass_calls = 0;
+    state.register_calls = 0;
+    state.native_resource_failures = 0;
+    state.start_global_frame = 0;
+    state.last_frame_id = 0;
+    state.last_native_resource = 0;
+    state.last_native_desc = {};
+    state.last_log = {};
+    g_dune_final_output_verdict.store(
+        armed ? DuneFinalOutputVerdict::Collecting : DuneFinalOutputVerdict::Disabled,
+        std::memory_order_release);
+}
+
+void dune_set_final_output_probe_armed(bool armed) {
+    const auto previous = g_dune_final_output_probe_armed.exchange(armed, std::memory_order_acq_rel);
+    if (previous == armed) {
+        return;
+    }
+
+    std::scoped_lock lock{g_dune_final_output_trace.mutex};
+    dune_reset_final_output_trace_locked(armed);
+    SPDLOG_INFO(
+        "[Dune][FinalOutput] Native dual-view probe {} (session={})",
+        armed ? "armed" : "disabled",
+        g_dune_final_output_trace.session);
+}
+
+void dune_fail_closed_if_probe_stalled() {
+    if (!g_dune_final_output_probe_armed.load(std::memory_order_acquire) ||
+        g_dune_final_output_verdict.load(std::memory_order_acquire) !=
+            DuneFinalOutputVerdict::Collecting) {
+        return;
+    }
+
+    std::scoped_lock lock{g_dune_final_output_trace.mutex};
+    auto& state = g_dune_final_output_trace;
+    if (!state.armed ||
+        g_dune_final_output_verdict.load(std::memory_order_relaxed) !=
+            DuneFinalOutputVerdict::Collecting) {
+        return;
+    }
+
+    // Injection can precede Dune's first gameplay view by thousands of frames.
+    // Do not consume the bounded probe window until an eligible view is observed.
+    if (!state.collection_started) {
+        return;
+    }
+
+    const auto age =
+        g_frame_count >= state.start_global_frame
+            ? g_frame_count - state.start_global_frame
+            : 0;
+    const auto missing_ffx_handoff =
+        state.eligible_add_pass_calls >= 300 && state.register_calls == 0;
+    const auto invalid_native_handoff =
+        state.register_calls >= 300 &&
+        state.native_resource_failures == state.register_calls &&
+        state.outcome_count == 0;
+    const auto insufficient_correlated_samples =
+        age >= 900 && state.outcome_count < 60;
+
+    if (!missing_ffx_handoff &&
+        !invalid_native_handoff &&
+        !insufficient_correlated_samples) {
+        return;
+    }
+
+    g_dune_final_output_verdict.store(
+        DuneFinalOutputVerdict::UnsafeOrAmbiguous,
+        std::memory_order_release);
+    SPDLOG_WARN(
+        "[Dune][FinalOutput] Probe failed closed after {} frames: eligible_views={} registrations={} "
+        "native_failures={} correlated={}. Native returns to head-tracked mono; select Synchronized "
+        "Sequential manually for true stereo.",
+        age,
+        state.eligible_add_pass_calls,
+        state.register_calls,
+        state.native_resource_failures,
+        state.outcome_count);
+}
+
+bool dune_final_output_descs_match(
+    const D3D12_RESOURCE_DESC& lhs,
+    const D3D12_RESOURCE_DESC& rhs) {
+    return lhs.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        rhs.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        lhs.Width == rhs.Width &&
+        lhs.Height == rhs.Height &&
+        lhs.Format == rhs.Format &&
+        lhs.SampleDesc.Count == rhs.SampleDesc.Count;
+}
+
+void dune_replace_outcome_locked(uint8_t outcome) {
+    auto& state = g_dune_final_output_trace;
+
+    auto remove_outcome = [&](uint8_t old) {
+        if (old == 1 && state.pair_frames > 0) {
+            --state.pair_frames;
+        } else if (old == 2 && state.single_frames > 0) {
+            --state.single_frames;
+        } else if (old == 3 && state.ambiguous_frames > 0) {
+            --state.ambiguous_frames;
+        }
+    };
+    auto add_outcome = [&](uint8_t value) {
+        if (value == 1) {
+            ++state.pair_frames;
+        } else if (value == 2) {
+            ++state.single_frames;
+        } else if (value == 3) {
+            ++state.ambiguous_frames;
+        }
+    };
+
+    if (state.outcome_count == state.outcomes.size()) {
+        remove_outcome(state.outcomes[state.next_outcome]);
+    } else {
+        ++state.outcome_count;
+    }
+
+    state.outcomes[state.next_outcome] = outcome;
+    state.next_outcome = (state.next_outcome + 1) % state.outcomes.size();
+    add_outcome(outcome);
+
+    if (state.outcome_count < state.outcomes.size()) {
+        return;
+    }
+
+    const auto total = static_cast<uint32_t>(state.outcome_count);
+    DuneFinalOutputVerdict verdict = DuneFinalOutputVerdict::UnsafeOrAmbiguous;
+
+    if (state.pair_frames >= 120 && state.pair_frames * 100 >= total * 95) {
+        verdict = DuneFinalOutputVerdict::NativePairVerified;
+    } else if (state.single_frames * 100 >= total * 95) {
+        verdict = DuneFinalOutputVerdict::SingleFinalOutput;
+    }
+
+    const auto previous = g_dune_final_output_verdict.exchange(verdict, std::memory_order_acq_rel);
+    if (previous != verdict) {
+        SPDLOG_INFO(
+            "[Dune][FinalOutput] Verdict={} window={} pair={} single={} ambiguous={}. {}",
+            dune_final_output_verdict_name(verdict),
+            total,
+            state.pair_frames,
+            state.single_frames,
+            state.ambiguous_frames,
+            verdict == DuneFinalOutputVerdict::NativePairVerified
+                ? "Native engine stereo remains enabled; final output exposes a stable resource pair."
+                : "Native returns to the head-tracked mono safety path. Select Synchronized Sequential manually for true stereo.");
+    }
+}
+
+void dune_finalize_frame_record_locked(DuneFinalFrameRecord& frame) {
+    if (!frame.occupied) {
+        return;
+    }
+
+    if (frame.eligible_views == 0 || frame.native_count == 0) {
+        frame = {};
+        return;
+    }
+
+    const auto has_distinct_stereo_passes = std::popcount(frame.stereo_pass_mask) >= 2;
+    const auto has_compatible_native_pair =
+        frame.native_count >= 2 &&
+        frame.native_resources[0] != frame.native_resources[1] &&
+        dune_final_output_descs_match(frame.native_descs[0], frame.native_descs[1]);
+
+    dune_replace_outcome_locked(
+        has_distinct_stereo_passes && has_compatible_native_pair
+            ? 1
+            : frame.native_count == 1
+                ? 2
+                : 3);
+    frame = {};
+}
+
+void dune_record_final_view_observation(const DuneFinalViewObservation& observation) {
+    if (!g_dune_final_output_probe_armed.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::scoped_lock lock{g_dune_final_output_trace.mutex};
+    auto& state = g_dune_final_output_trace;
+    if (!state.armed) {
+        return;
+    }
+
+    auto stored = observation;
+    stored.sequence = ++state.view_sequence;
+    state.views[state.next_view] = stored;
+    state.next_view = (state.next_view + 1) % state.views.size();
+    ++state.add_pass_calls;
+    if (stored.eligible) {
+        if (!state.collection_started) {
+            state.collection_started = true;
+            state.start_global_frame = g_frame_count;
+            SPDLOG_INFO(
+                "[Dune][FinalOutput] Probe collection started on the first eligible gameplay view "
+                "(session={} global_frame={})",
+                state.session,
+                state.start_global_frame);
+        }
+        ++state.eligible_add_pass_calls;
+    }
+}
+
 constexpr uint32_t AVOWED_NATIVE_FIX_STABLE_FRAMES = 180;
 constexpr uint32_t AVOWED_NATIVE_FIX_FAST_REACQUIRE_STABLE_FRAMES = 45;
 constexpr auto AVOWED_NATIVE_FIX_RENDER_GAP = std::chrono::milliseconds(250);
@@ -2280,6 +2605,20 @@ bool is_ue_5_3_dx_backend() {
     return disk_version.dwFileVersionMS >= 0x50003 && disk_version.dwFileVersionMS < 0x50004;
 }
 
+bool is_ue_5_0_to_5_3_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.0") ||
+            str_version.starts_with("5.1") ||
+            str_version.starts_with("5.2") ||
+            str_version.starts_with("5.3");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50000 && disk_version.dwFileVersionMS < 0x50004;
+}
+
 bool is_ue_5_4_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -2575,6 +2914,161 @@ bool is_probable_d3d_native_resource(void* native) {
         module_path_lower.ends_with("d3d12core.dll") ||
         module_path_lower.ends_with("dxgi.dll") ||
         module_path_lower.ends_with("d3d12sdklayers.dll");
+}
+
+bool dune_try_get_registered_native_resource(
+    void* resource,
+    ID3D12Resource*& native,
+    D3D12_RESOURCE_DESC& desc) {
+    native = nullptr;
+    desc = {};
+
+    const auto get_native_address = g_dune_get_native_resource_fn.load(std::memory_order_acquire);
+    if (resource == nullptr ||
+        get_native_address == 0 ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(resource), 0xC0) ||
+        !is_executable_process_range(get_native_address, 1)) {
+        return false;
+    }
+
+    using GetNativeResourceFn = ID3D12Resource* (*)(void*);
+
+    __try {
+        native = reinterpret_cast<GetNativeResourceFn>(get_native_address)(resource);
+        if (!is_probable_d3d_native_resource(native)) {
+            native = nullptr;
+            return false;
+        }
+
+        desc = native->GetDesc();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        native = nullptr;
+        desc = {};
+        return false;
+    }
+
+    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        desc.Width > 0 &&
+        desc.Width <= 65536 &&
+        desc.Height > 0 &&
+        desc.Height <= 65536 &&
+        desc.Format != DXGI_FORMAT_UNKNOWN;
+}
+
+void dune_record_registered_frame_resource(
+    void* resource,
+    uint64_t frame_id,
+    ID3D12Resource* native,
+    const D3D12_RESOURCE_DESC* desc) {
+    if (!g_dune_final_output_probe_armed.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    std::scoped_lock lock{g_dune_final_output_trace.mutex};
+    auto& state = g_dune_final_output_trace;
+    if (!state.armed) {
+        return;
+    }
+
+    ++state.register_calls;
+    if (native == nullptr || desc == nullptr) {
+        ++state.native_resource_failures;
+    }
+
+    // The FFX frame ID is monotonic. Finish records only after two newer IDs
+    // have appeared so late resource registrations from the same frame remain
+    // grouped without waiting on a CPU/GPU fence.
+    for (auto& candidate : state.frames) {
+        if (candidate.occupied &&
+            frame_id > candidate.frame_id &&
+            frame_id - candidate.frame_id >= 2) {
+            dune_finalize_frame_record_locked(candidate);
+        }
+    }
+
+    auto& frame = state.frames[frame_id % state.frames.size()];
+    if (frame.occupied && frame.frame_id != frame_id) {
+        dune_finalize_frame_record_locked(frame);
+    }
+
+    if (!frame.occupied) {
+        frame.occupied = true;
+        frame.frame_id = frame_id;
+        frame.first_global_frame = g_frame_count;
+    }
+    frame.last_global_frame = g_frame_count;
+
+    const auto newest_view_sequence = state.view_sequence;
+    for (const auto& observation : state.views) {
+        if (!observation.eligible ||
+            observation.sequence == 0 ||
+            newest_view_sequence - observation.sequence > 24) {
+            continue;
+        }
+
+        const auto frame_distance =
+            observation.global_frame > g_frame_count
+                ? observation.global_frame - g_frame_count
+                : g_frame_count - observation.global_frame;
+        if (frame_distance > 2) {
+            continue;
+        }
+
+        frame.eligible_views =
+            static_cast<uint8_t>(std::min<uint32_t>(255, frame.eligible_views + 1));
+        if (observation.stereo_pass < 32) {
+            frame.stereo_pass_mask |= 1u << observation.stereo_pass;
+        }
+    }
+
+    if (native != nullptr && desc != nullptr) {
+        const auto native_address = reinterpret_cast<uintptr_t>(native);
+        const auto already_present =
+            std::find(
+                frame.native_resources.begin(),
+                frame.native_resources.begin() + frame.native_count,
+                native_address) != frame.native_resources.begin() + frame.native_count;
+
+        if (!already_present && frame.native_count < frame.native_resources.size()) {
+            frame.native_resources[frame.native_count] = native_address;
+            frame.native_descs[frame.native_count] = *desc;
+            ++frame.native_count;
+        }
+
+        state.last_native_resource = native_address;
+        state.last_native_desc = *desc;
+    }
+    state.last_frame_id = frame_id;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (state.last_log.time_since_epoch().count() == 0 ||
+        now - state.last_log >= std::chrono::seconds(2)) {
+        state.last_log = now;
+        SPDLOG_INFO(
+            "[Dune][FinalOutput] verdict={} session={} add_pass={} eligible_views={} registrations={} "
+            "native_failures={} ffx_frame={} frame_resources={} stereo_mask=0x{:x} "
+            "last_native={:x} desc={}x{} fmt={} window={}/{} pair={} single={} ambiguous={} rhi={:x}",
+            dune_final_output_verdict_name(
+                g_dune_final_output_verdict.load(std::memory_order_acquire)),
+            state.session,
+            state.add_pass_calls,
+            state.eligible_add_pass_calls,
+            state.register_calls,
+            state.native_resource_failures,
+            frame_id,
+            frame.native_count,
+            frame.stereo_pass_mask,
+            state.last_native_resource,
+            state.last_native_desc.Width,
+            state.last_native_desc.Height,
+            static_cast<uint32_t>(state.last_native_desc.Format),
+            state.outcome_count,
+            state.outcomes.size(),
+            state.pair_frames,
+            state.single_frames,
+            state.ambiguous_frames,
+            reinterpret_cast<uintptr_t>(resource));
+    }
 }
 
 std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
@@ -5658,6 +6152,333 @@ bool FFakeStereoRenderingHook::ue418_oculus_update_pixel_density_hook(void* sett
     return g_hook->m_ue418_oculus_pixel_density_hook.call<bool>(settings);
 }
 
+bool FFakeStereoRenderingHook::attempt_hook_dune_dlss_output() {
+    if (m_dune_dlss_add_passes_hook) {
+        return true;
+    }
+
+    if (!dune_awakening_is_current_game() || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    // Dune's UE5.2 DLSS upscaler returns FOutputs by hidden pointer:
+    // RCX=this, RDX=FOutputs*, R8=FRDGBuilder*, R9=FViewInfo*, stack[0x28]=FPassInputs*.
+    // Keep this image-signature guarded; an update must match both the complete
+    // prologue and the post-call FullRes FScreenPassTexture stores.
+    const auto target = utility::scan(
+        utility::get_executable(),
+        "4C 89 44 24 18 48 89 4C 24 08 55 53 56 57 41 54 41 55 41 56 41 57 "
+        "48 8D 6C 24 A8 48 81 EC 58 01 00 00");
+
+    if (!target) {
+        SPDLOG_WARN("[Dune][DLSSOutput] FDLSSSceneViewFamilyUpscaler::AddPasses signature was not found; telemetry remains disabled");
+        return false;
+    }
+
+    const auto output_store = utility::scan(
+        *target,
+        0x500,
+        "E8 ? ? ? ? 48 8B 85 A8 00 00 00 48 8D 4D 10 49 89 07 "
+        "48 8B 45 A0 49 89 47 08 48 8B 45 A8 49 89 47 10");
+
+    if (!output_store || !is_executable_process_range(*target, 1)) {
+        SPDLOG_WARN(
+            "[Dune][DLSSOutput] AddPasses candidate {:x} failed the FOutputs store validation; telemetry remains disabled",
+            *target);
+        return false;
+    }
+
+    m_dune_dlss_add_passes_hook =
+        safetyhook::create_inline(reinterpret_cast<void*>(*target), &FFakeStereoRenderingHook::dune_dlss_add_passes_hook);
+
+    if (!m_dune_dlss_add_passes_hook) {
+        SPDLOG_WARN("[Dune][DLSSOutput] Failed to hook AddPasses at {:x}; preserving the original renderer", *target);
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Dune][DLSSOutput] Passively hooked FDLSSSceneViewFamilyUpscaler::AddPasses at {:x}; "
+        "FullRes output telemetry is read-only",
+        *target);
+    return true;
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_dune_ffx_frame_resources() {
+    if (m_dune_ffx_register_frame_resources_hook) {
+        return true;
+    }
+
+    if (!dune_awakening_is_current_game() || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    // Dune's 5.2 FidelityFX backend receives the final registered
+    // FRHIResource in RDX and its explicit interpolation frame ID in R8.
+    // Validate both the complete prologue and the queue-node stores so a game
+    // update fails closed instead of hooking a similar ref-count helper.
+    const auto register_target = utility::scan(
+        utility::get_executable(),
+        "40 53 57 48 83 EC 28 48 89 6C 24 40 48 8B EA 48 89 74 24 48 "
+        "4C 89 74 24 50 4C 8D 71 50 4C 89 7C 24 20 4D 8B F8");
+    const auto get_native_target = utility::scan(
+        utility::get_executable(),
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B 81 B8 00 00 00 33 FF 48 8B D9 "
+        "48 85 C0 74 ? 48 8B 78 20");
+
+    if (!register_target || !get_native_target) {
+        SPDLOG_WARN(
+            "[Dune][FinalOutput] Required FFX registration signatures were not found "
+            "(register={} get_native={}); Native probe remains fail-closed",
+            register_target.has_value(),
+            get_native_target.has_value());
+        return false;
+    }
+
+    const auto queue_store = utility::scan(
+        *register_target,
+        0xA0,
+        "4C 89 78 08 48 89 68 10");
+    if (!queue_store ||
+        !is_executable_process_range(*register_target, 1) ||
+        !is_executable_process_range(*get_native_target, 1)) {
+        SPDLOG_WARN(
+            "[Dune][FinalOutput] FFX registration candidate {:x} failed validation; Native probe remains fail-closed",
+            *register_target);
+        return false;
+    }
+
+    g_dune_get_native_resource_fn.store(*get_native_target, std::memory_order_release);
+    m_dune_ffx_register_frame_resources_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*register_target),
+        &FFakeStereoRenderingHook::dune_ffx_register_frame_resources_hook);
+    if (!m_dune_ffx_register_frame_resources_hook) {
+        g_dune_get_native_resource_fn.store(0, std::memory_order_release);
+        SPDLOG_WARN(
+            "[Dune][FinalOutput] Failed to hook FFXD3D12Backend::RegisterFrameResources at {:x}",
+            *register_target);
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Dune][FinalOutput] Passively hooked FFXD3D12Backend::RegisterFrameResources at {:x}; "
+        "validated FD3D12Texture::GetNativeResource at {:x}",
+        *register_target,
+        *get_native_target);
+    return true;
+}
+
+void* FFakeStereoRenderingHook::dune_dlss_add_passes_hook(
+    void* upscaler,
+    void* outputs,
+    void* graph_builder,
+    void* view,
+    void* pass_inputs) {
+    auto* hook = g_hook;
+
+    if (hook == nullptr || !hook->m_dune_dlss_add_passes_hook) {
+        return outputs;
+    }
+
+    auto* result = hook->m_dune_dlss_add_passes_hook.call<void*>(
+        upscaler,
+        outputs,
+        graph_builder,
+        view,
+        pass_inputs);
+
+    const auto vr = VR::get();
+    const auto probe_enabled =
+        vr != nullptr && vr->is_dune_native_dual_view_probe_enabled();
+    dune_set_final_output_probe_armed(probe_enabled);
+    if (!probe_enabled) {
+        return result;
+    }
+
+    if (outputs == nullptr || pass_inputs == nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Dune][DLSSOutput] AddPasses returned with an invalid telemetry pointer outputs={:x} inputs={:x}",
+            reinterpret_cast<uintptr_t>(outputs),
+            reinterpret_cast<uintptr_t>(pass_inputs));
+        return result;
+    }
+
+    DuneTemporalUpscalerOutputsPrefix output{};
+    DuneTemporalUpscalerInputsPrefix input{};
+    if (!safe_read_value(reinterpret_cast<uintptr_t>(outputs), output) ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(pass_inputs), input)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Dune][DLSSOutput] Refused unreadable AddPasses telemetry outputs={:x} inputs={:x}",
+            reinterpret_cast<uintptr_t>(outputs),
+            reinterpret_cast<uintptr_t>(pass_inputs));
+        return result;
+    }
+
+    uintptr_t family{};
+    uintptr_t scene_state{};
+    uint32_t stereo_pass{};
+    std::array<int32_t, 4> constrained_rect{};
+    std::array<int32_t, 4> view_rect{};
+    const auto view_address = reinterpret_cast<uintptr_t>(view);
+    const auto readable_view =
+        view_address != 0 &&
+        safe_read_value(view_address + 0x10, family) &&
+        safe_read_value(view_address + 0x18, scene_state) &&
+        safe_read_value(view_address + 0x328, constrained_rect) &&
+        safe_read_value(view_address + 0x338, view_rect) &&
+        safe_read_value(view_address + 0x13A0, stereo_pass);
+    const auto width = readable_view ? view_rect[2] - view_rect[0] : 0;
+    const auto height = readable_view ? view_rect[3] - view_rect[1] : 0;
+    const auto valid_rect =
+        width > 0 &&
+        height > 0 &&
+        width <= 16384 &&
+        height <= 16384 &&
+        constrained_rect[2] > constrained_rect[0] &&
+        constrained_rect[3] > constrained_rect[1];
+    const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
+    const auto eligible =
+        readable_view &&
+        family != 0 &&
+        scene_state != 0 &&
+        output.full_res_texture != 0 &&
+        valid_rect &&
+        hook->dune_has_live_pawn();
+
+    dune_record_final_view_observation(DuneFinalViewObservation{
+        .global_frame = g_frame_count,
+        .render_frame = static_cast<uint32_t>(render_frame),
+        .view = view_address,
+        .family = family,
+        .scene_state = scene_state,
+        .full_res_texture = output.full_res_texture,
+        .stereo_pass = stereo_pass,
+        .width = width,
+        .height = height,
+        .eligible = eligible,
+    });
+
+    struct ThreadTelemetry {
+        uint64_t calls{};
+        uint64_t output_changes{};
+        uint64_t null_outputs{};
+        uintptr_t previous_output{};
+        uintptr_t current_output{};
+        std::chrono::steady_clock::time_point last_log{};
+    };
+
+    thread_local ThreadTelemetry telemetry{};
+    ++telemetry.calls;
+
+    if (output.full_res_texture == 0) {
+        ++telemetry.null_outputs;
+    }
+
+    if (output.full_res_texture != telemetry.current_output) {
+        telemetry.previous_output = telemetry.current_output;
+        telemetry.current_output = output.full_res_texture;
+        ++telemetry.output_changes;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (telemetry.calls == 1 ||
+        telemetry.last_log.time_since_epoch().count() == 0 ||
+        now - telemetry.last_log >= std::chrono::seconds(2)) {
+        telemetry.last_log = now;
+        SPDLOG_INFO(
+            "[Dune][DLSSOutput] calls={} changes={} null={} self={:x} graph={:x} view={:x} "
+            "input_color={:x} depth={:x} velocity={:x} full_res={:x} previous={:x} "
+            "rect=[{},{} -> {},{}] view_rect={}x{} family={:x} state={:x} stereo_pass={} "
+            "eligible={} result_matches_outputs={}",
+            telemetry.calls,
+            telemetry.output_changes,
+            telemetry.null_outputs,
+            reinterpret_cast<uintptr_t>(upscaler),
+            reinterpret_cast<uintptr_t>(graph_builder),
+            reinterpret_cast<uintptr_t>(view),
+            input.scene_color,
+            input.scene_depth,
+            input.scene_velocity,
+            output.full_res_texture,
+            telemetry.previous_output,
+            output.min_x,
+            output.min_y,
+            output.max_x,
+            output.max_y,
+            width,
+            height,
+            family,
+            scene_state,
+            stereo_pass,
+            eligible,
+            result == outputs);
+    }
+
+    return result;
+}
+
+void FFakeStereoRenderingHook::dune_ffx_register_frame_resources_hook(
+    void* backend,
+    void* resource,
+    uint64_t frame_id) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_dune_ffx_register_frame_resources_hook) {
+        return;
+    }
+
+    hook->m_dune_ffx_register_frame_resources_hook.call<void>(
+        backend,
+        resource,
+        frame_id);
+
+    const auto vr = VR::get();
+    const auto probe_enabled =
+        vr != nullptr && vr->is_dune_native_dual_view_probe_enabled();
+    dune_set_final_output_probe_armed(probe_enabled);
+    if (!probe_enabled) {
+        return;
+    }
+
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+    const auto valid_native =
+        dune_try_get_registered_native_resource(resource, native, desc);
+    dune_record_registered_frame_resource(
+        resource,
+        frame_id,
+        valid_native ? native : nullptr,
+        valid_native ? &desc : nullptr);
+}
+
+std::string FFakeStereoRenderingHook::get_dune_final_output_probe_status_text() const {
+    if (!dune_awakening_is_current_game()) {
+        return "not applicable";
+    }
+
+    std::scoped_lock lock{g_dune_final_output_trace.mutex};
+    const auto& state = g_dune_final_output_trace;
+    const auto verdict =
+        g_dune_final_output_verdict.load(std::memory_order_acquire);
+
+    if (!state.armed) {
+        return "disabled (Native + DX12 + OpenXR, Native Fix off, then enable the probe)";
+    }
+
+    return std::format(
+        "{}; sample {}/{} (pair {}, single {}, ambiguous {}), views {}/{}, FFX resources {}, native failures {}",
+        dune_final_output_verdict_name(verdict),
+        state.outcome_count,
+        state.outcomes.size(),
+        state.pair_frames,
+        state.single_frames,
+        state.ambiguous_frames,
+        state.eligible_add_pass_calls,
+        state.add_pass_calls,
+        state.register_calls,
+        state.native_resource_failures);
+}
+
 bool FFakeStereoRenderingHook::hook() {
     SPDLOG_INFO("Entering FFakeStereoRenderingHook::hook");
 
@@ -5668,6 +6489,8 @@ bool FFakeStereoRenderingHook::hook() {
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
 
     hook_ue418_oculus_pixel_density_sink();
+    attempt_hook_dune_dlss_output();
+    attempt_hook_dune_ffx_frame_resources();
 
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
@@ -6044,6 +6867,13 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     SPDLOG_INFO("IsStereoEnabled: {:x}", (uintptr_t)*is_stereo_enabled_func_ptr);
 
     m_has_double_precision = is_using_double_precision(stereo_view_offset_func) || is_using_double_precision(calculate_stereo_projection_matrix_func);
+
+    if (!m_has_double_precision && is_ue_5_0_to_5_3_runtime()) {
+        // Large World Coordinates changed UE5's view math to double precision.
+        // Optimized game thunks can hide that from the instruction heuristic.
+        m_has_double_precision = true;
+        SPDLOG_WARN("[UE5.0-5.3] Forcing source-defined double-precision view math because function-scan detection missed it");
+    }
 
     if (!m_has_double_precision && windrose_is_current_game() && is_ue_5_6_or_newer()) {
         m_has_double_precision = true;
@@ -8650,7 +9480,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    const auto is_ue5 = g_hook->has_double_precision();
+    const auto is_ue50_to_53 = is_ue_5_0_to_5_3_runtime();
+    const auto is_ue5 = g_hook->has_double_precision() || is_ue50_to_53;
+    auto init_options_ue50_to_53 = (sdk::FSceneViewInitOptionsUE50To53*)init_options;
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
     const auto init_options_scene_state = init_options->get_scene_state();
@@ -8671,7 +9503,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }};
 
     if (init_options_scene_state != nullptr) {
-        if (is_ue5) {
+        if (is_ue50_to_53) {
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue50_to_53[init_options_scene_state];
+            memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE50To53));
+        } else if (is_ue5) {
             auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
             memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
         } else {
@@ -8714,14 +9549,35 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(true_index));
 
-        auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&init_options_ue5->view_origin : init_options->view_origin;
-        auto& init_options_view_rect = is_ue5 ? init_options_ue5->view_rect : init_options->view_rect;
-        auto& init_options_constrained_view_rect = is_ue5 ? init_options_ue5->constrained_view_rect : init_options->constrained_view_rect;
+        auto& init_options_view_origin =
+            is_ue50_to_53
+                ? *(glm::vec3*)&init_options_ue50_to_53->view_origin
+                : is_ue5
+                    ? *(glm::vec3*)&init_options_ue5->view_origin
+                    : init_options->view_origin;
+        auto& init_options_view_rect =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->view_rect
+                : is_ue5
+                    ? init_options_ue5->view_rect
+                    : init_options->view_rect;
+        auto& init_options_constrained_view_rect =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->constrained_view_rect
+                : is_ue5
+                    ? init_options_ue5->constrained_view_rect
+                    : init_options->constrained_view_rect;
         auto& init_options_projection_matrix = init_options->projection_matrix;
-        auto& init_options_projection_matrix_ue5 = init_options_ue5->projection_matrix;
+        auto& init_options_projection_matrix_ue5 =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->projection_matrix
+                : init_options_ue5->projection_matrix;
 
         auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
-        auto& init_options_view_rotation_matrix_ue5 = init_options_ue5->view_rotation_matrix;
+        auto& init_options_view_rotation_matrix_ue5 =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->view_rotation_matrix
+                : init_options_ue5->view_rotation_matrix;
 
         const auto conversion_mat = glm::mat4 {
             0, 0, 1, 0,
@@ -9666,11 +10522,16 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         return;
     }
 
-    using ProjectionData = sdk::FSceneViewProjectionDataUE5T<double>;
-    ProjectionData data{};
+    using ProjectionDataUE50To53 = sdk::FSceneViewProjectionDataUE50To53;
+    using ProjectionDataUE54Plus = sdk::FSceneViewProjectionDataUE5T<double>;
+    const auto uses_ue50_to_53_layout = is_ue_5_0_to_5_3_runtime();
+    ProjectionDataUE50To53 data_ue50_to_53{};
+    ProjectionDataUE54Plus data_ue54_plus{};
     const auto readable =
         projection_data != nullptr &&
-        safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data);
+        (uses_ue50_to_53_layout
+            ? safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data_ue50_to_53)
+            : safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data_ue54_plus));
     const auto vr = VR::get();
     const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
     const auto runtime_frame =
@@ -9684,6 +10545,19 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         return;
     }
 
+    const auto& view_origin =
+        uses_ue50_to_53_layout ? data_ue50_to_53.view_origin : data_ue54_plus.view_origin;
+    const auto& view_rect =
+        uses_ue50_to_53_layout ? data_ue50_to_53.view_rect : data_ue54_plus.view_rect;
+    const auto& constrained_view_rect =
+        uses_ue50_to_53_layout
+            ? data_ue50_to_53.constrained_view_rect
+            : data_ue54_plus.constrained_view_rect;
+    const auto& projection_matrix =
+        uses_ue50_to_53_layout
+            ? data_ue50_to_53.projection_matrix
+            : data_ue54_plus.projection_matrix;
+
     SPDLOG_INFO_EVERY_N_SEC(
         1,
         "[Dune][ViewTrace] SetupViewProjectionMatrix data={:x} live_pawn={} viewport_draw={} "
@@ -9696,21 +10570,21 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         render_frame,
         runtime_frame,
         g_frame_count,
-        data.view_origin.x,
-        data.view_origin.y,
-        data.view_origin.z,
-        data.view_rect[0],
-        data.view_rect[1],
-        data.view_rect[2],
-        data.view_rect[3],
-        data.constrained_view_rect[0],
-        data.constrained_view_rect[1],
-        data.constrained_view_rect[2],
-        data.constrained_view_rect[3],
-        data.projection_matrix[0][0],
-        data.projection_matrix[1][1],
-        data.projection_matrix[2][2],
-        data.projection_matrix[3][2],
+        view_origin.x,
+        view_origin.y,
+        view_origin.z,
+        view_rect[0],
+        view_rect[1],
+        view_rect[2],
+        view_rect[3],
+        constrained_view_rect[0],
+        constrained_view_rect[1],
+        constrained_view_rect[2],
+        constrained_view_rect[3],
+        projection_matrix[0][0],
+        projection_matrix[1][1],
+        projection_matrix[2][2],
+        projection_matrix[3][2],
         reinterpret_cast<uintptr_t>(_ReturnAddress()));
 
     const auto pending_view = g_dune_pending_true_stereo_view;
@@ -9718,17 +10592,17 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
 
     if (vr != nullptr && vr->is_dune_true_stereo_enabled()) {
         const auto frame = static_cast<uint32_t>(render_frame);
-        const auto rect_width = data.view_rect[2] - data.view_rect[0];
-        const auto rect_height = data.view_rect[3] - data.view_rect[1];
+        const auto rect_width = view_rect[2] - view_rect[0];
+        const auto rect_height = view_rect[3] - view_rect[1];
         const auto valid_rect =
             rect_width > 0 &&
             rect_height > 0 &&
             rect_width <= 16384 &&
             rect_height <= 16384;
         const auto finite_origin =
-            std::isfinite(data.view_origin.x) &&
-            std::isfinite(data.view_origin.y) &&
-            std::isfinite(data.view_origin.z);
+            std::isfinite(view_origin.x) &&
+            std::isfinite(view_origin.y) &&
+            std::isfinite(view_origin.z);
         const auto matching_main_view =
             pending_view.valid &&
             pending_view.render_frame == frame &&
@@ -9775,7 +10649,7 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
                 std::isfinite(eye_separation.z) &&
                 glm::length(eye_separation) <= 1000.0f;
 
-            auto adjusted_origin = data.view_origin;
+            auto adjusted_origin = view_origin;
             adjusted_origin -= glm::dvec3{eye_separation};
 
             const auto projection_f = vr->get_projection_matrix(eye);
@@ -9806,17 +10680,23 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
             // Dune's AMD presentation path reconstructs scene depth using the
             // game's projection conventions. Preserve those depth/clip terms
             // and only import the per-eye OpenXR lens terms.
-            auto projection = data.projection_matrix;
+            auto projection = projection_matrix;
             projection[0][0] = openxr_projection[0][0];
             projection[1][1] = openxr_projection[1][1];
             projection[2][0] = openxr_projection[2][0];
             projection[2][1] = openxr_projection[2][1];
 
-            auto* writable_data = reinterpret_cast<ProjectionData*>(projection_data);
+            const auto projection_data_address = reinterpret_cast<uintptr_t>(projection_data);
             const auto origin_address =
-                reinterpret_cast<uintptr_t>(&writable_data->view_origin);
+                projection_data_address +
+                (uses_ue50_to_53_layout
+                    ? offsetof(ProjectionDataUE50To53, view_origin)
+                    : offsetof(ProjectionDataUE54Plus, view_origin));
             const auto projection_address =
-                reinterpret_cast<uintptr_t>(&writable_data->projection_matrix);
+                projection_data_address +
+                (uses_ue50_to_53_layout
+                    ? offsetof(ProjectionDataUE50To53, projection_matrix)
+                    : offsetof(ProjectionDataUE54Plus, projection_matrix));
             const auto writable =
                 is_writable_process_range(origin_address, sizeof(adjusted_origin)) &&
                 is_writable_process_range(projection_address, sizeof(projection));
@@ -12217,10 +13097,36 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     }
 
     if (dune_should_preserve_native_viewport_target()) {
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[Dune][CustomPresent] Temporarily disabling engine stereo while the native AMD presentation path owns the scene");
-        return false;
+        const auto vr = VR::get();
+        const auto native_probe_enabled =
+            vr != nullptr && vr->is_dune_native_dual_view_probe_enabled();
+        dune_set_final_output_probe_armed(native_probe_enabled);
+
+        if (native_probe_enabled) {
+            dune_fail_closed_if_probe_stalled();
+            const auto verdict =
+                g_dune_final_output_verdict.load(std::memory_order_acquire);
+            if (verdict == DuneFinalOutputVerdict::Collecting ||
+                verdict == DuneFinalOutputVerdict::NativePairVerified) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Dune][FinalOutput] Engine stereo requested while verdict={}; "
+                    "the native viewport target remains owned by Dune",
+                    dune_final_output_verdict_name(verdict));
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Dune][FinalOutput] Engine stereo blocked after verdict={}; "
+                    "using head-tracked mono safety path (choose Synchronized Sequential manually for true stereo)",
+                    dune_final_output_verdict_name(verdict));
+                return false;
+            }
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Dune][CustomPresent] Temporarily disabling engine stereo while the native AMD presentation path owns the scene");
+            return false;
+        }
     }
 
     /*if (g_hook->m_analyzing_view_extensions) {

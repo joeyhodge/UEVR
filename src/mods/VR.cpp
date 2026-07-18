@@ -8914,6 +8914,19 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         "view-extension callbacks. Requires DX12 + OpenXR + Synchronized Sequential. Other modes "
                         "and unsafe frames fall back to the existing head-tracked mono path.");
                 }
+
+                m_compatibility_dune_native_dual_view_probe->draw("Dune Native Dual-View Probe (Experimental)");
+                if (m_compatibility_dune_native_dual_view_probe->value()) {
+                    ImGui::TextWrapped(
+                        "Dune only, default off: while Native Stereo is selected with Native Fix disabled, requests two engine views and "
+                        "correlates DLSS view output with the final FidelityFX resources. It never switches rendering methods automatically. "
+                        "If Dune exposes only one final image, Native immediately returns to the proven head-tracked mono path; select "
+                        "Synchronized Sequential manually for true stereo.");
+                }
+                if (m_fake_stereo_hook != nullptr) {
+                    const auto status = m_fake_stereo_hook->get_dune_final_output_probe_status_text();
+                    ImGui::TextWrapped("Dune native output: %s", status.c_str());
+                }
             }
             if (is_windrose_executable()) {
                 ImGui::SeparatorText("Windrose");
