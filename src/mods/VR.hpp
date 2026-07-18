@@ -826,6 +826,20 @@ public:
             !is_using_2d_screen();
     }
 
+    bool is_dune_native_dual_view_probe_enabled() const {
+        const auto runtime = get_runtime();
+        return m_compatibility_dune_native_dual_view_probe->value() &&
+            m_is_d3d12 &&
+            runtime != nullptr &&
+            runtime->ready() &&
+            runtime->is_openxr() &&
+            is_hmd_active() &&
+            m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+            !is_using_afr() &&
+            !is_native_stereo_fix_enabled() &&
+            !is_using_2d_screen();
+    }
+
     bool is_daysgone_bend_ui_placement_fix_enabled() const {
         return m_compatibility_daysgone_bend_ui_placement_fix->value();
     }
@@ -1747,6 +1761,7 @@ private:
     const ModToggle::Ptr m_compatibility_daysgone_gbuffer_safe_mode{ ModToggle::create(generate_name("Compatibility_DaysGoneGBufferSafeMode"), false, true) };
     const ModToggle::Ptr m_compatibility_everspace2_remove_cinematic_bars{ ModToggle::create(generate_name("Compatibility_Everspace2RemoveCinematicBars"), false, true) };
     const ModToggle::Ptr m_compatibility_dune_true_stereo{ ModToggle::create(generate_name("Compatibility_DuneTrueStereo"), false, true) };
+    const ModToggle::Ptr m_compatibility_dune_native_dual_view_probe{ ModToggle::create(generate_name("Compatibility_DuneNativeDualViewProbe"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -2205,6 +2220,7 @@ public:
             *m_compatibility_daysgone_gbuffer_safe_mode,
             *m_compatibility_everspace2_remove_cinematic_bars,
             *m_compatibility_dune_true_stereo,
+            *m_compatibility_dune_native_dual_view_probe,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,
