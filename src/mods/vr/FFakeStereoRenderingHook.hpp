@@ -321,6 +321,106 @@ public:
     bool depth_analysis_passed{false};
 };
 
+struct VRRenderTargetManager_58 : IStereoRenderTargetManager_58, VRRenderTargetManager_Base {
+    bool ShouldUseSeparateRenderTarget() const override {
+        return VRRenderTargetManager_Base::should_use_separate_render_target();
+    }
+
+    void CalculateRenderTargetSize(
+        const sdk::FViewport& Viewport,
+        uint32_t& InOutSizeX,
+        uint32_t& InOutSizeY) override
+    {
+        VRRenderTargetManager_Base::calculate_render_target_size(Viewport, InOutSizeX, InOutSizeY);
+    }
+
+    bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
+        return VRRenderTargetManager_Base::need_reallocate_view_target(Viewport);
+    }
+
+    bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override {
+        return false;
+    }
+
+    bool AllocateRenderTargetTextures(
+        sdk::FRHICommandListBase& RHICmdList,
+        uint32_t SizeX,
+        uint32_t SizeY,
+        uint8_t Format,
+        uint32_t NumLayers,
+        ETextureCreateFlags Flags,
+        ETextureCreateFlags TargetableTextureFlags,
+        TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+        uint32_t NumSamples = 1) override;
+
+    bool AllocateRenderTargetTextures(
+        uint32_t SizeX,
+        uint32_t SizeY,
+        uint8_t Format,
+        uint32_t NumLayers,
+        ETextureCreateFlags Flags,
+        ETextureCreateFlags TargetableTextureFlags,
+        TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+        uint32_t NumSamples = 1) override;
+};
+
+struct VRRenderTargetManager_58_Transitional : IStereoRenderTargetManager_58_Transitional, VRRenderTargetManager_Base {
+    bool ShouldUseSeparateRenderTarget() const override {
+        return VRRenderTargetManager_Base::should_use_separate_render_target();
+    }
+
+    void CalculateRenderTargetSize(
+        const sdk::FViewport& Viewport,
+        uint32_t& InOutSizeX,
+        uint32_t& InOutSizeY) override
+    {
+        VRRenderTargetManager_Base::calculate_render_target_size(Viewport, InOutSizeX, InOutSizeY);
+    }
+
+    bool NeedReAllocateViewportRenderTarget(const sdk::FViewport& Viewport) override {
+        return VRRenderTargetManager_Base::need_reallocate_view_target(Viewport);
+    }
+
+    bool NeedReAllocateDepthTexture(const void* DepthTarget) override {
+        return false;
+    }
+
+    bool NeedReAllocateShadingRateTexture(const void* ShadingRateTarget) override {
+        return false;
+    }
+
+    bool AllocateRenderTargetTextures(
+        sdk::FRHICommandListBase& RHICmdList,
+        uint32_t SizeX,
+        uint32_t SizeY,
+        uint8_t Format,
+        uint32_t NumLayers,
+        ETextureCreateFlags Flags,
+        ETextureCreateFlags TargetableTextureFlags,
+        TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+        uint32_t NumSamples = 1) override;
+
+    bool AllocateRenderTargetTextures(
+        uint32_t SizeX,
+        uint32_t SizeY,
+        uint8_t Format,
+        uint32_t NumLayers,
+        ETextureCreateFlags Flags,
+        ETextureCreateFlags TargetableTextureFlags,
+        TArray<FTexture2DRHIRef>& OutTargetableTextures,
+        TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+        uint32_t NumSamples = 1) override;
+};
+
+enum class UE58RenderTargetManagerABI : uint8_t {
+    Unknown,
+    Public,
+    TransitionalDepthSlot,
+};
+
 struct VRRenderTargetManager_418 : IStereoRenderTargetManager_418, VRRenderTargetManager_Base {
     uint32_t GetNumberOfBufferedFrames() const override { return VRRenderTargetManager_Base::get_number_of_buffered_frames(); }
     virtual bool ShouldUseSeparateRenderTarget() const override { return VRRenderTargetManager_Base::should_use_separate_render_target(); }
@@ -374,6 +474,16 @@ public:
     FFakeStereoRenderingHook();
 
     VRRenderTargetManager_Base* get_render_target_manager() {
+        if (m_uses_ue58_rendertarget_manager) {
+            if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) ==
+                UE58RenderTargetManagerABI::TransitionalDepthSlot)
+            {
+                return static_cast<VRRenderTargetManager_Base*>(&m_rtm_58_transitional);
+            }
+
+            return static_cast<VRRenderTargetManager_Base*>(&m_rtm_58);
+        }
+
         if (m_uses_old_rendertarget_manager) {
             return static_cast<VRRenderTargetManager_Base*>(&m_rtm_418);
         }
@@ -733,6 +843,7 @@ private:
     static bool ue418_oculus_update_pixel_density_hook(void* settings);
 
     static IStereoRenderTargetManager* get_render_target_manager_hook(FFakeStereoRendering* stereo);
+    void observe_ue58_render_target_manager_abi(uintptr_t return_address);
     static IStereoLayers* get_stereo_layers_hook(FFakeStereoRendering* stereo);
 
     // LocalPlayer
@@ -857,6 +968,8 @@ private:
     } m_viewport_rt_hook_data{};
 
     VRRenderTargetManager m_rtm{};
+    VRRenderTargetManager_58 m_rtm_58{};
+    VRRenderTargetManager_58_Transitional m_rtm_58_transitional{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};
 
@@ -944,6 +1057,9 @@ private:
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_uses_old_rendertarget_manager{false};
+    bool m_uses_ue58_rendertarget_manager{false};
+    std::atomic<UE58RenderTargetManagerABI> m_ue58_rendertarget_manager_abi{
+        UE58RenderTargetManagerABI::Unknown};
     bool m_rendertarget_manager_embedded_in_stereo_device{false}; // 4.17 and below...?
     bool m_special_detected{false};
     bool m_special_detected_4_18{false};
