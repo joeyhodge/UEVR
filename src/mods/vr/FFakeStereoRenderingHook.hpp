@@ -158,6 +158,7 @@ public:
         return ue58_pending_scene_target_observations;
     }
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
+    void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
     void cancel_dedicated_ui_creation_preserving_target(const char* reason = nullptr);
@@ -1130,6 +1131,7 @@ private:
     bool m_uses_ue58_rendertarget_manager{false};
     std::atomic<UE58RenderTargetManagerABI> m_ue58_rendertarget_manager_abi{
         UE58RenderTargetManagerABI::Unknown};
+    std::mutex m_ue58_rendertarget_manager_abi_mutex{};
     bool m_rendertarget_manager_embedded_in_stereo_device{false}; // 4.17 and below...?
     bool m_special_detected{false};
     bool m_special_detected_4_18{false};
