@@ -4585,11 +4585,120 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
 
     if (m_uses_ue58_rendertarget_manager) {
-        SPDLOG_INFO("[UE5.8] Using the UE5.8 IStereoRenderTargetManager ABI");
+        SPDLOG_INFO("[UE5.8] Render-target-manager ABI will be selected from the engine call site");
     }
 
     m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
     setup_options();
+}
+
+void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t return_address) {
+    if (!m_uses_ue58_rendertarget_manager ||
+        m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) !=
+            UE58RenderTargetManagerABI::Unknown)
+    {
+        return;
+    }
+
+    const auto caller_module = utility::get_module_within(return_address);
+    if (!caller_module || *caller_module != utility::get_executable()) {
+        return;
+    }
+
+    // FSceneViewport::InitRHI calls CalculateRenderTargetSize (slot 1), then
+    // AllocateRenderTargetTextures. Public UE5.8 uses slot 4; a shipping
+    // transitional ABI that retains NeedReAllocateDepthTexture uses slot 5.
+    bool saw_calculate_call = false;
+    uint32_t pending_calculate_register = 0;
+    uint32_t pending_allocate_register = 0;
+    int64_t pending_allocate_displacement = 0;
+    uint32_t calculate_ttl = 0;
+    uint32_t allocate_ttl = 0;
+
+    auto ip = return_address;
+    constexpr size_t max_bytes = 0x180;
+    constexpr size_t max_instructions = 96;
+
+    for (size_t i = 0; i < max_instructions && ip < return_address + max_bytes; ++i) {
+        const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        const auto mnemonic = std::string_view{decoded->Mnemonic};
+        if (mnemonic.starts_with("RET")) {
+            break;
+        }
+
+        if (decoded->Instruction == ND_INS_MOV &&
+            decoded->OperandsCount >= 2 &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[1].Type == ND_OP_MEM &&
+            decoded->Operands[1].Info.Memory.HasDisp)
+        {
+            const auto displacement = decoded->Operands[1].Info.Memory.Disp;
+            const auto destination_register =
+                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+
+            if (!saw_calculate_call && displacement == 0x8) {
+                pending_calculate_register = destination_register;
+                calculate_ttl = 6;
+            } else if (saw_calculate_call &&
+                (displacement == 0x20 || displacement == 0x28))
+            {
+                pending_allocate_register = destination_register;
+                pending_allocate_displacement = displacement;
+                allocate_ttl = 24;
+            }
+        }
+
+        if (mnemonic.starts_with("CALL") &&
+            decoded->OperandsCount >= 1 &&
+            decoded->Operands[0].Type == ND_OP_REG)
+        {
+            const auto call_register =
+                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+
+            if (calculate_ttl != 0 && call_register == pending_calculate_register) {
+                saw_calculate_call = true;
+                calculate_ttl = 0;
+            } else if (saw_calculate_call &&
+                allocate_ttl != 0 &&
+                call_register == pending_allocate_register)
+            {
+                const auto detected =
+                    pending_allocate_displacement == 0x28
+                        ? UE58RenderTargetManagerABI::TransitionalDepthSlot
+                        : UE58RenderTargetManagerABI::Public;
+                auto expected = UE58RenderTargetManagerABI::Unknown;
+
+                if (m_ue58_rendertarget_manager_abi.compare_exchange_strong(
+                        expected,
+                        detected,
+                        std::memory_order_acq_rel))
+                {
+                    SPDLOG_INFO(
+                        "[UE5.8] Detected render-target-manager allocation slot 0x{:x}; using {} ABI",
+                        pending_allocate_displacement,
+                        detected == UE58RenderTargetManagerABI::TransitionalDepthSlot
+                            ? "transitional depth-slot"
+                            : "public");
+                }
+
+                return;
+            }
+        }
+
+        if (calculate_ttl != 0) {
+            --calculate_ttl;
+        }
+
+        if (allocate_ttl != 0) {
+            --allocate_ttl;
+        }
+
+        ip += decoded->Length;
+    }
 }
 
 void FFakeStereoRenderingHook::on_frame() {
@@ -14099,6 +14208,16 @@ IStereoRenderTargetManager* FFakeStereoRenderingHook::get_render_target_manager_
 
     if (!vr->get_runtime()->got_first_poses || vr->is_hmd_active()) {
         if (g_hook->m_uses_ue58_rendertarget_manager) {
+            g_hook->observe_ue58_render_target_manager_abi(
+                reinterpret_cast<uintptr_t>(_ReturnAddress()));
+
+            if (g_hook->m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) ==
+                UE58RenderTargetManagerABI::TransitionalDepthSlot)
+            {
+                return reinterpret_cast<IStereoRenderTargetManager*>(
+                    &g_hook->m_rtm_58_transitional);
+            }
+
             return (IStereoRenderTargetManager*)&g_hook->m_rtm_58;
         }
 
@@ -21438,6 +21557,42 @@ bool VRRenderTargetManager_58::AllocateRenderTargetTextures(
     uint32_t NumSamples)
 {
     SPDLOG_INFO_ONCE("[UE5.8] Deprecated AllocateRenderTargetTextures called");
+    return false;
+}
+
+bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
+    sdk::FRHICommandListBase& RHICmdList,
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    SPDLOG_INFO_ONCE(
+        "[UE5.8] Transitional AllocateRenderTargetTextures with RHI command list called");
+
+    // Never claim success without producing at least one valid pair. Shipping
+    // FSceneViewport checks are compiled out and otherwise permit a modulo by
+    // zero when a mismatched ABI returns a non-zero value.
+    return false;
+}
+
+bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
+    uint32_t SizeX,
+    uint32_t SizeY,
+    uint8_t Format,
+    uint32_t NumLayers,
+    ETextureCreateFlags Flags,
+    ETextureCreateFlags TargetableTextureFlags,
+    TArray<FTexture2DRHIRef>& OutTargetableTextures,
+    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
+    uint32_t NumSamples)
+{
+    SPDLOG_INFO_ONCE("[UE5.8] Transitional deprecated AllocateRenderTargetTextures called");
     return false;
 }
 
