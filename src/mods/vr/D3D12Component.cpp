@@ -3703,9 +3703,35 @@ void D3D12Component::draw_spectator_view(
         &source_rect, 
         DirectX::Colors::White);
 
-    const auto draw_ui_overlay = mirror_mode == VR::DESKTOP_MIRROR_FULL && has_ui_tex && !is_ue58_runtime_cached();
+    bool has_separate_ue58_ui = false;
+
+    if (is_ue58_runtime_cached()) {
+        const auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+
+        if (fake_stereo_hook != nullptr) {
+            auto* const rtm = fake_stereo_hook->get_render_target_manager();
+
+            if (rtm != nullptr) {
+                auto* const dedicated_ui = rtm->get_dedicated_ui_target();
+                auto* const scene_target = rtm->get_render_target();
+                has_separate_ue58_ui =
+                    dedicated_ui != nullptr &&
+                    dedicated_ui != scene_target;
+            }
+        }
+    }
+
+    const auto draw_ui_overlay =
+        mirror_mode == VR::DESKTOP_MIRROR_FULL &&
+        has_ui_tex &&
+        (!is_ue58_runtime_cached() || has_separate_ue58_ui);
 
     if (draw_ui_overlay) {
+        if (has_separate_ue58_ui) {
+            SPDLOG_INFO_ONCE(
+                "[UE5.8][spectator] Compositing proven separate Slate UI over the desktop scene mirror");
+        }
+
         const auto ui_desc = ui_tex.texture->GetDesc();
         ID3D12DescriptorHeap* ui_heaps[] = { ui_tex.srv_heap->Heap() };
         render::D3D12Diagnostics::get().record_descriptor_heaps_set("VR::D3D12Component::draw_spectator_view/UISRV", 1, ui_heaps);
