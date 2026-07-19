@@ -4835,13 +4835,26 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
                     pending_allocate_displacement == 0x28
                         ? UE58RenderTargetManagerABI::TransitionalDepthSlot
                         : UE58RenderTargetManagerABI::Public;
-                auto expected = UE58RenderTargetManagerABI::Unknown;
 
-                if (m_ue58_rendertarget_manager_abi.compare_exchange_strong(
-                        expected,
-                        detected,
-                        std::memory_order_acq_rel))
+                std::scoped_lock abi_lock{m_ue58_rendertarget_manager_abi_mutex};
+
+                if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) ==
+                    UE58RenderTargetManagerABI::Unknown)
                 {
+                    if (detected == UE58RenderTargetManagerABI::TransitionalDepthSlot) {
+                        // Slate can expose and promote its real UI texture before
+                        // FSceneViewport reaches the callsite that identifies the
+                        // transitional UE5.8 ABI. Preserve that validated target
+                        // before publishing the manager switch.
+                        m_rtm_58_transitional.inherit_dedicated_ui_state_from(
+                            m_rtm_58,
+                            "UE5.8 transitional ABI selection");
+                    }
+
+                    m_ue58_rendertarget_manager_abi.store(
+                        detected,
+                        std::memory_order_release);
+
                     SPDLOG_INFO(
                         "[UE5.8] Detected render-target-manager allocation slot 0x{:x}; using {} ABI",
                         pending_allocate_displacement,
@@ -6096,7 +6109,17 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
             const auto refs = utility::scan_displacement_references(*module_within, string_addr);
 
             for (const auto ref : refs) {
-                const auto function_start = utility::find_function_start_with_call(ref);
+                // scan_displacement_references returns the address of the
+                // rel32 displacement, which can be several bytes into the
+                // instruction. Decode from the owning instruction below.
+                const auto instruction = utility::resolve_instruction(ref);
+
+                if (!instruction) {
+                    continue;
+                }
+
+                const auto ref_ip = instruction->addr;
+                const auto function_start = utility::find_function_start_with_call(ref_ip);
 
                 if (!function_start.has_value() || !is_candidate_draw_function(*function_start)) {
                     continue;
@@ -6105,9 +6128,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 auto& function_refs = refs_by_function[*function_start];
 
                 if (layered) {
-                    function_refs.layered_refs.push_back(ref);
+                    function_refs.layered_refs.push_back(ref_ip);
                 } else {
-                    function_refs.base_refs.push_back(ref);
+                    function_refs.base_refs.push_back(ref_ip);
                 }
             }
         }
@@ -6119,10 +6142,17 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
 
         for (const auto string_addr : utility::scan_strings(*module_within, L"StereoSpectatorSwapChainTexture", true)) {
             for (const auto ref : utility::scan_displacement_references(*module_within, string_addr)) {
-                const auto function_start = utility::find_function_start_with_call(ref);
+                const auto instruction = utility::resolve_instruction(ref);
+
+                if (!instruction) {
+                    continue;
+                }
+
+                const auto ref_ip = instruction->addr;
+                const auto function_start = utility::find_function_start_with_call(ref_ip);
 
                 if (function_start.has_value() && is_candidate_draw_function(*function_start)) {
-                    spectator_refs_by_function[*function_start].push_back(ref);
+                    spectator_refs_by_function[*function_start].push_back(ref_ip);
                 }
             }
         }
@@ -20505,6 +20535,44 @@ void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint
     dedicated_ui_width = width;
     dedicated_ui_height = height;
     dedicated_ui_creation_pending = false;
+}
+
+void VRRenderTargetManager_Base::inherit_dedicated_ui_state_from(
+    VRRenderTargetManager_Base& source,
+    const char* reason)
+{
+    if (this == &source) {
+        return;
+    }
+
+    const auto width = source.get_dedicated_ui_width();
+    const auto height = source.get_dedicated_ui_height();
+    auto* const source_target = source.get_dedicated_ui_target();
+
+    if (source_target != nullptr && !IsBadReadPtr(source_target, sizeof(void*))) {
+        // FTexture2DRHIRef retains the engine texture. Keep the source manager's
+        // reference as well because an already queued Slate pass may still use it.
+        set_dedicated_ui_target(source_target, width, height);
+        get_fallback_ui_target_ref() = nullptr;
+
+        SPDLOG_INFO(
+            "[UE5.8][SlateUI] Inherited dedicated UI target {:x} [{}x{}] during {}",
+            reinterpret_cast<uintptr_t>(source_target),
+            width,
+            height,
+            reason != nullptr ? reason : "render-target-manager transition");
+        return;
+    }
+
+    if (width != 0 && height != 0) {
+        request_dedicated_ui_target(width, height);
+
+        SPDLOG_INFO(
+            "[UE5.8][SlateUI] Inherited trusted UI extent [{}x{}] during {}; waiting for the next Slate target",
+            width,
+            height,
+            reason != nullptr ? reason : "render-target-manager transition");
+    }
 }
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
