@@ -241,6 +241,7 @@ protected:
     bool is_version_5_0_3{false};
     bool wants_depth_reallocate{false};
     bool allocate_texture_called{false}; // used to determine if the pretexture hook should go ahead
+    std::atomic_bool legacy_texture_replay_failed_closed{false};
 
     uint32_t last_width{0};
     uint32_t last_height{0};
