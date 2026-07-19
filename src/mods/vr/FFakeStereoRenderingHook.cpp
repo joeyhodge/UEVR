@@ -661,6 +661,17 @@ bool mechwarrior_clans_is_current_game() {
     return result;
 }
 
+bool redemption_sin_eternal_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path &&
+            (exe_path->find(L"Redemption_Sin_Eternal.exe") != std::wstring::npos ||
+             exe_path->find(L"Redemption_Sin_Eternal-Win64-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
 bool directive8020_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2780,12 +2791,13 @@ bool supports_ue57_dedicated_ui_target() {
 }
 
 bool supports_ue55_dedicated_ui_target_for_current_game() {
-    // These UE5.5 titles expose a valid Slate UI texture but route Slate to the
-    // wrong target, leaving the HUD clipped in the upper-left/left-eye path.
-    // Keep this allowlisted and DX12-only until more UE5.5 games validate it.
+    // These UE5.5/5.6 titles expose a valid Slate UI texture but route Slate to
+    // the wrong target, leaving the HUD clipped in the upper-left/left-eye path.
+    // Keep this allowlisted and DX12-only until more games validate it.
     return (aphelion_is_current_game() ||
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
+            redemption_sin_eternal_is_current_game() ||
             everspace2_is_current_game() ||
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
@@ -3104,15 +3116,38 @@ void dune_record_registered_frame_resource(
     }
 }
 
+void* call_get_native_resource_guarded(FRHITexture2D* texture, uintptr_t function) {
+    __try {
+        using GetNativeResourceFn = void* (*)(const FRHITexture2D*);
+        return reinterpret_cast<GetNativeResourceFn>(function)(texture);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
+bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out) {
+    __try {
+        out = resource->GetDesc();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = {};
+        return false;
+    }
+}
+
 std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
     if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return std::nullopt;
     }
 
     const auto texture_address = (uintptr_t)texture;
-    constexpr std::array<uintptr_t, 2> desc_offsets{0x20, 0xf0};
+    constexpr std::array<uintptr_t, 3> desc_offsets{0x20, 0xe0, 0xf0};
 
     for (const auto desc_offset : desc_offsets) {
+        if (desc_offset == 0xe0 && !is_ue_5_6_dx12_backend()) {
+            continue;
+        }
+
         if (texture_address + desc_offset < texture_address ||
             IsBadReadPtr((void*)(texture_address + desc_offset), 0x38)) {
             continue;
@@ -3175,7 +3210,7 @@ bool ue55_dx12_try_get_native_resource_direct(
         return false;
     }
 
-    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 6)) {
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 8)) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.5][SlateUI] {} candidate has no readable vtable: tex={:x} vtable={:x}",
             source != nullptr ? source : "<unknown>", (uintptr_t)texture, (uintptr_t)vtable);
         return false;
@@ -3188,25 +3223,31 @@ bool ue55_dx12_try_get_native_resource_direct(
         return false;
     }
 
-    const std::array<size_t, 2> direct_slots = *desc_offset == 0xf0
-        ? std::array<size_t, 2>{5ull, 4ull}
-        : std::array<size_t, 2>{4ull, 5ull};
+    std::array<size_t, 2> direct_slots{};
+    size_t direct_slot_count = 2;
 
-    for (const auto slot : direct_slots) {
-        using GetNativeResourceFn = void* (*)(const FRHITexture2D*);
-        const auto fn = (GetNativeResourceFn)vtable[slot];
+    if (*desc_offset == 0xe0) {
+        // Confirmed from Redemption's UE5.6 FD3D12Texture vtable/PDB.
+        direct_slots = {7ull, 0ull};
+        direct_slot_count = 1;
+    } else if (*desc_offset == 0xf0) {
+        direct_slots = {5ull, 4ull};
+    } else {
+        direct_slots = {4ull, 5ull};
+    }
 
-        if (fn == nullptr || IsBadReadPtr((void*)fn, 1) || !utility::get_module_within((void*)fn).has_value()) {
+    for (size_t slot_index = 0; slot_index < direct_slot_count; ++slot_index) {
+        const auto slot = direct_slots[slot_index];
+        const auto fn = reinterpret_cast<uintptr_t>(vtable[slot]);
+
+        if (fn == 0 ||
+            !is_executable_process_range(fn, 1) ||
+            !utility::get_module_within(reinterpret_cast<void*>(fn)).has_value())
+        {
             continue;
         }
 
-        void* native_raw = nullptr;
-
-        try {
-            native_raw = fn(texture);
-        } catch (...) {
-            continue;
-        }
+        auto* native_raw = call_get_native_resource_guarded(texture, fn);
 
         if (!is_probable_d3d_native_resource(native_raw)) {
             continue;
@@ -3215,9 +3256,7 @@ bool ue55_dx12_try_get_native_resource_direct(
         auto* native = (ID3D12Resource*)native_raw;
         D3D12_RESOURCE_DESC desc{};
 
-        try {
-            desc = native->GetDesc();
-        } catch (...) {
+        if (!get_d3d12_resource_desc_guarded(native, desc)) {
             continue;
         }
 
@@ -3243,12 +3282,20 @@ bool ue55_dx12_try_get_native_resource_direct(
         return true;
     }
 
-    SPDLOG_INFO_EVERY_N_SEC(2,
-        "[UE5.5][SlateUI] direct GetNativeResource slots {} and {} did not produce a valid D3D12 texture for {} tex={:x}",
-        direct_slots[0],
-        direct_slots[1],
-        source != nullptr ? source : "<unknown>",
-        (uintptr_t)texture);
+    if (direct_slot_count == 1) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.6][SlateUI] direct GetNativeResource slot {} did not produce a valid D3D12 texture for {} tex={:x}",
+            direct_slots[0],
+            source != nullptr ? source : "<unknown>",
+            (uintptr_t)texture);
+    } else {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[UE5.5][SlateUI] direct GetNativeResource slots {} and {} did not produce a valid D3D12 texture for {} tex={:x}",
+            direct_slots[0],
+            direct_slots[1],
+            source != nullptr ? source : "<unknown>",
+            (uintptr_t)texture);
+    }
 
     return false;
 }
@@ -4302,6 +4349,90 @@ bool is_executable_process_range(uintptr_t address, size_t size) {
            protect == PAGE_EXECUTE_READ ||
            protect == PAGE_EXECUTE_READWRITE ||
            protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+bool overlaps_current_thread_stack(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    const auto* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+    if (tib == nullptr) {
+        return false;
+    }
+
+    const auto stack_low = reinterpret_cast<uintptr_t>(tib->StackLimit);
+    const auto stack_high = reinterpret_cast<uintptr_t>(tib->StackBase);
+    return address < stack_high && address + size > stack_low;
+}
+
+bool is_probable_new_rhi_command(sdk::FRHICommandBase_New* command, const char*& reason) {
+    const auto address = reinterpret_cast<uintptr_t>(command);
+
+    if (command == nullptr || (address & (alignof(void*) - 1)) != 0) {
+        reason = "null or unaligned command";
+        return false;
+    }
+
+    if (overlaps_current_thread_stack(address, sizeof(*command))) {
+        reason = "stack-resident command";
+        return false;
+    }
+
+    if (!is_readable_process_range(address, sizeof(*command)) ||
+        !is_writable_process_range(address, sizeof(void*)))
+    {
+        reason = "unreadable or non-writable command";
+        return false;
+    }
+
+    const auto vtable = *reinterpret_cast<uintptr_t*>(address);
+    if (!is_readable_process_range(vtable, sizeof(uintptr_t)) ||
+        !utility::get_module_within(reinterpret_cast<void*>(vtable)).has_value())
+    {
+        reason = "vtable is not module-owned";
+        return false;
+    }
+
+    const auto execute = *reinterpret_cast<uintptr_t*>(vtable);
+    if (!is_executable_process_range(execute, 1)) {
+        reason = "first vtable entry is not executable";
+        return false;
+    }
+
+    reason = nullptr;
+    return true;
+}
+
+bool is_probable_old_rhi_command(sdk::FRHICommandBase_Old* command, const char*& reason) {
+    const auto address = reinterpret_cast<uintptr_t>(command);
+
+    if (command == nullptr || (address & (alignof(void*) - 1)) != 0) {
+        reason = "null or unaligned command";
+        return false;
+    }
+
+    if (overlaps_current_thread_stack(address, sizeof(*command))) {
+        reason = "stack-resident command";
+        return false;
+    }
+
+    if (!is_readable_process_range(address, sizeof(*command)) ||
+        !is_writable_process_range(
+            address + offsetof(sdk::FRHICommandBase_Old, func),
+            sizeof(command->func)))
+    {
+        reason = "unreadable or non-writable command";
+        return false;
+    }
+
+    if (!is_executable_process_range(reinterpret_cast<uintptr_t>(command->func), 1)) {
+        reason = "command function is not executable";
+        return false;
+    }
+
+    reason = nullptr;
+    return true;
 }
 
 struct RuntimeFunctionRange {
@@ -9403,8 +9534,12 @@ struct SceneViewExtensionAnalyzer {
         auto runtime = VR::get()->get_runtime();
         runtime->on_pre_render_render_thread(frame_count);
 
-        if (last_command == nullptr || *(void**)last_command == nullptr) {
-            SPDLOG_INFO("Cannot hook command with no vtable, falling back to passing current frame count to runtime");
+        const char* rejection_reason = nullptr;
+        if (!is_probable_new_rhi_command(last_command, rejection_reason)) {
+            SPDLOG_WARN_ONCE(
+                "[ISceneViewExtension] Rejected unsafe new RHI-command candidate before hijack ({}); "
+                "falling back to render-thread poses",
+                rejection_reason != nullptr ? rejection_reason : "unknown");
             runtime->enqueue_render_poses(frame_count);
             return;
         }
@@ -9456,6 +9591,16 @@ struct SceneViewExtensionAnalyzer {
 
         auto runtime = VR::get()->get_runtime();
         runtime->on_pre_render_render_thread(frame_count);
+
+        const char* rejection_reason = nullptr;
+        if (!is_probable_old_rhi_command(last_command, rejection_reason)) {
+            SPDLOG_WARN_ONCE(
+                "[ISceneViewExtension] Rejected unsafe legacy RHI-command candidate before hijack ({}); "
+                "falling back to render-thread poses",
+                rejection_reason != nullptr ? rejection_reason : "unknown");
+            runtime->enqueue_render_poses(frame_count);
+            return;
+        }
 
         cmd_frame_counts[last_command] = frame_count;
 
@@ -15459,6 +15604,98 @@ struct UE55SlateExtent {
     uint32_t height{};
 };
 
+bool ue56_promote_source_matched_slate_scene_output(
+    VRRenderTargetManager_Base* rtm,
+    void* outputs_ptr,
+    std::optional<UE55SlateExtent> expected_extent)
+{
+    if (!redemption_sin_eternal_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        rtm == nullptr ||
+        outputs_ptr == nullptr)
+    {
+        return false;
+    }
+
+    if (!is_readable_process_range(
+            reinterpret_cast<uintptr_t>(outputs_ptr),
+            sizeof(UE55SlateDrawWindowPassOutputs)))
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Redemption][UE5.6][SlateRT] DrawWindow output storage is not readable: {:x}",
+            reinterpret_cast<uintptr_t>(outputs_ptr));
+        return false;
+    }
+
+    UE55SlateDrawWindowPassOutputs outputs{};
+    std::memcpy(&outputs, outputs_ptr, sizeof(outputs));
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[Redemption][UE5.6][SlateRT] outputs viewport_rhi={:x} viewport_texture={:x} "
+        "output_texture={:x} Slate={}x{}",
+        reinterpret_cast<uintptr_t>(outputs.viewport_rhi),
+        reinterpret_cast<uintptr_t>(outputs.viewport_texture_rhi),
+        reinterpret_cast<uintptr_t>(outputs.output_texture_rhi),
+        expected_extent ? expected_extent->width : 0,
+        expected_extent ? expected_extent->height : 0);
+
+    auto* scene_texture = outputs.viewport_texture_rhi;
+    if (scene_texture == nullptr || IsBadReadPtr(scene_texture, sizeof(void*))) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Redemption][UE5.6][SlateRT] No readable separate viewport texture yet");
+        return false;
+    }
+
+    ID3D12Resource* native_resource{};
+    D3D12_RESOURCE_DESC desc{};
+    if (!ue55_dx12_try_get_native_resource_direct(
+            scene_texture,
+            "Redemption source-matched DrawWindow viewport texture",
+            &native_resource,
+            &desc))
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Redemption][UE5.6][SlateRT] Rejected unvalidated viewport texture {:x}",
+            reinterpret_cast<uintptr_t>(scene_texture));
+        return false;
+    }
+
+    if ((desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Redemption][UE5.6][SlateRT] Rejected viewport texture without render-target capability: "
+            "tex={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
+            reinterpret_cast<uintptr_t>(scene_texture),
+            reinterpret_cast<uintptr_t>(native_resource),
+            desc.Width,
+            desc.Height,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+        return false;
+    }
+
+    if (rtm->get_render_target() != scene_texture) {
+        FRHITexture2D::set_vtable(*reinterpret_cast<void**>(scene_texture));
+        rtm->set_render_target(scene_texture);
+
+        SPDLOG_WARN(
+            "[Redemption][UE5.6][SlateRT] Adopted source-matched viewport texture as scene target: "
+            "tex={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
+            reinterpret_cast<uintptr_t>(scene_texture),
+            reinterpret_cast<uintptr_t>(native_resource),
+            desc.Width,
+            desc.Height,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+    }
+
+    return true;
+}
+
 bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateDrawWindowPassInputsHead& out) {
     if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputsHead))) {
         return false;
@@ -18309,6 +18546,78 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         viewport_info = ue55_inputs.viewport_info;
     }
 
+    if (redemption_sin_eternal_is_current_game() &&
+        is_ue_5_6_dx12_backend() &&
+        a4_is_ue_5_5_variant)
+    {
+        // Redemption's UE5.6 DrawWindow signature returns pass outputs through
+        // hidden storage. Treating RDX/R8 as the legacy command list or viewport
+        // objects corrupts RDG state, so keep this path source-matched.
+        SPDLOG_WARN_ONCE(
+            "[Redemption][UE5.6][SlateRT] Using source-matched DrawWindow ABI; "
+            "legacy viewport emulation and command-list callbacks are bypassed");
+
+        const auto expected_extent =
+            a4_has_ue_5_5_full_inputs ? ue55_get_slate_expected_extent(ue55_inputs_full) : std::nullopt;
+        const auto vr = VR::get();
+        auto* rtm = g_hook->get_render_target_manager();
+        const bool redirect_dedicated_ui =
+            supports_ue55_dedicated_ui_target_for_current_game() &&
+            vr != nullptr &&
+            vr->is_hmd_active() &&
+            !vr->is_stereo_emulation_enabled() &&
+            rtm != nullptr;
+
+        if (redirect_dedicated_ui) {
+            g_hook->note_stable_slate_draw();
+            g_hook->attempt_hook_ue55_slate_output_texture_register();
+
+            if (expected_extent) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Redemption][UE5.6][SlateUI] trusted Slate extent [{}x{}]; "
+                    "preparing dedicated UI redirection",
+                    expected_extent->width,
+                    expected_extent->height);
+                rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
+                rtm->ensure_dedicated_ui_target(reinterpret_cast<uintptr_t>(a2));
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Redemption][UE5.6][SlateUI] No trusted Slate extent yet; "
+                    "dedicated UI creation is deferred");
+            }
+
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+        }
+
+        utility::ScopeGuard slate_draw_guard{[&]() {
+            if (redirect_dedicated_ui) {
+                g_hook->m_inside_slate_draw_window = false;
+            }
+        }};
+
+        const auto ret =
+            g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+
+        if (vr != nullptr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled()) {
+            ue56_promote_source_matched_slate_scene_output(
+                rtm,
+                ue55_draw_window_outputs_ptr,
+                expected_extent);
+
+            if (redirect_dedicated_ui) {
+                ue55_promote_slate_outputs(
+                    rtm,
+                    ue55_draw_window_outputs_ptr,
+                    expected_extent);
+            }
+        }
+
+        return ret;
+    }
+
     if (!a4_is_ue_5_5_variant) {
         // How are we going to fix this on UE5.5?
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
@@ -19238,6 +19547,31 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
     auto rtm = g_hook->get_render_target_manager();
 
+    if (rtm->legacy_texture_replay_failed_closed.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const auto rcx_is_stack_local =
+        ctx.rcx != 0 && std::abs(static_cast<int64_t>(ctx.rcx) - static_cast<int64_t>(ctx.rsp)) <= 0x300;
+    const auto looks_like_scope_constructor =
+        rtm->is_pre_texture_call_e8 &&
+        rcx_is_stack_local &&
+        ctx.r8 == 0 &&
+        ctx.rdx > 0 &&
+        ctx.rdx < 0x100;
+
+    if (is_ue_5_6_dx12_backend() && looks_like_scope_constructor) {
+        rtm->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+        rtm->allocate_texture_called = false;
+        rtm->texture_hook_ref = nullptr;
+        rtm->shader_resource_hook_ref = nullptr;
+
+        SPDLOG_WARN_ONCE(
+            "[UE5.6][SlateUI] Legacy texture replay resolved a stack-local scope constructor "
+            "instead of a texture allocator; disabling this unsafe replay path for the session");
+        return;
+    }
+
     if (g_framework->is_dx12() && dune_awakening_is_current_game()) {
         SPDLOG_WARN_ONCE(
             "[Dune][RT] Allowing separate render-target texture creation; "
@@ -20088,6 +20422,13 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
 void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     auto rtm = g_hook->get_render_target_manager();
+
+    if (rtm->legacy_texture_replay_failed_closed.load(std::memory_order_acquire)) {
+        rtm->allocate_texture_called = false;
+        rtm->texture_hook_ref = nullptr;
+        rtm->shader_resource_hook_ref = nullptr;
+        return;
+    }
 
     if (g_framework->is_dx12() && shf_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[SHf] PostTextureHook summary last_ref={:x}", (uintptr_t)rtm->texture_hook_ref);
@@ -21701,6 +22042,24 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                 && utility::scan(fn, 0x80, "48 83 C2 38").has_value();
         };
 
+        auto is_ue56_stack_scope_constructor_call = [](uintptr_t callsite) {
+            if (!is_ue_5_6_dx12_backend() ||
+                callsite < 0x20 ||
+                !is_executable_process_range(callsite - 0x20, 0x21) ||
+                *reinterpret_cast<uint8_t*>(callsite) != 0xE8)
+            {
+                return false;
+            }
+
+            const auto sequence_start = callsite - 0x20;
+            const auto match = utility::scan(
+                sequence_start,
+                0x21,
+                "F6 45 ? 05 48 8D 4D ? BA 30 00 00 00 C6 44 24 28 01 "
+                "0F 45 D3 C6 44 24 20 01 45 33 C9 45 33 C0 E8");
+            return match.has_value() && *match == sequence_start;
+        };
+
         struct DirectCallInfo {
             uintptr_t callsite{};
             uintptr_t target{};
@@ -21783,7 +22142,17 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                         const auto fn = utility::calculate_absolute(ip + 1);
                         SPDLOG_INFO("Analyzing call at {:x} to {:x}", ip, fn);
 
-                        if (is_ue57_dx11_backend() && this->is_version_greq_5_1 &&
+                        if (is_ue56_stack_scope_constructor_call(ip)) {
+                            // This UE5.6 LLM/scope constructor sits immediately
+                            // after AllocateRenderTargetTexture. Hooking it with
+                            // the texture-create ABI corrupts the render thread.
+                            this->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+                            this->set_up_texture_hook = true;
+                            SPDLOG_WARN_ONCE(
+                                "[UE5.6][SlateUI] Rejected stack-local scope constructor "
+                                "before legacy texture replay hook installation");
+                            return false;
+                        } else if (is_ue57_dx11_backend() && this->is_version_greq_5_1 &&
                             is_probable_ue57_dx11_texture_desc_prepare_function(fn))
                         {
                             SPDLOG_INFO("Skipping UE 5.7 D3D11 texture-desc prepare helper at {:x}; continuing to the real texture-create wrapper", fn);
