@@ -4450,6 +4450,86 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
     return best_candidate;
 }
 
+bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
+    const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto function = get_runtime_function_range(target);
+
+    if (!function || function->begin != target || function->image_base != game_module || function->size() < 0x200) {
+        return false;
+    }
+
+    // Dune's UE5.2 implementation consumes the TArrayView passed in R8 at the
+    // start of the plural function: its data pointer is at +0 and count at +8.
+    // Requiring both reads prevents an exact-wrapper false positive from ever
+    // being installed as a Native Stereo Fix hook.
+    const auto validation_size = std::min<size_t>(function->size(), 0x100);
+    return utility::scan(target, validation_size, "4D 8B 20").has_value() &&
+           utility::scan(target, validation_size, "49 63 40 08").has_value();
+}
+
+std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
+    if (!dune_awakening_is_current_game()) {
+        return std::nullopt;
+    }
+
+    static const auto resolved = []() -> std::optional<uintptr_t> {
+        const auto module = utility::get_executable();
+
+        // FRendererModule::BeginRenderingViewFamily(FCanvas*, FSceneViewFamily*)
+        // builds a one-element TArrayView and directly calls the plural entry.
+        // Resolve that CALL rather than accepting an unrelated render-stack
+        // function based only on its size.
+        constexpr auto wrapper_pattern =
+            "4C 89 44 24 18 48 83 EC 38 C7 44 24 28 01 00 00 00 "
+            "48 8D 44 24 50 48 89 44 24 20 4C 8D 44 24 20 "
+            "C5 F8 10 44 24 20 C5 F9 7F 44 24 20 E8 ? ? ? ? "
+            "48 83 C4 38 C3";
+        constexpr size_t call_offset = 0x2C;
+
+        const auto wrapper = utility::scan(module, wrapper_pattern);
+        if (!wrapper) {
+            SPDLOG_ERROR(
+                "[Dune][NativeStereoFix] Refusing activation: the verified singular BeginRenderingViewFamily wrapper was not found");
+            return std::nullopt;
+        }
+
+        const auto wrapper_function = get_runtime_function_range(*wrapper);
+        if (!wrapper_function || wrapper_function->begin != *wrapper || wrapper_function->size() > 0x80) {
+            SPDLOG_ERROR(
+                "[Dune][NativeStereoFix] Refusing activation: wrapper at {:x} failed function-boundary validation",
+                *wrapper);
+            return std::nullopt;
+        }
+
+        const auto call_address = *wrapper + call_offset;
+        if (!is_readable_process_range(call_address, 5) || *reinterpret_cast<const uint8_t*>(call_address) != 0xE8) {
+            SPDLOG_ERROR(
+                "[Dune][NativeStereoFix] Refusing activation: wrapper at {:x} has no verified direct CALL",
+                *wrapper);
+            return std::nullopt;
+        }
+
+        int32_t displacement{};
+        std::memcpy(&displacement, reinterpret_cast<const void*>(call_address + 1), sizeof(displacement));
+        const auto target = static_cast<uintptr_t>(call_address + 5 + displacement);
+
+        if (!validate_dune_begin_rendering_viewfamilies_target(target)) {
+            SPDLOG_ERROR(
+                "[Dune][NativeStereoFix] Refusing activation: plural target {:x} failed TArrayView validation",
+                target);
+            return std::nullopt;
+        }
+
+        SPDLOG_INFO(
+            "[Dune][NativeStereoFix] Resolved verified BeginRenderingViewFamilies wrapper={:x} target={:x}",
+            *wrapper,
+            target);
+        return target;
+    }();
+
+    return resolved;
+}
+
 bool looks_like_virtual_function_table(uintptr_t table) {
     if (!is_readable_process_range(table, sizeof(uintptr_t) * 12)) {
         return false;
@@ -11209,21 +11289,97 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         uint32_t count;
     };
 
-    const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && *(void**)view_family_candidate != sdk::FSceneViewFamily::get_vtable_ptr();
-    const auto ue5_view_family_array = (TArrayViewViewFamily*)view_family_candidate;
-
-    if (uses_tarrayview && ue5_view_family_array->data == nullptr) {
+    const auto call_original = [&]() {
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+    };
+    const auto reject_candidate = [&](const char* reason) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[NativeStereoFix] Preserving the original render call because the view-family argument failed validation: {}",
+            reason);
+        call_original();
+    };
+
+    if (view_family_candidate == nullptr || !is_readable_process_range((uintptr_t)view_family_candidate, sizeof(void*))) {
+        reject_candidate("unreadable argument");
         return;
     }
 
-    // UE5 passes an TArrayView of ViewFamily pointers instead of a single ViewFamily
-    sdk::FSceneViewFamily* view_family = uses_tarrayview ? ue5_view_family_array->data[0] : view_family_candidate;
+    const auto strict_candidate_validation = dune_awakening_is_current_game();
+    const auto expected_vtable = reinterpret_cast<uintptr_t>(sdk::FSceneViewFamily::get_vtable_ptr());
+    uintptr_t first_word{};
+    std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
+
+    const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
+    sdk::FSceneViewFamily* view_family = view_family_candidate;
+
+    if (uses_tarrayview) {
+        if (!is_readable_process_range((uintptr_t)view_family_candidate, sizeof(TArrayViewViewFamily))) {
+            reject_candidate("unreadable TArrayView");
+            return;
+        }
+
+        TArrayViewViewFamily view_family_array{};
+        std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
+
+        if (strict_candidate_validation) {
+            constexpr uint32_t max_sane_view_families = 16;
+            if (expected_vtable == 0 || view_family_array.data == nullptr || view_family_array.count == 0 ||
+                view_family_array.count > max_sane_view_families ||
+                !is_readable_process_range(
+                    (uintptr_t)view_family_array.data,
+                    sizeof(sdk::FSceneViewFamily*) * view_family_array.count))
+            {
+                reject_candidate("invalid TArrayView data/count");
+                return;
+            }
+        } else if (view_family_array.data == nullptr) {
+            call_original();
+            return;
+        }
+
+        std::memcpy(&view_family, view_family_array.data, sizeof(view_family));
+    }
+
+    if (strict_candidate_validation &&
+        (view_family == nullptr || !is_readable_process_range((uintptr_t)view_family, sizeof(void*))))
+    {
+        reject_candidate("unreadable first view family");
+        return;
+    }
+
+    if (strict_candidate_validation && sdk::FSceneViewFamily::has_vtable()) {
+        uintptr_t actual_vtable{};
+        std::memcpy(&actual_vtable, view_family, sizeof(actual_vtable));
+
+        if (expected_vtable == 0 || actual_vtable != expected_vtable) {
+            reject_candidate("unexpected FSceneViewFamily vtable");
+            return;
+        }
+    }
 
     auto views_ptr = view_family->get_views();
     if (views_ptr == nullptr) {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        call_original();
         return;
+    }
+
+    if (strict_candidate_validation)
+    {
+        if (!is_readable_process_range((uintptr_t)views_ptr, sizeof(*views_ptr))) {
+            reject_candidate("unreadable Views array");
+            return;
+        }
+
+        constexpr uint32_t max_sane_views = 16;
+        if (views_ptr->count == 0 || views_ptr->count > max_sane_views ||
+            views_ptr->capacity < views_ptr->count ||
+            views_ptr->data == nullptr ||
+            !is_readable_process_range((uintptr_t)views_ptr->data, sizeof(void*) * views_ptr->count))
+        {
+            reject_candidate("invalid Views data/count");
+            return;
+        }
     }
 
     auto& views = *views_ptr;
@@ -11609,7 +11765,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             ++resolver_attempts;
             calls_until_retry = 30;
 
-            const auto candidate = resolve_begin_rendering_viewfamilies_from_stack();
+            const auto candidate = dune_awakening_is_current_game()
+                ? resolve_dune_begin_rendering_viewfamilies()
+                : resolve_begin_rendering_viewfamilies_from_stack();
             if (!candidate) {
                 SPDLOG_WARN(
                     "[NativeStereoFix] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
