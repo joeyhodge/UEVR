@@ -2734,6 +2734,10 @@ bool is_ue57_dx11_backend() {
     return is_ue_5_7_or_newer() && g_framework != nullptr && g_framework->is_dx11();
 }
 
+bool is_ue58_dx11_dedicated_ui_backend() {
+    return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx11();
+}
+
 bool supports_ue57_dedicated_ui_target() {
     if (!is_ue_5_7_or_newer() || g_framework == nullptr) {
         return false;
@@ -2911,6 +2915,51 @@ bool is_probable_d3d_native_resource(void* native) {
         module_path_lower.ends_with("d3d12core.dll") ||
         module_path_lower.ends_with("dxgi.dll") ||
         module_path_lower.ends_with("d3d12sdklayers.dll");
+}
+
+bool ue58_try_get_d3d11_texture_desc(void* native, D3D11_TEXTURE2D_DESC& out_desc) {
+    out_desc = {};
+
+    if (native == nullptr || IsBadReadPtr(native, sizeof(void*))) {
+        return false;
+    }
+
+    void* vtable{};
+
+    try {
+        vtable = *(void**)native;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*))) {
+        return false;
+    }
+
+    const auto module = utility::get_module_within(vtable);
+    if (!module) {
+        return false;
+    }
+
+    const auto module_path = utility::get_module_path(*module);
+    if (!module_path) {
+        return false;
+    }
+
+    auto lower = std::string{*module_path};
+    std::transform(lower.begin(), lower.end(), lower.begin(), ::tolower);
+
+    if (lower.find("d3d11") == std::string::npos && lower.find("dxgi") == std::string::npos) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> texture{};
+    if (FAILED(reinterpret_cast<IUnknown*>(native)->QueryInterface(IID_PPV_ARGS(&texture))) || texture == nullptr) {
+        return false;
+    }
+
+    texture->GetDesc(&out_desc);
+    return out_desc.Width != 0 && out_desc.Height != 0;
 }
 
 bool dune_try_get_registered_native_resource(
@@ -5767,7 +5816,7 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread @ 0x{:x}!", *func);
 
-    if (is_ue_5_8() && g_framework->is_dx12()) {
+    if (is_ue_5_8() && (g_framework->is_dx12() || is_ue58_dx11_dedicated_ui_backend())) {
         attempt_hook_ue58_slate_output_texture_register();
     }
 
@@ -6021,7 +6070,11 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register() {
-    if (!is_ue_5_8() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+    if (!is_ue_5_8() ||
+        !supports_ue57_dedicated_ui_target() ||
+        g_framework == nullptr ||
+        (!g_framework->is_dx12() && !is_ue58_dx11_dedicated_ui_backend()))
+    {
         return;
     }
 
@@ -8378,10 +8431,15 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
     const bool ue58_viewport_adoption = is_ue_5_8();
 
-    if (g_framework == nullptr ||
-        (is_ue_5_7_or_newer() && !ue58_viewport_adoption) ||
-        !g_framework->is_dx12())
-    {
+    if (g_framework == nullptr) {
+        return;
+    }
+
+    const bool ue58_dx11_viewport_adoption =
+        ue58_viewport_adoption && g_framework->is_dx11();
+
+    if ((is_ue_5_7_or_newer() && !ue58_viewport_adoption) ||
+        (!g_framework->is_dx12() && !ue58_dx11_viewport_adoption)) {
         return;
     }
 
@@ -8428,10 +8486,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     // UE5.8 can still expose the desktop target before its pending
     // NeedReAllocateViewportRenderTarget request has completed. Publishing
-    // that target lets the D3D12 copy path race its queued discard transition.
+    // that target lets the graphics copy path race its queued transition.
     // Prefer completed Draw, but some UE5.8 games strip every Draw anchor.
     // In that case, accept the render-family target through the same size and
-    // repeated-observation gates instead of leaving D3D12 without a source.
+    // repeated-observation gates instead of leaving the VR backend without a source.
     if (ue58_viewport_adoption && !is_ue58_post_draw && !is_ue58_render_family_fallback) {
         return;
     }
@@ -8550,15 +8608,58 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     ID3D12Resource* native_resource = nullptr;
+    void* native_resource_identity = nullptr;
     D3D12_RESOURCE_DESC desc{};
+    D3D11_TEXTURE2D_DESC d3d11_desc{};
+    uint64_t native_width{};
+    uint32_t native_height{};
+    uint32_t native_format{};
+    bool native_is_texture2d{false};
 
     if (everspace2_candidate) {
+        native_resource = everspace2_candidate->native_resource.Get();
         desc = everspace2_candidate->desc;
     } else if (is_ue_5_6_dx12_backend()) {
         if (!ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc)) {
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
             return;
         }
+    } else if (ue58_dx11_viewport_adoption) {
+        void* candidate_native = nullptr;
+
+        try {
+            candidate_native = candidate->get_native_resource();
+        } catch (const std::exception& e) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Rejected FSceneViewport render target from {} because D3D11 GetNativeResource failed: {}",
+                log_prefix,
+                source_name,
+                e.what());
+            return;
+        } catch (...) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "{} Rejected FSceneViewport render target from {} because D3D11 GetNativeResource threw",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        if (!ue58_try_get_d3d11_texture_desc(candidate_native, d3d11_desc)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "{} FSceneViewport render target from {} has no validated native D3D11 texture yet",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        native_resource_identity = candidate_native;
+        native_width = d3d11_desc.Width;
+        native_height = d3d11_desc.Height;
+        native_format = static_cast<uint32_t>(d3d11_desc.Format);
+        native_is_texture2d = true;
     } else {
         try {
             native_resource = (ID3D12Resource*)candidate->get_native_resource();
@@ -8575,15 +8676,36 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
     }
 
-    if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target from {} has no native D3D12 resource yet", log_prefix, source_name);
-        return;
+    if (!ue58_dx11_viewport_adoption) {
+        if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "{} FSceneViewport render target from {} has no native D3D12 resource yet",
+                log_prefix,
+                source_name);
+            return;
+        }
+
+        native_resource_identity = native_resource;
+        native_width = desc.Width;
+        native_height = desc.Height;
+        native_format = static_cast<uint32_t>(desc.Format);
+        native_is_texture2d = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     }
 
-    if (desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Height == 0) {
+    if (native_resource_identity == nullptr ||
+        !native_is_texture2d ||
+        native_width == 0 ||
+        native_height == 0)
+    {
         SPDLOG_WARNING_EVERY_N_SEC(2,
-            "{} Rejected FSceneViewport render target from {} because desc is invalid: dim={} size={}x{} fmt={}",
-            log_prefix, source_name, (uint32_t)desc.Dimension, desc.Width, desc.Height, (uint32_t)desc.Format);
+            "{} Rejected FSceneViewport render target from {} because the {} desc is invalid: size={}x{} fmt={}",
+            log_prefix,
+            source_name,
+            ue58_dx11_viewport_adoption ? "D3D11" : "D3D12",
+            native_width,
+            native_height,
+            native_format);
         return;
     }
 
@@ -8591,7 +8713,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         const auto expected_width = (uint64_t)vr->get_hmd_width() * 2ull;
         const auto expected_height = (uint64_t)vr->get_hmd_height();
 
-        if (desc.Width != expected_width || desc.Height != expected_height) {
+        if (native_width != expected_width || native_height != expected_height) {
             rtm->reset_ue58_scene_target_observation();
 
             if (current_target != nullptr) {
@@ -8604,17 +8726,17 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 log_prefix,
                 source_name,
                 (uintptr_t)candidate,
-                (uintptr_t)native_resource,
-                desc.Width,
-                desc.Height,
-                (uint32_t)desc.Format,
+                (uintptr_t)native_resource_identity,
+                native_width,
+                native_height,
+                native_format,
                 expected_width,
                 expected_height);
             return;
         }
 
         const auto stable_observations =
-            rtm->observe_ue58_scene_target(candidate, native_resource);
+            rtm->observe_ue58_scene_target(candidate, native_resource_identity);
 
         if (stable_observations == 1) {
             SPDLOG_INFO(
@@ -8622,10 +8744,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 log_prefix,
                 source_name,
                 (uintptr_t)candidate,
-                (uintptr_t)native_resource,
-                desc.Width,
-                desc.Height,
-                (uint32_t)desc.Format);
+                (uintptr_t)native_resource_identity,
+                native_width,
+                native_height,
+                native_format);
             return;
         }
 
@@ -8635,7 +8757,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 log_prefix,
                 source_name,
                 (uintptr_t)candidate,
-                (uintptr_t)native_resource,
+                (uintptr_t)native_resource_identity,
                 stable_observations);
         }
     }
@@ -8729,10 +8851,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             log_prefix,
             source_name,
             (uintptr_t)candidate,
-            (uintptr_t)native_resource,
-            desc.Width,
-            desc.Height,
-            (uint32_t)desc.Format);
+            (uintptr_t)native_resource_identity,
+            native_width,
+            native_height,
+            native_format);
         return;
     }
 
@@ -8740,7 +8862,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         shf_probe_scene_viewport_memory(viewport, source, candidate);
         SPDLOG_WARNING_EVERY_N_SEC(2,
             "{} Found FSceneViewport render target candidate from {} at {:x} [{}x{} fmt={}] but not adopting it yet",
-            log_prefix, source_name, (uintptr_t)candidate, desc.Width, desc.Height, (uint32_t)desc.Format);
+            log_prefix, source_name, (uintptr_t)candidate, native_width, native_height, native_format);
         return;
     }
 
@@ -8753,13 +8875,19 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             source_name,
             (uintptr_t)current_target,
             (uintptr_t)candidate,
-            (uintptr_t)native_resource,
-            desc.Width,
-            desc.Height,
-            (uint32_t)desc.Format);
+            (uintptr_t)native_resource_identity,
+            native_width,
+            native_height,
+            native_format);
     } else {
         SPDLOG_WARN_ONCE("{} Adopted real FSceneViewport render target from {} at {:x} native={:x} [{}x{} fmt={}]",
-            log_prefix, source_name, (uintptr_t)candidate, (uintptr_t)native_resource, desc.Width, desc.Height, (uint32_t)desc.Format);
+            log_prefix,
+            source_name,
+            (uintptr_t)candidate,
+            (uintptr_t)native_resource_identity,
+            native_width,
+            native_height,
+            native_format);
     }
 }
 
@@ -15423,6 +15551,221 @@ bool ue55_try_promote_fallback_ui_target(
     return true;
 }
 
+bool ue58_dx11_try_get_rhi_texture_desc(
+    FRHITexture2D* texture,
+    D3D11_TEXTURE2D_DESC& out_desc,
+    void** out_native = nullptr)
+{
+    out_desc = {};
+
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (texture == nullptr || !looks_like_vtable_object(texture)) {
+        return false;
+    }
+
+    void* native{};
+
+    try {
+        FRHITexture2D::set_vtable(*(void**)texture);
+        native = texture->get_native_resource();
+    } catch (...) {
+        return false;
+    }
+
+    if (!ue58_try_get_d3d11_texture_desc(native, out_desc)) {
+        return false;
+    }
+
+    if (out_native != nullptr) {
+        *out_native = native;
+    }
+
+    return true;
+}
+
+bool ue58_dx11_slate_output_is_scene_target(
+    VRRenderTargetManager_Base* rtm,
+    FRHITexture2D* texture,
+    void* native,
+    const D3D11_TEXTURE2D_DESC& desc)
+{
+    if (rtm != nullptr && texture != nullptr && texture == rtm->get_render_target()) {
+        return true;
+    }
+
+    if (rtm != nullptr && native != nullptr) {
+        D3D11_TEXTURE2D_DESC scene_desc{};
+        void* scene_native{};
+
+        if (ue58_dx11_try_get_rhi_texture_desc(rtm->get_render_target(), scene_desc, &scene_native) &&
+            scene_native == native)
+        {
+            return true;
+        }
+    }
+
+    auto vr = VR::get();
+
+    if (vr == nullptr || !vr->is_hmd_active()) {
+        return false;
+    }
+
+    const auto expected_scene_width = (uint64_t)vr->get_hmd_width() * 2ull;
+    const auto expected_scene_height = (uint64_t)vr->get_hmd_height();
+
+    return expected_scene_width != 0 &&
+           expected_scene_height != 0 &&
+           desc.Width == expected_scene_width &&
+           desc.Height == expected_scene_height;
+}
+
+bool ue58_dx11_validate_dedicated_ui_target(
+    VRRenderTargetManager_Base* rtm,
+    FRHITexture2D* texture,
+    uint32_t expected_width,
+    uint32_t expected_height,
+    D3D11_TEXTURE2D_DESC* out_desc = nullptr,
+    void** out_native = nullptr)
+{
+    if (!is_ue58_dx11_dedicated_ui_backend() ||
+        rtm == nullptr ||
+        texture == nullptr ||
+        texture == rtm->get_render_target())
+    {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC desc{};
+    void* native{};
+
+    if (!ue58_dx11_try_get_rhi_texture_desc(texture, desc, &native)) {
+        return false;
+    }
+
+    if (expected_width == 0 ||
+        expected_height == 0 ||
+        desc.Width != expected_width ||
+        desc.Height != expected_height ||
+        desc.Format == DXGI_FORMAT_UNKNOWN ||
+        desc.ArraySize != 1 ||
+        desc.SampleDesc.Count != 1 ||
+        (desc.BindFlags & D3D11_BIND_RENDER_TARGET) == 0 ||
+        (desc.BindFlags & D3D11_BIND_SHADER_RESOURCE) == 0)
+    {
+        return false;
+    }
+
+    D3D11_TEXTURE2D_DESC scene_desc{};
+    void* scene_native{};
+
+    if (ue58_dx11_try_get_rhi_texture_desc(rtm->get_render_target(), scene_desc, &scene_native) &&
+        scene_native == native)
+    {
+        return false;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = desc;
+    }
+
+    if (out_native != nullptr) {
+        *out_native = native;
+    }
+
+    return true;
+}
+
+bool ue58_dx11_route_slate_output_texture(
+    safetyhook::Context& ctx,
+    VRRenderTargetManager_Base* rtm,
+    const char* tag)
+{
+    if (!is_ue58_dx11_dedicated_ui_backend()) {
+        return false;
+    }
+
+    if (rtm == nullptr) {
+        return true;
+    }
+
+    auto* const ui_target = rtm->get_dedicated_ui_target();
+    const auto expected_width = rtm->get_dedicated_ui_width();
+    const auto expected_height = rtm->get_dedicated_ui_height();
+    D3D11_TEXTURE2D_DESC ui_desc{};
+    void* ui_native{};
+
+    if (!ue58_dx11_validate_dedicated_ui_target(
+            rtm,
+            ui_target,
+            expected_width,
+            expected_height,
+            &ui_desc,
+            &ui_native))
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "{} DX11 SlateOutputTexture call reached before a validated dedicated UI target exists",
+            tag);
+        return true;
+    }
+
+    auto* const original = reinterpret_cast<FRHITexture2D*>(ctx.rdx);
+    D3D11_TEXTURE2D_DESC original_desc{};
+    void* original_native{};
+
+    if (!ue58_dx11_try_get_rhi_texture_desc(original, original_desc, &original_native)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "{} refusing DX11 SlateOutputTexture replacement because the original texture is invalid: {:x}",
+            tag,
+            (uintptr_t)original);
+        return true;
+    }
+
+    if (original == ui_target || original_native == ui_native) {
+        return true;
+    }
+
+    const auto original_is_scene =
+        ue58_dx11_slate_output_is_scene_target(rtm, original, original_native, original_desc);
+
+    if (!original_is_scene &&
+        (original_desc.Width != ui_desc.Width || original_desc.Height != ui_desc.Height))
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            1,
+            "{} refusing DX11 SlateOutputTexture replacement because original extent [{}x{}] does not match dedicated UI extent [{}x{}]",
+            tag,
+            original_desc.Width,
+            original_desc.Height,
+            ui_desc.Width,
+            ui_desc.Height);
+        return true;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        1,
+        "{} routing DX11 {}SlateOutputTexture original={:x} native={:x} [{}x{} fmt={}] -> dedicated={:x} native={:x} [{}x{} fmt={}]",
+        tag,
+        original_is_scene ? "scene-target " : "",
+        (uintptr_t)original,
+        (uintptr_t)original_native,
+        original_desc.Width,
+        original_desc.Height,
+        (uint32_t)original_desc.Format,
+        (uintptr_t)ui_target,
+        (uintptr_t)ui_native,
+        ui_desc.Width,
+        ui_desc.Height,
+        (uint32_t)ui_desc.Format);
+
+    ctx.rdx = reinterpret_cast<uintptr_t>(ui_target);
+    return true;
+}
+
 bool ue58_slate_output_is_scene_target(
     VRRenderTargetManager_Base* rtm,
     FRHITexture2D* texture,
@@ -15456,7 +15799,11 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
     }
 
     if (ue58) {
-        if (!is_ue_5_8() || !supports_ue57_dedicated_ui_target() || g_framework == nullptr || !g_framework->is_dx12()) {
+        if (!is_ue_5_8() ||
+            !supports_ue57_dedicated_ui_target() ||
+            g_framework == nullptr ||
+            (!g_framework->is_dx12() && !is_ue58_dx11_dedicated_ui_backend()))
+        {
             return;
         }
     } else if (!supports_ue55_dedicated_ui_target_for_current_game()) {
@@ -15475,6 +15822,11 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
     }
 
     auto* rtm = g_hook->get_render_target_manager();
+
+    if (ue58 && ue58_dx11_route_slate_output_texture(ctx, rtm, tag)) {
+        return;
+    }
+
     auto* ui_target = rtm != nullptr ? rtm->get_dedicated_ui_target() : nullptr;
     const auto original = (FRHITexture2D*)ctx.rdx;
     std::optional<D3D12_RESOURCE_DESC> original_desc{};
@@ -18566,7 +18918,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (!is_ue_5_8()) {
+        if (!is_ue_5_8() || is_ue58_dx11_dedicated_ui_backend()) {
             rtm->ensure_dedicated_ui_target((uintptr_t)a2);
         }
 
@@ -18596,6 +18948,16 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
 
     if (is_ue_5_7_or_newer()) {
+        if (is_ue58_dx11_dedicated_ui_backend() &&
+            !ue58_dx11_validate_dedicated_ui_target(
+                rtm,
+                rtm->get_dedicated_ui_target(),
+                rtm->get_dedicated_ui_width(),
+                rtm->get_dedicated_ui_height()))
+        {
+            ui_target = nullptr;
+        }
+
         if (rtm->has_dedicated_ui_target()) {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using explicit dedicated UI target on UE 5.7+");
         }
@@ -18606,7 +18968,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             fallback_ui_target = nullptr;
         }
 
-        ui_target = rtm->get_ui_target();
+        if (!is_ue58_dx11_dedicated_ui_backend() || ui_target != nullptr) {
+            ui_target = rtm->get_ui_target();
+        }
     } else {
         if (daysgone_dx11_no_scene_as_ui && ui_target == render_target_fallback) {
             SPDLOG_WARN_ONCE("[DaysGone] Clearing scene render target UI fallback before Slate DrawWindow");
@@ -18643,6 +19007,27 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         SPDLOG_INFO_EVERY_N_SEC(1, "No UI target, skipping!");
         return call_orig();
+    }
+
+    if (is_ue58_dx11_dedicated_ui_backend()) {
+        // Keep UE5.8's FSlateDrawWindowPassOutputs pointed at the real swapchain.
+        // The proven RegisterExternalTexture callsite redirects only RDG's Slate
+        // draw destination, avoiding a stale or incorrectly presented UI texture.
+        if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[UE5.8][DX11][SlateUI] Dedicated UI target is ready, but the guarded RDG redirect is not installed; using the original Slate path");
+            return call_orig();
+        }
+
+        const auto ret = call_orig();
+
+        for (auto& mod : mods) {
+            mod->on_post_slate_draw_window(renderer, a2, viewport_info);
+        }
+
+        SPDLOG_INFO_ONCE("[UE5.8][DX11][SlateUI] DrawWindow is using the guarded RDG dedicated-UI redirect");
+        return ret;
     }
 
     // Replace the texture with one we have control over.
@@ -20374,18 +20759,17 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
         reset_dedicated_ui_creation_state();
     }
 
-    if (is_ue_5_8()) {
-        // UE5.8 routes Slate through RDG. The older UObject render-target path can
-        // be GC'd before its render resource is valid, causing a creation loop and
-        // stale OpenXR frame state. Keep the trusted extent only; the RDG hook will
-        // promote/route a real Slate output texture when it observes one.
+    if (is_ue_5_8() && !is_ue58_dx11_dedicated_ui_backend()) {
+        // UE5.8 DX12 routes Slate through RDG and promotes a real Slate output.
+        // DX11 has the same RDG call but no safe engine-owned output to retain, so
+        // it creates one persistent target and redirects only that RDG registration.
         return;
     }
 
     try_schedule_dedicated_ui_creation();
 }
 
-bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
+bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     if (!supports_dedicated_ui_target_for_current_game() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
         return false;
     }
@@ -20410,6 +20794,29 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() const {
 
     if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
         return false;
+    }
+
+    if (is_ue58_dx11_dedicated_ui_backend()) {
+        D3D11_TEXTURE2D_DESC scene_desc{};
+        void* scene_native{};
+
+        if (!ue58_dx11_try_get_rhi_texture_desc(get_render_target(), scene_desc, &scene_native) ||
+            scene_native == nullptr)
+        {
+            return false;
+        }
+
+        const auto vr = VR::get();
+        const auto expected_scene_width = vr != nullptr ? (uint64_t)vr->get_hmd_width() * 2ull : 0;
+        const auto expected_scene_height = vr != nullptr ? (uint64_t)vr->get_hmd_height() : 0;
+
+        if (expected_scene_width == 0 ||
+            expected_scene_height == 0 ||
+            scene_desc.Width != expected_scene_width ||
+            scene_desc.Height != expected_scene_height)
+        {
+            return false;
+        }
     }
 
     if (supports_ue55_dedicated_ui_target_for_current_game()) {
@@ -20514,13 +20921,19 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             // collected while Slate/RDG can still reference its RHI resource.
             // UGameInstance resolves the same world but persists across travel.
             auto* world_context = (sdk::UObject*)world;
-            if (everspace2_is_current_game()) {
+            if (everspace2_is_current_game() || is_ue58_dx11_dedicated_ui_backend()) {
                 world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
 
                 if (world_context == nullptr || world_context->is_pending_kill_or_unreachable()) {
-                    SPDLOG_INFO_EVERY_N_SEC(
-                        2,
-                        "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    if (is_ue58_dx11_dedicated_ui_backend()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[UE5.8][DX11][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    }
                     this->reset_dedicated_ui_creation_state();
                     return;
                 }
@@ -20602,6 +21015,31 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         }
 
                         FRHITexture2D::set_vtable(*(void**)*frt_texture);
+
+                        if (is_ue58_dx11_dedicated_ui_backend() &&
+                            !ue58_dx11_validate_dedicated_ui_target(
+                                this,
+                                *frt_texture,
+                                width,
+                                height))
+                        {
+                            SPDLOG_ERROR(
+                                "[UE5.8][DX11][SlateUI] Rejecting generation {} because its native UI texture failed validation [{}x{}]",
+                                generation,
+                                width,
+                                height);
+                            GameThreadWorker::get().enqueue([this, generation]() -> void {
+                                if (!this->is_dedicated_ui_generation_current(generation)) {
+                                    return;
+                                }
+
+                                this->in_flight_dedicated_ui_texture = nullptr;
+                                this->dedicated_ui_texture = nullptr;
+                                this->destroy_dedicated_ui_target();
+                            });
+                            return true;
+                        }
+
                         this->set_dedicated_ui_target(*frt_texture, width, height);
                         this->get_fallback_ui_target_ref() = nullptr;
 
@@ -20680,14 +21118,25 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
 
     if (existing_target != nullptr && !IsBadReadPtr(existing_target, sizeof(void*))) {
         if (g_framework->is_dx11()) {
-            auto* native_resource = (ID3D11Texture2D*)existing_target->get_native_resource();
-
-            if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
-                D3D11_TEXTURE2D_DESC desc{};
-                native_resource->GetDesc(&desc);
-
-                if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+            if (is_ue58_dx11_dedicated_ui_backend()) {
+                if (ue58_dx11_validate_dedicated_ui_target(
+                        this,
+                        existing_target,
+                        dedicated_ui_width,
+                        dedicated_ui_height))
+                {
                     return;
+                }
+            } else {
+                auto* native_resource = (ID3D11Texture2D*)existing_target->get_native_resource();
+
+                if (native_resource != nullptr && !IsBadReadPtr(native_resource, sizeof(void*))) {
+                    D3D11_TEXTURE2D_DESC desc{};
+                    native_resource->GetDesc(&desc);
+
+                    if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+                        return;
+                    }
                 }
             }
         } else {
@@ -20710,8 +21159,21 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         !IsBadReadPtr(owned_dedicated_ui_target->texture, sizeof(void*)))
     {
         FRHITexture2D::set_vtable(*(void**)owned_dedicated_ui_target->texture);
-        dedicated_ui_target = owned_dedicated_ui_target->texture;
-        existing_target = get_dedicated_ui_target();
+
+        if (!is_ue58_dx11_dedicated_ui_backend() ||
+            ue58_dx11_validate_dedicated_ui_target(
+                this,
+                owned_dedicated_ui_target->texture,
+                dedicated_ui_width,
+                dedicated_ui_height))
+        {
+            dedicated_ui_target = owned_dedicated_ui_target->texture;
+            existing_target = get_dedicated_ui_target();
+        } else {
+            SPDLOG_WARN("[UE5.8][DX11][SlateUI] Dropping an invalid retained dedicated UI target");
+            destroy_dedicated_ui_target();
+            existing_target = nullptr;
+        }
     }
 
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
@@ -20726,9 +21188,18 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
 
                     if (frt_texture != nullptr && *frt_texture != nullptr && !IsBadReadPtr(*frt_texture, sizeof(void*))) {
                         FRHITexture2D::set_vtable(*(void**)*frt_texture);
-                        set_dedicated_ui_target(*frt_texture, dedicated_ui_width, dedicated_ui_height);
-                        get_fallback_ui_target_ref() = nullptr;
-                        return;
+
+                        if (!is_ue58_dx11_dedicated_ui_backend() ||
+                            ue58_dx11_validate_dedicated_ui_target(
+                                this,
+                                *frt_texture,
+                                dedicated_ui_width,
+                                dedicated_ui_height))
+                        {
+                            set_dedicated_ui_target(*frt_texture, dedicated_ui_width, dedicated_ui_height);
+                            get_fallback_ui_target_ref() = nullptr;
+                            return;
+                        }
                     }
                 }
             }
