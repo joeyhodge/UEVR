@@ -5758,10 +5758,17 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
         uint64_t expired{};
         uint64_t skipped{};
     };
+    struct RecentVisibleState {
+        uintptr_t state_address{};
+        int64_t last_visible_ms{};
+        uint64_t generation{};
+    };
     static thread_local PendingCounters pending{};
     static thread_local ProSpiPlayerVisibilityMode cached_mode{ProSpiPlayerVisibilityMode::OFF};
     static thread_local std::array<uintptr_t, 8> aggressive_validated_states{};
     static thread_local size_t aggressive_validated_state_next{};
+    static thread_local std::array<RecentVisibleState, PROSPI_RECENT_PLAYER_HISTORY_COUNT>
+        recent_visible_states{};
 
     const auto flush_pending_counters = [&]() {
         const auto flush = [](std::atomic<uint64_t>& target, uint64_t& value) {
@@ -5785,6 +5792,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
         flush_pending_counters();
         aggressive_validated_states.fill(0);
         aggressive_validated_state_next = 0;
+        recent_visible_states = {};
         cached_mode = mode;
     }
 
@@ -5810,76 +5818,110 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
     const auto generation =
         vr->m_prospi_player_visibility_balanced_generation.load(std::memory_order_acquire);
     ProSpiBalancedPlayerVisibilitySlot* balanced_slot = nullptr;
+    RecentVisibleState* recent_visible_state = nullptr;
+    bool promote_to_balanced_slot = false;
 
     if (mode == ProSpiPlayerVisibilityMode::BALANCED) {
+        static_assert(
+            (PROSPI_RECENT_PLAYER_HISTORY_COUNT & (PROSPI_RECENT_PLAYER_HISTORY_COUNT - 1)) == 0,
+            "Recent-player history must be a power of two");
+        const auto history_index =
+            ((state_address >> 4) ^ (state_address >> 17)) &
+            (PROSPI_RECENT_PLAYER_HISTORY_COUNT - 1);
+        recent_visible_state = &recent_visible_states[history_index];
+
         size_t empty_slot = PROSPI_BALANCED_PLAYER_SLOT_COUNT;
         size_t oldest_slot = 0;
-        int64_t oldest_visible_ms = (std::numeric_limits<int64_t>::max)();
+        int64_t oldest_relevant_ms = (std::numeric_limits<int64_t>::max)();
 
         for (size_t i = 0; i < vr->m_prospi_balanced_player_visibility_slots.size(); ++i) {
             auto& slot = vr->m_prospi_balanced_player_visibility_slots[i];
-            const auto cached_state = slot.state_address.load(std::memory_order_acquire);
+            auto cached_state = slot.state_address.load(std::memory_order_acquire);
+            const auto slot_generation = slot.generation.load(std::memory_order_relaxed);
+            const auto relevant_ms = slot.last_relevant_ms.load(std::memory_order_relaxed);
+
+            if (cached_state != 0 &&
+                (slot_generation != generation ||
+                 relevant_ms <= 0 ||
+                 now_ms - relevant_ms > PROSPI_BALANCED_PLAYER_HOLD_MS))
+            {
+                auto expected_state = cached_state;
+                if (slot.state_address.compare_exchange_strong(
+                        expected_state,
+                        0,
+                        std::memory_order_acq_rel,
+                        std::memory_order_relaxed))
+                {
+                    ++pending.expired;
+                    cached_state = 0;
+                } else {
+                    cached_state = expected_state;
+                }
+            }
+
             if (cached_state == state_address) {
                 balanced_slot = &slot;
-                break;
             }
 
             if (cached_state == 0 && empty_slot == PROSPI_BALANCED_PLAYER_SLOT_COUNT) {
                 empty_slot = i;
             }
 
-            const auto natural_ms = slot.last_naturally_visible_ms.load(std::memory_order_relaxed);
-            if (cached_state != 0 && natural_ms < oldest_visible_ms) {
-                oldest_visible_ms = natural_ms;
+            if (cached_state != 0 && relevant_ms < oldest_relevant_ms) {
+                oldest_relevant_ms = relevant_ms;
                 oldest_slot = i;
             }
         }
 
         if (visible != 0) {
-            if (balanced_slot == nullptr) {
-                const auto target_index =
-                    empty_slot != PROSPI_BALANCED_PLAYER_SLOT_COUNT ? empty_slot : oldest_slot;
-                balanced_slot = &vr->m_prospi_balanced_player_visibility_slots[target_index];
+            recent_visible_state->state_address = state_address;
+            recent_visible_state->last_visible_ms = now_ms;
+            recent_visible_state->generation = generation;
 
-                if (balanced_slot->state_address.load(std::memory_order_acquire) != 0) {
-                    ++pending.evicted;
-                }
-
-                balanced_slot->state_address.store(0, std::memory_order_release);
+            if (balanced_slot != nullptr) {
                 balanced_slot->generation.store(generation, std::memory_order_relaxed);
-                balanced_slot->last_naturally_visible_ms.store(now_ms, std::memory_order_relaxed);
-                balanced_slot->state_address.store(state_address, std::memory_order_release);
-                ++pending.learned;
-            } else {
-                balanced_slot->generation.store(generation, std::memory_order_relaxed);
-                balanced_slot->last_naturally_visible_ms.store(now_ms, std::memory_order_relaxed);
+                balanced_slot->last_relevant_ms.store(now_ms, std::memory_order_relaxed);
             }
 
             return;
         }
 
         if (balanced_slot == nullptr) {
-            ++pending.skipped;
-            return;
-        }
+            const auto recent_age_ms =
+                now_ms - recent_visible_state->last_visible_ms;
+            const auto current_shot_candidate =
+                recent_visible_state->generation == generation &&
+                recent_age_ms <= PROSPI_RECENT_PLAYER_HISTORY_MS;
+            const auto previous_shot_handoff =
+                recent_visible_state->generation != 0 &&
+                recent_visible_state->generation + 1 == generation &&
+                recent_age_ms <= PROSPI_PREVIOUS_SHOT_HANDOFF_MS;
+            const auto was_recently_visible =
+                recent_visible_state->state_address == state_address &&
+                recent_visible_state->last_visible_ms > 0 &&
+                recent_age_ms >= 0 &&
+                (current_shot_candidate || previous_shot_handoff);
+            if (!was_recently_visible) {
+                ++pending.skipped;
+                return;
+            }
 
-        const auto slot_generation = balanced_slot->generation.load(std::memory_order_relaxed);
-        const auto natural_ms =
-            balanced_slot->last_naturally_visible_ms.load(std::memory_order_relaxed);
-        const auto expired =
-            slot_generation != generation ||
-            now_ms <= 0 ||
-            natural_ms <= 0 ||
-            now_ms - natural_ms > PROSPI_BALANCED_PLAYER_HOLD_MS;
-        if (expired) {
-            auto expected_state = state_address;
-            balanced_slot->state_address.compare_exchange_strong(
-                expected_state,
-                0,
-                std::memory_order_acq_rel,
-                std::memory_order_relaxed);
-            ++pending.expired;
-            return;
+            if (empty_slot != PROSPI_BALANCED_PLAYER_SLOT_COUNT) {
+                balanced_slot = &vr->m_prospi_balanced_player_visibility_slots[empty_slot];
+            } else {
+                // Keep a stable four-player set instead of replacing one slot
+                // for every visibility callback in crowded shots.
+                if (oldest_relevant_ms > 0 &&
+                    now_ms - oldest_relevant_ms < PROSPI_BALANCED_REPLACEMENT_GUARD_MS)
+                {
+                    ++pending.skipped;
+                    return;
+                }
+
+                balanced_slot = &vr->m_prospi_balanced_player_visibility_slots[oldest_slot];
+            }
+
+            promote_to_balanced_slot = true;
         }
     } else if (visible != 0) {
         return;
@@ -5912,7 +5954,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
     }
 
     if (player_enabled == 0) {
-        if (balanced_slot != nullptr) {
+        if (balanced_slot != nullptr && !promote_to_balanced_slot) {
             auto expected_state = state_address;
             balanced_slot->state_address.compare_exchange_strong(
                 expected_state,
@@ -5921,8 +5963,31 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
                 std::memory_order_relaxed);
         }
 
+        if (recent_visible_state != nullptr &&
+            recent_visible_state->state_address == state_address)
+        {
+            *recent_visible_state = {};
+        }
+
         ++pending.intentional_off;
         return;
+    }
+
+    if (promote_to_balanced_slot) {
+        const auto previous_state =
+            balanced_slot->state_address.load(std::memory_order_acquire);
+        if (previous_state != 0 && previous_state != state_address) {
+            ++pending.evicted;
+        }
+
+        balanced_slot->state_address.store(0, std::memory_order_release);
+        balanced_slot->generation.store(generation, std::memory_order_relaxed);
+        balanced_slot->last_relevant_ms.store(now_ms, std::memory_order_relaxed);
+        balanced_slot->state_address.store(state_address, std::memory_order_release);
+        *recent_visible_state = {};
+        ++pending.learned;
+    } else if (balanced_slot != nullptr) {
+        balanced_slot->last_relevant_ms.store(now_ms, std::memory_order_relaxed);
     }
 
     ctx.r12 = (ctx.r12 & ~uint64_t{0xff}) | uint64_t{1};
@@ -5938,7 +6003,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
         flush_pending_counters();
         SPDLOG_INFO(
             "[PROSPI_PLAYER_VISIBILITY] mode={} restored={} observed={} intentional_off={} rejected={} "
-            "learned={} evicted={} expired={} skipped={} state=0x{:x}",
+            "promoted={} evicted={} expired={} skipped={} state=0x{:x}",
             mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced" : "aggressive_heavy",
             vr->m_prospi_player_visibility_forced_count.load(std::memory_order_relaxed),
             vr->m_prospi_player_visibility_call_count.load(std::memory_order_relaxed),
@@ -5955,7 +6020,7 @@ void VR::prospi_player_visibility_hook(safetyhook::Context& ctx) {
 void VR::clear_prospi_balanced_player_visibility_cache() {
     for (auto& slot : m_prospi_balanced_player_visibility_slots) {
         slot.state_address.store(0, std::memory_order_release);
-        slot.last_naturally_visible_ms.store(0, std::memory_order_relaxed);
+        slot.last_relevant_ms.store(0, std::memory_order_relaxed);
         slot.generation.store(0, std::memory_order_relaxed);
     }
 
@@ -5997,14 +6062,20 @@ void VR::update_prospi_player_visibility_guard() {
             mode == ProSpiPlayerVisibilityMode::BALANCED ?
                 get_last_detected_prospi_camera_sample() :
                 ProSpiFieldMapSample{};
+        m_prospi_player_visibility_last_cache_reset_ms = 0;
         m_prospi_player_visibility_last_log_ms.store(0, std::memory_order_relaxed);
         SPDLOG_INFO(
-            "[PROSPI_PLAYER_VISIBILITY] mode={} balanced_slots={} hold_ms={}",
+            "[PROSPI_PLAYER_VISIBILITY] mode={} balanced_slots={} recent_history={} recent_ms={} "
+            "handoff_ms={} idle_ms={} cut_debounce_ms={}",
             mode == ProSpiPlayerVisibilityMode::BALANCED ? "balanced" :
             mode == ProSpiPlayerVisibilityMode::AGGRESSIVE ? "aggressive_heavy" :
             "off",
             PROSPI_BALANCED_PLAYER_SLOT_COUNT,
-            PROSPI_BALANCED_PLAYER_HOLD_MS);
+            PROSPI_RECENT_PLAYER_HISTORY_COUNT,
+            PROSPI_RECENT_PLAYER_HISTORY_MS,
+            PROSPI_PREVIOUS_SHOT_HANDOFF_MS,
+            PROSPI_BALANCED_PLAYER_HOLD_MS,
+            PROSPI_BALANCED_CAMERA_RESET_DEBOUNCE_MS);
     }
 
     if (mode == ProSpiPlayerVisibilityMode::BALANCED) {
@@ -6050,12 +6121,36 @@ void VR::update_prospi_player_visibility_guard() {
         }
 
         if (camera_cut) {
-            clear_prospi_balanced_player_visibility_cache();
-            const auto resets =
-                m_prospi_player_visibility_camera_reset_count.fetch_add(1, std::memory_order_relaxed) + 1;
-            SPDLOG_INFO(
-                "[PROSPI_PLAYER_VISIBILITY] balanced cache reset for camera cut (count={})",
-                resets);
+            const auto now_ms =
+                m_prospi_player_visibility_now_ms.load(std::memory_order_relaxed);
+            const auto since_last_reset_ms =
+                now_ms - m_prospi_player_visibility_last_cache_reset_ms;
+            const auto duplicate_cut =
+                m_prospi_player_visibility_last_cache_reset_ms > 0 &&
+                since_last_reset_ms >= 0 &&
+                since_last_reset_ms < PROSPI_BALANCED_CAMERA_RESET_DEBOUNCE_MS;
+
+            if (!duplicate_cut) {
+                clear_prospi_balanced_player_visibility_cache();
+                m_prospi_player_visibility_last_cache_reset_ms = now_ms;
+                const auto resets =
+                    m_prospi_player_visibility_camera_reset_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                SPDLOG_INFO(
+                    "[PROSPI_PLAYER_VISIBILITY] balanced cache reset for camera cut (count={})",
+                    resets);
+            } else {
+                const auto debounced =
+                    m_prospi_player_visibility_debounced_reset_count.fetch_add(
+                        1,
+                        std::memory_order_relaxed) + 1;
+                if (debounced == 1 || (debounced % 25) == 0) {
+                    SPDLOG_INFO(
+                        "[PROSPI_PLAYER_VISIBILITY] ignored duplicate camera-cut reset "
+                        "(age_ms={} count={})",
+                        since_last_reset_ms,
+                        debounced);
+                }
+            }
         }
     }
 
@@ -6150,6 +6245,189 @@ void VR::prospi_frame_pace_hook(safetyhook::Context& ctx) {
         ctx.rbx = 0;
         vr->m_prospi_frame_pace_native_override_count.fetch_add(1, std::memory_order_relaxed);
     }
+}
+
+void VR::attempt_hook_prospi_frame_end_vsync() {
+    if (m_prospi_frame_end_vsync_hook_attempted || !is_prospi_executable()) {
+        return;
+    }
+
+    m_prospi_frame_end_vsync_hook_attempted = true;
+
+    // FRenderCommandFence::BeginFence queries r.VSync immediately before
+    // selecting its RHI/GPU sync path. ProSpi restores the cvar after our
+    // normal console update, so bypass this one decision without changing the
+    // user's persistent game setting.
+    constexpr const char* FRAME_END_VSYNC_PATTERN =
+        "48 8B 0D ? ? ? ? 48 8B 01 FF 90 90 00 00 00 "
+        "85 C0 0F 84 ? ? ? ? 4C 89 BC 24 80 00 00 00 "
+        "E8 ? ? ? ? 84 C0 74 ?";
+    constexpr uintptr_t HOOK_OFFSET = 0x10;
+    constexpr std::array<uint8_t, 4> EXPECTED_HOOK_BYTES{0x85, 0xC0, 0x0F, 0x84};
+
+    const auto module = utility::get_executable();
+    const auto module_size = utility::get_module_size(module);
+    const auto sequence = utility::scan(module, FRAME_END_VSYNC_PATTERN);
+    if (!module_size || !sequence) {
+        m_prospi_frame_end_vsync_hook_status.store(-1, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to find the guarded frame-end VSync fence sequence");
+        return;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_end = module_base + *module_size;
+    if (*sequence < module_base || *sequence + HOOK_OFFSET + EXPECTED_HOOK_BYTES.size() > module_end) {
+        m_prospi_frame_end_vsync_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected out-of-range frame-end VSync sequence at 0x{:x}", *sequence);
+        return;
+    }
+
+    const auto second_start = *sequence + 1;
+    if (second_start < module_end) {
+        const auto second = utility::scan(second_start, module_end - second_start, FRAME_END_VSYNC_PATTERN);
+        if (second) {
+            m_prospi_frame_end_vsync_hook_status.store(-2, std::memory_order_relaxed);
+            SPDLOG_WARN(
+                "[PROSPI_FRAME_PACE] Refusing ambiguous frame-end VSync signatures at 0x{:x} and 0x{:x}",
+                *sequence,
+                *second);
+            return;
+        }
+    }
+
+    const auto hook_address = *sequence + HOOK_OFFSET;
+    const auto* hook_bytes = reinterpret_cast<const uint8_t*>(hook_address);
+    if (!std::equal(EXPECTED_HOOK_BYTES.begin(), EXPECTED_HOOK_BYTES.end(), hook_bytes)) {
+        m_prospi_frame_end_vsync_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected unexpected frame-end VSync bytes at 0x{:x}", hook_address);
+        return;
+    }
+
+    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_frame_end_vsync_hook);
+    if (!hook) {
+        m_prospi_frame_end_vsync_hook_status.store(-4, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to install frame-end VSync hook at 0x{:x}", hook_address);
+        return;
+    }
+
+    m_prospi_frame_end_vsync_hook = std::move(hook);
+    m_prospi_frame_end_vsync_hook_address.store(hook_address, std::memory_order_relaxed);
+    m_prospi_frame_end_vsync_hook_status.store(1, std::memory_order_relaxed);
+    SPDLOG_INFO(
+        "[PROSPI_FRAME_PACE] Hooked frame-end VSync fence decision at 0x{:x} (RVA 0x{:x})",
+        hook_address,
+        hook_address - module_base);
+}
+
+void VR::prospi_frame_end_vsync_hook(safetyhook::Context& ctx) {
+    if (g_framework == nullptr || g_framework->vr() == nullptr) {
+        return;
+    }
+
+    auto* vr = g_framework->vr().get();
+    const auto native_vsync = static_cast<int32_t>(ctx.rax);
+    vr->m_prospi_frame_end_vsync_last_native.store(native_vsync, std::memory_order_relaxed);
+    vr->m_prospi_frame_end_vsync_observed_count.fetch_add(1, std::memory_order_relaxed);
+
+    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed) || native_vsync == 0) {
+        return;
+    }
+
+    ctx.rax = 0;
+    vr->m_prospi_frame_end_vsync_bypass_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void VR::attempt_hook_prospi_max_tick_rate() {
+    if (m_prospi_max_tick_rate_hook_attempted || !is_prospi_executable()) {
+        return;
+    }
+
+    m_prospi_max_tick_rate_hook_attempted = true;
+
+    // UGameEngine::GetMaxTickRate falls back to its network-derived rate only
+    // when UEngine::GetMaxTickRate returns zero. Observe the final XMM0 value
+    // at the common epilogue and make zero mean uncapped while this ProSpi-only
+    // option is enabled.
+    constexpr const char* MAX_TICK_RATE_PATTERN =
+        "E8 ? ? ? ? 44 0F 28 44 24 20 48 8B 7C 24 50 "
+        "48 8B 74 24 68 0F 2E C7 0F 28 7C 24 30 75 03 "
+        "0F 28 C6 0F 28 74 24 40 48 83 C4 58 C3";
+    constexpr uintptr_t HOOK_OFFSET = 0x22;
+    constexpr std::array<uint8_t, 5> EXPECTED_HOOK_BYTES{0x0F, 0x28, 0x74, 0x24, 0x40};
+
+    const auto module = utility::get_executable();
+    const auto module_size = utility::get_module_size(module);
+    const auto sequence = utility::scan(module, MAX_TICK_RATE_PATTERN);
+    if (!module_size || !sequence) {
+        m_prospi_max_tick_rate_hook_status.store(-1, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to find the guarded UGameEngine::GetMaxTickRate epilogue");
+        return;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_end = module_base + *module_size;
+    if (*sequence < module_base || *sequence + HOOK_OFFSET + EXPECTED_HOOK_BYTES.size() > module_end) {
+        m_prospi_max_tick_rate_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected out-of-range GetMaxTickRate signature at 0x{:x}", *sequence);
+        return;
+    }
+
+    const auto second_start = *sequence + 1;
+    if (second_start < module_end) {
+        const auto second = utility::scan(second_start, module_end - second_start, MAX_TICK_RATE_PATTERN);
+        if (second) {
+            m_prospi_max_tick_rate_hook_status.store(-2, std::memory_order_relaxed);
+            SPDLOG_WARN(
+                "[PROSPI_FRAME_PACE] Refusing ambiguous GetMaxTickRate signatures at 0x{:x} and 0x{:x}",
+                *sequence,
+                *second);
+            return;
+        }
+    }
+
+    const auto hook_address = *sequence + HOOK_OFFSET;
+    const auto* hook_bytes = reinterpret_cast<const uint8_t*>(hook_address);
+    if (!std::equal(EXPECTED_HOOK_BYTES.begin(), EXPECTED_HOOK_BYTES.end(), hook_bytes)) {
+        m_prospi_max_tick_rate_hook_status.store(-3, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Rejected unexpected GetMaxTickRate bytes at 0x{:x}", hook_address);
+        return;
+    }
+
+    auto hook = safetyhook::create_mid((void*)hook_address, &VR::prospi_max_tick_rate_hook);
+    if (!hook) {
+        m_prospi_max_tick_rate_hook_status.store(-4, std::memory_order_relaxed);
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Failed to install GetMaxTickRate hook at 0x{:x}", hook_address);
+        return;
+    }
+
+    m_prospi_max_tick_rate_hook = std::move(hook);
+    m_prospi_max_tick_rate_hook_address.store(hook_address, std::memory_order_relaxed);
+    m_prospi_max_tick_rate_hook_status.store(1, std::memory_order_relaxed);
+    SPDLOG_INFO(
+        "[PROSPI_FRAME_PACE] Hooked UGameEngine::GetMaxTickRate result at 0x{:x} (RVA 0x{:x})",
+        hook_address,
+        hook_address - module_base);
+}
+
+void VR::prospi_max_tick_rate_hook(safetyhook::Context& ctx) {
+    if (g_framework == nullptr || g_framework->vr() == nullptr) {
+        return;
+    }
+
+    auto* vr = g_framework->vr().get();
+    const auto native_tick_rate = ctx.xmm0.f32[0];
+    vr->m_prospi_max_tick_rate_last_native.store(native_tick_rate, std::memory_order_relaxed);
+    vr->m_prospi_max_tick_rate_observed_count.fetch_add(1, std::memory_order_relaxed);
+
+    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed) ||
+        !std::isfinite(native_tick_rate) ||
+        native_tick_rate <= 0.0f)
+    {
+        return;
+    }
+
+    ctx.xmm0.f32[0] = 0.0f;
+    vr->m_prospi_max_tick_rate_override_count.fetch_add(1, std::memory_order_relaxed);
 }
 
 void VR::restore_prospi_frame_pace_override() {
@@ -6252,7 +6530,12 @@ void VR::update_prospi_frame_pace_override() {
     }
 
     attempt_hook_prospi_frame_pace();
-    if (m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed) != 1) {
+    attempt_hook_prospi_frame_end_vsync();
+    attempt_hook_prospi_max_tick_rate();
+    if (m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed) != 1 ||
+        m_prospi_frame_end_vsync_hook_status.load(std::memory_order_relaxed) != 1 ||
+        m_prospi_max_tick_rate_hook_status.load(std::memory_order_relaxed) != 1)
+    {
         m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
         m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
         return;
@@ -6399,17 +6682,24 @@ void VR::update_prospi_frame_pace_override() {
     }
 
     SPDLOG_INFO(
-        "[PROSPI_FRAME_PACE] apply={} reassert={} hook_status={} command={} sync={}->{} vsync={}->{} max_fps={:.2f}->{:.2f}",
+        "[PROSPI_FRAME_PACE] apply={} reassert={} hook_status={}/{}/{} command={} sync={}->{} vsync={}->{} "
+        "max_fps={:.2f}->{:.2f} fence_native={} fence_bypasses={} max_tick={:.2f} tick_overrides={}",
         active,
         was_active && drifted,
         m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed),
+        m_prospi_frame_end_vsync_hook_status.load(std::memory_order_relaxed),
+        m_prospi_max_tick_rate_hook_status.load(std::memory_order_relaxed),
         command_ok,
         sync_before,
         sync_after,
         vsync_before,
         vsync_after,
         max_fps_before,
-        max_fps_after);
+        max_fps_after,
+        m_prospi_frame_end_vsync_last_native.load(std::memory_order_relaxed),
+        m_prospi_frame_end_vsync_bypass_count.load(std::memory_order_relaxed),
+        m_prospi_max_tick_rate_last_native.load(std::memory_order_relaxed),
+        m_prospi_max_tick_rate_override_count.load(std::memory_order_relaxed));
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -13746,9 +14036,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                 ImGui::SeparatorText("Player Model Visibility");
                 ImGui::TextWrapped(
-                    "Balanced caches at most four player states that were naturally visible in the current shot, "
-                    "preserves them for two seconds through transient custom-camera rejection, and clears them on "
-                    "camera cuts or PLAYEROFF. It is substantially lighter than the fallback below."
+                    "Balanced records naturally visible players in a cheap hashed history, then promotes only players "
+                    "that actually transition to camera-culled. At most four promoted states are preserved; the set is "
+                    "stable during a shot and clears on real camera cuts or PLAYEROFF. A bounded previous-shot handoff "
+                    "covers the first 500 ms after a cut, while duplicate cut signals are debounced. It remains "
+                    "substantially lighter than the fallback below."
                 );
                 m_prospi_balanced_player_preservation->draw("Balanced Player Preservation");
                 ImGui::TextWrapped(
@@ -13788,20 +14080,23 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     (unsigned long long)m_prospi_player_visibility_intentional_off_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_rejected_count.load(std::memory_order_relaxed));
                 ImGui::Text(
-                    "Balanced tracked: %u/4 | Learned: %llu | Evicted: %llu | Expired: %llu",
+                    "Balanced tracked: %u/4 | Promoted: %llu | Evicted: %llu | Expired: %llu",
                     tracked_players,
                     (unsigned long long)m_prospi_player_visibility_balanced_learned_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_balanced_evicted_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_player_visibility_balanced_expired_count.load(std::memory_order_relaxed));
                 ImGui::Text(
-                    "Balanced skipped: %llu | Camera resets: %llu",
+                    "Balanced skipped: %llu | Camera resets: %llu | Debounced: %llu",
                     (unsigned long long)m_prospi_player_visibility_balanced_skipped_count.load(std::memory_order_relaxed),
-                    (unsigned long long)m_prospi_player_visibility_camera_reset_count.load(std::memory_order_relaxed));
+                    (unsigned long long)m_prospi_player_visibility_camera_reset_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_player_visibility_debounced_reset_count.load(std::memory_order_relaxed));
 
                 ImGui::SeparatorText("30/60 Frame-Pace Unlock");
                 ImGui::TextWrapped(
                     "Runs r.SetFramePace 0, disables engine VSync, and maintains t.MaxFPS=500. "
-                    "A unique signature-validated native guard prevents later ProSpi 30/60 requests from restoring the cap. "
+                    "Unique signature-validated guards prevent later ProSpi 30/60 requests and its per-frame "
+                    "VSync RHI fence from restoring the cap, and make a positive native GetMaxTickRate result "
+                    "return zero (Unreal's uncapped value). "
                     "This removes engine-side pacing only; GPU load and the OpenXR runtime still limit delivered FPS."
                 );
                 m_prospi_remove_frame_pace->draw("Remove ProSpi 30/60 Frame Pace");
@@ -13813,6 +14108,24 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     hook_status == -2 ? "ambiguous signature" :
                     hook_status == -3 ? "validation failed" :
                     hook_status == -4 ? "install failed" :
+                    "idle";
+                const auto fence_hook_status =
+                    m_prospi_frame_end_vsync_hook_status.load(std::memory_order_relaxed);
+                const auto fence_hook_status_text =
+                    fence_hook_status == 1 ? "active" :
+                    fence_hook_status == -1 ? "signature missing" :
+                    fence_hook_status == -2 ? "ambiguous signature" :
+                    fence_hook_status == -3 ? "validation failed" :
+                    fence_hook_status == -4 ? "install failed" :
+                    "idle";
+                const auto max_tick_hook_status =
+                    m_prospi_max_tick_rate_hook_status.load(std::memory_order_relaxed);
+                const auto max_tick_hook_status_text =
+                    max_tick_hook_status == 1 ? "active" :
+                    max_tick_hook_status == -1 ? "signature missing" :
+                    max_tick_hook_status == -2 ? "ambiguous signature" :
+                    max_tick_hook_status == -3 ? "validation failed" :
+                    max_tick_hook_status == -4 ? "install failed" :
                     "idle";
                 const auto command_status = m_prospi_frame_pace_command_status.load(std::memory_order_relaxed);
                 const auto command_status_text =
@@ -13834,11 +14147,21 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             : std::string{"unknown"};
 
                 ImGui::Text(
-                    "Status: %s | Command: %s | Hook: %s at 0x%llx",
+                    "Status: %s | Command: %s | Pace hook: %s at 0x%llx",
                     m_prospi_frame_pace_active.load(std::memory_order_relaxed) ? "active" : "inactive",
                     command_status_text,
                     hook_status_text,
                     (unsigned long long)m_prospi_frame_pace_hook_address.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Frame-end fence hook: %s at 0x%llx | Native VSync: %d",
+                    fence_hook_status_text,
+                    (unsigned long long)m_prospi_frame_end_vsync_hook_address.load(std::memory_order_relaxed),
+                    m_prospi_frame_end_vsync_last_native.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Max-tick hook: %s at 0x%llx | Native result: %.2f",
+                    max_tick_hook_status_text,
+                    (unsigned long long)m_prospi_max_tick_rate_hook_address.load(std::memory_order_relaxed),
+                    m_prospi_max_tick_rate_last_native.load(std::memory_order_relaxed));
                 ImGui::Text(
                     "Sync interval: %d | Native pace: %s | VSync: %d | t.MaxFPS: %.2f",
                     sync_interval,
@@ -13846,11 +14169,19 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     m_prospi_frame_pace_current_vsync.load(std::memory_order_relaxed),
                     m_prospi_frame_pace_current_max_fps.load(std::memory_order_relaxed));
                 ImGui::Text(
-                    "Commands: %llu | Native overrides: %llu | Reassertions: %llu | Last native request: %lld",
+                    "Commands: %llu | Native overrides: %llu | Fence bypasses: %llu/%llu",
                     (unsigned long long)m_prospi_frame_pace_command_count.load(std::memory_order_relaxed),
                     (unsigned long long)m_prospi_frame_pace_native_override_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_frame_end_vsync_bypass_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_frame_end_vsync_observed_count.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Reassertions: %llu | Last native frame-pace request: %lld",
                     (unsigned long long)m_prospi_frame_pace_reassert_count.load(std::memory_order_relaxed),
                     (long long)m_prospi_frame_pace_last_native_request.load(std::memory_order_relaxed));
+                ImGui::Text(
+                    "Max-tick overrides: %llu/%llu",
+                    (unsigned long long)m_prospi_max_tick_rate_override_count.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_max_tick_rate_observed_count.load(std::memory_order_relaxed));
             }
 
             if (m_match_game_fov->value()) {

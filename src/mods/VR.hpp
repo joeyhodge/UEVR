@@ -1957,6 +1957,10 @@ private:
     void restore_prospi_frame_pace_override();
     void attempt_hook_prospi_frame_pace();
     static void prospi_frame_pace_hook(safetyhook::Context& ctx);
+    void attempt_hook_prospi_frame_end_vsync();
+    static void prospi_frame_end_vsync_hook(safetyhook::Context& ctx);
+    void attempt_hook_prospi_max_tick_rate();
+    static void prospi_max_tick_rate_hook(safetyhook::Context& ctx);
     void attempt_hook_prospi_spectator_world_cull();
     static void prospi_spectator_world_cull_hook(safetyhook::Context& ctx);
     float get_game_fov() const;
@@ -2433,11 +2437,16 @@ private:
     };
     struct ProSpiBalancedPlayerVisibilitySlot {
         std::atomic<uintptr_t> state_address{0};
-        std::atomic<int64_t> last_naturally_visible_ms{0};
+        std::atomic<int64_t> last_relevant_ms{0};
         std::atomic<uint64_t> generation{0};
     };
     static constexpr size_t PROSPI_BALANCED_PLAYER_SLOT_COUNT = 4;
-    static constexpr int64_t PROSPI_BALANCED_PLAYER_HOLD_MS = 2000;
+    static constexpr size_t PROSPI_RECENT_PLAYER_HISTORY_COUNT = 256;
+    static constexpr int64_t PROSPI_RECENT_PLAYER_HISTORY_MS = 3000;
+    static constexpr int64_t PROSPI_PREVIOUS_SHOT_HANDOFF_MS = 500;
+    static constexpr int64_t PROSPI_BALANCED_PLAYER_HOLD_MS = 8000;
+    static constexpr int64_t PROSPI_BALANCED_REPLACEMENT_GUARD_MS = 750;
+    static constexpr int64_t PROSPI_BALANCED_CAMERA_RESET_DEBOUNCE_MS = 350;
     safetyhook::MidHook m_prospi_player_visibility_hook{};
     bool m_prospi_player_visibility_hook_attempted{false};
     std::atomic<bool> m_prospi_player_visibility_guard_enabled{false};
@@ -2451,6 +2460,7 @@ private:
     std::array<ProSpiBalancedPlayerVisibilitySlot, PROSPI_BALANCED_PLAYER_SLOT_COUNT>
         m_prospi_balanced_player_visibility_slots{};
     uint64_t m_prospi_player_visibility_last_cut_generation{0};
+    int64_t m_prospi_player_visibility_last_cache_reset_ms{0};
     ProSpiFieldMapSample m_prospi_player_visibility_last_camera_sample{};
     std::atomic<uint64_t> m_prospi_player_visibility_call_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_forced_count{0};
@@ -2461,9 +2471,14 @@ private:
     std::atomic<uint64_t> m_prospi_player_visibility_balanced_expired_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_balanced_skipped_count{0};
     std::atomic<uint64_t> m_prospi_player_visibility_camera_reset_count{0};
+    std::atomic<uint64_t> m_prospi_player_visibility_debounced_reset_count{0};
     std::atomic<int64_t> m_prospi_player_visibility_last_log_ms{0};
     safetyhook::MidHook m_prospi_frame_pace_hook{};
+    safetyhook::MidHook m_prospi_frame_end_vsync_hook{};
+    safetyhook::MidHook m_prospi_max_tick_rate_hook{};
     bool m_prospi_frame_pace_hook_attempted{false};
+    bool m_prospi_frame_end_vsync_hook_attempted{false};
+    bool m_prospi_max_tick_rate_hook_attempted{false};
     sdk::IConsoleCommand* m_prospi_set_frame_pace_command{nullptr};
     sdk::IConsoleVariable* m_prospi_sync_interval_cvar{nullptr};
     sdk::IConsoleVariable* m_prospi_vsync_cvar{nullptr};
@@ -2476,13 +2491,23 @@ private:
     std::atomic<bool> m_prospi_frame_pace_override_enabled{false};
     std::atomic<bool> m_prospi_frame_pace_active{false};
     std::atomic<int32_t> m_prospi_frame_pace_hook_status{0};
+    std::atomic<int32_t> m_prospi_frame_end_vsync_hook_status{0};
+    std::atomic<int32_t> m_prospi_max_tick_rate_hook_status{0};
     std::atomic<int32_t> m_prospi_frame_pace_command_status{0};
     std::atomic<uintptr_t> m_prospi_frame_pace_hook_address{0};
+    std::atomic<uintptr_t> m_prospi_frame_end_vsync_hook_address{0};
+    std::atomic<uintptr_t> m_prospi_max_tick_rate_hook_address{0};
     std::atomic<int32_t> m_prospi_frame_pace_current_sync_interval{-1};
     std::atomic<int32_t> m_prospi_frame_pace_current_vsync{-1};
     std::atomic<float> m_prospi_frame_pace_current_max_fps{-1.0f};
     std::atomic<int64_t> m_prospi_frame_pace_last_native_request{-1};
     std::atomic<uint64_t> m_prospi_frame_pace_native_override_count{0};
+    std::atomic<int32_t> m_prospi_frame_end_vsync_last_native{-1};
+    std::atomic<uint64_t> m_prospi_frame_end_vsync_observed_count{0};
+    std::atomic<uint64_t> m_prospi_frame_end_vsync_bypass_count{0};
+    std::atomic<float> m_prospi_max_tick_rate_last_native{-1.0f};
+    std::atomic<uint64_t> m_prospi_max_tick_rate_observed_count{0};
+    std::atomic<uint64_t> m_prospi_max_tick_rate_override_count{0};
     std::atomic<uint64_t> m_prospi_frame_pace_command_count{0};
     std::atomic<uint64_t> m_prospi_frame_pace_reassert_count{0};
     safetyhook::MidHook m_prospi_spectator_world_cull_hook{};
