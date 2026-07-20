@@ -1953,6 +1953,20 @@ bool is_ue_5_3_dx_backend() {
     return disk_version.dwFileVersionMS >= 0x50003 && disk_version.dwFileVersionMS < 0x50004;
 }
 
+bool is_ue_5_0_to_5_3_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("5.0") ||
+            str_version.starts_with("5.1") ||
+            str_version.starts_with("5.2") ||
+            str_version.starts_with("5.3");
+    }
+
+    return disk_version.dwFileVersionMS >= 0x50000 && disk_version.dwFileVersionMS < 0x50004;
+}
+
 bool is_ue_5_4_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -5951,6 +5965,13 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     m_has_double_precision = is_using_double_precision(stereo_view_offset_func) || is_using_double_precision(calculate_stereo_projection_matrix_func);
 
+    if (!m_has_double_precision && is_ue_5_0_to_5_3_runtime()) {
+        // Large World Coordinates changed UE5's view math to double precision.
+        // Optimized game thunks can hide that from the instruction heuristic.
+        m_has_double_precision = true;
+        SPDLOG_WARN("[UE5.0-5.3] Forcing source-defined double-precision view math because function-scan detection missed it");
+    }
+
     if (!m_has_double_precision && windrose_is_current_game() && is_ue_5_6_or_newer()) {
         m_has_double_precision = true;
         SPDLOG_WARN("[Windrose][R5] Forcing UE5.6 double-precision view math because function-scan detection missed it");
@@ -8608,7 +8629,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    const auto is_ue5 = g_hook->has_double_precision();
+    const auto is_ue50_to_53 = is_ue_5_0_to_5_3_runtime();
+    const auto is_ue5 = g_hook->has_double_precision() || is_ue50_to_53;
+    auto init_options_ue50_to_53 = (sdk::FSceneViewInitOptionsUE50To53*)init_options;
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
     const auto init_options_scene_state = init_options->get_scene_state();
@@ -8629,7 +8652,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }};
 
     if (init_options_scene_state != nullptr) {
-        if (is_ue5) {
+        if (is_ue50_to_53) {
+            auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue50_to_53[init_options_scene_state];
+            memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE50To53));
+        } else if (is_ue5) {
             auto& vio_entry = g_hook->m_sceneview_data.view_init_options_ue5[init_options_scene_state];
             memcpy(&vio_entry, init_options, sizeof(sdk::FSceneViewInitOptionsUE5));
         } else {
@@ -8672,14 +8698,35 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         const auto proj_mat = vr->get_projection_matrix((VRRuntime::Eye)(true_index));
 
-        auto& init_options_view_origin = is_ue5 ? *(glm::vec3*)&init_options_ue5->view_origin : init_options->view_origin;
-        auto& init_options_view_rect = is_ue5 ? init_options_ue5->view_rect : init_options->view_rect;
-        auto& init_options_constrained_view_rect = is_ue5 ? init_options_ue5->constrained_view_rect : init_options->constrained_view_rect;
+        auto& init_options_view_origin =
+            is_ue50_to_53
+                ? *(glm::vec3*)&init_options_ue50_to_53->view_origin
+                : is_ue5
+                    ? *(glm::vec3*)&init_options_ue5->view_origin
+                    : init_options->view_origin;
+        auto& init_options_view_rect =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->view_rect
+                : is_ue5
+                    ? init_options_ue5->view_rect
+                    : init_options->view_rect;
+        auto& init_options_constrained_view_rect =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->constrained_view_rect
+                : is_ue5
+                    ? init_options_ue5->constrained_view_rect
+                    : init_options->constrained_view_rect;
         auto& init_options_projection_matrix = init_options->projection_matrix;
-        auto& init_options_projection_matrix_ue5 = init_options_ue5->projection_matrix;
+        auto& init_options_projection_matrix_ue5 =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->projection_matrix
+                : init_options_ue5->projection_matrix;
 
         auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
-        auto& init_options_view_rotation_matrix_ue5 = init_options_ue5->view_rotation_matrix;
+        auto& init_options_view_rotation_matrix_ue5 =
+            is_ue50_to_53
+                ? init_options_ue50_to_53->view_rotation_matrix
+                : init_options_ue5->view_rotation_matrix;
 
         const auto conversion_mat = glm::mat4 {
             0, 0, 1, 0,
@@ -9289,11 +9336,16 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         return;
     }
 
-    using ProjectionData = sdk::FSceneViewProjectionDataUE5T<double>;
-    ProjectionData data{};
+    using ProjectionDataUE50To53 = sdk::FSceneViewProjectionDataUE50To53;
+    using ProjectionDataUE54Plus = sdk::FSceneViewProjectionDataUE5T<double>;
+    const auto uses_ue50_to_53_layout = is_ue_5_0_to_5_3_runtime();
+    ProjectionDataUE50To53 data_ue50_to_53{};
+    ProjectionDataUE54Plus data_ue54_plus{};
     const auto readable =
         projection_data != nullptr &&
-        safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data);
+        (uses_ue50_to_53_layout
+            ? safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data_ue50_to_53)
+            : safe_read_value(reinterpret_cast<uintptr_t>(projection_data), data_ue54_plus));
     const auto vr = VR::get();
     const auto render_frame = vr != nullptr ? vr->get_frame_count() : 0;
     const auto runtime_frame =
@@ -9307,6 +9359,19 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         return;
     }
 
+    const auto& view_origin =
+        uses_ue50_to_53_layout ? data_ue50_to_53.view_origin : data_ue54_plus.view_origin;
+    const auto& view_rect =
+        uses_ue50_to_53_layout ? data_ue50_to_53.view_rect : data_ue54_plus.view_rect;
+    const auto& constrained_view_rect =
+        uses_ue50_to_53_layout
+            ? data_ue50_to_53.constrained_view_rect
+            : data_ue54_plus.constrained_view_rect;
+    const auto& projection_matrix =
+        uses_ue50_to_53_layout
+            ? data_ue50_to_53.projection_matrix
+            : data_ue54_plus.projection_matrix;
+
     SPDLOG_INFO_EVERY_N_SEC(
         1,
         "[Dune][ViewTrace] SetupViewProjectionMatrix data={:x} live_pawn={} viewport_draw={} "
@@ -9319,21 +9384,21 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
         render_frame,
         runtime_frame,
         g_frame_count,
-        data.view_origin.x,
-        data.view_origin.y,
-        data.view_origin.z,
-        data.view_rect[0],
-        data.view_rect[1],
-        data.view_rect[2],
-        data.view_rect[3],
-        data.constrained_view_rect[0],
-        data.constrained_view_rect[1],
-        data.constrained_view_rect[2],
-        data.constrained_view_rect[3],
-        data.projection_matrix[0][0],
-        data.projection_matrix[1][1],
-        data.projection_matrix[2][2],
-        data.projection_matrix[3][2],
+        view_origin.x,
+        view_origin.y,
+        view_origin.z,
+        view_rect[0],
+        view_rect[1],
+        view_rect[2],
+        view_rect[3],
+        constrained_view_rect[0],
+        constrained_view_rect[1],
+        constrained_view_rect[2],
+        constrained_view_rect[3],
+        projection_matrix[0][0],
+        projection_matrix[1][1],
+        projection_matrix[2][2],
+        projection_matrix[3][2],
         reinterpret_cast<uintptr_t>(_ReturnAddress()));
 
     const auto pending_view = g_dune_pending_true_stereo_view;
@@ -9341,17 +9406,17 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
 
     if (vr != nullptr && vr->is_dune_true_stereo_enabled()) {
         const auto frame = static_cast<uint32_t>(render_frame);
-        const auto rect_width = data.view_rect[2] - data.view_rect[0];
-        const auto rect_height = data.view_rect[3] - data.view_rect[1];
+        const auto rect_width = view_rect[2] - view_rect[0];
+        const auto rect_height = view_rect[3] - view_rect[1];
         const auto valid_rect =
             rect_width > 0 &&
             rect_height > 0 &&
             rect_width <= 16384 &&
             rect_height <= 16384;
         const auto finite_origin =
-            std::isfinite(data.view_origin.x) &&
-            std::isfinite(data.view_origin.y) &&
-            std::isfinite(data.view_origin.z);
+            std::isfinite(view_origin.x) &&
+            std::isfinite(view_origin.y) &&
+            std::isfinite(view_origin.z);
         const auto matching_main_view =
             pending_view.valid &&
             pending_view.render_frame == frame &&
@@ -9398,7 +9463,7 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
                 std::isfinite(eye_separation.z) &&
                 glm::length(eye_separation) <= 1000.0f;
 
-            auto adjusted_origin = data.view_origin;
+            auto adjusted_origin = view_origin;
             adjusted_origin -= glm::dvec3{eye_separation};
 
             const auto projection_f = vr->get_projection_matrix(eye);
@@ -9429,17 +9494,23 @@ void FFakeStereoRenderingHook::setup_view_projection_matrix(
             // Dune's AMD presentation path reconstructs scene depth using the
             // game's projection conventions. Preserve those depth/clip terms
             // and only import the per-eye OpenXR lens terms.
-            auto projection = data.projection_matrix;
+            auto projection = projection_matrix;
             projection[0][0] = openxr_projection[0][0];
             projection[1][1] = openxr_projection[1][1];
             projection[2][0] = openxr_projection[2][0];
             projection[2][1] = openxr_projection[2][1];
 
-            auto* writable_data = reinterpret_cast<ProjectionData*>(projection_data);
+            const auto projection_data_address = reinterpret_cast<uintptr_t>(projection_data);
             const auto origin_address =
-                reinterpret_cast<uintptr_t>(&writable_data->view_origin);
+                projection_data_address +
+                (uses_ue50_to_53_layout
+                    ? offsetof(ProjectionDataUE50To53, view_origin)
+                    : offsetof(ProjectionDataUE54Plus, view_origin));
             const auto projection_address =
-                reinterpret_cast<uintptr_t>(&writable_data->projection_matrix);
+                projection_data_address +
+                (uses_ue50_to_53_layout
+                    ? offsetof(ProjectionDataUE50To53, projection_matrix)
+                    : offsetof(ProjectionDataUE54Plus, projection_matrix));
             const auto writable =
                 is_writable_process_range(origin_address, sizeof(adjusted_origin)) &&
                 is_writable_process_range(projection_address, sizeof(projection));
