@@ -22037,9 +22037,10 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
         };
 
         auto is_probable_ue57_texture_desc_prepare = [](uintptr_t fn) {
-            return utility::scan(fn, 0x80, "0F B6 42 32").has_value()
-                && utility::scan(fn, 0x80, "48 8B 42 24").has_value()
-                && utility::scan(fn, 0x80, "48 83 C2 38").has_value();
+            constexpr size_t ue57_desc_copy_scan_size = 0x100;
+            return utility::scan(fn, ue57_desc_copy_scan_size, "0F B6 42 32").has_value()
+                && utility::scan(fn, ue57_desc_copy_scan_size, "48 8B 42 24").has_value()
+                && utility::scan(fn, ue57_desc_copy_scan_size, "48 83 C2 38").has_value();
         };
 
         auto is_ue56_stack_scope_constructor_call = [](uintptr_t callsite) {
@@ -22066,26 +22067,136 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             uint8_t length{};
         };
 
-        auto find_next_direct_calls = [](uintptr_t start, size_t span, size_t max_calls) {
-            std::vector<DirectCallInfo> results{};
+        auto decode_linear_range = [](uintptr_t start, uintptr_t end, auto&& visitor) {
+            if (start >= end || !is_executable_process_range(start, end - start)) {
+                return false;
+            }
 
-            utility::exhaustive_decode((uint8_t*)start, span, [&](const utility::ExhaustionContext& decode_ctx) -> utility::ExhaustionResult {
-                if (std::string_view{decode_ctx.instrux.Mnemonic}.starts_with("CALL") && *(uint8_t*)decode_ctx.addr == 0xE8) {
-                    results.emplace_back(DirectCallInfo{
-                        .callsite = decode_ctx.addr,
-                        .target = utility::calculate_absolute(decode_ctx.addr + 1),
-                        .length = (uint8_t)decode_ctx.instrux.Length
-                    });
+            for (auto ip = start; ip < end;) {
+                const auto decoded = utility::decode_one((uint8_t*)ip, end - ip);
 
-                    if (results.size() >= max_calls) {
-                        return utility::ExhaustionResult::BREAK;
-                    }
+                if (!decoded || decoded->Length == 0 || decoded->Length > end - ip) {
+                    return false;
                 }
 
-                return utility::ExhaustionResult::CONTINUE;
+                if (!visitor(*decoded, ip)) {
+                    break;
+                }
+
+                ip += decoded->Length;
+            }
+
+            return true;
+        };
+
+        auto find_next_direct_calls = [&](uintptr_t start, size_t span, size_t max_calls) {
+            std::vector<DirectCallInfo> results{};
+
+            decode_linear_range(start, start + span, [&](const INSTRUX& ix, uintptr_t ip) {
+                if (std::string_view{ix.Mnemonic}.starts_with("CALL") && *(uint8_t*)ip == 0xE8) {
+                    results.emplace_back(DirectCallInfo{
+                        .callsite = ip,
+                        .target = utility::calculate_absolute(ip + 1),
+                        .length = (uint8_t)ix.Length
+                    });
+                }
+
+                return results.size() < max_calls;
             });
 
             return results;
+        };
+
+        auto is_stack_memory_operand = [](const ND_OPERAND& operand) {
+            return operand.Type == ND_OP_MEM &&
+                operand.Info.Memory.HasBase &&
+                (operand.Info.Memory.Base == NDR_RSP || operand.Info.Memory.Base == NDR_RBP);
+        };
+
+        auto has_ue57_create_initializer_setup = [&](uintptr_t start, uintptr_t end) {
+            if (start >= end || end - start > 0x60) {
+                return false;
+            }
+
+            bool has_command_list = false;
+            bool has_initializer_output = false;
+            bool has_texture_desc = false;
+
+            const auto decoded = decode_linear_range(start, end, [&](const INSTRUX& ix, uintptr_t) {
+                if (ix.OperandsCount < 2 || ix.Operands[0].Type != ND_OP_REG) {
+                    return true;
+                }
+
+                const auto destination = ix.Operands[0].Info.Register.Reg;
+                const auto& source = ix.Operands[1];
+
+                if (destination == NDR_RCX &&
+                    (ix.Instruction == ND_INS_MOV || ix.Instruction == ND_INS_LEA))
+                {
+                    has_command_list = true;
+                } else if (ix.Instruction == ND_INS_LEA && destination == NDR_RDX && is_stack_memory_operand(source)) {
+                    has_initializer_output = true;
+                } else if (ix.Instruction == ND_INS_LEA && destination == NDR_R8 && is_stack_memory_operand(source)) {
+                    has_texture_desc = true;
+                }
+
+                return true;
+            });
+
+            return decoded && has_command_list && has_initializer_output && has_texture_desc;
+        };
+
+        auto has_ue57_finalize_setup = [&](uintptr_t start, uintptr_t end) {
+            if (start >= end || end - start > 0x30) {
+                return false;
+            }
+
+            bool has_initializer_this = false;
+            bool has_texture_output = false;
+
+            const auto decoded = decode_linear_range(start, end, [&](const INSTRUX& ix, uintptr_t) {
+                if (ix.Instruction != ND_INS_LEA ||
+                    ix.OperandsCount < 2 ||
+                    ix.Operands[0].Type != ND_OP_REG ||
+                    !is_stack_memory_operand(ix.Operands[1]))
+                {
+                    return true;
+                }
+
+                const auto destination = ix.Operands[0].Info.Register.Reg;
+                has_initializer_this |= destination == NDR_RCX;
+                has_texture_output |= destination == NDR_RDX;
+                return true;
+            });
+
+            return decoded && has_initializer_this && has_texture_output;
+        };
+
+        struct UE57TextureCreateSequence {
+            DirectCallInfo create_initializer{};
+            DirectCallInfo finalize{};
+        };
+
+        auto find_ue57_texture_create_sequence = [&](uintptr_t start) -> std::optional<UE57TextureCreateSequence> {
+            const auto calls = find_next_direct_calls(start, 0x120, 8);
+
+            for (size_t i = 0; i + 1 < calls.size(); ++i) {
+                const auto setup_start = i == 0
+                    ? start
+                    : calls[i - 1].callsite + calls[i - 1].length;
+                const auto finalize_setup_start = calls[i].callsite + calls[i].length;
+
+                if (has_ue57_create_initializer_setup(setup_start, calls[i].callsite) &&
+                    has_ue57_finalize_setup(finalize_setup_start, calls[i + 1].callsite))
+                {
+                    return UE57TextureCreateSequence{
+                        .create_initializer = calls[i],
+                        .finalize = calls[i + 1]
+                    };
+                }
+            }
+
+            return std::nullopt;
         };
 
         while(true) {
@@ -22158,12 +22269,45 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                             SPDLOG_INFO("Skipping UE 5.7 D3D11 texture-desc prepare helper at {:x}; continuing to the real texture-create wrapper", fn);
                             next_call_is_not_the_right_one = true;
                         } else if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
-                            const auto next_calls = find_next_direct_calls((uintptr_t)ip + decoded->Length, 0x80, 2);
+                            const auto sequence_start = (uintptr_t)ip + decoded->Length;
+                            const auto has_ue57_prepare_shape = is_probable_ue57_texture_desc_prepare(fn);
+                            auto texture_sequence = has_ue57_prepare_shape || is_ue_5_8_or_newer()
+                                ? find_ue57_texture_create_sequence(sequence_start)
+                                : std::optional<UE57TextureCreateSequence>{};
 
-                            if (next_calls.size() >= 2) {
+                            // Preserve the already-tested UE5.8+ resolver if its
+                            // optimized setup does not expose the UE5.7 semantic
+                            // call pair. UE5.7 must fail closed rather than call
+                            // a conditional FMemory::Free with texture-create ABI.
+                            if (!texture_sequence && is_ue_5_8_or_newer()) {
+                                const auto legacy_calls = find_next_direct_calls(sequence_start, 0x80, 2);
+
+                                if (legacy_calls.size() >= 2) {
+                                    texture_sequence = UE57TextureCreateSequence{
+                                        .create_initializer = legacy_calls[0],
+                                        .finalize = legacy_calls[1]
+                                    };
+                                    SPDLOG_WARN_ONCE("UE 5.8+ texture sequence did not match the UE 5.7 semantic guard; retaining the validated legacy resolver");
+                                }
+                            }
+
+                            if (!texture_sequence && !is_ue_5_8_or_newer()) {
+                                if (has_ue57_prepare_shape) {
+                                    this->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+                                    this->set_up_texture_hook = true;
+                                    SPDLOG_WARN_ONCE(
+                                        "Detected the UE 5.7 texture-desc prepare helper, but the guarded "
+                                        "CreateTextureInitializer/Finalize pair was not proven; disabling unsafe texture replay");
+                                    return false;
+                                }
+
+                                next_call_is_not_the_right_one = true;
+                            }
+
+                            if (texture_sequence) {
                                 this->texture_desc_prepare_func = fn;
-                                this->texture_create_wrapper_func = next_calls[0].target;
-                                this->texture_finalize_func = next_calls[1].target;
+                                this->texture_create_wrapper_func = texture_sequence->create_initializer.target;
+                                this->texture_finalize_func = texture_sequence->finalize.target;
                                 this->texture_release_func = 0;
                                 this->texture_extract_func = 0;
                                 this->texture_finalize_callsite = 0;
@@ -22174,11 +22318,11 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
                                     this->texture_create_wrapper_func,
                                     this->texture_finalize_func);
 
-                                const auto wrapper_call_ip = next_calls[0].callsite;
-                                const auto finalize_post_call = next_calls[1].callsite + next_calls[1].length;
+                                const auto wrapper_call_ip = texture_sequence->create_initializer.callsite;
+                                const auto finalize_post_call = texture_sequence->finalize.callsite + texture_sequence->finalize.length;
 
-                                this->texture_create_insn_bytes.resize(next_calls[0].length);
-                                memcpy(this->texture_create_insn_bytes.data(), (void*)wrapper_call_ip, next_calls[0].length);
+                                this->texture_create_insn_bytes.resize(texture_sequence->create_initializer.length);
+                                memcpy(this->texture_create_insn_bytes.data(), (void*)wrapper_call_ip, texture_sequence->create_initializer.length);
 
                                 auto texture_hook_result = safetyhook::MidHook::create((void*)finalize_post_call, +[](safetyhook::Context& ctx) -> void {
                                     VRRenderTargetManager::texture_hook_callback(ctx, false);
