@@ -2451,6 +2451,27 @@ bool is_live_uobject_identity(sdk::UObject* object, int32_t expected_index = -1,
     return false;
 }
 
+std::optional<std::pair<int32_t, int32_t>> capture_live_uobject_identity(sdk::UObject* object) try {
+    if (!is_live_uobject_identity(object)) {
+        return std::nullopt;
+    }
+
+    const auto objects = sdk::FUObjectArray::get();
+    const auto index = (int32_t)object->get_internal_index();
+    if (objects == nullptr || index < 0 || index >= objects->get_object_count()) {
+        return std::nullopt;
+    }
+
+    const auto item = objects->get_object(index);
+    if (item == nullptr || item->get_object() != object) {
+        return std::nullopt;
+    }
+
+    return std::pair{index, item->get_serial_number()};
+} catch (...) {
+    return std::nullopt;
+}
+
 bool is_everspace2_cinematic_bar(sdk::UObject* object, std::wstring_view expected_name) try {
     if (!is_live_uobject_identity(object) || object->get_name_safe() != expected_name) {
         return false;
@@ -6439,6 +6460,46 @@ void VR::restore_prospi_frame_pace_override() {
         return;
     }
 
+    bool fixed_frame_rate_restored = false;
+    if (is_live_uobject_identity(
+            (sdk::UObject*)m_prospi_frame_pace_engine,
+            m_prospi_frame_pace_engine_index,
+            m_prospi_frame_pace_engine_serial))
+    {
+        const auto use_fixed_before =
+            read_object_bool_property((sdk::UObject*)m_prospi_frame_pace_engine, L"bUseFixedFrameRate");
+        const auto fixed_rate =
+            read_object_float_property((sdk::UObject*)m_prospi_frame_pace_engine, L"FixedFrameRate");
+
+        if (use_fixed_before && fixed_rate) {
+            fixed_frame_rate_restored =
+                *use_fixed_before == m_prospi_use_fixed_frame_rate_baseline ||
+                write_object_bool_property(
+                    (sdk::UObject*)m_prospi_frame_pace_engine,
+                    L"bUseFixedFrameRate",
+                    m_prospi_use_fixed_frame_rate_baseline);
+
+            const auto use_fixed_after =
+                read_object_bool_property((sdk::UObject*)m_prospi_frame_pace_engine, L"bUseFixedFrameRate");
+            fixed_frame_rate_restored =
+                fixed_frame_rate_restored &&
+                use_fixed_after &&
+                *use_fixed_after == m_prospi_use_fixed_frame_rate_baseline;
+
+            m_prospi_frame_pace_current_use_fixed_frame_rate.store(
+                use_fixed_after ? (int32_t)*use_fixed_after : -1,
+                std::memory_order_relaxed);
+            m_prospi_frame_pace_current_fixed_frame_rate.store(*fixed_rate, std::memory_order_relaxed);
+        }
+    }
+
+    if (!fixed_frame_rate_restored) {
+        SPDLOG_WARN(
+            "[PROSPI_FRAME_PACE] Could not restore bUseFixedFrameRate={} on the original live GameEngine; "
+            "no stale object was written",
+            m_prospi_use_fixed_frame_rate_baseline);
+    }
+
     if (m_prospi_sync_interval_cvar == nullptr ||
         IsBadReadPtr(m_prospi_sync_interval_cvar, sizeof(void*)) != FALSE ||
         m_prospi_vsync_cvar == nullptr ||
@@ -6509,16 +6570,23 @@ void VR::restore_prospi_frame_pace_override() {
     }
 
     SPDLOG_INFO(
-        "[PROSPI_FRAME_PACE] Restored baselines sync_interval={} vsync={} max_fps={:.2f}",
+        "[PROSPI_FRAME_PACE] Restored baselines fixed={} ({:.2f} FPS) sync_interval={} vsync={} max_fps={:.2f}",
+        fixed_frame_rate_restored,
+        m_prospi_fixed_frame_rate_baseline,
         m_prospi_sync_interval_baseline,
         m_prospi_vsync_baseline,
         m_prospi_max_fps_baseline);
 
     m_prospi_frame_pace_baselines_valid = false;
+    m_prospi_frame_pace_engine = nullptr;
+    m_prospi_frame_pace_engine_index = -1;
+    m_prospi_frame_pace_engine_serial = 0;
+    m_prospi_use_fixed_frame_rate_baseline = false;
+    m_prospi_fixed_frame_rate_baseline = 0.0f;
     m_prospi_frame_pace_next_check = {};
 }
 
-void VR::update_prospi_frame_pace_override() {
+void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
     if (!is_prospi_executable()) {
         return;
     }
@@ -6527,6 +6595,17 @@ void VR::update_prospi_frame_pace_override() {
     if (!requested) {
         restore_prospi_frame_pace_override();
         return;
+    }
+
+    if (m_prospi_frame_pace_baselines_valid &&
+        (engine != m_prospi_frame_pace_engine ||
+            !is_live_uobject_identity(
+                (sdk::UObject*)m_prospi_frame_pace_engine,
+                m_prospi_frame_pace_engine_index,
+                m_prospi_frame_pace_engine_serial)))
+    {
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] GameEngine identity changed; restoring and relearning guarded baselines");
+        restore_prospi_frame_pace_override();
     }
 
     attempt_hook_prospi_frame_pace();
@@ -6548,6 +6627,30 @@ void VR::update_prospi_frame_pace_override() {
         return;
     }
     m_prospi_frame_pace_next_check = now + std::chrono::seconds(1);
+
+    const auto engine_identity = capture_live_uobject_identity((sdk::UObject*)engine);
+    const auto use_fixed_before = read_object_bool_property((sdk::UObject*)engine, L"bUseFixedFrameRate");
+    const auto fixed_rate_before = read_object_float_property((sdk::UObject*)engine, L"FixedFrameRate");
+    if (!engine_identity ||
+        !use_fixed_before ||
+        !fixed_rate_before ||
+        *fixed_rate_before < 15.0f ||
+        *fixed_rate_before > 1000.0f)
+    {
+        m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
+        m_prospi_frame_pace_current_use_fixed_frame_rate.store(-1, std::memory_order_relaxed);
+        m_prospi_frame_pace_current_fixed_frame_rate.store(-1.0f, std::memory_order_relaxed);
+        SPDLOG_WARNING_EVERY_N_SEC(
+            5,
+            "[PROSPI_FRAME_PACE] Missing or implausible GameEngine fixed-rate state; override remains fail-closed");
+        return;
+    }
+
+    m_prospi_frame_pace_current_use_fixed_frame_rate.store(
+        (int32_t)*use_fixed_before,
+        std::memory_order_relaxed);
+    m_prospi_frame_pace_current_fixed_frame_rate.store(*fixed_rate_before, std::memory_order_relaxed);
 
     const auto console_manager = sdk::FConsoleManager::get();
     if (console_manager == nullptr) {
@@ -6625,17 +6728,28 @@ void VR::update_prospi_frame_pace_override() {
         m_prospi_sync_interval_baseline = sync_before;
         m_prospi_vsync_baseline = vsync_before;
         m_prospi_max_fps_baseline = max_fps_before;
+        m_prospi_frame_pace_engine = engine;
+        m_prospi_frame_pace_engine_index = engine_identity->first;
+        m_prospi_frame_pace_engine_serial = engine_identity->second;
+        m_prospi_use_fixed_frame_rate_baseline = *use_fixed_before;
+        m_prospi_fixed_frame_rate_baseline = *fixed_rate_before;
         m_prospi_frame_pace_baselines_valid = true;
     }
 
     m_prospi_frame_pace_override_enabled.store(true, std::memory_order_relaxed);
     const auto was_active = m_prospi_frame_pace_active.load(std::memory_order_relaxed);
     const auto drifted =
+        *use_fixed_before ||
         sync_before != 0 ||
         vsync_before != 0 ||
         std::abs(max_fps_before - 500.0f) > 0.01f;
     if (was_active && !drifted) {
         return;
+    }
+
+    bool fixed_rate_ok = true;
+    if (*use_fixed_before) {
+        fixed_rate_ok = write_object_bool_property((sdk::UObject*)engine, L"bUseFixedFrameRate", false);
     }
 
     const auto command_ok = m_prospi_set_frame_pace_command->Execute(L"0");
@@ -6659,7 +6773,15 @@ void VR::update_prospi_frame_pace_override() {
     const auto sync_after = m_prospi_sync_interval_cvar->GetInt();
     const auto vsync_after = m_prospi_vsync_cvar->GetInt();
     const auto max_fps_after = m_prospi_max_fps_cvar->GetFloat();
+    const auto use_fixed_after = read_object_bool_property((sdk::UObject*)engine, L"bUseFixedFrameRate");
+    const auto fixed_rate_after = read_object_float_property((sdk::UObject*)engine, L"FixedFrameRate");
     const auto active =
+        fixed_rate_ok &&
+        use_fixed_after &&
+        !*use_fixed_after &&
+        fixed_rate_after &&
+        *fixed_rate_after >= 15.0f &&
+        *fixed_rate_after <= 1000.0f &&
         command_ok &&
         vsync_ok &&
         max_fps_ok &&
@@ -6670,7 +6792,18 @@ void VR::update_prospi_frame_pace_override() {
     m_prospi_frame_pace_current_sync_interval.store(sync_after, std::memory_order_relaxed);
     m_prospi_frame_pace_current_vsync.store(vsync_after, std::memory_order_relaxed);
     m_prospi_frame_pace_current_max_fps.store(max_fps_after, std::memory_order_relaxed);
+    m_prospi_frame_pace_current_use_fixed_frame_rate.store(
+        use_fixed_after ? (int32_t)*use_fixed_after : -1,
+        std::memory_order_relaxed);
+    m_prospi_frame_pace_current_fixed_frame_rate.store(
+        fixed_rate_after ? *fixed_rate_after : -1.0f,
+        std::memory_order_relaxed);
     m_prospi_frame_pace_active.store(active, std::memory_order_relaxed);
+
+    if (*use_fixed_before && use_fixed_after && !*use_fixed_after) {
+        m_prospi_fixed_frame_rate_override_count.fetch_add(1, std::memory_order_relaxed);
+    }
+
     if (!active) {
         m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
         restore_prospi_frame_pace_override();
@@ -6683,7 +6816,8 @@ void VR::update_prospi_frame_pace_override() {
 
     SPDLOG_INFO(
         "[PROSPI_FRAME_PACE] apply={} reassert={} hook_status={}/{}/{} command={} sync={}->{} vsync={}->{} "
-        "max_fps={:.2f}->{:.2f} fence_native={} fence_bypasses={} max_tick={:.2f} tick_overrides={}",
+        "max_fps={:.2f}->{:.2f} fixed={}->{} ({:.2f} FPS) fixed_clears={} "
+        "fence_native={} fence_bypasses={} max_tick={:.2f} tick_overrides={}",
         active,
         was_active && drifted,
         m_prospi_frame_pace_hook_status.load(std::memory_order_relaxed),
@@ -6696,6 +6830,10 @@ void VR::update_prospi_frame_pace_override() {
         vsync_after,
         max_fps_before,
         max_fps_after,
+        *use_fixed_before,
+        use_fixed_after.value_or(true),
+        fixed_rate_after.value_or(-1.0f),
+        m_prospi_fixed_frame_rate_override_count.load(std::memory_order_relaxed),
         m_prospi_frame_end_vsync_last_native.load(std::memory_order_relaxed),
         m_prospi_frame_end_vsync_bypass_count.load(std::memory_order_relaxed),
         m_prospi_max_tick_rate_last_native.load(std::memory_order_relaxed),
@@ -6874,7 +7012,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
 
     update_statistics_overlay(engine);
     update_prospi_player_visibility_guard();
-    update_prospi_frame_pace_override();
+    update_prospi_frame_pace_override(engine);
 
     const auto prospi_world_cull_override =
         is_prospi_executable() && m_match_game_fov_prospi_spectator_world_cull_override->value();
@@ -14093,7 +14231,8 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
 
                 ImGui::SeparatorText("30/60 Frame-Pace Unlock");
                 ImGui::TextWrapped(
-                    "Runs r.SetFramePace 0, disables engine VSync, and maintains t.MaxFPS=500. "
+                    "Disables the reflected GameEngine bUseFixedFrameRate flag, runs r.SetFramePace 0, "
+                    "disables engine VSync, and maintains t.MaxFPS=500. "
                     "Unique signature-validated guards prevent later ProSpi 30/60 requests and its per-frame "
                     "VSync RHI fence from restoring the cap, and make a positive native GetMaxTickRate result "
                     "return zero (Unreal's uncapped value). "
@@ -14168,6 +14307,13 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                     derived_frame_pace_text.c_str(),
                     m_prospi_frame_pace_current_vsync.load(std::memory_order_relaxed),
                     m_prospi_frame_pace_current_max_fps.load(std::memory_order_relaxed));
+                const auto use_fixed_frame_rate =
+                    m_prospi_frame_pace_current_use_fixed_frame_rate.load(std::memory_order_relaxed);
+                ImGui::Text(
+                    "Engine fixed rate: %s | Configured rate: %.2f | Clears: %llu",
+                    use_fixed_frame_rate < 0 ? "unknown" : use_fixed_frame_rate != 0 ? "on" : "off",
+                    m_prospi_frame_pace_current_fixed_frame_rate.load(std::memory_order_relaxed),
+                    (unsigned long long)m_prospi_fixed_frame_rate_override_count.load(std::memory_order_relaxed));
                 ImGui::Text(
                     "Commands: %llu | Native overrides: %llu | Fence bypasses: %llu/%llu",
                     (unsigned long long)m_prospi_frame_pace_command_count.load(std::memory_order_relaxed),

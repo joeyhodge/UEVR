@@ -1953,7 +1953,7 @@ private:
     void update_prospi_player_visibility_guard();
     void attempt_hook_prospi_player_visibility();
     static void prospi_player_visibility_hook(safetyhook::Context& ctx);
-    void update_prospi_frame_pace_override();
+    void update_prospi_frame_pace_override(sdk::UGameEngine* engine);
     void restore_prospi_frame_pace_override();
     void attempt_hook_prospi_frame_pace();
     static void prospi_frame_pace_hook(safetyhook::Context& ctx);
@@ -2487,6 +2487,11 @@ private:
     int32_t m_prospi_sync_interval_baseline{1};
     int32_t m_prospi_vsync_baseline{0};
     float m_prospi_max_fps_baseline{0.0f};
+    sdk::UGameEngine* m_prospi_frame_pace_engine{nullptr};
+    int32_t m_prospi_frame_pace_engine_index{-1};
+    int32_t m_prospi_frame_pace_engine_serial{0};
+    bool m_prospi_use_fixed_frame_rate_baseline{false};
+    float m_prospi_fixed_frame_rate_baseline{0.0f};
     std::chrono::steady_clock::time_point m_prospi_frame_pace_next_check{};
     std::atomic<bool> m_prospi_frame_pace_override_enabled{false};
     std::atomic<bool> m_prospi_frame_pace_active{false};
@@ -2500,6 +2505,8 @@ private:
     std::atomic<int32_t> m_prospi_frame_pace_current_sync_interval{-1};
     std::atomic<int32_t> m_prospi_frame_pace_current_vsync{-1};
     std::atomic<float> m_prospi_frame_pace_current_max_fps{-1.0f};
+    std::atomic<int32_t> m_prospi_frame_pace_current_use_fixed_frame_rate{-1};
+    std::atomic<float> m_prospi_frame_pace_current_fixed_frame_rate{-1.0f};
     std::atomic<int64_t> m_prospi_frame_pace_last_native_request{-1};
     std::atomic<uint64_t> m_prospi_frame_pace_native_override_count{0};
     std::atomic<int32_t> m_prospi_frame_end_vsync_last_native{-1};
@@ -2509,6 +2516,7 @@ private:
     std::atomic<uint64_t> m_prospi_max_tick_rate_observed_count{0};
     std::atomic<uint64_t> m_prospi_max_tick_rate_override_count{0};
     std::atomic<uint64_t> m_prospi_frame_pace_command_count{0};
+    std::atomic<uint64_t> m_prospi_fixed_frame_rate_override_count{0};
     std::atomic<uint64_t> m_prospi_frame_pace_reassert_count{0};
     safetyhook::MidHook m_prospi_spectator_world_cull_hook{};
     bool m_prospi_spectator_world_cull_hook_attempted{false};

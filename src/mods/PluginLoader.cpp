@@ -965,9 +965,14 @@ UEVR_IConsoleObjectHandle find_object(UEVR_FConsoleManagerHandle mgr, const wcha
     return (UEVR_IConsoleObjectHandle)console_manager->find(name);
 }
 
-// Naive implementation, but it's fine for now
 UEVR_IConsoleVariableHandle find_variable(UEVR_FConsoleManagerHandle mgr, const wchar_t* name) {
-    return (UEVR_IConsoleVariableHandle)find_object(mgr, name);
+    auto obj = (sdk::IConsoleObject*)find_object(mgr, name);
+
+    if (obj == nullptr || obj->AsCommand() != nullptr) {
+        return nullptr;
+    }
+
+    return (UEVR_IConsoleVariableHandle)obj;
 }
 
 UEVR_IConsoleCommandHandle find_command(UEVR_FConsoleManagerHandle mgr, const wchar_t* name) {
