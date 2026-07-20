@@ -141,12 +141,12 @@ public:
         ue58_pending_native_resource = nullptr;
         ue58_pending_scene_target_observations = 0;
     }
-    uint32_t observe_ue58_scene_target(FRHITexture2D* texture, ID3D12Resource* resource) {
+    uint32_t observe_ue58_scene_target(FRHITexture2D* texture, void* native_resource) {
         if (ue58_pending_scene_target != texture ||
-            ue58_pending_native_resource != resource)
+            ue58_pending_native_resource != native_resource)
         {
             ue58_pending_scene_target = texture;
-            ue58_pending_native_resource = resource;
+            ue58_pending_native_resource = native_resource;
             ue58_pending_scene_target_observations = 1;
             return ue58_pending_scene_target_observations;
         }
@@ -166,7 +166,7 @@ public:
     void ensure_dedicated_ui_target(uintptr_t command_list);
     bool create_dedicated_ui_texture();
     bool try_schedule_dedicated_ui_creation();
-    bool can_attempt_dedicated_ui_creation() const;
+    bool can_attempt_dedicated_ui_creation();
     void reset_dedicated_ui_creation_state();
     bool is_dedicated_ui_generation_current(uint64_t generation) const {
         return in_flight_dedicated_ui_generation == generation;
@@ -304,7 +304,7 @@ protected:
     uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
     FRHITexture2D* ue58_pending_scene_target{nullptr};
-    ID3D12Resource* ue58_pending_native_resource{nullptr};
+    void* ue58_pending_native_resource{nullptr};
     uint32_t ue58_pending_scene_target_observations{0};
     std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
     std::atomic<uint64_t> everspace2_scene_target_generation{};
