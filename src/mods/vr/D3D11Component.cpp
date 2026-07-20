@@ -1299,6 +1299,14 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 }
 
 void D3D11Component::on_post_present(VR* vr) {
+    // Never erase the desktop while no validated scene source has reached the
+    // compositor. Setup retries on the next frame without turning a recoverable
+    // target-discovery delay into a black game window.
+    if (vr->is_hmd_active() && m_force_reset) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[VR] D3D11 scene textures are not ready; preserving the desktop back buffer");
+        return;
+    }
+
     // Clear the (real) backbuffer if VR is enabled. Otherwise it will flicker and all sorts of nasty things.
     if (vr->is_hmd_active()) {
         auto& hook = g_framework->get_d3d11_hook();
