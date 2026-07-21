@@ -74,25 +74,26 @@ ImTextureID to_imgui_texture_id(uint64_t texture_id) {
 }
 
 std::string make_d3d12_pair_key(const render::ShaderOverrideRegistry::D3D12PipelinePairInfo& pair) {
-    std::ostringstream ss{};
-    ss << std::hex << std::uppercase
-       << pair.original_pipeline_state << ':'
-       << pair.bound_pipeline_state << ':'
-       << pair.vertex_shader.hash << ':'
-       << pair.pixel_shader.hash << ':'
-       << pair.tracking_note;
-    return ss.str();
+    char buffer[96]{};
+    sprintf_s(
+        buffer,
+        "%016llX:%016llX:%016llX",
+        static_cast<unsigned long long>(pair.original_pipeline_state),
+        static_cast<unsigned long long>(pair.bound_pipeline_state),
+        static_cast<unsigned long long>(pair.first_seen_frame)
+    );
+    return buffer;
 }
 
 std::string make_d3d12_pso_key(const render::ShaderOverrideRegistry::D3D12PsoAggregateInfo& aggregate) {
-    std::ostringstream ss{};
-    ss << std::hex << std::uppercase
-       << aggregate.original_pso << ':'
-       << aggregate.vs_hash << ':'
-       << aggregate.ps_hash << ':'
-       << static_cast<uint32_t>(aggregate.pipeline_stream) << ':'
-       << aggregate.tracking_note;
-    return ss.str();
+    char buffer[64]{};
+    sprintf_s(
+        buffer,
+        "%016llX:%016llX",
+        static_cast<unsigned long long>(aggregate.original_pso),
+        static_cast<unsigned long long>(aggregate.first_seen_frame)
+    );
+    return buffer;
 }
 
 bool matches_filters(
@@ -438,16 +439,20 @@ void RenderInspector::on_present() {
     }
 
     const auto resources_active = g_framework->is_sidebar_entry_selected("Resources");
-    const auto shader_tracking_active =
+    const auto shader_page_active =
         g_framework->is_sidebar_entry_selected("PSO Profiler") ||
         g_framework->is_sidebar_entry_selected("Shaders");
+    const auto shader_tracking_active = shader_page_active &&
+        (!g_framework->is_dx12() || m_enable_live_dx12_shader_tracking);
+    auto& shader_registry = render::ShaderOverrideRegistry::get();
+    shader_registry.set_inspector_tracking_enabled(shader_tracking_active);
     const auto dx12_diagnostics_active =
         g_framework->is_dx12() &&
-        (g_framework->is_sidebar_entry_selected("DX12 Diagnostics") || shader_tracking_active);
+        (g_framework->is_sidebar_entry_selected("DX12 Diagnostics") ||
+         shader_registry.should_collect_d3d12_inspector_data());
 
     render::D3D12Diagnostics::get().set_enabled(dx12_diagnostics_active);
-    render::ShaderOverrideRegistry::get().set_inspector_tracking_enabled(shader_tracking_active);
-    render::ShaderOverrideRegistry::get().on_present(*g_framework);
+    shader_registry.on_present(*g_framework);
 
     if (resources_active) {
         if (auto& vr = VR::get(); vr != nullptr) {
@@ -923,14 +928,23 @@ void RenderInspector::draw_dx12_diagnostics() {
 }
 
 void RenderInspector::draw_pso_profiler() {
-    auto shader_snapshot = render::ShaderOverrideRegistry::get().snapshot();
-    auto diagnostics_snapshot = render::D3D12Diagnostics::get().snapshot();
-    auto resource_snapshot = m_inspector.snapshot();
-
     if (!g_framework->is_dx12()) {
         ImGui::TextUnformatted("PSO profiler is only available on DX12.");
         return;
     }
+
+    ImGui::Checkbox("Enable live DX12 PSO/shader tracking (Heavy)", &m_enable_live_dx12_shader_tracking);
+    ImGui::TextWrapped(
+        "Default-off diagnostic mode. It observes every DX12 PSO bind and can materially reduce performance in shader-heavy games."
+    );
+    if (!m_enable_live_dx12_shader_tracking) {
+        ImGui::TextUnformatted("Live PSO collection is disabled. Enable it only while capturing a short diagnostic sample.");
+        return;
+    }
+
+    auto shader_snapshot = render::ShaderOverrideRegistry::get().snapshot(true);
+    auto diagnostics_snapshot = render::D3D12Diagnostics::get().snapshot();
+    auto resource_snapshot = m_inspector.snapshot();
 
     size_t associated_target_count = 0;
     for (const auto& aggregate : shader_snapshot.d3d12_pso_aggregates) {
@@ -1127,7 +1141,8 @@ void RenderInspector::draw_pso_profiler() {
 }
 
 void RenderInspector::draw_shaders() {
-    auto snapshot = render::ShaderOverrideRegistry::get().snapshot();
+    auto include_live_dx12_tracking = !g_framework->is_dx12() || m_enable_live_dx12_shader_tracking;
+    auto snapshot = render::ShaderOverrideRegistry::get().snapshot(include_live_dx12_tracking);
 
     ImGui::Text("Frame: %" PRIu64, snapshot.frame);
     ImGui::SameLine();
@@ -1138,37 +1153,53 @@ void RenderInspector::draw_shaders() {
     ImGui::TextWrapped("Global override dir: %s", snapshot.global_override_dir.c_str());
     ImGui::TextWrapped("Profile override dir: %s", snapshot.profile_override_dir.c_str());
 
+    if (g_framework->is_dx12()) {
+        if (ImGui::Checkbox("Enable live DX12 PSO/shader tracking (Heavy)", &m_enable_live_dx12_shader_tracking)) {
+            include_live_dx12_tracking = m_enable_live_dx12_shader_tracking;
+            snapshot = render::ShaderOverrideRegistry::get().snapshot(include_live_dx12_tracking);
+            if (!m_enable_live_dx12_shader_tracking) {
+                m_displayed_dx12_pair.reset();
+                m_selected_recent_dx12_pair_key.clear();
+            }
+        }
+        ImGui::TextWrapped(
+            "Default-off diagnostic mode. Capture Next remains available as a bounded one-shot sample without enabling continuous tracking."
+        );
+    }
+
     if (ImGui::Button("Reload Shader Overrides")) {
         render::ShaderOverrideRegistry::get().request_reload();
         render::ShaderOverrideRegistry::get().on_present(*g_framework);
-        snapshot = render::ShaderOverrideRegistry::get().snapshot();
+        snapshot = render::ShaderOverrideRegistry::get().snapshot(include_live_dx12_tracking);
     }
 
     if (g_framework->is_dx12()) {
         ImGui::SameLine();
         if (ImGui::Button("Capture Next DX12 Change")) {
             render::ShaderOverrideRegistry::get().request_capture_next_d3d12_change();
-            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot(include_live_dx12_tracking);
         }
 
         ImGui::SameLine();
         if (ImGui::Button("Clear Captured DX12 Change")) {
             render::ShaderOverrideRegistry::get().clear_captured_d3d12_change();
-            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot(include_live_dx12_tracking);
         }
 
-        ImGui::SameLine();
-        if (ImGui::Button("Sample DX12 Now")) {
-            if (snapshot.current_d3d12_pair.has_value()) {
-                m_displayed_dx12_pair = snapshot.current_d3d12_pair;
-                m_last_dx12_live_sample_frame = snapshot.frame;
+        if (m_enable_live_dx12_shader_tracking) {
+            ImGui::SameLine();
+            if (ImGui::Button("Sample DX12 Now")) {
+                if (snapshot.current_d3d12_pair.has_value()) {
+                    m_displayed_dx12_pair = snapshot.current_d3d12_pair;
+                    m_last_dx12_live_sample_frame = snapshot.frame;
+                }
             }
         }
     }
 
     ImGui::Separator();
 
-    if (g_framework->is_dx12()) {
+    if (g_framework->is_dx12() && m_enable_live_dx12_shader_tracking) {
         ImGui::Text("Capture armed: %s", snapshot.capture_next_d3d12_change_armed ? "yes" : "no");
         ImGui::SameLine();
         ImGui::TextDisabled("|");
@@ -1197,7 +1228,7 @@ void RenderInspector::draw_shaders() {
             } else {
                 m_shader_export_status = "JSON export failed: " + export_error;
             }
-            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot(true);
         }
 
         ImGui::SameLine();
@@ -1207,7 +1238,7 @@ void RenderInspector::draw_shaders() {
             } else {
                 m_shader_export_status = "CSV export failed: " + export_error;
             }
-            snapshot = render::ShaderOverrideRegistry::get().snapshot();
+            snapshot = render::ShaderOverrideRegistry::get().snapshot(true);
         }
 
         if (!m_shader_export_status.empty()) {
@@ -1227,7 +1258,8 @@ void RenderInspector::draw_shaders() {
         ImGui::Separator();
     }
 
-    if (ImGui::CollapsingHeader("Currently Bound Shaders", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if ((!g_framework->is_dx12() || m_enable_live_dx12_shader_tracking) &&
+        ImGui::CollapsingHeader("Currently Bound Shaders", ImGuiTreeNodeFlags_DefaultOpen)) {
         if (ImGui::BeginTable("ShaderBoundTable", 6, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
             ImGui::TableSetupColumn("Stage");
             ImGui::TableSetupColumn("Backend");
@@ -1274,7 +1306,8 @@ void RenderInspector::draw_shaders() {
         }
     }
 
-    if (g_framework->is_dx12() && ImGui::CollapsingHeader("Distinct DX12 PSOs / Shader Pairs", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (g_framework->is_dx12() && m_enable_live_dx12_shader_tracking &&
+        ImGui::CollapsingHeader("Distinct DX12 PSOs / Shader Pairs", ImGuiTreeNodeFlags_DefaultOpen)) {
         constexpr auto pair_table_flags =
             ImGuiTableFlags_Borders |
             ImGuiTableFlags_RowBg |
