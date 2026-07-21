@@ -27,6 +27,10 @@ constexpr auto AUTO_RELOAD_INTERVAL = std::chrono::milliseconds(1000);
 constexpr auto IDLE_AUTO_RELOAD_INTERVAL = std::chrono::milliseconds(30000);
 constexpr uint64_t MAX_PSO_BIND_CONTEXT_AGE_FRAMES = 2;
 constexpr size_t MAX_PSO_USAGE_ENTRIES = 8;
+constexpr size_t MAX_PSO_USAGE_RECORDS = 32;
+constexpr size_t MAX_TRACKED_D3D12_PIPELINE_STATES = 4096;
+constexpr size_t MAX_DISTINCT_D3D12_PAIRS = 4096;
+constexpr size_t MAX_D3D12_PSO_AGGREGATES = 4096;
 
 std::string backend_to_string(render::ShaderOverrideRegistry::Backend backend) {
     switch (backend) {
@@ -647,6 +651,11 @@ bool ShaderOverrideRegistry::should_track_d3d12_pipelines() const {
         m_capture_next_d3d12_change_hot_path.load(std::memory_order_relaxed);
 }
 
+bool ShaderOverrideRegistry::should_collect_d3d12_inspector_data() const {
+    return m_inspector_tracking_enabled.load(std::memory_order_relaxed) ||
+        m_capture_next_d3d12_change_hot_path.load(std::memory_order_relaxed);
+}
+
 void ShaderOverrideRegistry::request_reload() {
     std::scoped_lock _{m_mutex};
     m_force_reload = true;
@@ -796,7 +805,7 @@ bool ShaderOverrideRegistry::export_d3d12_pairs_csv(std::filesystem::path& out_p
     }
 }
 
-ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
+ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot(bool include_live_d3d12_tracking) const {
     std::scoped_lock _{m_mutex};
 
     Snapshot out{};
@@ -805,16 +814,22 @@ ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
     out.profile_override_dir = profile_override_dir().string();
     out.bound_vertex_shader = m_bound_vertex_shader;
     out.bound_pixel_shader = m_bound_pixel_shader;
-    out.current_d3d12_pair = m_last_d3d12_pair;
     out.capture_next_d3d12_change_armed = m_capture_next_d3d12_change;
     out.captured_d3d12_pair = m_captured_d3d12_pair;
-    out.total_d3d12_pair_samples = m_total_d3d12_pair_samples;
-    out.distinct_d3d12_pairs = m_distinct_d3d12_pairs;
-    out.total_d3d12_pso_samples = m_total_d3d12_pso_samples;
     out.recent_events = m_recent_events;
 
-    out.d3d12_pso_aggregates.reserve(m_d3d12_pso_aggregates.size());
+    if (include_live_d3d12_tracking) {
+        out.current_d3d12_pair = m_last_d3d12_pair;
+        out.total_d3d12_pair_samples = m_total_d3d12_pair_samples;
+        out.distinct_d3d12_pairs = m_distinct_d3d12_pairs;
+        out.total_d3d12_pso_samples = m_total_d3d12_pso_samples;
+        out.d3d12_pso_aggregates.reserve(m_d3d12_pso_aggregates.size());
+    }
+
     for (const auto& [_, aggregate] : m_d3d12_pso_aggregates) {
+        if (!include_live_d3d12_tracking) {
+            break;
+        }
         D3D12PsoAggregateInfo info{};
         info.total_samples = aggregate.total_samples;
         info.sample_share = m_total_d3d12_pso_samples > 0
@@ -1049,7 +1064,16 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
 
     std::scoped_lock _{m_mutex};
 
-    auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
+    const auto pipeline_state_key = reinterpret_cast<uintptr_t>(pipeline_state);
+    auto record_it = m_d3d12_graphics_pso_records.find(pipeline_state_key);
+    if (record_it == m_d3d12_graphics_pso_records.end()) {
+        if (m_d3d12_graphics_pso_records.size() >= MAX_TRACKED_D3D12_PIPELINE_STATES &&
+            !m_has_active_d3d12_overrides.load(std::memory_order_relaxed)) {
+            return;
+        }
+        record_it = m_d3d12_graphics_pso_records.try_emplace(pipeline_state_key).first;
+    }
+    auto& record = record_it->second;
     record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
     record.device = device;
     record.is_pipeline_stream = false;
@@ -1129,7 +1153,16 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
 
     std::scoped_lock _{m_mutex};
 
-    auto& record = m_d3d12_graphics_pso_records[reinterpret_cast<uintptr_t>(pipeline_state)];
+    const auto pipeline_state_key = reinterpret_cast<uintptr_t>(pipeline_state);
+    auto record_it = m_d3d12_graphics_pso_records.find(pipeline_state_key);
+    if (record_it == m_d3d12_graphics_pso_records.end()) {
+        if (m_d3d12_graphics_pso_records.size() >= MAX_TRACKED_D3D12_PIPELINE_STATES &&
+            !m_has_active_d3d12_overrides.load(std::memory_order_relaxed)) {
+            return;
+        }
+        record_it = m_d3d12_graphics_pso_records.try_emplace(pipeline_state_key).first;
+    }
+    auto& record = record_it->second;
     record.pipeline_state_pointer = reinterpret_cast<uintptr_t>(pipeline_state);
     record.device = device;
     record.is_pipeline_stream = true;
@@ -1174,7 +1207,7 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
 }
 
 ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12PipelineState* pipeline_state) {
-    if (!should_track_d3d12_pipelines()) {
+    if (!m_has_active_d3d12_overrides.load(std::memory_order_relaxed)) {
         return pipeline_state;
     }
 
@@ -1200,7 +1233,7 @@ ID3D12PipelineState* ShaderOverrideRegistry::resolve_d3d12_pipeline_state(ID3D12
 }
 
 void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState* original_pipeline_state, ID3D12PipelineState* bound_pipeline_state) {
-    if (!should_track_d3d12_pipelines()) {
+    if (!should_collect_d3d12_inspector_data()) {
         return;
     }
 
@@ -1559,7 +1592,7 @@ void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairI
         aggregate.pixel_shader = pair.pixel_shader;
         aggregate.tracking_note = pair.tracking_note;
         aggregate.bound_pipeline_state = pair.bound_pipeline_state;
-    } else {
+    } else if (m_distinct_d3d12_pairs.size() < MAX_DISTINCT_D3D12_PAIRS) {
         pair.first_seen_frame = info.frame;
         pair.last_seen_frame = info.frame;
         pair.hit_count = 1;
@@ -1586,7 +1619,15 @@ void ShaderOverrideRegistry::record_d3d12_pipeline_pair(const D3D12PipelinePairI
 void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo& info) {
     ++m_total_d3d12_pso_samples;
 
-    auto& aggregate = m_d3d12_pso_aggregates[make_d3d12_pso_key(info)];
+    const auto pso_key = make_d3d12_pso_key(info);
+    auto aggregate_it = m_d3d12_pso_aggregates.find(pso_key);
+    if (aggregate_it == m_d3d12_pso_aggregates.end()) {
+        if (m_d3d12_pso_aggregates.size() >= MAX_D3D12_PSO_AGGREGATES) {
+            return;
+        }
+        aggregate_it = m_d3d12_pso_aggregates.try_emplace(pso_key).first;
+    }
+    auto& aggregate = aggregate_it->second;
     if (aggregate.first_seen_frame == 0) {
         aggregate.first_seen_frame = info.frame;
         aggregate.original_pso = info.original_pipeline_state;
@@ -1627,7 +1668,15 @@ void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo
     std::ostringstream usage_key{};
     usage_key << render_target_key << '|' << depth_target_key;
 
-    auto& usage = aggregate.usage_by_key[usage_key.str()];
+    const auto usage_key_string = usage_key.str();
+    auto usage_it = aggregate.usage_by_key.find(usage_key_string);
+    if (usage_it == aggregate.usage_by_key.end()) {
+        if (aggregate.usage_by_key.size() >= MAX_PSO_USAGE_RECORDS) {
+            return;
+        }
+        usage_it = aggregate.usage_by_key.try_emplace(usage_key_string).first;
+    }
+    auto& usage = usage_it->second;
     if (usage.hit_count == 0) {
         usage.render_target_name = render_target_name;
         usage.depth_target_name = depth_target_name;
@@ -1640,25 +1689,20 @@ void ShaderOverrideRegistry::record_d3d12_pso_sample(const D3D12PipelinePairInfo
 }
 
 std::string ShaderOverrideRegistry::make_d3d12_pair_key(const D3D12PipelinePairInfo& info) const {
-    std::ostringstream ss{};
-    ss << std::hex << std::uppercase
-       << info.original_pipeline_state << ':'
-       << info.bound_pipeline_state << ':'
-       << info.vertex_shader.hash << ':'
-       << info.pixel_shader.hash << ':'
-       << info.tracking_note;
-    return ss.str();
+    char buffer[48]{};
+    sprintf_s(
+        buffer,
+        "%016llX:%016llX",
+        static_cast<unsigned long long>(info.original_pipeline_state),
+        static_cast<unsigned long long>(info.bound_pipeline_state)
+    );
+    return buffer;
 }
 
 std::string ShaderOverrideRegistry::make_d3d12_pso_key(const D3D12PipelinePairInfo& info) const {
-    std::ostringstream ss{};
-    ss << std::hex << std::uppercase
-       << info.original_pipeline_state << ':'
-       << info.vertex_shader.hash << ':'
-       << info.pixel_shader.hash << ':'
-       << static_cast<uint32_t>(info.pipeline_stream) << ':'
-       << info.tracking_note;
-    return ss.str();
+    char buffer[24]{};
+    sprintf_s(buffer, "%016llX", static_cast<unsigned long long>(info.original_pipeline_state));
+    return buffer;
 }
 
 std::filesystem::path ShaderOverrideRegistry::make_d3d12_pair_export_path(const char* extension) const {
