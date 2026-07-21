@@ -130,12 +130,13 @@ public:
     void set_inspector_tracking_enabled(bool enabled);
     bool should_track_d3d11_shaders() const;
     bool should_track_d3d12_pipelines() const;
+    bool should_collect_d3d12_inspector_data() const;
     void request_reload();
     void request_capture_next_d3d12_change();
     void clear_captured_d3d12_change();
     bool export_d3d12_pairs_json(std::filesystem::path& out_path, std::string& error_out);
     bool export_d3d12_pairs_csv(std::filesystem::path& out_path, std::string& error_out);
-    Snapshot snapshot() const;
+    Snapshot snapshot(bool include_live_d3d12_tracking = true) const;
 
     void set_d3d11_create_callbacks(CreateVertexShaderFn create_vs, CreatePixelShaderFn create_ps);
     void register_d3d11_shader_creation(Stage stage, ID3D11Device* device, IUnknown* shader, const void* bytecode, size_t bytecode_size);
