@@ -45,6 +45,7 @@ private:
     int m_recent_frame_window{180};
     int m_dx12_event_limit{24};
     int m_recent_dx12_shader_pair_limit{16};
+    bool m_enable_live_dx12_shader_tracking{false};
     bool m_freeze_dx12_live_view{false};
     int m_dx12_live_sample_interval_frames{15};
     uint64_t m_last_dx12_live_sample_frame{};
