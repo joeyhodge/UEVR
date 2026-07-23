@@ -2532,6 +2532,36 @@ bool is_ue_4_27_runtime() {
     return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 27;
 }
 
+bool is_ue_4_16_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("4.16");
+    }
+
+    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 16;
+}
+
+bool naruto_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.find(L"naruto-win64-shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool prospi_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -8682,18 +8712,24 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     const bool ue58_dx11_viewport_adoption =
         ue58_viewport_adoption && g_framework->is_dx11();
+    const bool naruto_ue416_dx11_viewport_adoption =
+        naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11();
+    const bool validated_dx11_viewport_adoption =
+        ue58_dx11_viewport_adoption || naruto_ue416_dx11_viewport_adoption;
 
     if ((is_ue_5_7_or_newer() && !ue58_viewport_adoption) ||
-        (!g_framework->is_dx12() && !ue58_dx11_viewport_adoption)) {
+        (!g_framework->is_dx12() && !validated_dx11_viewport_adoption)) {
         return;
     }
 
     const bool dune_viewport_adoption = dune_awakening_is_current_game();
     const bool allow_scene_viewport_rt_adoption =
-        dune_viewport_adoption || ue58_viewport_adoption;
+        dune_viewport_adoption || ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption;
     const auto log_prefix = dune_viewport_adoption
         ? "[Dune][RT]"
-        : (ue58_viewport_adoption ? "[UE5.8][RT]" : "[SHf]");
+        : (ue58_viewport_adoption
+            ? "[UE5.8][RT]"
+            : (naruto_ue416_dx11_viewport_adoption ? "[Naruto][UE4.16][RT]" : "[SHf]"));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
@@ -8728,6 +8764,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         source != nullptr &&
         (std::strcmp(source, "FSceneViewFamily::RenderTarget") == 0 ||
          std::strcmp(source, "BeginRenderingViewFamily RenderTarget") == 0);
+    const bool is_naruto_post_draw =
+        naruto_ue416_dx11_viewport_adoption &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw post") == 0;
 
     // UE5.8 can still expose the desktop target before its pending
     // NeedReAllocateViewportRenderTarget request has completed. Publishing
@@ -8736,6 +8776,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     // In that case, accept the render-family target through the same size and
     // repeated-observation gates instead of leaving the VR backend without a source.
     if (ue58_viewport_adoption && !is_ue58_post_draw && !is_ue58_render_family_fallback) {
+        return;
+    }
+
+    // UE4.16 updates FRenderTarget::RenderTargetTextureRHI from
+    // FViewport::BeginRenderFrame. Observe only after the completed game
+    // viewport draw so a desktop/stale wrapper is never published.
+    if (naruto_ue416_dx11_viewport_adoption && !is_naruto_post_draw) {
         return;
     }
 
@@ -8748,11 +8795,14 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     const bool is_ue58_viewport_refresh =
         ue58_viewport_adoption &&
         (is_ue58_post_draw || is_ue58_render_family_fallback);
+    const bool is_naruto_viewport_refresh =
+        naruto_ue416_dx11_viewport_adoption && is_naruto_post_draw;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
         !is_dune_viewport_refresh &&
-        !is_ue58_viewport_refresh)
+        !is_ue58_viewport_refresh &&
+        !is_naruto_viewport_refresh)
     {
         return;
     }
@@ -8763,7 +8813,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (everspace2_direct_observation) {
         everspace2_candidate = everspace2_get_scene_viewport_texture(viewport);
         candidate = everspace2_candidate ? everspace2_candidate->texture : nullptr;
-    } else if (ue58_viewport_adoption) {
+    } else if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
         if (!sdk::FRenderTarget::update_get_render_target_texture_index(viewport)) {
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
@@ -8822,7 +8872,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
-    if (ue58_viewport_adoption) {
+    if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
         if (IsBadReadPtr(candidate, sizeof(void*))) {
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
@@ -8877,7 +8927,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
             return;
         }
-    } else if (ue58_dx11_viewport_adoption) {
+    } else if (validated_dx11_viewport_adoption) {
         void* candidate_native = nullptr;
 
         try {
@@ -8929,7 +8979,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
     }
 
-    if (!ue58_dx11_viewport_adoption) {
+    if (!validated_dx11_viewport_adoption) {
         if (!everspace2_candidate && (native_resource == nullptr || IsBadReadPtr(native_resource, sizeof(void*)))) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
@@ -8955,15 +9005,16 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             "{} Rejected FSceneViewport render target from {} because the {} desc is invalid: size={}x{} fmt={}",
             log_prefix,
             source_name,
-            ue58_dx11_viewport_adoption ? "D3D11" : "D3D12",
+            validated_dx11_viewport_adoption ? "D3D11" : "D3D12",
             native_width,
             native_height,
             native_format);
         return;
     }
 
-    if (ue58_viewport_adoption) {
-        const auto expected_width = (uint64_t)vr->get_hmd_width() * 2ull;
+    if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
+        const auto expected_width = (uint64_t)vr->get_hmd_width() *
+            (naruto_ue416_dx11_viewport_adoption && vr->is_using_afr() ? 1ull : 2ull);
         const auto expected_height = (uint64_t)vr->get_hmd_height();
 
         if (native_width != expected_width || native_height != expected_height) {
@@ -9222,7 +9273,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
-        if (everspace2_is_current_game() || is_ue_5_8()) {
+        if (everspace2_is_current_game() || is_ue_5_8() ||
+            (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11())) {
             g_hook->try_adopt_scene_viewport_render_target(
                 viewport,
                 "UGameViewportClient::Draw post");
