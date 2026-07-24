@@ -846,6 +846,9 @@ private:
     bool hook_ue418_oculus_pixel_density_sink();
     bool attempt_hook_dune_dlss_output();
     bool attempt_hook_dune_ffx_frame_resources();
+    void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
+    void attempt_hook_naruto_ue416_projection_rect();
+    void attempt_hook_naruto_ue416_draw_stereo_predicate();
     void post_init_properties(uintptr_t localplayer);
     void try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source);
     void update_daysgone_ui_telemetry();
@@ -860,6 +863,16 @@ private:
 
     // FSceneView
     static sdk::FSceneView* sceneview_constructor(sdk::FSceneView* sceneview, sdk::FSceneViewInitOptions* init_options, void* a3, void* a4);
+
+    // Naruto's UE4.16 build omits the stock stereo sizing branch in
+    // FSceneViewport::InitDynamicRHI. This hook changes only its allocation locals.
+    static void naruto_ue416_init_dynamic_rhi_size_hook(safetyhook::Context& ctx);
+    // Its LocalPlayer projection override also skips AdjustViewRect. Restore only
+    // the validated per-eye rectangles after GetProjectionData succeeds.
+    static void naruto_ue416_projection_rect_hook(safetyhook::Context& ctx);
+    // Naruto's UGameViewportClient::Draw calls a shipping stub that always
+    // reports stereo disabled. Override only that validated Draw callsite.
+    static void naruto_ue416_draw_stereo_predicate_hook(safetyhook::Context& ctx);
     
     // IStereoRendering
     static bool is_stereo_enabled(FFakeStereoRendering* stereo);
@@ -1002,6 +1015,9 @@ private:
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
+    safetyhook::MidHook m_naruto_ue416_init_dynamic_rhi_size_hook{};
+    safetyhook::MidHook m_naruto_ue416_projection_rect_hook{};
+    safetyhook::MidHook m_naruto_ue416_draw_stereo_predicate_hook{};
     safetyhook::InlineHook m_windrose_hfsm_state_enter_hook{};
     safetyhook::InlineHook m_windrose_hfsm_state_exit_hook{};
     safetyhook::InlineHook m_windrose_hfsm_component_enter_hook{};
@@ -1128,6 +1144,9 @@ private:
     std::atomic<uint64_t> m_daysgone_bend_ui_restore_count{0};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
+    bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
+    bool m_attempted_hook_naruto_ue416_projection_rect{false};
+    bool m_attempted_hook_naruto_ue416_draw_stereo_predicate{false};
     bool m_uses_old_rendertarget_manager{false};
     bool m_uses_ue58_rendertarget_manager{false};
     std::atomic<UE58RenderTargetManagerABI> m_ue58_rendertarget_manager_abi{

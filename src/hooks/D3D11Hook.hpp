@@ -39,6 +39,14 @@ public:
     void on_post_present(OnPresentFn fn) { m_on_post_present = fn; }
     void on_resize_buffers(OnResizeBuffersFn fn) { m_on_resize_buffers = fn; }
 
+    // Naruto/UE4.16 draws the scene viewport as a Slate element while Slate is
+    // redirected to the dedicated UI target. Limit suppression to that draw.
+    static void begin_naruto_slate_ui_capture(
+        ID3D11Resource* ui_target,
+        ID3D11Resource* scene_target,
+        ID3D11Resource* original_target);
+    static void end_naruto_slate_ui_capture();
+
     ID3D11Device* get_device() { return m_device; }
     IDXGISwapChain* get_swap_chain() { return m_swap_chain; } // The "active" swap chain.
     auto get_swapchain_0() { return m_swapchain_0; }
@@ -69,6 +77,8 @@ protected:
     std::unique_ptr<PointerHook> m_create_pixel_shader_hook{};
     std::unique_ptr<PointerHook> m_vs_set_shader_hook{};
     std::unique_ptr<PointerHook> m_ps_set_shader_hook{};
+    std::unique_ptr<PointerHook> m_draw_indexed_hook{};
+    void** m_naruto_draw_context_vtable{};
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
@@ -82,9 +92,11 @@ protected:
     static HRESULT WINAPI create_unordered_access_view(ID3D11Device* device, ID3D11Resource* resource, const D3D11_UNORDERED_ACCESS_VIEW_DESC* desc, ID3D11UnorderedAccessView** uav);
     static void WINAPI vs_set_shader(ID3D11DeviceContext* context, ID3D11VertexShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI ps_set_shader(ID3D11DeviceContext* context, ID3D11PixelShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
+    static void WINAPI draw_indexed(ID3D11DeviceContext* context, UINT index_count, UINT start_index_location, INT base_vertex_location);
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
 
     void hook_create_uav(ID3D11Device* device);
     void hook_create_texture2d(ID3D11Device* device);
+    void hook_naruto_draw_indexed(ID3D11Device* device);
 };
