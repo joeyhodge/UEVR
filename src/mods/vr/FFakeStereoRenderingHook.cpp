@@ -678,6 +678,27 @@ bool dune_awakening_is_current_game() {
     return result;
 }
 
+bool halo_campaign_evolved_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\halocampaignevolved.exe") ||
+               lowered.ends_with(L"/halocampaignevolved.exe") ||
+               lowered == L"halocampaignevolved.exe";
+    }();
+
+    return result;
+}
+
 bool dimension_shift_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -9168,6 +9189,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     const bool ue58_viewport_adoption = is_ue_5_8();
 
     if (g_framework == nullptr) {
+        return;
+    }
+
+    if (halo_campaign_evolved_is_current_game() &&
+        m_special_detected_5_54 &&
+        g_framework->is_dx12())
+    {
+        // Halo's nonstandard UE5.5.4 device starts with a desktop Slate wrapper
+        // in this slot. Probing or retaining it as the scene RT races the real
+        // separate-target allocation and removes the D3D12 device.
+        SPDLOG_INFO_ONCE(
+            "[Halo][UE5.5.4] Deferring FSceneViewport RT adoption to the engine allocation hook");
         return;
     }
 
@@ -19563,6 +19596,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::FSlateResource* provider_resource = nullptr;
     FRHITexture2D* provider_texture = nullptr;
     auto rtm = g_hook->get_render_target_manager();
+
+    if (halo_campaign_evolved_is_current_game() &&
+        g_hook->m_special_detected_5_54 &&
+        g_framework->is_dx12() &&
+        rtm != nullptr &&
+        rtm->get_render_target() == nullptr)
+    {
+        // Keep the first UE5.5.4 Slate draw on the engine-owned desktop target.
+        // NeedReAllocateViewportRenderTarget then creates the real HMD-sized RT,
+        // which UEVR's normal allocation hook can publish on a later callback.
+        SPDLOG_INFO_ONCE(
+            "[Halo][UE5.5.4] Waiting for the engine-owned stereo RT; bypassing Slate scene/UI fallback adoption");
+        return call_orig();
+    }
 
     sdk::IViewportRenderTargetProvider** naruto_provider_slot = nullptr;
     sdk::IViewportRenderTargetProvider* naruto_original_provider = nullptr;
