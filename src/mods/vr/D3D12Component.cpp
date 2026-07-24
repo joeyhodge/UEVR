@@ -659,6 +659,91 @@ bool D3D12Component::ensure_2d_screen_textures(ID3D12Device* device, const D3D12
     return all_ready;
 }
 
+bool D3D12Component::ensure_halo_electra_quad_source_texture(ID3D12Device* device, uint64_t width, uint32_t height) {
+    if (device == nullptr || width == 0 || height == 0 ||
+        width > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION || height > D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION)
+    {
+        SPDLOG_ERROR_EVERY_N_SEC(
+            1,
+            "[Halo][D3D12] Refusing invalid cinematic staging extent [{}x{}]",
+            width,
+            height);
+        return false;
+    }
+
+    D3D12_RESOURCE_DESC staging_desc{};
+    staging_desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    staging_desc.Width = width;
+    staging_desc.Height = height;
+    staging_desc.DepthOrArraySize = 1;
+    staging_desc.MipLevels = 1;
+    // Keep the resource typeless so the copy exactly matches Halo's Electra
+    // target while exposing typed BGRA views to SpriteBatch.
+    staging_desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+    staging_desc.SampleDesc.Count = 1;
+    staging_desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+    staging_desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    if (m_halo_electra_quad_source_tex.texture != nullptr) {
+        const auto existing_desc = m_halo_electra_quad_source_tex.texture->GetDesc();
+        if (existing_desc.Width == staging_desc.Width &&
+            existing_desc.Height == staging_desc.Height &&
+            existing_desc.Format == staging_desc.Format &&
+            existing_desc.SampleDesc.Count == 1 &&
+            m_halo_electra_quad_source_tex.rtv_heap != nullptr &&
+            m_halo_electra_quad_source_tex.srv_heap != nullptr)
+        {
+            return true;
+        }
+    }
+
+    if (m_halo_electra_quad_source_tex.commands.ready()) {
+        m_halo_electra_quad_source_tex.commands.wait(INFINITE);
+    }
+    m_halo_electra_quad_source_tex.reset();
+
+    D3D12_HEAP_PROPERTIES heap_props{};
+    heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+
+    ComPtr<ID3D12Resource> staging_texture{};
+    const auto create_result = device->CreateCommittedResource(
+        &heap_props,
+        D3D12_HEAP_FLAG_NONE,
+        &staging_desc,
+        ENGINE_SRC_COLOR,
+        nullptr,
+        IID_PPV_ARGS(&staging_texture));
+    if (FAILED(create_result)) {
+        SPDLOG_ERROR(
+            "[Halo][D3D12] Failed to create owned cinematic staging texture hr=0x{:08x} [{}x{} fmt={}]",
+            (uint32_t)create_result,
+            staging_desc.Width,
+            staging_desc.Height,
+            (uint32_t)staging_desc.Format);
+        return false;
+    }
+
+    if (!m_halo_electra_quad_source_tex.setup(
+            device,
+            staging_texture.Get(),
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            L"Halo Electra Quad Source"))
+    {
+        SPDLOG_ERROR("[Halo][D3D12] Failed to create typed views for the owned cinematic staging texture");
+        m_halo_electra_quad_source_tex.reset();
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Halo][D3D12] Created owned cinematic staging texture [{}x{} resource_fmt={} view_fmt={}]",
+        staging_desc.Width,
+        staging_desc.Height,
+        (uint32_t)staging_desc.Format,
+        (uint32_t)DXGI_FORMAT_B8G8R8A8_UNORM);
+    return true;
+}
+
 bool D3D12Component::ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source) {
     if (device == nullptr || source == nullptr) {
         return false;
@@ -2784,6 +2869,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     auto* active_ui_tex = ue58_ui_uses_shader_conversion ? ue58_ui_submit_context : &m_game_ui_tex;
 
+    const auto halo_electra_renderer_2d_screen =
+        vr->is_halo_electra_cinematic_active() &&
+        !is_actually_afr &&
+        m_game_tex.texture.Get() != nullptr &&
+        m_game_tex.srv_heap != nullptr;
     const auto is_2d_screen = vr->is_using_2d_screen();
     const auto shf_auto_2d_screen =
         SHF_AUTO_2D_SCREEN_FROM_MONO_CINEMATIC &&
@@ -2795,7 +2885,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         vr->is_mixtape_auto_2d_active() &&
         m_game_tex.texture.Get() != nullptr &&
         m_game_tex.srv_heap != nullptr;
-    const auto use_2d_screen = is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen;
+    const auto use_2d_screen =
+        is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen || halo_electra_renderer_2d_screen;
     const auto defer_dibr_single_view_spectator =
         vr->is_dibr_single_view_projection_configured() &&
         vr->m_desktop_fix->value() &&
@@ -2817,6 +2908,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
             "[Mixtape][D3D12] Auto 2D screen using mono Bink source for both eyes");
+    }
+
+    if (halo_electra_renderer_2d_screen) {
+        const auto source_desc = backbuffer->GetDesc();
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Halo][D3D12] Renderer-only cinematic quad active global_2d={} source=[{}x{} fmt={}]",
+            vr->is_using_2d_screen(),
+            source_desc.Width,
+            source_desc.Height,
+            (uint32_t)source_desc.Format);
     }
 
     if (use_2d_screen && effective_game_tex != nullptr && effective_game_tex->texture.Get() != nullptr) {
@@ -2863,7 +2965,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             const auto use_shf_flat_screen_source = is_shf_current_game();
-            const auto use_mono_flat_screen_source = use_shf_flat_screen_source || mixtape_auto_2d_screen;
+            const auto use_mono_flat_screen_source =
+                use_shf_flat_screen_source || mixtape_auto_2d_screen || halo_electra_renderer_2d_screen;
             auto* screen_source_tex = &view_game_tex;
 
             if (use_shf_flat_screen_source &&
@@ -2903,27 +3006,54 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     const auto source_aspect = source_rect_width / source_rect_height;
                     const auto screen_aspect = screen_width / screen_height;
 
-                    if (source_aspect > screen_aspect) {
-                        const auto fitted_height = (LONG)(screen_width / source_aspect);
-                        const auto y = ((LONG)screen_desc.Height - fitted_height) / 2;
-                        dest_rect.top = y;
-                        dest_rect.bottom = y + fitted_height;
-                    } else {
-                        const auto fitted_width = (LONG)(screen_height * source_aspect);
-                        const auto x = ((LONG)screen_desc.Width - fitted_width) / 2;
-                        dest_rect.left = x;
-                        dest_rect.right = x + fitted_width;
-                    }
+                    if (halo_electra_renderer_2d_screen) {
+                        // Halo renders the 16:9 movie inside each near-square native eye target.
+                        // Crop that eye around its center before placing it on the floating quad;
+                        // destination-side fitting would preserve the eye target's black padding.
+                        if (source_aspect > screen_aspect) {
+                            const auto cropped_width = std::clamp<LONG>(
+                                (LONG)(source_rect_height * screen_aspect),
+                                1,
+                                left_source_rect.right - left_source_rect.left);
+                            const auto x = left_source_rect.left +
+                                ((left_source_rect.right - left_source_rect.left) - cropped_width) / 2;
+                            left_source_rect.left = x;
+                            left_source_rect.right = x + cropped_width;
+                        } else if (source_aspect < screen_aspect) {
+                            const auto cropped_height = std::clamp<LONG>(
+                                (LONG)(source_rect_width / screen_aspect),
+                                1,
+                                left_source_rect.bottom - left_source_rect.top);
+                            const auto y = left_source_rect.top +
+                                ((left_source_rect.bottom - left_source_rect.top) - cropped_height) / 2;
+                            left_source_rect.top = y;
+                            left_source_rect.bottom = y + cropped_height;
+                        }
 
-                    screen_dest_rect = dest_rect;
+                        right_source_rect = left_source_rect;
+                    } else {
+                        if (source_aspect > screen_aspect) {
+                            const auto fitted_height = (LONG)(screen_width / source_aspect);
+                            const auto y = ((LONG)screen_desc.Height - fitted_height) / 2;
+                            dest_rect.top = y;
+                            dest_rect.bottom = y + fitted_height;
+                        } else {
+                            const auto fitted_width = (LONG)(screen_height * source_aspect);
+                            const auto x = ((LONG)screen_desc.Width - fitted_width) / 2;
+                            dest_rect.left = x;
+                            dest_rect.right = x + fitted_width;
+                        }
+
+                        screen_dest_rect = dest_rect;
+                    }
                 }
 
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[D3D12] 2D screen using matched mono source game={} mode={} auto={} tex=[{}x{} fmt={}] src=[{},{} -> {},{}] dst=[{},{} -> {},{}]",
-                    mixtape_auto_2d_screen ? "Mixtape" : "SHf",
+                    halo_electra_renderer_2d_screen ? "Halo" : (mixtape_auto_2d_screen ? "Mixtape" : "SHf"),
                     shf_scene_mode_name(m_shf_scene_mode),
-                    shf_auto_2d_screen || mixtape_auto_2d_screen,
+                    shf_auto_2d_screen || mixtape_auto_2d_screen || halo_electra_renderer_2d_screen,
                     view_desc.Width,
                     view_desc.Height,
                     (uint32_t)view_desc.Format,
@@ -2935,6 +3065,63 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     screen_dest_rect ? screen_dest_rect->top : 0,
                     screen_dest_rect ? screen_dest_rect->right : (LONG)m_2d_screen_tex[0].texture->GetDesc().Width,
                     screen_dest_rect ? screen_dest_rect->bottom : (LONG)m_2d_screen_tex[0].texture->GetDesc().Height);
+            }
+
+            if (halo_electra_renderer_2d_screen) {
+                const auto crop_width = left_source_rect.right - left_source_rect.left;
+                const auto crop_height = left_source_rect.bottom - left_source_rect.top;
+                const auto source_is_bgra =
+                    view_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+                    view_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                    view_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+
+                if (!source_is_bgra || crop_width <= 0 || crop_height <= 0 ||
+                    !ensure_halo_electra_quad_source_texture(
+                        device,
+                        static_cast<uint64_t>(crop_width),
+                        static_cast<uint32_t>(crop_height)) ||
+                    m_halo_electra_quad_source_tex.texture == nullptr ||
+                    m_halo_electra_quad_source_tex.srv_heap == nullptr)
+                {
+                    SPDLOG_ERROR_EVERY_N_SEC(
+                        1,
+                        "[Halo][D3D12] Cinematic staging unavailable; skipping unsafe borrowed-texture sampling src=[{}x{} fmt={}] crop=[{},{} -> {},{}]",
+                        view_desc.Width,
+                        view_desc.Height,
+                        (uint32_t)view_desc.Format,
+                        left_source_rect.left,
+                        left_source_rect.top,
+                        left_source_rect.right,
+                        left_source_rect.bottom);
+                    return;
+                }
+
+                D3D12_BOX source_box{};
+                source_box.left = static_cast<UINT>(left_source_rect.left);
+                source_box.top = static_cast<UINT>(left_source_rect.top);
+                source_box.front = 0;
+                source_box.right = static_cast<UINT>(left_source_rect.right);
+                source_box.bottom = static_cast<UINT>(left_source_rect.bottom);
+                source_box.back = 1;
+
+                commands.copy_region(
+                    screen_source_tex->texture.Get(),
+                    m_halo_electra_quad_source_tex.texture.Get(),
+                    &source_box,
+                    scene_source_state,
+                    ENGINE_SRC_COLOR);
+
+                screen_source_tex = &m_halo_electra_quad_source_tex;
+                left_source_rect = RECT{0, 0, crop_width, crop_height};
+                right_source_rect = left_source_rect;
+                screen_dest_rect = std::nullopt;
+
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[Halo][D3D12] Staged cinematic eye crop through owned BGRA source [{}x{}] source_state=0x{:x}",
+                    crop_width,
+                    crop_height,
+                    (uint32_t)scene_source_state);
             }
 
             d3d12::render_srv_to_rtv(
@@ -3300,6 +3487,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (dune_using_hmd_mono_expansion && scene_depth_tex != nullptr) {
         SPDLOG_INFO_EVERY_N_SEC(2, "[Dune][D3D12] Suppressing depth submit while HMD mono scene expansion is active");
+        scene_depth_tex.Reset();
+    }
+
+    if (halo_electra_renderer_2d_screen && scene_depth_tex != nullptr) {
+        SPDLOG_INFO_EVERY_N_SEC(2, "[Halo][D3D12] Suppressing depth submit while the renderer-only cinematic quad is active");
         scene_depth_tex.Reset();
     }
 
@@ -3769,6 +3961,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (right_layer && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI_RIGHT)) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&right_layer->get());
+                }
+
+                if (halo_electra_renderer_2d_screen) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Halo][OpenXR] Submitting opaque eye-specific cinematic layers left={} right={} layer_count={}",
+                        left_layer.has_value(),
+                        right_layer.has_value(),
+                        quad_layers.size());
                 }
             } else if (!suppress_ui_copy && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
                 const auto slate_layer = openxr_overlay.generate_slate_layer(runtimes::OpenXR::SwapchainIndex::UI, XrEyeVisibility::XR_EYE_VISIBILITY_BOTH, ui_pose_basis_ptr);
@@ -4526,6 +4727,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_ue58_spectator_tex.reset();
     m_scene_capture_tex.reset();
     m_shf_mono_scene_tex.reset();
+    m_halo_electra_quad_source_tex.reset();
     m_shf_mono_scene_commands.reset();
     reset_dibr_preview();
     m_shf_mono_scene_width = 0;
