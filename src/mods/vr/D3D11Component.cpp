@@ -83,6 +83,29 @@ bool is_daysgone_executable() {
     return is_daysgone;
 }
 
+bool is_naruto_executable() {
+    static const auto is_naruto = []() {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        if (!path) {
+            return false;
+        }
+
+        auto lower = std::wstring{*path};
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        return lower.ends_with(L"\\naruto-win64-shipping.exe") ||
+               lower.ends_with(L"/naruto-win64-shipping.exe") ||
+               lower == L"naruto-win64-shipping.exe";
+    }();
+
+    return is_naruto;
+}
+
+bool needs_naruto_d3d11_color_conversion(const D3D11_TEXTURE2D_DESC& desc) {
+    return is_naruto_executable() &&
+           (desc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+            desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM);
+}
+
 bool is_d3d11_or_dxgi_com_object(IUnknown* object) {
     if (object == nullptr || IsBadReadPtr(object, sizeof(void*))) {
         return false;
@@ -119,6 +142,31 @@ struct DaysGoneViewFormats {
 
 DaysGoneViewFormats get_daysgone_ui_view_formats(const D3D11_TEXTURE2D_DESC& desc) {
     switch (desc.Format) {
+    case DXGI_FORMAT_R8G8B8A8_TYPELESS:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM};
+    case DXGI_FORMAT_R8G8B8A8_UNORM:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_R8G8B8A8_UNORM};
+    case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
+        return {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM_SRGB};
+    case DXGI_FORMAT_B8G8R8A8_TYPELESS:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM};
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM};
+    case DXGI_FORMAT_B8G8R8A8_UNORM_SRGB:
+        return {DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM_SRGB};
+    default:
+        return {};
+    }
+}
+
+DaysGoneViewFormats get_naruto_ui_view_formats(const D3D11_TEXTURE2D_DESC& desc) {
+    switch (desc.Format) {
+    case DXGI_FORMAT_R16G16B16A16_TYPELESS:
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+        return {DXGI_FORMAT_R16G16B16A16_FLOAT, DXGI_FORMAT_R16G16B16A16_FLOAT};
+    case DXGI_FORMAT_R10G10B10A2_TYPELESS:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+        return {DXGI_FORMAT_R10G10B10A2_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM};
     case DXGI_FORMAT_R8G8B8A8_TYPELESS:
         return {DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, DXGI_FORMAT_R8G8B8A8_UNORM};
     case DXGI_FORMAT_R8G8B8A8_UNORM:
@@ -481,24 +529,58 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         runtime->fix_frame();
     }
 
-    // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    D3D11_TEXTURE2D_DESC selected_backbuffer_desc{};
+    backbuffer->GetDesc(&selected_backbuffer_desc);
+
+    if (is_naruto_executable() &&
+        !vr->is_extreme_compatibility_mode_enabled() &&
+        m_backbuffer_size[0] != 0 &&
+        m_backbuffer_size[1] != 0 &&
+        (selected_backbuffer_desc.Width != m_backbuffer_size[0] ||
+         selected_backbuffer_desc.Height != m_backbuffer_size[1]))
+    {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][D3D11] Scene target changed from [{}x{}] to [{}x{}]; deferring submission for one guarded rebuild",
+            m_backbuffer_size[0],
+            m_backbuffer_size[1],
+            selected_backbuffer_desc.Width,
+            selected_backbuffer_desc.Height);
+        m_force_reset = true;
+        return vr::VRCompositorError_None;
+    }
+
+    const auto naruto_color_conversion =
+        !vr->is_extreme_compatibility_mode_enabled() &&
+        needs_naruto_d3d11_color_conversion(selected_backbuffer_desc);
+    const auto needs_color_conversion =
+        vr->is_extreme_compatibility_mode_enabled() || naruto_color_conversion;
+
+    // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view.
+    if (!needs_color_conversion) {
         m_engine_tex_ref.set(backbuffer.Get(), DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, DXGI_FORMAT_B8G8R8A8_UNORM);
     } else {
-        // We need to use a shader to convert the real backbuffer
-        // to a VR compatible format.
+        // OpenXR does not advertise Naruto's R10G10B10A2 scene format. Convert
+        // through an SRV-capable texture instead of issuing an invalid
+        // R10G10B10A2 -> BGRA8 CopyResource.
         DX11StateBackup backup{context.Get()};
 
-        // this backbuffer is a copy of the real backbuffer
-        // except it can be used as a shader resource
+        auto source_desc = selected_backbuffer_desc;
+        source_desc.Usage = D3D11_USAGE_DEFAULT;
         if (m_extreme_compat_backbuffer == nullptr) {
-            D3D11_TEXTURE2D_DESC desc{};
-            real_backbuffer->GetDesc(&desc);
+            source_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            source_desc.CPUAccessFlags = 0;
+            source_desc.MiscFlags = 0;
 
-            desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
-            desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
-            if (FAILED(device->CreateTexture2D(&desc, nullptr, &m_extreme_compat_backbuffer))) {
-                spdlog::error("[VR] Failed to create extreme compatibility backbuffer");
+            const auto result = device->CreateTexture2D(&source_desc, nullptr, &m_extreme_compat_backbuffer);
+            if (FAILED(result)) {
+                spdlog::error(
+                    "[VR] Failed to create D3D11 format-conversion source (hr=0x{:08X}, {}x{}, fmt={}, samples={}, bind=0x{:X})",
+                    static_cast<uint32_t>(result),
+                    source_desc.Width,
+                    source_desc.Height,
+                    static_cast<uint32_t>(source_desc.Format),
+                    source_desc.SampleDesc.Count,
+                    source_desc.BindFlags);
                 return vr::VRCompositorError_None;
             }
         }
@@ -506,14 +588,20 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         context->CopyResource(m_extreme_compat_backbuffer.Get(), backbuffer.Get());
 
         if (m_converted_backbuffer == nullptr) {
-            D3D11_TEXTURE2D_DESC desc{};
-            real_backbuffer->GetDesc(&desc);
+            auto converted_desc = source_desc;
+            converted_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            converted_desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+            converted_desc.CPUAccessFlags = 0;
+            converted_desc.MiscFlags = 0;
 
-            desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-            desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
-            desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
-            if (FAILED(device->CreateTexture2D(&desc, nullptr, &m_converted_backbuffer))) {
-                spdlog::error("[VR] Failed to create converted backbuffer");
+            const auto result = device->CreateTexture2D(&converted_desc, nullptr, &m_converted_backbuffer);
+            if (FAILED(result)) {
+                spdlog::error(
+                    "[VR] Failed to create D3D11 BGRA conversion target (hr=0x{:08X}, {}x{}, samples={})",
+                    static_cast<uint32_t>(result),
+                    converted_desc.Width,
+                    converted_desc.Height,
+                    converted_desc.SampleDesc.Count);
                 return vr::VRCompositorError_None;
             }
         }
@@ -524,7 +612,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         }
 
         if (!m_extreme_compat_backbuffer_ctx.set(m_extreme_compat_backbuffer.Get(), std::nullopt, std::nullopt)) {
-            spdlog::error("[VR] Failed to set extreme compat backbuffer ctx");
+            spdlog::error("[VR] Failed to set D3D11 format-conversion source context");
             return vr::VRCompositorError_None;
         }
 
@@ -534,6 +622,14 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         render_srv_to_rtv(m_backbuffer_batch.get(), m_extreme_compat_backbuffer_ctx, m_engine_tex_ref, m_backbuffer_size[0], m_backbuffer_size[1]);
 
         backbuffer = m_converted_backbuffer;
+
+        if (naruto_color_conversion) {
+            SPDLOG_INFO_ONCE(
+                "[Naruto][UE4.16][D3D11] Converting adopted scene target {}x{} format {} to BGRA8 for OpenXR submission",
+                selected_backbuffer_desc.Width,
+                selected_backbuffer_desc.Height,
+                static_cast<uint32_t>(selected_backbuffer_desc.Format));
+        }
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
@@ -616,6 +712,21 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 ffsr->get_daysgone_slate_ui_offset_x(),
                 ffsr->get_daysgone_slate_ui_offset_y(),
                 ffsr->get_daysgone_slate_ui_scale());
+        } else if (is_naruto_executable() && native_ui_target != nullptr) {
+            D3D11_TEXTURE2D_DESC desc{};
+            native_ui_target->GetDesc(&desc);
+            const auto formats = get_naruto_ui_view_formats(desc);
+            rtv_format = formats.rtv;
+            srv_format = formats.srv;
+
+            SPDLOG_INFO_ONCE(
+                "[Naruto][UE4.16][SlateUI] Using dedicated UI texture {}x{} fmt={} bind=0x{:X} with RTV fmt={} SRV fmt={}",
+                desc.Width,
+                desc.Height,
+                (uint32_t)desc.Format,
+                desc.BindFlags,
+                (uint32_t)rtv_format,
+                (uint32_t)srv_format);
         }
 
         // We use SRGB for the RTV but not for the SRV because it screws up the colors when drawing the spectator view
@@ -1980,6 +2091,31 @@ bool D3D11Component::setup() {
     D3D11_TEXTURE2D_DESC backbuffer_desc{};
     backbuffer->GetDesc(&backbuffer_desc);
 
+    if (is_naruto_executable() && !vr->is_extreme_compatibility_mode_enabled()) {
+        const uint64_t expected_width =
+            static_cast<uint64_t>(vr->get_hmd_width()) * (vr->is_using_afr() ? 1ull : 2ull);
+        const uint64_t expected_height = vr->get_hmd_height();
+
+        if (expected_width == 0 || expected_height == 0 ||
+            backbuffer_desc.Width != expected_width ||
+            backbuffer_desc.Height != expected_height)
+        {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[Naruto][UE4.16][D3D11] Waiting for verified VR-sized scene target; observed [{}x{} fmt={}], expected [{}x{}]",
+                backbuffer_desc.Width,
+                backbuffer_desc.Height,
+                static_cast<uint32_t>(backbuffer_desc.Format),
+                expected_width,
+                expected_height);
+            return false;
+        }
+    }
+
+    const auto naruto_color_conversion =
+        !vr->is_extreme_compatibility_mode_enabled() &&
+        needs_naruto_d3d11_color_conversion(backbuffer_desc);
+
     m_backbuffer_size[0] = backbuffer_desc.Width;
     m_backbuffer_size[1] = backbuffer_desc.Height;
 
@@ -2000,6 +2136,27 @@ bool D3D11Component::setup() {
 
     spdlog::info("[VR] W: {}, H: {}", backbuffer_desc.Width, backbuffer_desc.Height);
     spdlog::info("[VR] Format: {}", (uint32_t)backbuffer_desc.Format);
+
+    if (naruto_color_conversion) {
+        SPDLOG_INFO(
+            "[Naruto][UE4.16][D3D11] Preparing BGRA-compatible local textures for source {}x{} fmt={} mips={} array={} samples={} bind=0x{:X} misc=0x{:X}",
+            backbuffer_desc.Width * 2,
+            backbuffer_desc.Height,
+            static_cast<uint32_t>(backbuffer_desc.Format),
+            backbuffer_desc.MipLevels,
+            backbuffer_desc.ArraySize,
+            backbuffer_desc.SampleDesc.Count,
+            backbuffer_desc.BindFlags,
+            backbuffer_desc.MiscFlags);
+
+        // UEVR's eye, 2D-screen and OpenXR textures use BGRA8 views. The
+        // engine-owned R10 target is converted every frame before reaching
+        // these resources; do not attach incompatible BGRA views to R10.
+        backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_TYPELESS;
+        backbuffer_desc.Usage = D3D11_USAGE_DEFAULT;
+        backbuffer_desc.CPUAccessFlags = 0;
+        backbuffer_desc.MiscFlags = 0;
+    }
 
     backbuffer_desc.BindFlags |= D3D11_BIND_RENDER_TARGET;
     backbuffer_desc.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
@@ -2042,7 +2199,7 @@ bool D3D11Component::setup() {
     clear_tex(m_ui_tex.Get());
 
     // copy backbuffer into right eye
-    if (!vr->is_extreme_compatibility_mode_enabled()) {
+    if (!vr->is_extreme_compatibility_mode_enabled() && !naruto_color_conversion) {
         context->CopyResource(m_right_eye_tex.Get(), backbuffer.Get());
         context->CopyResource(m_left_eye_tex.Get(), backbuffer.Get());
     }
