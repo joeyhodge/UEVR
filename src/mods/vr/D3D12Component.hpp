@@ -138,6 +138,7 @@ private:
     void wait_for_ue58_slate_ui_consumers();
     void clear_backbuffer();
     bool ensure_2d_screen_textures(ID3D12Device* device, const D3D12_RESOURCE_DESC& base_desc);
+    bool ensure_halo_electra_quad_source_texture(ID3D12Device* device, uint64_t width, uint32_t height);
 
     enum class ShfSceneMode {
         Unknown,
@@ -282,6 +283,7 @@ private:
     std::atomic<uint32_t> m_dibr_single_view_source_height{};
     std::atomic<bool> m_dibr_single_view_preview_ready{};
     d3d12::TextureContext m_dune_hmd_mono_scene_tex{};
+    d3d12::TextureContext m_halo_electra_quad_source_tex{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
     d3d12::CommandContext m_dune_hmd_mono_scene_commands{};
