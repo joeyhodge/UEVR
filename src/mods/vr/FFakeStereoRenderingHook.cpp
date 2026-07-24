@@ -699,6 +699,27 @@ bool halo_campaign_evolved_is_current_game() {
     return result;
 }
 
+bool bimbo_paradise_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\bimboparadise.exe") ||
+               lowered.ends_with(L"/bimboparadise.exe") ||
+               lowered == L"bimboparadise.exe";
+    }();
+
+    return result;
+}
+
 bool dimension_shift_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2789,6 +2810,15 @@ bool is_ue58_dx11_dedicated_ui_backend() {
     return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx11();
 }
 
+bool is_ue58_dx12_backend() {
+    return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx12();
+}
+
+bool supports_bimbo_ue58_dx12_owned_ui_target() {
+    return bimbo_paradise_is_current_game() &&
+        is_ue58_dx12_backend();
+}
+
 bool supports_naruto_ue416_dedicated_ui_target() {
     return naruto_is_current_game() &&
         is_ue_4_16_runtime() &&
@@ -3246,7 +3276,10 @@ std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
     constexpr std::array<uintptr_t, 3> desc_offsets{0x20, 0xe0, 0xf0};
 
     for (const auto desc_offset : desc_offsets) {
-        if (desc_offset == 0xe0 && !is_ue_5_6_dx12_backend()) {
+        if (desc_offset == 0xe0 &&
+            !is_ue_5_6_dx12_backend() &&
+            !is_ue58_dx12_backend())
+        {
             continue;
         }
 
@@ -19726,6 +19759,15 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
             rtm->get_fallback_ui_target_ref() = nullptr;
             rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
+
+            if (supports_bimbo_ue58_dx12_owned_ui_target()) {
+                // This title registers SlateOutputTexture with the UE5.8 RHI
+                // validation layout but does not always publish a separate
+                // engine-owned target. Keep an owned target ready as a fallback.
+                rtm->ensure_dedicated_ui_target(reinterpret_cast<uintptr_t>(a2));
+                SPDLOG_WARN_ONCE(
+                    "[BimboParadise][UE5.8][SlateUI] Enabled exact-PDB +0xE0 Slate texture validation and owned UI fallback");
+            }
         } else {
             SPDLOG_INFO_EVERY_N_SEC(2, "[UE5.8][SlateUI] No trusted Slate extent yet; dedicated UI creation is deferred");
         }
@@ -20006,7 +20048,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             }
         }
 
-        if (!is_ue_5_8() || is_ue58_dx11_dedicated_ui_backend()) {
+        if (!is_ue_5_8() ||
+            is_ue58_dx11_dedicated_ui_backend() ||
+            supports_bimbo_ue58_dx12_owned_ui_target())
+        {
             rtm->ensure_dedicated_ui_target((uintptr_t)a2);
         }
 
@@ -21944,7 +21989,10 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
         reset_dedicated_ui_creation_state();
     }
 
-    if (is_ue_5_8() && !is_ue58_dx11_dedicated_ui_backend()) {
+    if (is_ue_5_8() &&
+        !is_ue58_dx11_dedicated_ui_backend() &&
+        !supports_bimbo_ue58_dx12_owned_ui_target())
+    {
         // UE5.8 DX12 routes Slate through RDG and promotes a real Slate output.
         // DX11 has the same RDG call but no safe engine-owned output to retain, so
         // it creates one persistent target and redirects only that RDG registration.
@@ -22012,6 +22060,10 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     }
 
     if (supports_ue55_dedicated_ui_target_for_current_game()) {
+        return true;
+    }
+
+    if (supports_bimbo_ue58_dx12_owned_ui_target()) {
         return true;
     }
 
@@ -22115,6 +22167,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
+                supports_bimbo_ue58_dx12_owned_ui_target() ||
                 supports_naruto_ue416_dedicated_ui_target())
             {
                 world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
