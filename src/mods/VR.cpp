@@ -16,8 +16,10 @@
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
+#include <safetyhook.hpp>
 #include <utility/Module.hpp>
 #include <utility/Registry.hpp>
+#include <utility/Scan.hpp>
 #include <utility/ScopeGuard.hpp>
 
 #include <sdk/Globals.hpp>
@@ -1272,6 +1274,24 @@ bool is_mixtape_executable() {
     return is_mixtape;
 }
 
+bool is_halo_campaign_evolved_executable() {
+    static const bool is_halo = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        if (!module_path.has_value()) {
+            return false;
+        }
+
+        auto filename = std::filesystem::path{*module_path}.filename().wstring();
+        std::transform(filename.begin(), filename.end(), filename.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return filename == L"halocampaignevolved.exe";
+    }();
+
+    return is_halo;
+}
+
 bool is_subnautica2_executable() {
     static const bool is_subnautica2 = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -2084,6 +2104,280 @@ MixtapeAuto2DDecision evaluate_mixtape_auto_2d(sdk::UGameEngine* engine) {
     }
 
     return {};
+}
+
+safetyhook::InlineHook g_halo_electra_present_video_frame_hook{};
+safetyhook::InlineHook g_halo_electra_video_flush_hook{};
+safetyhook::InlineHook g_halo_electra_open_hook{};
+std::once_flag g_halo_electra_hook_once{};
+std::atomic_bool g_halo_electra_hooks_ready{false};
+std::atomic<uintptr_t> g_halo_electra_active_player{};
+std::atomic<uint64_t> g_halo_electra_present_count{};
+std::atomic<uint64_t> g_halo_electra_flush_count{};
+std::atomic<uint64_t> g_halo_electra_open_count{};
+std::array<std::atomic<uintptr_t>, 8> g_halo_electra_cinematic_players{};
+
+constexpr uintptr_t HALO_ELECTRA_ADAPTER_OFFSET = 0x28;
+
+struct HaloNativeFString {
+    const wchar_t* data{};
+    int32_t count{};
+    int32_t capacity{};
+};
+
+bool halo_native_string_contains(const wchar_t* value, size_t length, std::wstring_view needle) {
+    if (value == nullptr || needle.empty() || length < needle.size()) {
+        return false;
+    }
+
+    for (size_t i = 0; i + needle.size() <= length; ++i) {
+        bool matched = true;
+        for (size_t j = 0; j < needle.size(); ++j) {
+            if (std::towlower(value[i + j]) != std::towlower(needle[j])) {
+                matched = false;
+                break;
+            }
+        }
+
+        if (matched) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool halo_is_prerender_url(const HaloNativeFString* url) {
+    if (url == nullptr || url->data == nullptr || url->count <= 1 ||
+        url->count > 32768 || url->capacity < url->count)
+    {
+        return false;
+    }
+
+    auto length = static_cast<size_t>(url->count);
+    if (url->data[length - 1] == L'\0') {
+        --length;
+    }
+
+    return halo_native_string_contains(url->data, length, L"cinematic") &&
+           halo_native_string_contains(url->data, length, L"prerender") &&
+           halo_native_string_contains(url->data, length, L".mp4");
+}
+
+bool halo_is_classified_cinematic_player(uintptr_t player) {
+    for (const auto& slot : g_halo_electra_cinematic_players) {
+        if (slot.load(std::memory_order_acquire) == player) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool halo_set_cinematic_player(uintptr_t player, bool cinematic) {
+    if (player == 0) {
+        return false;
+    }
+
+    if (!cinematic) {
+        for (auto& slot : g_halo_electra_cinematic_players) {
+            auto expected = player;
+            slot.compare_exchange_strong(expected, 0, std::memory_order_release, std::memory_order_relaxed);
+        }
+
+        auto active_player = player;
+        g_halo_electra_active_player.compare_exchange_strong(
+            active_player,
+            0,
+            std::memory_order_release,
+            std::memory_order_relaxed);
+        return true;
+    }
+
+    if (halo_is_classified_cinematic_player(player)) {
+        return true;
+    }
+
+    for (auto& slot : g_halo_electra_cinematic_players) {
+        uintptr_t empty{};
+        if (slot.compare_exchange_strong(empty, player, std::memory_order_release, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool halo_electra_open(void* player, const HaloNativeFString* url, const void* options, const void* player_options) {
+    const auto adapter = reinterpret_cast<uintptr_t>(player) + HALO_ELECTRA_ADAPTER_OFFSET;
+    const auto cinematic = halo_is_prerender_url(url);
+    const auto tracked = halo_set_cinematic_player(adapter, cinematic);
+
+    const auto result = g_halo_electra_open_hook.call<bool>(player, url, options, player_options);
+    if (!result) {
+        halo_set_cinematic_player(adapter, false);
+    }
+
+    const auto open_count = g_halo_electra_open_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    try {
+        std::string logged_url{"<invalid>"};
+        if (url != nullptr && url->data != nullptr && url->count > 0 && url->count <= 32768 && url->capacity >= url->count) {
+            auto length = static_cast<size_t>(url->count);
+            if (length > 0 && url->data[length - 1] == L'\0') {
+                --length;
+            }
+            logged_url = utility::narrow(std::wstring_view{url->data, length});
+        }
+
+        SPDLOG_INFO(
+            "[Halo][Electra] Open count={} player={:x} adapter={:x} cinematic={} tracked={} result={} url={}",
+            open_count,
+            reinterpret_cast<uintptr_t>(player),
+            adapter,
+            cinematic,
+            tracked,
+            result,
+            logged_url);
+    } catch (...) {
+        SPDLOG_INFO(
+            "[Halo][Electra] Open count={} player={:x} adapter={:x} cinematic={} tracked={} result={} url=<log-failed>",
+            open_count,
+            reinterpret_cast<uintptr_t>(player),
+            adapter,
+            cinematic,
+            tracked,
+            result);
+    }
+    return result;
+}
+
+void halo_electra_present_video_frame(void* player, const void* video_frame) {
+    // This runs on an Electra decoder thread. Keep it allocation-, lock-, and log-free.
+    const auto player_address = reinterpret_cast<uintptr_t>(player);
+    if (halo_is_classified_cinematic_player(player_address)) {
+        g_halo_electra_active_player.store(player_address, std::memory_order_release);
+        g_halo_electra_present_count.fetch_add(1, std::memory_order_relaxed);
+    }
+    g_halo_electra_present_video_frame_hook.call<void>(player, video_frame);
+}
+
+void halo_electra_video_flush(void* player) {
+    g_halo_electra_video_flush_hook.call<void>(player);
+
+    auto active_player = reinterpret_cast<uintptr_t>(player);
+    g_halo_electra_active_player.compare_exchange_strong(
+        active_player,
+        0,
+        std::memory_order_release,
+        std::memory_order_relaxed);
+    g_halo_electra_flush_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool ensure_halo_electra_native_hooks() {
+    std::call_once(g_halo_electra_hook_once, []() {
+        const auto module = utility::get_executable();
+        if (module == nullptr) {
+            SPDLOG_WARN("[Halo][Electra] Executable module was unavailable; native cinematic detection is disabled");
+            return;
+        }
+
+        // UE5.5 FElectraPlayerPlugin::PresentVideoFrame. An update that changes
+        // this complete prologue safely disables the game-specific path.
+        const auto present_video_frame = utility::scan(
+            module,
+            "48 8B C4 48 89 48 08 53 48 81 EC 80 00 00 00 "
+            "48 89 68 F0 48 8D 99 88 00 00 00 48 89 70 E8");
+
+        // FElectraPlayerPlugin::Open(const FString&, const IMediaOptions*,
+        // const FMediaPlayerOptions*). This lets us distinguish the menu's
+        // Electra background from Halo's CinematicsPreRenders MP4s.
+        const auto open = utility::scan(
+            module,
+            "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 48 FD FF FF "
+            "48 81 EC B8 03 00 00 C5 F8");
+
+        // OnVideoFlush, OnAudioFlush, and OnSubtitleFlush share a prologue.
+        // The FetchVideo vcall at +0x98 uniquely identifies OnVideoFlush; the
+        // hook starts 0x88 bytes before this internal signature.
+        const auto video_flush_body = utility::scan(
+            module,
+            "40 00 89 6C 24 41 66 89 74 24 45 40 88 7C 24 47 "
+            "FF 50 48 84 C0 75 A4 48 8B 5C 24 28");
+
+        if (!present_video_frame || !open || !video_flush_body ||
+            *video_flush_body < reinterpret_cast<uintptr_t>(module) + 0x88)
+        {
+            SPDLOG_WARN(
+                "[Halo][Electra] Native signatures were not found (open={} present={} flush={}); leaving Halo rendering untouched",
+                open.has_value(),
+                present_video_frame.has_value(),
+                video_flush_body.has_value());
+            return;
+        }
+
+        const auto video_flush = *video_flush_body - 0x88;
+        auto present_hook = safetyhook::create_inline(
+            reinterpret_cast<void*>(*present_video_frame),
+            &halo_electra_present_video_frame,
+            safetyhook::InlineHook::StartDisabled);
+        auto flush_hook = safetyhook::create_inline(
+            reinterpret_cast<void*>(video_flush),
+            &halo_electra_video_flush,
+            safetyhook::InlineHook::StartDisabled);
+        auto open_hook = safetyhook::create_inline(
+            reinterpret_cast<void*>(*open),
+            &halo_electra_open,
+            safetyhook::InlineHook::StartDisabled);
+
+        if (!present_hook || !flush_hook || !open_hook) {
+            SPDLOG_WARN(
+                "[Halo][Electra] Failed to create native hooks (open={} present={} flush={}); leaving Halo rendering untouched",
+                static_cast<bool>(open_hook),
+                static_cast<bool>(present_hook),
+                static_cast<bool>(flush_hook));
+            return;
+        }
+
+        g_halo_electra_present_video_frame_hook = std::move(present_hook);
+        g_halo_electra_video_flush_hook = std::move(flush_hook);
+        g_halo_electra_open_hook = std::move(open_hook);
+
+        const auto open_enable = g_halo_electra_open_hook.enable();
+        if (!open_enable.has_value()) {
+            (void)g_halo_electra_open_hook.disable();
+            SPDLOG_WARN(
+                "[Halo][Electra] Failed to enable the native Open hook; leaving Halo rendering untouched");
+            return;
+        }
+
+        const auto flush_enable = g_halo_electra_video_flush_hook.enable();
+        if (!flush_enable.has_value()) {
+            (void)g_halo_electra_open_hook.disable();
+            (void)g_halo_electra_video_flush_hook.disable();
+            SPDLOG_WARN(
+                "[Halo][Electra] Failed to enable the native flush hook; leaving Halo rendering untouched");
+            return;
+        }
+
+        const auto present_enable = g_halo_electra_present_video_frame_hook.enable();
+        if (!present_enable.has_value()) {
+            (void)g_halo_electra_open_hook.disable();
+            (void)g_halo_electra_video_flush_hook.disable();
+            (void)g_halo_electra_present_video_frame_hook.disable();
+            SPDLOG_WARN(
+                "[Halo][Electra] Failed to enable the native frame hook; leaving Halo rendering untouched");
+            return;
+        }
+
+        g_halo_electra_hooks_ready.store(true, std::memory_order_release);
+        SPDLOG_INFO(
+            "[Halo][Electra] Native URL filter armed at open={:x} present={:x} flush={:x}; frame callbacks only update atomics",
+            *open,
+            *present_video_frame,
+            video_flush);
+    });
+
+    return g_halo_electra_hooks_ready.load(std::memory_order_acquire);
 }
 }
 
@@ -4510,6 +4804,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_shf_auto_2d_mode(engine);
     update_dispatch_auto_2d_mode(engine);
     update_mixtape_auto_2d_mode(engine);
+    update_halo_electra_cinematic_state(engine);
     update_windrose_meta_ui_auto_2d_mode();
 
     // Dont update action states on AFR frames
@@ -5573,6 +5868,58 @@ void VR::update_mixtape_auto_2d_mode(sdk::UGameEngine* engine) {
     if (m_mixtape_auto_2d_active.exchange(false, std::memory_order_relaxed)) {
         m_2d_screen_mode->value() = m_mixtape_auto_2d_previous_mode;
         spdlog::info("[Mixtape][Auto2D] active=false restored={}", m_mixtape_auto_2d_previous_mode);
+    }
+}
+
+void VR::update_halo_electra_cinematic_state(sdk::UGameEngine* engine) {
+    (void)engine;
+
+    if (!is_halo_campaign_evolved_executable() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12())
+    {
+        return;
+    }
+
+    if (!ensure_halo_electra_native_hooks()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto active_player = g_halo_electra_active_player.load(std::memory_order_acquire);
+
+    if (active_player != 0) {
+        m_halo_electra_restore_after = {};
+
+        if (!m_halo_electra_cinematic_active.exchange(true, std::memory_order_relaxed)) {
+            spdlog::info(
+                "[Halo][Electra] renderer-quad=true reason=classified-prerender player={:x} frames={} flushes={}",
+                active_player,
+                g_halo_electra_present_count.load(std::memory_order_relaxed),
+                g_halo_electra_flush_count.load(std::memory_order_relaxed));
+        }
+        return;
+    }
+
+    if (!m_halo_electra_cinematic_active.load(std::memory_order_relaxed)) {
+        return;
+    }
+
+    constexpr auto RESTORE_DEBOUNCE = std::chrono::milliseconds(750);
+    if (m_halo_electra_restore_after.time_since_epoch().count() == 0) {
+        m_halo_electra_restore_after = now + RESTORE_DEBOUNCE;
+    }
+
+    if (now < m_halo_electra_restore_after) {
+        return;
+    }
+
+    if (m_halo_electra_cinematic_active.exchange(false, std::memory_order_relaxed)) {
+        m_halo_electra_restore_after = {};
+        spdlog::info(
+            "[Halo][Electra] renderer-quad=false frames={} flushes={}",
+            g_halo_electra_present_count.load(std::memory_order_relaxed),
+            g_halo_electra_flush_count.load(std::memory_order_relaxed));
     }
 }
 
