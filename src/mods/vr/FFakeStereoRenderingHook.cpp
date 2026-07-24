@@ -2816,6 +2816,13 @@ bool is_ue58_dx11_dedicated_ui_backend() {
     return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx11();
 }
 
+bool supports_naruto_ue416_dedicated_ui_target() {
+    return naruto_is_current_game() &&
+        is_ue_4_16_runtime() &&
+        g_framework != nullptr &&
+        g_framework->is_dx11();
+}
+
 bool supports_ue57_dedicated_ui_target() {
     if (!is_ue_5_7_or_newer() || g_framework == nullptr) {
         return false;
@@ -2842,7 +2849,9 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
 }
 
 bool supports_dedicated_ui_target_for_current_game() {
-    return supports_ue57_dedicated_ui_target() || supports_ue55_dedicated_ui_target_for_current_game();
+    return supports_ue57_dedicated_ui_target() ||
+        supports_ue55_dedicated_ui_target_for_current_game() ||
+        supports_naruto_ue416_dedicated_ui_target();
 }
 
 bool should_preserve_promoted_ue55_slate_target() {
@@ -3038,6 +3047,47 @@ bool ue58_try_get_d3d11_texture_desc(void* native, D3D11_TEXTURE2D_DESC& out_des
 
     texture->GetDesc(&out_desc);
     return out_desc.Width != 0 && out_desc.Height != 0;
+}
+
+bool naruto_ue416_try_get_d3d11_texture_desc(
+    FRHITexture2D* texture,
+    D3D11_TEXTURE2D_DESC& out_desc,
+    ID3D11Resource** out_native = nullptr)
+{
+    out_desc = {};
+
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (!supports_naruto_ue416_dedicated_ui_target() ||
+        texture == nullptr ||
+        IsBadReadPtr(texture, sizeof(void*)))
+    {
+        return false;
+    }
+
+    try {
+        auto* const vtable = *(void**)texture;
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*)) || !utility::get_module_within(vtable)) {
+            return false;
+        }
+
+        FRHITexture2D::set_vtable(vtable);
+        auto* const native = reinterpret_cast<ID3D11Resource*>(texture->get_native_resource());
+
+        if (!ue58_try_get_d3d11_texture_desc(native, out_desc)) {
+            return false;
+        }
+
+        if (out_native != nullptr) {
+            *out_native = native;
+        }
+
+        return true;
+    } catch (...) {
+        return false;
+    }
 }
 
 bool dune_try_get_registered_native_resource(
@@ -8452,6 +8502,454 @@ void* FFakeStereoRenderingHook::viewport_destructor_hook(void* viewport, void* a
     return call_orig();
 }
 
+void FFakeStereoRenderingHook::attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport) {
+    if (m_naruto_ue416_init_dynamic_rhi_size_hook ||
+        m_attempted_hook_naruto_ue416_init_dynamic_rhi ||
+        viewport == nullptr ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime() ||
+        !g_framework->is_dx11())
+    {
+        return;
+    }
+
+    // In UE4.16 FSceneViewport inherits FViewport followed by FRenderResource.
+    // UGameViewportClient::Draw receives the FViewport subobject, so its
+    // FRenderResource vtable begins at +0x10.
+    constexpr uintptr_t render_resource_offset = 0x10;
+    constexpr size_t init_dynamic_rhi_vtable_index = 1;
+    const auto render_resource = reinterpret_cast<uintptr_t>(viewport) + render_resource_offset;
+
+    if (!is_readable_process_range(render_resource, sizeof(uintptr_t))) {
+        return;
+    }
+
+    const auto render_resource_vtable = *reinterpret_cast<const uintptr_t*>(render_resource);
+    const auto init_slot = render_resource_vtable + init_dynamic_rhi_vtable_index * sizeof(uintptr_t);
+
+    if (!is_readable_process_range(init_slot, sizeof(uintptr_t))) {
+        return;
+    }
+
+    const auto init_dynamic_rhi = *reinterpret_cast<const uintptr_t*>(init_slot);
+    if (!is_executable_process_range(init_dynamic_rhi, 0x100) ||
+        utility::get_module_within(reinterpret_cast<void*>(init_dynamic_rhi)).value_or(nullptr) != utility::get_executable())
+    {
+        return;
+    }
+
+    // This exact prologue and local snapshot identify Naruto's modified
+    // FSceneViewport::InitDynamicRHI. Refuse future/other builds rather than
+    // guessing stack offsets.
+    constexpr std::string_view entry_pattern{
+        "48 89 74 24 20 55 57 41 54 41 56 41 57 48 8D AC 24 20 FB FF FF 48 81 EC E0 05 00 00"};
+    constexpr std::string_view size_snapshot_pattern{
+        "44 8B A6 A8 00 00 00 4C 89 AC 24 20 06 00 00 44 89 64 24 54 4C 8B 78 20 "
+        "8B 86 AC 00 00 00 4C 89 7C 24 70 89 44 24 58 44 38 B6 93 02 00 00"};
+    constexpr size_t size_snapshot_to_hook = 0x27;
+
+    if (utility::scan(init_dynamic_rhi, 0x40, std::string{entry_pattern}).value_or(0) != init_dynamic_rhi) {
+        m_attempted_hook_naruto_ue416_init_dynamic_rhi = true;
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][RT] Refusing InitDynamicRHI sizing hook because the entry at {:x} did not match the validated build",
+            init_dynamic_rhi);
+        return;
+    }
+
+    const auto snapshot = utility::scan(init_dynamic_rhi, 0x100, std::string{size_snapshot_pattern});
+    if (!snapshot) {
+        m_attempted_hook_naruto_ue416_init_dynamic_rhi = true;
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][RT] Refusing InitDynamicRHI sizing hook because its allocation-local snapshot was not found at {:x}",
+            init_dynamic_rhi);
+        return;
+    }
+
+    const auto hook_address = *snapshot + size_snapshot_to_hook;
+    constexpr std::array<uint8_t, 7> expected_hook_bytes{0x44, 0x38, 0xB6, 0x93, 0x02, 0x00, 0x00};
+    if (!is_executable_process_range(hook_address, expected_hook_bytes.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(hook_address), expected_hook_bytes.data(), expected_hook_bytes.size()) != 0)
+    {
+        m_attempted_hook_naruto_ue416_init_dynamic_rhi = true;
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][RT] Refusing InitDynamicRHI sizing hook because the guarded instruction at {:x} changed",
+            hook_address);
+        return;
+    }
+
+    m_attempted_hook_naruto_ue416_init_dynamic_rhi = true;
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(hook_address),
+        &FFakeStereoRenderingHook::naruto_ue416_init_dynamic_rhi_size_hook);
+
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][RT] Failed to install guarded InitDynamicRHI sizing hook at {:x}",
+            hook_address);
+        return;
+    }
+
+    m_naruto_ue416_init_dynamic_rhi_size_hook = std::move(hook);
+    set_should_recreate_textures(true);
+    SPDLOG_INFO(
+        "[Naruto][UE4.16][RT] Hooked omitted stereo allocation sizing in FSceneViewport::InitDynamicRHI at {:x} (function {:x})",
+        hook_address,
+        init_dynamic_rhi);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_naruto_ue416_projection_rect() {
+    if (m_naruto_ue416_projection_rect_hook ||
+        m_attempted_hook_naruto_ue416_projection_rect ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime() ||
+        !g_framework->is_dx11())
+    {
+        return;
+    }
+
+    m_attempted_hook_naruto_ue416_projection_rect = true;
+
+    // Naruto overrides ULocalPlayer::GetProjectionData and returns without the
+    // stock IStereoRendering::AdjustViewRect call. Match the exact successful
+    // return path inside UE4.16 CalcSceneViewInitOptions and run immediately
+    // before IsValidViewRectangle consumes the unchanged desktop rectangle.
+    constexpr std::string_view projection_post_call_pattern{
+        "4D 85 C0 0F 84 ? ? ? ? 48 8B 01 4C 8B CA 48 89 5C 24 68 49 8B D6 "
+        "8B 9C 24 80 00 00 00 44 8B C3 FF 90 80 02 00 00 84 C0 74 ? 48 8B CE E8 ? ? ? ? 84 C0"};
+    constexpr size_t pattern_to_hook = 0x2B;
+    constexpr std::array<uint8_t, 3> expected_hook_bytes{0x48, 0x8B, 0xCE};
+
+    const auto executable = utility::get_executable();
+    const auto match = utility::scan(executable, std::string{projection_post_call_pattern});
+    if (!match) {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][ViewRect] Refusing projection correction because the validated CalcSceneViewInitOptions path was not found");
+        return;
+    }
+
+    const auto hook_address = *match + pattern_to_hook;
+    if (!is_executable_process_range(hook_address, expected_hook_bytes.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(hook_address), expected_hook_bytes.data(), expected_hook_bytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][ViewRect] Refusing projection correction because the guarded instruction at {:x} changed",
+            hook_address);
+        return;
+    }
+
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(hook_address),
+        &FFakeStereoRenderingHook::naruto_ue416_projection_rect_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][ViewRect] Failed to install guarded projection correction at {:x}",
+            hook_address);
+        return;
+    }
+
+    m_naruto_ue416_projection_rect_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Naruto][UE4.16][ViewRect] Hooked omitted per-eye AdjustViewRect path at {:x}",
+        hook_address);
+}
+
+void FFakeStereoRenderingHook::attempt_hook_naruto_ue416_draw_stereo_predicate() {
+    if (m_naruto_ue416_draw_stereo_predicate_hook ||
+        m_attempted_hook_naruto_ue416_draw_stereo_predicate ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime() ||
+        !g_framework->is_dx11())
+    {
+        return;
+    }
+
+    m_attempted_hook_naruto_ue416_draw_stereo_predicate = true;
+
+    // Naruto's modified UGameViewportClient::Draw calls a three-byte shipping
+    // stub (xor al, al; ret) for its stereo predicate. The false result makes
+    // Draw build one eSSP_FULL view even though UEVR has installed its stereo
+    // device, leaving the right half of the double-wide target stale. Match the
+    // exact callsite and change only the returned AL before Draw snapshots it.
+    constexpr std::string_view draw_stereo_predicate_pattern{
+        "48 8B 0D ? ? ? ? 49 8B D6 E8 ? ? ? ? 49 8B 16 49 8B CE "
+        "0F B6 F0 88 44 24 60 FF 92 10 01 00 00"};
+    constexpr size_t predicate_call_offset = 0x0A;
+    constexpr size_t pattern_to_hook = 0x0F;
+    constexpr std::array<uint8_t, 3> expected_predicate_stub{0x32, 0xC0, 0xC3};
+    constexpr std::array<uint8_t, 3> expected_hook_bytes{0x49, 0x8B, 0x16};
+
+    const auto match = utility::scan(utility::get_executable(), std::string{draw_stereo_predicate_pattern});
+    if (!match) {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][StereoDraw] Refusing stereo predicate correction because the validated Draw callsite was not found");
+        return;
+    }
+
+    const auto predicate_call = *match + predicate_call_offset;
+    int32_t predicate_relative_target{};
+    std::memcpy(
+        &predicate_relative_target,
+        reinterpret_cast<const void*>(predicate_call + 1),
+        sizeof(predicate_relative_target));
+    const auto predicate_target =
+        predicate_call + 5 + static_cast<intptr_t>(predicate_relative_target);
+
+    if (!is_executable_process_range(predicate_target, expected_predicate_stub.size()) ||
+        utility::get_module_within(reinterpret_cast<void*>(predicate_target)).value_or(nullptr) != utility::get_executable() ||
+        std::memcmp(
+            reinterpret_cast<const void*>(predicate_target),
+            expected_predicate_stub.data(),
+            expected_predicate_stub.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][StereoDraw] Refusing stereo predicate correction because its target at {:x} is not the validated false stub",
+            predicate_target);
+        return;
+    }
+
+    const auto hook_address = *match + pattern_to_hook;
+    if (!is_executable_process_range(hook_address, expected_hook_bytes.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(hook_address), expected_hook_bytes.data(), expected_hook_bytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][StereoDraw] Refusing stereo predicate correction because the guarded instruction at {:x} changed",
+            hook_address);
+        return;
+    }
+
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(hook_address),
+        &FFakeStereoRenderingHook::naruto_ue416_draw_stereo_predicate_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Naruto][UE4.16][StereoDraw] Failed to install guarded stereo predicate correction at {:x}",
+            hook_address);
+        return;
+    }
+
+    m_naruto_ue416_draw_stereo_predicate_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Naruto][UE4.16][StereoDraw] Hooked disabled stereo predicate result in UGameViewportClient::Draw at {:x}",
+        hook_address);
+}
+
+void FFakeStereoRenderingHook::naruto_ue416_draw_stereo_predicate_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr ||
+        g_framework == nullptr ||
+        !g_framework->is_game_data_intialized() ||
+        !g_framework->is_dx11() ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime())
+    {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr ||
+        !vr->is_hmd_active() ||
+        vr->is_using_afr() ||
+        vr->is_native_stereo_fix_enabled() ||
+        !vr->is_sceneview_compatibility_enabled() ||
+        vr->is_stereo_emulation_enabled() ||
+        vr->is_extreme_compatibility_mode_enabled())
+    {
+        return;
+    }
+
+    const auto original_result = static_cast<uint8_t>(ctx.rax);
+    ctx.rax = (ctx.rax & ~uintptr_t{0xFF}) | uintptr_t{1};
+
+    static std::atomic_uint64_t correction_count{0};
+    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 8) {
+        SPDLOG_INFO(
+            "[Naruto][UE4.16][StereoDraw] Forced Draw stereo result {} -> 1 so both engine views are requested (correction={})",
+            original_result,
+            count);
+    }
+}
+
+void FFakeStereoRenderingHook::naruto_ue416_projection_rect_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr ||
+        g_framework == nullptr ||
+        !g_framework->is_game_data_intialized() ||
+        !g_framework->is_dx11() ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime())
+    {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr ||
+        !vr->is_hmd_active() ||
+        vr->is_using_afr() ||
+        vr->is_stereo_emulation_enabled() ||
+        vr->is_extreme_compatibility_mode_enabled())
+    {
+        return;
+    }
+
+    constexpr uint32_t primary_pass = EStereoscopicPass::eSSP_PRIMARY;
+    constexpr uint32_t secondary_pass = EStereoscopicPass::eSSP_SECONDARY;
+    const auto stereo_pass = static_cast<uint32_t>(ctx.rbx);
+    if (stereo_pass != primary_pass && stereo_pass != secondary_pass) {
+        return;
+    }
+
+    auto* const init_options = reinterpret_cast<sdk::FSceneViewInitOptionsUE4*>(ctx.rsi);
+    if (init_options == nullptr ||
+        !is_writable_process_range(reinterpret_cast<uintptr_t>(init_options), sizeof(sdk::FSceneViewProjectionDataT<float>)))
+    {
+        return;
+    }
+
+    static_assert(offsetof(sdk::FSceneViewInitOptionsUE4, view_rect) == 0x90);
+    static_assert(offsetof(sdk::FSceneViewInitOptionsUE4, constrained_view_rect) == 0xA0);
+
+    const int32_t eye_width = vr->get_hmd_width();
+    const int32_t eye_height = vr->get_hmd_height();
+    constexpr int32_t max_d3d11_texture_dimension = 16384;
+    if (eye_width <= 0 || eye_height <= 0 ||
+        eye_width > max_d3d11_texture_dimension / 2 ||
+        eye_height > max_d3d11_texture_dimension)
+    {
+        return;
+    }
+
+    const std::array<int32_t, 4> old_view_rect{
+        init_options->view_rect[0],
+        init_options->view_rect[1],
+        init_options->view_rect[2],
+        init_options->view_rect[3]};
+    const std::array<int32_t, 4> old_constrained_rect{
+        init_options->constrained_view_rect[0],
+        init_options->constrained_view_rect[1],
+        init_options->constrained_view_rect[2],
+        init_options->constrained_view_rect[3]};
+
+    const auto valid_source_rect = [&](const std::array<int32_t, 4>& rect) {
+        return rect[0] >= 0 && rect[1] >= 0 &&
+            rect[2] > rect[0] && rect[3] > rect[1] &&
+            rect[2] <= max_d3d11_texture_dimension && rect[3] <= max_d3d11_texture_dimension;
+    };
+    if (!valid_source_rect(old_view_rect) || !valid_source_rect(old_constrained_rect)) {
+        SPDLOG_WARN_ONCE(
+            "[Naruto][UE4.16][ViewRect] Refusing invalid source rectangles view=[{},{} -> {},{}] constrained=[{},{} -> {},{}]",
+            old_view_rect[0], old_view_rect[1], old_view_rect[2], old_view_rect[3],
+            old_constrained_rect[0], old_constrained_rect[1], old_constrained_rect[2], old_constrained_rect[3]);
+        return;
+    }
+
+    const int32_t min_x = stereo_pass == secondary_pass ? eye_width : 0;
+    const std::array<int32_t, 4> corrected_rect{min_x, 0, min_x + eye_width, eye_height};
+    std::copy(corrected_rect.begin(), corrected_rect.end(), init_options->view_rect);
+    std::copy(corrected_rect.begin(), corrected_rect.end(), init_options->constrained_view_rect);
+
+    static std::atomic_uint64_t correction_count{0};
+    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 12) {
+        SPDLOG_INFO(
+            "[Naruto][UE4.16][ViewRect] Restored eye={} pass={} view=[{},{} -> {},{}] constrained=[{},{} -> {},{}] to [{},{} -> {},{}] correction={}",
+            stereo_pass == primary_pass ? "left" : "right",
+            stereo_pass,
+            old_view_rect[0], old_view_rect[1], old_view_rect[2], old_view_rect[3],
+            old_constrained_rect[0], old_constrained_rect[1], old_constrained_rect[2], old_constrained_rect[3],
+            corrected_rect[0], corrected_rect[1], corrected_rect[2], corrected_rect[3],
+            count);
+    }
+}
+
+void FFakeStereoRenderingHook::naruto_ue416_init_dynamic_rhi_size_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr ||
+        g_framework == nullptr ||
+        !g_framework->is_game_data_intialized() ||
+        !g_framework->is_dx11() ||
+        !naruto_is_current_game() ||
+        !is_ue_4_16_runtime())
+    {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr ||
+        !vr->is_hmd_active() ||
+        vr->is_stereo_emulation_enabled() ||
+        vr->is_extreme_compatibility_mode_enabled())
+    {
+        return;
+    }
+
+    // The guarded instruction is immediately after Naruto snapshots SizeX/Y.
+    // Keep the desktop-facing FSceneViewport dimensions untouched and alter
+    // only the local extent consumed by the RHI texture allocation.
+    constexpr uintptr_t size_x_offset = 0xA8;
+    constexpr uintptr_t size_y_offset = 0xAC;
+    constexpr uintptr_t use_separate_rt_offset = 0x293;
+    constexpr uintptr_t force_separate_rt_offset = 0x294;
+    constexpr uintptr_t local_size_x_offset = 0x54;
+    constexpr uintptr_t local_size_y_offset = 0x58;
+    constexpr uint32_t max_d3d11_texture_dimension = 16384;
+
+    const auto self = static_cast<uintptr_t>(ctx.rsi);
+    const auto local_size_x = static_cast<uintptr_t>(ctx.rsp) + local_size_x_offset;
+    const auto local_size_y = static_cast<uintptr_t>(ctx.rsp) + local_size_y_offset;
+
+    if (!is_readable_process_range(self + size_x_offset, sizeof(uint32_t) * 2) ||
+        !is_readable_process_range(self + use_separate_rt_offset, sizeof(uint8_t) * 2) ||
+        !is_writable_process_range(local_size_x, sizeof(uint32_t) * 2) ||
+        !overlaps_current_thread_stack(local_size_x, sizeof(uint32_t) * 2))
+    {
+        return;
+    }
+
+    const auto source_width = *reinterpret_cast<const uint32_t*>(self + size_x_offset);
+    const auto source_height = *reinterpret_cast<const uint32_t*>(self + size_y_offset);
+    const auto saved_width = *reinterpret_cast<const uint32_t*>(local_size_x);
+    const auto saved_height = *reinterpret_cast<const uint32_t*>(local_size_y);
+    const auto use_separate_rt = *reinterpret_cast<const uint8_t*>(self + use_separate_rt_offset);
+    const auto force_separate_rt = *reinterpret_cast<const uint8_t*>(self + force_separate_rt_offset);
+
+    if (source_width == 0 || source_height == 0 ||
+        source_width > max_d3d11_texture_dimension || source_height > max_d3d11_texture_dimension ||
+        saved_width != source_width || saved_height != source_height ||
+        use_separate_rt > 1 || force_separate_rt > 1 ||
+        (use_separate_rt == 0 && force_separate_rt == 0))
+    {
+        return;
+    }
+
+    const uint64_t eye_width = vr->get_hmd_width();
+    const uint64_t target_width = eye_width * (vr->is_using_afr() ? 1ull : 2ull);
+    const uint64_t target_height = vr->get_hmd_height();
+
+    if (target_width == 0 || target_height == 0 ||
+        target_width > max_d3d11_texture_dimension || target_height > max_d3d11_texture_dimension)
+    {
+        SPDLOG_WARN_ONCE(
+            "[Naruto][UE4.16][RT] Refusing invalid stereo allocation extent {}x{}",
+            target_width,
+            target_height);
+        return;
+    }
+
+    *reinterpret_cast<uint32_t*>(local_size_x) = static_cast<uint32_t>(target_width);
+    *reinterpret_cast<uint32_t*>(local_size_y) = static_cast<uint32_t>(target_height);
+    ctx.r12 = target_width;
+    ctx.rax = target_height;
+
+    static std::atomic_uint64_t adjustment_count{0};
+    const auto count = adjustment_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    SPDLOG_INFO(
+        "[Naruto][UE4.16][RT] Restored omitted stereo allocation extent {}x{} -> {}x{} (AFR={}, adjustment={})",
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+        vr->is_using_afr(),
+        count);
+}
+
 void FFakeStereoRenderingHook::viewport_draw_hook(void* viewport, bool should_present) {
     ZoneScopedN(__FUNCTION__);
 
@@ -9022,6 +9520,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
             if (current_target != nullptr) {
                 rtm->set_render_target(nullptr);
+
+                if (naruto_ue416_dx11_viewport_adoption) {
+                    // A flat Slate/desktop target may have reached D3D11 before
+                    // Naruto finishes allocating its separate stereo target.
+                    // Retire those local resources with the rejected source.
+                    vr->reinitialize_renderer();
+                }
             }
 
             SPDLOG_INFO_EVERY_N_SEC(
@@ -9172,6 +9677,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     rtm->set_render_target(candidate);
 
+    if (naruto_ue416_dx11_viewport_adoption) {
+        // D3D11 may already have initialized while Naruto still exposed its
+        // desktop target. Rebuild once from the twice-observed VR-sized target.
+        vr->reinitialize_renderer();
+        SPDLOG_INFO(
+            "[Naruto][UE4.16][RT] Scheduled D3D11 resource rebuild for verified target native={:x} [{}x{} fmt={}]",
+            (uintptr_t)native_resource_identity,
+            native_width,
+            native_height,
+            native_format);
+    }
+
     if (current_target != nullptr) {
         SPDLOG_WARN(
             "{} Re-adopted changed FSceneViewport RT from {} after viewport/world transition from {:x} to {:x} native={:x} [{}x{} fmt={}]",
@@ -9293,6 +9810,9 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     g_hook->get_render_target_manager()->set_viewport(viewport);
     if (viewport != nullptr) {
         shf_force_scene_viewport_separate_rt(*viewport, "UGameViewportClient::Draw");
+        g_hook->attempt_hook_naruto_ue416_draw_stereo_predicate();
+        g_hook->attempt_hook_naruto_ue416_projection_rect();
+        g_hook->attempt_hook_naruto_ue416_init_dynamic_rhi(viewport);
     }
     g_hook->try_adopt_scene_viewport_render_target(viewport, "UGameViewportClient::Draw viewport");
 
@@ -16180,6 +16700,50 @@ sdk::FSlateResource* try_get_slate_viewport_render_target_texture(sdk::ISlateVie
     }
 }
 
+bool naruto_ue416_is_expected_viewport_rt_provider(sdk::IViewportRenderTargetProvider* provider) {
+    if (provider == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(provider), sizeof(void*)))
+    {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    uintptr_t first_virtual{};
+    if (!safe_read_value(reinterpret_cast<uintptr_t>(provider), vtable) ||
+        !safe_read_value(vtable, first_virtual) ||
+        !is_executable_process_range(first_virtual, 1))
+    {
+        return false;
+    }
+
+    // UE4.16 FSceneViewport::GetViewportRenderTargetTexture as emitted by the
+    // validated Naruto build. Matching the virtual prevents a stale FViewport
+    // pointer or a future game update from making the base adjustment unsafe.
+    static const auto expected_virtual = []() -> std::optional<uintptr_t> {
+        constexpr std::string_view pattern{
+            "40 53 48 83 EC 20 48 8B D9 E8 ? ? ? ? 84 C0 74 0D 48 8B 83 58 02 00 00 "
+            "48 83 C4 20 5B C3 83 BB 28 02 00 00 00 74 18 48 63 8B 64 02 00 00 "
+            "48 8B 83 20 02 00 00 48 8B 04 C8"};
+        return utility::scan(utility::get_executable(), std::string{pattern});
+    }();
+
+    return expected_virtual && first_virtual == *expected_virtual;
+}
+
+sdk::FSlateResource* try_get_naruto_ue416_viewport_rt_resource(
+    sdk::IViewportRenderTargetProvider* provider,
+    bool& faulted)
+{
+    faulted = false;
+
+    __try {
+        return provider != nullptr ? provider->get_viewport_render_target_texture() : nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = true;
+        return nullptr;
+    }
+}
+
 bool ue55_is_valid_ui_texture_candidate(
     VRRenderTargetManager_Base* rtm,
     FRHITexture2D* texture,
@@ -19428,6 +19992,95 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     FRHITexture2D* provider_texture = nullptr;
     auto rtm = g_hook->get_render_target_manager();
 
+    sdk::IViewportRenderTargetProvider** naruto_provider_slot = nullptr;
+    sdk::IViewportRenderTargetProvider* naruto_original_provider = nullptr;
+    bool naruto_provider_was_restored = false;
+    utility::ScopeGuard naruto_provider_restore_guard{[&]() {
+        if (naruto_provider_was_restored &&
+            naruto_provider_slot != nullptr &&
+            is_writable_process_range(reinterpret_cast<uintptr_t>(naruto_provider_slot), sizeof(*naruto_provider_slot)))
+        {
+            *naruto_provider_slot = naruto_original_provider;
+        }
+    }};
+
+    if (viewport_info != nullptr &&
+        !a4_is_ue_5_5_variant &&
+        rtm != nullptr &&
+        naruto_is_current_game() &&
+        is_ue_4_16_runtime() &&
+        g_framework->is_dx11())
+    {
+        // Naruto destroys the old FRHI texture wrapper when its separate
+        // viewport target is resized. Never carry that raw provider texture
+        // into a later Slate draw through the generic fallback slot.
+        rtm->get_fallback_ui_target_ref() = nullptr;
+
+        // Naruto omits FSceneViewport::WindowRenderTargetUpdate after UEVR
+        // enables the separate target, leaving FViewportInfo::RTProvider null.
+        // The UE4.16 constructor proves these exact base adjustments:
+        // FViewport is complete+0x08 and IViewportRenderTargetProvider is
+        // complete+0xE8, so the provider is FViewport+0xE0.
+        constexpr uintptr_t viewport_info_provider_offset = 0xE8;
+        constexpr uintptr_t fviewport_to_provider_offset = 0xE0;
+
+        auto* const viewport = rtm->get_viewport();
+        auto* const provider = viewport != nullptr
+            ? reinterpret_cast<sdk::IViewportRenderTargetProvider*>(
+                  reinterpret_cast<uintptr_t>(viewport) + fviewport_to_provider_offset)
+            : nullptr;
+        auto* const provider_slot = reinterpret_cast<sdk::IViewportRenderTargetProvider**>(
+            reinterpret_cast<uintptr_t>(viewport_info) + viewport_info_provider_offset);
+
+        sdk::IViewportRenderTargetProvider* current_provider = nullptr;
+        const bool slot_is_valid =
+            is_writable_process_range(reinterpret_cast<uintptr_t>(provider_slot), sizeof(*provider_slot)) &&
+            safe_read_value(reinterpret_cast<uintptr_t>(provider_slot), current_provider);
+        const bool provider_is_valid = naruto_ue416_is_expected_viewport_rt_provider(provider);
+
+        if (slot_is_valid && provider_is_valid &&
+            (current_provider == nullptr || current_provider == provider))
+        {
+            naruto_provider_slot = provider_slot;
+            naruto_original_provider = current_provider;
+
+            if (current_provider == nullptr) {
+                *provider_slot = provider;
+                naruto_provider_was_restored = true;
+            }
+
+            bool provider_call_faulted = false;
+            auto* const direct_resource =
+                try_get_naruto_ue416_viewport_rt_resource(provider, provider_call_faulted);
+
+            if (!provider_call_faulted && direct_resource != nullptr &&
+                is_readable_process_range(reinterpret_cast<uintptr_t>(direct_resource), sizeof(void*) * 2))
+            {
+                slate_resource = direct_resource;
+                provider_resource = direct_resource;
+                provider_texture = direct_resource->get_mutable_resource();
+            }
+
+            SPDLOG_INFO_ONCE(
+                "[Naruto][UE4.16][SlateUI] Restored FViewportInfo RTProvider using FSceneViewport provider={} viewport={} resource={} texture={}",
+                reinterpret_cast<uintptr_t>(provider),
+                reinterpret_cast<uintptr_t>(viewport),
+                reinterpret_cast<uintptr_t>(direct_resource),
+                reinterpret_cast<uintptr_t>(provider_texture));
+        } else if (!slot_is_valid || !provider_is_valid) {
+            SPDLOG_WARN_ONCE(
+                "[Naruto][UE4.16][SlateUI] Refusing RTProvider restoration: slot_valid={} provider_valid={} viewport={} provider={}",
+                slot_is_valid,
+                provider_is_valid,
+                reinterpret_cast<uintptr_t>(viewport),
+                reinterpret_cast<uintptr_t>(provider));
+        } else {
+            SPDLOG_WARN_ONCE(
+                "[Naruto][UE4.16][SlateUI] Preserving an existing non-FSceneViewport RTProvider {}",
+                reinterpret_cast<uintptr_t>(current_provider));
+        }
+    }
+
     if (is_ue_5_8() &&
         supports_ue57_dedicated_ui_target() &&
         a4_is_ue_5_5_variant &&
@@ -19596,7 +20249,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 "[UE5.6][RT] Skipping FViewportInfo::GetRenderTargetProvider probing because the known texture cannot expose a stable native resource; deferring to D3D12 hooks");
         }
 
-        const auto viewport_rt_provider = known_texture != nullptr && known_texture_is_safe ? viewport_info->get_rt_provider(known_texture) : nullptr;
+        const auto viewport_rt_provider =
+            provider_resource == nullptr && known_texture != nullptr && known_texture_is_safe
+                ? viewport_info->get_rt_provider(known_texture)
+                : nullptr;
 
         if (viewport_rt_provider != nullptr) {
             provider_resource = viewport_rt_provider->get_viewport_render_target_texture();
@@ -19604,7 +20260,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (provider_resource != nullptr) {
                 provider_texture = provider_resource->get_mutable_resource();
             }
-        } else if (slate_viewport == nullptr && rtm->get_render_target() == nullptr) {
+        } else if (provider_resource == nullptr && slate_viewport == nullptr && rtm->get_render_target() == nullptr) {
             SPDLOG_INFO_EVERY_N_SEC(1, "No viewport RT provider, skipping!");
             return call_orig();
         }
@@ -19634,6 +20290,10 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     bool engine_texture_native_ok = true;
     bool provider_texture_native_ok = true;
     const auto vr_state = VR::get();
+    const bool naruto_waiting_for_verified_scene_target =
+        naruto_is_current_game() &&
+        is_ue_4_16_runtime() &&
+        g_framework->is_dx11();
     const bool ue56_d3d12_targets_ready =
         is_ue_5_6_dx12_backend() &&
         vr_state != nullptr &&
@@ -19661,9 +20321,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
                 "[UE5.6][RT] Not adopting Slate viewport texture because native-resource discovery failed; waiting for D3D12 texture/backbuffer hooks");
         }
 
-        if (engine_texture_native_ok && rtm->get_render_target() == nullptr && !is_ue_5_8()) {
+        if (engine_texture_native_ok &&
+            rtm->get_render_target() == nullptr &&
+            !is_ue_5_8() &&
+            !naruto_waiting_for_verified_scene_target)
+        {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
             rtm->set_render_target(engine_texture);
+        } else if (engine_texture_native_ok &&
+                   rtm->get_render_target() == nullptr &&
+                   naruto_waiting_for_verified_scene_target)
+        {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Naruto][UE4.16][RT] Deferring flat Slate viewport adoption until completed Draw confirms the VR-sized scene target");
         } else if (engine_texture_native_ok && rtm->get_render_target() == nullptr && is_ue_5_8()) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
@@ -19675,6 +20346,38 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         provider_texture_native_ok =
             !is_ue_5_6_dx12_backend() ||
             ue56_dx12_try_get_native_resource(provider_texture, "Viewport RT provider texture");
+    }
+
+    if (supports_naruto_ue416_dedicated_ui_target()) {
+        // The first valid provider texture is Naruto's desktop-sized Slate
+        // destination. Capture its extent before FSceneViewport replaces the
+        // wrapper with the double-wide scene target, then keep Slate on a
+        // separately owned texture for the rest of the session.
+        if (rtm->get_dedicated_ui_width() == 0 &&
+            rtm->get_dedicated_ui_height() == 0 &&
+            provider_texture != nullptr &&
+            provider_texture != rtm->get_render_target())
+        {
+            D3D11_TEXTURE2D_DESC provider_desc{};
+
+            if (naruto_ue416_try_get_d3d11_texture_desc(provider_texture, provider_desc) &&
+                provider_desc.Width >= 320 && provider_desc.Height >= 240 &&
+                provider_desc.Width <= 8192 && provider_desc.Height <= 8192 &&
+                provider_desc.SampleDesc.Count == 1 &&
+                (provider_desc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0)
+            {
+                SPDLOG_WARN(
+                    "[Naruto][UE4.16][SlateUI] Captured desktop UI extent [{}x{} fmt={}]; scheduling persistent dedicated UI target",
+                    provider_desc.Width,
+                    provider_desc.Height,
+                    (uint32_t)provider_desc.Format);
+                rtm->request_dedicated_ui_target(provider_desc.Width, provider_desc.Height);
+            }
+        }
+
+        if (rtm->get_dedicated_ui_width() != 0 && rtm->get_dedicated_ui_height() != 0) {
+            rtm->ensure_dedicated_ui_target(reinterpret_cast<uintptr_t>(a2));
+        }
     }
 
     if (is_ue_5_7_or_newer()) {
@@ -19712,6 +20415,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto ui_target = rtm->get_ui_target();
     const auto render_target_fallback = rtm->get_render_target();
     const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
+    const auto naruto_ue416_transient_ui =
+        naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11();
 
     if (is_ue_5_7_or_newer()) {
         if (is_ue58_dx11_dedicated_ui_backend() &&
@@ -19745,18 +20450,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (ui_target == nullptr && provider_texture_native_ok && provider_texture != nullptr && !IsBadReadPtr(provider_texture, sizeof(void*)) && provider_texture != render_target_fallback) {
-            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
             ui_target = provider_texture;
-            rtm->get_fallback_ui_target_ref() = provider_texture;
+            if (naruto_ue416_transient_ui) {
+                SPDLOG_INFO_ONCE(
+                    "[Naruto][UE4.16][SlateUI] Using viewport provider texture for this draw only; not retaining it across viewport reallocations");
+            } else {
+                SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
+                rtm->get_fallback_ui_target_ref() = provider_texture;
+            }
         }
 
         if (ui_target == nullptr && engine_texture_native_ok && engine_texture != nullptr && !IsBadReadPtr(engine_texture, sizeof(void*)) && engine_texture != render_target_fallback) {
-            SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as dedicated UI target fallback");
             ui_target = engine_texture;
-            rtm->get_fallback_ui_target_ref() = engine_texture;
+            if (naruto_ue416_transient_ui) {
+                SPDLOG_INFO_ONCE(
+                    "[Naruto][UE4.16][SlateUI] Using Slate viewport texture for this draw only; not retaining it across viewport reallocations");
+            } else {
+                SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as dedicated UI target fallback");
+                rtm->get_fallback_ui_target_ref() = engine_texture;
+            }
         }
 
-        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider && !daysgone_dx11_no_scene_as_ui) {
+        if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider &&
+            !daysgone_dx11_no_scene_as_ui && !naruto_ue416_transient_ui)
+        {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
             ui_target = render_target_fallback;
             rtm->get_fallback_ui_target_ref() = render_target_fallback;
@@ -19799,6 +20516,88 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     // Replace the texture with one we have control over.
     // This isolates the UI to render on our own texture separate from the scene.
     const auto old_texture = slate_resource->get_mutable_resource();
+
+    bool naruto_slate_viewport_filter_armed = false;
+    sdk::TConsoleVariableData<float>* naruto_slate_draw_to_vr_target_cvar = nullptr;
+    std::array<float, 2> naruto_slate_draw_to_vr_target_old_values{};
+    bool naruto_slate_draw_to_vr_target_overridden = false;
+
+    if (supports_naruto_ue416_dedicated_ui_target()) {
+        D3D11_TEXTURE2D_DESC ui_desc{};
+        D3D11_TEXTURE2D_DESC scene_desc{};
+        D3D11_TEXTURE2D_DESC original_desc{};
+        ID3D11Resource* ui_native = nullptr;
+        ID3D11Resource* scene_native = nullptr;
+        ID3D11Resource* original_native = nullptr;
+
+        const bool have_ui = naruto_ue416_try_get_d3d11_texture_desc(ui_target, ui_desc, &ui_native);
+        auto* const scene_target = rtm->get_render_target();
+        const bool have_scene =
+            scene_target != nullptr &&
+            naruto_ue416_try_get_d3d11_texture_desc(scene_target, scene_desc, &scene_native);
+        const bool have_original =
+            old_texture != nullptr &&
+            naruto_ue416_try_get_d3d11_texture_desc(old_texture, original_desc, &original_native);
+
+        if (have_ui && ui_native != nullptr) {
+            D3D11Hook::begin_naruto_slate_ui_capture(
+                ui_native,
+                have_scene ? scene_native : nullptr,
+                have_original ? original_native : nullptr);
+            naruto_slate_viewport_filter_armed = true;
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Naruto][UE4.16][SlateUI] Dedicated UI target has no validated D3D11 resource; viewport-quad suppression is fail-closed");
+        }
+
+        // UE4.16 sets bRenderedStereo when this value is zero, then routes
+        // Slate back to the swapchain after calling UEVR's no-op fake-stereo
+        // RenderTexture. Keep this single draw on the redirected UI target and
+        // restore both render-thread copies immediately afterward.
+        if (auto cvar = sdk::vr::get_slate_draw_to_vr_render_target_real_cvar(); cvar) {
+            auto* const data = cvar->get<float>();
+            if (data != nullptr &&
+                is_writable_process_range(reinterpret_cast<uintptr_t>(data), sizeof(*data)) &&
+                std::isfinite(data->values[0]) &&
+                std::isfinite(data->values[1]))
+            {
+                naruto_slate_draw_to_vr_target_cvar = data;
+                naruto_slate_draw_to_vr_target_old_values = {data->values[0], data->values[1]};
+                data->values[0] = 1.0f;
+                data->values[1] = 1.0f;
+                naruto_slate_draw_to_vr_target_overridden = true;
+                SPDLOG_INFO_ONCE(
+                    "[Naruto][UE4.16][SlateUI] Scoped Slate.DrawToVRRenderTarget=1 so Slate draws only into the dedicated UI target");
+            } else {
+                SPDLOG_WARN_ONCE(
+                    "[Naruto][UE4.16][SlateUI] Refusing unsafe Slate.DrawToVRRenderTarget override; using the original path");
+            }
+        } else {
+            SPDLOG_WARN_ONCE(
+                "[Naruto][UE4.16][SlateUI] Slate.DrawToVRRenderTarget was not resolved; using the original path");
+        }
+    }
+
+    const auto restore_naruto_slate_scope = [&]() {
+        if (naruto_slate_draw_to_vr_target_overridden &&
+            naruto_slate_draw_to_vr_target_cvar != nullptr &&
+            is_writable_process_range(
+                reinterpret_cast<uintptr_t>(naruto_slate_draw_to_vr_target_cvar),
+                sizeof(*naruto_slate_draw_to_vr_target_cvar)))
+        {
+            naruto_slate_draw_to_vr_target_cvar->values[0] = naruto_slate_draw_to_vr_target_old_values[0];
+            naruto_slate_draw_to_vr_target_cvar->values[1] = naruto_slate_draw_to_vr_target_old_values[1];
+            naruto_slate_draw_to_vr_target_overridden = false;
+        }
+
+        if (naruto_slate_viewport_filter_armed) {
+            D3D11Hook::end_naruto_slate_ui_capture();
+            naruto_slate_viewport_filter_armed = false;
+        }
+    };
+    utility::ScopeGuard naruto_slate_scope_guard{restore_naruto_slate_scope};
+
     slate_resource->get_mutable_resource() = ui_target;
 
     // To be seen if we need to resort to a MidHook on this function if the parameters
@@ -19807,6 +20606,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
     // Restore the old texture.
     slate_resource->get_mutable_resource() = old_texture;
+    restore_naruto_slate_scope();
 
     for (auto& mod : mods) {
         mod->on_post_slate_draw_window(renderer, a2, viewport_info);
@@ -21585,6 +22385,13 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         }
     }
 
+    if (supports_naruto_ue416_dedicated_ui_target()) {
+        // UE4.16 never selects the UE5.7 Slate-thread startup policy below.
+        // Once DrawWindow itself is stable, its captured desktop extent is
+        // sufficient to create the persistent target used by this guarded path.
+        return true;
+    }
+
     if (supports_ue55_dedicated_ui_target_for_current_game()) {
         return true;
     }
@@ -21687,7 +22494,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             // collected while Slate/RDG can still reference its RHI resource.
             // UGameInstance resolves the same world but persists across travel.
             auto* world_context = (sdk::UObject*)world;
-            if (everspace2_is_current_game() || is_ue58_dx11_dedicated_ui_backend()) {
+            if (everspace2_is_current_game() ||
+                is_ue58_dx11_dedicated_ui_backend() ||
+                supports_naruto_ue416_dedicated_ui_target())
+            {
                 world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
 
                 if (world_context == nullptr || world_context->is_pending_kill_or_unreachable()) {
@@ -21695,10 +22505,14 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[UE5.8][DX11][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
-                    } else {
+                    } else if (everspace2_is_current_game()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[Naruto][UE4.16][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     }
                     this->reset_dedicated_ui_creation_state();
                     return;
