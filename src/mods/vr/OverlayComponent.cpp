@@ -869,7 +869,12 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     layer.type = XR_TYPE_COMPOSITION_LAYER_QUAD;
     const auto& ui_swapchain = vr->m_openxr->swapchains[(uint32_t)swapchain];
     layer.subImage.swapchain = ui_swapchain.handle;
-    layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    // Halo's Electra movie target contains valid RGB but does not provide a
+    // compositor-safe alpha channel. Treat the eye-specific movie quad as
+    // opaque; otherwise OpenXR blends it away over the black projection layer.
+    layer.layerFlags = vr->is_halo_electra_cinematic_active()
+        ? 0
+        : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     layer.subImage.imageRect.offset.x = 0;
     layer.subImage.imageRect.offset.y = 0;
     layer.subImage.imageRect.extent.width = ui_swapchain.width;
@@ -995,7 +1000,9 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     layer.type = XR_TYPE_COMPOSITION_LAYER_CYLINDER_KHR;
     const auto& ui_swapchain = vr->m_openxr->swapchains[(uint32_t)swapchain];
     layer.subImage.swapchain = ui_swapchain.handle;
-    layer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+    layer.layerFlags = vr->is_halo_electra_cinematic_active()
+        ? 0
+        : XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
     layer.subImage.imageRect.offset.x = 0;
     layer.subImage.imageRect.offset.y = 0;
     layer.subImage.imageRect.extent.width = ui_swapchain.width;
