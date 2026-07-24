@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <spdlog/spdlog.h>
@@ -16,6 +17,29 @@
 using namespace std;
 
 static D3D11Hook* g_d3d11_hook = nullptr;
+
+namespace {
+struct NarutoSlateUICaptureState {
+    std::atomic_bool active{false};
+    std::atomic_uint64_t expires_at_ms{0};
+    std::atomic<ID3D11Resource*> ui_target{nullptr};
+    std::atomic<ID3D11Resource*> scene_target{nullptr};
+    std::atomic<ID3D11Resource*> original_target{nullptr};
+};
+
+NarutoSlateUICaptureState g_naruto_slate_ui_capture{};
+std::atomic_bool g_logged_naruto_slate_viewport_suppression{false};
+std::atomic_uint32_t g_logged_naruto_slate_unmatched_quads{0};
+
+bool naruto_d3d11_slate_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"NARUTO-Win64-Shipping.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+}
 
 static bool daysgone_d3d11_guard_enabled() {
     static const bool result = []() {
@@ -124,6 +148,35 @@ D3D11Hook::~D3D11Hook() {
     unhook();
 }
 
+void D3D11Hook::begin_naruto_slate_ui_capture(
+    ID3D11Resource* ui_target,
+    ID3D11Resource* scene_target,
+    ID3D11Resource* original_target)
+{
+    auto& state = g_naruto_slate_ui_capture;
+    state.active.store(false, std::memory_order_release);
+
+    if (!naruto_d3d11_slate_guard_enabled() || ui_target == nullptr) {
+        state.ui_target.store(nullptr, std::memory_order_relaxed);
+        state.scene_target.store(nullptr, std::memory_order_relaxed);
+        state.original_target.store(nullptr, std::memory_order_relaxed);
+        state.expires_at_ms.store(0, std::memory_order_relaxed);
+        return;
+    }
+
+    state.ui_target.store(ui_target, std::memory_order_relaxed);
+    state.scene_target.store(scene_target, std::memory_order_relaxed);
+    state.original_target.store(original_target, std::memory_order_relaxed);
+    state.expires_at_ms.store(GetTickCount64() + 1000, std::memory_order_relaxed);
+    state.active.store(true, std::memory_order_release);
+}
+
+void D3D11Hook::end_naruto_slate_ui_capture() {
+    // UE4.16 records Slate RHI commands here but executes them later on the
+    // RHI thread. Keep the exact resource identities alive briefly; Begin()
+    // renews them every Slate frame and the timeout fails closed on teardown.
+}
+
 bool D3D11Hook::hook() {
     spdlog::info("Hooking D3D11");
 
@@ -189,6 +242,8 @@ bool D3D11Hook::hook() {
         m_create_pixel_shader_hook.reset();
         m_vs_set_shader_hook.reset();
         m_ps_set_shader_hook.reset();
+        m_draw_indexed_hook.reset();
+        m_naruto_draw_context_vtable = nullptr;
 
         auto& present_fn = (*(void***)swap_chain)[8];
         auto& resize_buffers_fn = (*(void***)swap_chain)[13];
@@ -241,8 +296,13 @@ bool D3D11Hook::unhook() {
     m_create_texture2d_hook.reset();
     m_create_texture2d_hook_device = nullptr;
 
+    const auto naruto_draw_unhooked = m_draw_indexed_hook == nullptr || m_draw_indexed_hook->remove();
+    m_draw_indexed_hook.reset();
+    m_naruto_draw_context_vtable = nullptr;
+
     if (uav_unhooked &&
         tex2d_unhooked &&
+        naruto_draw_unhooked &&
         m_present_hook->remove() &&
         m_resize_buffers_hook->remove() &&
         m_create_vertex_shader_hook->remove() &&
@@ -290,6 +350,10 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
     }*/
 
     swap_chain->GetDevice(__uuidof(d3d11->m_device), (void**)&d3d11->m_device);
+
+    if (naruto_d3d11_slate_guard_enabled()) {
+        d3d11->hook_naruto_draw_indexed(d3d11->m_device);
+    }
 
     if (daysgone_d3d11_guard_enabled()) {
         d3d11->hook_create_texture2d(d3d11->m_device);
@@ -738,6 +802,149 @@ void WINAPI D3D11Hook::ps_set_shader(
     auto bound_shader = shader_registry.resolve_d3d11_pixel_shader(device.Get(), shader);
     shader_registry.note_d3d11_shader_bound(render::ShaderOverrideRegistry::Stage::Pixel, shader, bound_shader);
     original(context, bound_shader, class_instances, num_class_instances);
+}
+
+void D3D11Hook::hook_naruto_draw_indexed(ID3D11Device* device) {
+    if (!naruto_d3d11_slate_guard_enabled() || device == nullptr) {
+        return;
+    }
+
+    ComPtr<ID3D11DeviceContext> context{};
+    device->GetImmediateContext(&context);
+
+    if (context == nullptr) {
+        return;
+    }
+
+    auto** const vtable = *reinterpret_cast<void***>(context.Get());
+    if (vtable == nullptr || (m_draw_indexed_hook != nullptr && m_naruto_draw_context_vtable == vtable)) {
+        return;
+    }
+
+    try {
+        if (m_draw_indexed_hook != nullptr) {
+            m_draw_indexed_hook->remove();
+            m_draw_indexed_hook.reset();
+            m_naruto_draw_context_vtable = nullptr;
+        }
+
+        // ID3D11DeviceContext::DrawIndexed is vtable slot 12. Hook the real
+        // game context: the NULL-driver context used during bootstrap has a
+        // different implementation table on Naruto's D3D11 device.
+        auto& draw_indexed_fn = vtable[12];
+        if (draw_indexed_fn == nullptr || draw_indexed_fn == reinterpret_cast<void*>(&D3D11Hook::draw_indexed)) {
+            return;
+        }
+
+        m_draw_indexed_hook = std::make_unique<PointerHook>(&draw_indexed_fn, reinterpret_cast<void*>(&D3D11Hook::draw_indexed));
+        m_naruto_draw_context_vtable = vtable;
+        spdlog::warn("[Naruto][UE4.16][SlateUI] Hooked DrawIndexed on the live D3D11 immediate context");
+    } catch (const std::exception& e) {
+        spdlog::error("[Naruto][UE4.16][SlateUI] Failed to hook live DrawIndexed: {}", e.what());
+    } catch (...) {
+        spdlog::error("[Naruto][UE4.16][SlateUI] Failed to hook live DrawIndexed");
+    }
+}
+
+void WINAPI D3D11Hook::draw_indexed(
+    ID3D11DeviceContext* context,
+    UINT index_count,
+    UINT start_index_location,
+    INT base_vertex_location)
+{
+    auto d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_draw_indexed_hook->get_original<decltype(D3D11Hook::draw_indexed)*>();
+    auto& state = g_naruto_slate_ui_capture;
+    const auto capture_active = state.active.load(std::memory_order_acquire);
+    const auto expires_at_ms = state.expires_at_ms.load(std::memory_order_relaxed);
+    const auto ui_target = state.ui_target.load(std::memory_order_relaxed);
+    const auto scene_target = state.scene_target.load(std::memory_order_relaxed);
+    const auto original_target = state.original_target.load(std::memory_order_relaxed);
+
+    if (capture_active && (expires_at_ms == 0 || GetTickCount64() > expires_at_ms)) {
+        state.active.store(false, std::memory_order_release);
+    }
+
+    // A Slate viewport is one quad. Requiring both the dedicated UI RTV and
+    // the exact old/scene resource keeps this from touching ordinary UI.
+    if (capture_active && GetTickCount64() <= expires_at_ms && ui_target != nullptr &&
+        context != nullptr && index_count == 6)
+    {
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv{};
+        context->OMGetRenderTargets(1, rtv.GetAddressOf(), nullptr);
+
+        Microsoft::WRL::ComPtr<ID3D11Resource> destination{};
+        if (rtv != nullptr) {
+            rtv->GetResource(destination.GetAddressOf());
+        }
+
+        if (destination.Get() == ui_target) {
+            constexpr UINT srv_count = 8;
+            ID3D11ShaderResourceView* srvs[srv_count]{};
+            context->PSGetShaderResources(0, srv_count, srvs);
+
+            ID3D11Resource* matched_source = nullptr;
+            UINT matched_slot = 0;
+            ID3D11Resource* first_source = nullptr;
+
+            for (UINT slot = 0; slot < srv_count; ++slot) {
+                if (srvs[slot] == nullptr) {
+                    continue;
+                }
+
+                ID3D11Resource* source = nullptr;
+                srvs[slot]->GetResource(&source);
+
+                if (first_source == nullptr) {
+                    first_source = source;
+                    if (first_source != nullptr) {
+                        first_source->AddRef();
+                    }
+                }
+
+                if (source != nullptr &&
+                    ((scene_target != nullptr && source == scene_target) ||
+                     (original_target != nullptr && source == original_target)))
+                {
+                    matched_source = source;
+                    matched_slot = slot;
+                }
+
+                if (source != nullptr) {
+                    source->Release();
+                }
+                srvs[slot]->Release();
+            }
+
+            if (matched_source != nullptr) {
+                if (!g_logged_naruto_slate_viewport_suppression.exchange(true)) {
+                    spdlog::warn(
+                        "[Naruto][UE4.16][SlateUI] Suppressed the original viewport composite from the dedicated UI target (srv_slot={})",
+                        matched_slot);
+                }
+
+                if (first_source != nullptr) {
+                    first_source->Release();
+                }
+                return;
+            }
+
+            const auto log_index = g_logged_naruto_slate_unmatched_quads.fetch_add(1);
+            if (log_index < 8) {
+                spdlog::info(
+                    "[Naruto][UE4.16][SlateUI] Observed unmatched 6-index UI-target draw: first_srv={} scene={} original={}",
+                    reinterpret_cast<uintptr_t>(first_source),
+                    reinterpret_cast<uintptr_t>(scene_target),
+                    reinterpret_cast<uintptr_t>(original_target));
+            }
+
+            if (first_source != nullptr) {
+                first_source->Release();
+            }
+        }
+    }
+
+    original(context, index_count, start_index_location, base_vertex_location);
 }
 
 void WINAPI D3D11Hook::set_render_targets(
