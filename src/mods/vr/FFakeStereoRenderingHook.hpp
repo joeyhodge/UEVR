@@ -1050,6 +1050,8 @@ private:
     VRRenderTargetManager_58_Transitional m_rtm_58_transitional{};
     VRRenderTargetManager_418 m_rtm_418{};
     VRRenderTargetManager_Special m_rtm_special{};
+    std::atomic<FRHITexture2D*> m_validated_ue58_scene_viewport_texture{};
+    std::atomic<void*> m_validated_ue58_scene_viewport_texture_vtable{};
 
     Rotator<float> m_last_afr_rotation{};
     Rotator<double> m_last_afr_rotation_double{};
@@ -1102,7 +1104,42 @@ private:
     uint64_t m_daysgone_ui_telemetry_log_counter{0};
     std::atomic_bool m_daysgone_bend_ui_fix_queued{false};
     std::chrono::steady_clock::time_point m_daysgone_bend_ui_last_apply{};
-    std::string m_daysgone_bend_ui_last_apply_signature{};
+    struct DaysGoneBendUIApplySettings {
+        uint64_t manual_generation{};
+        int32_t mode{};
+        bool force_player_camera{};
+        bool override_widget_transform{};
+        bool override_root_transform{};
+        bool force_widget_refresh{};
+        bool viewport_slot_fix{};
+        bool apply_child_render_transform{};
+        bool use_slate_overlay{};
+        bool suppress_in_scene_composite{};
+        float viewport_slot_offset_x{};
+        float viewport_slot_offset_y{};
+        float viewport_slot_scale{};
+        float viewport_slot_opacity{};
+        float distance_from_camera{};
+        float camera_fov{};
+        float widget_loc_x{};
+        float widget_loc_y{};
+        float widget_loc_z{};
+        float widget_rot_pitch{};
+        float widget_rot_yaw{};
+        float widget_rot_roll{};
+        float widget_scale{};
+        float screen_offset_x{};
+        float screen_offset_y{};
+        float screen_scale{};
+        float draw_scale{};
+        float root_loc_x{};
+        float root_loc_y{};
+        float root_loc_z{};
+        float key_opacity{};
+
+        bool operator==(const DaysGoneBendUIApplySettings&) const = default;
+    };
+    std::optional<DaysGoneBendUIApplySettings> m_daysgone_bend_ui_last_apply_settings{};
     std::atomic<uint64_t> m_daysgone_bend_ui_manual_apply_generation{0};
     struct DaysGoneBendUIOriginalState {
         uintptr_t menu3d{};

@@ -636,18 +636,35 @@ ShaderOverrideRegistry& ShaderOverrideRegistry::get() {
 }
 
 void ShaderOverrideRegistry::on_present(Framework&) {
-    std::scoped_lock _{m_mutex};
-    ++m_frame;
-
     const auto now = std::chrono::steady_clock::now();
+    const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
+    m_frame.fetch_add(1, std::memory_order_relaxed);
+
     const auto full_tracking_active = should_track_d3d11_shaders() || should_track_d3d12_pipelines();
     const auto reload_interval = full_tracking_active ? AUTO_RELOAD_INTERVAL : IDLE_AUTO_RELOAD_INTERVAL;
+    const auto reload_interval_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(reload_interval).count();
+    const auto last_scan_ns = m_last_scan_time_ns.load(std::memory_order_relaxed);
 
-    if (m_force_reload || m_last_scan_time.time_since_epoch().count() == 0 || (now - m_last_scan_time) >= reload_interval) {
-        m_force_reload = false;
-        m_last_scan_time = now;
-        scan_override_directories();
+    if (!m_force_reload.load(std::memory_order_acquire) &&
+        last_scan_ns != 0 &&
+        now_ns - last_scan_ns < reload_interval_ns)
+    {
+        return;
     }
+
+    std::scoped_lock _{m_mutex};
+    const auto force_reload = m_force_reload.exchange(false, std::memory_order_acq_rel);
+    const auto locked_last_scan_ns = m_last_scan_time_ns.load(std::memory_order_relaxed);
+
+    if (!force_reload &&
+        locked_last_scan_ns != 0 &&
+        now_ns - locked_last_scan_ns < reload_interval_ns)
+    {
+        return;
+    }
+
+    m_last_scan_time_ns.store(now_ns, std::memory_order_relaxed);
+    scan_override_directories();
 }
 
 void ShaderOverrideRegistry::set_inspector_tracking_enabled(bool enabled) {
@@ -666,8 +683,7 @@ bool ShaderOverrideRegistry::should_track_d3d12_pipelines() const {
 }
 
 void ShaderOverrideRegistry::request_reload() {
-    std::scoped_lock _{m_mutex};
-    m_force_reload = true;
+    m_force_reload.store(true, std::memory_order_release);
 }
 
 void ShaderOverrideRegistry::request_capture_next_d3d12_change() {
@@ -691,7 +707,7 @@ bool ShaderOverrideRegistry::export_d3d12_pairs_json(std::filesystem::path& out_
         std::filesystem::create_directories(out_path.parent_path());
 
         json root{};
-        root["frame"] = m_frame;
+        root["frame"] = m_frame.load(std::memory_order_relaxed);
         root["total_samples"] = m_total_d3d12_pair_samples;
         root["distinct_pairs"] = json::array();
 
@@ -839,7 +855,7 @@ ShaderOverrideRegistry::Snapshot ShaderOverrideRegistry::snapshot() const {
     std::scoped_lock _{m_mutex};
 
     Snapshot out{};
-    out.frame = m_frame;
+    out.frame = m_frame.load(std::memory_order_relaxed);
     out.global_override_dir = global_override_dir().string();
     out.profile_override_dir = profile_override_dir().string();
     out.bound_vertex_shader = m_bound_vertex_shader;
@@ -972,9 +988,9 @@ void ShaderOverrideRegistry::register_d3d11_shader_creation(Stage stage, ID3D11D
     record.device_pointer = reinterpret_cast<uintptr_t>(device);
     record.hash = hash_shader_bytecode(bytecode, bytecode_size);
     if (record.first_seen_frame == 0) {
-        record.first_seen_frame = m_frame;
+        record.first_seen_frame = m_frame.load(std::memory_order_relaxed);
     }
-    record.last_seen_frame = m_frame;
+    record.last_seen_frame = m_frame.load(std::memory_order_relaxed);
     ++record.seen_count;
 
     update_d3d11_override_shader(record, device);
@@ -1044,7 +1060,7 @@ void ShaderOverrideRegistry::note_d3d11_shader_bound(Stage stage, IUnknown* orig
     info.stage = stage;
     info.original_pointer = reinterpret_cast<uintptr_t>(original_shader);
     info.bound_pointer = reinterpret_cast<uintptr_t>(bound_shader);
-    info.last_bound_frame = m_frame;
+    info.last_bound_frame = m_frame.load(std::memory_order_relaxed);
 
     if (original_shader == nullptr) {
         info.known = false;
@@ -1146,9 +1162,9 @@ void ShaderOverrideRegistry::register_d3d12_graphics_pipeline_state_creation(
     record.compute_hash.clear();
     record.amplification_hash.clear();
     record.mesh_hash.clear();
-    record.last_seen_frame = m_frame;
+    record.last_seen_frame = m_frame.load(std::memory_order_relaxed);
     if (record.first_seen_frame == 0) {
-        record.first_seen_frame = m_frame;
+        record.first_seen_frame = m_frame.load(std::memory_order_relaxed);
         record.applied_override_revision = (std::numeric_limits<uint64_t>::max)();
     }
     ++record.seen_count;
@@ -1203,10 +1219,10 @@ void ShaderOverrideRegistry::register_d3d12_pipeline_state_stream_creation(
     record.compute_hash = hash_shader_bytecode(record.owned_stream.compute_shader.data(), record.owned_stream.compute_shader.size());
     record.amplification_hash = hash_shader_bytecode(record.owned_stream.amplification_shader.data(), record.owned_stream.amplification_shader.size());
     record.mesh_hash = hash_shader_bytecode(record.owned_stream.mesh_shader.data(), record.owned_stream.mesh_shader.size());
-    record.last_seen_frame = m_frame;
+    record.last_seen_frame = m_frame.load(std::memory_order_relaxed);
 
     if (record.first_seen_frame == 0) {
-        record.first_seen_frame = m_frame;
+        record.first_seen_frame = m_frame.load(std::memory_order_relaxed);
         record.applied_override_revision = (std::numeric_limits<uint64_t>::max)();
     }
 
@@ -1264,7 +1280,7 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
         info.stage = stage;
         info.original_pointer = reinterpret_cast<uintptr_t>(original_pipeline_state);
         info.bound_pointer = reinterpret_cast<uintptr_t>(bound_pipeline_state);
-        info.last_bound_frame = m_frame;
+        info.last_bound_frame = m_frame.load(std::memory_order_relaxed);
 
         if (original_pipeline_state == nullptr) {
             info.note = "null pso";
@@ -1342,7 +1358,7 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
     m_bound_pixel_shader = fill_info(Stage::Pixel);
 
     D3D12PipelinePairInfo pair{};
-    pair.frame = m_frame;
+    pair.frame = m_frame.load(std::memory_order_relaxed);
     pair.original_pipeline_state = reinterpret_cast<uintptr_t>(original_pipeline_state);
     pair.bound_pipeline_state = reinterpret_cast<uintptr_t>(bound_pipeline_state);
     pair.vertex_shader = m_bound_vertex_shader;
@@ -1371,23 +1387,58 @@ void ShaderOverrideRegistry::note_d3d12_pipeline_state_bound(ID3D12PipelineState
 }
 
 void ShaderOverrideRegistry::scan_override_directories() {
-    std::unordered_map<std::string, std::filesystem::path> discovered_entries{};
+    std::unordered_map<std::string, OverrideEntry> discovered_entries{};
 
-    scan_single_directory(global_override_dir(), false);
-    for (const auto& [key, entry] : m_overrides) {
-        discovered_entries[key] = entry.manifest_path;
+    scan_single_directory(global_override_dir(), false, discovered_entries);
+    scan_single_directory(profile_override_dir(), true, discovered_entries);
+
+    std::unordered_map<std::string, std::filesystem::path> discovered_paths{};
+    discovered_paths.reserve(discovered_entries.size());
+
+    for (auto& [key, entry] : discovered_entries) {
+        discovered_paths.emplace(key, entry.manifest_path);
+        auto existing = m_overrides.find(key);
+
+        if (existing == m_overrides.end()) {
+            compile_or_refresh_entry(entry);
+            m_overrides[key] = std::move(entry);
+            continue;
+        }
+
+        auto& current = existing->second;
+        const bool changed =
+            current.manifest_path != entry.manifest_path ||
+            current.source_path != entry.source_path ||
+            current.enabled != entry.enabled ||
+            current.entry_point != entry.entry_point ||
+            current.profile != entry.profile ||
+            current.name != entry.name ||
+            current.manifest_write_time != entry.manifest_write_time ||
+            current.source_write_time != entry.source_write_time ||
+            current.from_profile_dir != entry.from_profile_dir;
+
+        entry.generation = current.generation;
+        entry.compiled_bytecode = current.compiled_bytecode;
+        entry.compiled = current.compiled;
+        entry.status = current.status;
+        entry.last_error = current.last_error;
+
+        if (changed) {
+            compile_or_refresh_entry(entry);
+        }
+
+        current = std::move(entry);
     }
 
-    scan_single_directory(profile_override_dir(), true);
-    for (const auto& [key, entry] : m_overrides) {
-        discovered_entries[key] = entry.manifest_path;
-    }
-
-    remove_deleted_entries(discovered_entries);
+    remove_deleted_entries(discovered_paths);
     refresh_active_override_flags_locked();
 }
 
-void ShaderOverrideRegistry::scan_single_directory(const std::filesystem::path& dir, bool from_profile_dir) {
+void ShaderOverrideRegistry::scan_single_directory(
+    const std::filesystem::path& dir,
+    bool from_profile_dir,
+    std::unordered_map<std::string, OverrideEntry>& discovered_entries)
+{
     std::error_code ec{};
     std::filesystem::create_directories(dir, ec);
 
@@ -1414,44 +1465,12 @@ void ShaderOverrideRegistry::scan_single_directory(const std::filesystem::path& 
         }
 
         auto& entry = parsed.value();
-        auto existing = m_overrides.find(entry.key);
+        auto existing = discovered_entries.find(entry.key);
 
-        if (existing == m_overrides.end()) {
-            compile_or_refresh_entry(entry);
-            m_overrides[entry.key] = std::move(entry);
-            continue;
+        // Profile entries intentionally replace global entries with the same key.
+        if (existing == discovered_entries.end() || from_profile_dir || !existing->second.from_profile_dir) {
+            discovered_entries[entry.key] = std::move(entry);
         }
-
-        auto& current = existing->second;
-        const bool profile_override_replaces_global = from_profile_dir && !current.from_profile_dir;
-        const bool same_origin = current.manifest_path == entry.manifest_path;
-
-        if (!profile_override_replaces_global && !same_origin && current.from_profile_dir && !from_profile_dir) {
-            continue;
-        }
-
-        const bool changed =
-            current.manifest_path != entry.manifest_path ||
-            current.source_path != entry.source_path ||
-            current.enabled != entry.enabled ||
-            current.entry_point != entry.entry_point ||
-            current.profile != entry.profile ||
-            current.name != entry.name ||
-            current.manifest_write_time != entry.manifest_write_time ||
-            current.source_write_time != entry.source_write_time ||
-            current.from_profile_dir != entry.from_profile_dir;
-
-        entry.generation = current.generation;
-        entry.compiled_bytecode = current.compiled_bytecode;
-        entry.compiled = current.compiled;
-        entry.status = current.status;
-        entry.last_error = current.last_error;
-
-        if (changed) {
-            compile_or_refresh_entry(entry);
-        }
-
-        current = std::move(entry);
     }
 }
 
