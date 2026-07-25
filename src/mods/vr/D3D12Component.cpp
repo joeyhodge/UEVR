@@ -2153,6 +2153,7 @@ void D3D12Component::sync_depth_target_stability_guard_state(VR* vr) {
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const bool collect_frame_timing = vr != nullptr && vr->is_hitch_diagnostics_enabled();
+    d3d12::set_fence_profiler_enabled(collect_frame_timing);
 
     if (collect_frame_timing != m_frame_timing_collection_active) {
         reset_frame_timing_stats();
