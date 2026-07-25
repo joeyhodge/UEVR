@@ -8,6 +8,9 @@
 namespace d3d12 {
 struct TextureContext;
 
+void set_fence_profiler_enabled(bool enabled);
+bool is_fence_profiler_enabled();
+
 struct CommandContext {
     CommandContext() = default;
     virtual ~CommandContext() { this->reset(); }
