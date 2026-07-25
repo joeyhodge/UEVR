@@ -2574,6 +2574,17 @@ bool is_ue_4_27_runtime() {
     return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 27;
 }
 
+bool is_ue_4_26_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("4.26");
+    }
+
+    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 26;
+}
+
 bool is_ue_4_16_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -4333,6 +4344,26 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         }
 
         SPDLOG_WARN("[PostInitProperties] ProSpi UE4.27 slot 8 did not validate; skipping Ghosting Fix bootstrap for safety");
+        return std::nullopt;
+    }
+
+    // UE4.26.1 source, the Psychonauts 2 PDB, and archived UE4.26 UEVR logs
+    // place UObject::PostInitProperties at slot 8. ULocalPlayer overrides that
+    // slot to size and allocate ViewStates from GetDesiredNumberOfViews.
+    if (is_ue_4_26_runtime()) {
+        constexpr uint32_t UE426_POST_INIT_PROPERTIES_SLOT = 8;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                UE426_POST_INIT_PROPERTIES_SLOT,
+                "UE4.26 ULocalPlayer::PostInitProperties",
+                false))
+        {
+            return UE426_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN("[UE4.26][PostInitProperties] Slot 8 did not validate; skipping LocalPlayer bootstrap for safety");
         return std::nullopt;
     }
 
@@ -15492,8 +15523,13 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         !vr->is_splitscreen_compatibility_enabled() &&
         !vr->is_sceneview_compatibility_enabled() &&
         ghosting_bootstrap_ready;
+    // UE4.26 games commonly create ULocalPlayer before UEVR installs the fake
+    // stereo device. A valid GetDesiredNumberOfViews hook therefore cannot
+    // retroactively allocate the missing right-eye ViewState.
+    const bool ue426_needs_localplayer_bootstrap = is_ue_4_26_runtime();
     const bool wants_localplayer_bootstrap =
         wants_ghosting_bootstrap ||
+        ue426_needs_localplayer_bootstrap ||
         vr->is_native_stereo_fix_enabled() ||
         vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
@@ -16354,11 +16390,43 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
+    const auto ue426_post_init = is_ue_4_26_runtime();
+
+    if (ue426_post_init) {
+        // Verified in UE4.26.1 source and multiple shipping builds:
+        // ULocalPlayer::ViewStates is TArray<TSharedPtr<...>> at 0xA8.
+        constexpr uintptr_t UE426_VIEW_STATES_NUM_OFFSET = 0xB0;
+        const auto view_state_num_address = localplayer + UE426_VIEW_STATES_NUM_OFFSET;
+
+        if (IsBadReadPtr(reinterpret_cast<void*>(view_state_num_address), sizeof(int32_t))) {
+            SPDLOG_WARN("[UE4.26][PostInitProperties] ViewStates.Num is unreadable; refusing LocalPlayer bootstrap");
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        const auto view_state_count = *reinterpret_cast<const int32_t*>(view_state_num_address);
+
+        if (view_state_count >= 2 && view_state_count <= 8) {
+            SPDLOG_INFO("[UE4.26][PostInitProperties] LocalPlayer already has {} ViewStates; bootstrap is not needed", view_state_count);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        if (view_state_count != 1) {
+            SPDLOG_WARN("[UE4.26][PostInitProperties] Unexpected ViewStates.Num={}; refusing LocalPlayer bootstrap", view_state_count);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        SPDLOG_INFO("[UE4.26][PostInitProperties] Existing LocalPlayer has one ViewState; allocating the right-eye state");
+    }
+
     const auto ue51_post_init = is_ue_5_1_dx_backend();
     const auto ue52_post_init = is_ue_5_2_dx_backend();
     const auto ue53_post_init = is_ue_5_3_dx_backend();
     const auto prospi_ue427_post_init = is_ue_4_27_runtime() && prospi_is_current_game();
     const auto needs_source_informed_post_init =
+        ue426_post_init ||
         prospi_ue427_post_init ||
         is_ue_5_7_or_newer() ||
         is_ue_5_6_dx12_backend() ||
@@ -16372,7 +16440,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if ((prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+    if ((ue426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
@@ -16563,6 +16631,20 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         m_sceneview_data.inside_post_init_properties = false;
 
         SPDLOG_INFO("PostInitProperties called!");
+
+        if (ue426_post_init) {
+            constexpr uintptr_t UE426_VIEW_STATES_NUM_OFFSET = 0xB0;
+            const auto view_state_num_address = localplayer + UE426_VIEW_STATES_NUM_OFFSET;
+
+            if (!IsBadReadPtr(reinterpret_cast<void*>(view_state_num_address), sizeof(int32_t))) {
+                const auto view_state_count = *reinterpret_cast<const int32_t*>(view_state_num_address);
+                if (view_state_count >= 2 && view_state_count <= 8) {
+                    SPDLOG_INFO("[UE4.26][PostInitProperties] Bootstrap completed with {} ViewStates", view_state_count);
+                } else {
+                    SPDLOG_ERROR("[UE4.26][PostInitProperties] Bootstrap returned with invalid ViewStates.Num={}", view_state_count);
+                }
+            }
+        }
 
         // remove the handler
         RemoveVectoredExceptionHandler(exception_handler);
