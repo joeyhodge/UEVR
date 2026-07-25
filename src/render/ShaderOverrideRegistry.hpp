@@ -287,7 +287,10 @@ private:
     };
 
     void scan_override_directories();
-    void scan_single_directory(const std::filesystem::path& dir, bool from_profile_dir);
+    void scan_single_directory(
+        const std::filesystem::path& dir,
+        bool from_profile_dir,
+        std::unordered_map<std::string, OverrideEntry>& discovered_entries);
     void remove_deleted_entries(const std::unordered_map<std::string, std::filesystem::path>& discovered_entries);
     void compile_or_refresh_entry(OverrideEntry& entry);
     std::optional<OverrideEntry> parse_manifest(const std::filesystem::path& manifest_path, bool from_profile_dir);
@@ -322,9 +325,9 @@ private:
     uint64_t m_total_d3d12_pso_samples{};
     std::unordered_map<std::string, D3D12PsoAggregateRecord> m_d3d12_pso_aggregates{};
     std::vector<std::string> m_recent_events{};
-    std::chrono::steady_clock::time_point m_last_scan_time{};
-    bool m_force_reload{};
-    uint64_t m_frame{};
+    std::atomic<int64_t> m_last_scan_time_ns{};
+    std::atomic_bool m_force_reload{};
+    std::atomic<uint64_t> m_frame{};
     uint64_t m_override_revision{};
     CreateVertexShaderFn m_create_vertex_shader{};
     CreatePixelShaderFn m_create_pixel_shader{};
