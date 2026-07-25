@@ -202,6 +202,7 @@ private:
         }
     };
 
+    void reset_frame_timing_stats();
     void log_frame_timing_stats_if_needed(VR* vr);
     void log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width = 0, uint32_t new_depth_height = 0);
 
@@ -209,6 +210,7 @@ private:
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
     std::chrono::steady_clock::time_point m_last_on_frame{};
     std::chrono::steady_clock::time_point m_last_frame_timing_log{};
+    bool m_frame_timing_collection_active{};
     FrameTimingStats m_perf_on_frame{};
     FrameTimingStats m_perf_ui_copy{};
     FrameTimingStats m_perf_swapchain_copy{};

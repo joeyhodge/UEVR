@@ -9566,6 +9566,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
         if (IsBadReadPtr(candidate, sizeof(void*))) {
+            if (ue58_viewport_adoption &&
+                m_validated_ue58_scene_viewport_texture.load(std::memory_order_acquire) == candidate)
+            {
+                m_validated_ue58_scene_viewport_texture.store(nullptr, std::memory_order_release);
+                m_validated_ue58_scene_viewport_texture_vtable.store(nullptr, std::memory_order_release);
+            }
+
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
                 "{} Rejected unreadable FSceneViewport texture {:x} from {}",
@@ -9576,11 +9583,23 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
 
         const auto candidate_vtable = *(void**)candidate;
+        const bool cached_ue58_wrapper =
+            ue58_viewport_adoption &&
+            m_validated_ue58_scene_viewport_texture.load(std::memory_order_acquire) == candidate &&
+            m_validated_ue58_scene_viewport_texture_vtable.load(std::memory_order_acquire) == candidate_vtable;
 
-        if (candidate_vtable == nullptr ||
-            IsBadReadPtr(candidate_vtable, sizeof(void*)) ||
-            !utility::get_module_within(candidate_vtable).has_value())
+        if (!cached_ue58_wrapper &&
+            (candidate_vtable == nullptr ||
+             IsBadReadPtr(candidate_vtable, sizeof(void*)) ||
+             !utility::get_module_within(candidate_vtable).has_value()))
         {
+            if (ue58_viewport_adoption &&
+                m_validated_ue58_scene_viewport_texture.load(std::memory_order_acquire) == candidate)
+            {
+                m_validated_ue58_scene_viewport_texture.store(nullptr, std::memory_order_release);
+                m_validated_ue58_scene_viewport_texture_vtable.store(nullptr, std::memory_order_release);
+            }
+
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
                 "{} Rejected FSceneViewport texture {:x} with invalid vtable {:x} from {}",
@@ -9591,7 +9610,14 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             return;
         }
 
-        FRHITexture2D::set_vtable(candidate_vtable);
+        if (!cached_ue58_wrapper && ue58_viewport_adoption) {
+            m_validated_ue58_scene_viewport_texture_vtable.store(candidate_vtable, std::memory_order_release);
+            m_validated_ue58_scene_viewport_texture.store(candidate, std::memory_order_release);
+        }
+
+        if (FRHITexture2D::get_vtable() != candidate_vtable) {
+            FRHITexture2D::set_vtable(candidate_vtable);
+        }
     }
 
     ID3D12Resource* native_resource = nullptr;
@@ -19462,40 +19488,41 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
 
     const auto now = std::chrono::steady_clock::now();
     if (enabled) {
-        const auto apply_signature = fmt::format(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}|{:.3f}",
-            m_daysgone_bend_ui_manual_apply_generation.load(),
-            m_daysgone_bend_ui_mode->value(),
-            m_daysgone_bend_ui_force_player_camera->value(),
-            m_daysgone_bend_ui_override_widget_transform->value(),
-            m_daysgone_bend_ui_override_root_transform->value(),
-            m_daysgone_bend_ui_force_widget_refresh->value(),
-            m_daysgone_bend_ui_viewport_slot_fix->value(),
-            m_daysgone_bend_ui_apply_child_render_transform->value(),
-            m_daysgone_bend_ui_use_slate_overlay->value(),
-            m_daysgone_bend_ui_suppress_in_scene_composite->value(),
-            m_daysgone_bend_ui_viewport_slot_offset_x->value(),
-            m_daysgone_bend_ui_viewport_slot_offset_y->value(),
-            m_daysgone_bend_ui_viewport_slot_scale->value(),
-            m_daysgone_bend_ui_viewport_slot_opacity->value(),
-            m_daysgone_bend_ui_distance_from_camera->value(),
-            m_daysgone_bend_ui_camera_fov->value(),
-            m_daysgone_bend_ui_widget_loc_x->value(),
-            m_daysgone_bend_ui_widget_loc_y->value(),
-            m_daysgone_bend_ui_widget_loc_z->value(),
-            m_daysgone_bend_ui_widget_rot_pitch->value(),
-            m_daysgone_bend_ui_widget_rot_yaw->value(),
-            m_daysgone_bend_ui_widget_rot_roll->value(),
-            m_daysgone_bend_ui_widget_scale->value(),
-            m_daysgone_bend_ui_screen_offset_x->value(),
-            m_daysgone_bend_ui_screen_offset_y->value(),
-            m_daysgone_bend_ui_screen_scale->value(),
-            m_daysgone_bend_ui_draw_scale->value(),
-            m_daysgone_bend_ui_root_loc_x->value(),
-            m_daysgone_bend_ui_root_loc_y->value(),
-            m_daysgone_bend_ui_root_loc_z->value(),
-            m_daysgone_bend_ui_key_opacity->value());
-        const bool settings_changed = apply_signature != m_daysgone_bend_ui_last_apply_signature;
+        DaysGoneBendUIApplySettings settings{};
+        settings.manual_generation = m_daysgone_bend_ui_manual_apply_generation.load();
+        settings.mode = (int32_t)m_daysgone_bend_ui_mode->value();
+        settings.force_player_camera = m_daysgone_bend_ui_force_player_camera->value();
+        settings.override_widget_transform = m_daysgone_bend_ui_override_widget_transform->value();
+        settings.override_root_transform = m_daysgone_bend_ui_override_root_transform->value();
+        settings.force_widget_refresh = m_daysgone_bend_ui_force_widget_refresh->value();
+        settings.viewport_slot_fix = m_daysgone_bend_ui_viewport_slot_fix->value();
+        settings.apply_child_render_transform = m_daysgone_bend_ui_apply_child_render_transform->value();
+        settings.use_slate_overlay = m_daysgone_bend_ui_use_slate_overlay->value();
+        settings.suppress_in_scene_composite = m_daysgone_bend_ui_suppress_in_scene_composite->value();
+        settings.viewport_slot_offset_x = m_daysgone_bend_ui_viewport_slot_offset_x->value();
+        settings.viewport_slot_offset_y = m_daysgone_bend_ui_viewport_slot_offset_y->value();
+        settings.viewport_slot_scale = m_daysgone_bend_ui_viewport_slot_scale->value();
+        settings.viewport_slot_opacity = m_daysgone_bend_ui_viewport_slot_opacity->value();
+        settings.distance_from_camera = m_daysgone_bend_ui_distance_from_camera->value();
+        settings.camera_fov = m_daysgone_bend_ui_camera_fov->value();
+        settings.widget_loc_x = m_daysgone_bend_ui_widget_loc_x->value();
+        settings.widget_loc_y = m_daysgone_bend_ui_widget_loc_y->value();
+        settings.widget_loc_z = m_daysgone_bend_ui_widget_loc_z->value();
+        settings.widget_rot_pitch = m_daysgone_bend_ui_widget_rot_pitch->value();
+        settings.widget_rot_yaw = m_daysgone_bend_ui_widget_rot_yaw->value();
+        settings.widget_rot_roll = m_daysgone_bend_ui_widget_rot_roll->value();
+        settings.widget_scale = m_daysgone_bend_ui_widget_scale->value();
+        settings.screen_offset_x = m_daysgone_bend_ui_screen_offset_x->value();
+        settings.screen_offset_y = m_daysgone_bend_ui_screen_offset_y->value();
+        settings.screen_scale = m_daysgone_bend_ui_screen_scale->value();
+        settings.draw_scale = m_daysgone_bend_ui_draw_scale->value();
+        settings.root_loc_x = m_daysgone_bend_ui_root_loc_x->value();
+        settings.root_loc_y = m_daysgone_bend_ui_root_loc_y->value();
+        settings.root_loc_z = m_daysgone_bend_ui_root_loc_z->value();
+        settings.key_opacity = m_daysgone_bend_ui_key_opacity->value();
+
+        const bool settings_changed = !m_daysgone_bend_ui_last_apply_settings ||
+            *m_daysgone_bend_ui_last_apply_settings != settings;
         const bool watchdog_due =
             m_daysgone_bend_ui_live_watchdog->value() &&
             m_daysgone_bend_ui_last_apply.time_since_epoch().count() != 0 &&
@@ -19517,10 +19544,10 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
         }
 
         m_daysgone_bend_ui_last_apply = now;
-        m_daysgone_bend_ui_last_apply_signature = apply_signature;
+        m_daysgone_bend_ui_last_apply_settings = settings;
     } else {
         m_daysgone_bend_ui_last_apply = {};
-        m_daysgone_bend_ui_last_apply_signature.clear();
+        m_daysgone_bend_ui_last_apply_settings.reset();
         if (m_daysgone_bend_ui_fix_queued.exchange(true)) {
             return;
         }

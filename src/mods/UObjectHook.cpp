@@ -1100,25 +1100,26 @@ void* UObjectHook::process_event_hook(sdk::UObject* obj, sdk::UFunction* func, v
     return result;
 }
 
-void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_jobs) {
-    {
+bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_jobs, bool candidate_already_validated) {
+    if (!candidate_already_validated) {
         std::shared_lock _{m_mutex};
         if (exists_unsafe(object)) {
-            return;
+            return false;
         }
     }
 
     const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
 
-    if (use_dynamic_uobjecthook_candidate_guard() && !is_safe_uobject_candidate(*this, object, require_array_member)) {
+    if (!candidate_already_validated && use_dynamic_uobjecthook_candidate_guard() &&
+        !is_safe_uobject_candidate(*this, object, require_array_member)) {
         SPDLOG_WARNING_EVERY_N_SEC(2, "[UObjectHook] Skipping unsafe UObject candidate {:x}", (uintptr_t)object);
-        return;
+        return false;
     }
 
     std::unique_lock _{m_mutex};
 
     if (exists_unsafe(object)) {
-        return;
+        return false;
     }
 
     std::unique_ptr<MetaObject> meta_object{};
@@ -1136,7 +1137,7 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
     const auto c = object->get_class();
 
     if (c == nullptr) {
-        return;
+        return false;
     }
 
     if (!m_reusable_meta_objects.empty()) {
@@ -1193,6 +1194,8 @@ void UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
 #ifdef VERBOSE_UOBJECTHOOK
     SPDLOG_INFO("Adding object {:x} {:s}", (uintptr_t)object, utility::narrow(m_meta_objects[object]->full_name));
 #endif
+
+    return true;
 }
 
 bool UObjectHook::try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::UObjectBase* child, std::string_view context) {
@@ -1693,6 +1696,16 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
     uint32_t rejected = 0;
     uint32_t tombstone_skips = 0;
 
+    struct ScanCandidate {
+        sdk::UObjectBase* object{};
+        int32_t index{};
+        int32_t serial{};
+    };
+
+    static thread_local std::vector<ScanCandidate> candidates{};
+    candidates.clear();
+    candidates.reserve((size_t)std::max(0, end - start));
+
     ++m_uobject_array_scan_stats.ticks;
     m_uobject_array_scan_stats.scanned += (uint64_t)std::max(0, end - start);
 
@@ -1705,43 +1718,50 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
 
         auto object = item->get_object();
 
-        if (object == nullptr || exists(object)) {
+        if (object == nullptr) {
             continue;
         }
 
-        bool skip_tombstoned_object = false;
+        candidates.push_back(ScanCandidate{object, i, item->get_serial_number()});
+    }
 
-        {
-            std::unique_lock _{m_mutex};
+    // Filter tracked objects and tombstones under one lock instead of locking once per array entry.
+    if (!candidates.empty()) {
+        std::unique_lock _{m_mutex};
+        size_t write_index = 0;
 
-            if (const auto tombstone_it = m_destroyed_object_tombstones.find(object); tombstone_it != m_destroyed_object_tombstones.end()) {
-                const auto serial = item->get_serial_number();
+        for (const auto& candidate : candidates) {
+            if (exists_unsafe(candidate.object)) {
+                continue;
+            }
 
-                if (tombstone_it->second.index == i &&
-                    tombstone_it->second.serial == serial &&
+            if (const auto tombstone_it = m_destroyed_object_tombstones.find(candidate.object);
+                tombstone_it != m_destroyed_object_tombstones.end()) {
+                if (tombstone_it->second.index == candidate.index &&
+                    tombstone_it->second.serial == candidate.serial &&
                     now - tombstone_it->second.time <= std::chrono::seconds(30))
                 {
-                    skip_tombstoned_object = true;
+                    ++tombstone_skips;
+                    continue;
                 } else {
                     m_destroyed_object_tombstones.erase(tombstone_it);
                 }
             }
+
+            candidates[write_index++] = candidate;
         }
 
-        if (skip_tombstoned_object) {
-            ++tombstone_skips;
-            continue;
-        }
+        candidates.resize(write_index);
+    }
 
+    for (const auto& candidate : candidates) {
         // Objects found directly through FUObjectArray must still pass layout and index validation.
-        if (!is_safe_uobject_candidate(*this, object, true)) {
+        if (!is_safe_uobject_candidate(*this, candidate.object, true)) {
             ++rejected;
             continue;
         }
 
-        add_new_object(object);
-
-        if (exists(object)) {
+        if (add_new_object(candidate.object, true, true)) {
             ++added;
         }
     }

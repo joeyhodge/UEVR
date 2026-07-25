@@ -501,6 +501,7 @@ bool D3D12Hook::hook() {
         m_create_render_target_view_hook_lookup.clear();
         m_create_depth_stencil_view_hook_lookup.clear();
         m_set_pipeline_state_hook_lookup.clear();
+        m_set_pipeline_state_hook_generation.fetch_add(1, std::memory_order_release);
         m_swapchain_hook.reset();
 
         m_is_phase_1 = true;
@@ -729,6 +730,7 @@ bool D3D12Hook::unhook() {
     m_create_depth_stencil_view_hook_lookup.clear();
     m_set_pipeline_state_hook_lookup.clear();
     m_resource_barrier_hook_lookup.clear();
+    m_set_pipeline_state_hook_generation.fetch_add(1, std::memory_order_release);
     m_swapchain_hook.reset();
 
     m_hooked = false;
@@ -1123,8 +1125,27 @@ void WINAPI D3D12Hook::create_depth_stencil_view(
 void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state) {
     auto d3d12 = g_d3d12_hook;
     const auto slot = &(*(void***)command_list)[SET_PIPELINE_STATE_VTABLE_INDEX];
-    auto* hook = d3d12->find_set_pipeline_state_hook(slot);
-    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::set_pipeline_state)*>() : nullptr;
+    using SetPipelineStateFn = decltype(D3D12Hook::set_pipeline_state)*;
+
+    struct OriginalCache {
+        D3D12Hook* owner{};
+        void* slot{};
+        uint64_t generation{};
+        SetPipelineStateFn original{};
+    };
+
+    static thread_local OriginalCache cache{};
+    const auto generation = d3d12->m_set_pipeline_state_hook_generation.load(std::memory_order_acquire);
+
+    if (cache.owner != d3d12 || cache.slot != slot || cache.generation != generation || cache.original == nullptr) {
+        auto* hook = d3d12->find_set_pipeline_state_hook(slot);
+        cache.owner = d3d12;
+        cache.slot = slot;
+        cache.generation = generation;
+        cache.original = hook != nullptr ? hook->get_original<SetPipelineStateFn>() : nullptr;
+    }
+
+    const auto original = cache.original;
 
     if (original == nullptr) {
         return;
