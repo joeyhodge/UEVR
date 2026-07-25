@@ -188,7 +188,7 @@ private:
     }
 
     void hook();
-    void add_new_object(sdk::UObjectBase* object, bool run_creation_jobs = true);
+    bool add_new_object(sdk::UObjectBase* object, bool run_creation_jobs = true, bool candidate_already_validated = false);
     bool try_track_reachable_ui_object(sdk::UObjectBase* parent, sdk::UObjectBase* child, std::string_view context);
     void ui_handle_reachable_object(sdk::UObject* parent, sdk::UObject* child, std::string_view context);
 
