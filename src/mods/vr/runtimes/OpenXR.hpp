@@ -395,6 +395,7 @@ public:
         }
     };
 
+    void reset_frame_timing_stats();
     void log_frame_timing_stats_if_needed();
     
     const ModSlider::Ptr resolution_scale{ ModSlider::create("OpenXR_ResolutionScale", 0.1f, 3.0f, 1.0f) };
@@ -457,6 +458,7 @@ public:
     std::chrono::steady_clock::time_point last_slow_pose_update_log{};
     std::chrono::steady_clock::time_point last_stale_pose_skip_log{};
     std::chrono::steady_clock::time_point last_stale_pose_submit_log{};
+    bool frame_timing_collection_active{};
     FrameTimingStats wait_frame_timing{};
     FrameTimingStats begin_frame_timing{};
     FrameTimingStats end_frame_timing{};
