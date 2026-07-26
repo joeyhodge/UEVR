@@ -7,6 +7,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <d3d12.h>
@@ -808,6 +810,7 @@ public:
     static void pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family);
 
     const char* get_ghosting_fix_status_text();
+    const char* get_splitscreen_compatibility_status_text();
 
 private:
     std::atomic_bool m_dune_character_creation_active{false};
@@ -966,6 +969,22 @@ private:
         bool logged_naturally_separated{};
     };
 
+    enum class SplitScreenCompatibilityState : uint8_t {
+        Off,
+        WaitingForViews,
+        PairReady,
+        FailedClosed,
+    };
+
+    struct SplitScreenViewMetadata {
+        sdk::FSceneViewFamily* family{};
+        sdk::FSceneViewStateInterface* state{};
+        int32_t player_index{};
+        uint32_t original_stereo_pass{};
+        uint8_t effective_eye{};
+        uint32_t frame{};
+    };
+
     struct {
         std::recursive_mutex mtx{};
         safetyhook::InlineHook constructor_hook{};
@@ -992,6 +1011,11 @@ private:
         uint8_t ghosting_bootstrap_attempts{};
         bool ghosting_bootstrap_ready{};
         bool ghosting_logged_bootstrap_deferred{};
+
+        std::unordered_map<sdk::FSceneView*, SplitScreenViewMetadata> splitscreen_views{};
+        uint32_t splitscreen_metadata_frame{};
+        uint32_t splitscreen_last_success_frame{};
+        SplitScreenCompatibilityState splitscreen_state{SplitScreenCompatibilityState::Off};
 
         // For keeping track of what the states were before our modifications.
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE4> view_init_options_ue4{};
