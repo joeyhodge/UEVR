@@ -738,6 +738,27 @@ bool halo_campaign_evolved_is_current_game() {
     return result;
 }
 
+bool medium_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\medium-win64-shipping.exe") ||
+               lowered.ends_with(L"/medium-win64-shipping.exe") ||
+               lowered == L"medium-win64-shipping.exe";
+    }();
+
+    return result;
+}
+
 bool bimbo_paradise_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -13798,6 +13819,19 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         return false;
     }
 
+    const bool medium_requires_game_allocator = medium_is_current_game();
+    const bool use_game_allocator =
+        m_use_fmalloc_scene_view_extensions->value() || medium_requires_game_allocator;
+
+    if (medium_requires_game_allocator && sdk::FMalloc::get() == nullptr) {
+        SPDLOG_ERROR("[Medium][UE4.25Plus] FMalloc is unavailable; refusing unsafe SceneViewExtensions allocation");
+        return false;
+    }
+
+    if (medium_requires_game_allocator) {
+        SPDLOG_INFO_ONCE("[Medium][UE4.25Plus] Using game FMalloc for SceneViewExtensions ownership");
+    }
+
     const auto active_stereo_device = locate_active_stereo_rendering_device();
 
     if (!active_stereo_device || !s_stereo_rendering_device_offset) {
@@ -14602,7 +14636,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
     // so the view extensions are a TArray and not a TWeakPtr<TArray>
     if (!m_rendertarget_manager_embedded_in_stereo_device) {
         if (view_extensions_tweakptr.reference == nullptr) {
-            view_extensions_tweakptr.allocate_naive(m_use_fmalloc_scene_view_extensions->value());
+            view_extensions_tweakptr.allocate_naive(use_game_allocator);
         }
     }
 
@@ -14692,7 +14726,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         // Allocate a bunch more than necessary to prevent crashes when the engine tries to add new entries
         const auto new_capacity = 32;
 
-        if (!m_use_fmalloc_scene_view_extensions->value()) {
+        if (!use_game_allocator) {
             exts.data = new TWeakPtr<ISceneViewExtension>[new_capacity]{};
         } else {
             if (auto fmalloc = sdk::FMalloc::get(); fmalloc != nullptr) {
@@ -14710,7 +14744,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
         exts.capacity = new_capacity;
 
         ZeroMemory(exts.data, sizeof(TWeakPtr<ISceneViewExtension>) * new_capacity);
-        exts.data[exts.count++].allocate_naive(m_use_fmalloc_scene_view_extensions->value());
+        exts.data[exts.count++].allocate_naive(use_game_allocator);
     } else if (view_extensions.extensions.data != nullptr && view_extensions.extensions.count <= view_extensions.extensions.capacity) {
         auto& exts = view_extensions.extensions;
 
@@ -14723,7 +14757,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
 
             TWeakPtr<ISceneViewExtension>* new_exts = nullptr;
 
-            if (!m_use_fmalloc_scene_view_extensions->value()) {
+            if (!use_game_allocator) {
                 new_exts = new TWeakPtr<ISceneViewExtension>[new_capacity];
             } else {
                 if (auto fmalloc = sdk::FMalloc::get(); fmalloc != nullptr) {
@@ -14749,7 +14783,7 @@ bool FFakeStereoRenderingHook::setup_view_extensions() try {
             SPDLOG_INFO("Allocating new view extension entry onto existing array...");
         }
 
-        exts.data[exts.count++].allocate_naive(m_use_fmalloc_scene_view_extensions->value());
+        exts.data[exts.count++].allocate_naive(use_game_allocator);
     } else {
         SPDLOG_INFO("None of the previous conditions were met, so we're not allocating a new view extensions array");
     }
@@ -15314,11 +15348,18 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
     }
 
     static bool index_starts_from_one = true;
+    const bool medium_one_based_eye_pass = medium_is_current_game();
 
-    if (index == 2) {
-        index_starts_from_one = true;
-    } else if (index == 0) {
-        index_starts_from_one = false;
+    if (!medium_one_based_eye_pass) {
+        if (index == 2) {
+            index_starts_from_one = true;
+        } else if (index == 0) {
+            index_starts_from_one = false;
+        }
+    } else if (index < 1 || index > 2) {
+        // Medium issues eSSP_FULL during gameplay before its two eye passes.
+        // It must not alter eye ownership or be cropped as an eye.
+        return;
     }
 
     // The purpose of this is to prevent the game from crashing in IDirect3D12CommandList::Close
@@ -15352,7 +15393,13 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
 
     *w = *w / 2;
 
-    const auto true_index = index_starts_from_one ? ((index + 1) % 2) : (index % 2);
+    const auto true_index = medium_one_based_eye_pass
+        ? index - 1
+        : (index_starts_from_one ? ((index + 1) % 2) : (index % 2));
+
+    if (medium_one_based_eye_pass) {
+        SPDLOG_INFO_ONCE("[Medium][UE4.25Plus] Forcing one-based stereo eye passes (1=left, 2=right)");
+    }
 
     if (!VR::get()->is_native_stereo_fix_enabled()) {
         *x += *w * true_index;
@@ -15379,10 +15426,16 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     static bool index_starts_from_one = true;
     static bool index_was_ever_two = false;
     static bool index_was_ever_negative = false;
+    const bool medium_one_based_eye_pass = medium_is_current_game();
 
     if (view_index == -1) {
         index_was_ever_negative = true;
         SPDLOG_INFO_ONCE("calculate stereo view offset called with view index -1 (INDEX_NONE), ignoring.");
+        return;
+    }
+
+    if (medium_one_based_eye_pass && (view_index < 1 || view_index > 2)) {
+        vr->set_world_to_meters(world_to_meters);
         return;
     }
 
@@ -15407,11 +15460,13 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
     vr->set_world_to_meters(world_to_meters);
 
-    if (view_index == 2) {
-        index_starts_from_one = true;
-        index_was_ever_two = true;
-    } else if (view_index == 0 && !index_was_ever_two) {
-        index_starts_from_one = false;
+    if (!medium_one_based_eye_pass) {
+        if (view_index == 2) {
+            index_starts_from_one = true;
+            index_was_ever_two = true;
+        } else if (view_index == 0 && !index_was_ever_two) {
+            index_starts_from_one = false;
+        }
     }
 
     // UE5 uses zero-based 0/1 eye indices; a genuine mono pass arrives as INDEX_NONE above.
@@ -15423,7 +15478,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         !g_hook->m_has_double_precision &&
         !synced_ue56_zero_view_is_eye;
 
-    auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
+    auto true_index = medium_one_based_eye_pass
+        ? view_index - 1
+        : (index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2));
     const auto has_double_precision = g_hook->m_has_double_precision;
     const auto rot_d = (Rotator<double>*)view_rotation;
 
@@ -15857,6 +15914,8 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     static bool index_starts_from_one = true;
     static bool index_was_ever_two = false;
 
+    const bool medium_one_based_projection_pass = medium_is_current_game();
+
     // This is eSSP_FULL, we don't care. It will cause the view to become monoscopic if we do anything.
     // or maybe we should, this could be used for WorldToScreen.
     /*if (index_was_ever_two && view_index == 0) {
@@ -15864,11 +15923,13 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         return out;
     }*/
 
-    if (view_index == 2) {
-        index_starts_from_one = true;
-        index_was_ever_two = true;
-    } else if (view_index == 0) {
-        index_starts_from_one = false;
+    if (!medium_one_based_projection_pass) {
+        if (view_index == 2) {
+            index_starts_from_one = true;
+            index_was_ever_two = true;
+        } else if (view_index == 0) {
+            index_starts_from_one = false;
+        }
     }
 
     // Can happen if we hooked this differently.
@@ -15880,6 +15941,10 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         } else {
             (*out)[3][2] = sdk::globals::get_near_clipping_plane();
         }
+    }
+
+    if (medium_one_based_projection_pass && (view_index < 1 || view_index > 2)) {
+        return out;
     }
 
     if (VR::get()->is_using_2d_screen()) {
@@ -15914,7 +15979,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     // SPDLOG_INFO("NearZ: {}", old_znear);
 
     if (out != nullptr) {
-        auto true_index = index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2);
+        auto true_index = medium_one_based_projection_pass
+            ? view_index - 1
+            : (index_starts_from_one ? ((view_index + 1) % 2) : (view_index % 2));
     
         if (vr->is_using_afr()) {
             true_index = g_frame_count % 2;
