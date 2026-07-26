@@ -15613,7 +15613,14 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         ImGui::SetNextItemOpen(true, ImGuiCond_::ImGuiCond_Once);
         if (ImGui::TreeNode("Splitscreen Compatibility")) {
             m_splitscreen_compatibility_mode->draw("Enabled");
-            m_splitscreen_view_index->draw("Index");
+            m_splitscreen_view_index->draw("Player / Camera Pair");
+            if (m_fake_stereo_hook != nullptr) {
+                ImGui::TextWrapped(
+                    "Status: %s",
+                    m_fake_stereo_hook->get_splitscreen_compatibility_status_text());
+            }
+            ImGui::TextWrapped(
+                "Opt-in only; validated for UE4.25+ and UE5. Selects one local player's verified left/right eye pair and leaves the original view list unchanged if ownership cannot be proven.");
             ImGui::TreePop();
         }
     }

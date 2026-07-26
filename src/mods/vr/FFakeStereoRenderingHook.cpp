@@ -4765,7 +4765,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
             best_score = score;
             best_candidate = callee->begin;
             SPDLOG_INFO(
-                "[NativeStereoFix] BeginRenderingViewFamilies candidate target={:x} size={:x} "
+                "[ViewFamilySelector] BeginRenderingViewFamilies candidate target={:x} size={:x} "
                 "wrapper={:x} wrapper_size={:x} return={:x} stack_index={} score={}",
                 callee->begin,
                 callee->size(),
@@ -4774,6 +4774,35 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
                 stack[i + 1],
                 i,
                 score);
+        }
+    }
+
+    if (!best_candidate) {
+        // UE4 and UE5.0 call the singular BeginRenderingViewFamily directly,
+        // while optimized newer builds can inline away the small plural wrapper.
+        // The first substantial game-module frame above this view-extension
+        // callback is the renderer entry point itself.
+        constexpr size_t min_renderer_size = 0x200;
+        constexpr size_t max_renderer_size = 0x4000;
+
+        for (uint32_t i = 1; i < depth; ++i) {
+            const auto candidate = get_runtime_function_range(stack[i]);
+            if (!candidate || candidate->image_base != game_module ||
+                candidate->size() < min_renderer_size ||
+                candidate->size() > max_renderer_size)
+            {
+                continue;
+            }
+
+            best_candidate = candidate->begin;
+            SPDLOG_INFO(
+                "[ViewFamilySelector] Resolved direct BeginRenderingViewFamily entry from stack "
+                "target={:x} size={:x} return={:x} stack_index={}",
+                candidate->begin,
+                candidate->size(),
+                stack[i],
+                i);
+            break;
         }
     }
 
@@ -10816,10 +10845,6 @@ void SceneViewExtensionAnalyzer::save_cached_discovery() {
     });
 }
 
-// 4.25something to 4.27
-// TODO: Add support for all versions via PDB dumps
-constexpr auto INIT_OPTIONS_OFFSET = 0x50;
-
 bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
 }
@@ -10915,6 +10940,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto init_options_scene_state = init_options->get_scene_state();
     const auto init_options_original_stereo_pass = init_options->get_stereo_pass();
+    const auto init_options_player_index = init_options->get_player_index();
     const auto init_options_view_family = init_options->get_view_family();
     const auto init_options_scene = init_options_view_family != nullptr
         ? init_options_view_family->get_scene_interface()
@@ -11599,6 +11625,42 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
 
+    if (vr->is_splitscreen_compatibility_enabled()) {
+        auto& split_views = g_hook->m_sceneview_data.splitscreen_views;
+
+        if (g_hook->m_sceneview_data.splitscreen_metadata_frame != g_frame_count) {
+            split_views.clear();
+            g_hook->m_sceneview_data.splitscreen_metadata_frame = g_frame_count;
+            g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::WaitingForViews;
+        }
+
+        const auto player_index = init_options_player_index.value_or(-1);
+        const bool valid_stereo_pass =
+            init_options_original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
+            init_options_original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY;
+
+        if (result != nullptr &&
+            init_options_view_family != nullptr &&
+            player_index >= 0 && player_index <= 255 &&
+            valid_stereo_pass &&
+            true_index <= 1)
+        {
+            split_views[result] = SplitScreenViewMetadata{
+                .family = init_options_view_family,
+                .state = init_options_scene_state,
+                .player_index = player_index,
+                .original_stereo_pass = init_options_original_stereo_pass,
+                .effective_eye = static_cast<uint8_t>(true_index),
+                .frame = g_frame_count,
+            };
+        }
+    } else {
+        g_hook->m_sceneview_data.splitscreen_views.clear();
+        g_hook->m_sceneview_data.splitscreen_metadata_frame = 0;
+        g_hook->m_sceneview_data.splitscreen_last_success_frame = 0;
+        g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::Off;
+    }
+
     // Reset the view count back to what it was.
     if (views_original_count.has_value()) {
         auto view_family = init_options->get_view_family();
@@ -12268,6 +12330,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     // leave the renderer on its normal path rather than create a hybrid frame.
     const auto dibr_single_view_eligible = dibr_single_view_requested && vr->is_dibr_preview_active();
     const auto native_stereo_fix_enabled = vr->is_native_stereo_fix_enabled();
+    const bool split_screen_enabled = vr->is_splitscreen_compatibility_enabled();
 
     const auto reset_dibr_single_view_state = [&]() {
         g_hook->m_dibr_single_view_status.store(DIBR_SINGLE_VIEW_DISABLED, std::memory_order_release);
@@ -12289,10 +12352,17 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         reset_dibr_single_view_state();
     }
 
-    if (!vr->is_hmd_active() || (!native_stereo_fix_enabled && !dibr_single_view_eligible)) {
+    if (!vr->is_hmd_active() ||
+        (!native_stereo_fix_enabled && !dibr_single_view_eligible && !split_screen_enabled)) {
         avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
         if (!dibr_single_view_eligible) {
             rtm->destroy_scene_capture();
+        }
+
+        if (!split_screen_enabled) {
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            g_hook->m_sceneview_data.splitscreen_last_success_frame = 0;
+            g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::Off;
         }
 
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
@@ -12310,7 +12380,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto reject_candidate = [&](const char* reason) {
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
-            "[NativeStereoFix] Preserving the original render call because the view-family argument failed validation: {}",
+            "[ViewFamilySelector] Preserving the original render call because the view-family argument failed validation: {}",
             reason);
         call_original();
     };
@@ -12320,13 +12390,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
-    const auto strict_candidate_validation = dune_awakening_is_current_game();
+    const auto strict_candidate_validation = dune_awakening_is_current_game() || split_screen_enabled;
     const auto expected_vtable = reinterpret_cast<uintptr_t>(sdk::FSceneViewFamily::get_vtable_ptr());
     uintptr_t first_word{};
     std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
 
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
+    std::vector<sdk::FSceneViewFamily*> view_families{};
 
     if (uses_tarrayview) {
         if (!is_readable_process_range((uintptr_t)view_family_candidate, sizeof(TArrayViewViewFamily))) {
@@ -12337,42 +12408,289 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         TArrayViewViewFamily view_family_array{};
         std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
 
-        if (strict_candidate_validation) {
-            constexpr uint32_t max_sane_view_families = 16;
-            if (expected_vtable == 0 || view_family_array.data == nullptr || view_family_array.count == 0 ||
-                view_family_array.count > max_sane_view_families ||
-                !is_readable_process_range(
-                    (uintptr_t)view_family_array.data,
-                    sizeof(sdk::FSceneViewFamily*) * view_family_array.count))
-            {
+        constexpr uint32_t max_sane_view_families = 16;
+        if (view_family_array.data == nullptr || view_family_array.count == 0 ||
+            view_family_array.count > max_sane_view_families ||
+            !is_readable_process_range(
+                (uintptr_t)view_family_array.data,
+                sizeof(sdk::FSceneViewFamily*) * view_family_array.count))
+        {
+            if (strict_candidate_validation) {
                 reject_candidate("invalid TArrayView data/count");
+            } else {
+                call_original();
+            }
+            return;
+        }
+
+        view_families.resize(view_family_array.count);
+        std::memcpy(
+            view_families.data(),
+            view_family_array.data,
+            sizeof(sdk::FSceneViewFamily*) * view_family_array.count);
+        view_family = view_families.front();
+    } else {
+        view_families.push_back(view_family);
+    }
+
+    if (strict_candidate_validation) {
+        for (const auto family : view_families) {
+            if (family == nullptr || !is_readable_process_range((uintptr_t)family, sizeof(void*))) {
+                reject_candidate("unreadable view family");
                 return;
             }
-        } else if (view_family_array.data == nullptr ||
-            (dibr_single_view_eligible &&
-                (view_family_array.count != 1 ||
-                    IsBadReadPtr(view_family_array.data, sizeof(sdk::FSceneViewFamily*)))))
+            if (sdk::FSceneViewFamily::has_vtable()) {
+                uintptr_t actual_vtable{};
+                std::memcpy(&actual_vtable, family, sizeof(actual_vtable));
+
+                if (expected_vtable == 0 || actual_vtable != expected_vtable) {
+                    reject_candidate("unexpected FSceneViewFamily vtable");
+                    return;
+                }
+            }
+        }
+    } else if (view_family_array.data == nullptr ||
+        (dibr_single_view_eligible &&
+            (view_family_array.count != 1 ||
+                IsBadReadPtr(view_family_array.data, sizeof(sdk::FSceneViewFamily*)))))
+    {
+        call_original();
+        return;
+    }
+
+    if (view_family == nullptr) {
+        call_original();
+        return;
+    }
+
+    using SceneViewsArrayPtr = decltype(view_family->get_views());
+    struct SplitScreenViewsRestore {
+        SceneViewsArrayPtr views{};
+        int32_t count{};
+        std::vector<sdk::FSceneView*> entries{};
+    };
+
+    std::vector<SplitScreenViewsRestore> split_screen_restores{};
+    utility::ScopeGuard restore_split_screen_views{[&]() {
+        for (auto it = split_screen_restores.rbegin(); it != split_screen_restores.rend(); ++it) {
+            if (it->views == nullptr || it->views->data == nullptr || it->entries.empty()) {
+                continue;
+            }
+
+            std::copy(it->entries.begin(), it->entries.end(), it->views->data);
+            it->views->count = it->count;
+        }
+    }};
+
+    if (split_screen_enabled) {
+        struct PlayerViewPair {
+            int32_t player_index{-1};
+            uint32_t first_view_index{};
+            sdk::FSceneView* by_pass[2]{};
+            sdk::FSceneView* by_eye[2]{};
+        };
+
+        const auto prepare_family = [&](sdk::FSceneViewFamily* family) -> bool {
+            auto views = family != nullptr ? family->get_views() : nullptr;
+            constexpr uint32_t max_sane_views = 16;
+
+            if (views == nullptr ||
+                !is_readable_process_range((uintptr_t)views, sizeof(*views)) ||
+                views->count < 2 || views->count > max_sane_views ||
+                views->capacity < views->count || views->data == nullptr ||
+                !is_readable_process_range((uintptr_t)views->data, sizeof(void*) * views->count))
+            {
+                return false;
+            }
+
+            std::vector<PlayerViewPair> pairs{};
+            bool grouped_by_player = true;
+
+            {
+                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
+                std::unordered_map<int32_t, size_t> pair_by_player{};
+
+                for (uint32_t view_index = 0; view_index < views->count; ++view_index) {
+                    const auto current_view = views->data[view_index];
+                    const auto metadata_it = metadata.find(current_view);
+
+                    if (current_view == nullptr || metadata_it == metadata.end()) {
+                        grouped_by_player = false;
+                        break;
+                    }
+
+                    const auto& view_metadata = metadata_it->second;
+                    if (view_metadata.frame != g_frame_count ||
+                        view_metadata.family != family ||
+                        view_metadata.player_index < 0 || view_metadata.player_index > 255 ||
+                        view_metadata.effective_eye > 1 ||
+                        (view_metadata.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
+                         view_metadata.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY))
+                    {
+                        grouped_by_player = false;
+                        break;
+                    }
+
+                    auto [pair_it, inserted] = pair_by_player.try_emplace(
+                        view_metadata.player_index,
+                        pairs.size());
+                    if (inserted) {
+                        pairs.push_back(PlayerViewPair{
+                            .player_index = view_metadata.player_index,
+                            .first_view_index = view_index,
+                        });
+                    }
+
+                    auto& pair = pairs[pair_it->second];
+                    const auto pass_index =
+                        view_metadata.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
+
+                    if (pair.by_pass[pass_index] != nullptr ||
+                        pair.by_eye[view_metadata.effective_eye] != nullptr)
+                    {
+                        grouped_by_player = false;
+                        break;
+                    }
+
+                    pair.by_pass[pass_index] = current_view;
+                    pair.by_eye[view_metadata.effective_eye] = current_view;
+                }
+
+                if (grouped_by_player) {
+                    grouped_by_player = std::all_of(
+                        pairs.begin(),
+                        pairs.end(),
+                        [](const PlayerViewPair& pair) {
+                            return pair.by_pass[0] != nullptr && pair.by_pass[1] != nullptr &&
+                                   pair.by_eye[0] != nullptr && pair.by_eye[1] != nullptr;
+                        });
+                }
+
+                // A few titles reuse one ControllerId for multiple local players. In that
+                // case accept only a fully proven adjacent PRIMARY/SECONDARY pair sequence.
+                if (!grouped_by_player) {
+                    pairs.clear();
+
+                    if ((views->count % 2) != 0) {
+                        return false;
+                    }
+
+                    for (uint32_t view_index = 0; view_index < views->count; view_index += 2) {
+                        PlayerViewPair pair{.first_view_index = view_index};
+
+                        for (uint32_t pair_offset = 0; pair_offset < 2; ++pair_offset) {
+                            const auto current_view = views->data[view_index + pair_offset];
+                            const auto metadata_it = metadata.find(current_view);
+
+                            if (current_view == nullptr || metadata_it == metadata.end()) {
+                                return false;
+                            }
+
+                            const auto& view_metadata = metadata_it->second;
+                            if (view_metadata.frame != g_frame_count ||
+                                view_metadata.family != family ||
+                                view_metadata.player_index < 0 || view_metadata.player_index > 255 ||
+                                view_metadata.effective_eye > 1 ||
+                                (view_metadata.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
+                                 view_metadata.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY))
+                            {
+                                return false;
+                            }
+
+                            if (pair_offset == 0) {
+                                pair.player_index = view_metadata.player_index;
+                            } else if (pair.player_index != view_metadata.player_index) {
+                                return false;
+                            }
+
+                            const auto pass_index =
+                                view_metadata.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
+                            if (pair.by_pass[pass_index] != nullptr ||
+                                pair.by_eye[view_metadata.effective_eye] != nullptr)
+                            {
+                                return false;
+                            }
+
+                            pair.by_pass[pass_index] = current_view;
+                            pair.by_eye[view_metadata.effective_eye] = current_view;
+                        }
+
+                        if (pair.by_pass[0] == nullptr || pair.by_pass[1] == nullptr ||
+                            pair.by_eye[0] == nullptr || pair.by_eye[1] == nullptr)
+                        {
+                            return false;
+                        }
+
+                        pairs.push_back(pair);
+                    }
+                }
+            }
+
+            std::sort(
+                pairs.begin(),
+                pairs.end(),
+                [](const PlayerViewPair& lhs, const PlayerViewPair& rhs) {
+                    return lhs.first_view_index < rhs.first_view_index;
+                });
+
+            const auto requested_pair = vr->get_requested_splitscreen_index();
+            if (requested_pair >= pairs.size()) {
+                return false;
+            }
+
+            const auto& selected_pair = pairs[requested_pair];
+            split_screen_restores.push_back(SplitScreenViewsRestore{
+                .views = views,
+                .count = views->count,
+                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
+            });
+
+            if (vr->is_using_afr()) {
+                const auto current_eye = g_frame_count % 2;
+                views->data[0] = selected_pair.by_eye[current_eye];
+                views->count = 1;
+            } else {
+                views->data[0] = selected_pair.by_eye[0];
+                views->data[1] = selected_pair.by_eye[1];
+                views->count = 2;
+            }
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[SplitScreen] Rendering player/camera pair {} (PlayerIndex {}, {} mode) from {} discovered pair(s)",
+                requested_pair,
+                selected_pair.player_index,
+                vr->is_using_afr() ? "AFR" : "two-view",
+                pairs.size());
+            return true;
+        };
+
+        bool selected_any_family = false;
+        for (const auto family : view_families) {
+            selected_any_family = prepare_family(family) || selected_any_family;
+        }
+
         {
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            if (selected_any_family) {
+                g_hook->m_sceneview_data.splitscreen_last_success_frame = g_frame_count;
+                g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::PairReady;
+            } else if (g_hook->m_sceneview_data.splitscreen_last_success_frame != g_frame_count) {
+                g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::FailedClosed;
+            }
+        }
+
+        if (!selected_any_family) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SplitScreen] Preserving the original view families because a complete selected player pair was not proven");
             call_original();
             return;
         }
 
-        std::memcpy(&view_family, view_family_array.data, sizeof(view_family));
-    }
-
-    if (strict_candidate_validation &&
-        (view_family == nullptr || !is_readable_process_range((uintptr_t)view_family, sizeof(void*))))
-    {
-        reject_candidate("unreadable first view family");
-        return;
-    }
-
-    if (strict_candidate_validation && sdk::FSceneViewFamily::has_vtable()) {
-        uintptr_t actual_vtable{};
-        std::memcpy(&actual_vtable, view_family, sizeof(actual_vtable));
-
-        if (expected_vtable == 0 || actual_vtable != expected_vtable) {
-            reject_candidate("unexpected FSceneViewFamily vtable");
+        if (!native_stereo_fix_enabled && !dibr_single_view_eligible) {
+            call_original();
             return;
         }
     }
@@ -12695,20 +13013,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             }
         }
 
-        /*auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[0] + INIT_OPTIONS_OFFSET);
-        init_options->stereo_pass = 0;
-
-        auto init_options2 = (sdk::FSceneViewInitOptions*)((uintptr_t)view_family.views.data[1] + INIT_OPTIONS_OFFSET);
-        init_options2->stereo_pass = 0;
-
-        std::array<uint8_t, 0x500> init_options_copy{};
-        std::array<uint8_t, 0x500> init_options_copy2{};
-
-        memcpy(init_options_copy.data(), init_options, 0x500);
-        view_family.views.data[0]->constructor((sdk::FSceneViewInitOptions*)init_options_copy.data()); // Triggers our hook as well
-
-        memcpy(init_options_copy2.data(), init_options2, 0x500);
-        view_family.views.data[1]->constructor((sdk::FSceneViewInitOptions*)init_options_copy2.data());*/
     }
 
     g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
@@ -12988,126 +13292,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         g_everspace2_next_view_pose_frame.store(frame_count + 1, std::memory_order_release);
     }
 
-    // This is a HACKHACKHACK to get splitscreen working on around 4.20 to 4.27 something
-    // This is completely borked on UE5
-    // We can probably do it better inside the sceneview constructor hook, but that needs to be handled with care
-    if (vr->is_splitscreen_compatibility_enabled() && views_ptr != nullptr) {
-        auto& views = *views_ptr;
-        
-        // B = dst, A = src
-        static auto copy_init_options_from = [](const sdk::FSceneView& a, sdk::FSceneView& b) {
-            std::scoped_lock _{g_hook->m_sceneview_data.mtx};
-            auto init_options_a = (sdk::FSceneViewInitOptions*)((uintptr_t)&a + INIT_OPTIONS_OFFSET);
-            auto init_options_b = (sdk::FSceneViewInitOptions*)((uintptr_t)&b + INIT_OPTIONS_OFFSET);
-
-            auto& cached_init_options = g_hook->m_sceneview_data.view_init_options_ue4;
-
-            if (auto it = cached_init_options.find(init_options_a->scene_view_state); it != cached_init_options.end()) {
-                const auto& vio_entry = it->second;
-                //memcpy(init_options_b, &vio_entry, sizeof(sdk::FSceneViewInitOptionsUE4));
-                init_options_b->view_origin = vio_entry.view_origin;
-                init_options_b->view_rotation_matrix = vio_entry.view_rotation_matrix;
-                *(FIntRect*)&init_options_b->view_rect = *(FIntRect*)&vio_entry.view_rect;
-                *(FIntRect*)&init_options_b->constrained_view_rect = *(FIntRect*)&vio_entry.constrained_view_rect;
-                init_options_b->projection_matrix = vio_entry.projection_matrix;
-                return;
-            }
-
-            // Otherwise just do this crap
-            init_options_b->view_origin = init_options_a->view_origin;
-            init_options_b->view_rotation_matrix = init_options_a->view_rotation_matrix;
-            *(FIntRect*)&init_options_b->view_rect = *(FIntRect*)&init_options_a->view_rect;
-            *(FIntRect*)&init_options_b->constrained_view_rect = *(FIntRect*)&init_options_a->constrained_view_rect;
-            init_options_b->projection_matrix = init_options_a->projection_matrix;
-        };
-
-        auto do_splitscreen = [&](int32_t view_index) {
-            int32_t w = vr->get_hmd_width();
-            int32_t h = vr->get_hmd_height();
-
-            int32_t x = 0;
-            int32_t y = 0;
-
-            const auto true_index = vr->is_using_afr() ? (frame_count + 1) % 2 : view_index;
-
-            if (!vr->is_using_afr() && true_index == 1) {
-                x += w;
-            }
-
-            auto view = views.data[view_index % views.count];
-
-            FIntRect view_rect{x, y, x + w, y + h};
-
-            auto& vr = VR::get();
-
-            VR::get()->get_runtime()->update_matrices(0.1f, 10000.0f);
-
-            const auto proj_mat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
-
-            std::array<uint8_t, 0x500> init_options_copy{};
-
-            auto init_options = (sdk::FSceneViewInitOptions*)((uintptr_t)view + INIT_OPTIONS_OFFSET);
-
-            auto& init_options_view_origin = init_options->view_origin;
-            auto& init_options_view_rotation_matrix = init_options->view_rotation_matrix;
-            auto& init_options_view_rect = *(FIntRect*)&init_options->view_rect;
-            auto& init_options_constrained_view_rect = *(FIntRect*)&init_options->constrained_view_rect;
-            auto& init_options_projection_matrix = init_options->projection_matrix;
-            auto& init_options_stereo_pass = init_options->stereo_pass;
-
-            // ADDENDUM: The sceneview constructor hook handles the rotation logic now.
-            /*const auto conversion_mat = glm::mat4 {
-                0, 0, 1, 0,
-                1, 0, 0, 0,
-                0, 1, 0, 0,
-                0, 0, 0, 1
-            };
-
-            const auto conversion_mat_inverse = glm::inverse(conversion_mat);*/
-
-            // We need to "undo" the operations done to create the rotation matrix so we can get the original angle
-            // const auto view_rot_mat = conversion_mat * make_inverse_rot_matrix(euler); <-- this is the result of the conversion
-            //auto euler = utility::math::ue_euler_from_rotation_matrix(glm::inverse(conversion_mat_inverse * init_options_view_rotation_matrix));
-            //g_hook->calculate_stereo_view_offset_(true_index + 1, (Rotator<float>*)&euler, 100.0f, &init_options_view_origin);
-            //const auto view_rot_mat = conversion_mat * utility::math::ue_inverse_rotation_matrix(euler);
-            //init_options_view_rotation_matrix = view_rot_mat;
-
-            init_options_view_rect = view_rect;
-            init_options_constrained_view_rect = view_rect;
-            init_options_projection_matrix = proj_mat;
-
-            memcpy(init_options_copy.data(), init_options, 0x500);
-            view->constructor((sdk::FSceneViewInitOptions*)init_options_copy.data()); // Triggers our hook as well
-        };
-
-        const auto requested_index = vr->get_requested_splitscreen_index();
-        const auto final_index = std::min<uint32_t>(views.count - 1, requested_index);
-        const auto other_index = final_index != 0 ? 0 : 1;
-
-        if (final_index > 0) {
-            if (views.count > 1) {
-                copy_init_options_from(*views.data[final_index], *views.data[other_index]);
-            }
-
-            if (!vr->is_using_afr()) {
-                if (views.count > 1) {
-                    do_splitscreen(other_index);
-                } else {
-                    do_splitscreen(0);
-                }
-            } else {
-                do_splitscreen(0);
-            }
-        }
-    }
-
     // If we couldn't find GetDesiredNumberOfViews, we need to set the view count to 1 as a workaround
     // TODO: Check if this can cause a memory leak, I don't know who is resonsible
     // for destroying the views in the array
     // This check might seem kind of arbitrary, but sometimes (rarely) the offset
     // for the views can be wrong so if the count is some sane number
     // then we can assume that the offset is correct
-    if (vr->is_using_afr() && views_ptr != nullptr && views_ptr->count >= 2 && views_ptr->count <= 4) {
+    if (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled() &&
+        views_ptr != nullptr && views_ptr->count >= 2 && views_ptr->count <= 4)
+    {
         SPDLOG_INFO_ONCE("Setting view count to 1 (from {})", views_ptr->count);
         views_ptr->count = 1;
     }
@@ -13118,9 +13311,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     static uint32_t resolver_attempts = 0;
     static uint32_t calls_until_retry = 0;
 
-    if (begin_rendering_view_family_real_fn == nullptr &&
-        (vr->is_native_stereo_fix_enabled() || vr->is_dibr_single_view_requested()))
-    {
+    const bool needs_begin_rendering_viewfamilies_hook =
+        vr->is_native_stereo_fix_enabled() ||
+        vr->is_dibr_single_view_requested() ||
+        vr->is_splitscreen_compatibility_enabled();
+
+    if (begin_rendering_view_family_real_fn == nullptr && needs_begin_rendering_viewfamilies_hook) {
         if (calls_until_retry > 0) {
             --calls_until_retry;
         } else {
@@ -13132,7 +13328,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 : resolve_begin_rendering_viewfamilies_from_stack();
             if (!candidate) {
                 SPDLOG_WARN(
-                "[RendererViewFamily] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
+                    "[ViewFamilySelector] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
                     "will retry in {} callbacks",
                     resolver_attempts,
                     calls_until_retry);
@@ -13142,7 +13338,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             begin_rendering_view_family_real_fn =
                 reinterpret_cast<BeginRenderViewFamilyRealFn>(*candidate);
             SPDLOG_INFO(
-                "[RendererViewFamily] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
+                "[ViewFamilySelector] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
                 reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn),
                 resolver_attempts);
 
@@ -13151,12 +13347,28 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 reinterpret_cast<uintptr_t>(&begin_render_viewfamily_real));
 
             if (g_hook->m_render_module_begin_render_viewfamily_hook) {
-                SPDLOG_INFO("[RendererViewFamily] Hooked BeginRenderingViewFamilies real function");
+                SPDLOG_INFO("[ViewFamilySelector] Hooked BeginRenderingViewFamilies real function");
             } else {
-                SPDLOG_ERROR("[RendererViewFamily] Failed to hook BeginRenderingViewFamilies real function");
+                SPDLOG_ERROR("[ViewFamilySelector] Failed to hook BeginRenderingViewFamilies real function");
                 begin_rendering_view_family_real_fn = nullptr;
             }
         }
+    }
+}
+
+const char* FFakeStereoRenderingHook::get_splitscreen_compatibility_status_text() {
+    std::scoped_lock lock{m_sceneview_data.mtx};
+
+    switch (m_sceneview_data.splitscreen_state) {
+    case SplitScreenCompatibilityState::WaitingForViews:
+        return "waiting for a complete player eye pair";
+    case SplitScreenCompatibilityState::PairReady:
+        return "active; selected player eye pair verified";
+    case SplitScreenCompatibilityState::FailedClosed:
+        return "not applied; preserving the game's original view list";
+    case SplitScreenCompatibilityState::Off:
+    default:
+        return "disabled";
     }
 }
 
