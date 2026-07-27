@@ -7358,7 +7358,7 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_view_uniform_rect() {
         "4C 8B DC 55 53 56 41 56 41 57 49 8D AB 18 FE FF FF 48 81 EC C0 02 00 00 "
         "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 38 01 00 00 48 8B 85 10 02 00 00 "
         "48 8B DA 48 8B B5 20 02 00 00 4C 8B F1";
-    constexpr size_t function_size = 0x1E6F;
+    constexpr size_t pdb_function_span = 0x1E6F;
     constexpr size_t view_rect_validation_offset = 0x77;
     constexpr std::array<uint8_t, 52> view_rect_validation{
         0x44, 0x38, 0xA1, 0x7C, 0x0D, 0x00, 0x00, 0x74,
@@ -7373,10 +7373,12 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_view_uniform_rect() {
     const auto executable = utility::get_executable();
     const auto target = utility::scan(executable, function_pattern);
     const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
+    // This large function is split across multiple chained x64 unwind entries.
+    // RtlLookupFunctionEntry therefore reports only the first fragment, not the
+    // complete PDB function span validated below.
     if (!target || !function || function->begin != *target ||
-        function->size() != function_size ||
         function->image_base != reinterpret_cast<uintptr_t>(executable) ||
-        !is_executable_process_range(*target, function_size) ||
+        !is_executable_process_range(*target, pdb_function_span) ||
         std::memcmp(
             reinterpret_cast<const void*>(*target + view_rect_validation_offset),
             view_rect_validation.data(),
