@@ -126,6 +126,33 @@ struct MediumViewStateAllocateGuard {
 
 thread_local MediumViewStateAllocateGuard g_medium_view_state_allocate_guard{};
 
+struct MediumRenderIntPoint {
+    int32_t x{};
+    int32_t y{};
+
+    bool operator==(const MediumRenderIntPoint&) const = default;
+};
+
+struct MediumRenderIntRect {
+    int32_t min_x{};
+    int32_t min_y{};
+    int32_t max_x{};
+    int32_t max_y{};
+
+    bool operator==(const MediumRenderIntRect&) const = default;
+};
+
+struct MediumViewUniformRectCache {
+    bool valid{};
+    uintptr_t scene{};
+    uintptr_t render_target{};
+    uint32_t family_frame{};
+    MediumRenderIntPoint buffer_size{};
+    MediumRenderIntRect right_rect{};
+};
+
+thread_local MediumViewUniformRectCache g_medium_view_uniform_rect_cache{};
+
 struct DunePendingTrueStereoView {
     bool valid{false};
     uint32_t render_frame{};
@@ -7313,6 +7340,239 @@ void FFakeStereoRenderingHook::medium_view_state_allocate_hook(void* view_state_
     hook->m_medium_view_state_allocate_hook.call<void>(view_state_reference);
 }
 
+bool FFakeStereoRenderingHook::attempt_hook_medium_view_uniform_rect() {
+    if (m_medium_view_uniform_rect_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_medium_view_uniform_rect || !medium_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_medium_view_uniform_rect = true;
+
+    // The Medium's NVIDIA UE4.25Plus fork adds a DLSS parameter to the view
+    // uniform path. Match its complete PDB-confirmed FViewInfo entry and the
+    // exact reads of bIsMobileMultiViewEnabled/ViewRect before touching it.
+    constexpr auto function_pattern =
+        "4C 8B DC 55 53 56 41 56 41 57 49 8D AB 18 FE FF FF 48 81 EC C0 02 00 00 "
+        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 38 01 00 00 48 8B 85 10 02 00 00 "
+        "48 8B DA 48 8B B5 20 02 00 00 4C 8B F1";
+    constexpr size_t function_size = 0x1E6F;
+    constexpr size_t view_rect_validation_offset = 0x77;
+    constexpr std::array<uint8_t, 52> view_rect_validation{
+        0x44, 0x38, 0xA1, 0x7C, 0x0D, 0x00, 0x00, 0x74,
+        0x28, 0x8B, 0x81, 0xB8, 0x15, 0x00, 0x00, 0x2B,
+        0x81, 0xB0, 0x15, 0x00, 0x00, 0x89, 0x45, 0x2C,
+        0x8B, 0x81, 0xBC, 0x15, 0x00, 0x00, 0x2B, 0x81,
+        0xB4, 0x15, 0x00, 0x00, 0x89, 0x45, 0x30, 0x48,
+        0x8D, 0x45, 0x24, 0x4C, 0x89, 0x65, 0x24, 0xEB,
+        0x0F, 0x0F, 0x10, 0x81,
+    };
+
+    const auto executable = utility::get_executable();
+    const auto target = utility::scan(executable, function_pattern);
+    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
+    if (!target || !function || function->begin != *target ||
+        function->size() != function_size ||
+        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
+        !is_executable_process_range(*target, function_size) ||
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + view_rect_validation_offset),
+            view_rect_validation.data(),
+            view_rect_validation.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[Medium][ViewUniformRect] FViewInfo::SetupUniformBufferParameters signature/body validation failed; correction disabled");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*target),
+        &FFakeStereoRenderingHook::medium_view_uniform_rect_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Medium][ViewUniformRect] Failed to hook validated FViewInfo::SetupUniformBufferParameters at {:x}",
+            *target);
+        return false;
+    }
+
+    m_medium_view_uniform_rect_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Medium][ViewUniformRect] Hooked validated FViewInfo::SetupUniformBufferParameters at {:x}",
+        *target);
+    return true;
+}
+
+void FFakeStereoRenderingHook::medium_view_uniform_rect_hook(
+    void* view_info,
+    void* scene_context,
+    const void* view_matrices,
+    const void* previous_view_matrices,
+    void* out_bounds,
+    int32_t num_cascades,
+    void* parameters)
+{
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_view_uniform_rect_hook) {
+        return;
+    }
+
+    const auto call_original = [&]() {
+        hook->m_medium_view_uniform_rect_hook.call<void>(
+            view_info,
+            scene_context,
+            view_matrices,
+            previous_view_matrices,
+            out_bounds,
+            num_cascades,
+            parameters);
+    };
+
+    const auto vr = VR::get();
+    if (g_framework == nullptr || !g_framework->is_game_data_intialized() ||
+        vr == nullptr || !vr->is_hmd_active() ||
+        !vr->is_splitscreen_compatibility_enabled() ||
+        vr->is_using_afr() || vr->is_native_stereo_fix_enabled() ||
+        vr->is_stereo_emulation_enabled() || vr->is_extreme_compatibility_mode_enabled() ||
+        view_info == nullptr || scene_context == nullptr)
+    {
+        call_original();
+        return;
+    }
+
+    constexpr uintptr_t family_offset = 0x0;
+    constexpr uintptr_t player_index_offset = 0x248;
+    constexpr uintptr_t stereo_pass_offset = 0xAD0;
+    constexpr uintptr_t is_game_view_offset = 0xD70;
+    constexpr uintptr_t is_view_info_offset = 0xD71;
+    constexpr uintptr_t is_scene_capture_offset = 0xD72;
+    constexpr uintptr_t is_reflection_capture_offset = 0xD74;
+    constexpr uintptr_t is_planar_reflection_offset = 0xD75;
+    constexpr uintptr_t view_rect_offset = 0x15B0;
+    constexpr uintptr_t family_render_target_offset = 0x20;
+    constexpr uintptr_t family_scene_offset = 0x28;
+    constexpr uintptr_t family_frame_offset = 0x44;
+    constexpr uintptr_t scene_context_buffer_size_offset = 0x3AC;
+    constexpr int32_t max_texture_dimension = 16384;
+
+    const auto address = reinterpret_cast<uintptr_t>(view_info);
+    const auto context_address = reinterpret_cast<uintptr_t>(scene_context);
+    uintptr_t family{};
+    uintptr_t scene{};
+    uintptr_t render_target{};
+    int32_t player_index{-1};
+    uint32_t stereo_pass{};
+    uint32_t family_frame{};
+    uint8_t is_game_view{};
+    uint8_t is_view_info{};
+    uint8_t is_scene_capture{};
+    uint8_t is_reflection_capture{};
+    uint8_t is_planar_reflection{};
+    MediumRenderIntPoint buffer_size{};
+    MediumRenderIntRect view_rect{};
+
+    const bool fields_valid =
+        safe_read_value(address + family_offset, family) && family != 0 &&
+        safe_read_value(address + player_index_offset, player_index) &&
+        safe_read_value(address + stereo_pass_offset, stereo_pass) &&
+        safe_read_value(address + is_game_view_offset, is_game_view) &&
+        safe_read_value(address + is_view_info_offset, is_view_info) &&
+        safe_read_value(address + is_scene_capture_offset, is_scene_capture) &&
+        safe_read_value(address + is_reflection_capture_offset, is_reflection_capture) &&
+        safe_read_value(address + is_planar_reflection_offset, is_planar_reflection) &&
+        safe_read_value(address + view_rect_offset, view_rect) &&
+        safe_read_value(family + family_render_target_offset, render_target) &&
+        safe_read_value(family + family_scene_offset, scene) &&
+        safe_read_value(family + family_frame_offset, family_frame) &&
+        safe_read_value(context_address + scene_context_buffer_size_offset, buffer_size);
+
+    const auto rect_is_sane = [&](const MediumRenderIntRect& rect) {
+        const auto width = static_cast<int64_t>(rect.max_x) - rect.min_x;
+        const auto height = static_cast<int64_t>(rect.max_y) - rect.min_y;
+        return rect.min_x >= 0 && rect.min_y >= 0 &&
+            width > 0 && height > 0 &&
+            rect.max_x <= buffer_size.x && rect.max_y <= buffer_size.y &&
+            width <= max_texture_dimension && height <= max_texture_dimension;
+    };
+
+    if (!fields_valid || player_index != 0 ||
+        (stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
+         stereo_pass != EStereoscopicPass::eSSP_SECONDARY) ||
+        is_game_view != 1 || is_view_info != 1 ||
+        is_scene_capture != 0 || is_reflection_capture != 0 || is_planar_reflection != 0 ||
+        scene == 0 || render_target == 0 ||
+        buffer_size.x <= 0 || buffer_size.y <= 0 ||
+        buffer_size.x > max_texture_dimension || buffer_size.y > max_texture_dimension ||
+        !rect_is_sane(view_rect))
+    {
+        call_original();
+        return;
+    }
+
+    auto& cache = g_medium_view_uniform_rect_cache;
+    if (stereo_pass == EStereoscopicPass::eSSP_SECONDARY) {
+        cache = MediumViewUniformRectCache{
+            .valid = true,
+            .scene = scene,
+            .render_target = render_target,
+            .family_frame = family_frame,
+            .buffer_size = buffer_size,
+            .right_rect = view_rect,
+        };
+    } else if (cache.valid && cache.scene == scene &&
+               cache.render_target == render_target && cache.buffer_size == buffer_size &&
+               (family_frame == cache.family_frame || family_frame == cache.family_frame + 1))
+    {
+        const auto right_width =
+            static_cast<int64_t>(cache.right_rect.max_x) - cache.right_rect.min_x;
+        const auto right_height =
+            static_cast<int64_t>(cache.right_rect.max_y) - cache.right_rect.min_y;
+        const auto derived_min_x = static_cast<int64_t>(cache.right_rect.min_x) - right_width;
+
+        if (right_width > 0 && right_height > 0 &&
+            derived_min_x >= 0 && derived_min_x <= std::numeric_limits<int32_t>::max())
+        {
+            const MediumRenderIntRect corrected{
+                .min_x = static_cast<int32_t>(derived_min_x),
+                .min_y = cache.right_rect.min_y,
+                .max_x = cache.right_rect.min_x,
+                .max_y = cache.right_rect.max_y,
+            };
+
+            if (rect_is_sane(corrected)) {
+                if (!(view_rect == corrected) &&
+                    is_writable_process_range(address + view_rect_offset, sizeof(corrected)))
+                {
+                    std::memcpy(
+                        reinterpret_cast<void*>(address + view_rect_offset),
+                        &corrected,
+                        sizeof(corrected));
+
+                    static std::atomic_uint64_t correction_count{};
+                    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (count <= 12) {
+                        SPDLOG_INFO(
+                            "[Medium][ViewUniformRect] Corrected shader-visible left rect "
+                            "[{},{} -> {},{}] -> [{},{} -> {},{}] from trusted right "
+                            "[{},{} -> {},{}], buffer={}x{}, frame={}, correction={}",
+                            view_rect.min_x, view_rect.min_y, view_rect.max_x, view_rect.max_y,
+                            corrected.min_x, corrected.min_y, corrected.max_x, corrected.max_y,
+                            cache.right_rect.min_x, cache.right_rect.min_y,
+                            cache.right_rect.max_x, cache.right_rect.max_y,
+                            buffer_size.x, buffer_size.y, family_frame, count);
+                    }
+                } else if (view_rect == corrected) {
+                    SPDLOG_INFO_ONCE(
+                        "[Medium][ViewUniformRect] Shader-visible left rect already matches the trusted right-eye geometry");
+                }
+            }
+        }
+    }
+
+    call_original();
+}
+
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
     sdk::UGameViewportClient* viewport_client) {
     const auto vr = VR::get();
@@ -7742,6 +8002,7 @@ bool FFakeStereoRenderingHook::hook() {
     hook_ue418_oculus_pixel_density_sink();
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
+    attempt_hook_medium_view_uniform_rect();
 
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
