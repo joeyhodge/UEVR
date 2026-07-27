@@ -84,6 +84,7 @@ FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
 
 namespace {
+bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
 
@@ -106,6 +107,21 @@ struct DunePendingTrueStereoView {
 };
 
 thread_local DunePendingTrueStereoView g_dune_pending_true_stereo_view{};
+
+struct SplitFictionHazeViewBuildContext {
+    bool active{};
+    bool metadata_valid{true};
+    uint8_t eye{};
+    uint32_t player_sequence{};
+};
+
+struct SplitFictionHazeArrayHeader {
+    void** data{};
+    int32_t count{};
+    int32_t capacity{};
+};
+
+thread_local SplitFictionHazeViewBuildContext g_split_fiction_haze_view_build{};
 
 struct DuneTemporalUpscalerOutputsPrefix {
     uintptr_t full_res_texture{};
@@ -754,6 +770,27 @@ bool medium_is_current_game() {
         return lowered.ends_with(L"\\medium-win64-shipping.exe") ||
                lowered.ends_with(L"/medium-win64-shipping.exe") ||
                lowered == L"medium-win64-shipping.exe";
+    }();
+
+    return result;
+}
+
+bool split_fiction_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\splitfiction.exe") ||
+               lowered.ends_with(L"/splitfiction.exe") ||
+               lowered == L"splitfiction.exe";
     }();
 
     return result;
@@ -7007,6 +7044,211 @@ bool FFakeStereoRenderingHook::attempt_hook_dune_ffx_frame_resources() {
     return true;
 }
 
+void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
+    sdk::UGameViewportClient* viewport_client) {
+    const auto vr = VR::get();
+    if (m_split_fiction_haze_view_builder_hook ||
+        m_attempted_hook_split_fiction_haze_view_builder ||
+        viewport_client == nullptr ||
+        vr == nullptr ||
+        !vr->is_splitscreen_compatibility_enabled() ||
+        !split_fiction_is_current_game() ||
+        !is_ue_5_4_runtime() ||
+        !m_sceneview_data.constructor_hook)
+    {
+        return;
+    }
+
+    constexpr size_t haze_view_builder_vtable_index = 0x3E0 / sizeof(uintptr_t);
+    const auto object = reinterpret_cast<uintptr_t>(viewport_client);
+    if (!is_readable_process_range(object, sizeof(uintptr_t))) {
+        return;
+    }
+
+    const auto vtable = *reinterpret_cast<const uintptr_t*>(object);
+    const auto slot = vtable + haze_view_builder_vtable_index * sizeof(uintptr_t);
+    if (!is_readable_process_range(slot, sizeof(uintptr_t))) {
+        return;
+    }
+
+    const auto target = *reinterpret_cast<const uintptr_t*>(slot);
+    constexpr std::array<uint8_t, 11> expected_entry{
+        0x48, 0x8B, 0xC4, 0x56, 0x48, 0x81, 0xEC, 0xB0, 0x00, 0x00, 0x00};
+    constexpr std::array<uint8_t, 6> expected_world_call{
+        0xFF, 0x90, 0x88, 0x01, 0x00, 0x00};
+    constexpr std::array<uint8_t, 7> expected_controller_load{
+        0x49, 0x8B, 0x8D, 0xB0, 0x03, 0x00, 0x00};
+
+    const auto executable = utility::get_executable();
+    const bool validated =
+        is_executable_process_range(target, 0x37) &&
+        utility::get_module_within(reinterpret_cast<void*>(target)).value_or(nullptr) == executable &&
+        std::memcmp(reinterpret_cast<const void*>(target), expected_entry.data(), expected_entry.size()) == 0 &&
+        std::memcmp(
+            reinterpret_cast<const void*>(target + 0x2A),
+            expected_world_call.data(),
+            expected_world_call.size()) == 0 &&
+        std::memcmp(
+            reinterpret_cast<const void*>(target + 0x30),
+            expected_controller_load.data(),
+            expected_controller_load.size()) == 0;
+
+    if (!validated) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SplitFiction][SplitScreen] Refusing Haze view-builder hook because vtable slot 124 target {:x} did not match the validated UE5.4.4 build",
+            target);
+        return;
+    }
+
+    m_attempted_hook_split_fiction_haze_view_builder = true;
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(target),
+        &FFakeStereoRenderingHook::split_fiction_haze_view_builder_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[SplitFiction][SplitScreen] Failed to hook the validated Haze view builder at {:x}; preserving the game's original views",
+            target);
+        return;
+    }
+
+    m_split_fiction_haze_view_builder_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[SplitFiction][SplitScreen] Hooked UHazeViewportClient view builder at {:x}; two-eye generation remains controlled by Split-Screen Compatibility",
+        target);
+}
+
+void FFakeStereoRenderingHook::split_fiction_haze_view_builder_hook(
+    void* viewport_client,
+    void* viewport,
+    void* family_output,
+    void* build_flags,
+    void* collected_views,
+    void* auxiliary_output) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_split_fiction_haze_view_builder_hook) {
+        return;
+    }
+
+    const auto call_original = [&]() {
+        hook->m_split_fiction_haze_view_builder_hook.call<void>(
+            viewport_client,
+            viewport,
+            family_output,
+            build_flags,
+            collected_views,
+            auxiliary_output);
+    };
+
+    const auto vr = VR::get();
+    if (g_split_fiction_haze_view_build.active ||
+        vr == nullptr ||
+        !vr->is_hmd_active() ||
+        !vr->is_splitscreen_compatibility_enabled() ||
+        !split_fiction_is_current_game() ||
+        !is_ue_5_4_runtime() ||
+        !hook->m_sceneview_data.constructor_hook)
+    {
+        call_original();
+        return;
+    }
+
+    auto* family_views = reinterpret_cast<SplitFictionHazeArrayHeader*>(
+        reinterpret_cast<uintptr_t>(family_output) + 0x8);
+    auto* collected = reinterpret_cast<SplitFictionHazeArrayHeader*>(collected_views);
+    const auto valid_header = [](const SplitFictionHazeArrayHeader* header) {
+        return header != nullptr &&
+            is_writable_process_range(reinterpret_cast<uintptr_t>(header), sizeof(*header)) &&
+            header->count >= 0 &&
+            header->capacity >= header->count &&
+            header->capacity <= 1024;
+    };
+
+    if (!valid_header(family_views) || !valid_header(collected)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SplitFiction][SplitScreen] Haze output arrays were not writable/sane; preserving the original one-view build");
+        call_original();
+        return;
+    }
+
+    const auto initial_family_count = family_views->count;
+    const auto initial_collected_count = collected->count;
+    const auto previous_context = g_split_fiction_haze_view_build;
+    utility::ScopeGuard restore_context{[&]() {
+        g_split_fiction_haze_view_build = previous_context;
+    }};
+
+    g_split_fiction_haze_view_build = SplitFictionHazeViewBuildContext{
+        .active = true,
+        .eye = 0,
+        .player_sequence = 0,
+    };
+    call_original();
+
+    if (!valid_header(family_views) || !valid_header(collected)) {
+        SPDLOG_WARN(
+            "[SplitFiction][SplitScreen] Haze left-eye build invalidated its output arrays; refusing the second pass");
+        return;
+    }
+
+    const auto first_family_count = family_views->count;
+    const auto first_collected_count = collected->count;
+    const auto first_family_added = first_family_count - initial_family_count;
+    const auto first_collected_added = first_collected_count - initial_collected_count;
+    const bool valid_first_pass =
+        g_split_fiction_haze_view_build.metadata_valid &&
+        first_family_added > 0 &&
+        first_family_added <= 8 &&
+        first_family_added == first_collected_added;
+
+    if (!valid_first_pass) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SplitFiction][SplitScreen] Haze left-eye build did not produce a bounded matching view set (family_added={} collected_added={}); preserving it without a second pass",
+            first_family_added,
+            first_collected_added);
+        return;
+    }
+
+    g_split_fiction_haze_view_build.eye = 1;
+    g_split_fiction_haze_view_build.metadata_valid = true;
+    g_split_fiction_haze_view_build.player_sequence = 0;
+    call_original();
+
+    if (!valid_header(family_views) || !valid_header(collected)) {
+        SPDLOG_WARN(
+            "[SplitFiction][SplitScreen] Haze right-eye build invalidated its output arrays; the duplicated frame cannot be safely selected");
+        return;
+    }
+
+    const auto second_family_added = family_views->count - first_family_count;
+    const auto second_collected_added = collected->count - first_collected_count;
+    const bool valid_second_pass =
+        g_split_fiction_haze_view_build.metadata_valid &&
+        second_family_added == first_family_added &&
+        second_collected_added == first_collected_added &&
+        family_views->count <= 16 &&
+        collected->count <= 16;
+
+    if (!valid_second_pass) {
+        family_views->count = first_family_count;
+        collected->count = first_collected_count;
+        SPDLOG_WARN(
+            "[SplitFiction][SplitScreen] Rejected asymmetric Haze right-eye build (left={} right={} collected_left={} collected_right={}); restored the one-view counts",
+            first_family_added,
+            second_family_added,
+            first_collected_added,
+            second_collected_added);
+        return;
+    }
+
+    SPDLOG_INFO_EVERY_N_SEC(
+        2,
+        "[SplitFiction][SplitScreen] Generated {} Haze player/camera view(s) for each eye before guarded pair selection",
+        first_family_added);
+}
+
 void* FFakeStereoRenderingHook::dune_dlss_add_passes_hook(
     void* upscaler,
     void* outputs,
@@ -10131,6 +10373,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         return;
     }
 
+    g_hook->attempt_hook_split_fiction_haze_view_builder(viewport_client);
+
     static uint32_t hook_attempts = 0;
     static bool run_anyways = false;
 
@@ -10975,6 +11219,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     const auto init_options_scene = init_options_view_family != nullptr
         ? init_options_view_family->get_scene_interface()
         : nullptr;
+    const bool split_fiction_haze_context =
+        g_split_fiction_haze_view_build.active &&
+        split_fiction_is_current_game() &&
+        is_ue_5_4_runtime() &&
+        vr->is_splitscreen_compatibility_enabled();
+    int32_t split_screen_metadata_player_index = init_options_player_index.value_or(-1);
+    uint32_t split_screen_metadata_stereo_pass = init_options_original_stereo_pass;
+    bool split_fiction_haze_metadata_active = false;
     bool restore_init_options_after_constructor = false;
 
     utility::ScopeGuard restore_init_options_guard{[&]() {
@@ -10984,6 +11236,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
         init_options->set_scene_state(init_options_scene_state);
         init_options->set_stereo_pass(init_options_original_stereo_pass);
+        if (init_options_player_index.has_value()) {
+            init_options->set_player_index(*init_options_player_index);
+        }
     }};
 
     if (init_options_scene_state != nullptr) {
@@ -10999,6 +11254,26 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
+    if (split_fiction_haze_context) {
+        const auto synthetic_player_index = g_split_fiction_haze_view_build.player_sequence++;
+        if (!init_options_player_index.has_value() ||
+            synthetic_player_index > static_cast<uint32_t>(std::numeric_limits<uint8_t>::max()) ||
+            g_split_fiction_haze_view_build.eye > 1)
+        {
+            g_split_fiction_haze_view_build.metadata_valid = false;
+        } else {
+            split_screen_metadata_player_index = static_cast<int32_t>(synthetic_player_index);
+            split_screen_metadata_stereo_pass =
+                g_split_fiction_haze_view_build.eye == 0
+                    ? EStereoscopicPass::eSSP_PRIMARY
+                    : EStereoscopicPass::eSSP_SECONDARY;
+            init_options->set_player_index(split_screen_metadata_player_index);
+            init_options->set_stereo_pass(split_screen_metadata_stereo_pass);
+            split_fiction_haze_metadata_active = true;
+            restore_init_options_after_constructor = true;
+        }
+    }
+
     auto& known_scene_states = g_hook->m_sceneview_data.known_scene_states;
     auto& last_frame_count = g_hook->m_sceneview_data.last_frame_count;
     auto& last_index = g_hook->m_sceneview_data.last_index;
@@ -11010,7 +11285,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     last_frame_count = g_frame_count;
 
     const auto true_index =
-        dune_manual_custom_present_pose
+        split_fiction_haze_metadata_active
+            ? static_cast<uint32_t>(g_split_fiction_haze_view_build.eye)
+            : dune_manual_custom_present_pose
             ? (vr->is_using_afr() ? g_frame_count % 2 : 0)
             : (vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index);
 
@@ -11664,10 +11941,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::WaitingForViews;
         }
 
-        const auto player_index = init_options_player_index.value_or(-1);
+        const auto player_index = split_screen_metadata_player_index;
         const bool valid_stereo_pass =
-            init_options_original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
-            init_options_original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY;
+            split_screen_metadata_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
+            split_screen_metadata_stereo_pass == EStereoscopicPass::eSSP_SECONDARY;
 
         if (result != nullptr &&
             init_options_view_family != nullptr &&
@@ -11679,9 +11956,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 .family = init_options_view_family,
                 .state = init_options_scene_state,
                 .player_index = player_index,
-                .original_stereo_pass = init_options_original_stereo_pass,
+                .original_stereo_pass = split_screen_metadata_stereo_pass,
                 .effective_eye = static_cast<uint8_t>(true_index),
                 .frame = g_frame_count,
+                .synthetic_split_fiction_haze = split_fiction_haze_metadata_active,
             };
         }
     } else {
@@ -12696,9 +12974,100 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return true;
         };
 
+        const auto prepare_split_fiction_haze_baseline = [&](sdk::FSceneViewFamily* family) -> bool {
+            if (!split_fiction_is_current_game() || !is_ue_5_4_runtime()) {
+                return false;
+            }
+
+            auto views = family != nullptr ? family->get_views() : nullptr;
+            constexpr uint32_t max_sane_views = 16;
+            if (views == nullptr ||
+                !is_readable_process_range(reinterpret_cast<uintptr_t>(views), sizeof(*views)) ||
+                views->count < 2 || views->count > max_sane_views ||
+                (views->count % 2) != 0 ||
+                views->capacity < views->count || views->data == nullptr ||
+                !is_readable_process_range(
+                    reinterpret_cast<uintptr_t>(views->data),
+                    sizeof(void*) * views->count))
+            {
+                return false;
+            }
+
+            std::vector<sdk::FSceneView*> first_eye_views{};
+            std::unordered_map<int32_t, uint8_t> eye_mask_by_player{};
+            {
+                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
+
+                for (uint32_t view_index = 0; view_index < views->count; ++view_index) {
+                    const auto current_view = views->data[view_index];
+                    const auto metadata_it = metadata.find(current_view);
+                    if (current_view == nullptr || metadata_it == metadata.end()) {
+                        return false;
+                    }
+
+                    const auto& view_metadata = metadata_it->second;
+                    if (view_metadata.frame != g_frame_count ||
+                        view_metadata.family != family ||
+                        !view_metadata.synthetic_split_fiction_haze ||
+                        view_metadata.player_index < 0 || view_metadata.player_index > 255 ||
+                        view_metadata.effective_eye > 1)
+                    {
+                        return false;
+                    }
+
+                    auto& eye_mask = eye_mask_by_player[view_metadata.player_index];
+                    const auto eye_bit = static_cast<uint8_t>(1u << view_metadata.effective_eye);
+                    if ((eye_mask & eye_bit) != 0) {
+                        return false;
+                    }
+
+                    eye_mask |= eye_bit;
+                    if (view_metadata.effective_eye == 0) {
+                        first_eye_views.push_back(current_view);
+                    }
+                }
+            }
+
+            if (first_eye_views.empty() ||
+                first_eye_views.size() * 2 != views->count ||
+                !std::all_of(
+                    eye_mask_by_player.begin(),
+                    eye_mask_by_player.end(),
+                    [](const auto& entry) { return entry.second == 0x3; }))
+            {
+                return false;
+            }
+
+            split_screen_restores.push_back(SplitScreenViewsRestore{
+                .views = views,
+                .count = views->count,
+                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
+            });
+            std::copy(first_eye_views.begin(), first_eye_views.end(), views->data);
+            views->count = static_cast<int32_t>(first_eye_views.size());
+            return true;
+        };
+
         bool selected_any_family = false;
         for (const auto family : view_families) {
             selected_any_family = prepare_family(family) || selected_any_family;
+        }
+
+        if (!selected_any_family &&
+            view_families.size() == 1 &&
+            prepare_split_fiction_haze_baseline(view_families.front()))
+        {
+            {
+                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                g_hook->m_sceneview_data.splitscreen_state = SplitScreenCompatibilityState::FailedClosed;
+            }
+
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SplitFiction][SplitScreen] Pair selection was not proven; rendering only the original Haze first-eye view set for this frame");
+            call_original();
+            return;
         }
 
         {
