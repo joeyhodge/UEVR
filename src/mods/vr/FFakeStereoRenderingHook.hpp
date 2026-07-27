@@ -850,6 +850,7 @@ private:
     bool hook_ue418_oculus_pixel_density_sink();
     bool attempt_hook_dune_dlss_output();
     bool attempt_hook_dune_ffx_frame_resources();
+    bool attempt_hook_medium_view_state_allocate();
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
     void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
     void attempt_hook_naruto_ue416_projection_rect();
@@ -901,6 +902,7 @@ private:
         void* backend,
         void* resource,
         uint64_t frame_id);
+    static void medium_view_state_allocate_hook(void* view_state_reference);
     static void split_fiction_haze_view_builder_hook(
         void* viewport_client,
         void* viewport,
@@ -1043,6 +1045,7 @@ private:
     safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
     safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
+    safetyhook::InlineHook m_medium_view_state_allocate_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
@@ -1216,6 +1219,7 @@ private:
     std::atomic<uint64_t> m_daysgone_bend_ui_restore_count{0};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
+    bool m_attempted_hook_medium_view_state_allocate{false};
     bool m_attempted_hook_split_fiction_haze_view_builder{false};
     bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
     bool m_attempted_hook_naruto_ue416_projection_rect{false};

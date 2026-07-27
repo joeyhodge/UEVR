@@ -87,6 +87,8 @@ namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
+template <typename T>
+bool safe_read_value(uintptr_t address, T& out);
 
 std::mutex g_shf_texture_probe_mutex{};
 std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
@@ -96,6 +98,33 @@ uint64_t g_shf_rtm_candidate_count{};
 uint64_t g_shf_rtm_candidate_suppressed{};
 std::atomic_bool g_dune_force_viewport_rhi_once{false};
 std::atomic_uint64_t g_dune_rejected_flat_viewport_rts{0};
+
+enum class MediumViewStateResetPhase : uint8_t {
+    Idle,
+    Pending,
+    Complete,
+    Failed,
+};
+
+struct MediumViewStateResetState {
+    std::atomic<MediumViewStateResetPhase> phase{MediumViewStateResetPhase::Idle};
+    std::atomic_bool gameplay_scene_view_seen{false};
+    std::atomic_uintptr_t localplayer{};
+    std::atomic_uint64_t reset_after_frame{};
+    std::atomic_uint64_t deadline_frame{};
+};
+
+MediumViewStateResetState g_medium_view_state_reset{};
+
+struct MediumViewStateAllocateGuard {
+    bool active{};
+    bool failed{};
+    uintptr_t existing_reference{};
+    uint32_t skipped_existing{};
+    uint32_t allocated_empty{};
+};
+
+thread_local MediumViewStateAllocateGuard g_medium_view_state_allocate_guard{};
 
 struct DunePendingTrueStereoView {
     bool valid{false};
@@ -734,6 +763,170 @@ bool medium_is_current_game() {
     }();
 
     return result;
+}
+
+struct MediumViewStatesSnapshot {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t capacity{};
+    std::array<uintptr_t, 2> references{};
+};
+
+std::optional<MediumViewStatesSnapshot> read_medium_view_states(uintptr_t localplayer) {
+    // UE4.25Plus source and The Medium PDB agree on this exact layout:
+    // TArray<FSceneViewStateReference> at +0xA8, 0x28-byte elements, and
+    // FSceneViewStateReference::Reference at element +0x8.
+    constexpr uintptr_t view_states_offset = 0xA8;
+    constexpr uintptr_t reference_offset = 0x8;
+    constexpr size_t reference_size = 0x28;
+
+    if (localplayer == 0 ||
+        !is_readable_process_range(localplayer + view_states_offset, sizeof(uintptr_t) + sizeof(int32_t) * 2))
+    {
+        return std::nullopt;
+    }
+
+    MediumViewStatesSnapshot result{};
+    std::memcpy(&result.data, reinterpret_cast<const void*>(localplayer + view_states_offset), sizeof(result.data));
+    std::memcpy(&result.count, reinterpret_cast<const void*>(localplayer + view_states_offset + 0x8), sizeof(result.count));
+    std::memcpy(&result.capacity, reinterpret_cast<const void*>(localplayer + view_states_offset + 0xC), sizeof(result.capacity));
+
+    if (result.count < 1 || result.count > 8 ||
+        result.capacity < result.count || result.capacity > 64 ||
+        result.data == 0 ||
+        !is_readable_process_range(result.data, reference_size * static_cast<size_t>(result.count)))
+    {
+        return std::nullopt;
+    }
+
+    const auto references_to_read = std::min<int32_t>(result.count, static_cast<int32_t>(result.references.size()));
+    for (int32_t index = 0; index < references_to_read; ++index) {
+        const auto reference_address = result.data + reference_size * static_cast<size_t>(index) + reference_offset;
+        std::memcpy(&result.references[index], reinterpret_cast<const void*>(reference_address), sizeof(uintptr_t));
+    }
+
+    return result;
+}
+
+std::optional<uintptr_t> resolve_medium_reset_view_state(uintptr_t view_state) {
+    if (view_state == 0 || !is_readable_process_range(view_state, sizeof(uintptr_t))) {
+        return std::nullopt;
+    }
+
+    uintptr_t vtable{};
+    std::memcpy(&vtable, reinterpret_cast<const void*>(view_state), sizeof(vtable));
+
+    // FSceneViewStateInterface::ResetViewState is slot 7 in the UE4.25Plus
+    // interface used by this executable. Validate the complete PDB-confirmed
+    // function body before making the virtual call.
+    constexpr size_t reset_view_state_slot = 7;
+    if (vtable == 0 ||
+        !is_readable_process_range(vtable, sizeof(uintptr_t) * (reset_view_state_slot + 1)))
+    {
+        return std::nullopt;
+    }
+
+    uintptr_t reset_view_state{};
+    std::memcpy(
+        &reset_view_state,
+        reinterpret_cast<const void*>(vtable + sizeof(uintptr_t) * reset_view_state_slot),
+        sizeof(reset_view_state));
+
+    constexpr std::array<uint8_t, 44> expected_body{
+        0x33, 0xC0, 0xC6, 0x81, 0x22, 0x05, 0x00, 0x00,
+        0x00, 0x48, 0x89, 0x81, 0x24, 0x05, 0x00, 0x00,
+        0x89, 0x81, 0x14, 0x05, 0x00, 0x00, 0x48, 0x8B,
+        0x41, 0x28, 0xC7, 0x81, 0x80, 0x04, 0x00, 0x00,
+        0x00, 0x00, 0x80, 0x3F, 0x48, 0x83, 0xC1, 0x28,
+        0x48, 0xFF, 0x60, 0x10,
+    };
+
+    if (!is_executable_process_range(reset_view_state, expected_body.size()) ||
+        std::memcmp(reinterpret_cast<const void*>(reset_view_state), expected_body.data(), expected_body.size()) != 0)
+    {
+        return std::nullopt;
+    }
+
+    return reset_view_state;
+}
+
+void schedule_medium_view_state_reset(uintptr_t localplayer) {
+    if (!medium_is_current_game() || localplayer == 0) {
+        return;
+    }
+
+    const auto previous_localplayer =
+        g_medium_view_state_reset.localplayer.exchange(localplayer, std::memory_order_relaxed);
+    const auto phase = g_medium_view_state_reset.phase.load(std::memory_order_acquire);
+
+    if (previous_localplayer == localplayer &&
+        (phase == MediumViewStateResetPhase::Pending || phase == MediumViewStateResetPhase::Complete))
+    {
+        return;
+    }
+
+    // Let both newly allocated states render one complete stereo pair before
+    // clearing the history inherited from the pre-injection mono target.
+    g_medium_view_state_reset.reset_after_frame.store(g_frame_count + 8, std::memory_order_relaxed);
+    g_medium_view_state_reset.deadline_frame.store(g_frame_count + 300, std::memory_order_relaxed);
+    g_medium_view_state_reset.phase.store(MediumViewStateResetPhase::Pending, std::memory_order_release);
+    SPDLOG_INFO("[Medium][UE4.25Plus] Scheduled one-time stereo ViewState reset for LocalPlayer {:x}", localplayer);
+}
+
+void try_reset_medium_view_states() {
+    if (!medium_is_current_game() ||
+        g_medium_view_state_reset.phase.load(std::memory_order_acquire) != MediumViewStateResetPhase::Pending ||
+        g_frame_count < g_medium_view_state_reset.reset_after_frame.load(std::memory_order_relaxed))
+    {
+        return;
+    }
+
+    const auto localplayer = g_medium_view_state_reset.localplayer.load(std::memory_order_relaxed);
+    const auto snapshot = read_medium_view_states(localplayer);
+
+    if (!snapshot || snapshot->count < 2 ||
+        snapshot->references[0] == 0 || snapshot->references[1] == 0 ||
+        snapshot->references[0] == snapshot->references[1])
+    {
+        if (g_frame_count <= g_medium_view_state_reset.deadline_frame.load(std::memory_order_relaxed)) {
+            return;
+        }
+
+        g_medium_view_state_reset.phase.store(MediumViewStateResetPhase::Failed, std::memory_order_release);
+        SPDLOG_WARN("[Medium][UE4.25Plus] Stereo ViewStates did not become a valid distinct pair; reset failed closed");
+        return;
+    }
+
+    const auto left_reset = resolve_medium_reset_view_state(snapshot->references[0]);
+    const auto right_reset = resolve_medium_reset_view_state(snapshot->references[1]);
+
+    if (!left_reset || !right_reset) {
+        g_medium_view_state_reset.phase.store(MediumViewStateResetPhase::Failed, std::memory_order_release);
+        SPDLOG_WARN("[Medium][UE4.25Plus] ResetViewState slot/body validation failed; reset was not called");
+        return;
+    }
+
+    reinterpret_cast<void (*)(uintptr_t)>(*left_reset)(snapshot->references[0]);
+    reinterpret_cast<void (*)(uintptr_t)>(*right_reset)(snapshot->references[1]);
+    g_medium_view_state_reset.phase.store(MediumViewStateResetPhase::Complete, std::memory_order_release);
+
+    SPDLOG_INFO(
+        "[Medium][UE4.25Plus] Reset both stereo ViewStates after guarded LocalPlayer bootstrap left={:x} right={:x}",
+        snapshot->references[0],
+        snapshot->references[1]);
+
+    // The Medium keeps the pre-gameplay D3D12 scene binding alive when its
+    // LocalPlayer grows from one ViewState to two. Refresh UEVR's scene copy
+    // only after both source-validated states exist and their histories have
+    // been reset. This mirrors the renderer refresh that otherwise happens
+    // only after a later viewport resize, which leaves the right eye and
+    // spectator black in the meantime.
+    if (g_framework->is_dx12()) {
+        g_hook->set_should_recreate_textures(true);
+        VR::get()->reinitialize_renderer();
+        SPDLOG_INFO(
+            "[Medium][UE4.25Plus] Requested one-time D3D12 scene binding refresh after stereo ViewState bootstrap");
+    }
 }
 
 bool split_fiction_is_current_game() {
@@ -4139,6 +4332,67 @@ bool looks_like_post_init_properties_virtual(uintptr_t fn) {
     return call_count > 0;
 }
 
+bool validate_medium_post_init_properties_slot(
+    uintptr_t* object_vtable,
+    uintptr_t* localplayer_vtable,
+    uint32_t slot)
+{
+    if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
+        IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
+    {
+        return false;
+    }
+
+    const auto object_fn = object_vtable[slot];
+    const auto localplayer_fn = localplayer_vtable[slot];
+
+    // Validate the PDB-confirmed UE4.25Plus bodies without relying on the
+    // generic decoder heuristic that rejects this title's optimized override.
+    constexpr std::array<uint8_t, 40> object_body{
+        0x48, 0x83, 0xEC, 0x38, 0x48, 0x8B, 0xD1, 0x48,
+        0xC7, 0x44, 0x24, 0x20, 0x00, 0x00, 0x00, 0x00,
+        0x48, 0x8B, 0x49, 0x10, 0x45, 0x33, 0xC9, 0x41,
+        0xB0, 0x01, 0x48, 0x8B, 0x01, 0xFF, 0x90, 0x30,
+        0x03, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x38, 0xC3,
+    };
+    constexpr std::array<uint8_t, 10> localplayer_prefix{
+        0x40, 0x56, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xF1, 0xE8,
+    };
+    constexpr std::array<uint8_t, 13> view_states_field_use{
+        0x48, 0x81, 0xC6, 0xA8, 0x00, 0x00, 0x00,
+        0x48, 0x63, 0x7E, 0x08, 0x3B, 0xD7,
+    };
+    constexpr std::array<uint8_t, 6> localplayer_tail{
+        0x48, 0x83, 0xC4, 0x20, 0x5E, 0xC3,
+    };
+
+    constexpr size_t localplayer_function_size = 0xF1;
+    if (!is_executable_process_range(object_fn, object_body.size()) ||
+        !is_executable_process_range(localplayer_fn, localplayer_function_size) ||
+        std::memcmp(reinterpret_cast<const void*>(object_fn), object_body.data(), object_body.size()) != 0 ||
+        std::memcmp(reinterpret_cast<const void*>(localplayer_fn), localplayer_prefix.data(), localplayer_prefix.size()) != 0 ||
+        std::memcmp(
+            reinterpret_cast<const void*>(localplayer_fn + 0x4D),
+            view_states_field_use.data(),
+            view_states_field_use.size()) != 0 ||
+        std::memcmp(
+            reinterpret_cast<const void*>(localplayer_fn + 0xEB),
+            localplayer_tail.data(),
+            localplayer_tail.size()) != 0)
+    {
+        return false;
+    }
+
+    int32_t base_call_displacement{};
+    std::memcpy(
+        &base_call_displacement,
+        reinterpret_cast<const void*>(localplayer_fn + 0xA),
+        sizeof(base_call_displacement));
+    const auto base_call_target = localplayer_fn + 0xE + base_call_displacement;
+
+    return base_call_target == object_fn;
+}
+
 std::optional<uint32_t> validate_source_informed_post_init_slot(
     uintptr_t* object_vtable,
     uintptr_t* localplayer_vtable,
@@ -4237,6 +4491,27 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         }
 
         SPDLOG_WARN("[PostInitProperties] ProSpi UE4.27 slot 8 did not validate; skipping Ghosting Fix bootstrap for safety");
+        return std::nullopt;
+    }
+
+    // The Medium's UE4.25Plus source and PDB place
+    // ULocalPlayer::PostInitProperties at slot 8. Its LocalPlayer is created
+    // before UEVR installs the fake stereo device, leaving only one ViewState.
+    if (medium_is_current_game()) {
+        constexpr uint32_t MEDIUM_UE425PLUS_POST_INIT_PROPERTIES_SLOT = 8;
+
+        if (validate_medium_post_init_properties_slot(
+                object_vtable,
+                localplayer_vtable,
+                MEDIUM_UE425PLUS_POST_INIT_PROPERTIES_SLOT))
+        {
+            SPDLOG_INFO(
+                "[Medium][UE4.25Plus] Validated PDB-confirmed ULocalPlayer::PostInitProperties slot 8");
+            return MEDIUM_UE425PLUS_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN(
+            "[Medium][UE4.25Plus] Slot 8 did not validate; skipping LocalPlayer bootstrap for safety");
         return std::nullopt;
     }
 
@@ -4700,6 +4975,68 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
     }
 
     return best_candidate;
+}
+
+std::optional<uintptr_t> resolve_medium_begin_rendering_viewfamily() {
+    if (!medium_is_current_game()) {
+        return std::nullopt;
+    }
+
+    static const auto resolved = []() -> std::optional<uintptr_t> {
+        const auto module = utility::get_executable();
+
+        // UE4.25Plus calls the singular renderer entry directly. Its normal
+        // stack has no small plural wrapper, so the generic wrapper heuristic
+        // can otherwise walk as far as GuardedMain and select a false target.
+        constexpr auto entry_pattern =
+            "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC C0 00 00 00 "
+            "49 8B 48 28 33 F6 49 8B F8 4C 8B EA 44 8B FE "
+            "48 8B 01 FF 90 50 02 00 00";
+        const auto candidate = utility::scan(module, entry_pattern);
+
+        if (!candidate) {
+            SPDLOG_ERROR(
+                "[Medium][SplitScreen] Refusing selector activation: source-confirmed UE4.25Plus "
+                "BeginRenderingViewFamily entry was not found");
+            return std::nullopt;
+        }
+
+        const auto function = get_runtime_function_range(*candidate);
+        constexpr size_t min_expected_size = 0x500;
+        constexpr size_t max_expected_size = 0x700;
+
+        if (!function || function->begin != *candidate ||
+            function->size() < min_expected_size || function->size() > max_expected_size)
+        {
+            SPDLOG_ERROR(
+                "[Medium][SplitScreen] Refusing selector activation: candidate {:x} failed "
+                "UE4.25Plus function-boundary validation",
+                *candidate);
+            return std::nullopt;
+        }
+
+        // Confirm the entry consumes FSceneViewFamily directly through R8:
+        // RenderTarget at +0x28 and Views data/count at +0x68/+0x70.
+        const auto validation_size = std::min<size_t>(function->size(), 0x240);
+        if (!utility::scan(*candidate, validation_size, "49 8B 48 28").has_value() ||
+            !utility::scan(*candidate, validation_size, "48 8B 47 68").has_value() ||
+            !utility::scan(*candidate, validation_size, "39 77 70").has_value())
+        {
+            SPDLOG_ERROR(
+                "[Medium][SplitScreen] Refusing selector activation: candidate {:x} failed "
+                "FSceneViewFamily field-use validation",
+                *candidate);
+            return std::nullopt;
+        }
+
+        SPDLOG_INFO(
+            "[Medium][SplitScreen] Resolved source-confirmed UE4.25Plus "
+            "FRendererModule::BeginRenderingViewFamily at {:x}",
+            *candidate);
+        return *candidate;
+    }();
+
+    return resolved;
 }
 
 bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
@@ -6877,6 +7214,103 @@ bool FFakeStereoRenderingHook::attempt_hook_dune_ffx_frame_resources() {
         *register_target,
         *get_native_target);
     return true;
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_medium_view_state_allocate() {
+    if (m_medium_view_state_allocate_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_medium_view_state_allocate || !medium_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_medium_view_state_allocate = true;
+
+    // UE4.25Plus ULocalPlayer::PostInitProperties grows ViewStates and then
+    // calls Allocate() on every element. The title's shipping Allocate body
+    // has no !Reference check, so calling PostInitProperties a second time
+    // overwrites the live left-eye state. Resolve the exact PDB-confirmed body
+    // and suppress only that one redundant call during the guarded bootstrap.
+    constexpr auto allocate_pattern =
+        "40 53 48 83 EC 40 48 8B D9 E8 ? ? ? ? 48 8B C8 48 8B 10 FF 52 70 "
+        "48 89 5C 24 30 0F 57 C0 0F 11 43 10 48 89 43 08 48 83 C3 10 "
+        "F2 0F 10 44 24 30 F2 0F 11 43 10 48 8B 05 ? ? ? ? 48 85 C0 74 0B "
+        "48 89 58 08 48 8B 05 ? ? ? ? 48 89 03 48 8D 05 ? ? ? ? 48 89 43 08 "
+        "48 89 1D ? ? ? ? 48 83 C4 40 5B C3";
+    constexpr size_t allocate_function_size = 0x68;
+    constexpr uint8_t allocate_prefix[] = {
+        0x40, 0x53, 0x48, 0x83, 0xEC, 0x40, 0x48, 0x8B, 0xD9, 0xE8,
+    };
+    constexpr uint8_t allocate_tail[] = {
+        0x48, 0x83, 0xC4, 0x40, 0x5B, 0xC3,
+    };
+
+    const auto executable = utility::get_executable();
+    const auto target = utility::scan(executable, allocate_pattern);
+    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
+    if (!target || !function || function->begin != *target ||
+        function->size() != allocate_function_size ||
+        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
+        !is_executable_process_range(*target, allocate_function_size) ||
+        std::memcmp(reinterpret_cast<const void*>(*target), allocate_prefix, std::size(allocate_prefix)) != 0 ||
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + allocate_function_size - std::size(allocate_tail)),
+            allocate_tail,
+            std::size(allocate_tail)) != 0)
+    {
+        SPDLOG_WARN(
+            "[Medium][UE4.25Plus] FSceneViewStateReference::Allocate signature/body validation failed; bootstrap disabled");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*target),
+        &FFakeStereoRenderingHook::medium_view_state_allocate_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Medium][UE4.25Plus] Failed to hook validated FSceneViewStateReference::Allocate at {:x}",
+            *target);
+        return false;
+    }
+
+    m_medium_view_state_allocate_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Medium][UE4.25Plus] Hooked validated FSceneViewStateReference::Allocate at {:x}",
+        *target);
+    return true;
+}
+
+void FFakeStereoRenderingHook::medium_view_state_allocate_hook(void* view_state_reference) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_view_state_allocate_hook) {
+        return;
+    }
+
+    auto& guard = g_medium_view_state_allocate_guard;
+    if (guard.active) {
+        uintptr_t reference{};
+        if (view_state_reference == nullptr ||
+            !safe_read_value(reinterpret_cast<uintptr_t>(view_state_reference) + 0x8, reference))
+        {
+            guard.failed = true;
+            return;
+        }
+
+        if (reference == guard.existing_reference && reference != 0) {
+            ++guard.skipped_existing;
+            return;
+        }
+
+        if (reference != 0) {
+            guard.failed = true;
+            return;
+        }
+
+        ++guard.allocated_empty;
+    }
+
+    hook->m_medium_view_state_allocate_hook.call<void>(view_state_reference);
 }
 
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
@@ -10964,6 +11398,15 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
+    if (medium_is_current_game()) {
+        const auto was_seen =
+            g_medium_view_state_reset.gameplay_scene_view_seen.exchange(true, std::memory_order_acq_rel);
+        if (!was_seen) {
+            SPDLOG_INFO(
+                "[Medium][UE4.25Plus] First gameplay FSceneView observed; LocalPlayer stereo bootstrap is now armed");
+        }
+    }
+
     const auto dune_manual_custom_present_pose =
         dune_awakening_is_current_game() &&
         g_hook->dune_has_live_pawn();
@@ -11111,12 +11554,27 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     last_frame_count = g_frame_count;
 
+    const bool medium_split_pass_eye_active =
+        medium_is_current_game() &&
+        vr->is_splitscreen_compatibility_enabled() &&
+        (init_options_original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
+         init_options_original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY);
+    const auto medium_split_pass_eye =
+        init_options_original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
+
     const auto true_index =
         split_fiction_haze_metadata_active
             ? static_cast<uint32_t>(g_split_fiction_haze_view_build.eye)
+            : medium_split_pass_eye_active
+            ? medium_split_pass_eye
             : dune_manual_custom_present_pose
             ? (vr->is_using_afr() ? g_frame_count % 2 : 0)
             : (vr->is_using_afr() ? (g_frame_count + last_index) % 2 : last_index);
+
+    if (medium_split_pass_eye_active) {
+        SPDLOG_INFO_ONCE(
+            "[Medium][SplitScreen] Deriving eye ownership from source-confirmed StereoPass instead of constructor order");
+    }
 
     if (vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
@@ -11757,7 +12215,47 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     last_index++;
 
+    // The Medium adds MainCameraFarPlane to UMediumLocalPlayer and copies a
+    // positive value into FSceneViewInitOptions::OverrideFarClippingPlaneDistance.
+    // Its PDB and UE4.25Plus source place that transient field at +0x1CC. Keep
+    // this exact-title path opt-in and restore the caller's stack value after
+    // the constructor so no game-owned state is changed.
+    constexpr uintptr_t MEDIUM_OVERRIDE_FAR_CLIP_DISTANCE_OFFSET = 0x1CC;
+    std::optional<float> medium_original_far_clip{};
+    const auto medium_far_clip_address =
+        reinterpret_cast<uintptr_t>(init_options) + MEDIUM_OVERRIDE_FAR_CLIP_DISTANCE_OFFSET;
+
+    if (medium_is_current_game() && vr->is_medium_far_plane_override_suppression_enabled()) {
+        float current_far_clip{};
+        if (safe_read_value(medium_far_clip_address, current_far_clip) &&
+            is_writable_process_range(medium_far_clip_address, sizeof(current_far_clip)))
+        {
+            if (std::isfinite(current_far_clip) && current_far_clip > 0.0f) {
+                medium_original_far_clip = current_far_clip;
+                constexpr float USE_ENGINE_DEFAULT_FAR_CLIP = -1.0f;
+                std::memcpy(
+                    reinterpret_cast<void*>(medium_far_clip_address),
+                    &USE_ENGINE_DEFAULT_FAR_CLIP,
+                    sizeof(USE_ENGINE_DEFAULT_FAR_CLIP));
+
+                SPDLOG_INFO_ONCE(
+                    "[Medium][FarPlane] Suppressing PDB-validated gameplay far-plane override (first value={})",
+                    current_far_clip);
+            }
+        } else {
+            SPDLOG_WARN_ONCE(
+                "[Medium][FarPlane] FSceneViewInitOptions far-plane field was not readable/writable; suppression failed closed");
+        }
+    }
+
     auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+
+    if (medium_original_far_clip.has_value()) {
+        std::memcpy(
+            reinterpret_cast<void*>(medium_far_clip_address),
+            &*medium_original_far_clip,
+            sizeof(*medium_original_far_clip));
+    }
 
     if (vr->is_splitscreen_compatibility_enabled()) {
         auto& split_views = g_hook->m_sceneview_data.splitscreen_views;
@@ -12604,6 +13102,160 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 return false;
             }
 
+            // The Medium constructs its views on the game thread, then submits the
+            // family on the render thread after g_frame_count advances. Constructor
+            // metadata therefore cannot prove the pair even though the live views
+            // retain all of the source-defined ownership fields. Use the exact
+            // UE4.25Plus/PDB layout only for this executable and only for a complete,
+            // ordinary two-eye gameplay family. Every field is validated before the
+            // view list is touched, so a changed game layout fails closed.
+            if (medium_is_current_game() && views->count == 2) {
+                struct MediumIntRect {
+                    int32_t min_x{};
+                    int32_t min_y{};
+                    int32_t max_x{};
+                    int32_t max_y{};
+                };
+
+                struct MediumDirectView {
+                    sdk::FSceneView* view{};
+                    sdk::FSceneViewFamily* family{};
+                    sdk::FSceneViewStateInterface* state{};
+                    int32_t player_index{-1};
+                    MediumIntRect unscaled_rect{};
+                    MediumIntRect unconstrained_rect{};
+                    uint32_t stereo_pass{};
+                    uint8_t is_game_view{};
+                    uint8_t is_scene_capture{};
+                    uint8_t is_reflection_capture{};
+                };
+
+                constexpr uintptr_t family_offset = 0x0;
+                constexpr uintptr_t state_offset = 0x8;
+                constexpr uintptr_t player_index_offset = 0x248;
+                constexpr uintptr_t unscaled_view_rect_offset = 0x258;
+                constexpr uintptr_t unconstrained_view_rect_offset = 0x268;
+                constexpr uintptr_t stereo_pass_offset = 0xAD0;
+                constexpr uintptr_t is_game_view_offset = 0xD70;
+                constexpr uintptr_t is_scene_capture_offset = 0xD72;
+                constexpr uintptr_t is_reflection_capture_offset = 0xD74;
+
+                const auto rect_is_sane = [](const MediumIntRect& rect) {
+                    const auto width = static_cast<int64_t>(rect.max_x) - rect.min_x;
+                    const auto height = static_cast<int64_t>(rect.max_y) - rect.min_y;
+                    return rect.min_x >= 0 && rect.min_y >= 0 &&
+                           width > 0 && height > 0 && width <= 16384 && height <= 16384;
+                };
+
+                std::array<MediumDirectView, 2> direct_views{};
+                bool direct_pair_valid = true;
+
+                for (size_t view_index = 0; view_index < direct_views.size(); ++view_index) {
+                    auto& direct = direct_views[view_index];
+                    direct.view = views->data[view_index];
+                    const auto address = reinterpret_cast<uintptr_t>(direct.view);
+
+                    direct_pair_valid = direct.view != nullptr &&
+                        safe_read_value(address + family_offset, direct.family) &&
+                        safe_read_value(address + state_offset, direct.state) &&
+                        safe_read_value(address + player_index_offset, direct.player_index) &&
+                        safe_read_value(address + unscaled_view_rect_offset, direct.unscaled_rect) &&
+                        safe_read_value(address + unconstrained_view_rect_offset, direct.unconstrained_rect) &&
+                        safe_read_value(address + stereo_pass_offset, direct.stereo_pass) &&
+                        safe_read_value(address + is_game_view_offset, direct.is_game_view) &&
+                        safe_read_value(address + is_scene_capture_offset, direct.is_scene_capture) &&
+                        safe_read_value(address + is_reflection_capture_offset, direct.is_reflection_capture);
+
+                    if (!direct_pair_valid || direct.family != family || direct.state == nullptr ||
+                        !is_readable_process_range(reinterpret_cast<uintptr_t>(direct.state), sizeof(uintptr_t)) ||
+                        direct.player_index < 0 || direct.player_index > 255 ||
+                        !rect_is_sane(direct.unscaled_rect) || !rect_is_sane(direct.unconstrained_rect) ||
+                        (direct.stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
+                         direct.stereo_pass != EStereoscopicPass::eSSP_SECONDARY) ||
+                        direct.is_game_view == 0 || direct.is_scene_capture != 0 ||
+                        direct.is_reflection_capture != 0)
+                    {
+                        direct_pair_valid = false;
+                        break;
+                    }
+                }
+
+                MediumDirectView* by_pass[2]{};
+                if (direct_pair_valid) {
+                    for (auto& direct : direct_views) {
+                        const auto pass_index =
+                            direct.stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
+                        if (by_pass[pass_index] != nullptr) {
+                            direct_pair_valid = false;
+                            break;
+                        }
+                        by_pass[pass_index] = &direct;
+                    }
+                }
+
+                if (direct_pair_valid) {
+                    const auto& left = *by_pass[0];
+                    const auto& right = *by_pass[1];
+                    const bool matching_player = left.player_index == right.player_index;
+                    const bool distinct_states = left.state != right.state;
+                    const bool matching_extent =
+                        left.unscaled_rect.min_y == right.unscaled_rect.min_y &&
+                        left.unscaled_rect.max_y == right.unscaled_rect.max_y &&
+                        left.unscaled_rect.max_x == right.unscaled_rect.min_x &&
+                        (left.unscaled_rect.max_x - left.unscaled_rect.min_x) ==
+                            (right.unscaled_rect.max_x - right.unscaled_rect.min_x);
+                    const bool matching_unconstrained_extent =
+                        left.unconstrained_rect.min_y == right.unconstrained_rect.min_y &&
+                        left.unconstrained_rect.max_y == right.unconstrained_rect.max_y &&
+                        left.unconstrained_rect.max_x == right.unconstrained_rect.min_x &&
+                        (left.unconstrained_rect.max_x - left.unconstrained_rect.min_x) ==
+                            (right.unconstrained_rect.max_x - right.unconstrained_rect.min_x);
+
+                    direct_pair_valid = matching_player && distinct_states &&
+                        matching_extent && matching_unconstrained_extent &&
+                        vr->get_requested_splitscreen_index() == 0;
+                }
+
+                if (direct_pair_valid) {
+                    const auto& left = *by_pass[0];
+                    const auto& right = *by_pass[1];
+
+                    split_screen_restores.push_back(SplitScreenViewsRestore{
+                        .views = views,
+                        .count = views->count,
+                        .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
+                    });
+
+                    if (vr->is_using_afr()) {
+                        views->data[0] = by_pass[g_frame_count % 2]->view;
+                        views->count = 1;
+                    } else {
+                        views->data[0] = left.view;
+                        views->data[1] = right.view;
+                        views->count = 2;
+                    }
+
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Medium][SplitScreen] Rendering PDB-validated gameplay eye pair PlayerIndex={} "
+                        "left={:x}/state={:x} right={:x}/state={:x} rects=[{},{} -> {},{}]/[{},{} -> {},{}]",
+                        left.player_index,
+                        reinterpret_cast<uintptr_t>(left.view),
+                        reinterpret_cast<uintptr_t>(left.state),
+                        reinterpret_cast<uintptr_t>(right.view),
+                        reinterpret_cast<uintptr_t>(right.state),
+                        left.unscaled_rect.min_x,
+                        left.unscaled_rect.min_y,
+                        left.unscaled_rect.max_x,
+                        left.unscaled_rect.max_y,
+                        right.unscaled_rect.min_x,
+                        right.unscaled_rect.min_y,
+                        right.unscaled_rect.max_x,
+                        right.unscaled_rect.max_y);
+                    return true;
+                }
+            }
+
             std::vector<PlayerViewPair> pairs{};
             bool grouped_by_player = true;
 
@@ -13172,7 +13824,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             ++resolver_attempts;
             calls_until_retry = 30;
 
-            const auto candidate = dune_awakening_is_current_game()
+            const auto candidate = medium_is_current_game()
+                ? resolve_medium_begin_rendering_viewfamily()
+                : dune_awakening_is_current_game()
                 ? resolve_dune_begin_rendering_viewfamilies()
                 : resolve_begin_rendering_viewfamilies_from_stack();
             if (!candidate) {
@@ -15598,6 +16252,8 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
 
     auto& vr = VR::get();
 
+    try_reset_medium_view_states();
+
     bool ghosting_bootstrap_ready = false;
     {
         std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
@@ -15616,15 +16272,24 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     // stereo device. A valid GetDesiredNumberOfViews hook therefore cannot
     // retroactively allocate the missing right-eye ViewState.
     const bool ue426_needs_localplayer_bootstrap = is_ue_4_26_runtime();
+    const bool medium_needs_localplayer_bootstrap =
+        medium_is_current_game() &&
+        g_medium_view_state_reset.gameplay_scene_view_seen.load(std::memory_order_acquire);
+    const bool medium_waiting_for_gameplay =
+        medium_is_current_game() && !medium_needs_localplayer_bootstrap;
     const bool wants_localplayer_bootstrap =
         wants_ghosting_bootstrap ||
         ue426_needs_localplayer_bootstrap ||
+        medium_needs_localplayer_bootstrap ||
         vr->is_native_stereo_fix_enabled() ||
         vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
         !g_hook->m_get_desired_number_of_views_hook;
 
-    if (!vr->should_skip_post_init_properties() && wants_localplayer_bootstrap) {
+    if (!vr->should_skip_post_init_properties() &&
+        wants_localplayer_bootstrap &&
+        !medium_waiting_for_gameplay)
+    {
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
@@ -16489,7 +17154,51 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
+    const auto medium_ue425plus_post_init = medium_is_current_game();
+    uintptr_t medium_existing_view_state{};
+    bool medium_allocate_guard_succeeded{!medium_ue425plus_post_init};
     const auto ue426_post_init = is_ue_4_26_runtime();
+
+    if (medium_ue425plus_post_init) {
+        const auto view_states = read_medium_view_states(localplayer);
+
+        if (!view_states) {
+            SPDLOG_WARN(
+                "[Medium][UE4.25Plus] ViewStates layout validation failed; refusing LocalPlayer bootstrap");
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        if (view_states->count >= 2) {
+            SPDLOG_INFO(
+                "[Medium][UE4.25Plus] LocalPlayer already has {} ViewStates; bootstrap is not needed",
+                view_states->count);
+            schedule_medium_view_state_reset(localplayer);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        if (view_states->count != 1 || view_states->references[0] == 0 || view_states->capacity < 2) {
+            SPDLOG_WARN(
+                "[Medium][UE4.25Plus] Expected one valid in-place-expandable ViewState, found count={} capacity={} left={:x}; refusing bootstrap",
+                view_states->count,
+                view_states->capacity,
+                view_states->references[0]);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        if (!attempt_hook_medium_view_state_allocate()) {
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        medium_existing_view_state = view_states->references[0];
+
+        SPDLOG_INFO(
+            "[Medium][UE4.25Plus] Existing LocalPlayer has one ViewState with spare capacity {}; preserving it while allocating only the missing right-eye state",
+            view_states->capacity);
+    }
 
     if (ue426_post_init) {
         // Verified in UE4.26.1 source and multiple shipping builds:
@@ -16525,6 +17234,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     const auto ue53_post_init = is_ue_5_3_dx_backend();
     const auto prospi_ue427_post_init = is_ue_4_27_runtime() && prospi_is_current_game();
     const auto needs_source_informed_post_init =
+        medium_ue425plus_post_init ||
         ue426_post_init ||
         prospi_ue427_post_init ||
         is_ue_5_7_or_newer() ||
@@ -16539,7 +17249,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if ((ue426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+    if ((medium_ue425plus_post_init || ue426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
@@ -16599,6 +17309,19 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     if (idx) {
         SPDLOG_INFO("Calling PostInitProperties on local player!");
 
+        const void (*post_init_properties)(uintptr_t) = (*(decltype(post_init_properties)**)localplayer)[*idx];
+        const auto post_init_instruction = utility::decode_one((uint8_t*)post_init_properties);
+        if (post_init_instruction &&
+            std::string_view{post_init_instruction->Mnemonic}.starts_with("RET"))
+        {
+            SPDLOG_INFO(
+                "[PostInitProperties] Source-verified slot {} is a no-op shipping thunk; no bootstrap call is required",
+                *idx);
+            g_hook->m_sceneview_data.known_scene_states.clear();
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
         // Get PEB and set debugger present
         auto peb = (PEB*)__readgsqword(0x60);
 
@@ -16611,19 +17334,6 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         static std::vector<uintptr_t> patch_locations{};
 
         static std::vector<Patch::Ptr> assert_patches{};
-        const void (*post_init_properties)(uintptr_t) = (*(decltype(post_init_properties)**)localplayer)[*idx];
-
-        const auto post_init_instruction = utility::decode_one((uint8_t*)post_init_properties);
-        if (post_init_instruction &&
-            std::string_view{post_init_instruction->Mnemonic}.starts_with("RET"))
-        {
-            SPDLOG_INFO(
-                "[PostInitProperties] Source-verified slot {} is a no-op shipping thunk; no bootstrap call is required",
-                *idx);
-            g_hook->m_sceneview_data.known_scene_states.clear();
-            g_hook->m_fixed_localplayer_view_count = true;
-            return;
-        }
 
         // Scan through all of the branches of PostInitProperties to find any assertions
         // The assertion we're looking for is easily identified by a string that it loads in RCX, named "!Reference"
@@ -16725,11 +17435,56 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
         const auto exception_handler = AddVectoredExceptionHandler(1, seh_handler);
 
+        if (medium_ue425plus_post_init) {
+            g_medium_view_state_allocate_guard = MediumViewStateAllocateGuard{
+                .active = true,
+                .existing_reference = medium_existing_view_state,
+            };
+        }
+
         m_sceneview_data.inside_post_init_properties = true;
         post_init_properties(localplayer);
         m_sceneview_data.inside_post_init_properties = false;
 
+        if (medium_ue425plus_post_init) {
+            auto& guard = g_medium_view_state_allocate_guard;
+            guard.active = false;
+            medium_allocate_guard_succeeded =
+                !guard.failed && guard.skipped_existing == 1 && guard.allocated_empty == 1;
+
+            if (medium_allocate_guard_succeeded) {
+                SPDLOG_INFO(
+                    "[Medium][UE4.25Plus] Preserved the existing left ViewState and allocated exactly one new right ViewState");
+            } else {
+                SPDLOG_ERROR(
+                    "[Medium][UE4.25Plus] Guarded ViewState allocation did not match the expected 1 preserved/1 new calls (failed={} preserved={} new={})",
+                    guard.failed,
+                    guard.skipped_existing,
+                    guard.allocated_empty);
+            }
+        }
+
         SPDLOG_INFO("PostInitProperties called!");
+
+        if (medium_ue425plus_post_init) {
+            const auto view_states = read_medium_view_states(localplayer);
+
+            if (medium_allocate_guard_succeeded && view_states && view_states->count == 2 &&
+                view_states->references[0] != 0 && view_states->references[1] != 0 &&
+                view_states->references[0] == medium_existing_view_state &&
+                view_states->references[0] != view_states->references[1])
+            {
+                SPDLOG_INFO(
+                    "[Medium][UE4.25Plus] Bootstrap completed with two distinct ViewStates left={:x} right={:x}",
+                    view_states->references[0],
+                    view_states->references[1]);
+                schedule_medium_view_state_reset(localplayer);
+            } else {
+                SPDLOG_ERROR(
+                    "[Medium][UE4.25Plus] Bootstrap did not produce a valid distinct stereo ViewState pair; reset disabled");
+                g_medium_view_state_reset.phase.store(MediumViewStateResetPhase::Failed, std::memory_order_release);
+            }
+        }
 
         if (ue426_post_init) {
             constexpr uintptr_t UE426_VIEW_STATES_NUM_OFFSET = 0xB0;

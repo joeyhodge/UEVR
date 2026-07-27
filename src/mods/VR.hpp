@@ -722,6 +722,10 @@ public:
         return m_compatibility_daysgone_bend_ui_placement_fix->value();
     }
 
+    bool is_medium_far_plane_override_suppression_enabled() const {
+        return m_compatibility_medium_far_plane_override_suppression->value();
+    }
+
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
         return m_last_xinput_update.time_since_epoch().count() != 0 &&
             (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
@@ -1522,6 +1526,7 @@ private:
     const ModToggle::Ptr m_compatibility_everspace2_remove_cinematic_bars{ ModToggle::create(generate_name("Compatibility_Everspace2RemoveCinematicBars"), false, true) };
     const ModToggle::Ptr m_compatibility_dune_true_stereo{ ModToggle::create(generate_name("Compatibility_DuneTrueStereo"), false, true) };
     const ModToggle::Ptr m_compatibility_dune_native_dual_view_probe{ ModToggle::create(generate_name("Compatibility_DuneNativeDualViewProbe"), false, true) };
+    const ModToggle::Ptr m_compatibility_medium_far_plane_override_suppression{ ModToggle::create(generate_name("Compatibility_MediumFarPlaneOverrideSuppression"), false, true) };
 
     struct Fullscreen16x9CameraCompatState {
         bool was_enabled{false};
@@ -1830,6 +1835,7 @@ public:
             *m_compatibility_everspace2_remove_cinematic_bars,
             *m_compatibility_dune_true_stereo,
             *m_compatibility_dune_native_dual_view_probe,
+            *m_compatibility_medium_far_plane_override_suppression,
             *m_sceneview_compatibility_mode,
             *m_keybind_recenter,
             *m_keybind_recenter_horizon,

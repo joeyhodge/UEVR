@@ -52,6 +52,7 @@
 namespace {
 bool is_stalker2_executable_cached();
 bool is_dune_awakening_executable_cached();
+bool is_medium_executable_cached();
 }
 
 std::shared_ptr<VR>& VR::get() {
@@ -239,6 +240,26 @@ bool is_everspace2_executable_cached() {
     }();
 
     return is_everspace2;
+}
+
+bool is_medium_executable_cached() {
+    static const bool is_medium = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t c) {
+            return static_cast<wchar_t>(std::towlower(c));
+        });
+
+        return lowered.ends_with(L"\\medium-win64-shipping.exe") ||
+               lowered.ends_with(L"/medium-win64-shipping.exe") ||
+               lowered == L"medium-win64-shipping.exe";
+    }();
+
+    return is_medium;
 }
 
 bool is_directive8020_executable_cached() {
@@ -9041,6 +9062,15 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 if (m_fake_stereo_hook != nullptr) {
                     const auto status = m_fake_stereo_hook->get_dune_final_output_probe_status_text();
                     ImGui::TextWrapped("Dune native output: %s", status.c_str());
+                }
+            }
+            if (is_medium_executable_cached()) {
+                m_compatibility_medium_far_plane_override_suppression->draw(
+                    "The Medium: Suppress Gameplay Far-Plane Override (Experimental)");
+                if (m_compatibility_medium_far_plane_override_suppression->value()) {
+                    ImGui::TextWrapped(
+                        "The Medium only, default off: ignores the game's custom positive MainCameraFarPlane when constructing HMD gameplay views, "
+                        "allowing UEVR's normal per-eye projection to control both eyes. The transient constructor input is restored immediately afterward.");
                 }
             }
             if (is_windrose_executable()) {
