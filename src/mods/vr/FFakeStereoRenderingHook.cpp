@@ -126,32 +126,35 @@ struct MediumViewStateAllocateGuard {
 
 thread_local MediumViewStateAllocateGuard g_medium_view_state_allocate_guard{};
 
-struct MediumRenderIntPoint {
-    int32_t x{};
-    int32_t y{};
+constexpr uintptr_t MEDIUM_VIEW_FAMILY_OFFSET = 0x0;
+constexpr uintptr_t MEDIUM_VIEW_STATE_OFFSET = 0x8;
+constexpr uintptr_t MEDIUM_VIEW_PLAYER_INDEX_OFFSET = 0x248;
+constexpr uintptr_t MEDIUM_VIEW_MATRICES_OFFSET = 0x280;
+constexpr size_t MEDIUM_VIEW_MATRICES_SIZE = 0x3B0;
+constexpr uintptr_t MEDIUM_VIEW_MATRIX_OFFSET = 0xC0;
+constexpr uintptr_t MEDIUM_VIEW_PROJECTION_MATRIX_OFFSET = 0x0;
+constexpr uintptr_t MEDIUM_VIEW_PROJECTION_OFFSET = 0x140;
+constexpr uintptr_t MEDIUM_VIEW_STEREO_PASS_OFFSET = 0xAD0;
+constexpr uintptr_t MEDIUM_VIEW_FRUSTUM_OFFSET = 0xBF0;
+constexpr uintptr_t MEDIUM_VIEW_REVERSE_CULLING_OFFSET = 0xD38;
+constexpr uintptr_t MEDIUM_VIEW_IS_GAME_OFFSET = 0xD70;
+constexpr uintptr_t MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET = 0xD72;
+constexpr uintptr_t MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET = 0xD74;
+constexpr uintptr_t MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET = 0xD75;
 
-    bool operator==(const MediumRenderIntPoint&) const = default;
-};
-
-struct MediumRenderIntRect {
-    int32_t min_x{};
-    int32_t min_y{};
-    int32_t max_x{};
-    int32_t max_y{};
-
-    bool operator==(const MediumRenderIntRect&) const = default;
-};
-
-struct MediumViewUniformRectCache {
+struct MediumLateViewSnapshot {
     bool valid{};
-    uintptr_t scene{};
-    uintptr_t render_target{};
-    uint32_t family_frame{};
-    MediumRenderIntPoint buffer_size{};
-    MediumRenderIntRect right_rect{};
+    uintptr_t view{};
+    uintptr_t family{};
+    uintptr_t state{};
+    uint32_t frame{};
+    int32_t player_index{-1};
+    uint32_t stereo_pass{};
+    uint8_t reverse_culling{};
+    std::array<uint8_t, MEDIUM_VIEW_MATRICES_SIZE> view_matrices{};
 };
 
-thread_local MediumViewUniformRectCache g_medium_view_uniform_rect_cache{};
+thread_local MediumLateViewSnapshot g_medium_late_view_snapshot{};
 
 struct DunePendingTrueStereoView {
     bool valid{false};
@@ -5066,6 +5069,63 @@ std::optional<uintptr_t> resolve_medium_begin_rendering_viewfamily() {
     return resolved;
 }
 
+std::optional<uintptr_t> resolve_medium_get_view_frustum_bounds() {
+    if (!medium_is_current_game()) {
+        return std::nullopt;
+    }
+
+    static const auto resolved = []() -> std::optional<uintptr_t> {
+        const auto module = utility::get_executable();
+
+        // Exact PDB-confirmed UE4.25Plus wrapper:
+        // GetViewFrustumBounds(FConvexVolume&, const FMatrix&, bool).
+        constexpr auto wrapper_pattern =
+            "48 83 EC 48 44 88 44 24 20 45 33 C9 4C 8D 44 24 30 "
+            "E8 ? ? ? ? 48 83 C4 48 C3";
+        const auto candidate = utility::scan(module, wrapper_pattern);
+        const auto function = candidate ? get_runtime_function_range(*candidate) : std::nullopt;
+
+        if (!candidate || !function || function->begin != *candidate ||
+            function->image_base != reinterpret_cast<uintptr_t>(module) ||
+            function->size() != 0x1B || !is_executable_process_range(*candidate, 0x1B))
+        {
+            SPDLOG_ERROR(
+                "[Medium][LateViewRepair] GetViewFrustumBounds wrapper validation failed; repair remains disabled");
+            return std::nullopt;
+        }
+
+        int32_t displacement{};
+        std::memcpy(
+            &displacement,
+            reinterpret_cast<const void*>(*candidate + 0x12),
+            sizeof(displacement));
+        const auto callee = *candidate + 0x16 + static_cast<int64_t>(displacement);
+        constexpr std::array<uint8_t, 22> callee_prefix{
+            0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x18, 0x55,
+            0x57, 0x41, 0x56, 0x48, 0x8D, 0x68, 0xA9, 0x48,
+            0x81, 0xEC, 0xC0, 0x00, 0x00, 0x00,
+        };
+
+        if (!is_executable_process_range(callee, callee_prefix.size()) ||
+            std::memcmp(
+                reinterpret_cast<const void*>(callee),
+                callee_prefix.data(),
+                callee_prefix.size()) != 0)
+        {
+            SPDLOG_ERROR(
+                "[Medium][LateViewRepair] GetViewFrustumBounds overload validation failed; repair remains disabled");
+            return std::nullopt;
+        }
+
+        SPDLOG_INFO(
+            "[Medium][LateViewRepair] Resolved PDB-validated GetViewFrustumBounds at {:x}",
+            *candidate);
+        return *candidate;
+    }();
+
+    return resolved;
+}
+
 bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const auto function = get_runtime_function_range(target);
@@ -7045,7 +7105,10 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
 
     auto& vr = VR::get();
 
-    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() && !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled()) {
+    if (!vr->is_ghosting_fix_enabled() && !vr->is_splitscreen_compatibility_enabled() &&
+        !vr->is_sceneview_compatibility_enabled() && !vr->is_native_stereo_fix_enabled() &&
+        !medium_is_current_game())
+    {
         return;
     }
 
@@ -7338,241 +7401,6 @@ void FFakeStereoRenderingHook::medium_view_state_allocate_hook(void* view_state_
     }
 
     hook->m_medium_view_state_allocate_hook.call<void>(view_state_reference);
-}
-
-bool FFakeStereoRenderingHook::attempt_hook_medium_view_uniform_rect() {
-    if (m_medium_view_uniform_rect_hook) {
-        return true;
-    }
-
-    if (m_attempted_hook_medium_view_uniform_rect || !medium_is_current_game()) {
-        return false;
-    }
-
-    m_attempted_hook_medium_view_uniform_rect = true;
-
-    // The Medium's NVIDIA UE4.25Plus fork adds a DLSS parameter to the view
-    // uniform path. Match its complete PDB-confirmed FViewInfo entry and the
-    // exact reads of bIsMobileMultiViewEnabled/ViewRect before touching it.
-    constexpr auto function_pattern =
-        "4C 8B DC 55 53 56 41 56 41 57 49 8D AB 18 FE FF FF 48 81 EC C0 02 00 00 "
-        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 38 01 00 00 48 8B 85 10 02 00 00 "
-        "48 8B DA 48 8B B5 20 02 00 00 4C 8B F1";
-    constexpr size_t pdb_function_span = 0x1E6F;
-    constexpr size_t view_rect_validation_offset = 0x77;
-    constexpr std::array<uint8_t, 52> view_rect_validation{
-        0x44, 0x38, 0xA1, 0x7C, 0x0D, 0x00, 0x00, 0x74,
-        0x28, 0x8B, 0x81, 0xB8, 0x15, 0x00, 0x00, 0x2B,
-        0x81, 0xB0, 0x15, 0x00, 0x00, 0x89, 0x45, 0x2C,
-        0x8B, 0x81, 0xBC, 0x15, 0x00, 0x00, 0x2B, 0x81,
-        0xB4, 0x15, 0x00, 0x00, 0x89, 0x45, 0x30, 0x48,
-        0x8D, 0x45, 0x24, 0x4C, 0x89, 0x65, 0x24, 0xEB,
-        0x0F, 0x0F, 0x10, 0x81,
-    };
-
-    const auto executable = utility::get_executable();
-    const auto target = utility::scan(executable, function_pattern);
-    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
-    // This large function is split across multiple chained x64 unwind entries.
-    // RtlLookupFunctionEntry therefore reports only the first fragment, not the
-    // complete PDB function span validated below.
-    if (!target || !function || function->begin != *target ||
-        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
-        !is_executable_process_range(*target, pdb_function_span) ||
-        std::memcmp(
-            reinterpret_cast<const void*>(*target + view_rect_validation_offset),
-            view_rect_validation.data(),
-            view_rect_validation.size()) != 0)
-    {
-        SPDLOG_WARN(
-            "[Medium][ViewUniformRect] FViewInfo::SetupUniformBufferParameters signature/body validation failed; correction disabled");
-        return false;
-    }
-
-    auto hook = safetyhook::create_inline(
-        reinterpret_cast<void*>(*target),
-        &FFakeStereoRenderingHook::medium_view_uniform_rect_hook);
-    if (!hook) {
-        SPDLOG_WARN(
-            "[Medium][ViewUniformRect] Failed to hook validated FViewInfo::SetupUniformBufferParameters at {:x}",
-            *target);
-        return false;
-    }
-
-    m_medium_view_uniform_rect_hook = std::move(hook);
-    SPDLOG_INFO(
-        "[Medium][ViewUniformRect] Hooked validated FViewInfo::SetupUniformBufferParameters at {:x}",
-        *target);
-    return true;
-}
-
-void FFakeStereoRenderingHook::medium_view_uniform_rect_hook(
-    void* view_info,
-    void* scene_context,
-    const void* view_matrices,
-    const void* previous_view_matrices,
-    void* out_bounds,
-    int32_t num_cascades,
-    void* parameters)
-{
-    auto* hook = g_hook;
-    if (hook == nullptr || !hook->m_medium_view_uniform_rect_hook) {
-        return;
-    }
-
-    const auto call_original = [&]() {
-        hook->m_medium_view_uniform_rect_hook.call<void>(
-            view_info,
-            scene_context,
-            view_matrices,
-            previous_view_matrices,
-            out_bounds,
-            num_cascades,
-            parameters);
-    };
-
-    const auto vr = VR::get();
-    if (g_framework == nullptr || !g_framework->is_game_data_intialized() ||
-        vr == nullptr || !vr->is_hmd_active() ||
-        !vr->is_splitscreen_compatibility_enabled() ||
-        vr->is_using_afr() || vr->is_native_stereo_fix_enabled() ||
-        vr->is_stereo_emulation_enabled() || vr->is_extreme_compatibility_mode_enabled() ||
-        view_info == nullptr || scene_context == nullptr)
-    {
-        call_original();
-        return;
-    }
-
-    constexpr uintptr_t family_offset = 0x0;
-    constexpr uintptr_t player_index_offset = 0x248;
-    constexpr uintptr_t stereo_pass_offset = 0xAD0;
-    constexpr uintptr_t is_game_view_offset = 0xD70;
-    constexpr uintptr_t is_view_info_offset = 0xD71;
-    constexpr uintptr_t is_scene_capture_offset = 0xD72;
-    constexpr uintptr_t is_reflection_capture_offset = 0xD74;
-    constexpr uintptr_t is_planar_reflection_offset = 0xD75;
-    constexpr uintptr_t view_rect_offset = 0x15B0;
-    constexpr uintptr_t family_render_target_offset = 0x20;
-    constexpr uintptr_t family_scene_offset = 0x28;
-    constexpr uintptr_t family_frame_offset = 0x44;
-    constexpr uintptr_t scene_context_buffer_size_offset = 0x3AC;
-    constexpr int32_t max_texture_dimension = 16384;
-
-    const auto address = reinterpret_cast<uintptr_t>(view_info);
-    const auto context_address = reinterpret_cast<uintptr_t>(scene_context);
-    uintptr_t family{};
-    uintptr_t scene{};
-    uintptr_t render_target{};
-    int32_t player_index{-1};
-    uint32_t stereo_pass{};
-    uint32_t family_frame{};
-    uint8_t is_game_view{};
-    uint8_t is_view_info{};
-    uint8_t is_scene_capture{};
-    uint8_t is_reflection_capture{};
-    uint8_t is_planar_reflection{};
-    MediumRenderIntPoint buffer_size{};
-    MediumRenderIntRect view_rect{};
-
-    const bool fields_valid =
-        safe_read_value(address + family_offset, family) && family != 0 &&
-        safe_read_value(address + player_index_offset, player_index) &&
-        safe_read_value(address + stereo_pass_offset, stereo_pass) &&
-        safe_read_value(address + is_game_view_offset, is_game_view) &&
-        safe_read_value(address + is_view_info_offset, is_view_info) &&
-        safe_read_value(address + is_scene_capture_offset, is_scene_capture) &&
-        safe_read_value(address + is_reflection_capture_offset, is_reflection_capture) &&
-        safe_read_value(address + is_planar_reflection_offset, is_planar_reflection) &&
-        safe_read_value(address + view_rect_offset, view_rect) &&
-        safe_read_value(family + family_render_target_offset, render_target) &&
-        safe_read_value(family + family_scene_offset, scene) &&
-        safe_read_value(family + family_frame_offset, family_frame) &&
-        safe_read_value(context_address + scene_context_buffer_size_offset, buffer_size);
-
-    const auto rect_is_sane = [&](const MediumRenderIntRect& rect) {
-        const auto width = static_cast<int64_t>(rect.max_x) - rect.min_x;
-        const auto height = static_cast<int64_t>(rect.max_y) - rect.min_y;
-        return rect.min_x >= 0 && rect.min_y >= 0 &&
-            width > 0 && height > 0 &&
-            rect.max_x <= buffer_size.x && rect.max_y <= buffer_size.y &&
-            width <= max_texture_dimension && height <= max_texture_dimension;
-    };
-
-    if (!fields_valid || player_index != 0 ||
-        (stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
-         stereo_pass != EStereoscopicPass::eSSP_SECONDARY) ||
-        is_game_view != 1 || is_view_info != 1 ||
-        is_scene_capture != 0 || is_reflection_capture != 0 || is_planar_reflection != 0 ||
-        scene == 0 || render_target == 0 ||
-        buffer_size.x <= 0 || buffer_size.y <= 0 ||
-        buffer_size.x > max_texture_dimension || buffer_size.y > max_texture_dimension ||
-        !rect_is_sane(view_rect))
-    {
-        call_original();
-        return;
-    }
-
-    auto& cache = g_medium_view_uniform_rect_cache;
-    if (stereo_pass == EStereoscopicPass::eSSP_SECONDARY) {
-        cache = MediumViewUniformRectCache{
-            .valid = true,
-            .scene = scene,
-            .render_target = render_target,
-            .family_frame = family_frame,
-            .buffer_size = buffer_size,
-            .right_rect = view_rect,
-        };
-    } else if (cache.valid && cache.scene == scene &&
-               cache.render_target == render_target && cache.buffer_size == buffer_size &&
-               (family_frame == cache.family_frame || family_frame == cache.family_frame + 1))
-    {
-        const auto right_width =
-            static_cast<int64_t>(cache.right_rect.max_x) - cache.right_rect.min_x;
-        const auto right_height =
-            static_cast<int64_t>(cache.right_rect.max_y) - cache.right_rect.min_y;
-        const auto derived_min_x = static_cast<int64_t>(cache.right_rect.min_x) - right_width;
-
-        if (right_width > 0 && right_height > 0 &&
-            derived_min_x >= 0 && derived_min_x <= std::numeric_limits<int32_t>::max())
-        {
-            const MediumRenderIntRect corrected{
-                .min_x = static_cast<int32_t>(derived_min_x),
-                .min_y = cache.right_rect.min_y,
-                .max_x = cache.right_rect.min_x,
-                .max_y = cache.right_rect.max_y,
-            };
-
-            if (rect_is_sane(corrected)) {
-                if (!(view_rect == corrected) &&
-                    is_writable_process_range(address + view_rect_offset, sizeof(corrected)))
-                {
-                    std::memcpy(
-                        reinterpret_cast<void*>(address + view_rect_offset),
-                        &corrected,
-                        sizeof(corrected));
-
-                    static std::atomic_uint64_t correction_count{};
-                    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
-                    if (count <= 12) {
-                        SPDLOG_INFO(
-                            "[Medium][ViewUniformRect] Corrected shader-visible left rect "
-                            "[{},{} -> {},{}] -> [{},{} -> {},{}] from trusted right "
-                            "[{},{} -> {},{}], buffer={}x{}, frame={}, correction={}",
-                            view_rect.min_x, view_rect.min_y, view_rect.max_x, view_rect.max_y,
-                            corrected.min_x, corrected.min_y, corrected.max_x, corrected.max_y,
-                            cache.right_rect.min_x, cache.right_rect.min_y,
-                            cache.right_rect.max_x, cache.right_rect.max_y,
-                            buffer_size.x, buffer_size.y, family_frame, count);
-                    }
-                } else if (view_rect == corrected) {
-                    SPDLOG_INFO_ONCE(
-                        "[Medium][ViewUniformRect] Shader-visible left rect already matches the trusted right-eye geometry");
-                }
-            }
-        }
-    }
-
-    call_original();
 }
 
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
@@ -8004,8 +7832,6 @@ bool FFakeStereoRenderingHook::hook() {
     hook_ue418_oculus_pixel_density_sink();
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
-    attempt_hook_medium_view_uniform_rect();
-
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
@@ -11273,22 +11099,59 @@ struct SceneViewExtensionAnalyzer {
             g_view_extension_vtable[setup_view_family_index + 2] = (uintptr_t)&FFakeStereoRenderingHook::setup_viewpoint;
         }
 
-        if (dune_awakening_is_current_game() && !index_0_called) {
+        if ((dune_awakening_is_current_game() || medium_is_current_game()) && !index_0_called) {
             if ((setup_view_family_index + 1) != begin_render_viewfamily_index) {
                 g_view_extension_vtable[setup_view_family_index + 1] =
                     (uintptr_t)&FFakeStereoRenderingHook::setup_view;
             }
 
-            if ((setup_view_family_index + 3) != begin_render_viewfamily_index) {
+            if (dune_awakening_is_current_game() &&
+                (setup_view_family_index + 3) != begin_render_viewfamily_index)
+            {
                 g_view_extension_vtable[setup_view_family_index + 3] =
                     (uintptr_t)&FFakeStereoRenderingHook::setup_view_projection_matrix;
             }
 
-            SPDLOG_INFO(
-                "[Dune][ViewTrace] Installed read-only callbacks SetupView={} SetupViewPoint={} SetupViewProjectionMatrix={}",
-                setup_view_family_index + 1,
-                setup_view_family_index + 2,
-                setup_view_family_index + 3);
+            if (dune_awakening_is_current_game()) {
+                SPDLOG_INFO(
+                    "[Dune][ViewTrace] Installed read-only callbacks SetupView={} SetupViewPoint={} SetupViewProjectionMatrix={}",
+                    setup_view_family_index + 1,
+                    setup_view_family_index + 2,
+                    setup_view_family_index + 3);
+            }
+
+            if (medium_is_current_game()) {
+                const auto setup_view_index = setup_view_family_index + 1;
+                const auto priority_index =
+                    is_active_this_frame_index > 0
+                        ? is_active_this_frame_index - 1
+                        : std::numeric_limits<uint32_t>::max();
+                const bool priority_slot_is_safe =
+                    priority_index < g_view_extension_vtable.size() &&
+                    priority_index != setup_view_family_index &&
+                    priority_index != setup_view_index &&
+                    priority_index != begin_render_viewfamily_index &&
+                    priority_index != pre_render_viewfamily_renderthread_index &&
+                    priority_index != is_active_this_frame_index;
+
+                if (priority_slot_is_safe) {
+                    g_view_extension_vtable[priority_index] =
+                        (uintptr_t)+[](ISceneViewExtension*) -> int32_t {
+                            // UE4 sorts extensions by descending priority. Run
+                            // after The Medium's priority-0 mirror extension.
+                            return -1000;
+                        };
+                    resolve_medium_get_view_frustum_bounds();
+                    SPDLOG_INFO(
+                        "[Medium][LateViewRepair] Installed late SetupView callback={} priority={} value=-1000",
+                        setup_view_index,
+                        priority_index);
+                } else {
+                    SPDLOG_ERROR(
+                        "[Medium][LateViewRepair] Refusing callback priority override: unsafe GetPriority index {}",
+                        priority_index);
+                }
+            }
         }
 
         // PreRenderViewFamily_RenderThread
@@ -11652,6 +11515,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     SPDLOG_INFO_ONCE("Called FSceneView constructor for the first time");
 
     auto& vr = VR::get();
+
+    if (medium_is_current_game()) {
+        // CalcSceneView invokes extensions immediately after each constructor.
+        // Never let an unmatched constructor leave stale repair state behind.
+        g_medium_late_view_snapshot.valid = false;
+    }
 
     if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
@@ -12520,6 +12389,61 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             sizeof(*medium_original_far_clip));
     }
 
+    if (medium_is_current_game() && result != nullptr && init_options_view_family != nullptr &&
+        init_options_scene != nullptr && !vr->is_using_afr() &&
+        !vr->is_native_stereo_fix_enabled() && !vr->is_stereo_emulation_enabled() &&
+        !vr->is_extreme_compatibility_mode_enabled())
+    {
+        const auto address = reinterpret_cast<uintptr_t>(result);
+        uintptr_t family{};
+        uintptr_t state{};
+        int32_t player_index{-1};
+        uint32_t stereo_pass{};
+        uint8_t reverse_culling{};
+        uint8_t is_game_view{};
+        uint8_t is_scene_capture{};
+        uint8_t is_reflection_capture{};
+        uint8_t is_planar_reflection{};
+
+        const bool fields_valid =
+            safe_read_value(address + MEDIUM_VIEW_FAMILY_OFFSET, family) &&
+            safe_read_value(address + MEDIUM_VIEW_STATE_OFFSET, state) &&
+            safe_read_value(address + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, player_index) &&
+            safe_read_value(address + MEDIUM_VIEW_STEREO_PASS_OFFSET, stereo_pass) &&
+            safe_read_value(address + MEDIUM_VIEW_REVERSE_CULLING_OFFSET, reverse_culling) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_GAME_OFFSET, is_game_view) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, is_scene_capture) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, is_reflection_capture) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, is_planar_reflection) &&
+            is_readable_process_range(
+                address + MEDIUM_VIEW_MATRICES_OFFSET,
+                MEDIUM_VIEW_MATRICES_SIZE);
+
+        if (fields_valid && family == reinterpret_cast<uintptr_t>(init_options_view_family) &&
+            state != 0 && player_index == 0 &&
+            stereo_pass == EStereoscopicPass::eSSP_PRIMARY &&
+            is_game_view == 1 && is_scene_capture == 0 &&
+            is_reflection_capture == 0 && is_planar_reflection == 0)
+        {
+            auto& snapshot = g_medium_late_view_snapshot;
+            snapshot.valid = true;
+            snapshot.view = address;
+            snapshot.family = family;
+            snapshot.state = state;
+            snapshot.frame = g_frame_count;
+            snapshot.player_index = player_index;
+            snapshot.stereo_pass = stereo_pass;
+            snapshot.reverse_culling = reverse_culling;
+            std::memcpy(
+                snapshot.view_matrices.data(),
+                reinterpret_cast<const void*>(address + MEDIUM_VIEW_MATRICES_OFFSET),
+                snapshot.view_matrices.size());
+
+            SPDLOG_INFO_ONCE(
+                "[Medium][LateViewRepair] Armed constructor-to-SetupView matrix verification for the ordinary gameplay left eye");
+        }
+    }
+
     if (vr->is_splitscreen_compatibility_enabled()) {
         auto& split_views = g_hook->m_sceneview_data.splitscreen_views;
 
@@ -12597,6 +12521,153 @@ void FFakeStereoRenderingHook::setup_view(
     sdk::FSceneViewFamily& view_family,
     sdk::FSceneView& view)
 {
+    if (medium_is_current_game()) {
+        auto snapshot = g_medium_late_view_snapshot;
+        g_medium_late_view_snapshot.valid = false;
+
+        if (!snapshot.valid || g_hook == nullptr || g_framework == nullptr ||
+            !g_framework->is_game_data_intialized())
+        {
+            return;
+        }
+
+        const auto vr = VR::get();
+        const auto address = reinterpret_cast<uintptr_t>(&view);
+        if (vr == nullptr || !vr->is_hmd_active() || vr->is_using_afr() ||
+            vr->is_native_stereo_fix_enabled() || vr->is_stereo_emulation_enabled() ||
+            vr->is_extreme_compatibility_mode_enabled() ||
+            snapshot.view != address ||
+            snapshot.family != reinterpret_cast<uintptr_t>(&view_family) ||
+            snapshot.frame != g_frame_count)
+        {
+            return;
+        }
+
+        uintptr_t family{};
+        uintptr_t state{};
+        int32_t player_index{-1};
+        uint32_t stereo_pass{};
+        uint8_t reverse_culling{};
+        uint8_t is_game_view{};
+        uint8_t is_scene_capture{};
+        uint8_t is_reflection_capture{};
+        uint8_t is_planar_reflection{};
+
+        const bool fields_valid =
+            safe_read_value(address + MEDIUM_VIEW_FAMILY_OFFSET, family) &&
+            safe_read_value(address + MEDIUM_VIEW_STATE_OFFSET, state) &&
+            safe_read_value(address + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, player_index) &&
+            safe_read_value(address + MEDIUM_VIEW_STEREO_PASS_OFFSET, stereo_pass) &&
+            safe_read_value(address + MEDIUM_VIEW_REVERSE_CULLING_OFFSET, reverse_culling) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_GAME_OFFSET, is_game_view) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, is_scene_capture) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, is_reflection_capture) &&
+            safe_read_value(address + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, is_planar_reflection);
+
+        if (!fields_valid || family != snapshot.family || state != snapshot.state ||
+            player_index != snapshot.player_index || stereo_pass != snapshot.stereo_pass ||
+            is_game_view != 1 || is_scene_capture != 0 ||
+            is_reflection_capture != 0 || is_planar_reflection != 0 ||
+            !is_readable_process_range(
+                address + MEDIUM_VIEW_MATRICES_OFFSET,
+                MEDIUM_VIEW_MATRICES_SIZE))
+        {
+            return;
+        }
+
+        const auto current_matrices =
+            reinterpret_cast<const uint8_t*>(address + MEDIUM_VIEW_MATRICES_OFFSET);
+        const bool projection_unchanged =
+            std::memcmp(
+                current_matrices + MEDIUM_VIEW_PROJECTION_MATRIX_OFFSET,
+                snapshot.view_matrices.data() + MEDIUM_VIEW_PROJECTION_MATRIX_OFFSET,
+                0x40) == 0;
+        const bool view_matrix_changed =
+            std::memcmp(
+                current_matrices + MEDIUM_VIEW_MATRIX_OFFSET,
+                snapshot.view_matrices.data() + MEDIUM_VIEW_MATRIX_OFFSET,
+                0x40) != 0;
+        const bool view_projection_changed =
+            std::memcmp(
+                current_matrices + MEDIUM_VIEW_PROJECTION_OFFSET,
+                snapshot.view_matrices.data() + MEDIUM_VIEW_PROJECTION_OFFSET,
+                0x40) != 0;
+        // UMediumMirrorComponent::SetupView always replaces ViewMatrices with
+        // its component camera before it checks DoNotMirror. The common
+        // DoNotMirror path therefore leaves reverse culling unchanged even
+        // though it has already destroyed UEVR's left-eye camera transform.
+        const bool camera_matrix_override =
+            snapshot.reverse_culling == 0 &&
+            (reverse_culling == 0 || reverse_culling == 1) &&
+            projection_unchanged && view_matrix_changed && view_projection_changed;
+
+        if (!camera_matrix_override) {
+            return;
+        }
+
+        const bool mirror_override = reverse_culling != snapshot.reverse_culling;
+        const auto get_view_frustum_bounds =
+            mirror_override ? resolve_medium_get_view_frustum_bounds() : std::nullopt;
+        constexpr size_t MEDIUM_VIEW_FRUSTUM_SIZE = 0x120;
+        const bool base_storage_writable =
+            is_writable_process_range(
+                address + MEDIUM_VIEW_MATRICES_OFFSET,
+                MEDIUM_VIEW_MATRICES_SIZE) &&
+            is_writable_process_range(
+                address + MEDIUM_VIEW_REVERSE_CULLING_OFFSET,
+                sizeof(snapshot.reverse_culling));
+        const bool mirror_storage_writable =
+            !mirror_override ||
+            (get_view_frustum_bounds.has_value() &&
+             is_readable_process_range(
+                 address + MEDIUM_VIEW_FRUSTUM_OFFSET,
+                 MEDIUM_VIEW_FRUSTUM_SIZE) &&
+             is_writable_process_range(
+                 address + MEDIUM_VIEW_FRUSTUM_OFFSET,
+                 MEDIUM_VIEW_FRUSTUM_SIZE));
+
+        if (!base_storage_writable || !mirror_storage_writable)
+        {
+            SPDLOG_WARN_ONCE(
+                "[Medium][LateViewRepair] Verified camera override but required view storage was not writable; failed closed");
+            return;
+        }
+
+        std::memcpy(
+            reinterpret_cast<void*>(address + MEDIUM_VIEW_MATRICES_OFFSET),
+            snapshot.view_matrices.data(),
+            snapshot.view_matrices.size());
+        std::memcpy(
+            reinterpret_cast<void*>(address + MEDIUM_VIEW_REVERSE_CULLING_OFFSET),
+            &snapshot.reverse_culling,
+            sizeof(snapshot.reverse_culling));
+
+        // DoNotMirror does not touch the constructor-generated frustum. A real
+        // mirror mutation does, so rebuild it only for that path.
+        if (mirror_override) {
+            using GetViewFrustumBoundsFn = void (*)(void*, const void*, bool);
+            reinterpret_cast<GetViewFrustumBoundsFn>(*get_view_frustum_bounds)(
+                reinterpret_cast<void*>(address + MEDIUM_VIEW_FRUSTUM_OFFSET),
+                reinterpret_cast<const void*>(
+                    address + MEDIUM_VIEW_MATRICES_OFFSET + MEDIUM_VIEW_PROJECTION_OFFSET),
+                false);
+        }
+
+        static std::atomic_uint64_t repair_count{};
+        const auto count = repair_count.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (count <= 12) {
+            SPDLOG_INFO(
+                "[Medium][LateViewRepair] Restored constructor-generated left-eye matrices after "
+                "verified FMirrorViewExtension {} override (view={:x}, state={:x}, frame={}, repair={})",
+                mirror_override ? "mirror" : "camera",
+                address,
+                state,
+                g_frame_count,
+                count);
+        }
+        return;
+    }
+
     if (!dune_awakening_is_current_game() ||
         g_hook == nullptr ||
         !g_framework->is_game_data_intialized())
@@ -13344,6 +13415,30 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         }
     }};
 
+    struct MediumStereoPassRestore {
+        uintptr_t address{};
+        uint32_t stereo_pass{};
+    };
+
+    std::vector<MediumStereoPassRestore> medium_stereo_pass_restores{};
+    utility::ScopeGuard restore_medium_stereo_passes{[&]() {
+        for (auto it = medium_stereo_pass_restores.rbegin();
+             it != medium_stereo_pass_restores.rend();
+             ++it)
+        {
+            if (!is_writable_process_range(it->address, sizeof(it->stereo_pass))) {
+                SPDLOG_ERROR_ONCE(
+                    "[Medium][SyncedSequential] Could not restore temporary StereoPass classification");
+                continue;
+            }
+
+            std::memcpy(
+                reinterpret_cast<void*>(it->address),
+                &it->stereo_pass,
+                sizeof(it->stereo_pass));
+        }
+    }};
+
     if (split_screen_enabled) {
         struct PlayerViewPair {
             int32_t player_index{-1};
@@ -13490,7 +13585,48 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                     });
 
                     if (vr->is_using_afr()) {
-                        views->data[0] = by_pass[g_frame_count % 2]->view;
+                        const auto selected_eye = g_frame_count % 2;
+                        auto* selected_view = by_pass[selected_eye];
+
+                        // UE4.25's tonemapper builds ColorGradingLUT only for a
+                        // primary view. Synced Sequential submits the verified
+                        // right eye alone, so leaving its source StereoPass as
+                        // SECONDARY reaches SetShaderParameters with a null LUT.
+                        // BeginRenderingViewFamily copies FSceneView before it
+                        // returns; temporarily classify only this proven Medium
+                        // right eye as primary, then restore the game-owned view.
+                        if (vr->is_using_synchronized_afr() && selected_eye == 1) {
+                            const auto pass_address =
+                                reinterpret_cast<uintptr_t>(selected_view->view) + stereo_pass_offset;
+                            const uint32_t primary_pass = EStereoscopicPass::eSSP_PRIMARY;
+
+                            if (selected_view->stereo_pass == EStereoscopicPass::eSSP_SECONDARY &&
+                                is_writable_process_range(pass_address, sizeof(primary_pass)))
+                            {
+                                medium_stereo_pass_restores.push_back(MediumStereoPassRestore{
+                                    .address = pass_address,
+                                    .stereo_pass = selected_view->stereo_pass,
+                                });
+                                std::memcpy(
+                                    reinterpret_cast<void*>(pass_address),
+                                    &primary_pass,
+                                    sizeof(primary_pass));
+
+                                SPDLOG_INFO_EVERY_N_SEC(
+                                    2,
+                                    "[Medium][SyncedSequential] Temporarily classifying the isolated verified right eye as primary for UE4.25 tonemap LUT generation");
+                            } else {
+                                // Reuse the proven left eye for this frame rather
+                                // than submit a secondary-only view that is known
+                                // to crash UE4.25's shipping tonemapper.
+                                selected_view = by_pass[0];
+                                SPDLOG_WARNING_EVERY_N_SEC(
+                                    2,
+                                    "[Medium][SyncedSequential] Right-eye tonemap guard failed validation; reusing the verified left eye for this frame");
+                            }
+                        }
+
+                        views->data[0] = selected_view->view;
                         views->count = 1;
                     } else {
                         views->data[0] = left.view;
