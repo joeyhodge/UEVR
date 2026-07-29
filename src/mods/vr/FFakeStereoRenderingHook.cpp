@@ -7348,7 +7348,12 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_prepare_view_rects() {
     constexpr size_t view_rect_write_offset = 0x2AC;
     constexpr std::array<uint8_t, 7> view_rect_write_bytes{0x89, 0x84, 0x33, 0xB0, 0x15, 0x00, 0x00};
     constexpr size_t prepare_end_offset = 0x46A;
-    constexpr size_t ngx_return_offset = 0xB60;
+    // NGXViewProcessing has compiler-generated cold blocks after its ordinary
+    // epilogue. Validate the final output write and hot return, not the end of
+    // the full Binary Ninja function range.
+    constexpr size_t ngx_output_write_offset = 0xA72;
+    constexpr std::array<uint8_t, 4> ngx_output_write_bytes{0xF3, 0x0F, 0x11, 0x30};
+    constexpr size_t ngx_hot_return_offset = 0xA91;
     const bool prepare_valid =
         target.has_value() &&
         utility::scan(*target, 0x60, std::string{prepare_pattern}).value_or(0) == *target &&
@@ -7362,9 +7367,13 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_prepare_view_rects() {
     const bool ngx_valid =
         ngx_target.has_value() &&
         utility::scan(*ngx_target, 0x40, std::string{ngx_pattern}).value_or(0) == *ngx_target &&
-        is_executable_process_range(*ngx_target + ngx_return_offset, 2) &&
-        *reinterpret_cast<const uint8_t*>(*ngx_target + ngx_return_offset) == 0xC3 &&
-        *reinterpret_cast<const uint8_t*>(*ngx_target + ngx_return_offset + 1) == 0xCC;
+        is_executable_process_range(*ngx_target + ngx_output_write_offset, ngx_output_write_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*ngx_target + ngx_output_write_offset),
+            ngx_output_write_bytes.data(),
+            ngx_output_write_bytes.size()) == 0 &&
+        is_executable_process_range(*ngx_target + ngx_hot_return_offset, 1) &&
+        *reinterpret_cast<const uint8_t*>(*ngx_target + ngx_hot_return_offset) == 0xC3;
     const auto hook_address = target.value_or(0) + rects_ready_offset;
     const bool hook_site_valid =
         target.has_value() &&
@@ -7610,6 +7619,156 @@ void FFakeStereoRenderingHook::medium_prepare_view_rects_hook(safetyhook::Contex
             corrected.max_y,
             count);
     }
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_medium_frame_capture_draw_hud() {
+    if (m_medium_frame_capture_draw_hud_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_medium_frame_capture_draw_hud || !medium_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_medium_frame_capture_draw_hud = true;
+
+    // The Medium composites its gameplay camera captures through AFramesHUD.
+    // Preserve DrawOnHUD's render-target maintenance, but use its own
+    // NormalCameraMode early return to prevent the desktop capture from being
+    // drawn over UEVR's stereo scene.
+    constexpr std::string_view draw_hud_pattern{
+        "48 8B C4 53 55 56 57 41 56 48 81 EC 80 00 00 00 "
+        "F2 41 0F 10 01 33 DB 4C 89 60 08 49 8B E8 F3 45 0F 2C 60 04 "
+        "4C 89 68 10 4C 8B F2 48 8B F9 F3 45 0F 2C 28"};
+    constexpr size_t game_phase_gate_offset = 0x223;
+    constexpr std::array<uint8_t, 7> game_phase_gate_bytes{
+        0x80, 0xBF, 0x78, 0x02, 0x00, 0x00, 0x01};
+    constexpr size_t normal_camera_gate_offset = 0x240;
+    constexpr std::array<uint8_t, 6> normal_camera_gate_bytes{
+        0x38, 0x9F, 0x30, 0x02, 0x00, 0x00};
+    constexpr size_t epilogue_offset = 0x31A;
+    constexpr std::array<uint8_t, 14> epilogue_bytes{
+        0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00,
+        0x41, 0x5E, 0x5F, 0x5E, 0x5D, 0x5B, 0xC3};
+
+    const auto target = utility::scan(utility::get_executable(), std::string{draw_hud_pattern});
+    const bool target_valid =
+        target.has_value() &&
+        utility::scan(*target, 0x50, std::string{draw_hud_pattern}).value_or(0) == *target &&
+        is_executable_process_range(*target + game_phase_gate_offset, game_phase_gate_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + game_phase_gate_offset),
+            game_phase_gate_bytes.data(),
+            game_phase_gate_bytes.size()) == 0 &&
+        is_executable_process_range(*target + normal_camera_gate_offset, normal_camera_gate_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + normal_camera_gate_offset),
+            normal_camera_gate_bytes.data(),
+            normal_camera_gate_bytes.size()) == 0 &&
+        is_executable_process_range(*target + epilogue_offset, epilogue_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + epilogue_offset),
+            epilogue_bytes.data(),
+            epilogue_bytes.size()) == 0;
+
+    if (!target_valid) {
+        SPDLOG_WARN(
+            "[Medium][FrameCaptureHUD] Refusing duplicate-layer suppression because the PDB-validated DrawOnHUD path changed");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*target),
+        &FFakeStereoRenderingHook::medium_frame_capture_draw_hud_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Medium][FrameCaptureHUD] Failed to hook validated UFrameCaptureManager::DrawOnHUD at {:x}",
+            *target);
+        return false;
+    }
+
+    m_medium_frame_capture_draw_hud_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Medium][FrameCaptureHUD] Hooked PDB-validated UFrameCaptureManager::DrawOnHUD at {:x}",
+        *target);
+    return true;
+}
+
+void FFakeStereoRenderingHook::medium_frame_capture_draw_hud_hook(
+    void* frame_capture_manager,
+    void* hud,
+    const void* viewport_size,
+    const void* canvas_size)
+{
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_frame_capture_draw_hud_hook) {
+        return;
+    }
+
+    const auto call_original = [&]() {
+        hook->m_medium_frame_capture_draw_hud_hook.call<void>(
+            frame_capture_manager,
+            hud,
+            viewport_size,
+            canvas_size);
+    };
+
+    const auto vr = VR::get();
+    if (frame_capture_manager == nullptr || g_framework == nullptr ||
+        !g_framework->is_game_data_intialized() || !medium_is_current_game() ||
+        vr == nullptr || !vr->is_hmd_active())
+    {
+        call_original();
+        return;
+    }
+
+    // Source/PDB-validated UFrameCaptureManager fields for this build.
+    constexpr uintptr_t normal_camera_mode_offset = 0x230;
+    constexpr uintptr_t frame_count_offset = 0x1F8;
+    constexpr uintptr_t current_game_phase_offset = 0x278;
+    const auto manager = reinterpret_cast<uintptr_t>(frame_capture_manager);
+    const auto normal_camera_mode_address = manager + normal_camera_mode_offset;
+    uint8_t original_normal_camera_mode{};
+    uint8_t current_game_phase{};
+    int32_t frame_count{};
+
+    if (!safe_read_value(normal_camera_mode_address, original_normal_camera_mode) ||
+        !safe_read_value(manager + current_game_phase_offset, current_game_phase) ||
+        !safe_read_value(manager + frame_count_offset, frame_count) ||
+        !is_writable_process_range(normal_camera_mode_address, sizeof(uint8_t)))
+    {
+        SPDLOG_WARN_ONCE(
+            "[Medium][FrameCaptureHUD] DrawOnHUD state failed validation; leaving the game compositor untouched");
+        call_original();
+        return;
+    }
+
+    // Merge phase and native camera mode already take the game's own safe
+    // no-overlay path. Only suppress a capture layer that would really draw.
+    if (current_game_phase == 1 || original_normal_camera_mode != 0 || frame_count <= 0) {
+        call_original();
+        return;
+    }
+
+    *reinterpret_cast<uint8_t*>(normal_camera_mode_address) = 1;
+    utility::ScopeGuard restore_normal_camera_mode{[=]() {
+        if (is_writable_process_range(normal_camera_mode_address, sizeof(uint8_t))) {
+            *reinterpret_cast<uint8_t*>(normal_camera_mode_address) = original_normal_camera_mode;
+        }
+    }};
+
+    static std::atomic_uint64_t suppression_count{};
+    const auto count = suppression_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 8) {
+        SPDLOG_INFO(
+            "[Medium][FrameCaptureHUD] Suppressed duplicate gameplay capture layer while preserving DrawOnHUD maintenance "
+            "(manager={:x}, frames={}, suppression={})",
+            manager,
+            frame_count,
+            count);
+    }
+
+    call_original();
 }
 
 bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
@@ -9025,6 +9184,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
     attempt_hook_medium_prepare_view_rects();
+    attempt_hook_medium_frame_capture_draw_hud();
     attempt_hook_medium_external_post_process();
     attempt_hook_medium_distortion_params();
     attempt_hook_medium_mirror_setup_view();
