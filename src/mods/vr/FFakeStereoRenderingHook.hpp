@@ -851,6 +851,8 @@ private:
     bool attempt_hook_dune_dlss_output();
     bool attempt_hook_dune_ffx_frame_resources();
     bool attempt_hook_medium_view_state_allocate();
+    bool attempt_hook_medium_mirror_setup_view();
+    bool attempt_hook_medium_tonemapping_lut();
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
     void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
     void attempt_hook_naruto_ue416_projection_rect();
@@ -903,6 +905,11 @@ private:
         void* resource,
         uint64_t frame_id);
     static void medium_view_state_allocate_hook(void* view_state_reference);
+    static void medium_mirror_setup_view_hook(
+        void* extension,
+        sdk::FSceneViewFamily* view_family,
+        sdk::FSceneView* view);
+    static void* medium_get_tonemapping_lut_hook(void* view_info);
     static void split_fiction_haze_view_builder_hook(
         void* viewport_client,
         void* viewport,
@@ -1035,6 +1042,15 @@ private:
         std::unordered_set<uintptr_t> seen_retaddrs{};
     } m_sceneview_data;
 
+    struct MediumSyncedLUTPair {
+        uintptr_t left_state{};
+        uintptr_t right_state{};
+        uint64_t serial{};
+    };
+    std::mutex m_medium_synced_lut_mutex{};
+    std::array<MediumSyncedLUTPair, 4> m_medium_synced_lut_pairs{};
+    uint64_t m_medium_synced_lut_serial{};
+
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
     safetyhook::InlineHook m_tick_hook{};
     safetyhook::InlineHook m_adjust_view_rect_hook{};
@@ -1046,6 +1062,8 @@ private:
     safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
     safetyhook::InlineHook m_medium_view_state_allocate_hook{};
+    safetyhook::InlineHook m_medium_mirror_setup_view_hook{};
+    safetyhook::InlineHook m_medium_get_tonemapping_lut_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
@@ -1220,6 +1238,8 @@ private:
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_attempted_hook_medium_view_state_allocate{false};
+    bool m_attempted_hook_medium_mirror_setup_view{false};
+    bool m_attempted_hook_medium_tonemapping_lut{false};
     bool m_attempted_hook_split_fiction_haze_view_builder{false};
     bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
     bool m_attempted_hook_naruto_ue416_projection_rect{false};
