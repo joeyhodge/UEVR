@@ -852,6 +852,8 @@ private:
     bool attempt_hook_dune_ffx_frame_resources();
     bool attempt_hook_medium_view_state_allocate();
     bool attempt_hook_medium_prepare_view_rects();
+    bool attempt_hook_medium_external_post_process();
+    bool attempt_hook_medium_distortion_params();
     bool attempt_hook_medium_mirror_setup_view();
     bool attempt_hook_medium_tonemapping_lut();
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
@@ -907,6 +909,17 @@ private:
         uint64_t frame_id);
     static void medium_view_state_allocate_hook(void* view_state_reference);
     static void medium_prepare_view_rects_hook(safetyhook::Context& ctx);
+    static void medium_external_post_process_hook(
+        void* block,
+        void* graph_builder,
+        void* view_info,
+        void* inputs,
+        void* material,
+        void* source,
+        void* result,
+        void* external_extent,
+        void* external_source);
+    static void medium_distortion_params_hook(void* distortion_params, void* view_info);
     static void medium_mirror_setup_view_hook(
         void* extension,
         sdk::FSceneViewFamily* view_family,
@@ -1065,6 +1078,8 @@ private:
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
     safetyhook::InlineHook m_medium_view_state_allocate_hook{};
     safetyhook::MidHook m_medium_prepare_view_rects_hook{};
+    safetyhook::InlineHook m_medium_external_post_process_hook{};
+    safetyhook::InlineHook m_medium_distortion_params_hook{};
     safetyhook::InlineHook m_medium_mirror_setup_view_hook{};
     safetyhook::InlineHook m_medium_get_tonemapping_lut_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
@@ -1242,6 +1257,8 @@ private:
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_attempted_hook_medium_view_state_allocate{false};
     bool m_attempted_hook_medium_prepare_view_rects{false};
+    bool m_attempted_hook_medium_external_post_process{false};
+    bool m_attempted_hook_medium_distortion_params{false};
     bool m_attempted_hook_medium_mirror_setup_view{false};
     bool m_attempted_hook_medium_tonemapping_lut{false};
     bool m_attempted_hook_split_fiction_haze_view_builder{false};

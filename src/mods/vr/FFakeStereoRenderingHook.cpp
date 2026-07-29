@@ -7332,8 +7332,6 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_prepare_view_rects() {
         "41 54 41 55 41 56 41 57 48 8D 6C 24 E1 48 81 EC A8 00 00 00"};
 
     const auto target = utility::scan(utility::get_executable(), std::string{prepare_pattern});
-    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
-
     auto resolve_rel32_call = [](uintptr_t address) -> std::optional<uintptr_t> {
         if (!is_readable_process_range(address, 5) ||
             *reinterpret_cast<const uint8_t*>(address) != 0xE8)
@@ -7347,14 +7345,26 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_prepare_view_rects() {
     };
 
     const auto ngx_target = target ? resolve_rel32_call(*target + ngx_call_offset) : std::nullopt;
-    const auto ngx_function = ngx_target ? get_runtime_function_range(*ngx_target) : std::nullopt;
+    constexpr size_t view_rect_write_offset = 0x2AC;
+    constexpr std::array<uint8_t, 7> view_rect_write_bytes{0x89, 0x84, 0x33, 0xB0, 0x15, 0x00, 0x00};
+    constexpr size_t prepare_end_offset = 0x46A;
+    constexpr size_t ngx_return_offset = 0xB60;
     const bool prepare_valid =
-        target.has_value() && function.has_value() && function->begin == *target &&
-        function->size() >= 0x460 && function->size() <= 0x480;
+        target.has_value() &&
+        utility::scan(*target, 0x60, std::string{prepare_pattern}).value_or(0) == *target &&
+        is_executable_process_range(*target + view_rect_write_offset, view_rect_write_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*target + view_rect_write_offset),
+            view_rect_write_bytes.data(),
+            view_rect_write_bytes.size()) == 0 &&
+        is_executable_process_range(*target + prepare_end_offset, 2) &&
+        *reinterpret_cast<const uint8_t*>(*target + prepare_end_offset) == 0xCC;
     const bool ngx_valid =
-        ngx_target.has_value() && ngx_function.has_value() && ngx_function->begin == *ngx_target &&
-        ngx_function->size() >= 0xB40 && ngx_function->size() <= 0xB80 &&
-        utility::scan(*ngx_target, 0x40, std::string{ngx_pattern}).value_or(0) == *ngx_target;
+        ngx_target.has_value() &&
+        utility::scan(*ngx_target, 0x40, std::string{ngx_pattern}).value_or(0) == *ngx_target &&
+        is_executable_process_range(*ngx_target + ngx_return_offset, 2) &&
+        *reinterpret_cast<const uint8_t*>(*ngx_target + ngx_return_offset) == 0xC3 &&
+        *reinterpret_cast<const uint8_t*>(*ngx_target + ngx_return_offset + 1) == 0xCC;
     const auto hook_address = target.value_or(0) + rects_ready_offset;
     const bool hook_site_valid =
         target.has_value() &&
@@ -7598,6 +7608,478 @@ void FFakeStereoRenderingHook::medium_prepare_view_rects_hook(safetyhook::Contex
             corrected.min_y,
             corrected.max_x,
             corrected.max_y,
+            count);
+    }
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
+    if (m_medium_external_post_process_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_medium_external_post_process || !medium_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_medium_external_post_process = true;
+
+    // The Medium's CustomPostProcessing plugin can pair its desktop/external
+    // target extent with the primary VR view rect. Prove both the private pass
+    // and its only registration wrapper before changing that one policy byte.
+    constexpr std::string_view pass_pattern{
+        "4C 8B DC 55 49 8D AB 68 FD FF FF 48 81 EC 90 03 00 00 "
+        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 D8 01 00 00 "
+        "41 0F 10 41 20 48 8B 85 D0 02 00 00"};
+    constexpr std::string_view register_pattern{
+        "4C 8B DC 55 56 41 54 41 55 41 56 41 57 49 8D 6B 88 "
+        "48 81 EC 48 01 00 00 48 8B 05 ? ? ? ? 48 33 C4 "
+        "48 89 45 38 41 0F 10 41 20"};
+    constexpr size_t first_family_view_offset = 0x279;
+    constexpr std::array<uint8_t, 15> first_family_view_bytes{
+        0x49, 0x8B, 0x06, 0x32, 0xD2, 0x48, 0x8B, 0x48,
+        0x08, 0x4C, 0x39, 0x31, 0x75, 0x07, 0x40};
+    constexpr size_t output_rect_policy_offset = 0x71D;
+    constexpr std::array<uint8_t, 15> output_rect_policy_bytes{
+        0x48, 0x8B, 0x85, 0xC8, 0x02, 0x00, 0x00, 0x80,
+        0xB8, 0x03, 0x02, 0x00, 0x00, 0x00, 0x74};
+    constexpr size_t pass_return_offset = 0x12F0;
+    constexpr size_t first_register_call_offset = 0x166;
+    constexpr size_t epilogue_register_call_offset = 0x277;
+
+    const auto pass = utility::scan(utility::get_executable(), std::string{pass_pattern});
+    const auto registration = utility::scan(utility::get_executable(), std::string{register_pattern});
+
+    const auto resolve_rel32_call = [](uintptr_t address) -> std::optional<uintptr_t> {
+        if (!is_readable_process_range(address, 5) ||
+            *reinterpret_cast<const uint8_t*>(address) != 0xE8)
+        {
+            return std::nullopt;
+        }
+
+        int32_t displacement{};
+        std::memcpy(&displacement, reinterpret_cast<const void*>(address + 1), sizeof(displacement));
+        return address + 5 + displacement;
+    };
+
+    const auto first_call = registration
+        ? resolve_rel32_call(*registration + first_register_call_offset)
+        : std::nullopt;
+    const auto epilogue_call = registration
+        ? resolve_rel32_call(*registration + epilogue_register_call_offset)
+        : std::nullopt;
+    const bool pass_valid =
+        pass.has_value() &&
+        is_executable_process_range(*pass + first_family_view_offset, first_family_view_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*pass + first_family_view_offset),
+            first_family_view_bytes.data(),
+            first_family_view_bytes.size()) == 0 &&
+        is_executable_process_range(*pass + output_rect_policy_offset, output_rect_policy_bytes.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(*pass + output_rect_policy_offset),
+            output_rect_policy_bytes.data(),
+            output_rect_policy_bytes.size()) == 0 &&
+        is_executable_process_range(*pass + pass_return_offset, 1) &&
+        *reinterpret_cast<const uint8_t*>(*pass + pass_return_offset) == 0xC3;
+    const bool registration_valid =
+        registration.has_value() && first_call == pass && epilogue_call == pass;
+
+    if (!pass_valid || !registration_valid) {
+        SPDLOG_WARN(
+            "[Medium][ExternalPostProcess] Refusing viewport-policy correction because the PDB-validated "
+            "CustomPostProcessing path changed (pass={} registration={})",
+            pass_valid,
+            registration_valid);
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*pass),
+        &FFakeStereoRenderingHook::medium_external_post_process_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Medium][ExternalPostProcess] Failed to hook validated AddPostProcessMaterialPass at {:x}",
+            *pass);
+        return false;
+    }
+
+    m_medium_external_post_process_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Medium][ExternalPostProcess] Hooked PDB-validated external-source material pass at {:x} "
+        "(registration={:x})",
+        *pass,
+        *registration);
+    return true;
+}
+
+void FFakeStereoRenderingHook::medium_external_post_process_hook(
+    void* block,
+    void* graph_builder,
+    void* view_info,
+    void* inputs,
+    void* material,
+    void* source,
+    void* result,
+    void* external_extent,
+    void* external_source)
+{
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_external_post_process_hook) {
+        return;
+    }
+
+    const auto call_original = [&]() {
+        hook->m_medium_external_post_process_hook.call<void>(
+            block,
+            graph_builder,
+            view_info,
+            inputs,
+            material,
+            source,
+            result,
+            external_extent,
+            external_source);
+    };
+
+    const auto vr = VR::get();
+    if (g_framework == nullptr || !g_framework->is_game_data_intialized() ||
+        !medium_is_current_game() || vr == nullptr || !vr->is_hmd_active() ||
+        vr->is_using_2d_screen() || view_info == nullptr || source == nullptr ||
+        external_extent != nullptr || external_source != nullptr)
+    {
+        call_original();
+        return;
+    }
+
+    struct ViewsHeader {
+        uintptr_t data{};
+        int32_t count{};
+        int32_t capacity{};
+    };
+
+    const auto view = reinterpret_cast<uintptr_t>(view_info);
+    uintptr_t family{};
+    uintptr_t state{};
+    int32_t player_index{-1};
+    uint32_t stereo_pass{};
+    uint8_t is_game_view{};
+    uint8_t is_scene_capture{};
+    uint8_t is_reflection_capture{};
+    uint8_t is_planar_reflection{};
+    ViewsHeader family_views{};
+    uintptr_t first_family_view{};
+
+    const bool eligible =
+        safe_read_value(view + MEDIUM_VIEW_FAMILY_OFFSET, family) && family != 0 &&
+        safe_read_value(view + MEDIUM_VIEW_STATE_OFFSET, state) && state != 0 &&
+        safe_read_value(view + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, player_index) && player_index == 0 &&
+        safe_read_value(view + MEDIUM_VIEW_STEREO_PASS_OFFSET, stereo_pass) &&
+        stereo_pass == EStereoscopicPass::eSSP_PRIMARY &&
+        safe_read_value(view + MEDIUM_VIEW_IS_GAME_OFFSET, is_game_view) && is_game_view != 0 &&
+        safe_read_value(view + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, is_scene_capture) && is_scene_capture == 0 &&
+        safe_read_value(view + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, is_reflection_capture) && is_reflection_capture == 0 &&
+        safe_read_value(view + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, is_planar_reflection) && is_planar_reflection == 0 &&
+        safe_read_value(family + 0x8, family_views) &&
+        family_views.data != 0 && family_views.count > 0 && family_views.count <= 4 &&
+        family_views.capacity >= family_views.count && family_views.capacity <= 16 &&
+        safe_read_value(family_views.data, first_family_view) && first_family_view == view;
+
+    constexpr uintptr_t output_rect_adjustments_offset = 0x203;
+    const auto policy_address = reinterpret_cast<uintptr_t>(source) + output_rect_adjustments_offset;
+    if (!eligible || !is_writable_process_range(policy_address, sizeof(uint8_t))) {
+        call_original();
+        return;
+    }
+
+    const auto original_policy = *reinterpret_cast<uint8_t*>(policy_address);
+    if (original_policy == 0) {
+        call_original();
+        return;
+    }
+
+    *reinterpret_cast<uint8_t*>(policy_address) = 0;
+    utility::ScopeGuard restore_policy{[=]() {
+        if (is_writable_process_range(policy_address, sizeof(uint8_t))) {
+            *reinterpret_cast<uint8_t*>(policy_address) = original_policy;
+        }
+    }};
+
+    static std::atomic_uint64_t correction_count{};
+    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 16) {
+        SPDLOG_INFO(
+            "[Medium][ExternalPostProcess] Used scene-color viewport parameters for primary gameplay eye "
+            "instead of the external-output extent (view={:x}, source={:x}, correction={})",
+            view,
+            reinterpret_cast<uintptr_t>(source),
+            count);
+    }
+
+    call_original();
+}
+
+bool FFakeStereoRenderingHook::attempt_hook_medium_distortion_params() {
+    if (m_medium_distortion_params_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_medium_distortion_params || !medium_is_current_game()) {
+        return false;
+    }
+
+    m_attempted_hook_medium_distortion_params = true;
+
+    // SetupDistortionParams also feeds CreateOpaqueBasePassUniformBuffer in
+    // this UE4.25Plus build. A full-width primary rect therefore stretches the
+    // whole eye, not just translucent distortion. Validate that exact caller.
+    constexpr std::string_view params_pattern{
+        "48 89 5C 24 08 57 48 83 EC 20 8B 82 60 02 00 00 "
+        "48 8B F9 2B 82 58 02 00 00 48 8B DA 66 0F 6E C8 "
+        "8B 82 64 02 00 00 2B 82 5C 02 00 00"};
+    constexpr std::string_view base_pass_pattern{
+        "40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 B8 F7 FF FF "
+        "48 81 EC 48 09 00 00 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 30 08 00 00"};
+    constexpr size_t base_pass_call_offset = 0x429;
+    constexpr size_t params_return_offset = 0xBE;
+    constexpr size_t instanced_eye_call_offset = 0x7A;
+    constexpr std::array<uint8_t, 9> instanced_eye_call_bytes{
+        0x48, 0x8B, 0xCA, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x84};
+
+    const auto params = utility::scan(utility::get_executable(), std::string{params_pattern});
+    const auto base_pass = utility::scan(utility::get_executable(), std::string{base_pass_pattern});
+
+    const auto resolve_rel32_call = [](uintptr_t address) -> std::optional<uintptr_t> {
+        if (!is_readable_process_range(address, 5) ||
+            *reinterpret_cast<const uint8_t*>(address) != 0xE8)
+        {
+            return std::nullopt;
+        }
+
+        int32_t displacement{};
+        std::memcpy(&displacement, reinterpret_cast<const void*>(address + 1), sizeof(displacement));
+        return address + 5 + displacement;
+    };
+
+    const auto base_pass_target = base_pass
+        ? resolve_rel32_call(*base_pass + base_pass_call_offset)
+        : std::nullopt;
+    bool instanced_landmark_valid = false;
+    if (params && is_executable_process_range(
+            *params + instanced_eye_call_offset,
+            instanced_eye_call_bytes.size()))
+    {
+        std::array<uint8_t, instanced_eye_call_bytes.size()> observed{};
+        std::memcpy(
+            observed.data(),
+            reinterpret_cast<const void*>(*params + instanced_eye_call_offset),
+            observed.size());
+        observed[4] = observed[5] = observed[6] = observed[7] = 0;
+        instanced_landmark_valid = observed == instanced_eye_call_bytes;
+    }
+
+    const bool valid =
+        params.has_value() && base_pass_target == params && instanced_landmark_valid &&
+        is_executable_process_range(*params + params_return_offset, 1) &&
+        *reinterpret_cast<const uint8_t*>(*params + params_return_offset) == 0xC3;
+    if (!valid) {
+        SPDLOG_WARN(
+            "[Medium][DistortionParams] Refusing primary-eye parameter correction because the "
+            "PDB-validated opaque-base-pass path changed");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*params),
+        &FFakeStereoRenderingHook::medium_distortion_params_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[Medium][DistortionParams] Failed to hook validated SetupDistortionParams at {:x}",
+            *params);
+        return false;
+    }
+
+    m_medium_distortion_params_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[Medium][DistortionParams] Hooked PDB-validated SetupDistortionParams at {:x} "
+        "(opaque-base-pass caller={:x})",
+        *params,
+        *base_pass);
+    return true;
+}
+
+void FFakeStereoRenderingHook::medium_distortion_params_hook(void* distortion_params, void* view_info) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_distortion_params_hook) {
+        return;
+    }
+
+    hook->m_medium_distortion_params_hook.call<void>(distortion_params, view_info);
+
+    const auto vr = VR::get();
+    if (g_framework == nullptr || !g_framework->is_game_data_intialized() ||
+        !medium_is_current_game() || vr == nullptr || !vr->is_hmd_active() ||
+        vr->is_using_2d_screen() || distortion_params == nullptr || view_info == nullptr ||
+        !is_writable_process_range(
+            reinterpret_cast<uintptr_t>(distortion_params),
+            sizeof(float) * 4))
+    {
+        return;
+    }
+
+    struct ViewsHeader {
+        uintptr_t data{};
+        int32_t count{};
+        int32_t capacity{};
+    };
+
+    const auto primary = reinterpret_cast<uintptr_t>(view_info);
+    uintptr_t family{};
+    uintptr_t primary_state{};
+    int32_t primary_player{-1};
+    uint32_t primary_pass{};
+    uint8_t primary_is_game{};
+    uint8_t primary_is_scene_capture{};
+    uint8_t primary_is_reflection_capture{};
+    uint8_t primary_is_planar_reflection{};
+    MediumRenderRect primary_rect{};
+    ViewsHeader family_views{};
+    uintptr_t first_family_view{};
+
+    const bool primary_eligible =
+        safe_read_value(primary + MEDIUM_VIEW_FAMILY_OFFSET, family) && family != 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_STATE_OFFSET, primary_state) && primary_state != 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, primary_player) && primary_player == 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_STEREO_PASS_OFFSET, primary_pass) &&
+        primary_pass == EStereoscopicPass::eSSP_PRIMARY &&
+        safe_read_value(primary + MEDIUM_VIEW_IS_GAME_OFFSET, primary_is_game) && primary_is_game != 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, primary_is_scene_capture) && primary_is_scene_capture == 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, primary_is_reflection_capture) && primary_is_reflection_capture == 0 &&
+        safe_read_value(primary + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, primary_is_planar_reflection) && primary_is_planar_reflection == 0 &&
+        safe_read_value(primary + 0x258, primary_rect) &&
+        safe_read_value(family + 0x8, family_views) &&
+        family_views.data != 0 && family_views.count >= 2 && family_views.count <= 4 &&
+        family_views.capacity >= family_views.count && family_views.capacity <= 16 &&
+        safe_read_value(family_views.data, first_family_view) && first_family_view == primary;
+    if (!primary_eligible) {
+        return;
+    }
+
+    uintptr_t secondary{};
+    MediumRenderRect secondary_rect{};
+    float secondary_projection_x{};
+    for (int32_t index = 1; index < family_views.count; ++index) {
+        uintptr_t candidate{};
+        if (!safe_read_value(
+                family_views.data + static_cast<uintptr_t>(index) * sizeof(uintptr_t),
+                candidate) || candidate == 0 || candidate == primary)
+        {
+            continue;
+        }
+
+        uintptr_t candidate_state{};
+        int32_t candidate_player{-1};
+        uint32_t candidate_pass{};
+        uint8_t candidate_is_game{};
+        uint8_t candidate_is_scene_capture{};
+        uint8_t candidate_is_reflection_capture{};
+        uint8_t candidate_is_planar_reflection{};
+        MediumRenderRect candidate_rect{};
+        float candidate_projection_x{};
+        const bool candidate_eligible =
+            safe_read_value(candidate + MEDIUM_VIEW_STATE_OFFSET, candidate_state) &&
+            candidate_state != 0 && candidate_state != primary_state &&
+            safe_read_value(candidate + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, candidate_player) && candidate_player == 0 &&
+            safe_read_value(candidate + MEDIUM_VIEW_STEREO_PASS_OFFSET, candidate_pass) &&
+            candidate_pass == EStereoscopicPass::eSSP_SECONDARY &&
+            safe_read_value(candidate + MEDIUM_VIEW_IS_GAME_OFFSET, candidate_is_game) && candidate_is_game != 0 &&
+            safe_read_value(candidate + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, candidate_is_scene_capture) && candidate_is_scene_capture == 0 &&
+            safe_read_value(candidate + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, candidate_is_reflection_capture) && candidate_is_reflection_capture == 0 &&
+            safe_read_value(candidate + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, candidate_is_planar_reflection) && candidate_is_planar_reflection == 0 &&
+            safe_read_value(candidate + 0x258, candidate_rect) &&
+            safe_read_value(
+                candidate + MEDIUM_VIEW_MATRICES_OFFSET + MEDIUM_VIEW_PROJECTION_MATRIX_OFFSET,
+                candidate_projection_x);
+        if (candidate_eligible) {
+            secondary = candidate;
+            secondary_rect = candidate_rect;
+            secondary_projection_x = candidate_projection_x;
+            break;
+        }
+    }
+
+    const auto rect_width = [](const MediumRenderRect& rect) {
+        return rect.max_x - rect.min_x;
+    };
+    const auto rect_height = [](const MediumRenderRect& rect) {
+        return rect.max_y - rect.min_y;
+    };
+    const auto primary_width = rect_width(primary_rect);
+    const auto primary_height = rect_height(primary_rect);
+    const auto secondary_width = rect_width(secondary_rect);
+    const auto secondary_height = rect_height(secondary_rect);
+    if (secondary == 0 || primary_width <= 0 || primary_height <= 0 ||
+        secondary_width <= 0 || secondary_height <= 0 ||
+        primary_width > 16384 || primary_height > 16384 ||
+        secondary_width > 16384 || secondary_height > 16384 ||
+        !std::isfinite(secondary_projection_x) ||
+        secondary_projection_x <= 0.01f || secondary_projection_x >= 100.0f)
+    {
+        return;
+    }
+
+    auto* params = reinterpret_cast<float*>(distortion_params);
+    std::array<float, 4> original{};
+    std::memcpy(original.data(), params, sizeof(original));
+    if (!std::ranges::all_of(original, [](float value) { return std::isfinite(value); })) {
+        return;
+    }
+
+    const auto primary_aspect = static_cast<float>(primary_width) / static_cast<float>(primary_height);
+    const auto secondary_aspect = static_cast<float>(secondary_width) / static_cast<float>(secondary_height);
+    const auto relative_error = [](float value, float expected) {
+        return std::abs(value - expected) / std::max(std::abs(expected), 0.001f);
+    };
+
+    // Y is the source aspect for ordinary stereo, but the paired eye's M00 for
+    // instanced stereo. Preserve whichever ABI the original function emitted.
+    const bool ordinary_layout = relative_error(original[1], primary_aspect) <= 0.03f;
+    const bool instanced_layout = relative_error(original[1], secondary_projection_x) <= 0.03f;
+    if (!ordinary_layout && !instanced_layout) {
+        return;
+    }
+
+    std::array<float, 4> corrected = original;
+    corrected[0] = relative_error(original[0], secondary_projection_x) > 0.03f
+        ? secondary_projection_x
+        : original[0];
+    corrected[1] = ordinary_layout ? secondary_aspect : secondary_projection_x;
+    corrected[2] = static_cast<float>(secondary_width);
+    corrected[3] = static_cast<float>(secondary_height);
+
+    const bool mismatch =
+        relative_error(original[0], corrected[0]) > 0.03f ||
+        relative_error(original[1], corrected[1]) > 0.03f ||
+        std::abs(original[2] - corrected[2]) > 0.5f ||
+        std::abs(original[3] - corrected[3]) > 0.5f;
+    if (!mismatch) {
+        return;
+    }
+
+    std::memcpy(params, corrected.data(), sizeof(corrected));
+    static std::atomic_uint64_t correction_count{};
+    const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 16) {
+        SPDLOG_INFO(
+            "[Medium][DistortionParams] Normalized primary gameplay parameters from paired secondary "
+            "({:.4f},{:.4f},{:.1f},{:.1f}) -> ({:.4f},{:.4f},{:.1f},{:.1f}) correction={}",
+            original[0],
+            original[1],
+            original[2],
+            original[3],
+            corrected[0],
+            corrected[1],
+            corrected[2],
+            corrected[3],
             count);
     }
 }
@@ -8543,6 +9025,8 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
     attempt_hook_medium_prepare_view_rects();
+    attempt_hook_medium_external_post_process();
+    attempt_hook_medium_distortion_params();
     attempt_hook_medium_mirror_setup_view();
     attempt_hook_medium_tonemapping_lut();
     const auto vtable = locate_fake_stereo_rendering_vtable();
@@ -25320,6 +25804,44 @@ __declspec(noinline) void FFakeStereoRenderingHook::update_viewport_rhi_hook(voi
 
         call_orig();
         return;
+    }
+
+    // The Medium can recreate its scene viewport from UEngine::LoadMap before
+    // the normal ShouldUseSeparateRenderTarget call has refreshed these flags.
+    // Calling UE4.25Plus UpdateViewportRHI in that state enters Slate's
+    // window-backed path with an empty SWindow and crashes in CreateViewport.
+    // Repair only that title's live, non-destroy transition before any of the
+    // generic early-return paths below can call the engine.
+    if (medium_is_current_game() && destroyed == 0) {
+        const auto rtm = g_hook->get_render_target_manager();
+        const auto force_offset = rtm != nullptr
+            ? rtm->get_viewport_force_separate_rt_offset()
+            : std::nullopt;
+
+        if (force_offset && *force_offset > 0 && *force_offset < 0x1000) {
+            const auto flags_address = reinterpret_cast<uintptr_t>(viewport) + *force_offset - 1;
+            if (is_readable_process_range(flags_address, 2) &&
+                is_writable_process_range(flags_address, 2))
+            {
+                auto& use_separate_rt = *reinterpret_cast<bool*>(flags_address);
+                auto& should_force_separate_rt = *reinterpret_cast<bool*>(flags_address + 1);
+
+                if (!use_separate_rt || !should_force_separate_rt) {
+                    use_separate_rt = true;
+                    should_force_separate_rt = true;
+                    modified_use_separate_rt = true;
+                    SPDLOG_WARN(
+                        "[Medium][ViewportTransition] Restored separate-render-target flags before level-load UpdateViewportRHI "
+                        "(viewport={:x}, size={}x{}, mode={})",
+                        reinterpret_cast<uintptr_t>(viewport),
+                        new_size_x,
+                        new_size_y,
+                        new_window_mode);
+                    call_orig();
+                    return;
+                }
+            }
+        }
     }
 
     struct FunctionInfo {
