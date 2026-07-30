@@ -8597,48 +8597,6 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_view_state_allocate() {
     return true;
 }
 
-std::optional<uintptr_t> resolve_medium_view_state_reference_destroy() {
-    // UE4.25Plus source destroys a ViewState reference by unlinking it from the
-    // global list, queuing the renderer-owned state for deferred deletion, and
-    // clearing Reference. Validate The Medium's complete PDB-confirmed body
-    // before using that lifecycle to replace its pre-injection desktop state.
-    constexpr auto destroy_pattern =
-        "40 53 48 83 EC 20 48 8B D9 48 8B 49 10 48 85 C9 74 08 48 8B 43 18 48 89 41 08 "
-        "48 8B 4B 18 48 85 C9 74 07 48 8B 43 10 48 89 01 48 C7 43 10 00 00 00 00 "
-        "48 C7 43 18 00 00 00 00 48 8B 4B 08 48 85 C9 74 0D 48 8B 01 FF 10 "
-        "48 C7 43 08 00 00 00 00 48 83 C4 20 5B C3";
-    constexpr size_t destroy_function_size = 0x56;
-    constexpr uint8_t destroy_prefix[] = {
-        0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0xD9, 0x48, 0x8B, 0x49, 0x10,
-    };
-    constexpr uint8_t destroy_tail[] = {
-        0x48, 0xC7, 0x43, 0x08, 0x00, 0x00, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3,
-    };
-
-    const auto executable = utility::get_executable();
-    const auto target = utility::scan(executable, destroy_pattern);
-    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
-    if (!target || !function || function->begin != *target ||
-        function->size() != destroy_function_size ||
-        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
-        !is_executable_process_range(*target, destroy_function_size) ||
-        std::memcmp(reinterpret_cast<const void*>(*target), destroy_prefix, std::size(destroy_prefix)) != 0 ||
-        std::memcmp(
-            reinterpret_cast<const void*>(*target + destroy_function_size - std::size(destroy_tail)),
-            destroy_tail,
-            std::size(destroy_tail)) != 0)
-    {
-        SPDLOG_WARN(
-            "[Medium][UE4.25Plus] FSceneViewStateReference::Destroy signature/body validation failed; fresh stereo bootstrap disabled");
-        return std::nullopt;
-    }
-
-    SPDLOG_INFO(
-        "[Medium][UE4.25Plus] Resolved validated FSceneViewStateReference::Destroy at {:x}",
-        *target);
-    return target;
-}
-
 void FFakeStereoRenderingHook::medium_view_state_allocate_hook(void* view_state_reference) {
     auto* hook = g_hook;
     if (hook == nullptr || !hook->m_medium_view_state_allocate_hook) {
@@ -18626,9 +18584,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
     const auto medium_ue425plus_post_init = medium_is_current_game();
     uintptr_t medium_existing_view_state{};
-    uintptr_t medium_view_state_destroy{};
     bool medium_allocate_guard_succeeded{!medium_ue425plus_post_init};
-    bool medium_destroyed_existing_view_state{!medium_ue425plus_post_init};
     const auto ue426_post_init = is_ue_4_26_runtime();
 
     if (medium_ue425plus_post_init) {
@@ -18660,17 +18616,15 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
             return;
         }
 
-        const auto destroy = resolve_medium_view_state_reference_destroy();
-        if (!destroy || !attempt_hook_medium_view_state_allocate()) {
+        if (!attempt_hook_medium_view_state_allocate()) {
             g_hook->m_fixed_localplayer_view_count = true;
             return;
         }
 
         medium_existing_view_state = view_states->references[0];
-        medium_view_state_destroy = *destroy;
 
         SPDLOG_INFO(
-            "[Medium][UE4.25Plus] Existing LocalPlayer has one desktop ViewState with spare capacity {}; replacing it with a fresh stereo pair",
+            "[Medium][UE4.25Plus] Existing LocalPlayer has one ViewState with spare capacity {}; preserving it while allocating only the missing right-eye state",
             view_states->capacity);
     }
 
@@ -18909,65 +18863,29 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
         const auto exception_handler = AddVectoredExceptionHandler(1, seh_handler);
 
-        bool call_post_init = true;
         if (medium_ue425plus_post_init) {
-            const auto before_destroy = read_medium_view_states(localplayer);
-            if (!before_destroy || before_destroy->count != 1 ||
-                before_destroy->references[0] != medium_existing_view_state ||
-                before_destroy->data == 0 || medium_view_state_destroy == 0)
-            {
-                SPDLOG_ERROR(
-                    "[Medium][UE4.25Plus] ViewState changed before guarded replacement; refusing fresh stereo bootstrap");
-                call_post_init = false;
-            } else {
-                reinterpret_cast<void (*)(void*)>(medium_view_state_destroy)(
-                    reinterpret_cast<void*>(before_destroy->data));
-
-                const auto after_destroy = read_medium_view_states(localplayer);
-                uintptr_t previous_link{};
-                uintptr_t next_link{};
-                medium_destroyed_existing_view_state =
-                    after_destroy && after_destroy->count == 1 &&
-                    after_destroy->data == before_destroy->data &&
-                    after_destroy->references[0] == 0 &&
-                    safe_read_value(after_destroy->data + 0x10, previous_link) && previous_link == 0 &&
-                    safe_read_value(after_destroy->data + 0x18, next_link) && next_link == 0;
-
-                if (!medium_destroyed_existing_view_state) {
-                    SPDLOG_ERROR(
-                        "[Medium][UE4.25Plus] Existing desktop ViewState did not reach a clean destroyed state; refusing PostInitProperties");
-                    call_post_init = false;
-                } else {
-                    g_medium_view_state_allocate_guard = MediumViewStateAllocateGuard{
-                        .active = true,
-                    };
-                    SPDLOG_INFO(
-                        "[Medium][UE4.25Plus] Retired pre-injection desktop ViewState {:x}; allocating two clean VR ViewStates",
-                        medium_existing_view_state);
-                }
-            }
+            g_medium_view_state_allocate_guard = MediumViewStateAllocateGuard{
+                .active = true,
+                .existing_reference = medium_existing_view_state,
+            };
         }
 
-        if (call_post_init) {
-            m_sceneview_data.inside_post_init_properties = true;
-            post_init_properties(localplayer);
-            m_sceneview_data.inside_post_init_properties = false;
-        }
+        m_sceneview_data.inside_post_init_properties = true;
+        post_init_properties(localplayer);
+        m_sceneview_data.inside_post_init_properties = false;
 
         if (medium_ue425plus_post_init) {
             auto& guard = g_medium_view_state_allocate_guard;
             guard.active = false;
             medium_allocate_guard_succeeded =
-                call_post_init && medium_destroyed_existing_view_state &&
-                !guard.failed && guard.skipped_existing == 0 && guard.allocated_empty == 2;
+                !guard.failed && guard.skipped_existing == 1 && guard.allocated_empty == 1;
 
             if (medium_allocate_guard_succeeded) {
                 SPDLOG_INFO(
-                    "[Medium][UE4.25Plus] Allocated exactly two fresh stereo ViewStates");
+                    "[Medium][UE4.25Plus] Preserved the existing left ViewState and allocated exactly one new right ViewState");
             } else {
                 SPDLOG_ERROR(
-                    "[Medium][UE4.25Plus] Guarded ViewState allocation did not match the expected 0 preserved/2 new calls (destroyed={} failed={} preserved={} new={})",
-                    medium_destroyed_existing_view_state,
+                    "[Medium][UE4.25Plus] Guarded ViewState allocation did not match the expected 1 preserved/1 new calls (failed={} preserved={} new={})",
                     guard.failed,
                     guard.skipped_existing,
                     guard.allocated_empty);
@@ -18981,15 +18899,13 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
 
             if (medium_allocate_guard_succeeded && view_states && view_states->count == 2 &&
                 view_states->references[0] != 0 && view_states->references[1] != 0 &&
-                view_states->references[0] != medium_existing_view_state &&
-                view_states->references[1] != medium_existing_view_state &&
+                view_states->references[0] == medium_existing_view_state &&
                 view_states->references[0] != view_states->references[1])
             {
                 SPDLOG_INFO(
-                    "[Medium][UE4.25Plus] Fresh stereo bootstrap completed left={:x} right={:x} retired={:x}",
+                    "[Medium][UE4.25Plus] Bootstrap completed with two distinct ViewStates left={:x} right={:x}",
                     view_states->references[0],
-                    view_states->references[1],
-                    medium_existing_view_state);
+                    view_states->references[1]);
                 schedule_medium_view_state_reset(localplayer);
             } else {
                 SPDLOG_ERROR(
