@@ -7755,52 +7755,46 @@ void FFakeStereoRenderingHook::medium_external_post_process_hook(
     const auto vr = VR::get();
     if (g_framework == nullptr || !g_framework->is_game_data_intialized() ||
         !medium_is_current_game() || vr == nullptr || !vr->is_hmd_active() ||
-        vr->is_using_2d_screen() || view_info == nullptr || source == nullptr ||
-        external_extent != nullptr || external_source != nullptr)
+        vr->is_using_2d_screen() || view_info == nullptr || material == nullptr ||
+        source == nullptr || result == nullptr)
     {
         call_original();
         return;
     }
 
-    struct ViewsHeader {
-        uintptr_t data{};
-        int32_t count{};
-        int32_t capacity{};
-    };
-
-    const auto view = reinterpret_cast<uintptr_t>(view_info);
-    uintptr_t family{};
-    uintptr_t state{};
-    int32_t player_index{-1};
-    uint32_t stereo_pass{};
-    uint8_t is_game_view{};
-    uint8_t is_scene_capture{};
-    uint8_t is_reflection_capture{};
-    uint8_t is_planar_reflection{};
-    ViewsHeader family_views{};
-    uintptr_t first_family_view{};
-
-    const bool eligible =
-        safe_read_value(view + MEDIUM_VIEW_FAMILY_OFFSET, family) && family != 0 &&
-        safe_read_value(view + MEDIUM_VIEW_STATE_OFFSET, state) && state != 0 &&
-        safe_read_value(view + MEDIUM_VIEW_PLAYER_INDEX_OFFSET, player_index) && player_index == 0 &&
-        safe_read_value(view + MEDIUM_VIEW_STEREO_PASS_OFFSET, stereo_pass) &&
-        stereo_pass == EStereoscopicPass::eSSP_PRIMARY &&
-        safe_read_value(view + MEDIUM_VIEW_IS_GAME_OFFSET, is_game_view) && is_game_view != 0 &&
-        safe_read_value(view + MEDIUM_VIEW_IS_SCENE_CAPTURE_OFFSET, is_scene_capture) && is_scene_capture == 0 &&
-        safe_read_value(view + MEDIUM_VIEW_IS_REFLECTION_CAPTURE_OFFSET, is_reflection_capture) && is_reflection_capture == 0 &&
-        safe_read_value(view + MEDIUM_VIEW_IS_PLANAR_REFLECTION_OFFSET, is_planar_reflection) && is_planar_reflection == 0 &&
-        safe_read_value(family + 0x8, family_views) &&
-        family_views.data != 0 && family_views.count > 0 && family_views.count <= 4 &&
-        family_views.capacity >= family_views.count && family_views.capacity <= 16 &&
-        safe_read_value(family_views.data, first_family_view) && first_family_view == view;
-
-    // UPostProcessToExternalSourceComponent::ForceIntermediateRT is +0x201 in
-    // this PDB/UHT-validated UE4.25Plus build. The secondary eye already takes
-    // this branch unconditionally; make the primary epilogue follow it too.
+    // Live reflection proves the affected WorldA/WorldB components use their
+    // epilogue at InjectAtEnd with DrawPolicy 0 and output-rect adjustment
+    // enabled. Match the component itself instead of FViewInfo fields: this
+    // pass runs before The Medium has finalized the primary gameplay view, so
+    // the previous ViewState/player/stereo predicate rejected the real call.
+    constexpr uintptr_t epilogue_material_offset = 0x1E0;
+    constexpr uintptr_t draw_policy_offset = 0x1E8;
+    constexpr uintptr_t injection_point_offset = 0x200;
     constexpr uintptr_t force_intermediate_rt_offset = 0x201;
-    const auto policy_address = reinterpret_cast<uintptr_t>(source) + force_intermediate_rt_offset;
-    if (!eligible || !is_writable_process_range(policy_address, sizeof(uint8_t))) {
+    constexpr uintptr_t epilogue_output_rect_adjustments_offset = 0x203;
+    constexpr uint8_t affected_draw_policy = 0;
+    constexpr uint8_t inject_at_end = 5;
+
+    const auto source_address = reinterpret_cast<uintptr_t>(source);
+    uintptr_t epilogue_material{};
+    uint8_t draw_policy{};
+    uint8_t injection_point{};
+    uint8_t output_rect_adjustments{};
+    const bool affected_epilogue =
+        safe_read_value(source_address + epilogue_material_offset, epilogue_material) &&
+        epilogue_material == reinterpret_cast<uintptr_t>(material) && epilogue_material != 0 &&
+        safe_read_value(source_address + draw_policy_offset, draw_policy) &&
+        draw_policy == affected_draw_policy &&
+        safe_read_value(source_address + injection_point_offset, injection_point) &&
+        injection_point == inject_at_end &&
+        safe_read_value(
+            source_address + epilogue_output_rect_adjustments_offset,
+            output_rect_adjustments) &&
+        output_rect_adjustments == 1;
+
+    const auto policy_address = source_address + force_intermediate_rt_offset;
+    if (!affected_epilogue || !is_writable_process_range(policy_address, sizeof(uint8_t)))
+    {
         call_original();
         return;
     }
@@ -7827,10 +7821,10 @@ void FFakeStereoRenderingHook::medium_external_post_process_hook(
     const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 16) {
         SPDLOG_INFO(
-            "[Medium][ExternalPostProcess] Forced primary gameplay epilogue through the secondary eye's "
-            "intermediate target path (view={:x}, source={:x}, correction={})",
-            view,
-            reinterpret_cast<uintptr_t>(source),
+            "[Medium][ExternalPostProcess] Routed a validated WorldA/WorldB epilogue through an "
+            "eye-local intermediate target (view={:x}, source={:x}, correction={})",
+            reinterpret_cast<uintptr_t>(view_info),
+            source_address,
             count);
     }
 
