@@ -7621,156 +7621,6 @@ void FFakeStereoRenderingHook::medium_prepare_view_rects_hook(safetyhook::Contex
     }
 }
 
-bool FFakeStereoRenderingHook::attempt_hook_medium_frame_capture_draw_hud() {
-    if (m_medium_frame_capture_draw_hud_hook) {
-        return true;
-    }
-
-    if (m_attempted_hook_medium_frame_capture_draw_hud || !medium_is_current_game()) {
-        return false;
-    }
-
-    m_attempted_hook_medium_frame_capture_draw_hud = true;
-
-    // The Medium composites its gameplay camera captures through AFramesHUD.
-    // Preserve DrawOnHUD's render-target maintenance, but use its own
-    // NormalCameraMode early return to prevent the desktop capture from being
-    // drawn over UEVR's stereo scene.
-    constexpr std::string_view draw_hud_pattern{
-        "48 8B C4 53 55 56 57 41 56 48 81 EC 80 00 00 00 "
-        "F2 41 0F 10 01 33 DB 4C 89 60 08 49 8B E8 F3 45 0F 2C 60 04 "
-        "4C 89 68 10 4C 8B F2 48 8B F9 F3 45 0F 2C 28"};
-    constexpr size_t game_phase_gate_offset = 0x223;
-    constexpr std::array<uint8_t, 7> game_phase_gate_bytes{
-        0x80, 0xBF, 0x78, 0x02, 0x00, 0x00, 0x01};
-    constexpr size_t normal_camera_gate_offset = 0x240;
-    constexpr std::array<uint8_t, 6> normal_camera_gate_bytes{
-        0x38, 0x9F, 0x30, 0x02, 0x00, 0x00};
-    constexpr size_t epilogue_offset = 0x31A;
-    constexpr std::array<uint8_t, 14> epilogue_bytes{
-        0x48, 0x81, 0xC4, 0x80, 0x00, 0x00, 0x00,
-        0x41, 0x5E, 0x5F, 0x5E, 0x5D, 0x5B, 0xC3};
-
-    const auto target = utility::scan(utility::get_executable(), std::string{draw_hud_pattern});
-    const bool target_valid =
-        target.has_value() &&
-        utility::scan(*target, 0x50, std::string{draw_hud_pattern}).value_or(0) == *target &&
-        is_executable_process_range(*target + game_phase_gate_offset, game_phase_gate_bytes.size()) &&
-        std::memcmp(
-            reinterpret_cast<const void*>(*target + game_phase_gate_offset),
-            game_phase_gate_bytes.data(),
-            game_phase_gate_bytes.size()) == 0 &&
-        is_executable_process_range(*target + normal_camera_gate_offset, normal_camera_gate_bytes.size()) &&
-        std::memcmp(
-            reinterpret_cast<const void*>(*target + normal_camera_gate_offset),
-            normal_camera_gate_bytes.data(),
-            normal_camera_gate_bytes.size()) == 0 &&
-        is_executable_process_range(*target + epilogue_offset, epilogue_bytes.size()) &&
-        std::memcmp(
-            reinterpret_cast<const void*>(*target + epilogue_offset),
-            epilogue_bytes.data(),
-            epilogue_bytes.size()) == 0;
-
-    if (!target_valid) {
-        SPDLOG_WARN(
-            "[Medium][FrameCaptureHUD] Refusing duplicate-layer suppression because the PDB-validated DrawOnHUD path changed");
-        return false;
-    }
-
-    auto hook = safetyhook::create_inline(
-        reinterpret_cast<void*>(*target),
-        &FFakeStereoRenderingHook::medium_frame_capture_draw_hud_hook);
-    if (!hook) {
-        SPDLOG_WARN(
-            "[Medium][FrameCaptureHUD] Failed to hook validated UFrameCaptureManager::DrawOnHUD at {:x}",
-            *target);
-        return false;
-    }
-
-    m_medium_frame_capture_draw_hud_hook = std::move(hook);
-    SPDLOG_INFO(
-        "[Medium][FrameCaptureHUD] Hooked PDB-validated UFrameCaptureManager::DrawOnHUD at {:x}",
-        *target);
-    return true;
-}
-
-void FFakeStereoRenderingHook::medium_frame_capture_draw_hud_hook(
-    void* frame_capture_manager,
-    void* hud,
-    const void* viewport_size,
-    const void* canvas_size)
-{
-    auto* hook = g_hook;
-    if (hook == nullptr || !hook->m_medium_frame_capture_draw_hud_hook) {
-        return;
-    }
-
-    const auto call_original = [&]() {
-        hook->m_medium_frame_capture_draw_hud_hook.call<void>(
-            frame_capture_manager,
-            hud,
-            viewport_size,
-            canvas_size);
-    };
-
-    const auto vr = VR::get();
-    if (frame_capture_manager == nullptr || g_framework == nullptr ||
-        !g_framework->is_game_data_intialized() || !medium_is_current_game() ||
-        vr == nullptr || !vr->is_hmd_active())
-    {
-        call_original();
-        return;
-    }
-
-    // Source/PDB-validated UFrameCaptureManager fields for this build.
-    constexpr uintptr_t normal_camera_mode_offset = 0x230;
-    constexpr uintptr_t frame_count_offset = 0x1F8;
-    constexpr uintptr_t current_game_phase_offset = 0x278;
-    const auto manager = reinterpret_cast<uintptr_t>(frame_capture_manager);
-    const auto normal_camera_mode_address = manager + normal_camera_mode_offset;
-    uint8_t original_normal_camera_mode{};
-    uint8_t current_game_phase{};
-    int32_t frame_count{};
-
-    if (!safe_read_value(normal_camera_mode_address, original_normal_camera_mode) ||
-        !safe_read_value(manager + current_game_phase_offset, current_game_phase) ||
-        !safe_read_value(manager + frame_count_offset, frame_count) ||
-        !is_writable_process_range(normal_camera_mode_address, sizeof(uint8_t)))
-    {
-        SPDLOG_WARN_ONCE(
-            "[Medium][FrameCaptureHUD] DrawOnHUD state failed validation; leaving the game compositor untouched");
-        call_original();
-        return;
-    }
-
-    // Merge phase and native camera mode already take the game's own safe
-    // no-overlay path. Only suppress a capture layer that would really draw.
-    if (current_game_phase == 1 || original_normal_camera_mode != 0 || frame_count <= 0) {
-        call_original();
-        return;
-    }
-
-    *reinterpret_cast<uint8_t*>(normal_camera_mode_address) = 1;
-    utility::ScopeGuard restore_normal_camera_mode{[=]() {
-        if (is_writable_process_range(normal_camera_mode_address, sizeof(uint8_t))) {
-            *reinterpret_cast<uint8_t*>(normal_camera_mode_address) = original_normal_camera_mode;
-        }
-    }};
-
-    static std::atomic_uint64_t suppression_count{};
-    const auto count = suppression_count.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (count <= 8) {
-        SPDLOG_INFO(
-            "[Medium][FrameCaptureHUD] Suppressed duplicate gameplay capture layer while preserving DrawOnHUD maintenance "
-            "(manager={:x}, frames={}, suppression={})",
-            manager,
-            frame_count,
-            count);
-    }
-
-    call_original();
-}
-
 bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
     if (m_medium_external_post_process_hook) {
         return true;
@@ -7782,9 +7632,9 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
 
     m_attempted_hook_medium_external_post_process = true;
 
-    // The Medium's CustomPostProcessing plugin can pair its desktop/external
-    // target extent with the primary VR view rect. Prove both the private pass
-    // and its only registration wrapper before changing that one policy byte.
+    // The Medium renders the first gameplay view directly into OverrideOutput,
+    // while later family views use an intermediate target. Prove that exact
+    // asymmetry and the private registration path before changing its policy.
     constexpr std::string_view pass_pattern{
         "4C 8B DC 55 49 8D AB 68 FD FF FF 48 81 EC 90 03 00 00 "
         "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 D8 01 00 00 "
@@ -7797,10 +7647,10 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
     constexpr std::array<uint8_t, 15> first_family_view_bytes{
         0x49, 0x8B, 0x06, 0x32, 0xD2, 0x48, 0x8B, 0x48,
         0x08, 0x4C, 0x39, 0x31, 0x75, 0x07, 0x40};
-    constexpr size_t output_rect_policy_offset = 0x71D;
-    constexpr std::array<uint8_t, 15> output_rect_policy_bytes{
-        0x48, 0x8B, 0x85, 0xC8, 0x02, 0x00, 0x00, 0x80,
-        0xB8, 0x03, 0x02, 0x00, 0x00, 0x00, 0x74};
+    constexpr size_t force_intermediate_policy_offset = 0x2B8;
+    constexpr std::array<uint8_t, 16> force_intermediate_policy_bytes{
+        0x48, 0x8B, 0x85, 0xC8, 0x02, 0x00, 0x00, 0x40,
+        0x38, 0xB8, 0x01, 0x02, 0x00, 0x00, 0x75, 0x35};
     constexpr size_t pass_return_offset = 0x12F0;
     constexpr size_t first_register_call_offset = 0x166;
     constexpr size_t epilogue_register_call_offset = 0x277;
@@ -7833,11 +7683,13 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
             reinterpret_cast<const void*>(*pass + first_family_view_offset),
             first_family_view_bytes.data(),
             first_family_view_bytes.size()) == 0 &&
-        is_executable_process_range(*pass + output_rect_policy_offset, output_rect_policy_bytes.size()) &&
+        is_executable_process_range(
+            *pass + force_intermediate_policy_offset,
+            force_intermediate_policy_bytes.size()) &&
         std::memcmp(
-            reinterpret_cast<const void*>(*pass + output_rect_policy_offset),
-            output_rect_policy_bytes.data(),
-            output_rect_policy_bytes.size()) == 0 &&
+            reinterpret_cast<const void*>(*pass + force_intermediate_policy_offset),
+            force_intermediate_policy_bytes.data(),
+            force_intermediate_policy_bytes.size()) == 0 &&
         is_executable_process_range(*pass + pass_return_offset, 1) &&
         *reinterpret_cast<const uint8_t*>(*pass + pass_return_offset) == 0xC3;
     const bool registration_valid =
@@ -7845,7 +7697,7 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_external_post_process() {
 
     if (!pass_valid || !registration_valid) {
         SPDLOG_WARN(
-            "[Medium][ExternalPostProcess] Refusing viewport-policy correction because the PDB-validated "
+            "[Medium][ExternalPostProcess] Refusing intermediate-target correction because the PDB-validated "
             "CustomPostProcessing path changed (pass={} registration={})",
             pass_valid,
             registration_valid);
@@ -7943,20 +7795,28 @@ void FFakeStereoRenderingHook::medium_external_post_process_hook(
         family_views.capacity >= family_views.count && family_views.capacity <= 16 &&
         safe_read_value(family_views.data, first_family_view) && first_family_view == view;
 
-    constexpr uintptr_t output_rect_adjustments_offset = 0x203;
-    const auto policy_address = reinterpret_cast<uintptr_t>(source) + output_rect_adjustments_offset;
+    // UPostProcessToExternalSourceComponent::ForceIntermediateRT is +0x201 in
+    // this PDB/UHT-validated UE4.25Plus build. The secondary eye already takes
+    // this branch unconditionally; make the primary epilogue follow it too.
+    constexpr uintptr_t force_intermediate_rt_offset = 0x201;
+    const auto policy_address = reinterpret_cast<uintptr_t>(source) + force_intermediate_rt_offset;
     if (!eligible || !is_writable_process_range(policy_address, sizeof(uint8_t))) {
         call_original();
         return;
     }
 
     const auto original_policy = *reinterpret_cast<uint8_t*>(policy_address);
-    if (original_policy == 0) {
+    if (original_policy > 1) {
         call_original();
         return;
     }
 
-    *reinterpret_cast<uint8_t*>(policy_address) = 0;
+    if (original_policy != 0) {
+        call_original();
+        return;
+    }
+
+    *reinterpret_cast<uint8_t*>(policy_address) = 1;
     utility::ScopeGuard restore_policy{[=]() {
         if (is_writable_process_range(policy_address, sizeof(uint8_t))) {
             *reinterpret_cast<uint8_t*>(policy_address) = original_policy;
@@ -7967,8 +7827,8 @@ void FFakeStereoRenderingHook::medium_external_post_process_hook(
     const auto count = correction_count.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 16) {
         SPDLOG_INFO(
-            "[Medium][ExternalPostProcess] Used scene-color viewport parameters for primary gameplay eye "
-            "instead of the external-output extent (view={:x}, source={:x}, correction={})",
+            "[Medium][ExternalPostProcess] Forced primary gameplay epilogue through the secondary eye's "
+            "intermediate target path (view={:x}, source={:x}, correction={})",
             view,
             reinterpret_cast<uintptr_t>(source),
             count);
@@ -8000,7 +7860,9 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_distortion_params() {
         "48 81 EC 48 09 00 00 48 8B 05 ? ? ? ? 48 33 C4 48 89 85 30 08 00 00"};
     constexpr size_t base_pass_call_offset = 0x429;
     constexpr size_t params_return_offset = 0xBE;
-    constexpr size_t instanced_eye_call_offset = 0x7A;
+    // The validated sequence begins with `mov rcx, rdx` at +0x77; +0x7A is
+    // the following call opcode and caused this guard to fail closed.
+    constexpr size_t instanced_eye_call_offset = 0x77;
     constexpr std::array<uint8_t, 9> instanced_eye_call_bytes{
         0x48, 0x8B, 0xCA, 0xE8, 0x00, 0x00, 0x00, 0x00, 0x84};
 
@@ -8205,6 +8067,26 @@ void FFakeStereoRenderingHook::medium_distortion_params_hook(void* distortion_pa
     const bool instanced_layout = relative_error(original[1], secondary_projection_x) <= 0.03f;
     if (!ordinary_layout && !instanced_layout) {
         return;
+    }
+
+    static std::atomic_uint64_t observation_count{};
+    const auto observation = observation_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (observation <= 8) {
+        SPDLOG_INFO(
+            "[Medium][DistortionParams] Observed paired gameplay parameters "
+            "primary=({:.4f},{:.4f},{:.1f},{:.1f}) secondary_projection_x={:.4f} "
+            "primary_size={}x{} secondary_size={}x{} layout={} observation={}",
+            original[0],
+            original[1],
+            original[2],
+            original[3],
+            secondary_projection_x,
+            primary_width,
+            primary_height,
+            secondary_width,
+            secondary_height,
+            ordinary_layout ? "ordinary" : "instanced",
+            observation);
     }
 
     std::array<float, 4> corrected = original;
@@ -8670,9 +8552,8 @@ bool FFakeStereoRenderingHook::attempt_hook_medium_view_state_allocate() {
 
     // UE4.25Plus ULocalPlayer::PostInitProperties grows ViewStates and then
     // calls Allocate() on every element. The title's shipping Allocate body
-    // has no !Reference check, so calling PostInitProperties a second time
-    // overwrites the live left-eye state. Resolve the exact PDB-confirmed body
-    // and suppress only that one redundant call during the guarded bootstrap.
+    // has no !Reference check, so the guarded bootstrap preserves the fresh
+    // primary replacement while allowing the missing secondary allocation.
     constexpr auto allocate_pattern =
         "40 53 48 83 EC 40 48 8B D9 E8 ? ? ? ? 48 8B C8 48 8B 10 FF 52 70 "
         "48 89 5C 24 30 0F 57 C0 0F 11 43 10 48 89 43 08 48 83 C3 10 "
@@ -9184,9 +9065,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
     attempt_hook_medium_prepare_view_rects();
-    attempt_hook_medium_frame_capture_draw_hud();
     attempt_hook_medium_external_post_process();
-    attempt_hook_medium_distortion_params();
     attempt_hook_medium_mirror_setup_view();
     attempt_hook_medium_tonemapping_lut();
     const auto vtable = locate_fake_stereo_rendering_vtable();
