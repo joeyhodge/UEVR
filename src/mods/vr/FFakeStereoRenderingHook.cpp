@@ -13170,6 +13170,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
     std::vector<sdk::FSceneViewFamily*> view_families{};
+    TArrayViewViewFamily view_family_array{};
 
     if (uses_tarrayview) {
         if (!is_readable_process_range((uintptr_t)view_family_candidate, sizeof(TArrayViewViewFamily))) {
@@ -13177,7 +13178,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        TArrayViewViewFamily view_family_array{};
         std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
 
         constexpr uint32_t max_sane_view_families = 16;
@@ -13221,13 +13221,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 }
             }
         }
-    } else if (view_family_array.data == nullptr ||
-        (dibr_single_view_eligible &&
-            (view_family_array.count != 1 ||
-                IsBadReadPtr(view_family_array.data, sizeof(sdk::FSceneViewFamily*)))))
-    {
-        call_original();
-        return;
+    } else if (uses_tarrayview) {
+        if (view_family_array.data == nullptr ||
+            (dibr_single_view_eligible &&
+                (view_family_array.count != 1 ||
+                    IsBadReadPtr(view_family_array.data, sizeof(sdk::FSceneViewFamily*)))))
+        {
+            call_original();
+            return;
+        }
     }
 
     if (view_family == nullptr) {
