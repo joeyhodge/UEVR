@@ -855,6 +855,7 @@ private:
     bool attempt_hook_dune_dlss_output();
     bool attempt_hook_dune_ffx_frame_resources();
     bool attempt_hook_dead_island_ue425_compute_light_grid();
+    bool attempt_hook_dead_island_ue425_hair_light_indices();
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
     void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
     void attempt_hook_naruto_ue416_projection_rect();
@@ -907,6 +908,7 @@ private:
         void* resource,
         uint64_t frame_id);
     static void dead_island_ue425_compute_light_grid_hook(safetyhook::Context& ctx);
+    static void dead_island_ue425_hair_light_indices_hook(safetyhook::Context& ctx);
     static void split_fiction_haze_view_builder_hook(
         void* viewport_client,
         void* viewport,
@@ -1050,6 +1052,7 @@ private:
     safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
     safetyhook::MidHook m_dead_island_ue425_compute_light_grid_hook{};
+    safetyhook::MidHook m_dead_island_ue425_hair_light_indices_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
@@ -1238,6 +1241,7 @@ private:
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
     bool m_attempted_hook_dead_island_ue425_compute_light_grid{false};
+    bool m_attempted_hook_dead_island_ue425_hair_light_indices{false};
     bool m_attempted_hook_split_fiction_haze_view_builder{false};
     bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
     bool m_attempted_hook_naruto_ue416_projection_rect{false};
