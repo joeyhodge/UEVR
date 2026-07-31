@@ -185,6 +185,32 @@ bool is_deadzone_rogue_current_game() {
     return result;
 }
 
+bool is_dead_island_2_ue425_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*exe_path);
+        const bool matching_executable =
+            lowered.ends_with(L"\\deadisland-win64-shipping.exe") ||
+            lowered.ends_with(L"/deadisland-win64-shipping.exe") ||
+            lowered == L"deadisland-win64-shipping.exe";
+
+        if (!matching_executable) {
+            return false;
+        }
+
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 4 &&
+            LOWORD(version.dwFileVersionMS) == 25;
+    }();
+
+    return result;
+}
+
 bool is_everspace2_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -1569,6 +1595,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     if (is_deadzone_rogue_current_game() && backbuffer == nullptr && real_backbuffer != nullptr) {
         SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable on frame; using real swapchain backbuffer fallback");
         backbuffer = real_backbuffer;
+    } else if (is_dead_island_2_ue425_current_game() && backbuffer == nullptr && real_backbuffer != nullptr) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DeadIsland2][UE4.25][D3D12] Scene target unavailable on frame; using desktop backbuffer until completed Draw publishes the stereo target");
+        backbuffer = real_backbuffer;
     }
 
     if (backbuffer == nullptr) {
@@ -1598,26 +1629,43 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_dead_island_2_ue425_external_backbuffer =
+        is_dead_island_2_ue425_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12() &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
     // Dune's adopted viewport RT can churn and may be typeless, so never bind it
     // directly as UEVR's game texture. Copy it into an owned stable texture first.
     const auto use_stable_external_backbuffer_copy =
-        is_shf_external_backbuffer || is_stalker2_ue51_external_backbuffer || is_dune_external_backbuffer;
+        is_shf_external_backbuffer ||
+        is_stalker2_ue51_external_backbuffer ||
+        is_dune_external_backbuffer ||
+        is_dead_island_2_ue425_external_backbuffer;
     // FSceneViewport::EndRenderFrame transitions a separate stereo target to
     // SRVMask before Present. Dune reaches us after that transition; declaring
     // the source as RENDER_TARGET creates an invalid barrier and can leave the
     // showroom/cinematic frame white while starving the render loop.
     const auto volatile_external_source_state =
-        (is_shf_external_backbuffer || is_dune_external_backbuffer)
+        (is_shf_external_backbuffer || is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer)
             ? ENGINE_SRC_COLOR
             : D3D12_RESOURCE_STATE_RENDER_TARGET;
     const char* stable_external_copy_label =
         is_dune_external_backbuffer ? "Dune" :
+        is_dead_island_2_ue425_external_backbuffer ? "DeadIsland2 UE4.25" :
         is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
     const wchar_t* stable_external_copy_name =
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy" :
+        is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
+    const wchar_t* stable_external_copy_command_name =
+        is_dune_external_backbuffer ? L"Dune Stable Scene Copy Commands" :
+        is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy Commands" :
+        is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy Commands" : L"SHf Stable Scene Copy Commands";
     const auto skip_in_place_ui_invert = false;
-    m_skip_spectator_view_for_volatile_external_rt = is_shf_external_backbuffer || is_dune_external_backbuffer;
+    m_skip_spectator_view_for_volatile_external_rt =
+        is_shf_external_backbuffer || is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer;
     auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     if (is_stalker2_ue51_external_backbuffer) {
@@ -1820,9 +1868,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc);
 
             if (needs_copy_texture) {
-                if (is_dune_external_backbuffer && m_game_tex.texture.Get() != nullptr) {
-                    // Character creation uses a desktop-sized stable copy, then
-                    // gameplay replaces it with the stereo viewport target.
+                if ((is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer) &&
+                    m_game_tex.texture.Get() != nullptr)
+                {
+                    // Startup can use a desktop-sized copy before gameplay
+                    // publishes its stereo viewport target. Drain consumers
+                    // before replacing that owned texture and its descriptors.
                     // Drain every queue that may still reference the old copy
                     // before TextureContext::setup releases its resource and
                     // descriptor heaps.
@@ -1835,7 +1886,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     }
 
                     SPDLOG_WARN(
-                        "[Dune][D3D12] Drained stable-scene GPU users before RT transition [{}x{} fmt={}] -> [{}x{} fmt={}]",
+                        "[{}][D3D12] Drained stable-scene GPU users before RT transition [{}x{} fmt={}] -> [{}x{} fmt={}]",
+                        stable_external_copy_label,
                         m_game_tex.texture->GetDesc().Width,
                         m_game_tex.texture->GetDesc().Height,
                         (uint32_t)m_game_tex.texture->GetDesc().Format,
@@ -1857,16 +1909,31 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 copy_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
                 ComPtr<ID3D12Resource> stable_copy{};
-                const auto dune_view_format = is_dune_external_backbuffer ? dune_view_format_for_resource(copy_desc.Format) : std::optional<DXGI_FORMAT>{};
-                const auto stable_rtv_format = is_dune_external_backbuffer ? dune_view_format : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
-                const auto stable_srv_format = is_dune_external_backbuffer ? dune_view_format : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+                const auto needs_concrete_stable_view =
+                    is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer;
+                const auto concrete_stable_view_format = needs_concrete_stable_view
+                    ? concrete_color_view_format_for_resource(copy_desc.Format)
+                    : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
+                const auto stable_rtv_format = concrete_stable_view_format;
+                const auto stable_srv_format = concrete_stable_view_format;
 
-                if (is_dune_external_backbuffer && dune_view_format) {
+                if (needs_concrete_stable_view && concrete_stable_view_format) {
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,
-                        "[Dune][D3D12] Using concrete view format {} for typeless stable scene copy format {}",
-                        (uint32_t)*dune_view_format,
+                        "[{}][D3D12] Using concrete view format {} for stable scene copy format {}",
+                        stable_external_copy_label,
+                        (uint32_t)*concrete_stable_view_format,
                         (uint32_t)copy_desc.Format);
+                }
+
+                if (!concrete_stable_view_format) {
+                    SPDLOG_ERROR_EVERY_N_SEC(
+                        1,
+                        "[{}][D3D12] Refusing stable scene copy because resource format {} has no compatible color view",
+                        stable_external_copy_label,
+                        (uint32_t)copy_desc.Format);
+                    m_game_tex.reset();
+                    return vr::VRCompositorError_None;
                 }
 
                 if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &copy_desc, ENGINE_SRC_COLOR, nullptr, IID_PPV_ARGS(&stable_copy)))) {
@@ -1880,7 +1947,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 } else {
                     for (auto& commands : m_game_tex_commands) {
                         if (!commands.ready()) {
-                            commands.setup(L"SHf Stable Scene Copy Commands");
+                            commands.setup(stable_external_copy_command_name);
                         }
                     }
                 }
@@ -1891,7 +1958,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 auto& command_ctx = m_game_tex_commands[idx];
 
                 if (!command_ctx.ready()) {
-                    command_ctx.setup(L"SHf Stable Scene Copy Commands");
+                    command_ctx.setup(stable_external_copy_command_name);
                 }
 
                 if (command_ctx.ready()) {
@@ -1902,7 +1969,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     SPDLOG_INFO_EVERY_N_SEC(2,
                         "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
                         stable_external_copy_label,
-                        is_dune_external_backbuffer ? "/mirror/2D using SRVMask source state" : "/mirror/2D");
+                        (is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer)
+                            ? "/mirror/2D using SRVMask source state"
+                            : "/mirror/2D");
 
                     // The spectator reads the owned texture, never Dune's volatile
                     // typeless viewport target, so descriptor creation is safe here.
@@ -1913,10 +1982,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (m_game_tex.texture.Get() == nullptr) {
-                if (is_dune_external_backbuffer) {
+                if (is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer) {
                     SPDLOG_ERROR_EVERY_N_SEC(
                         1,
-                        "[Dune][D3D12] Stable scene copy unavailable; refusing volatile viewport RT reference to avoid descriptor-cache crashes");
+                        "[{}][D3D12] Stable scene copy unavailable; refusing volatile viewport RT reference to avoid stale descriptors",
+                        stable_external_copy_label);
                     return vr::VRCompositorError_None;
                 }
 
@@ -4259,9 +4329,20 @@ bool D3D12Component::setup() {
         is_deadzone_rogue_current_game() &&
         backbuffer == nullptr &&
         real_backbuffer != nullptr;
+    const bool dead_island_2_real_backbuffer_bootstrap =
+        is_dead_island_2_ue425_current_game() &&
+        backbuffer == nullptr &&
+        real_backbuffer != nullptr;
+    const bool real_backbuffer_bootstrap =
+        deadzone_real_backbuffer_bootstrap || dead_island_2_real_backbuffer_bootstrap;
 
     if (deadzone_real_backbuffer_bootstrap) {
         SPDLOG_WARNING_EVERY_N_SEC(2, "[Deadzone][D3D12] UE render target unavailable during setup; using real swapchain backbuffer bootstrap");
+        backbuffer = real_backbuffer;
+    } else if (dead_island_2_real_backbuffer_bootstrap) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DeadIsland2][UE4.25][D3D12] Scene target unavailable during setup; bootstrapping from the desktop backbuffer");
         backbuffer = real_backbuffer;
     }
 
@@ -4284,7 +4365,7 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled() && !deadzone_real_backbuffer_bootstrap) {
+    if (!vr->is_extreme_compatibility_mode_enabled() && !real_backbuffer_bootstrap) {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
     }
 
