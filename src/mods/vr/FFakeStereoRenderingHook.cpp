@@ -7397,6 +7397,154 @@ void FFakeStereoRenderingHook::dead_island_ue425_compute_light_grid_hook(safetyh
         inferred_view_count);
 }
 
+bool FFakeStereoRenderingHook::attempt_hook_dead_island_ue425_hair_light_indices() {
+    if (m_dead_island_ue425_hair_light_indices_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_dead_island_ue425_hair_light_indices ||
+        !dead_island_2_ue425_is_current_game())
+    {
+        return false;
+    }
+
+    m_attempted_hook_dead_island_ue425_hair_light_indices = true;
+
+    // RenderLightsForHair consumes the same optional instance-to-per-view map
+    // after ComputeLightGrid. Dead Island's fork leaves it empty for stereo.
+    constexpr auto hair_light_index_pattern =
+        "41 8B 44 24 18 41 39 44 24 08 75 05 48 63 DA EB 22 "
+        "49 8B 44 24 20 41 8B CF 49 8B 14 02 48 8B C2 48 C1 E8 20 "
+        "85 C0 41 0F 45 C8 0F BA F2 1F 03 CA 48 63 D9";
+    constexpr uintptr_t pattern_offset_from_function = 0x9D1;
+    constexpr uintptr_t index_load_offset_from_pattern = 0x19;
+    constexpr std::array<uint8_t, 4> index_load_instruction{
+        0x49, 0x8B, 0x14, 0x02,
+    };
+
+    const auto executable = utility::get_executable();
+    const auto pattern = utility::scan(executable, hair_light_index_pattern);
+    const auto function = pattern ? get_runtime_function_range(*pattern) : std::nullopt;
+    const auto index_load = pattern ? *pattern + index_load_offset_from_pattern : 0;
+
+    if (!pattern || !function ||
+        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
+        function->begin + pattern_offset_from_function != *pattern ||
+        !is_executable_process_range(index_load, index_load_instruction.size()) ||
+        std::memcmp(
+            reinterpret_cast<const void*>(index_load),
+            index_load_instruction.data(),
+            index_load_instruction.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][HairLightGrid] RenderLightsForHair index-load validation failed; compatibility repair remains disabled");
+        return false;
+    }
+
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(index_load),
+        &FFakeStereoRenderingHook::dead_island_ue425_hair_light_indices_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][HairLightGrid] Failed to hook validated missing light-index load at {:x}",
+            index_load);
+        return false;
+    }
+
+    m_dead_island_ue425_hair_light_indices_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[DeadIsland2][UE4.25][HairLightGrid] Hooked validated RenderLightsForHair index load at {:x}",
+        index_load);
+    return true;
+}
+
+void FFakeStereoRenderingHook::dead_island_ue425_hair_light_indices_hook(safetyhook::Context& ctx) {
+    auto* const hook = g_hook;
+    if (hook == nullptr || !hook->m_dead_island_ue425_hair_light_indices_hook ||
+        ctx.rax != 0 || ctx.r12 == 0 || (ctx.r10 & 0x7) != 0)
+    {
+        return;
+    }
+
+    struct RawArray {
+        void* data;
+        int32_t num;
+        int32_t max;
+    };
+
+    struct LightArrayLayout {
+        RawArray instance_data;
+        RawArray per_view_data;
+        RawArray instance_per_view_indices;
+        RawArray sorted_lights;
+    };
+
+    static_assert(sizeof(RawArray) == 0x10);
+    static_assert(offsetof(LightArrayLayout, instance_per_view_indices) == 0x20);
+
+    if (!is_readable_process_range(ctx.r12, sizeof(LightArrayLayout))) {
+        return;
+    }
+
+    const auto& lights = *reinterpret_cast<const LightArrayLayout*>(ctx.r12);
+    const auto instance_count = lights.instance_data.num;
+    const auto per_view_count = lights.per_view_data.num;
+    const auto& indices = lights.instance_per_view_indices;
+    const auto light_index = ctx.r10 / sizeof(uint64_t);
+
+    const bool malformed_indices =
+        instance_count > 0 && instance_count <= 4096 &&
+        per_view_count > instance_count && per_view_count <= 16384 &&
+        indices.data == nullptr && indices.num == 0 && indices.max == 0 &&
+        light_index < static_cast<uint64_t>(instance_count);
+
+    if (!malformed_indices) {
+        return;
+    }
+
+    const auto inferred_view_count = per_view_count / instance_count;
+    const bool can_reconstruct_all_per_view =
+        inferred_view_count >= 2 && inferred_view_count <= 4 &&
+        per_view_count == instance_count * inferred_view_count &&
+        ctx.r11 == static_cast<uint64_t>(inferred_view_count) &&
+        lights.instance_data.data != nullptr &&
+        lights.per_view_data.data != nullptr &&
+        lights.instance_data.max >= instance_count &&
+        lights.per_view_data.max >= per_view_count &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.instance_data.data),
+            static_cast<size_t>(instance_count) * 0x1C) &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.per_view_data.data),
+            static_cast<size_t>(per_view_count) * 0x0C);
+
+    if (!can_reconstruct_all_per_view) {
+        return;
+    }
+
+    using PackedIndexTable = std::array<uint64_t, 4096>;
+    static const auto packed_indices = []() {
+        std::array<PackedIndexTable, 5> tables{};
+        for (uint32_t view_count = 2; view_count <= 4; ++view_count) {
+            for (uint32_t index = 0; index < tables[view_count].size(); ++index) {
+                const auto per_view_index = index * view_count;
+                tables[view_count][index] =
+                    (uint64_t{1} << 32) | static_cast<uint64_t>(per_view_index);
+            }
+        }
+        return tables;
+    }();
+
+    // The original load is [R10 + RAX], where R10 is the byte offset for the
+    // current light. Supply the immutable map only for this instruction.
+    ctx.rax = reinterpret_cast<uintptr_t>(packed_indices[inferred_view_count].data());
+
+    SPDLOG_WARN_ONCE(
+        "[DeadIsland2][UE4.25][HairLightGrid] Supplying {} missing light-index records for {} views in RenderLightsForHair",
+        instance_count,
+        inferred_view_count);
+}
+
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
     sdk::UGameViewportClient* viewport_client) {
     const auto vr = VR::get();
@@ -7827,6 +7975,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
     attempt_hook_dead_island_ue425_compute_light_grid();
+    attempt_hook_dead_island_ue425_hair_light_indices();
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
