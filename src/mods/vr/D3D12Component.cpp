@@ -2550,7 +2550,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     } else if (backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
-        if (is_shf_external_backbuffer) {
+        if (is_shf_external_backbuffer || is_dead_island_2_ue425_external_backbuffer) {
             const auto source_desc = backbuffer->GetDesc();
             const auto needs_copy_texture =
                 m_game_tex.texture.Get() == nullptr ||
