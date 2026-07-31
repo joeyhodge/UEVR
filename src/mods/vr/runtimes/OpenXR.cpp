@@ -143,6 +143,32 @@ bool is_everspace2_executable() {
     return result;
 }
 
+bool is_dead_island_2_ue425_executable() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*exe_path);
+        const bool matching_executable =
+            lowered.ends_with(L"\\deadisland-win64-shipping.exe") ||
+            lowered.ends_with(L"/deadisland-win64-shipping.exe") ||
+            lowered == L"deadisland-win64-shipping.exe";
+
+        if (!matching_executable) {
+            return false;
+        }
+
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 4 &&
+            LOWORD(version.dwFileVersionMS) == 25;
+    }();
+
+    return result;
+}
+
 std::string format_space_location_flags(XrSpaceLocationFlags flags) {
     std::ostringstream ss;
     ss << "0x" << std::hex << static_cast<uint64_t>(flags) << std::dec << " [";
@@ -213,6 +239,88 @@ bool has_required_view_validity(XrViewStateFlags flags) {
 bool has_any_view_tracking(XrViewStateFlags flags) {
     constexpr auto tracked = XR_VIEW_STATE_POSITION_TRACKED_BIT | XR_VIEW_STATE_ORIENTATION_TRACKED_BIT;
     return (flags & tracked) != 0;
+}
+
+bool synthesize_dead_island_view_space_pose(OpenXR* openxr) {
+    if (!is_dead_island_2_ue425_executable() ||
+        openxr->stage_views.size() < 2 ||
+        openxr->views.size() < 2 ||
+        has_required_location_validity(openxr->view_space_location.locationFlags) ||
+        !has_required_view_validity(openxr->stage_view_state.viewStateFlags) ||
+        !has_any_view_tracking(openxr->stage_view_state.viewStateFlags))
+    {
+        return false;
+    }
+
+    const auto& left_stage = openxr->stage_views[0].pose;
+    const auto& right_stage = openxr->stage_views[1].pose;
+    const glm::vec3 left_position{left_stage.position.x, left_stage.position.y, left_stage.position.z};
+    const glm::vec3 right_position{right_stage.position.x, right_stage.position.y, right_stage.position.z};
+    auto left_orientation = OpenXR::to_glm(left_stage.orientation);
+    auto right_orientation = OpenXR::to_glm(right_stage.orientation);
+
+    const auto finite_vec3 = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const auto finite_quat = [](const glm::quat& value) {
+        return std::isfinite(value.w) && std::isfinite(value.x) &&
+            std::isfinite(value.y) && std::isfinite(value.z);
+    };
+
+    if (!finite_vec3(left_position) || !finite_vec3(right_position) ||
+        !finite_quat(left_orientation) || !finite_quat(right_orientation) ||
+        glm::length(left_orientation) <= 1.0e-5f || glm::length(right_orientation) <= 1.0e-5f)
+    {
+        return false;
+    }
+
+    left_orientation = glm::normalize(left_orientation);
+    right_orientation = glm::normalize(right_orientation);
+
+    if (glm::dot(left_orientation, right_orientation) < 0.0f) {
+        right_orientation = -right_orientation;
+    }
+
+    const auto center_position = (left_position + right_position) * 0.5f;
+    const auto center_orientation = glm::normalize(left_orientation + right_orientation);
+
+    if (!finite_vec3(center_position) || !finite_quat(center_orientation)) {
+        return false;
+    }
+
+    openxr->view_space_location.pose.position = OpenXR::to_openxr(center_position);
+    openxr->view_space_location.pose.orientation = OpenXR::to_openxr(center_orientation);
+    openxr->view_space_location.locationFlags =
+        XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+
+    if ((openxr->stage_view_state.viewStateFlags & XR_VIEW_STATE_POSITION_TRACKED_BIT) != 0) {
+        openxr->view_space_location.locationFlags |= XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+    }
+
+    if ((openxr->stage_view_state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_TRACKED_BIT) != 0) {
+        openxr->view_space_location.locationFlags |= XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+    }
+
+    // Reconstruct eye-local poses from the valid stage-space pair instead of
+    // trusting the zero-flag view-space result returned by this title.
+    const auto inverse_center = glm::inverse(center_orientation);
+    for (size_t eye = 0; eye < 2; ++eye) {
+        const auto& stage_view = openxr->stage_views[eye];
+        const glm::vec3 stage_position{
+            stage_view.pose.position.x,
+            stage_view.pose.position.y,
+            stage_view.pose.position.z};
+        const auto stage_orientation = glm::normalize(OpenXR::to_glm(stage_view.pose.orientation));
+
+        openxr->views[eye].pose.position =
+            OpenXR::to_openxr(inverse_center * (stage_position - center_position));
+        openxr->views[eye].pose.orientation =
+            OpenXR::to_openxr(glm::normalize(inverse_center * stage_orientation));
+        openxr->views[eye].fov = stage_view.fov;
+    }
+
+    openxr->view_state.viewStateFlags = openxr->stage_view_state.viewStateFlags;
+    return true;
 }
 
 bool should_accept_startup_poses(OpenXR* openxr) {
@@ -1406,6 +1514,8 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
         return finish_pose_update((VRRuntime::Error)result);
     }
 
+    const auto used_dead_island_stage_pose = synthesize_dead_island_view_space_pose(this);
+
     pipeline_state.view_space_location = this->view_space_location;
 
     if (this->is_everspace2_coherent_submit_active()) {
@@ -1467,14 +1577,22 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
             this->last_valid_pose_probe_log = {};
             this->last_pose_validation_failure_log = {};
             if (startup_acceptable) {
-                spdlog::warn(
-                    "[OpenXR] Accepting startup poses without full tracked bits: display_time={} frame_count={} view_flags={} stage_view_flags={} view_space_flags={}",
-                    display_time,
-                    frame_count,
-                    format_view_state_flags(this->view_state.viewStateFlags),
-                    format_view_state_flags(this->stage_view_state.viewStateFlags),
-                    format_space_location_flags(this->view_space_location.locationFlags)
-                );
+                if (used_dead_island_stage_pose) {
+                    spdlog::warn(
+                        "[DeadIsland2][UE4.25][OpenXR] Accepting reconstructed stage-space startup pose because view-space flags remain unavailable: display_time={} frame_count={} stage_view_flags={} reconstructed_view_space_flags={}",
+                        display_time,
+                        frame_count,
+                        format_view_state_flags(this->stage_view_state.viewStateFlags),
+                        format_space_location_flags(this->view_space_location.locationFlags));
+                } else {
+                    spdlog::warn(
+                        "[OpenXR] Accepting startup poses without full tracked bits: display_time={} frame_count={} view_flags={} stage_view_flags={} view_space_flags={}",
+                        display_time,
+                        frame_count,
+                        format_view_state_flags(this->view_state.viewStateFlags),
+                        format_view_state_flags(this->stage_view_state.viewStateFlags),
+                        format_space_location_flags(this->view_space_location.locationFlags));
+                }
             }
 
             spdlog::info("[OpenXR] Got first valid poses at time: {} {} {}", display_time, pipeline_state.frame_state.predictedDisplayTime, pipeline_state.frame_state.predictedDisplayPeriod);
