@@ -808,6 +808,101 @@ bool dead_island_2_ue425_is_current_game() {
     return result;
 }
 
+struct DeadIslandUE425RawArray {
+    void* data;
+    int32_t num;
+    int32_t max;
+};
+
+struct DeadIslandUE425SimpleLightArray {
+    DeadIslandUE425RawArray instance_data;
+    DeadIslandUE425RawArray per_view_data;
+    DeadIslandUE425RawArray instance_per_view_indices;
+};
+
+struct DeadIslandUE425SimpleLightRepair {
+    uint64_t* packed_indices;
+    int32_t instance_count;
+    int32_t view_count;
+};
+
+static_assert(sizeof(DeadIslandUE425RawArray) == 0x10);
+static_assert(offsetof(DeadIslandUE425SimpleLightArray, per_view_data) == 0x10);
+static_assert(offsetof(DeadIslandUE425SimpleLightArray, instance_per_view_indices) == 0x20);
+
+std::optional<DeadIslandUE425SimpleLightRepair> repair_dead_island_ue425_simple_light_indices(
+    uintptr_t simple_lights_address,
+    uint64_t light_index)
+{
+    if (!is_readable_process_range(simple_lights_address, sizeof(DeadIslandUE425SimpleLightArray))) {
+        return std::nullopt;
+    }
+
+    auto& lights = *reinterpret_cast<DeadIslandUE425SimpleLightArray*>(simple_lights_address);
+    auto& indices = lights.instance_per_view_indices;
+    const auto instance_count = lights.instance_data.num;
+    const auto per_view_count = lights.per_view_data.num;
+
+    const bool malformed_indices =
+        instance_count > 0 && instance_count <= 4096 &&
+        per_view_count > instance_count && per_view_count <= 16384 &&
+        indices.data == nullptr && indices.num == 0 && indices.max == 0 &&
+        light_index < static_cast<uint64_t>(instance_count);
+
+    if (!malformed_indices) {
+        return std::nullopt;
+    }
+
+    const auto inferred_view_count = per_view_count / instance_count;
+    const bool can_reconstruct_all_per_view =
+        inferred_view_count >= 2 && inferred_view_count <= 4 &&
+        per_view_count == instance_count * inferred_view_count &&
+        lights.instance_data.data != nullptr &&
+        lights.per_view_data.data != nullptr &&
+        lights.instance_data.max >= instance_count &&
+        lights.per_view_data.max >= per_view_count &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.instance_data.data),
+            static_cast<size_t>(instance_count) * 0x1C) &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.per_view_data.data),
+            static_cast<size_t>(per_view_count) * 0x0C) &&
+        is_writable_process_range(
+            reinterpret_cast<uintptr_t>(&indices),
+            sizeof(indices));
+
+    if (!can_reconstruct_all_per_view) {
+        return std::nullopt;
+    }
+
+    using PackedIndexTable = std::array<uint64_t, 4096>;
+    static auto packed_indices = []() {
+        std::array<PackedIndexTable, 5> tables{};
+        for (uint32_t view_count = 2; view_count <= 4; ++view_count) {
+            for (uint32_t index = 0; index < tables[view_count].size(); ++index) {
+                tables[view_count][index] =
+                    (uint64_t{1} << 32) | static_cast<uint64_t>(index * view_count);
+            }
+        }
+        return tables;
+    }();
+
+    auto* const table = packed_indices[inferred_view_count].data();
+
+    // All downstream UE4.25 consumers call GetViewDependentData on this same
+    // FSimpleLightArray. Persist the validated map instead of substituting one
+    // register at each inlined call site.
+    indices.data = table;
+    indices.num = instance_count;
+    indices.max = instance_count;
+
+    return DeadIslandUE425SimpleLightRepair{
+        .packed_indices = table,
+        .instance_count = instance_count,
+        .view_count = inferred_view_count,
+    };
+}
+
 std::optional<uintptr_t> resolve_dead_island_2_game_viewport_draw(uintptr_t base_draw) try {
     if (!dead_island_2_ue425_is_current_game() || base_draw == 0) {
         return std::nullopt;
@@ -7300,100 +7395,25 @@ void FFakeStereoRenderingHook::dead_island_ue425_compute_light_grid_hook(safetyh
         return;
     }
 
-    struct RawArray {
-        void* data;
-        int32_t num;
-        int32_t max;
-    };
+    constexpr uintptr_t simple_lights_offset = 0x10;
+    const auto repair = repair_dead_island_ue425_simple_light_indices(
+        ctx.r9 + simple_lights_offset,
+        static_cast<uint64_t>(ctx.rbx));
 
-    struct SortedLightSetLayout {
-        int32_t simple_lights_end;
-        int32_t tiled_supported_end;
-        int32_t clustered_supported_end;
-        int32_t attenuation_light_start;
-        RawArray instance_data;
-        RawArray per_view_data;
-        RawArray instance_per_view_indices;
-        RawArray sorted_lights;
-    };
-
-    static_assert(sizeof(RawArray) == 0x10);
-    static_assert(offsetof(SortedLightSetLayout, instance_data) == 0x10);
-    static_assert(offsetof(SortedLightSetLayout, per_view_data) == 0x20);
-    static_assert(offsetof(SortedLightSetLayout, instance_per_view_indices) == 0x30);
-    static_assert(offsetof(SortedLightSetLayout, sorted_lights) == 0x40);
-
-    if (!is_readable_process_range(ctx.r9, sizeof(SortedLightSetLayout)))
-    {
-        return;
-    }
-
-    const auto& lights = *reinterpret_cast<const SortedLightSetLayout*>(ctx.r9);
-    const auto instance_count = lights.instance_data.num;
-    const auto per_view_count = lights.per_view_data.num;
-    const auto& indices = lights.instance_per_view_indices;
-    const auto light_index = static_cast<uint64_t>(ctx.rbx);
-
-    const bool malformed_indices =
-        lights.simple_lights_end > 0 &&
-        instance_count > 0 && instance_count <= 4096 &&
-        per_view_count >= instance_count && per_view_count <= 16384 &&
-        instance_count != per_view_count &&
-        indices.data == nullptr && indices.num == 0 &&
-        light_index < static_cast<uint64_t>(instance_count);
-
-    if (!malformed_indices) {
-        return;
-    }
-
-    const auto inferred_view_count = per_view_count / instance_count;
-    const bool can_reconstruct_all_per_view =
-        inferred_view_count >= 2 && inferred_view_count <= 4 &&
-        per_view_count == instance_count * inferred_view_count &&
-        lights.instance_data.data != nullptr &&
-        lights.per_view_data.data != nullptr &&
-        lights.instance_data.max >= instance_count &&
-        lights.per_view_data.max >= per_view_count &&
-        is_readable_process_range(
-            reinterpret_cast<uintptr_t>(lights.instance_data.data),
-            static_cast<size_t>(instance_count) * 0x1C) &&
-        is_readable_process_range(
-            reinterpret_cast<uintptr_t>(lights.per_view_data.data),
-            static_cast<size_t>(per_view_count) * 0x0C);
-
-    if (!can_reconstruct_all_per_view) {
+    if (!repair) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[DeadIsland2][UE4.25][LightGrid] Malformed simple-light arrays cannot be reconstructed safely at the guarded index load (simple_end={} instances={} per_view={} indices={}/{})",
-            lights.simple_lights_end,
-            instance_count,
-            per_view_count,
-            indices.num,
-            indices.max);
+            "[DeadIsland2][UE4.25][LightGrid] Missing simple-light index map could not be repaired safely at the guarded load");
         return;
     }
 
-    using PackedIndexTable = std::array<uint64_t, 4096>;
-    static const auto packed_indices = []() {
-        std::array<PackedIndexTable, 5> tables{};
-        for (uint32_t view_count = 2; view_count <= 4; ++view_count) {
-            for (uint32_t index = 0; index < tables[view_count].size(); ++index) {
-                const auto per_view_index = index * view_count;
-                tables[view_count][index] =
-                    (uint64_t{1} << 32) | static_cast<uint64_t>(per_view_index);
-            }
-        }
-        return tables;
-    }();
-
-    // The original instruction immediately loads [RAX + RBX*8]. Redirect RAX
-    // to an immutable UEVR-owned table for this one instruction only.
-    ctx.rax = reinterpret_cast<uintptr_t>(packed_indices[inferred_view_count].data());
+    // RAX was loaded before this mid-hook, so update it for the current access.
+    ctx.rax = reinterpret_cast<uintptr_t>(repair->packed_indices);
 
     SPDLOG_WARN_ONCE(
-        "[DeadIsland2][UE4.25][LightGrid] Supplying {} missing simple-light stereo index records for {} views at the guarded load",
-        instance_count,
-        inferred_view_count);
+        "[DeadIsland2][UE4.25][LightGrid] Installed {} missing simple-light stereo index records for {} views into the shared FSimpleLightArray",
+        repair->instance_count,
+        repair->view_count);
 }
 
 bool FFakeStereoRenderingHook::attempt_hook_dead_island_ue425_hair_light_indices() {
@@ -7415,7 +7435,10 @@ bool FFakeStereoRenderingHook::attempt_hook_dead_island_ue425_hair_light_indices
         "41 8B 44 24 18 41 39 44 24 08 75 05 48 63 DA EB 22 "
         "49 8B 44 24 20 41 8B CF 49 8B 14 02 48 8B C2 48 C1 E8 20 "
         "85 C0 41 0F 45 C8 0F BA F2 1F 03 CA 48 63 D9";
-    constexpr uintptr_t pattern_offset_from_function = 0x9D1;
+    // RenderLightsForHair spans several Windows unwind records. The signature
+    // is in the record beginning at RVA 0x2781A9E, not the PDB symbol start.
+    constexpr uintptr_t pattern_offset_from_unwind_fragment = 0xC3;
+    constexpr uintptr_t unwind_fragment_size = 0x705;
     constexpr uintptr_t index_load_offset_from_pattern = 0x19;
     constexpr std::array<uint8_t, 4> index_load_instruction{
         0x49, 0x8B, 0x14, 0x02,
@@ -7428,7 +7451,10 @@ bool FFakeStereoRenderingHook::attempt_hook_dead_island_ue425_hair_light_indices
 
     if (!pattern || !function ||
         function->image_base != reinterpret_cast<uintptr_t>(executable) ||
-        function->begin + pattern_offset_from_function != *pattern ||
+        function->begin + pattern_offset_from_unwind_fragment != *pattern ||
+        function->size() != unwind_fragment_size ||
+        index_load < function->begin ||
+        index_load + index_load_instruction.size() > function->end ||
         !is_executable_process_range(index_load, index_load_instruction.size()) ||
         std::memcmp(
             reinterpret_cast<const void*>(index_load),
@@ -7465,83 +7491,20 @@ void FFakeStereoRenderingHook::dead_island_ue425_hair_light_indices_hook(safetyh
         return;
     }
 
-    struct RawArray {
-        void* data;
-        int32_t num;
-        int32_t max;
-    };
-
-    struct LightArrayLayout {
-        RawArray instance_data;
-        RawArray per_view_data;
-        RawArray instance_per_view_indices;
-        RawArray sorted_lights;
-    };
-
-    static_assert(sizeof(RawArray) == 0x10);
-    static_assert(offsetof(LightArrayLayout, instance_per_view_indices) == 0x20);
-
-    if (!is_readable_process_range(ctx.r12, sizeof(LightArrayLayout))) {
-        return;
-    }
-
-    const auto& lights = *reinterpret_cast<const LightArrayLayout*>(ctx.r12);
-    const auto instance_count = lights.instance_data.num;
-    const auto per_view_count = lights.per_view_data.num;
-    const auto& indices = lights.instance_per_view_indices;
     const auto light_index = ctx.r10 / sizeof(uint64_t);
+    const auto repair = repair_dead_island_ue425_simple_light_indices(ctx.r12, light_index);
 
-    const bool malformed_indices =
-        instance_count > 0 && instance_count <= 4096 &&
-        per_view_count > instance_count && per_view_count <= 16384 &&
-        indices.data == nullptr && indices.num == 0 && indices.max == 0 &&
-        light_index < static_cast<uint64_t>(instance_count);
-
-    if (!malformed_indices) {
+    if (!repair) {
         return;
     }
 
-    const auto inferred_view_count = per_view_count / instance_count;
-    const bool can_reconstruct_all_per_view =
-        inferred_view_count >= 2 && inferred_view_count <= 4 &&
-        per_view_count == instance_count * inferred_view_count &&
-        ctx.r11 == static_cast<uint64_t>(inferred_view_count) &&
-        lights.instance_data.data != nullptr &&
-        lights.per_view_data.data != nullptr &&
-        lights.instance_data.max >= instance_count &&
-        lights.per_view_data.max >= per_view_count &&
-        is_readable_process_range(
-            reinterpret_cast<uintptr_t>(lights.instance_data.data),
-            static_cast<size_t>(instance_count) * 0x1C) &&
-        is_readable_process_range(
-            reinterpret_cast<uintptr_t>(lights.per_view_data.data),
-            static_cast<size_t>(per_view_count) * 0x0C);
-
-    if (!can_reconstruct_all_per_view) {
-        return;
-    }
-
-    using PackedIndexTable = std::array<uint64_t, 4096>;
-    static const auto packed_indices = []() {
-        std::array<PackedIndexTable, 5> tables{};
-        for (uint32_t view_count = 2; view_count <= 4; ++view_count) {
-            for (uint32_t index = 0; index < tables[view_count].size(); ++index) {
-                const auto per_view_index = index * view_count;
-                tables[view_count][index] =
-                    (uint64_t{1} << 32) | static_cast<uint64_t>(per_view_index);
-            }
-        }
-        return tables;
-    }();
-
-    // The original load is [R10 + RAX], where R10 is the byte offset for the
-    // current light. Supply the immutable map only for this instruction.
-    ctx.rax = reinterpret_cast<uintptr_t>(packed_indices[inferred_view_count].data());
+    // RAX was loaded before this mid-hook, so update it for the current access.
+    ctx.rax = reinterpret_cast<uintptr_t>(repair->packed_indices);
 
     SPDLOG_WARN_ONCE(
-        "[DeadIsland2][UE4.25][HairLightGrid] Supplying {} missing light-index records for {} views in RenderLightsForHair",
-        instance_count,
-        inferred_view_count);
+        "[DeadIsland2][UE4.25][HairLightGrid] Installed {} missing light-index records for {} views into the shared FSimpleLightArray fallback",
+        repair->instance_count,
+        repair->view_count);
 }
 
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
