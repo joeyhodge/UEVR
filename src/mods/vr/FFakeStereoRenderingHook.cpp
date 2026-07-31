@@ -5590,14 +5590,14 @@ void FFakeStereoRenderingHook::on_frame() {
 void FFakeStereoRenderingHook::on_draw_ui() {
     ZoneScopedN(__FUNCTION__);
 
+    m_safe_tick_hook->draw("Use Safe Tick Hooking");
+
     ImGui::SetNextItemOpen(true, ImGuiCond_Once);
     if (ImGui::TreeNode("Stereo Hook Options")) {
         m_asynchronous_scan->draw("Asynchronous Code Scanning");
         m_recreate_textures_on_reset->draw("Recreate Textures on Reset");
         m_frame_delay_compensation->draw("Frame Delay Compensation");
         m_use_fmalloc_scene_view_extensions->draw("Use FMalloc for ISceneViewExtensions");
-        m_safe_tick_hook->draw("Use Safe Tick Hooking");
-
         if (m_tracking_system_hook != nullptr) {
             m_tracking_system_hook->on_draw_ui();
         }
