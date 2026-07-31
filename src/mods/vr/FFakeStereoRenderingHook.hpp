@@ -854,6 +854,7 @@ private:
     bool hook_ue418_oculus_pixel_density_sink();
     bool attempt_hook_dune_dlss_output();
     bool attempt_hook_dune_ffx_frame_resources();
+ 
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
     void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
     void attempt_hook_naruto_ue416_projection_rect();
@@ -905,6 +906,7 @@ private:
         void* backend,
         void* resource,
         uint64_t frame_id);
+ 
     static void split_fiction_haze_view_builder_hook(
         void* viewport_client,
         void* viewport,
@@ -1047,6 +1049,7 @@ private:
     safetyhook::InlineHook m_ue418_oculus_pixel_density_hook{};
     safetyhook::InlineHook m_dune_dlss_add_passes_hook{};
     safetyhook::InlineHook m_dune_ffx_register_frame_resources_hook{};
+ 
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
@@ -1234,6 +1237,7 @@ private:
     std::atomic<uint64_t> m_daysgone_bend_ui_restore_count{0};
     bool m_attempted_hook_update_viewport_rhi{false};
     bool m_attempted_hook_fsceneview_constructor{false};
+ 
     bool m_attempted_hook_split_fiction_haze_view_builder{false};
     bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
     bool m_attempted_hook_naruto_ue416_projection_rect{false};
@@ -1257,6 +1261,7 @@ private:
     bool m_wants_texture_recreation{false};
     bool m_has_view_extension_hook{false};
     bool m_has_game_viewport_client_draw_hook{false};
+    std::atomic_bool m_dead_island_2_viewport_allocation_requested{false};
     bool m_skip_next_adjust_view_rect{true};
     bool m_inside_slate_draw_window{false};
     int32_t m_skip_next_adjust_view_rect_count{1};

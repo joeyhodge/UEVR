@@ -775,6 +775,137 @@ bool medium_is_current_game() {
     return result;
 }
 
+bool dead_island_2_ue425_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        const bool matching_executable =
+            lowered.ends_with(L"\\deadisland-win64-shipping.exe") ||
+            lowered.ends_with(L"/deadisland-win64-shipping.exe") ||
+            lowered == L"deadisland-win64-shipping.exe";
+
+        if (!matching_executable) {
+            return false;
+        }
+
+        // The fixed-file version is synchronous and reports 0x0004:0x0019
+        // for UE4.25. Do not depend on the asynchronous embedded-version
+        // scan, which may still be empty when this injection-time guard runs.
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 4 &&
+            LOWORD(version.dwFileVersionMS) == 25;
+    }();
+
+    return result;
+}
+
+std::optional<uintptr_t> resolve_dead_island_2_game_viewport_draw(uintptr_t base_draw) try {
+    if (!dead_island_2_ue425_is_current_game() || base_draw == 0) {
+        return std::nullopt;
+    }
+
+    constexpr size_t draw_slot = 107;
+    constexpr size_t relative_jump_size = 5;
+
+    const auto executable = utility::get_executable();
+    auto engine = sdk::UEngine::get();
+
+    if (executable == nullptr || engine == nullptr || IsBadReadPtr(engine, sizeof(void*))) {
+        SPDLOG_WARN("[DeadIsland2][UE4.25][Draw] Live viewport resolution deferred because GEngine is unavailable");
+        return std::nullopt;
+    }
+
+    auto game_viewport_storage = engine->get_property_data(L"GameViewport");
+
+    if (game_viewport_storage == nullptr || IsBadReadPtr(game_viewport_storage, sizeof(void*))) {
+        SPDLOG_WARN("[DeadIsland2][UE4.25][Draw] Could not read GEngine.GameViewport");
+        return std::nullopt;
+    }
+
+    auto game_viewport = *reinterpret_cast<sdk::UGameViewportClient**>(game_viewport_storage);
+
+    if (game_viewport == nullptr || IsBadReadPtr(game_viewport, sizeof(void*))) {
+        SPDLOG_WARN("[DeadIsland2][UE4.25][Draw] No live GameViewport is available");
+        return std::nullopt;
+    }
+
+    auto vtable = *reinterpret_cast<uintptr_t**>(game_viewport);
+
+    if (vtable == nullptr ||
+        IsBadReadPtr(vtable, (draw_slot + 1) * sizeof(uintptr_t)) ||
+        utility::get_module_within(vtable).value_or(nullptr) != executable)
+    {
+        SPDLOG_ERROR("[DeadIsland2][UE4.25][Draw] Rejected unreadable or foreign live GameViewport vtable {:x}",
+            reinterpret_cast<uintptr_t>(vtable));
+        return std::nullopt;
+    }
+
+    const auto live_target = vtable[draw_slot];
+
+    if (live_target == 0 ||
+        !is_executable_process_range(live_target, relative_jump_size) ||
+        utility::get_module_within(live_target).value_or(nullptr) != executable)
+    {
+        SPDLOG_ERROR("[DeadIsland2][UE4.25][Draw] Rejected live vtable slot {} target {:x}",
+            draw_slot,
+            live_target);
+        return std::nullopt;
+    }
+
+    if (live_target == base_draw) {
+        SPDLOG_INFO("[DeadIsland2][UE4.25][Draw] Live vtable slot {} directly matches base Draw {:x}",
+            draw_slot,
+            base_draw);
+        return live_target;
+    }
+
+    std::array<uint8_t, relative_jump_size> jump_bytes{};
+    std::memcpy(jump_bytes.data(), reinterpret_cast<const void*>(live_target), jump_bytes.size());
+
+    if (jump_bytes[0] != 0xE9) {
+        SPDLOG_ERROR("[DeadIsland2][UE4.25][Draw] Live vtable slot {} target {:x} is not the validated E9 Draw thunk",
+            draw_slot,
+            live_target);
+        return std::nullopt;
+    }
+
+    int32_t displacement{};
+    std::memcpy(&displacement, jump_bytes.data() + 1, sizeof(displacement));
+    const auto resolved_target = live_target + relative_jump_size + displacement;
+
+    if (resolved_target != base_draw) {
+        SPDLOG_ERROR(
+            "[DeadIsland2][UE4.25][Draw] Live vtable slot {} thunk {:x} resolves to {:x}, expected scanned base Draw {:x}",
+            draw_slot,
+            live_target,
+            resolved_target,
+            base_draw);
+        return std::nullopt;
+    }
+
+    SPDLOG_INFO(
+        "[DeadIsland2][UE4.25][Draw] Validated live DIGameViewportClient vtable slot {} thunk {:x} -> {:x}",
+        draw_slot,
+        live_target,
+        resolved_target);
+    return live_target;
+} catch (const std::exception& e) {
+    SPDLOG_ERROR("[DeadIsland2][UE4.25][Draw] Live viewport resolution failed: {}", e.what());
+    return std::nullopt;
+} catch (...) {
+    SPDLOG_ERROR("[DeadIsland2][UE4.25][Draw] Live viewport resolution failed with an unknown exception");
+    return std::nullopt;
+}
+
 bool split_fiction_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2943,6 +3074,50 @@ bool supports_naruto_ue416_dedicated_ui_target() {
         g_framework->is_dx11();
 }
 
+bool supports_dead_island_2_ue425_dedicated_ui_target() {
+    return dead_island_2_ue425_is_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12();
+}
+
+std::optional<std::pair<uint32_t, uint32_t>> get_dead_island_2_ue425_ui_extent() {
+    if (!supports_dead_island_2_ue425_dedicated_ui_target()) {
+        return std::nullopt;
+    }
+
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+    auto* const swapchain = d3d12_hook != nullptr ? d3d12_hook->get_swap_chain() : nullptr;
+
+    if (swapchain == nullptr) {
+        return std::nullopt;
+    }
+
+    DXGI_SWAP_CHAIN_DESC swapchain_desc{};
+    uint32_t width{};
+    uint32_t height{};
+
+    if (SUCCEEDED(swapchain->GetDesc(&swapchain_desc))) {
+        width = swapchain_desc.BufferDesc.Width;
+        height = swapchain_desc.BufferDesc.Height;
+    }
+
+    if (width == 0 || height == 0) {
+        Microsoft::WRL::ComPtr<ID3D12Resource> backbuffer{};
+
+        if (SUCCEEDED(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer))) && backbuffer != nullptr) {
+            const auto desc = backbuffer->GetDesc();
+            width = static_cast<uint32_t>(desc.Width);
+            height = desc.Height;
+        }
+    }
+
+    if (width < 320 || height < 240 || width > 16384 || height > 16384) {
+        return std::nullopt;
+    }
+
+    return std::pair{width, height};
+}
+
 bool supports_ue57_dedicated_ui_target() {
     if (!is_ue_5_7_or_newer() || g_framework == nullptr) {
         return false;
@@ -2971,7 +3146,8 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
 bool supports_dedicated_ui_target_for_current_game() {
     return supports_ue57_dedicated_ui_target() ||
         supports_ue55_dedicated_ui_target_for_current_game() ||
-        supports_naruto_ue416_dedicated_ui_target();
+        supports_naruto_ue416_dedicated_ui_target() ||
+        supports_dead_island_2_ue425_dedicated_ui_target();
 }
 
 bool should_preserve_promoted_ue55_slate_target() {
@@ -7044,6 +7220,182 @@ bool FFakeStereoRenderingHook::attempt_hook_dune_ffx_frame_resources() {
     return true;
 }
 
+bool FFakeStereoRenderingHook::attempt_hook_dead_island_ue425_compute_light_grid() {
+    if (m_dead_island_ue425_compute_light_grid_hook) {
+        return true;
+    }
+
+    if (m_attempted_hook_dead_island_ue425_compute_light_grid ||
+        !dead_island_2_ue425_is_current_game())
+    {
+        return false;
+    }
+
+    m_attempted_hook_dead_island_ue425_compute_light_grid = true;
+
+    // Dead Island 2's UE4.25 fork can emit one FSimpleLightPerViewEntry per
+    // stereo view without creating the matching InstancePerViewDataIndices
+    // array. Hook the exact index load rather than the large ComputeLightGrid
+    // entry point, which is split across multiple Windows unwind records.
+    constexpr auto compute_light_grid_pattern =
+        "48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 "
+        "48 8D AC 24 70 F5 FF FF 48 81 EC B0 0B 00 00";
+    constexpr auto malformed_simple_light_read_pattern =
+        "49 8B 41 30 8B CE 48 8B 14 D8 48 8B C2 48 C1 E8 20 "
+        "85 C0 0F 45 4D 10 0F BA F2 1F 03 CA 48 63 D1";
+    constexpr uintptr_t malformed_read_pattern_offset = 0x66C;
+    constexpr uintptr_t malformed_read_instruction_offset = 0x672;
+    constexpr std::array<uint8_t, 4> malformed_read_instruction{
+        0x48, 0x8B, 0x14, 0xD8,
+    };
+
+    const auto executable = utility::get_executable();
+    const auto target = utility::scan(executable, compute_light_grid_pattern);
+    const auto malformed_read = target
+        ? utility::scan(*target, 0x800, malformed_simple_light_read_pattern)
+        : std::nullopt;
+    const auto function = target ? get_runtime_function_range(*target) : std::nullopt;
+
+    const auto malformed_read_instruction_address = target
+        ? *target + malformed_read_instruction_offset
+        : 0;
+
+    if (!target || !malformed_read || !function ||
+        function->begin != *target ||
+        function->image_base != reinterpret_cast<uintptr_t>(executable) ||
+        *malformed_read != *target + malformed_read_pattern_offset ||
+        !is_executable_process_range(malformed_read_instruction_address, malformed_read_instruction.size()) ||
+        std::memcmp(
+            reinterpret_cast<const void*>(malformed_read_instruction_address),
+            malformed_read_instruction.data(),
+            malformed_read_instruction.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][LightGrid] Missing simple-light index load validation failed; compatibility repair remains disabled");
+        return false;
+    }
+
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(malformed_read_instruction_address),
+        &FFakeStereoRenderingHook::dead_island_ue425_compute_light_grid_hook);
+    if (!hook) {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][LightGrid] Failed to hook validated missing simple-light index load at {:x}",
+            malformed_read_instruction_address);
+        return false;
+    }
+
+    m_dead_island_ue425_compute_light_grid_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[DeadIsland2][UE4.25][LightGrid] Hooked validated missing simple-light index load at {:x}",
+        malformed_read_instruction_address);
+    return true;
+}
+
+void FFakeStereoRenderingHook::dead_island_ue425_compute_light_grid_hook(safetyhook::Context& ctx) {
+    auto* const hook = g_hook;
+    if (hook == nullptr || !hook->m_dead_island_ue425_compute_light_grid_hook ||
+        ctx.rax != 0 || ctx.r9 == 0)
+    {
+        return;
+    }
+
+    struct RawArray {
+        void* data;
+        int32_t num;
+        int32_t max;
+    };
+
+    struct SortedLightSetLayout {
+        int32_t simple_lights_end;
+        int32_t tiled_supported_end;
+        int32_t clustered_supported_end;
+        int32_t attenuation_light_start;
+        RawArray instance_data;
+        RawArray per_view_data;
+        RawArray instance_per_view_indices;
+        RawArray sorted_lights;
+    };
+
+    static_assert(sizeof(RawArray) == 0x10);
+    static_assert(offsetof(SortedLightSetLayout, instance_data) == 0x10);
+    static_assert(offsetof(SortedLightSetLayout, per_view_data) == 0x20);
+    static_assert(offsetof(SortedLightSetLayout, instance_per_view_indices) == 0x30);
+    static_assert(offsetof(SortedLightSetLayout, sorted_lights) == 0x40);
+
+    if (!is_readable_process_range(ctx.r9, sizeof(SortedLightSetLayout)))
+    {
+        return;
+    }
+
+    const auto& lights = *reinterpret_cast<const SortedLightSetLayout*>(ctx.r9);
+    const auto instance_count = lights.instance_data.num;
+    const auto per_view_count = lights.per_view_data.num;
+    const auto& indices = lights.instance_per_view_indices;
+    const auto light_index = static_cast<uint64_t>(ctx.rbx);
+
+    const bool malformed_indices =
+        lights.simple_lights_end > 0 &&
+        instance_count > 0 && instance_count <= 4096 &&
+        per_view_count >= instance_count && per_view_count <= 16384 &&
+        instance_count != per_view_count &&
+        indices.data == nullptr && indices.num == 0 &&
+        light_index < static_cast<uint64_t>(instance_count);
+
+    if (!malformed_indices) {
+        return;
+    }
+
+    const auto inferred_view_count = per_view_count / instance_count;
+    const bool can_reconstruct_all_per_view =
+        inferred_view_count >= 2 && inferred_view_count <= 4 &&
+        per_view_count == instance_count * inferred_view_count &&
+        lights.instance_data.data != nullptr &&
+        lights.per_view_data.data != nullptr &&
+        lights.instance_data.max >= instance_count &&
+        lights.per_view_data.max >= per_view_count &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.instance_data.data),
+            static_cast<size_t>(instance_count) * 0x1C) &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(lights.per_view_data.data),
+            static_cast<size_t>(per_view_count) * 0x0C);
+
+    if (!can_reconstruct_all_per_view) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DeadIsland2][UE4.25][LightGrid] Malformed simple-light arrays cannot be reconstructed safely at the guarded index load (simple_end={} instances={} per_view={} indices={}/{})",
+            lights.simple_lights_end,
+            instance_count,
+            per_view_count,
+            indices.num,
+            indices.max);
+        return;
+    }
+
+    using PackedIndexTable = std::array<uint64_t, 4096>;
+    static const auto packed_indices = []() {
+        std::array<PackedIndexTable, 5> tables{};
+        for (uint32_t view_count = 2; view_count <= 4; ++view_count) {
+            for (uint32_t index = 0; index < tables[view_count].size(); ++index) {
+                const auto per_view_index = index * view_count;
+                tables[view_count][index] =
+                    (uint64_t{1} << 32) | static_cast<uint64_t>(per_view_index);
+            }
+        }
+        return tables;
+    }();
+
+    // The original instruction immediately loads [RAX + RBX*8]. Redirect RAX
+    // to an immutable UEVR-owned table for this one instruction only.
+    ctx.rax = reinterpret_cast<uintptr_t>(packed_indices[inferred_view_count].data());
+
+    SPDLOG_WARN_ONCE(
+        "[DeadIsland2][UE4.25][LightGrid] Supplying {} missing simple-light stereo index records for {} views at the guarded load",
+        instance_count,
+        inferred_view_count);
+}
+
 void FFakeStereoRenderingHook::attempt_hook_split_fiction_haze_view_builder(
     sdk::UGameViewportClient* viewport_client) {
     const auto vr = VR::get();
@@ -7473,7 +7825,7 @@ bool FFakeStereoRenderingHook::hook() {
     hook_ue418_oculus_pixel_density_sink();
     attempt_hook_dune_dlss_output();
     attempt_hook_dune_ffx_frame_resources();
-
+    attempt_hook_dead_island_ue425_compute_light_grid();
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
@@ -8951,18 +9303,36 @@ bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
         return false;
     }
 
-    m_gameviewportclient_draw_hook = safetyhook::create_inline((void*)*game_viewport_client_draw, &game_viewport_client_draw_hook, safetyhook::InlineHook::StartDisabled);
-    m_has_game_viewport_client_draw_hook = true;
+    auto hook_target = *game_viewport_client_draw;
+
+    // Dead Island 2's game viewport thunk is not the only route into Draw.
+    // Validate it against the scanner result, but hook the shared base so
+    // both direct calls and the derived thunk pass through this hook.
+    if (const auto live_draw = resolve_dead_island_2_game_viewport_draw(*game_viewport_client_draw)) {
+        SPDLOG_INFO(
+            "[DeadIsland2][UE4.25][Draw] Live dispatch validated at {:x}; hooking shared base Draw {:x}",
+            *live_draw,
+            hook_target);
+    }
+
+    m_gameviewportclient_draw_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(hook_target),
+        &game_viewport_client_draw_hook,
+        safetyhook::InlineHook::StartDisabled);
+    m_has_game_viewport_client_draw_hook = false;
 
     if (!m_gameviewportclient_draw_hook) {
-        SPDLOG_ERROR("Failed to hook UGameViewportClient::Draw!");
+        SPDLOG_ERROR("Failed to hook UGameViewportClient::Draw at {:x}!", hook_target);
         return false;
     }
 
     if (auto enable_result = m_gameviewportclient_draw_hook.enable(); !enable_result.has_value()) {
-        SPDLOG_ERROR("Failed to enable UGameViewportClient::Draw hook!");
+        SPDLOG_ERROR("Failed to enable UGameViewportClient::Draw hook at {:x}!", hook_target);
         return false;
     }
+
+    m_has_game_viewport_client_draw_hook = true;
+    SPDLOG_INFO("Hooked UGameViewportClient::Draw dispatch target at {:x}", hook_target);
 
     return true;
 } catch(std::exception& e) {
@@ -9549,6 +9919,17 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
                 func_start = retaddr;
             }
 
+            // Dead Island 2's scene renderer does not carry the usual ViewFamilyTexture
+            // marker. Redirecting this caller to the UI target makes gameplay render black.
+            if (dead_island_2_ue425_is_current_game() &&
+                utility::find_string_reference_in_path(*func_start, L"Viewport render thread RT is NULL", false))
+            {
+                SPDLOG_INFO("[DeadIsland2][UE4.25][AHUD] Preserving RenderViewFamily_RenderThread scene target @ {:x}", retaddr);
+                data.call_original_retaddrs.insert(retaddr);
+                data.has_view_family_tex = true;
+                return og(viewport);
+            }
+
             // The function that has this string reference should ALWAYS get passed
             // back to the original function, this is the actual scene render target.
             // Everything else we will redirect to the UI render target.
@@ -9729,22 +10110,30 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         ue58_viewport_adoption && g_framework->is_dx11();
     const bool naruto_ue416_dx11_viewport_adoption =
         naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11();
+    const bool dead_island_2_ue425_dx12_viewport_adoption =
+        dead_island_2_ue425_is_current_game() && g_framework->is_dx12();
     const bool validated_dx11_viewport_adoption =
         ue58_dx11_viewport_adoption || naruto_ue416_dx11_viewport_adoption;
 
     if ((is_ue_5_7_or_newer() && !ue58_viewport_adoption) ||
-        (!g_framework->is_dx12() && !validated_dx11_viewport_adoption)) {
+        (!g_framework->is_dx12() && !validated_dx11_viewport_adoption) ||
+        (dead_island_2_ue425_is_current_game() && !dead_island_2_ue425_dx12_viewport_adoption)) {
         return;
     }
 
     const bool dune_viewport_adoption = dune_awakening_is_current_game();
     const bool allow_scene_viewport_rt_adoption =
-        dune_viewport_adoption || ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption;
+        dune_viewport_adoption || ue58_viewport_adoption ||
+        naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption;
     const auto log_prefix = dune_viewport_adoption
         ? "[Dune][RT]"
         : (ue58_viewport_adoption
             ? "[UE5.8][RT]"
-            : (naruto_ue416_dx11_viewport_adoption ? "[Naruto][UE4.16][RT]" : "[SHf]"));
+            : (naruto_ue416_dx11_viewport_adoption
+                ? "[Naruto][UE4.16][RT]"
+                : (dead_island_2_ue425_dx12_viewport_adoption
+                    ? "[DeadIsland2][UE4.25][RT]"
+                    : "[SHf]")));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
@@ -9783,6 +10172,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption &&
         source != nullptr &&
         std::strcmp(source, "UGameViewportClient::Draw post") == 0;
+    const bool is_dead_island_2_post_draw =
+        dead_island_2_ue425_dx12_viewport_adoption &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw post") == 0;
 
     // UE5.8 can still expose the desktop target before its pending
     // NeedReAllocateViewportRenderTarget request has completed. Publishing
@@ -9801,6 +10194,11 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
+    // Observe only after the engine-owned allocation and viewport draw finish.
+    if (dead_island_2_ue425_dx12_viewport_adoption && !is_dead_island_2_post_draw) {
+        return;
+    }
+
     auto current_target = rtm->get_render_target();
     const bool is_dune_viewport_refresh =
         dune_viewport_adoption &&
@@ -9812,12 +10210,15 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         (is_ue58_post_draw || is_ue58_render_family_fallback);
     const bool is_naruto_viewport_refresh =
         naruto_ue416_dx11_viewport_adoption && is_naruto_post_draw;
+    const bool is_dead_island_2_viewport_refresh =
+        dead_island_2_ue425_dx12_viewport_adoption && is_dead_island_2_post_draw;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
         !is_dune_viewport_refresh &&
         !is_ue58_viewport_refresh &&
-        !is_naruto_viewport_refresh)
+        !is_naruto_viewport_refresh &&
+        !is_dead_island_2_viewport_refresh)
     {
         return;
     }
@@ -10053,9 +10454,15 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
-    if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
+    if (ue58_viewport_adoption ||
+        naruto_ue416_dx11_viewport_adoption ||
+        dead_island_2_ue425_dx12_viewport_adoption)
+    {
         const auto expected_width = (uint64_t)vr->get_hmd_width() *
-            (naruto_ue416_dx11_viewport_adoption && vr->is_using_afr() ? 1ull : 2ull);
+            ((naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption) &&
+                    vr->is_using_afr()
+                ? 1ull
+                : 2ull);
         const auto expected_height = (uint64_t)vr->get_hmd_height();
 
         if (native_width != expected_width || native_height != expected_height) {
@@ -10232,17 +10639,45 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             native_format);
     }
 
-    if (current_target != nullptr) {
-        SPDLOG_WARN(
-            "{} Re-adopted changed FSceneViewport RT from {} after viewport/world transition from {:x} to {:x} native={:x} [{}x{} fmt={}]",
-            log_prefix,
-            source_name,
-            (uintptr_t)current_target,
-            (uintptr_t)candidate,
-            (uintptr_t)native_resource_identity,
+    if (dead_island_2_ue425_dx12_viewport_adoption && current_target == nullptr) {
+        // D3D12 may have initialized from the desktop bootstrap before the
+        // game viewport completed its double-wide allocation. Rebuild only
+        // for that first desktop-to-stereo transition. Rebuilding again for
+        // this title's rotating same-size wrappers creates a self-sustaining
+        // allocation/reinitialization loop and visible Native flicker.
+        g_hook->set_should_recreate_textures(true);
+        vr->reinitialize_renderer();
+        SPDLOG_INFO(
+            "[DeadIsland2][UE4.25][RT] Scheduled one-time D3D12 resource rebuild for first verified stereo target native={:x} [{}x{} fmt={}]",
+            reinterpret_cast<uintptr_t>(native_resource_identity),
             native_width,
             native_height,
             native_format);
+    }
+
+    if (current_target != nullptr) {
+        if (dead_island_2_ue425_dx12_viewport_adoption) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                5,
+                "[DeadIsland2][UE4.25][RT] Refreshed same-size engine scene source without rebuilding D3D12: {:x} -> {:x} native={:x} [{}x{} fmt={}]",
+                (uintptr_t)current_target,
+                (uintptr_t)candidate,
+                (uintptr_t)native_resource_identity,
+                native_width,
+                native_height,
+                native_format);
+        } else {
+            SPDLOG_WARN(
+                "{} Re-adopted changed FSceneViewport RT from {} after viewport/world transition from {:x} to {:x} native={:x} [{}x{} fmt={}]",
+                log_prefix,
+                source_name,
+                (uintptr_t)current_target,
+                (uintptr_t)candidate,
+                (uintptr_t)native_resource_identity,
+                native_width,
+                native_height,
+                native_format);
+        }
     } else {
         SPDLOG_WARN_ONCE("{} Adopted real FSceneViewport render target from {} at {:x} native={:x} [{}x{} fmt={}]",
             log_prefix,
@@ -10309,7 +10744,18 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     // texture instead of the scene render target, if it's not the scene itself/the view family texture.
     // This usually isn't needed but sometimes there are bespoke changes to the rendering pipeline
     // or uses of the AHUD class that make it necessary.
-    if (g_framework->is_game_data_intialized() && VR::get()->is_ahud_compatibility_enabled() && viewport != nullptr) {
+    auto* const render_target_manager = g_hook->get_render_target_manager();
+    const bool dead_island_waiting_for_scene =
+        dead_island_2_ue425_is_current_game() &&
+        g_framework->is_dx12() &&
+        render_target_manager != nullptr &&
+        render_target_manager->get_render_target() == nullptr;
+
+    if (g_framework->is_game_data_intialized() &&
+        VR::get()->is_ahud_compatibility_enabled() &&
+        viewport != nullptr &&
+        !dead_island_waiting_for_scene)
+    {
         if (g_hook->m_viewport_get_render_target_texture_hook == nullptr) {
             SPDLOG_INFO("Hooking FViewport::GetRenderTargetTexture...");
             void** vp_vtable = *(void***)viewport;
@@ -10324,6 +10770,9 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
                 SPDLOG_ERROR("Refusing FViewport::GetRenderTargetTexture hook because its vtable index was not validated");
             }
         }
+    } else if (dead_island_waiting_for_scene && VR::get()->is_ahud_compatibility_enabled()) {
+        SPDLOG_INFO_ONCE(
+            "[DeadIsland2][UE4.25][AHUD] Delaying AHUD redirection until the stereo scene target is adopted");
     }
 
     auto call_orig = [=]() {
@@ -10334,6 +10783,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
         if (everspace2_is_current_game() || is_ue_5_8() ||
+            (dead_island_2_ue425_is_current_game() && g_framework->is_dx12()) ||
             (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11())) {
             g_hook->try_adopt_scene_viewport_render_target(
                 viewport,
@@ -10371,6 +10821,20 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     if (!vr->is_hmd_active()) {
         call_orig();
         return;
+    }
+
+    if (dead_island_2_ue425_is_current_game() &&
+        g_framework->is_dx12() &&
+        viewport != nullptr &&
+        render_target_manager != nullptr &&
+        render_target_manager->get_render_target() == nullptr &&
+        !g_hook->m_dead_island_2_viewport_allocation_requested.exchange(true, std::memory_order_acq_rel))
+    {
+        // Let UE allocate its own double-wide target from inside Draw. A full
+        // D3D12 rebuild is deferred until that target is observed twice.
+        g_hook->set_should_recreate_textures(true);
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][RT] Requested one-time viewport stereo allocation after validated Draw remained desktop-sized");
     }
 
     g_hook->attempt_hook_split_fiction_haze_view_builder(viewport_client);
@@ -20943,6 +21407,30 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     FRHITexture2D* provider_texture = nullptr;
     auto rtm = g_hook->get_render_target_manager();
 
+    const bool dead_island_2_ue425_dedicated_ui =
+        supports_dead_island_2_ue425_dedicated_ui_target() && rtm != nullptr;
+
+    if (dead_island_2_ue425_dedicated_ui) {
+        // Dead Island 2 can enter Slate before its game viewport has published
+        // a scene target. Capture the desktop extent independently so UI target
+        // creation does not depend on the scene/provider bootstrap succeeding.
+        g_hook->note_stable_slate_draw();
+        rtm->get_fallback_ui_target_ref() = nullptr;
+
+        if (const auto extent = get_dead_island_2_ue425_ui_extent()) {
+            rtm->request_dedicated_ui_target(extent->first, extent->second);
+            rtm->ensure_dedicated_ui_target(reinterpret_cast<uintptr_t>(a2));
+            SPDLOG_INFO_ONCE(
+                "[DeadIsland2][UE4.25][SlateUI] Requested persistent desktop UI target [{}x{}] independently of the scene RT",
+                extent->first,
+                extent->second);
+        } else {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[DeadIsland2][UE4.25][SlateUI] Waiting for a trustworthy desktop swapchain extent");
+        }
+    }
+
     if (halo_campaign_evolved_is_current_game() &&
         g_hook->m_special_detected_5_54 &&
         g_framework->is_dx12() &&
@@ -21392,6 +21880,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     auto ui_target = rtm->get_ui_target();
     const auto render_target_fallback = rtm->get_render_target();
     const auto daysgone_dx11_no_scene_as_ui = daysgone_is_current_game() && g_framework->is_dx11();
+    const auto dead_island_2_ue425_no_scene_as_ui =
+        dead_island_2_ue425_dedicated_ui;
     const auto naruto_ue416_transient_ui =
         naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11();
 
@@ -21420,6 +21910,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             ui_target = rtm->get_ui_target();
         }
     } else {
+        if (dead_island_2_ue425_no_scene_as_ui && ui_target == render_target_fallback) {
+            SPDLOG_WARN_ONCE(
+                "[DeadIsland2][UE4.25][SlateUI] Clearing scene-target UI fallback before DrawWindow");
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            ui_target = nullptr;
+        }
+
         if (daysgone_dx11_no_scene_as_ui && ui_target == render_target_fallback) {
             SPDLOG_WARN_ONCE("[DaysGone] Clearing scene render target UI fallback before Slate DrawWindow");
             rtm->get_fallback_ui_target_ref() = nullptr;
@@ -21431,6 +21928,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (naruto_ue416_transient_ui) {
                 SPDLOG_INFO_ONCE(
                     "[Naruto][UE4.16][SlateUI] Using viewport provider texture for this draw only; not retaining it across viewport reallocations");
+            } else if (dead_island_2_ue425_no_scene_as_ui) {
+                SPDLOG_INFO_ONCE(
+                    "[DeadIsland2][UE4.25][SlateUI] Using the distinct viewport-provider texture only until the persistent UI target is ready");
             } else {
                 SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting viewport RT provider texture as dedicated UI target fallback");
                 rtm->get_fallback_ui_target_ref() = provider_texture;
@@ -21442,6 +21942,9 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             if (naruto_ue416_transient_ui) {
                 SPDLOG_INFO_ONCE(
                     "[Naruto][UE4.16][SlateUI] Using Slate viewport texture for this draw only; not retaining it across viewport reallocations");
+            } else if (dead_island_2_ue425_no_scene_as_ui) {
+                SPDLOG_INFO_ONCE(
+                    "[DeadIsland2][UE4.25][SlateUI] Using the distinct Slate texture only until the persistent UI target is ready");
             } else {
                 SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as dedicated UI target fallback");
                 rtm->get_fallback_ui_target_ref() = engine_texture;
@@ -21449,13 +21952,17 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
 
         if (ui_target == nullptr && render_target_fallback != nullptr && !skip_ue56_viewport_provider &&
-            !daysgone_dx11_no_scene_as_ui && !naruto_ue416_transient_ui)
+            !daysgone_dx11_no_scene_as_ui && !dead_island_2_ue425_no_scene_as_ui && !naruto_ue416_transient_ui)
         {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Falling back to render target because no dedicated UI target was recovered");
             ui_target = render_target_fallback;
             rtm->get_fallback_ui_target_ref() = render_target_fallback;
         } else if (ui_target == nullptr && render_target_fallback != nullptr && daysgone_dx11_no_scene_as_ui) {
             SPDLOG_WARN_ONCE("[DaysGone] Not replacing Slate viewport with the scene RT; using Bend's in-scene Slate composite");
+        } else if (ui_target == nullptr && render_target_fallback != nullptr && dead_island_2_ue425_no_scene_as_ui) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[DeadIsland2][UE4.25][SlateUI] Dedicated UI target is not ready; preserving the original Slate destination instead of writing into the scene RT");
         }
     }
 
@@ -23365,6 +23872,12 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         }
     }
 
+    if (supports_dead_island_2_ue425_dedicated_ui_target()) {
+        // This exact UE4.25 path derives its extent from the desktop swapchain
+        // and can reach Slate before any scene view family exists.
+        return true;
+    }
+
     if (supports_naruto_ue416_dedicated_ui_target()) {
         // UE4.16 never selects the UE5.7 Slate-thread startup policy below.
         // Once DrawWindow itself is stable, its captured desktop extent is
@@ -23481,7 +23994,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             if (everspace2_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
-                supports_naruto_ue416_dedicated_ui_target())
+                supports_naruto_ue416_dedicated_ui_target() ||
+                supports_dead_island_2_ue425_dedicated_ui_target())
             {
                 world_context = engine->get_property<sdk::UObject*>(L"GameInstance");
 
@@ -23494,6 +24008,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (supports_dead_island_2_ue425_dedicated_ui_target()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[DeadIsland2][UE4.25][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
@@ -24408,6 +24926,27 @@ void FFakeStereoRenderingHook::attempt_hook_update_viewport_rhi(uintptr_t return
 }
 
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
+    if (dead_island_2_ue425_is_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12())
+    {
+        // Dead Island 2's UE4.25 allocation tail enters an indirect thunk that
+        // the generic replay scanner cannot safely emulate. Keep ownership with
+        // FSceneViewport and publish its completed VR-sized texture after Draw.
+        this->texture_hook_ref = nullptr;
+        this->shader_resource_hook_ref = nullptr;
+        this->allocate_texture_called = false;
+
+        if (!this->set_up_texture_hook) {
+            this->set_up_texture_hook = true;
+            SPDLOG_INFO(
+                "[DeadIsland2][UE4.25][RT] Engine-owned allocation enabled; generic texture replay/midhooks disabled (caller={:x})",
+                return_address);
+        }
+
+        return false;
+    }
+
     if (everspace2_is_current_game() && is_ue_5_5_dx12_backend()) {
         // Returning false leaves allocation and ownership entirely with
         // FSceneViewport. Retaining these stack refs or replaying InitRHI's
