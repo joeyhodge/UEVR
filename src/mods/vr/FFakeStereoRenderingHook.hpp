@@ -394,6 +394,10 @@ struct VRRenderTargetManager_58 : IStereoRenderTargetManager_58, VRRenderTargetM
         TArray<FTexture2DRHIRef>& OutTargetableTextures,
         TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
         uint32_t NumSamples = 1) override;
+
+    uint8_t GetActualColorSwapchainFormat() const override { return 0; }
+    int32_t AcquireColorTexture() override { return -1; }
+    int32_t AcquireDepthTexture() override { return -1; }
 };
 
 struct VRRenderTargetManager_58_Transitional : IStereoRenderTargetManager_58_Transitional, VRRenderTargetManager_Base {
@@ -433,16 +437,9 @@ struct VRRenderTargetManager_58_Transitional : IStereoRenderTargetManager_58_Tra
         TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
         uint32_t NumSamples = 1) override;
 
-    bool AllocateRenderTargetTextures(
-        uint32_t SizeX,
-        uint32_t SizeY,
-        uint8_t Format,
-        uint32_t NumLayers,
-        ETextureCreateFlags Flags,
-        ETextureCreateFlags TargetableTextureFlags,
-        TArray<FTexture2DRHIRef>& OutTargetableTextures,
-        TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
-        uint32_t NumSamples = 1) override;
+    uint8_t GetActualColorSwapchainFormat() const override { return 0; }
+    int32_t AcquireColorTexture() override { return -1; }
+    int32_t AcquireDepthTexture() override { return -1; }
 };
 
 enum class UE58RenderTargetManagerABI : uint8_t {

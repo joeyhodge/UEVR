@@ -5666,7 +5666,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
 
     if (m_uses_ue58_rendertarget_manager) {
-        SPDLOG_INFO("[UE5.8] Render-target-manager ABI will be selected from the engine call site");
+        SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
     }
 
     m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
@@ -5686,19 +5686,29 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
         return;
     }
 
-    // FSceneViewport::InitRHI calls CalculateRenderTargetSize (slot 1), then
-    // AllocateRenderTargetTextures. Public UE5.8 uses slot 4; a shipping
-    // transitional ABI that retains NeedReAllocateDepthTexture uses slot 5.
+    // Use direct virtual-call pairs from FSceneViewport instead of loosely
+    // associating a loaded function pointer with a later CALL. Public UE5.8
+    // retains the deprecated allocation overload at 0x28. Transitional builds
+    // instead retain NeedReAllocateDepthTexture and replace that deprecated
+    // overload, putting the command-list allocation call at 0x28. Both layouts
+    // deliberately converge again at AcquireColor/AcquireDepth (0x38/0x40).
+    enum class ABIProbeState : uint8_t {
+        None,
+        AfterNeedReallocate,
+        AfterAcquireColor,
+    };
+
+    bool common_acquire_pair = false;
+    bool public_allocation_pair = false;
+    bool transitional_allocation_pair = false;
     bool saw_calculate_call = false;
-    uint32_t pending_calculate_register = 0;
-    uint32_t pending_allocate_register = 0;
-    int64_t pending_allocate_displacement = 0;
+    ABIProbeState acquire_state = ABIProbeState::None;
     uint32_t calculate_ttl = 0;
-    uint32_t allocate_ttl = 0;
+    uint32_t acquire_ttl = 0;
 
     auto ip = return_address;
-    constexpr size_t max_bytes = 0x180;
-    constexpr size_t max_instructions = 96;
+    constexpr size_t max_bytes = 0x240;
+    constexpr size_t max_instructions = 160;
 
     for (size_t i = 0; i < max_instructions && ip < return_address + max_bytes; ++i) {
         const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
@@ -5711,88 +5721,109 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
             break;
         }
 
-        if (decoded->Instruction == ND_INS_MOV &&
-            decoded->OperandsCount >= 2 &&
-            decoded->Operands[0].Type == ND_OP_REG &&
-            decoded->Operands[1].Type == ND_OP_MEM &&
-            decoded->Operands[1].Info.Memory.HasDisp)
-        {
-            const auto displacement = decoded->Operands[1].Info.Memory.Disp;
-            const auto destination_register =
-                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
-
-            if (!saw_calculate_call && displacement == 0x8) {
-                pending_calculate_register = destination_register;
-                calculate_ttl = 6;
-            } else if (saw_calculate_call &&
-                (displacement == 0x20 || displacement == 0x28))
-            {
-                pending_allocate_register = destination_register;
-                pending_allocate_displacement = displacement;
-                allocate_ttl = 24;
-            }
-        }
-
         if (mnemonic.starts_with("CALL") &&
             decoded->OperandsCount >= 1 &&
-            decoded->Operands[0].Type == ND_OP_REG)
+            decoded->Operands[0].Type == ND_OP_MEM &&
+            decoded->Operands[0].Info.Memory.HasBase &&
+            decoded->Operands[0].Info.Memory.HasDisp &&
+            !decoded->Operands[0].Info.Memory.IsRipRel)
         {
-            const auto call_register =
-                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+            const auto slot = decoded->Operands[0].Info.Memory.Disp;
 
-            if (calculate_ttl != 0 && call_register == pending_calculate_register) {
+            // FSceneViewport::InitRHI: CalculateRenderTargetSize followed by
+            // AllocateRenderTargetTextures. These are 0x08/0x20 publicly and
+            // 0x08/0x28 only when the retired depth-reallocation slot remains.
+            if (slot == 0x8) {
                 saw_calculate_call = true;
-                calculate_ttl = 0;
-            } else if (saw_calculate_call &&
-                allocate_ttl != 0 &&
-                call_register == pending_allocate_register)
-            {
-                const auto detected =
-                    pending_allocate_displacement == 0x28
-                        ? UE58RenderTargetManagerABI::TransitionalDepthSlot
-                        : UE58RenderTargetManagerABI::Public;
-
-                std::scoped_lock abi_lock{m_ue58_rendertarget_manager_abi_mutex};
-
-                if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) ==
-                    UE58RenderTargetManagerABI::Unknown)
-                {
-                    if (detected == UE58RenderTargetManagerABI::TransitionalDepthSlot) {
-                        // Slate can expose and promote its real UI texture before
-                        // FSceneViewport reaches the callsite that identifies the
-                        // transitional UE5.8 ABI. Preserve that validated target
-                        // before publishing the manager switch.
-                        m_rtm_58_transitional.inherit_dedicated_ui_state_from(
-                            m_rtm_58,
-                            "UE5.8 transitional ABI selection");
-                    }
-
-                    m_ue58_rendertarget_manager_abi.store(
-                        detected,
-                        std::memory_order_release);
-
-                    SPDLOG_INFO(
-                        "[UE5.8] Detected render-target-manager allocation slot 0x{:x}; using {} ABI",
-                        pending_allocate_displacement,
-                        detected == UE58RenderTargetManagerABI::TransitionalDepthSlot
-                            ? "transitional depth-slot"
-                            : "public");
+                calculate_ttl = 48;
+            } else if (saw_calculate_call && calculate_ttl != 0) {
+                if (slot == 0x20) {
+                    public_allocation_pair = true;
+                } else if (slot == 0x28) {
+                    transitional_allocation_pair = true;
                 }
+            }
 
-                return;
+            // FSceneViewport::EnqueueBeginRenderFrame has the same
+            // NeedReAllocate/AcquireColor/AcquireDepth slots in both supported
+            // layouts. Observe it as a safety invariant, not ABI evidence.
+            if (slot == 0x10) {
+                acquire_state = ABIProbeState::AfterNeedReallocate;
+                acquire_ttl = 96;
+            } else if (acquire_ttl != 0) {
+                if (acquire_state == ABIProbeState::AfterNeedReallocate) {
+                    if (slot == 0x38) {
+                        acquire_state = ABIProbeState::AfterAcquireColor;
+                    }
+                } else if (acquire_state == ABIProbeState::AfterAcquireColor && slot == 0x40) {
+                    common_acquire_pair = true;
+                }
             }
         }
 
         if (calculate_ttl != 0) {
             --calculate_ttl;
+            if (calculate_ttl == 0) {
+                saw_calculate_call = false;
+            }
         }
 
-        if (allocate_ttl != 0) {
-            --allocate_ttl;
+        if (acquire_ttl != 0) {
+            --acquire_ttl;
+            if (acquire_ttl == 0) {
+                acquire_state = ABIProbeState::None;
+            }
         }
 
         ip += decoded->Length;
     }
+
+    UE58RenderTargetManagerABI detected = UE58RenderTargetManagerABI::Unknown;
+    const char* evidence = nullptr;
+
+    if (public_allocation_pair != transitional_allocation_pair) {
+        detected = public_allocation_pair
+            ? UE58RenderTargetManagerABI::Public
+            : UE58RenderTargetManagerABI::TransitionalDepthSlot;
+        evidence = "InitRHI allocation pair";
+    } else if (public_allocation_pair || transitional_allocation_pair) {
+        // Conflicting evidence is not sufficient to move away from the public
+        // ABI used by released UE5.8 source.
+        detected = UE58RenderTargetManagerABI::Public;
+        evidence = "conflicting evidence; public fail-safe";
+    }
+
+    if (detected == UE58RenderTargetManagerABI::Unknown) {
+        return;
+    }
+
+    std::scoped_lock abi_lock{m_ue58_rendertarget_manager_abi_mutex};
+
+    if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) !=
+        UE58RenderTargetManagerABI::Unknown)
+    {
+        return;
+    }
+
+    if (detected == UE58RenderTargetManagerABI::TransitionalDepthSlot) {
+        // Slate can expose and promote its real UI texture before
+        // FSceneViewport reaches the callsite that identifies the
+        // transitional UE5.8 ABI. Preserve that validated target before
+        // publishing the manager switch.
+        m_rtm_58_transitional.inherit_dedicated_ui_state_from(
+            m_rtm_58,
+            "UE5.8 transitional ABI selection");
+    }
+
+    m_ue58_rendertarget_manager_abi.store(detected, std::memory_order_release);
+
+    SPDLOG_INFO(
+        "[UE5.8] Detected {} render-target-manager ABI from {} (acquire_pair={})",
+        detected == UE58RenderTargetManagerABI::TransitionalDepthSlot
+            ? "transitional depth-slot"
+            : "public",
+        evidence,
+        common_acquire_pair);
 }
 
 void FFakeStereoRenderingHook::on_frame() {
@@ -13417,6 +13448,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     constexpr size_t max_sane_view_families = 16;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
     FixedCapacityList<sdk::FSceneViewFamily*, max_sane_view_families> view_families{};
+    // DIBR validates this array again after the common candidate pass.
     TArrayViewViewFamily view_family_array{};
 
     if (uses_tarrayview) {
@@ -26031,21 +26063,6 @@ bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
     // Never claim success without producing at least one valid pair. Shipping
     // FSceneViewport checks are compiled out and otherwise permit a modulo by
     // zero when a mismatched ABI returns a non-zero value.
-    return false;
-}
-
-bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
-    uint32_t SizeX,
-    uint32_t SizeY,
-    uint8_t Format,
-    uint32_t NumLayers,
-    ETextureCreateFlags Flags,
-    ETextureCreateFlags TargetableTextureFlags,
-    TArray<FTexture2DRHIRef>& OutTargetableTextures,
-    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
-    uint32_t NumSamples)
-{
-    SPDLOG_INFO_ONCE("[UE5.8] Transitional deprecated AllocateRenderTargetTextures called");
     return false;
 }
 
