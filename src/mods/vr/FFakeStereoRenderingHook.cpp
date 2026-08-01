@@ -808,6 +808,101 @@ bool dead_island_2_ue425_is_current_game() {
     return result;
 }
 
+using DeadIsland2DeviceIsAPrimaryViewFn = bool (*)(void*, const void*);
+
+std::atomic<DeadIsland2DeviceIsAPrimaryViewFn> g_dead_island_2_device_is_primary_view{};
+std::atomic_bool g_dead_island_2_secondary_eye_logged{false};
+
+bool dead_island_2_device_is_primary_view_hook(void* stereo_device, const void* scene_view) {
+    const auto original = g_dead_island_2_device_is_primary_view.load(std::memory_order_acquire);
+
+    if (!dead_island_2_ue425_is_current_game() ||
+        scene_view == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(scene_view) + 0xB00, sizeof(int32_t)))
+    {
+        return original != nullptr && original(stereo_device, scene_view);
+    }
+
+    int32_t stereo_pass{};
+    std::memcpy(
+        &stereo_pass,
+        reinterpret_cast<const void*>(reinterpret_cast<uintptr_t>(scene_view) + 0xB00),
+        sizeof(stereo_pass));
+
+    if (stereo_pass == 2) {
+        if (!g_dead_island_2_secondary_eye_logged.exchange(true, std::memory_order_acq_rel)) {
+            SPDLOG_INFO(
+                "[DeadIsland2][UE4.25][StereoState] Treating the right eye as secondary so UE shares the primary eye's temporal exposure state");
+        }
+
+        return false;
+    }
+
+    return original != nullptr && original(stereo_device, scene_view);
+}
+
+bool install_dead_island_2_primary_view_override(std::vector<uintptr_t>& shadow_vtable) {
+    constexpr size_t device_is_primary_view_index = 10;
+    constexpr size_t slot = device_is_primary_view_index;
+
+    if (!dead_island_2_ue425_is_current_game() || slot >= shadow_vtable.size()) {
+        return false;
+    }
+
+    const auto original = shadow_vtable[slot];
+    if (!is_executable_process_range(original, 0x24)) {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][StereoState] Primary-view slot {} is not executable; preserving the engine vtable",
+            device_is_primary_view_index);
+        return false;
+    }
+
+    // Validate the UE4.25 FFakeStereoRenderingDevice mGPU override before
+    // replacing it. The call displacement and branch distance are build-local.
+    std::array<uint8_t, 0x24> bytes{};
+    SIZE_T bytes_read{};
+    if (!ReadProcessMemory(
+            GetCurrentProcess(),
+            reinterpret_cast<const void*>(original),
+            bytes.data(),
+            bytes.size(),
+            &bytes_read) ||
+        bytes_read != bytes.size())
+    {
+        SPDLOG_WARN(
+            "[DeadIsland2][UE4.25][StereoState] Could not read primary-view slot {}; preserving the engine vtable",
+            device_is_primary_view_index);
+        return false;
+    }
+
+    constexpr std::array<uint8_t, 0x24> expected{
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20,
+        0x48, 0x8B, 0xF9, 0x48, 0x8B, 0xDA, 0x48, 0x8B, 0xCA, 0xE8,
+        0x00, 0x00, 0x00, 0x00, 0x84, 0xC0, 0x74, 0x00, 0x8B, 0x83,
+        0x08, 0x0B, 0x00, 0x00, 0x85, 0xC0};
+
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const bool wildcard = (i >= 20 && i <= 23) || i == 27;
+        if (!wildcard && bytes[i] != expected[i]) {
+            SPDLOG_WARN(
+                "[DeadIsland2][UE4.25][StereoState] Primary-view slot {} failed byte validation at +0x{:x}; preserving the engine vtable",
+                device_is_primary_view_index,
+                i);
+            return false;
+        }
+    }
+
+    g_dead_island_2_device_is_primary_view.store(
+        reinterpret_cast<DeadIsland2DeviceIsAPrimaryViewFn>(original),
+        std::memory_order_release);
+    shadow_vtable[slot] = reinterpret_cast<uintptr_t>(&dead_island_2_device_is_primary_view_hook);
+
+    SPDLOG_INFO(
+        "[DeadIsland2][UE4.25][StereoState] Installed validated right-eye secondary-view override at stereo vtable slot {}",
+        device_is_primary_view_index);
+    return true;
+}
+
 struct DeadIslandUE425RawArray {
     void* data;
     int32_t num;
@@ -8688,6 +8783,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 shadow_vtable.push_back(vtable[i]);
             }
 
+            install_dead_island_2_primary_view_override(shadow_vtable);
             vtable = shadow_vtable.data();
         }
     } else {
@@ -10571,11 +10667,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption ||
         dead_island_2_ue425_dx12_viewport_adoption)
     {
+        // Dead Island keeps its engine-owned side-by-side target in Synced
+        // Sequential. Only Naruto transitions to a single-eye source in AFR.
         const auto expected_width = (uint64_t)vr->get_hmd_width() *
-            ((naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption) &&
-                    vr->is_using_afr()
-                ? 1ull
-                : 2ull);
+            (naruto_ue416_dx11_viewport_adoption && vr->is_using_afr() ? 1ull : 2ull);
         const auto expected_height = (uint64_t)vr->get_hmd_height();
 
         if (native_width != expected_width || native_height != expected_height) {
@@ -16434,6 +16529,14 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
     if (vr->is_using_afr() && !is_full_pass) {
         true_index = g_frame_count % 2;
+
+        if (dead_island_2_ue425_is_current_game() && vr->is_using_synchronized_afr()) {
+            g_hook->publish_dead_island_synced_eye(
+                g_frame_count,
+                static_cast<uint8_t>(true_index));
+            SPDLOG_INFO_ONCE(
+                "[DeadIsland2][UE4.25][Synced] Publishing the eye actually consumed by CalculateStereoViewOffset");
+        }
 
         if (!vr->is_using_synchronized_afr()) {
             if (g_hook->m_has_double_precision) {

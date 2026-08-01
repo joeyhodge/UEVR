@@ -321,6 +321,31 @@ bool is_dune_awakening_executable_cached() {
     return is_dune;
 }
 
+bool is_dead_island_2_ue425_executable_cached() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*exe_path);
+        const bool matching_executable =
+            lowered.ends_with(L"\\deadisland-win64-shipping.exe") ||
+            lowered.ends_with(L"/deadisland-win64-shipping.exe") ||
+            lowered == L"deadisland-win64-shipping.exe";
+
+        if (!matching_executable) {
+            return false;
+        }
+
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 4 &&
+            LOWORD(version.dwFileVersionMS) == 25;
+    }();
+
+    return result;
+}
+
 bool is_everspace2_executable_cached() {
     static const bool is_everspace2 = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -12389,7 +12414,17 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
             const auto last_frame = (frame_count - 1) % runtimes::OpenXR::QUEUE_SIZE;
             const auto now_frame = frame_count % runtimes::OpenXR::QUEUE_SIZE;
             m_openxr->pipeline_states[now_frame] = m_openxr->pipeline_states[last_frame];
-            m_openxr->pipeline_states[now_frame].frame_count = now_frame;
+            if (is_dead_island_2_ue425_executable_cached() && is_using_synchronized_afr()) {
+                // Synced Sequential consumes the full frame token, not the
+                // circular queue index. Advance it even when this eye reuses
+                // the previous pose or every later eye decision stays stale.
+                m_openxr->pipeline_states[now_frame].frame_count = frame_count;
+                m_openxr->internal_frame_count = frame_count;
+                SPDLOG_INFO_ONCE(
+                    "[DeadIsland2][UE4.25][Synced] Advancing the cloned OpenXR pose with its full frame token");
+            } else {
+                m_openxr->pipeline_states[now_frame].frame_count = now_frame;
+            }
         } else {
             const auto last_frame = (frame_count - 1) % m_openvr->pose_queue.size();
             const auto now_frame = frame_count % m_openvr->pose_queue.size();
