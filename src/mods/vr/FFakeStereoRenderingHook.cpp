@@ -15969,14 +15969,6 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     if (vr->is_using_afr() && !is_full_pass) {
         true_index = g_frame_count % 2;
 
-        if (dead_island_2_ue425_is_current_game() && vr->is_using_synchronized_afr()) {
-            g_hook->publish_dead_island_synced_eye(
-                g_frame_count,
-                static_cast<uint8_t>(true_index));
-            SPDLOG_INFO_ONCE(
-                "[DeadIsland2][UE4.25][Synced] Publishing the eye actually consumed by CalculateStereoViewOffset");
-        }
-
         if (!vr->is_using_synchronized_afr()) {
             if (g_hook->m_has_double_precision) {
                 if (true_index == 1) {
