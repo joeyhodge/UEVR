@@ -2240,30 +2240,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         scene_source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         scene_source_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) * 2ull &&
         scene_source_desc.Height == vr->get_hmd_height();
+    const bool dead_island_2_synced_depth_disabled =
+        is_dead_island_2_ue425_current_game() &&
+        vr->is_using_synchronized_afr();
 
-    if (dead_island_2_double_wide_afr_source &&
-        is_afr &&
-        vr->m_fake_stereo_hook != nullptr &&
-        runtime->is_openxr())
-    {
-        const auto snapshot = vr->m_fake_stereo_hook->get_dead_island_synced_eye_snapshot();
-        const auto runtime_frame = runtime->internal_frame_count;
-        const auto frame_distance = snapshot
-            ? (std::max)(runtime_frame, snapshot->view_frame) - (std::min)(runtime_frame, snapshot->view_frame)
-            : std::numeric_limits<uint32_t>::max();
-
-        if (snapshot && snapshot->eye <= static_cast<uint8_t>(VRRuntime::Eye::RIGHT) && frame_distance <= 2u) {
-            is_left_eye_frame = snapshot->eye == static_cast<uint8_t>(VRRuntime::Eye::LEFT);
-            is_right_eye_frame = !is_left_eye_frame;
-
-            SPDLOG_INFO_EVERY_N_SEC(
-                1,
-                "[DeadIsland2][UE4.25][Synced] D3D12 submit matched view_frame={} runtime_frame={} render_frame={} eye={}",
-                snapshot->view_frame,
-                runtime_frame,
-                vr->m_render_frame_count,
-                is_left_eye_frame ? "left" : "right");
-        }
+    if (dead_island_2_double_wide_afr_source) {
+        SPDLOG_INFO_ONCE(
+            "[DeadIsland2][UE4.25][Synced] Using render-frame parity for the double-wide eye pair and disabling the invalid AFR depth layer");
     }
 
     if (dead_island_2_double_wide_afr_source) {
@@ -3780,7 +3763,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             } else {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                if (scene_depth_tex != nullptr) {
+                if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                 }
             }
@@ -3855,7 +3838,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                    if (scene_depth_tex != nullptr) {
+                    if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                     }
                 }
@@ -3905,7 +3888,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                    if (scene_depth_tex != nullptr) {
+                    if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                     }
                 }
@@ -4170,7 +4153,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
             }
 
-            auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex.Get() != nullptr && !native_stereo_array_submit_active);
+            auto result = vr->m_openxr->end_frame(
+                quad_layers,
+                scene_depth_tex.Get() != nullptr &&
+                    !native_stereo_array_submit_active &&
+                    !dead_island_2_synced_depth_disabled);
 
             if (result == XR_ERROR_LAYER_INVALID) {
                 spdlog::info("[VR] Attempting to correct invalid layer");
