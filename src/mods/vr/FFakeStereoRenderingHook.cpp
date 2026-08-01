@@ -88,6 +88,44 @@ bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
 
+template <typename T, size_t Capacity>
+class FixedCapacityList {
+public:
+    bool try_push_back(const T& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = value;
+        return true;
+    }
+
+    bool try_push_back(T&& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = std::move(value);
+        return true;
+    }
+
+    void clear() { m_size = 0; }
+    bool empty() const { return m_size == 0; }
+    size_t size() const { return m_size; }
+    T* begin() { return m_storage.data(); }
+    T* end() { return m_storage.data() + m_size; }
+    const T* begin() const { return m_storage.data(); }
+    const T* end() const { return m_storage.data() + m_size; }
+    T& front() { return m_storage[0]; }
+    const T& front() const { return m_storage[0]; }
+    T& operator[](size_t index) { return m_storage[index]; }
+    const T& operator[](size_t index) const { return m_storage[index]; }
+
+private:
+    std::array<T, Capacity> m_storage{};
+    size_t m_size{};
+};
+
 std::mutex g_shf_texture_probe_mutex{};
 std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
 std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_texture_probe_by_base{};
@@ -5628,7 +5666,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
 
     if (m_uses_ue58_rendertarget_manager) {
-        SPDLOG_INFO("[UE5.8] Render-target-manager ABI will be selected from the engine call site");
+        SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
     }
 
     m_prefer_slate_thread_for_session = load_ue57_slate_thread_preference();
@@ -5648,19 +5686,29 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
         return;
     }
 
-    // FSceneViewport::InitRHI calls CalculateRenderTargetSize (slot 1), then
-    // AllocateRenderTargetTextures. Public UE5.8 uses slot 4; a shipping
-    // transitional ABI that retains NeedReAllocateDepthTexture uses slot 5.
+    // Use direct virtual-call pairs from FSceneViewport instead of loosely
+    // associating a loaded function pointer with a later CALL. Public UE5.8
+    // retains the deprecated allocation overload at 0x28. Transitional builds
+    // instead retain NeedReAllocateDepthTexture and replace that deprecated
+    // overload, putting the command-list allocation call at 0x28. Both layouts
+    // deliberately converge again at AcquireColor/AcquireDepth (0x38/0x40).
+    enum class ABIProbeState : uint8_t {
+        None,
+        AfterNeedReallocate,
+        AfterAcquireColor,
+    };
+
+    bool common_acquire_pair = false;
+    bool public_allocation_pair = false;
+    bool transitional_allocation_pair = false;
     bool saw_calculate_call = false;
-    uint32_t pending_calculate_register = 0;
-    uint32_t pending_allocate_register = 0;
-    int64_t pending_allocate_displacement = 0;
+    ABIProbeState acquire_state = ABIProbeState::None;
     uint32_t calculate_ttl = 0;
-    uint32_t allocate_ttl = 0;
+    uint32_t acquire_ttl = 0;
 
     auto ip = return_address;
-    constexpr size_t max_bytes = 0x180;
-    constexpr size_t max_instructions = 96;
+    constexpr size_t max_bytes = 0x240;
+    constexpr size_t max_instructions = 160;
 
     for (size_t i = 0; i < max_instructions && ip < return_address + max_bytes; ++i) {
         const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
@@ -5673,88 +5721,109 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
             break;
         }
 
-        if (decoded->Instruction == ND_INS_MOV &&
-            decoded->OperandsCount >= 2 &&
-            decoded->Operands[0].Type == ND_OP_REG &&
-            decoded->Operands[1].Type == ND_OP_MEM &&
-            decoded->Operands[1].Info.Memory.HasDisp)
-        {
-            const auto displacement = decoded->Operands[1].Info.Memory.Disp;
-            const auto destination_register =
-                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
-
-            if (!saw_calculate_call && displacement == 0x8) {
-                pending_calculate_register = destination_register;
-                calculate_ttl = 6;
-            } else if (saw_calculate_call &&
-                (displacement == 0x20 || displacement == 0x28))
-            {
-                pending_allocate_register = destination_register;
-                pending_allocate_displacement = displacement;
-                allocate_ttl = 24;
-            }
-        }
-
         if (mnemonic.starts_with("CALL") &&
             decoded->OperandsCount >= 1 &&
-            decoded->Operands[0].Type == ND_OP_REG)
+            decoded->Operands[0].Type == ND_OP_MEM &&
+            decoded->Operands[0].Info.Memory.HasBase &&
+            decoded->Operands[0].Info.Memory.HasDisp &&
+            !decoded->Operands[0].Info.Memory.IsRipRel)
         {
-            const auto call_register =
-                static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+            const auto slot = decoded->Operands[0].Info.Memory.Disp;
 
-            if (calculate_ttl != 0 && call_register == pending_calculate_register) {
+            // FSceneViewport::InitRHI: CalculateRenderTargetSize followed by
+            // AllocateRenderTargetTextures. These are 0x08/0x20 publicly and
+            // 0x08/0x28 only when the retired depth-reallocation slot remains.
+            if (slot == 0x8) {
                 saw_calculate_call = true;
-                calculate_ttl = 0;
-            } else if (saw_calculate_call &&
-                allocate_ttl != 0 &&
-                call_register == pending_allocate_register)
-            {
-                const auto detected =
-                    pending_allocate_displacement == 0x28
-                        ? UE58RenderTargetManagerABI::TransitionalDepthSlot
-                        : UE58RenderTargetManagerABI::Public;
-
-                std::scoped_lock abi_lock{m_ue58_rendertarget_manager_abi_mutex};
-
-                if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) ==
-                    UE58RenderTargetManagerABI::Unknown)
-                {
-                    if (detected == UE58RenderTargetManagerABI::TransitionalDepthSlot) {
-                        // Slate can expose and promote its real UI texture before
-                        // FSceneViewport reaches the callsite that identifies the
-                        // transitional UE5.8 ABI. Preserve that validated target
-                        // before publishing the manager switch.
-                        m_rtm_58_transitional.inherit_dedicated_ui_state_from(
-                            m_rtm_58,
-                            "UE5.8 transitional ABI selection");
-                    }
-
-                    m_ue58_rendertarget_manager_abi.store(
-                        detected,
-                        std::memory_order_release);
-
-                    SPDLOG_INFO(
-                        "[UE5.8] Detected render-target-manager allocation slot 0x{:x}; using {} ABI",
-                        pending_allocate_displacement,
-                        detected == UE58RenderTargetManagerABI::TransitionalDepthSlot
-                            ? "transitional depth-slot"
-                            : "public");
+                calculate_ttl = 48;
+            } else if (saw_calculate_call && calculate_ttl != 0) {
+                if (slot == 0x20) {
+                    public_allocation_pair = true;
+                } else if (slot == 0x28) {
+                    transitional_allocation_pair = true;
                 }
+            }
 
-                return;
+            // FSceneViewport::EnqueueBeginRenderFrame has the same
+            // NeedReAllocate/AcquireColor/AcquireDepth slots in both supported
+            // layouts. Observe it as a safety invariant, not ABI evidence.
+            if (slot == 0x10) {
+                acquire_state = ABIProbeState::AfterNeedReallocate;
+                acquire_ttl = 96;
+            } else if (acquire_ttl != 0) {
+                if (acquire_state == ABIProbeState::AfterNeedReallocate) {
+                    if (slot == 0x38) {
+                        acquire_state = ABIProbeState::AfterAcquireColor;
+                    }
+                } else if (acquire_state == ABIProbeState::AfterAcquireColor && slot == 0x40) {
+                    common_acquire_pair = true;
+                }
             }
         }
 
         if (calculate_ttl != 0) {
             --calculate_ttl;
+            if (calculate_ttl == 0) {
+                saw_calculate_call = false;
+            }
         }
 
-        if (allocate_ttl != 0) {
-            --allocate_ttl;
+        if (acquire_ttl != 0) {
+            --acquire_ttl;
+            if (acquire_ttl == 0) {
+                acquire_state = ABIProbeState::None;
+            }
         }
 
         ip += decoded->Length;
     }
+
+    UE58RenderTargetManagerABI detected = UE58RenderTargetManagerABI::Unknown;
+    const char* evidence = nullptr;
+
+    if (public_allocation_pair != transitional_allocation_pair) {
+        detected = public_allocation_pair
+            ? UE58RenderTargetManagerABI::Public
+            : UE58RenderTargetManagerABI::TransitionalDepthSlot;
+        evidence = "InitRHI allocation pair";
+    } else if (public_allocation_pair || transitional_allocation_pair) {
+        // Conflicting evidence is not sufficient to move away from the public
+        // ABI used by released UE5.8 source.
+        detected = UE58RenderTargetManagerABI::Public;
+        evidence = "conflicting evidence; public fail-safe";
+    }
+
+    if (detected == UE58RenderTargetManagerABI::Unknown) {
+        return;
+    }
+
+    std::scoped_lock abi_lock{m_ue58_rendertarget_manager_abi_mutex};
+
+    if (m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire) !=
+        UE58RenderTargetManagerABI::Unknown)
+    {
+        return;
+    }
+
+    if (detected == UE58RenderTargetManagerABI::TransitionalDepthSlot) {
+        // Slate can expose and promote its real UI texture before
+        // FSceneViewport reaches the callsite that identifies the
+        // transitional UE5.8 ABI. Preserve that validated target before
+        // publishing the manager switch.
+        m_rtm_58_transitional.inherit_dedicated_ui_state_from(
+            m_rtm_58,
+            "UE5.8 transitional ABI selection");
+    }
+
+    m_ue58_rendertarget_manager_abi.store(detected, std::memory_order_release);
+
+    SPDLOG_INFO(
+        "[UE5.8] Detected {} render-target-manager ABI from {} (acquire_pair={})",
+        detected == UE58RenderTargetManagerABI::TransitionalDepthSlot
+            ? "transitional depth-slot"
+            : "public",
+        evidence,
+        common_acquire_pair);
 }
 
 void FFakeStereoRenderingHook::on_frame() {
@@ -13375,8 +13444,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
 
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
+    constexpr size_t max_sane_view_families = 16;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
-    std::vector<sdk::FSceneViewFamily*> view_families{};
+    FixedCapacityList<sdk::FSceneViewFamily*, max_sane_view_families> view_families{};
+    // DIBR validates this array again after the common candidate pass.
     TArrayViewViewFamily view_family_array{};
 
     if (uses_tarrayview) {
@@ -13387,7 +13458,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
         std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
 
-        constexpr uint32_t max_sane_view_families = 16;
         if (view_family_array.data == nullptr || view_family_array.count == 0 ||
             view_family_array.count > max_sane_view_families ||
             !is_readable_process_range(
@@ -13402,14 +13472,18 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        view_families.resize(view_family_array.count);
-        std::memcpy(
-            view_families.data(),
-            view_family_array.data,
-            sizeof(sdk::FSceneViewFamily*) * view_family_array.count);
+        for (uint32_t index = 0; index < view_family_array.count; ++index) {
+            if (!view_families.try_push_back(view_family_array.data[index])) {
+                reject_candidate("too many view families");
+                return;
+            }
+        }
         view_family = view_families.front();
     } else {
-        view_families.push_back(view_family);
+        if (!view_families.try_push_back(view_family)) {
+            reject_candidate("too many view families");
+            return;
+        }
     }
 
     if (strict_candidate_validation) {
@@ -13448,20 +13522,39 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     struct SplitScreenViewsRestore {
         SceneViewsArrayPtr views{};
         int32_t count{};
-        std::vector<sdk::FSceneView*> entries{};
+        FixedCapacityList<sdk::FSceneView*, 16> entries{};
     };
 
-    std::vector<SplitScreenViewsRestore> split_screen_restores{};
+    FixedCapacityList<SplitScreenViewsRestore, max_sane_view_families> split_screen_restores{};
     utility::ScopeGuard restore_split_screen_views{[&]() {
-        for (auto it = split_screen_restores.rbegin(); it != split_screen_restores.rend(); ++it) {
-            if (it->views == nullptr || it->views->data == nullptr || it->entries.empty()) {
+        for (size_t index = split_screen_restores.size(); index > 0; --index) {
+            auto& restore = split_screen_restores[index - 1];
+            if (restore.views == nullptr || restore.views->data == nullptr || restore.entries.empty()) {
                 continue;
             }
 
-            std::copy(it->entries.begin(), it->entries.end(), it->views->data);
-            it->views->count = it->count;
+            std::copy(restore.entries.begin(), restore.entries.end(), restore.views->data);
+            restore.views->count = restore.count;
         }
     }};
+
+    const auto capture_split_screen_restore = [&](SceneViewsArrayPtr views) -> bool {
+        if (views == nullptr || views->count < 0 || views->count > 16 || views->data == nullptr) {
+            return false;
+        }
+
+        SplitScreenViewsRestore restore{
+            .views = views,
+            .count = views->count,
+        };
+        for (int32_t index = 0; index < views->count; ++index) {
+            if (!restore.entries.try_push_back(views->data[index])) {
+                return false;
+            }
+        }
+
+        return split_screen_restores.try_push_back(std::move(restore));
+    };
 
     if (split_screen_enabled) {
         struct PlayerViewPair {
@@ -13484,13 +13577,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 return false;
             }
 
-            std::vector<PlayerViewPair> pairs{};
+            FixedCapacityList<PlayerViewPair, max_sane_views> pairs{};
             bool grouped_by_player = true;
 
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
-                std::unordered_map<int32_t, size_t> pair_by_player{};
 
                 for (uint32_t view_index = 0; view_index < views->count; ++view_index) {
                     const auto current_view = views->data[view_index];
@@ -13513,17 +13605,25 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         break;
                     }
 
-                    auto [pair_it, inserted] = pair_by_player.try_emplace(
-                        view_metadata.player_index,
-                        pairs.size());
-                    if (inserted) {
-                        pairs.push_back(PlayerViewPair{
-                            .player_index = view_metadata.player_index,
-                            .first_view_index = view_index,
-                        });
+                    size_t pair_index = pairs.size();
+                    for (size_t index = 0; index < pairs.size(); ++index) {
+                        if (pairs[index].player_index == view_metadata.player_index) {
+                            pair_index = index;
+                            break;
+                        }
                     }
 
-                    auto& pair = pairs[pair_it->second];
+                    if (pair_index == pairs.size()) {
+                        if (!pairs.try_push_back(PlayerViewPair{
+                            .player_index = view_metadata.player_index,
+                            .first_view_index = view_index,
+                        })) {
+                            grouped_by_player = false;
+                            break;
+                        }
+                    }
+
+                    auto& pair = pairs[pair_index];
                     const auto pass_index =
                         view_metadata.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
 
@@ -13603,7 +13703,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                             return false;
                         }
 
-                        pairs.push_back(pair);
+                        if (!pairs.try_push_back(pair)) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -13621,11 +13723,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             }
 
             const auto& selected_pair = pairs[requested_pair];
-            split_screen_restores.push_back(SplitScreenViewsRestore{
-                .views = views,
-                .count = views->count,
-                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
-            });
+            if (!capture_split_screen_restore(views)) {
+                return false;
+            }
 
             if (vr->is_using_afr()) {
                 const auto current_eye = g_frame_count % 2;
@@ -13666,8 +13766,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 return false;
             }
 
-            std::vector<sdk::FSceneView*> first_eye_views{};
-            std::unordered_map<int32_t, uint8_t> eye_mask_by_player{};
+            struct PlayerEyeMask {
+                int32_t player_index{-1};
+                uint8_t mask{};
+            };
+            FixedCapacityList<sdk::FSceneView*, max_sane_views> first_eye_views{};
+            FixedCapacityList<PlayerEyeMask, max_sane_views> eye_masks{};
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
@@ -13689,7 +13793,22 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         return false;
                     }
 
-                    auto& eye_mask = eye_mask_by_player[view_metadata.player_index];
+                    size_t eye_mask_index = eye_masks.size();
+                    for (size_t index = 0; index < eye_masks.size(); ++index) {
+                        if (eye_masks[index].player_index == view_metadata.player_index) {
+                            eye_mask_index = index;
+                            break;
+                        }
+                    }
+                    if (eye_mask_index == eye_masks.size()) {
+                        if (!eye_masks.try_push_back(PlayerEyeMask{
+                            .player_index = view_metadata.player_index,
+                        })) {
+                            return false;
+                        }
+                    }
+
+                    auto& eye_mask = eye_masks[eye_mask_index].mask;
                     const auto eye_bit = static_cast<uint8_t>(1u << view_metadata.effective_eye);
                     if ((eye_mask & eye_bit) != 0) {
                         return false;
@@ -13697,7 +13816,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
                     eye_mask |= eye_bit;
                     if (view_metadata.effective_eye == 0) {
-                        first_eye_views.push_back(current_view);
+                        if (!first_eye_views.try_push_back(current_view)) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -13705,18 +13826,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             if (first_eye_views.empty() ||
                 first_eye_views.size() * 2 != views->count ||
                 !std::all_of(
-                    eye_mask_by_player.begin(),
-                    eye_mask_by_player.end(),
-                    [](const auto& entry) { return entry.second == 0x3; }))
+                    eye_masks.begin(),
+                    eye_masks.end(),
+                    [](const PlayerEyeMask& entry) { return entry.mask == 0x3; }))
             {
                 return false;
             }
 
-            split_screen_restores.push_back(SplitScreenViewsRestore{
-                .views = views,
-                .count = views->count,
-                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
-            });
+            if (!capture_split_screen_restore(views)) {
+                return false;
+            }
             std::copy(first_eye_views.begin(), first_eye_views.end(), views->data);
             views->count = static_cast<int32_t>(first_eye_views.size());
             return true;
@@ -25943,21 +26062,6 @@ bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
     // Never claim success without producing at least one valid pair. Shipping
     // FSceneViewport checks are compiled out and otherwise permit a modulo by
     // zero when a mismatched ABI returns a non-zero value.
-    return false;
-}
-
-bool VRRenderTargetManager_58_Transitional::AllocateRenderTargetTextures(
-    uint32_t SizeX,
-    uint32_t SizeY,
-    uint8_t Format,
-    uint32_t NumLayers,
-    ETextureCreateFlags Flags,
-    ETextureCreateFlags TargetableTextureFlags,
-    TArray<FTexture2DRHIRef>& OutTargetableTextures,
-    TArray<FTexture2DRHIRef>& OutShaderResourceTextures,
-    uint32_t NumSamples)
-{
-    SPDLOG_INFO_ONCE("[UE5.8] Transitional deprecated AllocateRenderTargetTextures called");
     return false;
 }
 
