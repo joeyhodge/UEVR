@@ -49,6 +49,7 @@ enum SwapchainRecreateReason : uint32_t {
     SWAPCHAIN_RECREATE_AFR_STATE = 1 << 3,
     SWAPCHAIN_RECREATE_DEPTH_EXTENT = 1 << 4,
     SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS = 1 << 5,
+    SWAPCHAIN_RECREATE_SCENE_TARGET_READY = 1 << 6,
 };
 
 std::string format_swapchain_recreate_reasons(uint32_t reasons) {
@@ -75,6 +76,7 @@ std::string format_swapchain_recreate_reasons(uint32_t reasons) {
     append(SWAPCHAIN_RECREATE_AFR_STATE, "afr_state");
     append(SWAPCHAIN_RECREATE_DEPTH_EXTENT, "depth_extent");
     append(SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS, "depth_null_defaults");
+    append(SWAPCHAIN_RECREATE_SCENE_TARGET_READY, "scene_target_ready");
     return out;
 }
 
@@ -135,7 +137,10 @@ bool is_ue58_runtime_cached() {
 
 void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
     const auto cadence_sensitive_recreate =
-        (reasons & (SWAPCHAIN_RECREATE_AFR_STATE | SWAPCHAIN_RECREATE_DEPTH_EXTENT | SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS)) != 0;
+        (reasons & (SWAPCHAIN_RECREATE_AFR_STATE |
+                    SWAPCHAIN_RECREATE_DEPTH_EXTENT |
+                    SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS |
+                    SWAPCHAIN_RECREATE_SCENE_TARGET_READY)) != 0;
 
     if (!cadence_sensitive_recreate) {
         return;
@@ -1580,6 +1585,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     };
 
+    if (!is_dead_island_2_ue425_current_game() || !vr->is_using_strict_synchronized_afr()) {
+        m_dead_island_2_synced_eye_rebase_pending = false;
+    }
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "[D3D12 VR] Could not set up, trying again next frame");
@@ -1735,7 +1743,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto debug_skip_scene_copy = openxr_runtime != nullptr && openxr_runtime->debug_skip_scene_copy->value();
     const auto debug_skip_ui_copy = openxr_runtime != nullptr && openxr_runtime->debug_skip_ui_copy->value();
     const auto debug_disable_depth_submit = openxr_runtime != nullptr && openxr_runtime->debug_disable_depth_submit->value();
-    const auto suppress_scene_copy = debug_submit_empty_frame || debug_skip_scene_copy;
+    auto suppress_scene_copy = debug_submit_empty_frame || debug_skip_scene_copy;
     const auto suppress_ui_copy = debug_submit_empty_frame || debug_skip_ui_copy;
 
     if (is_dune_external_backbuffer && runtime->is_openxr()) {
@@ -1763,14 +1771,40 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     auto is_left_eye_frame = is_afr && vr->m_render_frame_count % 2 == vr->m_left_eye_interval;
     auto is_right_eye_frame = !is_afr || vr->m_render_frame_count % 2 == vr->m_right_eye_interval;
     const auto scene_source_desc = backbuffer->GetDesc();
-    const bool dead_island_2_synced_current_eye_source =
+    const bool dead_island_2_synced_mode =
         is_dead_island_2_ue425_current_game() &&
-        vr->is_using_strict_synchronized_afr() &&
+        runtime->is_openxr() &&
+        vr->is_using_strict_synchronized_afr();
+    const bool dead_island_2_synced_current_eye_source =
+        dead_island_2_synced_mode &&
+        is_dead_island_2_ue425_external_backbuffer &&
         scene_source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         scene_source_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) * 2ull &&
         scene_source_desc.Height == vr->get_hmd_height();
     const bool dead_island_2_afr_depth_disabled =
         should_disable_dead_island_2_afr_depth(vr);
+
+    if (dead_island_2_synced_mode && !dead_island_2_synced_current_eye_source) {
+        // The desktop bootstrap is smaller than an OpenXR eye. Recording a
+        // right-eye copy from it makes D3D12 reject AFR_RIGHT_EYE's command
+        // list permanently. Keep UI/frame cadence alive, but do not touch the
+        // eye command lists until Draw publishes the real stereo target.
+        m_dead_island_2_synced_eye_rebase_pending = true;
+        suppress_scene_copy = true;
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[DeadIsland2][UE4.25][Synced] Deferring eye copies until the verified stereo target is ready source={}x{} external={}",
+            scene_source_desc.Width,
+            scene_source_desc.Height,
+            is_dead_island_2_ue425_external_backbuffer);
+    } else if (dead_island_2_synced_current_eye_source && m_dead_island_2_synced_eye_rebase_pending) {
+        // Normally target adoption has already requested this reset. Keep a
+        // fallback here for a same-wrapper target transition that did not.
+        m_force_reset = true;
+        suppress_scene_copy = true;
+        SPDLOG_INFO_ONCE(
+            "[DeadIsland2][UE4.25][Synced] Verified stereo target arrived; scheduling a clean AFR eye-context rebase");
+    }
 
     if (dead_island_2_synced_current_eye_source) {
         SPDLOG_INFO_ONCE(
@@ -4344,6 +4378,13 @@ void D3D12Component::on_reset(VR* vr) {
             reasons |= SWAPCHAIN_RECREATE_DEPTH_EXTENT;
         }
 
+        if (is_dead_island_2_ue425_current_game() &&
+            vr->is_using_strict_synchronized_afr() &&
+            m_dead_island_2_synced_eye_rebase_pending)
+        {
+            reasons |= SWAPCHAIN_RECREATE_SCENE_TARGET_READY;
+        }
+
         if (reasons != SWAPCHAIN_RECREATE_NONE) {
             uint32_t new_depth_width = 0;
             uint32_t new_depth_height = 0;
@@ -4356,7 +4397,18 @@ void D3D12Component::on_reset(VR* vr) {
 
             log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
             prepare_openxr_swapchain_recreate(vr, reasons);
-            m_openxr.create_swapchains();
+            const auto swapchain_error = m_openxr.create_swapchains();
+            if ((reasons & SWAPCHAIN_RECREATE_SCENE_TARGET_READY) != 0) {
+                if (swapchain_error) {
+                    SPDLOG_ERROR(
+                        "[DeadIsland2][UE4.25][Synced] AFR eye-context rebase failed: {}",
+                        *swapchain_error);
+                } else {
+                    m_dead_island_2_synced_eye_rebase_pending = false;
+                    SPDLOG_INFO(
+                        "[DeadIsland2][UE4.25][Synced] AFR eye contexts rebased after the verified stereo target became ready");
+                }
+            }
             m_last_afr_state = vr->is_using_afr();
         }
 
