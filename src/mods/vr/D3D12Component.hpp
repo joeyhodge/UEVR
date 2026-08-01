@@ -471,6 +471,7 @@ private:
     uint32_t m_last_rendered_frame{0};
     bool m_force_reset{true};
     bool m_last_afr_state{false};
+    bool m_dead_island_2_synced_eye_rebase_pending{};
     bool m_submitted_left_eye{false};
     bool m_dibr_was_active{};
     uint64_t m_swapchain_recreate_count{};
