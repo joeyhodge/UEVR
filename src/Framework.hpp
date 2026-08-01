@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <unordered_set>
 #include <memory>
@@ -182,6 +183,10 @@ public:
 
     bool is_drawing_anything() const;
 
+    uint64_t get_d3d12_ui_generation() const {
+        return m_d3d12_ui_generation.load(std::memory_order_acquire);
+    }
+
     void set_draw_ui(bool state, bool should_save = true);
 
     auto& get_hook_monitor_mutex() {
@@ -306,6 +311,7 @@ private:
     
     // UI
     bool m_has_frame{false};
+    std::atomic<uint64_t> m_d3d12_ui_generation{0};
     bool m_wants_device_object_cleanup{false};
     bool m_draw_ui{true};
     bool m_last_draw_ui{m_draw_ui};
