@@ -6664,11 +6664,15 @@ void VR::prospi_frame_end_vsync_hook(safetyhook::Context& ctx) {
     }
 
     auto* vr = g_framework->vr().get();
+    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
+
     const auto native_vsync = static_cast<int32_t>(ctx.rax);
     vr->m_prospi_frame_end_vsync_last_native.store(native_vsync, std::memory_order_relaxed);
     vr->m_prospi_frame_end_vsync_observed_count.fetch_add(1, std::memory_order_relaxed);
 
-    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed) || native_vsync == 0) {
+    if (native_vsync == 0) {
         return;
     }
 
@@ -6754,12 +6758,15 @@ void VR::prospi_max_tick_rate_hook(safetyhook::Context& ctx) {
     }
 
     auto* vr = g_framework->vr().get();
+    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed)) {
+        return;
+    }
+
     const auto native_tick_rate = ctx.xmm0.f32[0];
     vr->m_prospi_max_tick_rate_last_native.store(native_tick_rate, std::memory_order_relaxed);
     vr->m_prospi_max_tick_rate_observed_count.fetch_add(1, std::memory_order_relaxed);
 
-    if (!vr->m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed) ||
-        !std::isfinite(native_tick_rate) ||
+    if (!std::isfinite(native_tick_rate) ||
         native_tick_rate <= 0.0f)
     {
         return;
@@ -6773,42 +6780,93 @@ void VR::restore_prospi_frame_pace_override() {
     m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
     m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);
 
+    const auto clear_cached_state = [&]() {
+        m_prospi_frame_pace_baselines_valid = false;
+        m_prospi_frame_pace_engine = nullptr;
+        m_prospi_frame_pace_engine_index = -1;
+        m_prospi_frame_pace_engine_serial = 0;
+        m_prospi_use_fixed_frame_rate_baseline = false;
+        m_prospi_fixed_frame_rate_baseline = 0.0f;
+        m_prospi_set_frame_pace_command = nullptr;
+        m_prospi_sync_interval_cvar = nullptr;
+        m_prospi_vsync_cvar = nullptr;
+        m_prospi_max_fps_cvar = nullptr;
+        m_prospi_frame_pace_next_check = {};
+    };
+
     if (!m_prospi_frame_pace_baselines_valid) {
         m_prospi_frame_pace_next_check = {};
         return;
     }
 
-    bool fixed_frame_rate_restored = false;
-    if (is_live_uobject_identity(
+    if (!is_live_uobject_identity(
             (sdk::UObject*)m_prospi_frame_pace_engine,
             m_prospi_frame_pace_engine_index,
             m_prospi_frame_pace_engine_serial))
     {
-        const auto use_fixed_before =
+        SPDLOG_WARN(
+            "[PROSPI_FRAME_PACE] Original GameEngine identity is stale; discarding cached baselines without writing");
+        clear_cached_state();
+        return;
+    }
+
+    const auto console_manager = sdk::FConsoleManager::get();
+    if (console_manager == nullptr) {
+        SPDLOG_WARN(
+            "[PROSPI_FRAME_PACE] Console manager is unavailable during restore; discarding cached baselines without writing");
+        clear_cached_state();
+        return;
+    }
+
+    const auto current_command_object = console_manager->find(L"r.SetFramePace");
+    const auto current_sync_object = console_manager->find(L"rhi.SyncInterval");
+    const auto current_vsync_object = console_manager->find(L"r.VSync");
+    const auto current_max_fps_object = console_manager->find(L"t.MaxFPS");
+    const auto controls_still_match =
+        current_command_object != nullptr &&
+        current_command_object->AsCommand() == m_prospi_set_frame_pace_command &&
+        current_sync_object != nullptr &&
+        current_sync_object->AsCommand() == nullptr &&
+        (sdk::IConsoleVariable*)current_sync_object == m_prospi_sync_interval_cvar &&
+        current_vsync_object != nullptr &&
+        current_vsync_object->AsCommand() == nullptr &&
+        (sdk::IConsoleVariable*)current_vsync_object == m_prospi_vsync_cvar &&
+        current_max_fps_object != nullptr &&
+        current_max_fps_object->AsCommand() == nullptr &&
+        (sdk::IConsoleVariable*)current_max_fps_object == m_prospi_max_fps_cvar;
+
+    if (!controls_still_match) {
+        SPDLOG_WARN(
+            "[PROSPI_FRAME_PACE] Console control identities changed; discarding cached baselines without writing");
+        clear_cached_state();
+        return;
+    }
+
+    bool fixed_frame_rate_restored = false;
+    const auto use_fixed_before =
+        read_object_bool_property((sdk::UObject*)m_prospi_frame_pace_engine, L"bUseFixedFrameRate");
+    const auto fixed_rate =
+        read_object_float_property((sdk::UObject*)m_prospi_frame_pace_engine, L"FixedFrameRate");
+
+    if (use_fixed_before && fixed_rate) {
+        fixed_frame_rate_restored =
+            *use_fixed_before == m_prospi_use_fixed_frame_rate_baseline ||
+            write_object_bool_property(
+                (sdk::UObject*)m_prospi_frame_pace_engine,
+                L"bUseFixedFrameRate",
+                m_prospi_use_fixed_frame_rate_baseline);
+
+        const auto use_fixed_after =
             read_object_bool_property((sdk::UObject*)m_prospi_frame_pace_engine, L"bUseFixedFrameRate");
-        const auto fixed_rate =
-            read_object_float_property((sdk::UObject*)m_prospi_frame_pace_engine, L"FixedFrameRate");
+        fixed_frame_rate_restored =
+            fixed_frame_rate_restored &&
+            use_fixed_after &&
+            *use_fixed_after == m_prospi_use_fixed_frame_rate_baseline;
 
-        if (use_fixed_before && fixed_rate) {
-            fixed_frame_rate_restored =
-                *use_fixed_before == m_prospi_use_fixed_frame_rate_baseline ||
-                write_object_bool_property(
-                    (sdk::UObject*)m_prospi_frame_pace_engine,
-                    L"bUseFixedFrameRate",
-                    m_prospi_use_fixed_frame_rate_baseline);
-
-            const auto use_fixed_after =
-                read_object_bool_property((sdk::UObject*)m_prospi_frame_pace_engine, L"bUseFixedFrameRate");
-            fixed_frame_rate_restored =
-                fixed_frame_rate_restored &&
-                use_fixed_after &&
-                *use_fixed_after == m_prospi_use_fixed_frame_rate_baseline;
-
-            m_prospi_frame_pace_current_use_fixed_frame_rate.store(
-                use_fixed_after ? (int32_t)*use_fixed_after : -1,
-                std::memory_order_relaxed);
-            m_prospi_frame_pace_current_fixed_frame_rate.store(*fixed_rate, std::memory_order_relaxed);
-        }
+        m_prospi_frame_pace_current_use_fixed_frame_rate.store(
+            use_fixed_after ? (int32_t)*use_fixed_after : -1,
+            std::memory_order_relaxed);
+        m_prospi_frame_pace_current_fixed_frame_rate.store(*fixed_rate, std::memory_order_relaxed);
     }
 
     if (!fixed_frame_rate_restored) {
@@ -6816,16 +6874,6 @@ void VR::restore_prospi_frame_pace_override() {
             "[PROSPI_FRAME_PACE] Could not restore bUseFixedFrameRate={} on the original live GameEngine; "
             "no stale object was written",
             m_prospi_use_fixed_frame_rate_baseline);
-    }
-
-    if (m_prospi_sync_interval_cvar == nullptr ||
-        IsBadReadPtr(m_prospi_sync_interval_cvar, sizeof(void*)) != FALSE ||
-        m_prospi_vsync_cvar == nullptr ||
-        IsBadReadPtr(m_prospi_vsync_cvar, sizeof(void*)) != FALSE ||
-        m_prospi_max_fps_cvar == nullptr ||
-        IsBadReadPtr(m_prospi_max_fps_cvar, sizeof(void*)) != FALSE)
-    {
-        return;
     }
 
     auto sync_before = m_prospi_sync_interval_cvar->GetInt();
@@ -6874,7 +6922,7 @@ void VR::restore_prospi_frame_pace_override() {
     m_prospi_frame_pace_current_vsync.store(m_prospi_vsync_cvar->GetInt(), std::memory_order_relaxed);
     m_prospi_frame_pace_current_max_fps.store(m_prospi_max_fps_cvar->GetFloat(), std::memory_order_relaxed);
 
-    if (!sync_restored || !vsync_restored || !max_fps_restored) {
+    if (!fixed_frame_rate_restored || !sync_restored || !vsync_restored || !max_fps_restored) {
         SPDLOG_WARN(
             "[PROSPI_FRAME_PACE] Restore incomplete: sync={} vsync={} max_fps={} baselines={}/{}/{:.2f}",
             sync_restored,
@@ -6895,13 +6943,7 @@ void VR::restore_prospi_frame_pace_override() {
         m_prospi_vsync_baseline,
         m_prospi_max_fps_baseline);
 
-    m_prospi_frame_pace_baselines_valid = false;
-    m_prospi_frame_pace_engine = nullptr;
-    m_prospi_frame_pace_engine_index = -1;
-    m_prospi_frame_pace_engine_serial = 0;
-    m_prospi_use_fixed_frame_rate_baseline = false;
-    m_prospi_fixed_frame_rate_baseline = 0.0f;
-    m_prospi_frame_pace_next_check = {};
+    clear_cached_state();
 }
 
 void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
@@ -6911,7 +6953,12 @@ void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
 
     const auto requested = m_prospi_remove_frame_pace->value();
     if (!requested) {
-        restore_prospi_frame_pace_override();
+        if (m_prospi_frame_pace_baselines_valid ||
+            m_prospi_frame_pace_override_enabled.load(std::memory_order_relaxed) ||
+            m_prospi_frame_pace_active.load(std::memory_order_relaxed))
+        {
+            restore_prospi_frame_pace_override();
+        }
         return;
     }
 
@@ -6978,33 +7025,49 @@ void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
         return;
     }
 
-    if (m_prospi_set_frame_pace_command == nullptr) {
-        if (auto* object = console_manager->find(L"r.SetFramePace"); object != nullptr) {
-            m_prospi_set_frame_pace_command = object->AsCommand();
+    bool controls_changed = false;
+    if (auto* object = console_manager->find(L"r.SetFramePace"); object != nullptr) {
+        auto* current_command = object->AsCommand();
+        controls_changed =
+            m_prospi_frame_pace_baselines_valid &&
+            m_prospi_set_frame_pace_command != nullptr &&
+            current_command != m_prospi_set_frame_pace_command;
+        if (!controls_changed) {
+            m_prospi_set_frame_pace_command = current_command;
         }
-        m_prospi_frame_pace_command_status.store(
-            m_prospi_set_frame_pace_command != nullptr ? 1 : -1,
-            std::memory_order_relaxed);
+    } else {
+        m_prospi_set_frame_pace_command = nullptr;
     }
+    m_prospi_frame_pace_command_status.store(
+        m_prospi_set_frame_pace_command != nullptr ? 1 : -1,
+        std::memory_order_relaxed);
 
     const auto resolve_variable = [&](sdk::IConsoleVariable*& destination, const wchar_t* name) {
-        if (destination != nullptr && IsBadReadPtr(destination, sizeof(void*)) == FALSE) {
-            return true;
-        }
-
-        destination = nullptr;
         auto* object = console_manager->find(name);
         if (object == nullptr || object->AsCommand() != nullptr) {
+            destination = nullptr;
             return false;
         }
 
-        destination = (sdk::IConsoleVariable*)object;
+        auto* current = (sdk::IConsoleVariable*)object;
+        if (m_prospi_frame_pace_baselines_valid && destination != nullptr && current != destination) {
+            controls_changed = true;
+            return false;
+        }
+
+        destination = current;
         return true;
     };
 
     const auto have_sync = resolve_variable(m_prospi_sync_interval_cvar, L"rhi.SyncInterval");
     const auto have_vsync = resolve_variable(m_prospi_vsync_cvar, L"r.VSync");
     const auto have_max_fps = resolve_variable(m_prospi_max_fps_cvar, L"t.MaxFPS");
+    if (controls_changed) {
+        SPDLOG_WARN("[PROSPI_FRAME_PACE] Runtime controls changed; discarding stale baselines before relearning");
+        restore_prospi_frame_pace_override();
+        return;
+    }
+
     if (m_prospi_set_frame_pace_command == nullptr || !have_sync || !have_vsync || !have_max_fps) {
         m_prospi_frame_pace_override_enabled.store(false, std::memory_order_relaxed);
         m_prospi_frame_pace_active.store(false, std::memory_order_relaxed);

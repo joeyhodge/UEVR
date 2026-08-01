@@ -88,6 +88,44 @@ bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
 
+template <typename T, size_t Capacity>
+class FixedCapacityList {
+public:
+    bool try_push_back(const T& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = value;
+        return true;
+    }
+
+    bool try_push_back(T&& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = std::move(value);
+        return true;
+    }
+
+    void clear() { m_size = 0; }
+    bool empty() const { return m_size == 0; }
+    size_t size() const { return m_size; }
+    T* begin() { return m_storage.data(); }
+    T* end() { return m_storage.data() + m_size; }
+    const T* begin() const { return m_storage.data(); }
+    const T* end() const { return m_storage.data() + m_size; }
+    T& front() { return m_storage[0]; }
+    const T& front() const { return m_storage[0]; }
+    T& operator[](size_t index) { return m_storage[index]; }
+    const T& operator[](size_t index) const { return m_storage[index]; }
+
+private:
+    std::array<T, Capacity> m_storage{};
+    size_t m_size{};
+};
+
 std::mutex g_shf_texture_probe_mutex{};
 std::unordered_set<uintptr_t> g_shf_logged_texture_probe_keys{};
 std::unordered_map<uintptr_t, std::chrono::steady_clock::time_point> g_shf_last_texture_probe_by_base{};
@@ -13376,8 +13414,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
 
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
+    constexpr size_t max_sane_view_families = 16;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
-    std::vector<sdk::FSceneViewFamily*> view_families{};
+    FixedCapacityList<sdk::FSceneViewFamily*, max_sane_view_families> view_families{};
     TArrayViewViewFamily view_family_array{};
 
     if (uses_tarrayview) {
@@ -13388,7 +13427,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
         std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
 
-        constexpr uint32_t max_sane_view_families = 16;
         if (view_family_array.data == nullptr || view_family_array.count == 0 ||
             view_family_array.count > max_sane_view_families ||
             !is_readable_process_range(
@@ -13403,14 +13441,18 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        view_families.resize(view_family_array.count);
-        std::memcpy(
-            view_families.data(),
-            view_family_array.data,
-            sizeof(sdk::FSceneViewFamily*) * view_family_array.count);
+        for (uint32_t index = 0; index < view_family_array.count; ++index) {
+            if (!view_families.try_push_back(view_family_array.data[index])) {
+                reject_candidate("too many view families");
+                return;
+            }
+        }
         view_family = view_families.front();
     } else {
-        view_families.push_back(view_family);
+        if (!view_families.try_push_back(view_family)) {
+            reject_candidate("too many view families");
+            return;
+        }
     }
 
     if (strict_candidate_validation) {
@@ -13449,20 +13491,39 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     struct SplitScreenViewsRestore {
         SceneViewsArrayPtr views{};
         int32_t count{};
-        std::vector<sdk::FSceneView*> entries{};
+        FixedCapacityList<sdk::FSceneView*, 16> entries{};
     };
 
-    std::vector<SplitScreenViewsRestore> split_screen_restores{};
+    FixedCapacityList<SplitScreenViewsRestore, max_sane_view_families> split_screen_restores{};
     utility::ScopeGuard restore_split_screen_views{[&]() {
-        for (auto it = split_screen_restores.rbegin(); it != split_screen_restores.rend(); ++it) {
-            if (it->views == nullptr || it->views->data == nullptr || it->entries.empty()) {
+        for (size_t index = split_screen_restores.size(); index > 0; --index) {
+            auto& restore = split_screen_restores[index - 1];
+            if (restore.views == nullptr || restore.views->data == nullptr || restore.entries.empty()) {
                 continue;
             }
 
-            std::copy(it->entries.begin(), it->entries.end(), it->views->data);
-            it->views->count = it->count;
+            std::copy(restore.entries.begin(), restore.entries.end(), restore.views->data);
+            restore.views->count = restore.count;
         }
     }};
+
+    const auto capture_split_screen_restore = [&](SceneViewsArrayPtr views) -> bool {
+        if (views == nullptr || views->count < 0 || views->count > 16 || views->data == nullptr) {
+            return false;
+        }
+
+        SplitScreenViewsRestore restore{
+            .views = views,
+            .count = views->count,
+        };
+        for (int32_t index = 0; index < views->count; ++index) {
+            if (!restore.entries.try_push_back(views->data[index])) {
+                return false;
+            }
+        }
+
+        return split_screen_restores.try_push_back(std::move(restore));
+    };
 
     if (split_screen_enabled) {
         struct PlayerViewPair {
@@ -13485,13 +13546,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 return false;
             }
 
-            std::vector<PlayerViewPair> pairs{};
+            FixedCapacityList<PlayerViewPair, max_sane_views> pairs{};
             bool grouped_by_player = true;
 
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
-                std::unordered_map<int32_t, size_t> pair_by_player{};
 
                 for (uint32_t view_index = 0; view_index < views->count; ++view_index) {
                     const auto current_view = views->data[view_index];
@@ -13514,17 +13574,25 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         break;
                     }
 
-                    auto [pair_it, inserted] = pair_by_player.try_emplace(
-                        view_metadata.player_index,
-                        pairs.size());
-                    if (inserted) {
-                        pairs.push_back(PlayerViewPair{
-                            .player_index = view_metadata.player_index,
-                            .first_view_index = view_index,
-                        });
+                    size_t pair_index = pairs.size();
+                    for (size_t index = 0; index < pairs.size(); ++index) {
+                        if (pairs[index].player_index == view_metadata.player_index) {
+                            pair_index = index;
+                            break;
+                        }
                     }
 
-                    auto& pair = pairs[pair_it->second];
+                    if (pair_index == pairs.size()) {
+                        if (!pairs.try_push_back(PlayerViewPair{
+                            .player_index = view_metadata.player_index,
+                            .first_view_index = view_index,
+                        })) {
+                            grouped_by_player = false;
+                            break;
+                        }
+                    }
+
+                    auto& pair = pairs[pair_index];
                     const auto pass_index =
                         view_metadata.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ? 0u : 1u;
 
@@ -13604,7 +13672,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                             return false;
                         }
 
-                        pairs.push_back(pair);
+                        if (!pairs.try_push_back(pair)) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -13622,11 +13692,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             }
 
             const auto& selected_pair = pairs[requested_pair];
-            split_screen_restores.push_back(SplitScreenViewsRestore{
-                .views = views,
-                .count = views->count,
-                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
-            });
+            if (!capture_split_screen_restore(views)) {
+                return false;
+            }
 
             if (vr->is_using_afr()) {
                 const auto current_eye = g_frame_count % 2;
@@ -13667,8 +13735,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 return false;
             }
 
-            std::vector<sdk::FSceneView*> first_eye_views{};
-            std::unordered_map<int32_t, uint8_t> eye_mask_by_player{};
+            struct PlayerEyeMask {
+                int32_t player_index{-1};
+                uint8_t mask{};
+            };
+            FixedCapacityList<sdk::FSceneView*, max_sane_views> first_eye_views{};
+            FixedCapacityList<PlayerEyeMask, max_sane_views> eye_masks{};
             {
                 std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
                 const auto& metadata = g_hook->m_sceneview_data.splitscreen_views;
@@ -13690,7 +13762,22 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                         return false;
                     }
 
-                    auto& eye_mask = eye_mask_by_player[view_metadata.player_index];
+                    size_t eye_mask_index = eye_masks.size();
+                    for (size_t index = 0; index < eye_masks.size(); ++index) {
+                        if (eye_masks[index].player_index == view_metadata.player_index) {
+                            eye_mask_index = index;
+                            break;
+                        }
+                    }
+                    if (eye_mask_index == eye_masks.size()) {
+                        if (!eye_masks.try_push_back(PlayerEyeMask{
+                            .player_index = view_metadata.player_index,
+                        })) {
+                            return false;
+                        }
+                    }
+
+                    auto& eye_mask = eye_masks[eye_mask_index].mask;
                     const auto eye_bit = static_cast<uint8_t>(1u << view_metadata.effective_eye);
                     if ((eye_mask & eye_bit) != 0) {
                         return false;
@@ -13698,7 +13785,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
                     eye_mask |= eye_bit;
                     if (view_metadata.effective_eye == 0) {
-                        first_eye_views.push_back(current_view);
+                        if (!first_eye_views.try_push_back(current_view)) {
+                            return false;
+                        }
                     }
                 }
             }
@@ -13706,18 +13795,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             if (first_eye_views.empty() ||
                 first_eye_views.size() * 2 != views->count ||
                 !std::all_of(
-                    eye_mask_by_player.begin(),
-                    eye_mask_by_player.end(),
-                    [](const auto& entry) { return entry.second == 0x3; }))
+                    eye_masks.begin(),
+                    eye_masks.end(),
+                    [](const PlayerEyeMask& entry) { return entry.mask == 0x3; }))
             {
                 return false;
             }
 
-            split_screen_restores.push_back(SplitScreenViewsRestore{
-                .views = views,
-                .count = views->count,
-                .entries = std::vector<sdk::FSceneView*>(views->data, views->data + views->count),
-            });
+            if (!capture_split_screen_restore(views)) {
+                return false;
+            }
             std::copy(first_eye_views.begin(), first_eye_views.end(), views->data);
             views->count = static_cast<int32_t>(first_eye_views.size());
             return true;

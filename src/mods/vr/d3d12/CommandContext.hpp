@@ -17,7 +17,9 @@ struct CommandContext {
 
     bool setup(const wchar_t* name = L"CommandContext object");
     void reset();
-    void wait(uint32_t ms);
+    // Returns true only after any submitted work has retired and the command
+    // allocator/list are safe to reuse.
+    bool wait(uint32_t ms);
     // Reclaims an already-completed command allocator without blocking the
     // caller. Consumers that need a hard synchronization still use wait().
     bool try_wait();
@@ -44,8 +46,8 @@ struct CommandContext {
     void clear_rtv(TextureContext& tex, const float* color, D3D12_RESOURCE_STATES dst_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
     void execute();
 
-	bool ready() const {
-        return this->cmd_list != nullptr && this->cmd_allocator != nullptr && this->fence != nullptr;
+    bool ready() const {
+        return !this->poisoned && this->cmd_list != nullptr && this->cmd_allocator != nullptr && this->fence != nullptr;
     }
 
     ComPtr<ID3D12CommandAllocator> cmd_allocator{};
@@ -58,6 +60,8 @@ struct CommandContext {
 
     bool waiting_for_fence{false};
     bool has_commands{false};
+    bool poisoned{false};
+    uint64_t close_failure_count{0};
 
     std::wstring internal_name{L"CommandContext object"};
 };
