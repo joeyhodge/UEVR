@@ -370,6 +370,12 @@ bool is_dead_island_2_ue425_current_game() {
     return result;
 }
 
+bool should_disable_dead_island_2_afr_depth(VR* vr) {
+    return vr != nullptr &&
+        is_dead_island_2_ue425_current_game() &&
+        vr->is_using_afr();
+}
+
 bool is_everspace2_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2446,22 +2452,21 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     auto is_left_eye_frame = is_afr && vr->m_render_frame_count % 2 == vr->m_left_eye_interval;
     auto is_right_eye_frame = !is_afr || vr->m_render_frame_count % 2 == vr->m_right_eye_interval;
     const auto scene_source_desc = backbuffer->GetDesc();
-    const bool dead_island_2_double_wide_afr_source =
+    const bool dead_island_2_synced_current_eye_source =
         is_dead_island_2_ue425_current_game() &&
-        is_actually_afr &&
+        vr->is_using_strict_synchronized_afr() &&
         scene_source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         scene_source_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) * 2ull &&
         scene_source_desc.Height == vr->get_hmd_height();
-    const bool dead_island_2_synced_depth_disabled =
-        is_dead_island_2_ue425_current_game() &&
-        vr->is_using_synchronized_afr();
+    const bool dead_island_2_afr_depth_disabled =
+        should_disable_dead_island_2_afr_depth(vr);
 
-    if (dead_island_2_double_wide_afr_source) {
+    if (dead_island_2_synced_current_eye_source) {
         SPDLOG_INFO_ONCE(
-            "[DeadIsland2][UE4.25][Synced] Using render-frame parity for the double-wide eye pair and disabling the invalid AFR depth layer");
+            "[DeadIsland2][UE4.25][Synced] Using the current-eye source region for both right-eye submits and disabling the invalid AFR depth layer");
     }
 
-    if (dead_island_2_double_wide_afr_source) {
+    if (dead_island_2_synced_current_eye_source) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
             "[DeadIsland2][UE4.25][D3D12] Synced Sequential retained the double-wide scene source; submitting UEVR's current-eye region [{}x{}]",
@@ -3990,7 +3995,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             } else {
                 m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
+                if (scene_depth_tex != nullptr && !dead_island_2_afr_depth_disabled) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                 }
             }
@@ -4065,7 +4070,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_LEFT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                    if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
+                    if (scene_depth_tex != nullptr && !dead_island_2_afr_depth_disabled) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                     }
                 }
@@ -4083,14 +4088,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     src_box.front = 0;
                     src_box.back = 1;
                 } else if (!vr->is_extreme_compatibility_mode_enabled()) {
-                    if (!is_afr || dead_island_2_double_wide_afr_source) {
+                    if (!is_afr && !dead_island_2_synced_current_eye_source) {
                         src_box.left = m_backbuffer_size[0] / 2;
                         src_box.right = m_backbuffer_size[0];
                         src_box.top = 0;
                         src_box.bottom = m_backbuffer_size[1];
                         src_box.front = 0;
                         src_box.back = 1;
-                    } else { // Copy the current AFR eye from UEVR's standard region.
+                    } else { // DI2 keeps each Synced eye in UEVR's current-eye region, including the repeated submit.
                         src_box.left = 0;
                         src_box.right = m_backbuffer_size[0] / 2;
                         src_box.top = 0;
@@ -4115,7 +4120,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_RIGHT_EYE, backbuffer.Get(), scene_source_state, &src_box);
 
-                    if (scene_depth_tex != nullptr && !dead_island_2_synced_depth_disabled) {
+                    if (scene_depth_tex != nullptr && !dead_island_2_afr_depth_disabled) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE, scene_depth_tex.Get(), ENGINE_SRC_DEPTH, nullptr);
                     }
                 }
@@ -4384,7 +4389,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 quad_layers,
                 scene_depth_tex.Get() != nullptr &&
                     !native_stereo_array_submit_active &&
-                    !dead_island_2_synced_depth_disabled);
+                    !dead_island_2_afr_depth_disabled);
 
             if (result == XR_ERROR_LAYER_INVALID) {
                 spdlog::info("[VR] Attempting to correct invalid layer");
@@ -5700,6 +5705,12 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
         return err;
     }
 
+    // Snapshot the mode once so a frontend/profile transition cannot enter the
+    // block as Native and create AFR depth swapchains at the end of setup.
+    const bool create_afr_depth = vr->is_using_afr();
+    const bool skip_dead_island_2_afr_depth =
+        create_afr_depth && is_dead_island_2_ue425_current_game();
+
     // Depth textures
     if (vr->get_openxr_runtime()->is_depth_allowed()) {
         // Even when using AFR, the depth tex is always the size of a double wide.
@@ -5774,12 +5785,12 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             depth_swapchain_create_info.height = depth_desc.Height;
         }
 
-        if (!vr->is_using_afr()) {
+        if (!create_afr_depth) {
             spdlog::info("[VR] Creating double wide depth swapchain");
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH, depth_swapchain_create_info, depth_desc)) {
                 return err;
             }
-        } else {
+        } else if (!skip_dead_island_2_afr_depth) {
             spdlog::info("[VR] Creating AFR depth swapchain");
             spdlog::info("[VR] Creating AFR left eye depth swapchain");
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, depth_swapchain_create_info, depth_desc)) {
@@ -5790,6 +5801,8 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE, depth_swapchain_create_info, depth_desc)) {
                 return err;
             }
+        } else {
+            SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Skipping invalid AFR depth swapchain creation");
         }
     }
 
@@ -6267,10 +6280,18 @@ void D3D12Component::OpenXR::copy(
     const auto& swapchain = vr->m_openxr->swapchains[swapchain_idx];
     auto& ctx = this->contexts[swapchain_idx];
 
-    const auto is_depth_swapchain =
-        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH ||
+    const auto is_afr_depth_swapchain =
         swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE ||
         swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE;
+    const auto is_depth_swapchain =
+        swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH ||
+        is_afr_depth_swapchain;
+
+    // These indices are AFR-only. Reject them by executable rather than current
+    // UI mode so an injection-time Native -> Synced transition cannot race us.
+    if (is_afr_depth_swapchain && is_dead_island_2_ue425_current_game()) {
+        return;
+    }
 
     if (resource != nullptr &&
         src_box == nullptr &&

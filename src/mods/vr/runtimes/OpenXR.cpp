@@ -3569,6 +3569,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
+    if (is_afr && is_dead_island_2_ue425_executable()) {
+        has_depth = false;
+        SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Submitting the AFR projection layer without depth");
+    }
+
     const auto has_native_stereo_array =
         !is_afr &&
         vr->is_native_stereo_fix_texture_array_submit_enabled() &&
