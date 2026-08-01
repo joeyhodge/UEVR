@@ -207,6 +207,11 @@ bool is_fence_profiler_enabled() {
 bool CommandContext::setup(const wchar_t* name) {
     std::scoped_lock _{this->mtx};
 
+    if (this->waiting_for_fence && !this->wait(2000)) {
+        spdlog::error("[VR] Refusing to rebuild command context {} while GPU work is still pending", utility::narrow(name));
+        return false;
+    }
+
     this->internal_name = name;
 
     auto& hook = g_framework->get_d3d12_hook();
@@ -215,6 +220,15 @@ bool CommandContext::setup(const wchar_t* name) {
     this->cmd_allocator.Reset();
     this->cmd_list.Reset();
     this->fence.Reset();
+    if (this->fence_event != nullptr) {
+        CloseHandle(this->fence_event);
+        this->fence_event = nullptr;
+    }
+    this->fence_value = 0;
+    this->waiting_for_fence = false;
+    this->has_commands = false;
+    this->poisoned = false;
+    this->close_failure_count = 0;
 
     if (FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&this->cmd_allocator)))) {
         spdlog::error("[VR] Failed to create command allocator for {}", utility::narrow(name));
@@ -238,6 +252,14 @@ bool CommandContext::setup(const wchar_t* name) {
 
     this->fence->SetName(name);
     this->fence_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    if (this->fence_event == nullptr) {
+        spdlog::error("[VR] Failed to create fence event for {}", utility::narrow(name));
+        this->cmd_allocator.Reset();
+        this->cmd_list.Reset();
+        this->fence.Reset();
+        this->poisoned = true;
+        return false;
+    }
 
     return true;
 }
@@ -251,41 +273,84 @@ void CommandContext::reset() {
     this->cmd_list.Reset();
     this->fence.Reset();
     this->fence_value = 0;
-    CloseHandle(this->fence_event);
-    this->fence_event = 0;
+    if (this->fence_event != nullptr) {
+        CloseHandle(this->fence_event);
+        this->fence_event = nullptr;
+    }
     this->waiting_for_fence = false;
+    this->has_commands = false;
+    this->poisoned = false;
+    this->close_failure_count = 0;
 }
 
-void CommandContext::wait(uint32_t ms) {
+bool CommandContext::wait(uint32_t ms) {
     std::scoped_lock _{this->mtx};
 
-	if (this->fence_event && this->waiting_for_fence) {
+    if (this->poisoned && !this->waiting_for_fence) {
+        const auto name = this->internal_name;
+        return this->setup(name.c_str());
+    }
+
+    if (!this->waiting_for_fence) {
+        return this->ready();
+    }
+
+    if (this->fence_event == nullptr || this->fence == nullptr || this->cmd_allocator == nullptr || this->cmd_list == nullptr) {
+        this->poisoned = true;
+        return false;
+    }
+
+    DWORD wait_result = WAIT_OBJECT_0;
+    const auto completed_before = this->fence->GetCompletedValue();
+    if (completed_before < this->fence_value) {
         if (is_fence_profiler_enabled()) {
-            const auto completed_before = this->fence != nullptr ? this->fence->GetCompletedValue() : 0;
             const auto wait_start = std::chrono::steady_clock::now();
-            const auto wait_result = WaitForSingleObject(this->fence_event, ms);
+            wait_result = WaitForSingleObject(this->fence_event, ms);
             const auto wait_duration = std::chrono::steady_clock::now() - wait_start;
-            const auto completed_after = this->fence != nullptr ? this->fence->GetCompletedValue() : 0;
+            const auto completed_after = this->fence->GetCompletedValue();
             record_fence_wait(wait_duration, ms, wait_result, this->fence_value, completed_before, completed_after, this->internal_name);
         } else {
-            WaitForSingleObject(this->fence_event, ms);
+            wait_result = WaitForSingleObject(this->fence_event, ms);
         }
-
-        ResetEvent(this->fence_event);
-        this->waiting_for_fence = false;
-        if (FAILED(this->cmd_allocator->Reset())) {
-            spdlog::error("[VR] Failed to reset command allocator for {}", utility::narrow(this->internal_name));
-        }
-
-        if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
-            spdlog::error("[VR] Failed to reset command list for {}", utility::narrow(this->internal_name));
-        }
-        this->has_commands = false;
     }
+
+    const auto completed_after = this->fence->GetCompletedValue();
+    if (completed_after < this->fence_value) {
+        if (wait_result == WAIT_FAILED) {
+            spdlog::error(
+                "[VR] Fence wait failed for {} (error={})",
+                utility::narrow(this->internal_name),
+                GetLastError());
+        }
+        return false;
+    }
+
+    ResetEvent(this->fence_event);
+    this->waiting_for_fence = false;
+    if (FAILED(this->cmd_allocator->Reset())) {
+        spdlog::error("[VR] Failed to reset command allocator for {}", utility::narrow(this->internal_name));
+        this->poisoned = true;
+        return false;
+    }
+
+    if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
+        spdlog::error("[VR] Failed to reset command list for {}", utility::narrow(this->internal_name));
+        this->poisoned = true;
+        return false;
+    }
+
+    this->has_commands = false;
+    this->poisoned = false;
+    return true;
 }
 
 bool CommandContext::try_wait() {
     std::scoped_lock _{this->mtx};
+
+    if (this->poisoned && !this->waiting_for_fence) {
+        const auto name = this->internal_name;
+        return this->setup(name.c_str());
+    }
 
     if (!this->waiting_for_fence) {
         return this->ready();
@@ -300,18 +365,22 @@ bool CommandContext::try_wait() {
         ResetEvent(this->fence_event);
     }
 
+    this->waiting_for_fence = false;
+
     if (FAILED(this->cmd_allocator->Reset())) {
         spdlog::error("[VR] Failed to reset completed command allocator for {}", utility::narrow(this->internal_name));
+        this->poisoned = true;
         return false;
     }
 
     if (FAILED(this->cmd_list->Reset(this->cmd_allocator.Get(), nullptr))) {
         spdlog::error("[VR] Failed to reset completed command list for {}", utility::narrow(this->internal_name));
+        this->poisoned = true;
         return false;
     }
 
-    this->waiting_for_fence = false;
     this->has_commands = false;
+    this->poisoned = false;
     return true;
 }
 void CommandContext::copy(ID3D12Resource* src, ID3D12Resource* dst, D3D12_RESOURCE_STATES src_state, D3D12_RESOURCE_STATES dst_state) {
@@ -586,22 +655,63 @@ void CommandContext::clear_rtv(d3d12::TextureContext& tex, const float* color, D
 
 void CommandContext::execute() {
     std::scoped_lock _{this->mtx};
-    
+
+    if (this->poisoned || !this->ready()) {
+        return;
+    }
+
     if (this->has_commands) {
-        if (FAILED(this->cmd_list->Close())) {
-            spdlog::error("[VR] Failed to close command list. ({})", utility::narrow(this->internal_name));
+        const auto close_result = this->cmd_list->Close();
+        if (FAILED(close_result)) {
+            this->has_commands = false;
+            this->poisoned = true;
+            const auto failure_count = ++this->close_failure_count;
+            if (failure_count == 1 || failure_count % 120 == 0) {
+                spdlog::error(
+                    "[VR] Failed to close command list. ({} hr=0x{:08x}, consecutive={})",
+                    utility::narrow(this->internal_name),
+                    static_cast<uint32_t>(close_result),
+                    failure_count);
+            }
             return;
         }
+
+        this->close_failure_count = 0;
         
         auto command_queue = g_framework->get_d3d12_hook()->get_command_queue();
+        if (command_queue == nullptr) {
+            this->poisoned = true;
+            spdlog::error("[VR] Cannot execute command list without a command queue. ({})", utility::narrow(this->internal_name));
+            return;
+        }
+
         ID3D12CommandList* const cmd_lists[] = {this->cmd_list.Get()};
         const auto profile_fence = is_fence_profiler_enabled();
         const auto execute_start = profile_fence
             ? std::chrono::steady_clock::now()
             : std::chrono::steady_clock::time_point{};
         command_queue->ExecuteCommandLists(1, cmd_lists);
-        command_queue->Signal(this->fence.Get(), ++this->fence_value);
-        this->fence->SetEventOnCompletion(this->fence_value, this->fence_event);
+        const auto next_fence_value = this->fence_value + 1;
+        const auto signal_result = command_queue->Signal(this->fence.Get(), next_fence_value);
+        if (FAILED(signal_result)) {
+            this->poisoned = true;
+            spdlog::error(
+                "[VR] Failed to signal command fence. ({} hr=0x{:08x})",
+                utility::narrow(this->internal_name),
+                static_cast<uint32_t>(signal_result));
+            return;
+        }
+
+        this->fence_value = next_fence_value;
+        const auto event_result = this->fence->SetEventOnCompletion(this->fence_value, this->fence_event);
+        if (FAILED(event_result)) {
+            this->poisoned = true;
+            spdlog::error(
+                "[VR] Failed to arm command fence event. ({} hr=0x{:08x})",
+                utility::narrow(this->internal_name),
+                static_cast<uint32_t>(event_result));
+            return;
+        }
         if (profile_fence) {
             record_fence_execute_signal(
                 std::chrono::steady_clock::now() - execute_start,

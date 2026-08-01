@@ -3030,7 +3030,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (fw_rt && g_framework->is_drawing_anything()) {
                     if (is_ue58_runtime_cached()) {
-                        m_openxr.copy_framework_ui_ue58(fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                        m_openxr.copy_framework_ui_ue58(
+                            fw_rt.Get(),
+                            g_framework->get_d3d12_ui_generation(),
+                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                     } else {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI, fw_rt.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                     }
@@ -4238,7 +4241,9 @@ void D3D12Component::clear_backbuffer() {
     }
 
     // Clear the backbuffer
-    backbuffer_ctx.commands.wait(0);
+    if (!backbuffer_ctx.commands.try_wait()) {
+        return;
+    }
     const float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
     backbuffer_ctx.commands.clear_rtv(backbuffer_ctx.texture.Get(), backbuffer_ctx.get_rtv(), clear_color, D3D12_RESOURCE_STATE_PRESENT);
     backbuffer_ctx.commands.execute();
@@ -4735,7 +4740,10 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
                         const float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
                         texture_ctx->commands.clear_rtv(ctx.textures[index].texture, texture_ctx->get_rtv(), clear_color, D3D12_RESOURCE_STATE_RENDER_TARGET);
                         texture_ctx->commands.execute();
-                        texture_ctx->commands.wait(100);
+                        if (!texture_ctx->commands.wait(INFINITE)) {
+                            xrReleaseSwapchainImage(swapchain.handle, &release_info);
+                            return "Failed to retire static swapchain image clear.";
+                        }
                     } else {
                         spdlog::error("[VR] Failed to create RTV for swapchain image {}.", index);
                     }
@@ -5268,12 +5276,36 @@ void D3D12Component::OpenXR::retire_framework_ui_delayed_release(bool force_wait
     ctx.framework_ui_last_release_frame = current_frame;
 }
 
-void D3D12Component::OpenXR::copy_framework_ui_ue58(ID3D12Resource* resource, D3D12_RESOURCE_STATES src_state) {
+void D3D12Component::OpenXR::copy_framework_ui_ue58(
+    ID3D12Resource* resource,
+    uint64_t source_generation,
+    D3D12_RESOURCE_STATES src_state)
+{
     constexpr auto framework_ui_idx = (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI;
 
     if (!is_ue58_runtime_cached()) {
         copy(framework_ui_idx, resource, src_state);
         return;
+    }
+
+    if (source_generation == 0) {
+        return;
+    }
+
+    // Multiple game/render submissions can observe the same Framework render.
+    // Retire any completed work without blocking, then keep the already
+    // released image instead of reacquiring and copying identical contents.
+    retire_framework_ui_delayed_release(false);
+
+    {
+        std::scoped_lock _{this->mtx};
+        const auto ctx_it = this->contexts.find(framework_ui_idx);
+
+        if (ctx_it != this->contexts.end() &&
+            ctx_it->second.framework_ui_last_submitted_generation == source_generation)
+        {
+            return;
+        }
     }
 
     // Give the previous UI copy until the next UI draw to finish before we
@@ -5374,6 +5406,7 @@ void D3D12Component::OpenXR::copy_framework_ui_ue58(ID3D12Resource* resource, D3
     texture_ctx->commands.execute();
 
     ctx.pre_acquired = false;
+    ctx.framework_ui_last_submitted_generation = source_generation;
     ctx.framework_ui_pending_release = true;
     ctx.framework_ui_pending_texture = texture_index;
     ctx.framework_ui_pending_frame = vr->get_frame_count();
