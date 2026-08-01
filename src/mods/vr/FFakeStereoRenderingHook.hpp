@@ -618,23 +618,6 @@ public:
         };
     }
 
-    struct DeadIslandSyncedEyeSnapshot {
-        uint32_t view_frame{};
-        uint8_t eye{};
-    };
-
-    std::optional<DeadIslandSyncedEyeSnapshot> get_dead_island_synced_eye_snapshot() const {
-        const auto packed = m_dead_island_synced_eye.load(std::memory_order_acquire);
-        if ((packed & 0x2ull) == 0) {
-            return std::nullopt;
-        }
-
-        return DeadIslandSyncedEyeSnapshot{
-            .view_frame = static_cast<uint32_t>(packed >> 2),
-            .eye = static_cast<uint8_t>(packed & 0x1ull),
-        };
-    }
-
     std::string get_dune_final_output_probe_status_text() const;
 
     void note_stable_slate_draw() {
@@ -837,7 +820,6 @@ private:
     std::atomic_bool m_dune_character_creation_active{false};
     std::atomic_bool m_dune_has_live_pawn{false};
     std::atomic_uint64_t m_dune_true_stereo_frame{0};
-    std::atomic_uint64_t m_dead_island_synced_eye{0};
 
     void publish_dune_true_stereo_frame(uint32_t render_frame, uint8_t eye) {
         m_dune_true_stereo_frame.store(
@@ -847,12 +829,6 @@ private:
 
     void invalidate_dune_true_stereo_frame() {
         m_dune_true_stereo_frame.store(0, std::memory_order_release);
-    }
-
-    void publish_dead_island_synced_eye(uint32_t view_frame, uint8_t eye) {
-        m_dead_island_synced_eye.store(
-            (static_cast<uint64_t>(view_frame) << 2) | 0x2ull | (eye & 0x1u),
-            std::memory_order_release);
     }
 
     bool hook();
