@@ -1,5 +1,7 @@
 name: Dev Release
 on: [push, workflow_dispatch]
+permissions:
+  contents: read
 env:
   BUILD_TYPE: Release
 jobs:

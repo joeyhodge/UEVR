@@ -1,5 +1,7 @@
 name: Dev Build PR
 on: [pull_request, workflow_dispatch]
+permissions:
+  contents: read
 env:
   BUILD_TYPE: Release
 jobs:
