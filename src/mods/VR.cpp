@@ -232,6 +232,22 @@ bool is_dune_awakening_executable_cached() {
     return is_dune;
 }
 
+bool is_medium_executable_cached() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto lowered = uevr::games::lowercase_path(*exe_path);
+        return lowered.ends_with(L"\\medium-win64-shipping.exe") ||
+            lowered.ends_with(L"/medium-win64-shipping.exe") ||
+            lowered == L"medium-win64-shipping.exe";
+    }();
+
+    return result;
+}
+
 bool is_dead_island_2_ue425_executable_cached() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2389,6 +2405,11 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
 
     SPDLOG_INFO_ONCE("[Avowed][NativeStereoFix] Ignoring Native Stereo Fix while Synced Sequential rendering is active");
     return true;
+}
+
+bool VR::should_suppress_generic_splitscreen_for_medium() const {
+    return is_medium_executable_cached() &&
+        m_medium_dual_reality_compatibility_mode->value();
 }
 
 bool VR::should_force_native_stereo_fix_same_pass() const {
@@ -9113,6 +9134,27 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::TextWrapped(
                 "Opt-in only; validated for UE4.25+ and UE5. Selects one local player's verified left/right eye pair and leaves the original view list unchanged if ownership cannot be proven.");
             ImGui::TreePop();
+        }
+
+        if (is_medium_executable_cached()) {
+            ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+            if (ImGui::TreeNode("The Medium Dual-Reality Compatibility")) {
+                m_medium_dual_reality_compatibility_mode->draw("Enabled");
+                if (m_fake_stereo_hook != nullptr) {
+                    ImGui::TextWrapped(
+                        "Status: %s",
+                        m_fake_stereo_hook->get_medium_dual_reality_status_text());
+                }
+                ImGui::TextWrapped(
+                    "The Medium only, default off. Redirects the game's verified mirror/dual-world camera through the current AFR eye pose. Use Synchronized Sequential or Alternating Frame; Native and DIBR fail closed.");
+                if (m_medium_dual_reality_compatibility_mode->value() &&
+                    m_splitscreen_compatibility_mode->value())
+                {
+                    ImGui::TextWrapped(
+                        "The generic split-screen option is temporarily superseded while this Medium-specific mode is enabled.");
+                }
+                ImGui::TreePop();
+            }
         }
     }
     
