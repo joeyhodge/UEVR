@@ -5830,6 +5830,7 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_everspace2_pool_trace();
     home_together_pool_guard::attempt_install();
     attempt_hook_medium_dual_reality();
+    attempt_hook_medium_dual_world_frame_capture();
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
@@ -5862,6 +5863,36 @@ void FFakeStereoRenderingHook::on_frame() {
                     set_medium_dual_reality_state(
                         MediumDualRealityState::WaitingForMirror,
                         "waiting for the game to render a live dual-world component");
+                }
+            }
+        }
+
+        if (vr == nullptr || !vr->is_medium_dual_world_frame_capture_enabled()) {
+            m_medium_frame_capture_last_component.store(0, std::memory_order_release);
+            m_medium_frame_capture_last_owner.store(0, std::memory_order_release);
+            m_medium_frame_capture_last_seen_frame.store(0, std::memory_order_release);
+            m_medium_frame_capture_last_camera_id.store(0xFF, std::memory_order_release);
+            set_medium_dual_world_frame_capture_state(
+                MediumDualWorldFrameCaptureState::Off,
+                "option disabled");
+        } else if (!m_medium_scene_capture_get_camera_view_hook) {
+            set_medium_dual_world_frame_capture_state(
+                m_attempted_hook_medium_dual_world_frame_capture
+                    ? MediumDualWorldFrameCaptureState::FailedClosed
+                    : MediumDualWorldFrameCaptureState::WaitingForHook,
+                m_attempted_hook_medium_dual_world_frame_capture
+                    ? "the validated frame-capture hook is unavailable"
+                    : "waiting to resolve the frame-capture hook");
+        } else {
+            const auto last_seen = m_medium_frame_capture_last_seen_frame.load(std::memory_order_acquire);
+            const auto current_state = m_medium_dual_world_frame_capture_state.load(std::memory_order_acquire);
+            if (last_seen == 0 || static_cast<uint32_t>(g_frame_count - last_seen) > 3) {
+                if (current_state != MediumDualWorldFrameCaptureState::UnsupportedMode &&
+                    current_state != MediumDualWorldFrameCaptureState::FailedClosed)
+                {
+                    set_medium_dual_world_frame_capture_state(
+                        MediumDualWorldFrameCaptureState::WaitingForCapture,
+                        "waiting for an active WorldA or WorldB frame capture");
                 }
             }
         }
@@ -7933,6 +7964,32 @@ void FFakeStereoRenderingHook::set_medium_dual_reality_state(
         reason != nullptr ? reason : "state transition");
 }
 
+void FFakeStereoRenderingHook::set_medium_dual_world_frame_capture_state(
+    MediumDualWorldFrameCaptureState state,
+    const char* reason) {
+    const auto previous = m_medium_dual_world_frame_capture_state.exchange(state, std::memory_order_acq_rel);
+    if (previous == state) {
+        return;
+    }
+
+    const auto state_name = [](MediumDualWorldFrameCaptureState value) {
+        switch (value) {
+        case MediumDualWorldFrameCaptureState::WaitingForHook: return "waiting_for_hook";
+        case MediumDualWorldFrameCaptureState::WaitingForCapture: return "waiting_for_capture";
+        case MediumDualWorldFrameCaptureState::ActiveAfr: return "active_afr";
+        case MediumDualWorldFrameCaptureState::UnsupportedMode: return "unsupported_mode";
+        case MediumDualWorldFrameCaptureState::FailedClosed: return "failed_closed";
+        case MediumDualWorldFrameCaptureState::Off:
+        default: return "off";
+        }
+    };
+
+    SPDLOG_INFO(
+        "[Medium][FrameCapture] State={} reason={}",
+        state_name(state),
+        reason != nullptr ? reason : "state transition");
+}
+
 void FFakeStereoRenderingHook::attempt_hook_medium_dual_reality() {
     if (!medium_is_current_game() || m_attempted_hook_medium_dual_reality) {
         return;
@@ -8097,7 +8154,190 @@ void FFakeStereoRenderingHook::attempt_hook_medium_dual_reality() {
         *component_vtable);
 }
 
-bool FFakeStereoRenderingHook::apply_medium_mirror_eye_pose(
+void FFakeStereoRenderingHook::attempt_hook_medium_dual_world_frame_capture() {
+    if (!medium_is_current_game() || m_attempted_hook_medium_dual_world_frame_capture) {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr || !vr->is_medium_dual_world_frame_capture_enabled()) {
+        return;
+    }
+
+    m_attempted_hook_medium_dual_world_frame_capture = true;
+    set_medium_dual_world_frame_capture_state(
+        MediumDualWorldFrameCaptureState::WaitingForHook,
+        "resolving the validated AFrameCapture2D scene-capture path");
+
+    constexpr auto component_constructor_pattern =
+        "40 53 48 83 EC 20 48 8B D9 E8 ? ? ? ? 48 8D 05 ? ? ? ? "
+        "C6 83 45 02 00 00 01 48 89 03 48 8D 05 ? ? ? ? 48 89 43 28 "
+        "48 8B C3 48 83 C4 20 5B C3";
+    constexpr auto owner_constructor_pattern =
+        "48 89 5C 24 18 55 57 41 56 48 8D 6C 24 B9 48 81 EC 90 00 00 00 "
+        "48 89 B4 24 B8 00 00 00 48 8B F9 E8 ? ? ? ? F3 0F 10 0D ? ? ? ? "
+        "48 8D 05 ? ? ? ? 48 8D 8F 60 02 00 00 48 89 07 "
+        "C7 87 48 02 00 00 FF 01 01 01";
+    constexpr auto get_camera_view_pattern =
+        "48 89 5C 24 08 57 48 83 EC 40 0F 10 91 D0 01 00 00 49 8B F8";
+    constexpr uintptr_t component_vtable_lea_offset = 0xE;
+    constexpr uintptr_t owner_vtable_lea_offset = 0x2D;
+    constexpr size_t get_camera_view_vtable_slot = 166;
+
+    const auto executable = utility::get_executable();
+    const auto executable_size = utility::get_module_size(executable);
+    if (executable == nullptr || !executable_size || *executable_size == 0) {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the executable image range was unavailable");
+        return;
+    }
+
+    const auto module_begin = reinterpret_cast<uintptr_t>(executable);
+    const auto module_end = module_begin + *executable_size;
+    const auto find_unique = [&](const char* pattern, const char* label) -> std::optional<uintptr_t> {
+        const auto first = utility::scan(executable, pattern);
+        if (!first || *first < module_begin || *first >= module_end) {
+            SPDLOG_WARN("[Medium][FrameCapture] {} signature was not found", label);
+            return std::nullopt;
+        }
+
+        const auto second_start = *first + 1;
+        if (second_start < module_end &&
+            utility::scan(second_start, module_end - second_start, pattern).has_value())
+        {
+            SPDLOG_WARN("[Medium][FrameCapture] {} signature was ambiguous", label);
+            return std::nullopt;
+        }
+
+        return first;
+    };
+
+    const auto component_constructor = find_unique(
+        component_constructor_pattern,
+        "USceneCaptureComponent2DMedium constructor");
+    const auto owner_constructor = find_unique(
+        owner_constructor_pattern,
+        "AFrameCapture2D constructor");
+    if (!component_constructor || !owner_constructor) {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "one or more exact Medium frame-capture signatures did not validate");
+        return;
+    }
+
+    const auto component_vtable_lea = *component_constructor + component_vtable_lea_offset;
+    const auto owner_vtable_lea = *owner_constructor + owner_vtable_lea_offset;
+    constexpr std::array<uint8_t, 3> rip_relative_lea{0x48, 0x8D, 0x05};
+    if (!is_executable_process_range(component_vtable_lea, 7) ||
+        !is_executable_process_range(owner_vtable_lea, 7) ||
+        std::memcmp(reinterpret_cast<const void*>(component_vtable_lea), rip_relative_lea.data(), rip_relative_lea.size()) != 0 ||
+        std::memcmp(reinterpret_cast<const void*>(owner_vtable_lea), rip_relative_lea.data(), rip_relative_lea.size()) != 0)
+    {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the validated constructor vtable loads changed");
+        return;
+    }
+
+    const auto component_vtable = utility::resolve_displacement(component_vtable_lea);
+    const auto owner_vtable = utility::resolve_displacement(owner_vtable_lea);
+    uintptr_t get_camera_view{};
+    if (!component_vtable || !owner_vtable ||
+        !looks_like_virtual_function_table(*component_vtable) ||
+        !looks_like_virtual_function_table(*owner_vtable) ||
+        !safe_read_value(
+            *component_vtable + get_camera_view_vtable_slot * sizeof(uintptr_t),
+            get_camera_view) ||
+        get_camera_view < module_begin || get_camera_view >= module_end ||
+        utility::scan(get_camera_view, 0x40, get_camera_view_pattern).value_or(0) != get_camera_view)
+    {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the scene-capture vtables or GetCameraView slot failed validation");
+        return;
+    }
+
+    const auto get_contiguous_runtime_span = [](
+        uintptr_t address,
+        size_t minimum_size,
+        size_t maximum_size,
+        size_t maximum_fragments) -> std::optional<RuntimeFunctionRange> {
+        auto span = get_runtime_function_range(address);
+        if (!span || span->begin != address || span->size() > maximum_size) {
+            return std::nullopt;
+        }
+
+        for (size_t fragment = 1;
+             span->size() < minimum_size && fragment < maximum_fragments;
+             ++fragment)
+        {
+            const auto next = get_runtime_function_range(span->end);
+            if (!next || next->begin != span->end || next->image_base != span->image_base) {
+                return std::nullopt;
+            }
+
+            span->end = next->end;
+            if (span->size() > maximum_size) {
+                return std::nullopt;
+            }
+        }
+
+        return span->size() >= minimum_size ? span : std::nullopt;
+    };
+
+    const auto component_constructor_function = get_runtime_function_range(*component_constructor);
+    const auto owner_constructor_function = get_contiguous_runtime_span(
+        *owner_constructor,
+        0x400,
+        0x1000,
+        8);
+    const auto get_camera_view_function = get_runtime_function_range(get_camera_view);
+    if (!component_constructor_function ||
+        component_constructor_function->begin != *component_constructor ||
+        component_constructor_function->size() < 0x20 ||
+        component_constructor_function->size() > 0x80 ||
+        !owner_constructor_function ||
+        owner_constructor_function->begin != *owner_constructor ||
+        owner_constructor_function->size() < 0x400 ||
+        owner_constructor_function->size() > 0x1000 ||
+        !get_camera_view_function ||
+        get_camera_view_function->begin != get_camera_view ||
+        get_camera_view_function->size() < 0x80 ||
+        get_camera_view_function->size() > 0x200)
+    {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the PDATA function boundaries did not match the validated build");
+        return;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(get_camera_view),
+        &FFakeStereoRenderingHook::medium_scene_capture_get_camera_view_hook);
+    if (!hook) {
+        set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "SafetyHook refused the validated GetCameraView target");
+        return;
+    }
+
+    m_medium_scene_capture_component_vtable.store(*component_vtable, std::memory_order_release);
+    m_medium_frame_capture_owner_vtable.store(*owner_vtable, std::memory_order_release);
+    m_medium_scene_capture_get_camera_view_hook = std::move(hook);
+    set_medium_dual_world_frame_capture_state(
+        MediumDualWorldFrameCaptureState::WaitingForCapture,
+        "hook installed; waiting for an active WorldA or WorldB capture");
+
+    SPDLOG_INFO(
+        "[Medium][FrameCapture] Hooked validated GetCameraView target={:x} component_vtable={:x} owner_vtable={:x} slot={}",
+        get_camera_view,
+        *component_vtable,
+        *owner_vtable,
+        get_camera_view_vtable_slot);
+}
+
+bool FFakeStereoRenderingHook::apply_medium_eye_pose(
     uint8_t eye,
     Rotator<float>& camera_rotation,
     Vector3f& camera_location,
@@ -8310,7 +8550,7 @@ void FFakeStereoRenderingHook::medium_mirror_setup_view_hook(
     auto adjusted_rotation = original_rotation;
     const auto eye = static_cast<uint8_t>(g_frame_count % 2);
     const auto world_to_meters = vr->get_world_to_meters();
-    if (!apply_medium_mirror_eye_pose(
+    if (!apply_medium_eye_pose(
             eye,
             adjusted_rotation,
             adjusted_location,
@@ -8340,6 +8580,163 @@ void FFakeStereoRenderingHook::medium_mirror_setup_view_hook(
         MediumDualRealityState::ActiveAfr,
         eye == 0 ? "applying the left AFR eye to the live mirror view" : "applying the right AFR eye to the live mirror view");
     call_original();
+}
+
+void FFakeStereoRenderingHook::medium_scene_capture_get_camera_view_hook(
+    void* component,
+    float delta_seconds,
+    void* view_info) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_scene_capture_get_camera_view_hook) {
+        return;
+    }
+
+    hook->m_medium_scene_capture_get_camera_view_hook.call<void>(
+        component,
+        delta_seconds,
+        view_info);
+
+    const auto vr = VR::get();
+    if (vr == nullptr || !medium_is_current_game() ||
+        !vr->is_medium_dual_world_frame_capture_enabled())
+    {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::Off,
+            "option disabled");
+        return;
+    }
+
+    if (!vr->is_hmd_active()) {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::WaitingForCapture,
+            "HMD is not active");
+        return;
+    }
+
+    if (vr->is_using_2d_screen() ||
+        vr->is_stereo_emulation_enabled() ||
+        !vr->is_using_afr())
+    {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::UnsupportedMode,
+            "requires Synchronized Sequential or Alternating Frame rendering");
+        return;
+    }
+
+    constexpr uintptr_t use_ngx_screen_percentage_driver_offset = 0x245;
+    constexpr uintptr_t texture_target_offset = 0x2A8;
+    constexpr uintptr_t owner_camera_id_offset = 0x248;
+    constexpr uintptr_t owner_capture_component_offset = 0x2A0;
+    constexpr uintptr_t minimal_view_location_offset = 0x0;
+    constexpr uintptr_t minimal_view_rotation_offset = 0xC;
+    constexpr uintptr_t minimal_view_pose_size = 0x18;
+
+    const auto component_address = reinterpret_cast<uintptr_t>(component);
+    const auto view_info_address = reinterpret_cast<uintptr_t>(view_info);
+    const auto expected_component_vtable =
+        hook->m_medium_scene_capture_component_vtable.load(std::memory_order_acquire);
+    const auto expected_owner_vtable =
+        hook->m_medium_frame_capture_owner_vtable.load(std::memory_order_acquire);
+    const auto outer_offset = static_cast<uintptr_t>(sdk::UObjectBase::get_outer_private_offset());
+
+    uintptr_t component_vtable{};
+    uintptr_t texture_target{};
+    uintptr_t texture_vtable{};
+    uintptr_t owner{};
+    uintptr_t owner_vtable{};
+    uintptr_t owner_component{};
+    uint8_t use_ngx_screen_percentage_driver{};
+    uint8_t camera_id{0xFF};
+
+    if (expected_component_vtable == 0 ||
+        !safe_read_value(component_address, component_vtable) ||
+        component_vtable != expected_component_vtable)
+    {
+        return;
+    }
+
+    const bool valid_component =
+        expected_owner_vtable != 0 &&
+        outer_offset >= 0x18 && outer_offset <= 0x40 &&
+        is_readable_process_range(component_address, texture_target_offset + sizeof(uintptr_t)) &&
+        safe_read_value(
+            component_address + use_ngx_screen_percentage_driver_offset,
+            use_ngx_screen_percentage_driver) &&
+        use_ngx_screen_percentage_driver != 0 &&
+        safe_read_value(component_address + texture_target_offset, texture_target) &&
+        safe_read_value(component_address + outer_offset, owner) &&
+        owner != 0 &&
+        safe_read_value(owner, owner_vtable) &&
+        owner_vtable == expected_owner_vtable &&
+        is_readable_process_range(owner, owner_capture_component_offset + sizeof(uintptr_t)) &&
+        safe_read_value(owner + owner_camera_id_offset, camera_id) &&
+        safe_read_value(owner + owner_capture_component_offset, owner_component) &&
+        owner_component == component_address;
+
+    if (!valid_component) {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the live scene-capture component failed exact type/owner validation");
+        return;
+    }
+
+    // Camera 2 is the inventory capture. Only WorldA and WorldB are stereoized.
+    if (camera_id > 1 || texture_target == 0) {
+        return;
+    }
+
+    if (!safe_read_value(texture_target, texture_vtable) ||
+        !looks_like_virtual_function_table(texture_vtable) ||
+        !is_writable_process_range(view_info_address, minimal_view_pose_size))
+    {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the active capture target or returned view was invalid");
+        return;
+    }
+
+    Vector3f camera_location{};
+    Rotator<float> camera_rotation{};
+    std::memcpy(
+        &camera_location,
+        reinterpret_cast<const void*>(view_info_address + minimal_view_location_offset),
+        sizeof(camera_location));
+    std::memcpy(
+        &camera_rotation,
+        reinterpret_cast<const void*>(view_info_address + minimal_view_rotation_offset),
+        sizeof(camera_rotation));
+
+    const auto eye = static_cast<uint8_t>(g_frame_count % 2);
+    if (!apply_medium_eye_pose(
+            eye,
+            camera_rotation,
+            camera_location,
+            vr->get_world_to_meters()))
+    {
+        hook->set_medium_dual_world_frame_capture_state(
+            MediumDualWorldFrameCaptureState::FailedClosed,
+            "the cached HMD eye pose was invalid");
+        return;
+    }
+
+    std::memcpy(
+        reinterpret_cast<void*>(view_info_address + minimal_view_location_offset),
+        &camera_location,
+        sizeof(camera_location));
+    std::memcpy(
+        reinterpret_cast<void*>(view_info_address + minimal_view_rotation_offset),
+        &camera_rotation,
+        sizeof(camera_rotation));
+
+    hook->m_medium_frame_capture_last_component.store(component_address, std::memory_order_release);
+    hook->m_medium_frame_capture_last_owner.store(owner, std::memory_order_release);
+    hook->m_medium_frame_capture_last_camera_id.store(camera_id, std::memory_order_release);
+    hook->m_medium_frame_capture_last_seen_frame.store(g_frame_count, std::memory_order_release);
+    hook->set_medium_dual_world_frame_capture_state(
+        MediumDualWorldFrameCaptureState::ActiveAfr,
+        camera_id == 0
+            ? "applying the current AFR eye to WorldA"
+            : "applying the current AFR eye to WorldB");
 }
 
 void* FFakeStereoRenderingHook::dune_dlss_add_passes_hook(
@@ -15017,10 +15414,10 @@ const char* FFakeStereoRenderingHook::get_splitscreen_compatibility_status_text(
     const auto vr = VR::get();
     if (vr != nullptr &&
         vr->is_splitscreen_compatibility_requested() &&
-        vr->is_medium_dual_reality_compatibility_enabled() &&
+        vr->is_medium_dual_world_frame_capture_enabled() &&
         medium_is_current_game())
     {
-        return "superseded by The Medium Dual-Reality Compatibility";
+        return "superseded by The Medium dual-world frame-capture option";
     }
 
     std::scoped_lock lock{m_sceneview_data.mtx};
@@ -15055,6 +15452,28 @@ const char* FFakeStereoRenderingHook::get_medium_dual_reality_status_text() cons
     case MediumDualRealityState::FailedClosed:
         return "failed closed; preserving the game's original mirror view";
     case MediumDualRealityState::Off:
+    default:
+        return "disabled";
+    }
+}
+
+const char* FFakeStereoRenderingHook::get_medium_dual_world_frame_capture_status_text() const {
+    if (!medium_is_current_game()) {
+        return "not applicable";
+    }
+
+    switch (m_medium_dual_world_frame_capture_state.load(std::memory_order_acquire)) {
+    case MediumDualWorldFrameCaptureState::WaitingForHook:
+        return "resolving the validated frame-capture hook";
+    case MediumDualWorldFrameCaptureState::WaitingForCapture:
+        return "ready; waiting for an active WorldA or WorldB capture";
+    case MediumDualWorldFrameCaptureState::ActiveAfr:
+        return "active; dual-world frame capture follows the current AFR eye";
+    case MediumDualWorldFrameCaptureState::UnsupportedMode:
+        return "inactive in this rendering mode; use Synchronized Sequential or Alternating Frame";
+    case MediumDualWorldFrameCaptureState::FailedClosed:
+        return "failed closed; preserving the game's original frame-capture view";
+    case MediumDualWorldFrameCaptureState::Off:
     default:
         return "disabled";
     }
