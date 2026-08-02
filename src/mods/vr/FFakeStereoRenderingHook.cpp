@@ -5829,6 +5829,7 @@ void FFakeStereoRenderingHook::observe_ue58_render_target_manager_abi(uintptr_t 
 void FFakeStereoRenderingHook::on_frame() {
     attempt_everspace2_pool_trace();
     home_together_pool_guard::attempt_install();
+    attempt_hook_medium_dual_reality();
     attempt_hook_game_engine_tick();
     attempt_hook_slate_thread();
     attempt_hook_fsceneview_constructor();
@@ -5836,6 +5837,35 @@ void FFakeStereoRenderingHook::on_frame() {
     attempt_hook_daysgone_bend_taa_composite();
     update_daysgone_ui_telemetry();
     update_daysgone_bend_ui_placement_fix();
+
+    if (medium_is_current_game()) {
+        const auto vr = VR::get();
+        if (vr == nullptr || !vr->is_medium_dual_reality_compatibility_enabled()) {
+            m_medium_mirror_last_component.store(0, std::memory_order_release);
+            m_medium_mirror_last_seen_frame.store(0, std::memory_order_release);
+            set_medium_dual_reality_state(MediumDualRealityState::Off, "option disabled");
+        } else if (!m_medium_mirror_setup_view_hook) {
+            set_medium_dual_reality_state(
+                m_attempted_hook_medium_dual_reality
+                    ? MediumDualRealityState::FailedClosed
+                    : MediumDualRealityState::WaitingForHook,
+                m_attempted_hook_medium_dual_reality
+                    ? "the validated mirror hook is unavailable"
+                    : "waiting to resolve the mirror hook");
+        } else {
+            const auto last_seen = m_medium_mirror_last_seen_frame.load(std::memory_order_acquire);
+            const auto current_state = m_medium_dual_reality_state.load(std::memory_order_acquire);
+            if (last_seen == 0 || static_cast<uint32_t>(g_frame_count - last_seen) > 3) {
+                if (current_state != MediumDualRealityState::UnsupportedMode &&
+                    current_state != MediumDualRealityState::FailedClosed)
+                {
+                    set_medium_dual_reality_state(
+                        MediumDualRealityState::WaitingForMirror,
+                        "waiting for the game to render a live dual-world component");
+                }
+            }
+        }
+    }
 
     // Ideally we want to do all hooking
     // from game engine tick. if it fails
@@ -7875,6 +7905,407 @@ void FFakeStereoRenderingHook::split_fiction_haze_view_builder_hook(
         2,
         "[SplitFiction][SplitScreen] Generated {} Haze player/camera view(s) for each eye before guarded pair selection",
         first_family_added);
+}
+
+void FFakeStereoRenderingHook::set_medium_dual_reality_state(
+    MediumDualRealityState state,
+    const char* reason) {
+    const auto previous = m_medium_dual_reality_state.exchange(state, std::memory_order_acq_rel);
+    if (previous == state) {
+        return;
+    }
+
+    const auto state_name = [](MediumDualRealityState value) {
+        switch (value) {
+        case MediumDualRealityState::WaitingForHook: return "waiting_for_hook";
+        case MediumDualRealityState::WaitingForMirror: return "waiting_for_mirror";
+        case MediumDualRealityState::ActiveAfr: return "active_afr";
+        case MediumDualRealityState::UnsupportedMode: return "unsupported_mode";
+        case MediumDualRealityState::FailedClosed: return "failed_closed";
+        case MediumDualRealityState::Off:
+        default: return "off";
+        }
+    };
+
+    SPDLOG_INFO(
+        "[Medium][DualReality] State={} reason={}",
+        state_name(state),
+        reason != nullptr ? reason : "state transition");
+}
+
+void FFakeStereoRenderingHook::attempt_hook_medium_dual_reality() {
+    if (!medium_is_current_game() || m_attempted_hook_medium_dual_reality) {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr || !vr->is_medium_dual_reality_compatibility_enabled()) {
+        return;
+    }
+
+    m_attempted_hook_medium_dual_reality = true;
+    set_medium_dual_reality_state(
+        MediumDualRealityState::WaitingForHook,
+        "resolving the validated UMediumMirrorComponent path");
+
+    constexpr auto wrapper_pattern =
+        "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8D 59 08 "
+        "49 8B F8 48 8B CB 48 8B F2 E8 ? ? ? ? 84 C0 74 ? 48 8B CB "
+        "E8 ? ? ? ? 48 8B C8 4C 8B C7 48 8B D6 E8 ? ? ? ?";
+    constexpr auto constructor_pattern =
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 E8 ? ? ? ? 33 FF "
+        "48 8D 05 ? ? ? ? 48 89 03 0F 57 D2 41 B1 01 48 8D 05 ? ? ? ? "
+        "48 89 43 28";
+    constexpr auto setup_view_pattern =
+        "48 89 5C 24 08 57 48 81 EC 30 01 00 00 49 8B D8 "
+        "48 8D 91 B0 08 00 00 48 8B F9 4C 8D 81 BC 08 00 00 "
+        "48 8D 8B 80 02 00 00 E8 ? ? ? ? 80 BF 71 09 00 00 00";
+    constexpr uintptr_t wrapper_setup_view_call_offset = 0x36;
+    constexpr uintptr_t constructor_vtable_lea_offset = 0x14;
+
+    const auto executable = utility::get_executable();
+    const auto executable_size = utility::get_module_size(executable);
+    if (executable == nullptr || !executable_size || *executable_size == 0) {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the executable image range was unavailable");
+        return;
+    }
+
+    const auto module_begin = reinterpret_cast<uintptr_t>(executable);
+    const auto module_end = module_begin + *executable_size;
+    const auto find_unique = [&](const char* pattern, const char* label) -> std::optional<uintptr_t> {
+        const auto first = utility::scan(executable, pattern);
+        if (!first || *first < module_begin || *first >= module_end) {
+            SPDLOG_WARN("[Medium][DualReality] {} signature was not found", label);
+            return std::nullopt;
+        }
+
+        const auto second_start = *first + 1;
+        if (second_start < module_end &&
+            utility::scan(second_start, module_end - second_start, pattern).has_value())
+        {
+            SPDLOG_WARN("[Medium][DualReality] {} signature was ambiguous", label);
+            return std::nullopt;
+        }
+
+        return first;
+    };
+
+    const auto wrapper = find_unique(wrapper_pattern, "FMirrorViewExtension::SetupView wrapper");
+    const auto constructor = find_unique(constructor_pattern, "UMediumMirrorComponent constructor");
+    if (!wrapper || !constructor) {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "one or more exact Medium signatures did not validate");
+        return;
+    }
+
+    const auto call_address = *wrapper + wrapper_setup_view_call_offset;
+    const auto vtable_lea = *constructor + constructor_vtable_lea_offset;
+    if (!is_executable_process_range(call_address, 5) ||
+        *reinterpret_cast<const uint8_t*>(call_address) != 0xE8 ||
+        !is_executable_process_range(vtable_lea, 7))
+    {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the wrapper call or constructor vtable load changed");
+        return;
+    }
+
+    const auto setup_view = utility::resolve_displacement(call_address);
+    const auto component_vtable = utility::resolve_displacement(vtable_lea);
+    if (!setup_view || !component_vtable ||
+        *setup_view < module_begin || *setup_view >= module_end ||
+        utility::scan(*setup_view, 0x40, setup_view_pattern).value_or(0) != *setup_view ||
+        !looks_like_virtual_function_table(*component_vtable))
+    {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the resolved SetupView target or component vtable failed validation");
+        return;
+    }
+
+    const auto wrapper_function = get_runtime_function_range(*wrapper);
+    const auto setup_view_function = get_runtime_function_range(*setup_view);
+    const auto constructor_function = get_runtime_function_range(*constructor);
+    if (!wrapper_function || wrapper_function->begin != *wrapper || wrapper_function->size() > 0x80 ||
+        !setup_view_function || setup_view_function->begin != *setup_view || setup_view_function->size() < 0x100 ||
+        !constructor_function || constructor_function->begin != *constructor || constructor_function->size() < 0x80)
+    {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the PDATA function boundaries did not match the validated build");
+        return;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*setup_view),
+        &FFakeStereoRenderingHook::medium_mirror_setup_view_hook);
+    if (!hook) {
+        set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "SafetyHook refused the validated SetupView target");
+        return;
+    }
+
+    m_medium_mirror_component_vtable.store(*component_vtable, std::memory_order_release);
+    m_medium_mirror_setup_view_hook = std::move(hook);
+    set_medium_dual_reality_state(
+        MediumDualRealityState::WaitingForMirror,
+        "hook installed; waiting for a live dual-world component");
+
+    SPDLOG_INFO(
+        "[Medium][DualReality] Hooked validated UMediumMirrorComponent::SetupView wrapper={:x} target={:x} vtable={:x}",
+        *wrapper,
+        *setup_view,
+        *component_vtable);
+}
+
+bool FFakeStereoRenderingHook::apply_medium_mirror_eye_pose(
+    uint8_t eye,
+    Rotator<float>& camera_rotation,
+    Vector3f& camera_location,
+    float world_to_meters) {
+    const auto vr = VR::get();
+    if (vr == nullptr || eye > 1 || !std::isfinite(world_to_meters) ||
+        world_to_meters <= 0.0f || world_to_meters > 100000.0f)
+    {
+        return false;
+    }
+
+    const auto finite_vec3 = [](const glm::vec3& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) && std::isfinite(value.z);
+    };
+    const auto finite_quat = [](const glm::quat& value) {
+        return std::isfinite(value.x) && std::isfinite(value.y) &&
+            std::isfinite(value.z) && std::isfinite(value.w) &&
+            glm::dot(value, value) > 0.000001f;
+    };
+
+    if (!finite_vec3(camera_location) ||
+        !std::isfinite(camera_rotation.pitch) ||
+        !std::isfinite(camera_rotation.yaw) ||
+        !std::isfinite(camera_rotation.roll))
+    {
+        return false;
+    }
+
+    const auto view_matrix_inverse = glm::yawPitchRoll(
+        glm::radians(-camera_rotation.yaw),
+        glm::radians(camera_rotation.pitch),
+        glm::radians(-camera_rotation.roll));
+    auto view_quaternion_inverse = glm::quat{view_matrix_inverse};
+    if (!finite_quat(view_quaternion_inverse)) {
+        return false;
+    }
+    view_quaternion_inverse = glm::normalize(view_quaternion_inverse);
+    if (vr->is_decoupled_pitch_enabled()) {
+        view_quaternion_inverse = utility::math::flatten(view_quaternion_inverse);
+    }
+
+    const auto quaternion_converter = glm::quat{Matrix4x4f{
+        0, 0, -1, 0,
+        1, 0, 0, 0,
+        0, 1, 0, 0,
+        0, 0, 0, 1
+    }};
+    const auto world_scale = world_to_meters * vr->get_world_scale();
+    const auto camera_forward_offset = vr->get_camera_forward_offset();
+    const auto camera_right_offset = vr->get_camera_right_offset();
+    const auto camera_up_offset = vr->get_camera_up_offset();
+    if (!std::isfinite(world_scale) || world_scale <= 0.0f || world_scale > 1000000.0f ||
+        !std::isfinite(camera_forward_offset) ||
+        !std::isfinite(camera_right_offset) ||
+        !std::isfinite(camera_up_offset))
+    {
+        return false;
+    }
+
+    const auto camera_forward = quaternion_converter *
+        (view_quaternion_inverse * glm::vec3{0.0f, 0.0f, camera_forward_offset});
+    const auto camera_right = quaternion_converter *
+        (view_quaternion_inverse * glm::vec3{-camera_right_offset, 0.0f, 0.0f});
+    const auto camera_up = quaternion_converter *
+        (view_quaternion_inverse * glm::vec3{0.0f, -camera_up_offset, 0.0f});
+
+    const auto rotation_offset = vr->get_rotation_offset();
+    const auto hmd_rotation = glm::quat{vr->get_rotation(0)};
+    const auto eye_rotation = glm::quat{vr->get_eye_transform(eye)};
+    if (!finite_quat(rotation_offset) || !finite_quat(hmd_rotation) || !finite_quat(eye_rotation)) {
+        return false;
+    }
+
+    const auto current_hmd_rotation = glm::normalize(rotation_offset * hmd_rotation);
+    const auto current_eye_rotation = glm::normalize(eye_rotation);
+    const auto new_rotation = glm::normalize(
+        view_quaternion_inverse * current_hmd_rotation * current_eye_rotation);
+    if (!finite_quat(new_rotation)) {
+        return false;
+    }
+
+    const auto eye_offset = glm::vec3{vr->get_eye_offset(static_cast<VRRuntime::Eye>(eye))};
+    const auto standing_delta = glm::vec3{vr->get_position(0) - vr->get_standing_origin()};
+    if (!finite_vec3(eye_offset) || !finite_vec3(standing_delta)) {
+        return false;
+    }
+
+    const auto position = glm::vec3{rotation_offset * standing_delta};
+    const auto head_offset = quaternion_converter *
+        (view_quaternion_inverse * (position * world_scale));
+    const auto eye_separation = quaternion_converter *
+        (new_rotation * (eye_offset * world_scale));
+    const auto euler = glm::degrees(utility::math::euler_angles_from_steamvr(new_rotation));
+    if (!finite_vec3(camera_forward) || !finite_vec3(camera_right) ||
+        !finite_vec3(camera_up) || !finite_vec3(head_offset) ||
+        !finite_vec3(eye_separation) || !finite_vec3(euler))
+    {
+        return false;
+    }
+
+    camera_location += camera_forward;
+    camera_location += camera_right;
+    camera_location += camera_up;
+    camera_location -= head_offset;
+    camera_location -= eye_separation;
+    camera_rotation.pitch = euler.x;
+    camera_rotation.yaw = euler.y;
+    camera_rotation.roll = euler.z;
+    return finite_vec3(camera_location);
+}
+
+void FFakeStereoRenderingHook::medium_mirror_setup_view_hook(
+    void* component,
+    void* view_family,
+    sdk::FSceneView* view) {
+    auto* hook = g_hook;
+    if (hook == nullptr || !hook->m_medium_mirror_setup_view_hook) {
+        return;
+    }
+
+    const auto call_original = [&]() {
+        hook->m_medium_mirror_setup_view_hook.call<void>(component, view_family, view);
+    };
+    const auto vr = VR::get();
+    if (vr == nullptr || !medium_is_current_game() ||
+        !vr->is_medium_dual_reality_compatibility_enabled())
+    {
+        hook->set_medium_dual_reality_state(MediumDualRealityState::Off, "option disabled");
+        call_original();
+        return;
+    }
+
+    if (!vr->is_hmd_active()) {
+        hook->set_medium_dual_reality_state(MediumDualRealityState::WaitingForMirror, "HMD is not active");
+        call_original();
+        return;
+    }
+
+    if (vr->is_dibr_rendering_method_selected() ||
+        vr->is_using_2d_screen() ||
+        vr->is_stereo_emulation_enabled() ||
+        !vr->is_using_afr())
+    {
+        hook->set_medium_dual_reality_state(
+            MediumDualRealityState::UnsupportedMode,
+            "requires Synchronized Sequential or Alternating Frame rendering");
+        call_original();
+        return;
+    }
+
+    constexpr uintptr_t texture_target_offset = 0x2A8;
+    constexpr uintptr_t camera_location_offset = 0x8B0;
+    constexpr uintptr_t camera_rotation_offset = 0x8BC;
+    constexpr uintptr_t camera_aspect_ratio_offset = 0x940;
+    constexpr uintptr_t render_factor_offset = 0x944;
+    constexpr uintptr_t begin_play_called_offset = 0x950;
+    constexpr uintptr_t draw_content_offset = 0x970;
+    // Reflected ClassParams/PropPointers and both SDK dumps agree on a 0x980-byte class.
+    constexpr uintptr_t component_validation_size = 0x980;
+
+    const auto component_address = reinterpret_cast<uintptr_t>(component);
+    const auto view_address = reinterpret_cast<uintptr_t>(view);
+    const auto family_address = reinterpret_cast<uintptr_t>(view_family);
+    const auto expected_vtable = hook->m_medium_mirror_component_vtable.load(std::memory_order_acquire);
+    uintptr_t actual_vtable{};
+    uintptr_t texture_target{};
+    uintptr_t texture_vtable{};
+    uint8_t begin_play_called{};
+    uint8_t draw_content{};
+    float camera_aspect_ratio{};
+    float render_factor{};
+
+    const bool valid_component =
+        expected_vtable != 0 &&
+        is_readable_process_range(component_address, component_validation_size) &&
+        is_writable_process_range(component_address + camera_location_offset, sizeof(Vector3f)) &&
+        is_writable_process_range(component_address + camera_rotation_offset, sizeof(Rotator<float>)) &&
+        safe_read_value(component_address, actual_vtable) &&
+        actual_vtable == expected_vtable &&
+        safe_read_value(component_address + texture_target_offset, texture_target) &&
+        safe_read_value(component_address + begin_play_called_offset, begin_play_called) &&
+        safe_read_value(component_address + draw_content_offset, draw_content) &&
+        safe_read_value(component_address + camera_aspect_ratio_offset, camera_aspect_ratio) &&
+        safe_read_value(component_address + render_factor_offset, render_factor) &&
+        texture_target != 0 &&
+        safe_read_value(texture_target, texture_vtable) &&
+        looks_like_virtual_function_table(texture_vtable) &&
+        begin_play_called != 0 &&
+        draw_content != 0 &&
+        std::isfinite(camera_aspect_ratio) && camera_aspect_ratio > 0.05f && camera_aspect_ratio < 20.0f &&
+        std::isfinite(render_factor) && render_factor > 0.0f && render_factor <= 16.0f &&
+        view_address != 0 && is_readable_process_range(view_address, sizeof(uintptr_t)) &&
+        family_address != 0 && is_readable_process_range(family_address, sizeof(uintptr_t));
+
+    if (!valid_component) {
+        hook->set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the live mirror component failed exact type/lifetime validation");
+        call_original();
+        return;
+    }
+
+    auto* camera_location = reinterpret_cast<Vector3f*>(component_address + camera_location_offset);
+    auto* camera_rotation = reinterpret_cast<Rotator<float>*>(component_address + camera_rotation_offset);
+    Vector3f original_location{};
+    Rotator<float> original_rotation{};
+    std::memcpy(&original_location, camera_location, sizeof(original_location));
+    std::memcpy(&original_rotation, camera_rotation, sizeof(original_rotation));
+
+    auto adjusted_location = original_location;
+    auto adjusted_rotation = original_rotation;
+    const auto eye = static_cast<uint8_t>(g_frame_count % 2);
+    const auto world_to_meters = vr->get_world_to_meters();
+    if (!apply_medium_mirror_eye_pose(
+            eye,
+            adjusted_rotation,
+            adjusted_location,
+            world_to_meters))
+    {
+        hook->set_medium_dual_reality_state(
+            MediumDualRealityState::FailedClosed,
+            "the cached HMD eye pose was invalid");
+        call_original();
+        return;
+    }
+
+    std::memcpy(camera_location, &adjusted_location, sizeof(adjusted_location));
+    std::memcpy(camera_rotation, &adjusted_rotation, sizeof(adjusted_rotation));
+    utility::ScopeGuard restore_camera{[&]() {
+        if (is_writable_process_range(reinterpret_cast<uintptr_t>(camera_location), sizeof(original_location)) &&
+            is_writable_process_range(reinterpret_cast<uintptr_t>(camera_rotation), sizeof(original_rotation)))
+        {
+            std::memcpy(camera_location, &original_location, sizeof(original_location));
+            std::memcpy(camera_rotation, &original_rotation, sizeof(original_rotation));
+        }
+    }};
+
+    hook->m_medium_mirror_last_component.store(component_address, std::memory_order_release);
+    hook->m_medium_mirror_last_seen_frame.store(g_frame_count, std::memory_order_release);
+    hook->set_medium_dual_reality_state(
+        MediumDualRealityState::ActiveAfr,
+        eye == 0 ? "applying the left AFR eye to the live mirror view" : "applying the right AFR eye to the live mirror view");
+    call_original();
 }
 
 void* FFakeStereoRenderingHook::dune_dlss_add_passes_hook(
@@ -14549,6 +14980,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 }
 
 const char* FFakeStereoRenderingHook::get_splitscreen_compatibility_status_text() {
+    const auto vr = VR::get();
+    if (vr != nullptr &&
+        vr->is_splitscreen_compatibility_requested() &&
+        vr->is_medium_dual_reality_compatibility_enabled() &&
+        medium_is_current_game())
+    {
+        return "superseded by The Medium Dual-Reality Compatibility";
+    }
+
     std::scoped_lock lock{m_sceneview_data.mtx};
 
     switch (m_sceneview_data.splitscreen_state) {
@@ -14559,6 +14999,28 @@ const char* FFakeStereoRenderingHook::get_splitscreen_compatibility_status_text(
     case SplitScreenCompatibilityState::FailedClosed:
         return "not applied; preserving the game's original view list";
     case SplitScreenCompatibilityState::Off:
+    default:
+        return "disabled";
+    }
+}
+
+const char* FFakeStereoRenderingHook::get_medium_dual_reality_status_text() const {
+    if (!medium_is_current_game()) {
+        return "not applicable";
+    }
+
+    switch (m_medium_dual_reality_state.load(std::memory_order_acquire)) {
+    case MediumDualRealityState::WaitingForHook:
+        return "resolving the validated mirror hook";
+    case MediumDualRealityState::WaitingForMirror:
+        return "ready; waiting for a live dual-reality view";
+    case MediumDualRealityState::ActiveAfr:
+        return "active; mirror view follows the current AFR eye";
+    case MediumDualRealityState::UnsupportedMode:
+        return "inactive in this rendering mode; use Synchronized Sequential or Alternating Frame";
+    case MediumDualRealityState::FailedClosed:
+        return "failed closed; preserving the game's original mirror view";
+    case MediumDualRealityState::Off:
     default:
         return "disabled";
     }

@@ -594,9 +594,20 @@ public:
         return m_load_blueprint_code->value();
     }
 
-    bool is_splitscreen_compatibility_enabled() const {
+    bool is_splitscreen_compatibility_requested() const {
         return m_splitscreen_compatibility_mode->value();
     }
+
+    bool is_medium_dual_reality_compatibility_enabled() const {
+        return m_medium_dual_reality_compatibility_mode->value();
+    }
+
+    bool is_splitscreen_compatibility_enabled() const {
+        return is_splitscreen_compatibility_requested() &&
+            !should_suppress_generic_splitscreen_for_medium();
+    }
+
+    bool should_suppress_generic_splitscreen_for_medium() const;
 
     uint32_t get_requested_splitscreen_index() const {
         return m_splitscreen_view_index->value();
@@ -692,7 +703,7 @@ public:
             !m_native_stereo_fix->value() &&
             !m_extreme_compat_mode->value() &&
             !m_sceneview_compatibility_mode->value() &&
-            !m_splitscreen_compatibility_mode->value() &&
+            !is_splitscreen_compatibility_enabled() &&
             !is_using_2d_screen() &&
             !m_stereo_emulation_mode;
     }
@@ -714,7 +725,7 @@ public:
             !m_native_stereo_fix->value() &&
             !m_extreme_compat_mode->value() &&
             !m_sceneview_compatibility_mode->value() &&
-            !m_splitscreen_compatibility_mode->value() &&
+            !is_splitscreen_compatibility_enabled() &&
             !is_using_2d_screen() &&
             !m_stereo_emulation_mode;
     }
@@ -1747,6 +1758,7 @@ private:
 
     const ModToggle::Ptr m_splitscreen_compatibility_mode{ ModToggle::create(generate_name("Compatibility_SplitScreen"), false, true) };
     const ModInt32::Ptr m_splitscreen_view_index{ ModInt32::create(generate_name("SplitscreenViewIndex"), 0, true) };
+    const ModToggle::Ptr m_medium_dual_reality_compatibility_mode{ ModToggle::create(generate_name("Compatibility_MediumDualReality"), false, true) };
 
     const ModToggle::Ptr m_sceneview_compatibility_mode{ ModToggle::create(generate_name("Compatibility_SceneView"), false, true) };
 
@@ -2214,6 +2226,7 @@ public:
             *m_native_stereo_fix_async_openxr_wait,
             *m_splitscreen_compatibility_mode,
             *m_splitscreen_view_index,
+            *m_medium_dual_reality_compatibility_mode,
             *m_compatibility_skip_pip,
             *m_compatibility_skip_uobjectarray_init,
             *m_compatibility_ahud,
