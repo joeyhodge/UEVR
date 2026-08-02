@@ -8235,8 +8235,7 @@ void FFakeStereoRenderingHook::medium_mirror_setup_view_hook(
         return;
     }
 
-    if (vr->is_dibr_rendering_method_selected() ||
-        vr->is_using_2d_screen() ||
+    if (vr->is_using_2d_screen() ||
         vr->is_stereo_emulation_enabled() ||
         !vr->is_using_afr())
     {
