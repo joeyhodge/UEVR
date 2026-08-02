@@ -8025,8 +8025,43 @@ void FFakeStereoRenderingHook::attempt_hook_medium_dual_reality() {
         return;
     }
 
+    const auto get_contiguous_runtime_span = [](
+        uintptr_t address,
+        size_t minimum_size,
+        size_t maximum_size,
+        size_t maximum_fragments) -> std::optional<RuntimeFunctionRange> {
+        auto span = get_runtime_function_range(address);
+        if (!span || span->begin != address || span->size() > maximum_size) {
+            return std::nullopt;
+        }
+
+        // MSVC can split one logical function into adjacent PDATA records when
+        // it emits multiple unwind regions. Walk only directly contiguous
+        // records from the exact validated entry point.
+        for (size_t fragment = 1;
+             span->size() < minimum_size && fragment < maximum_fragments;
+             ++fragment)
+        {
+            const auto next = get_runtime_function_range(span->end);
+            if (!next || next->begin != span->end || next->image_base != span->image_base) {
+                return std::nullopt;
+            }
+
+            span->end = next->end;
+            if (span->size() > maximum_size) {
+                return std::nullopt;
+            }
+        }
+
+        return span->size() >= minimum_size ? span : std::nullopt;
+    };
+
     const auto wrapper_function = get_runtime_function_range(*wrapper);
-    const auto setup_view_function = get_runtime_function_range(*setup_view);
+    const auto setup_view_function = get_contiguous_runtime_span(
+        *setup_view,
+        0x100,
+        0x1000,
+        4);
     const auto constructor_function = get_runtime_function_range(*constructor);
     if (!wrapper_function || wrapper_function->begin != *wrapper || wrapper_function->size() > 0x80 ||
         !setup_view_function || setup_view_function->begin != *setup_view || setup_view_function->size() < 0x100 ||
