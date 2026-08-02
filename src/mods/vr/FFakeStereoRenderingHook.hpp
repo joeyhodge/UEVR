@@ -812,8 +812,6 @@ public:
     uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
     uint32_t get_dibr_single_view_fallback_frames() const { return m_dibr_single_view_fallback_frames.load(std::memory_order_acquire); }
     const char* get_splitscreen_compatibility_status_text();
-    const char* get_medium_dual_reality_status_text() const;
-    const char* get_medium_dual_world_frame_capture_status_text() const;
 
 private:
     std::atomic_bool m_dune_character_creation_active{false};
@@ -856,8 +854,6 @@ private:
     bool attempt_hook_dead_island_ue425_compute_light_grid();
     bool attempt_hook_dead_island_ue425_hair_light_indices();
     void attempt_hook_split_fiction_haze_view_builder(sdk::UGameViewportClient* viewport_client);
-    void attempt_hook_medium_dual_reality();
-    void attempt_hook_medium_dual_world_frame_capture();
     void attempt_hook_naruto_ue416_init_dynamic_rhi(sdk::FViewport* viewport);
     void attempt_hook_naruto_ue416_projection_rect();
     void attempt_hook_naruto_ue416_draw_stereo_predicate();
@@ -917,14 +913,6 @@ private:
         void* build_flags,
         void* collected_views,
         void* auxiliary_output);
-    static void medium_mirror_setup_view_hook(
-        void* component,
-        void* view_family,
-        sdk::FSceneView* view);
-    static void medium_scene_capture_get_camera_view_hook(
-        void* component,
-        float delta_seconds,
-        void* view_info);
 
     static IStereoRenderTargetManager* get_render_target_manager_hook(FFakeStereoRendering* stereo);
     void observe_ue58_render_target_manager_abi(uintptr_t return_address);
@@ -1001,34 +989,6 @@ private:
         FailedClosed,
     };
 
-    enum class MediumDualRealityState : uint8_t {
-        Off,
-        WaitingForHook,
-        WaitingForMirror,
-        ActiveAfr,
-        UnsupportedMode,
-        FailedClosed,
-    };
-
-    enum class MediumDualWorldFrameCaptureState : uint8_t {
-        Off,
-        WaitingForHook,
-        WaitingForCapture,
-        ActiveAfr,
-        UnsupportedMode,
-        FailedClosed,
-    };
-
-    void set_medium_dual_reality_state(MediumDualRealityState state, const char* reason = nullptr);
-    void set_medium_dual_world_frame_capture_state(
-        MediumDualWorldFrameCaptureState state,
-        const char* reason = nullptr);
-    static bool apply_medium_eye_pose(
-        uint8_t eye,
-        Rotator<float>& camera_rotation,
-        Vector3f& camera_location,
-        float world_to_meters);
-
     struct SplitScreenViewMetadata {
         sdk::FSceneViewFamily* family{};
         sdk::FSceneViewStateInterface* state{};
@@ -1091,8 +1051,6 @@ private:
     safetyhook::MidHook m_dead_island_ue425_compute_light_grid_hook{};
     safetyhook::MidHook m_dead_island_ue425_hair_light_indices_hook{};
     safetyhook::InlineHook m_split_fiction_haze_view_builder_hook{};
-    safetyhook::InlineHook m_medium_mirror_setup_view_hook{};
-    safetyhook::InlineHook m_medium_scene_capture_get_camera_view_hook{};
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
@@ -1282,23 +1240,9 @@ private:
     bool m_attempted_hook_dead_island_ue425_compute_light_grid{false};
     bool m_attempted_hook_dead_island_ue425_hair_light_indices{false};
     bool m_attempted_hook_split_fiction_haze_view_builder{false};
-    bool m_attempted_hook_medium_dual_reality{false};
-    bool m_attempted_hook_medium_dual_world_frame_capture{false};
     bool m_attempted_hook_naruto_ue416_init_dynamic_rhi{false};
     bool m_attempted_hook_naruto_ue416_projection_rect{false};
     bool m_attempted_hook_naruto_ue416_draw_stereo_predicate{false};
-    std::atomic<MediumDualRealityState> m_medium_dual_reality_state{MediumDualRealityState::Off};
-    std::atomic<uintptr_t> m_medium_mirror_component_vtable{0};
-    std::atomic<uintptr_t> m_medium_mirror_last_component{0};
-    std::atomic<uint32_t> m_medium_mirror_last_seen_frame{0};
-    std::atomic<MediumDualWorldFrameCaptureState> m_medium_dual_world_frame_capture_state{
-        MediumDualWorldFrameCaptureState::Off};
-    std::atomic<uintptr_t> m_medium_scene_capture_component_vtable{0};
-    std::atomic<uintptr_t> m_medium_frame_capture_owner_vtable{0};
-    std::atomic<uintptr_t> m_medium_frame_capture_last_component{0};
-    std::atomic<uintptr_t> m_medium_frame_capture_last_owner{0};
-    std::atomic<uint32_t> m_medium_frame_capture_last_seen_frame{0};
-    std::atomic<uint8_t> m_medium_frame_capture_last_camera_id{0xFF};
     bool m_uses_old_rendertarget_manager{false};
     bool m_uses_ue58_rendertarget_manager{false};
     std::atomic<UE58RenderTargetManagerABI> m_ue58_rendertarget_manager_abi{
