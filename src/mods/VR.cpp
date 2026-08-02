@@ -2409,7 +2409,7 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
 
 bool VR::should_suppress_generic_splitscreen_for_medium() const {
     return is_medium_executable_cached() &&
-        m_medium_dual_reality_compatibility_mode->value();
+        m_medium_dual_world_frame_capture_mode->value();
 }
 
 bool VR::should_force_native_stereo_fix_same_pass() const {
@@ -9139,19 +9139,28 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         if (is_medium_executable_cached()) {
             ImGui::SetNextItemOpen(true, ImGuiCond_Once);
             if (ImGui::TreeNode("The Medium Dual-Reality Compatibility")) {
-                m_medium_dual_reality_compatibility_mode->draw("Enabled");
+                m_medium_dual_reality_compatibility_mode->draw("Mirror / Planar Reflection Eye Pose");
                 if (m_fake_stereo_hook != nullptr) {
                     ImGui::TextWrapped(
-                        "Status: %s",
+                        "Mirror status: %s",
                         m_fake_stereo_hook->get_medium_dual_reality_status_text());
                 }
                 ImGui::TextWrapped(
-                    "The Medium only, default off. Redirects the game's verified mirror/dual-world camera through the current AFR eye pose. Use Synchronized Sequential or Alternating Frame; Native and DIBR fail closed.");
-                if (m_medium_dual_reality_compatibility_mode->value() &&
+                    "Default off. Applies the current AFR eye pose only to the game's validated UMediumMirrorComponent path.");
+
+                m_medium_dual_world_frame_capture_mode->draw("Dual-World Frame Capture Eye Pose");
+                if (m_fake_stereo_hook != nullptr) {
+                    ImGui::TextWrapped(
+                        "Frame-capture status: %s",
+                        m_fake_stereo_hook->get_medium_dual_world_frame_capture_status_text());
+                }
+                ImGui::TextWrapped(
+                    "Default off. Applies the current AFR eye pose to the validated WorldA/WorldB AFrameCapture2D views. Use Synchronized Sequential or Alternating Frame; Native and DIBR fail closed.");
+                if (m_medium_dual_world_frame_capture_mode->value() &&
                     m_splitscreen_compatibility_mode->value())
                 {
                     ImGui::TextWrapped(
-                        "The generic split-screen option is temporarily superseded while this Medium-specific mode is enabled.");
+                        "The generic LocalPlayer split-screen option is temporarily superseded while the Medium frame-capture option is enabled.");
                 }
                 ImGui::TreePop();
             }
