@@ -3379,7 +3379,14 @@ bool supports_dedicated_ui_target_for_current_game() {
 }
 
 bool should_preserve_promoted_ue55_slate_target() {
-    return mechwarrior_clans_is_current_game() || everwind_is_current_game() || is_deadzone_ue56_executable();
+    // Once these games expose a validated engine-owned DrawWindow output, stop
+    // the synthetic UObject request. Letting it time out can clear the promoted
+    // FRHI target and start a second render-resource bootstrap while Slate and
+    // D3D12 still reference the first target.
+    return aphelion_is_current_game() ||
+        mechwarrior_clans_is_current_game() ||
+        everwind_is_current_game() ||
+        is_deadzone_ue56_executable();
 }
 
 bool is_probable_ue57_dx11_texture_desc_prepare_function(uintptr_t fn) {
@@ -24153,6 +24160,16 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 
 bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     if (!supports_dedicated_ui_target_for_current_game() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return false;
+    }
+
+    if (aphelion_is_current_game() && is_ue_5_5_dx12_backend()) {
+        // Aphelion exposes a validated window-sized DrawWindow output shortly
+        // after stereo RT allocation. Prefer that engine-owned texture: its
+        // UTextureRenderTarget2D resource layout does not pass the generic SDK
+        // discovery path, and retrying a synthetic target can race D3D12 cleanup.
+        SPDLOG_INFO_ONCE(
+            "[Aphelion][UE5.5][SlateUI] Waiting for the validated engine-owned DrawWindow UI target; synthetic target creation is disabled");
         return false;
     }
 
