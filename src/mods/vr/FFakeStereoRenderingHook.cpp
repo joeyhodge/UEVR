@@ -75,6 +75,7 @@
 #include "../../utility/Logging.hpp"
 
 #include "FFakeStereoRenderingHook.hpp"
+#include "UECompatibility.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -501,10 +502,7 @@ bool is_deadzone_ue56_executable() {
             return false;
         }
 
-        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-        const auto file_version = sdk::get_file_version_info();
-
-        return str_version.starts_with("5.6") || file_version.dwFileVersionMS == 0x00050006;
+        return sdk::get_engine_version().is(5, 6);
     }();
 
     return result;
@@ -796,12 +794,7 @@ bool dead_island_2_ue425_is_current_game() {
             return false;
         }
 
-        // The fixed-file version is synchronous and reports 0x0004:0x0019
-        // for UE4.25. Do not depend on the asynchronous embedded-version
-        // scan, which may still be empty when this injection-time guard runs.
-        const auto version = sdk::get_file_version_info();
-        return HIWORD(version.dwFileVersionMS) == 4 &&
-            LOWORD(version.dwFileVersionMS) == 25;
+        return sdk::get_engine_version().is(4, 25);
     }();
 
     return result;
@@ -2920,49 +2913,19 @@ bool avowed_native_fix_gate_ready(uint32_t* out_stable_frames = nullptr, uint32_
 }
 
 bool is_ue_5_7_or_newer() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        if (str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
-            return true;
-        }
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50007;
+    return uevr::compat::get().ue57_or_newer;
 }
 
 bool is_ue_4_27_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("4.27");
-    }
-
-    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 27;
+    return uevr::compat::is_exact(4, 27);
 }
 
 bool is_ue_4_26_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("4.26");
-    }
-
-    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 26;
+    return uevr::compat::is_exact(4, 26);
 }
 
 bool is_ue_4_16_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("4.16");
-    }
-
-    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 16;
+    return uevr::compat::is_exact(4, 16);
 }
 
 bool naruto_is_current_game() {
@@ -3004,41 +2967,23 @@ bool prospi_is_current_game() {
 }
 
 bool is_ue_5_8_or_newer() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        if (str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
-            return true;
-        }
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50008;
+    return uevr::compat::get().ue58_or_newer;
 }
 
 bool is_ue_5_8() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+    return uevr::compat::is_exact(5, 8);
+}
 
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.8");
-    }
-
-    return disk_version.dwFileVersionMS == 0x50008;
+bool uses_ue58_compatible_runtime_profile() {
+    const auto& version = uevr::compat::get().version;
+    return version.is(5, 8) || version.is(6, 0);
 }
 
 
 bool is_ue_5_6_or_newer() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        if (str_version.starts_with("5.6") || str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9")) {
-            return true;
-        }
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50006;
+    const auto& profile = uevr::compat::get();
+    return (profile.version.major == 5 && profile.version.minor >= 6) ||
+        profile.version.is(6, 0);
 }
 
 bool is_ue_5_1_dx12_backend() {
@@ -3046,14 +2991,7 @@ bool is_ue_5_1_dx12_backend() {
         return false;
     }
 
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.1");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
+    return uevr::compat::is_exact(5, 1);
 }
 
 bool is_ue_5_1_dx_backend() {
@@ -3061,14 +2999,7 @@ bool is_ue_5_1_dx_backend() {
         return false;
     }
 
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.1");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50001 && disk_version.dwFileVersionMS < 0x50002;
+    return uevr::compat::is_exact(5, 1);
 }
 
 bool is_ue_5_2_dx_backend() {
@@ -3076,14 +3007,7 @@ bool is_ue_5_2_dx_backend() {
         return false;
     }
 
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.2");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50002 && disk_version.dwFileVersionMS < 0x50003;
+    return uevr::compat::is_exact(5, 2);
 }
 
 bool is_ue_5_3_dx_backend() {
@@ -3091,39 +3015,16 @@ bool is_ue_5_3_dx_backend() {
         return false;
     }
 
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.3");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50003 && disk_version.dwFileVersionMS < 0x50004;
+    return uevr::compat::is_exact(5, 3);
 }
 
 bool is_ue_5_0_to_5_3_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.0") ||
-            str_version.starts_with("5.1") ||
-            str_version.starts_with("5.2") ||
-            str_version.starts_with("5.3");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50000 && disk_version.dwFileVersionMS < 0x50004;
+    const auto& version = uevr::compat::get().version;
+    return version.major == 5 && version.minor <= 3;
 }
 
 bool is_ue_5_4_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.4");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50004 && disk_version.dwFileVersionMS < 0x50005;
+    return uevr::compat::is_exact(5, 4);
 }
 
 bool is_ue_5_4_dx_backend() {
@@ -3135,14 +3036,7 @@ bool is_ue_5_4_dx_backend() {
 }
 
 bool is_ue_5_5_runtime() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.5");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50005 && disk_version.dwFileVersionMS < 0x50006;
+    return uevr::compat::is_exact(5, 5);
 }
 
 bool is_ue_5_5_dx_backend() {
@@ -3166,14 +3060,7 @@ bool is_ue_5_6_dx12_backend() {
         return false;
     }
 
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-    if (str_version != "0.00") {
-        return str_version.starts_with("5.6");
-    }
-
-    return disk_version.dwFileVersionMS >= 0x50006 && disk_version.dwFileVersionMS < 0x50007;
+    return uevr::compat::is_exact(5, 6);
 }
 
 bool ue56_dx12_try_get_native_resource(FRHITexture2D* texture, const char* source, ID3D12Resource** out_native = nullptr, D3D12_RESOURCE_DESC* out_desc = nullptr) {
@@ -3235,11 +3122,11 @@ bool is_ue57_dx11_backend() {
 }
 
 bool is_ue58_dx11_dedicated_ui_backend() {
-    return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx11();
+    return uses_ue58_compatible_runtime_profile() && g_framework != nullptr && g_framework->is_dx11();
 }
 
 bool is_ue58_dx12_backend() {
-    return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx12();
+    return uses_ue58_compatible_runtime_profile() && g_framework != nullptr && g_framework->is_dx12();
 }
 
 bool supports_bimbo_ue58_dx12_owned_ui_target() {
@@ -5505,7 +5392,7 @@ bool is_using_double_precision(uintptr_t addr) {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
-    m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
+    m_uses_ue58_rendertarget_manager = uevr::compat::get().uses_ue58_render_target_manager;
 
     if (m_uses_ue58_rendertarget_manager) {
         SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
@@ -6590,7 +6477,8 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
 
     SPDLOG_INFO("Hooked FSlateRHIRenderer::DrawWindow_RenderThread @ 0x{:x}!", *func);
 
-    if (is_ue_5_8() && (g_framework->is_dx12() || is_ue58_dx11_dedicated_ui_backend())) {
+    if (uses_ue58_compatible_runtime_profile() &&
+        (g_framework->is_dx12() || is_ue58_dx11_dedicated_ui_backend())) {
         attempt_hook_ue58_slate_output_texture_register();
     }
 
@@ -6844,7 +6732,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
 }
 
 void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register() {
-    if (!is_ue_5_8() ||
+    if (!uses_ue58_compatible_runtime_profile() ||
         !supports_ue57_dedicated_ui_target() ||
         g_framework == nullptr ||
         (!g_framework->is_dx12() && !is_ue58_dx11_dedicated_ui_backend()))
@@ -7159,8 +7047,7 @@ bool FFakeStereoRenderingHook::hook_ue418_oculus_pixel_density_sink() {
         return true;
     }
 
-    const auto engine_version = sdk::search_for_version(utility::get_executable()).value_or(L"");
-    if (!engine_version.starts_with(L"4.18")) {
+    if (!sdk::get_engine_version().is(4, 18)) {
         return false;
     }
 
@@ -7935,6 +7822,15 @@ bool FFakeStereoRenderingHook::hook() {
 
     m_tried_hooking = true;
 
+    const auto& compatibility = uevr::compat::get();
+    if (compatibility.version.major == 6 && !compatibility.source_validated) {
+        SPDLOG_ERROR(
+            "[UECompat] Refusing ABI-sensitive fake-stereo hooks for unsupported UE {}.{}",
+            compatibility.version.major,
+            compatibility.version.minor);
+        return false;
+    }
+
     // Locking the hook monitor mutex stops our code from trying to re-hook DX11 and 12 after
     // Long pauses in code execution, due to us doing massive scans for code in this function.
     std::scoped_lock _{g_framework->get_hook_monitor_mutex()};
@@ -7992,9 +7888,9 @@ bool FFakeStereoRenderingHook::hook() {
             return false;
         };
 
-        const auto found_version = sdk::search_for_version(utility::get_executable());
+        const auto engine_version = sdk::get_engine_version();
 
-        if (!found_version) {
+        if (!engine_version.valid()) {
             SPDLOG_WARN("Failed to find version in executable");
         }
 
@@ -8005,7 +7901,7 @@ bool FFakeStereoRenderingHook::hook() {
 
         // Check for version 4.27.2.0
         // 4.26 also works here
-        if (check_file_version(0x4001B, 0x20000) || found_version.value_or(L"") == L"4.26") {
+        if (check_file_version(0x4001B, 0x20000) || engine_version.is(4, 26)) {
             return nonstandard_create_stereo_device_hook_4_27();
         }
 
@@ -10207,7 +10103,7 @@ FRHITexture2D** FFakeStereoRenderingHook::viewport_get_render_target_texture_hoo
 }
 
 void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FViewport* viewport, const char* source) {
-    const bool ue58_viewport_adoption = is_ue_5_8();
+    const bool ue58_viewport_adoption = uevr::compat::get().supports_scene_viewport_adoption;
 
     if (g_framework == nullptr) {
         return;
@@ -10892,7 +10788,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
-        if (everspace2_is_current_game() || is_ue_5_8() ||
+        if (everspace2_is_current_game() || uevr::compat::get().supports_scene_viewport_adoption ||
             (dead_island_2_ue425_is_current_game() && g_framework->is_dx12()) ||
             (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11())) {
             g_hook->try_adopt_scene_viewport_render_target(
@@ -13919,7 +13815,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
 
-    if (is_ue_5_8() &&
+    if (uses_ue58_compatible_runtime_profile() &&
         runtime->is_openxr() &&
         runtime->ready() &&
         !g_hook->m_has_game_viewport_client_draw_hook)
@@ -14160,15 +14056,15 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
 
             static size_t actual_offset = 0;
 
-            // UE5.8's FRHICommandListBase begins with a 0x28-byte FMemStackBase.
+            // UE5.8 and source-validated UE6.0 begin with a 0x28-byte FMemStackBase.
             // Do not run the legacy speculative root scan here: a false positive
             // corrupts an RDG command vtable and crashes later in SetupPassInternals.
-            if (is_ue_5_8()) {
-                constexpr size_t ue58_root_offset = 0x28;
-                const auto root_field = (uintptr_t)command_list + ue58_root_offset;
+            const auto& compatibility = uevr::compat::get();
+            if (compatibility.command_list_root_offset != 0) {
+                const auto root_field = (uintptr_t)command_list + compatibility.command_list_root_offset;
 
                 if (command_list == nullptr || IsBadReadPtr((void*)root_field, sizeof(void*))) {
-                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Command list/root field is unreadable; using direct pose enqueue");
+                    SPDLOG_WARN_ONCE("[UE5.8/UE6.0][RHICommandList] Command list/root field is unreadable; using direct pose enqueue");
                     vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
                     return;
                 }
@@ -14179,7 +14075,7 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
                     ((uintptr_t)root & (sizeof(void*) - 1)) != 0 ||
                     IsBadReadPtr(root, sizeof(void*) * 2))
                 {
-                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Root is absent or unreadable; using direct pose enqueue");
+                    SPDLOG_WARN_ONCE("[UE5.8/UE6.0][RHICommandList] Root is absent or unreadable; using direct pose enqueue");
                     vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
                     return;
                 }
@@ -14194,13 +14090,21 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
                     !utility::get_module_within(vtable) ||
                     !utility::get_module_within(first_function))
                 {
-                    SPDLOG_WARN_ONCE("[UE5.8][RHICommandList] Root vtable failed validation; using direct pose enqueue");
+                    SPDLOG_WARN_ONCE("[UE5.8/UE6.0][RHICommandList] Root vtable failed validation; using direct pose enqueue");
                     vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
                     return;
                 }
 
-                SPDLOG_INFO_ONCE("[UE5.8][RHICommandList] Using source/PDB-validated Root offset 0x28");
+                SPDLOG_INFO_ONCE(
+                    "[UE5.8/UE6.0][RHICommandList] Using source-validated Root offset 0x{:X}",
+                    compatibility.command_list_root_offset);
                 SceneViewExtensionAnalyzer::hook_new_rhi_command(root, frame_count + compensation);
+                return;
+            }
+
+            if (compatibility.version.major == 6) {
+                SPDLOG_ERROR_ONCE("[UE6][RHICommandList] Unsupported UE6 minor; skipping speculative Root discovery");
+                vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
                 return;
             }
 
@@ -17636,6 +17540,20 @@ struct UE58SlateDrawWindowPassInputs {
     float viewport_scale_ui;
 };
 
+struct UE60SlateDrawWindowPassInputs {
+    void* renderer;
+    void* window_element_list;
+    void* window;
+    sdk::ISlateViewport* window_viewport;
+    sdk::FViewportInfo* viewport_info;
+    UE55FIntPoint cursor_position;
+    UE55FIntRect scene_view_rect;
+    float viewport_scale_ui;
+};
+
+static_assert(offsetof(UE60SlateDrawWindowPassInputs, window_viewport) == 0x18);
+static_assert(offsetof(UE60SlateDrawWindowPassInputs, viewport_info) == 0x20);
+
 struct UE55SlateDrawWindowPassOutputs {
     void* viewport_rhi;
     FRHITexture2D* viewport_texture_rhi;
@@ -17745,7 +17663,56 @@ bool ue56_promote_source_matched_slate_scene_output(
     return true;
 }
 
-bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateDrawWindowPassInputsHead& out) {
+bool try_read_ue55_slate_draw_inputs(
+    void* candidate,
+    void* renderer,
+    UE55SlateDrawWindowPassInputsHead& out,
+    sdk::ISlateViewport** out_window_viewport = nullptr)
+{
+    if (out_window_viewport != nullptr) {
+        *out_window_viewport = nullptr;
+    }
+
+    if (uevr::compat::get().slate_input_layout == uevr::compat::SlateInputLayout::UE60) {
+        if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE60SlateDrawWindowPassInputs))) {
+            return false;
+        }
+
+        UE60SlateDrawWindowPassInputs ue60{};
+        memcpy(&ue60, candidate, sizeof(ue60));
+
+        if (ue60.renderer != renderer || ue60.window == nullptr ||
+            !is_readable_process_range((uintptr_t)ue60.window, sizeof(void*)))
+        {
+            return false;
+        }
+
+        if (ue60.window_viewport != nullptr &&
+            !is_readable_process_range((uintptr_t)ue60.window_viewport, sizeof(void*)))
+        {
+            return false;
+        }
+
+        if (ue60.viewport_info != nullptr &&
+            !is_readable_process_range((uintptr_t)ue60.viewport_info, sizeof(void*)))
+        {
+            return false;
+        }
+
+        out = {
+            .renderer = ue60.renderer,
+            .window_element_list = ue60.window_element_list,
+            .window = ue60.window,
+            .viewport_info = ue60.viewport_info,
+        };
+
+        if (out_window_viewport != nullptr) {
+            *out_window_viewport = ue60.window_viewport;
+        }
+
+        return true;
+    }
+
     if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE55SlateDrawWindowPassInputsHead))) {
         return false;
     }
@@ -17759,7 +17726,56 @@ bool try_read_ue55_slate_draw_inputs(void* candidate, void* renderer, UE55SlateD
     return is_readable_process_range((uintptr_t)out.window, sizeof(void*));
 }
 
-bool try_read_ue55_slate_draw_inputs_full(void* candidate, void* renderer, UE55SlateDrawWindowPassInputs& out) {
+bool try_read_ue55_slate_draw_inputs_full(
+    void* candidate,
+    void* renderer,
+    UE55SlateDrawWindowPassInputs& out,
+    sdk::ISlateViewport** out_window_viewport = nullptr)
+{
+    if (out_window_viewport != nullptr) {
+        *out_window_viewport = nullptr;
+    }
+
+    if (uevr::compat::get().slate_input_layout == uevr::compat::SlateInputLayout::UE60) {
+        if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE60SlateDrawWindowPassInputs))) {
+            return false;
+        }
+
+        UE60SlateDrawWindowPassInputs ue60{};
+        memcpy(&ue60, candidate, sizeof(ue60));
+
+        const auto width = ue60.scene_view_rect.max.x - ue60.scene_view_rect.min.x;
+        const auto height = ue60.scene_view_rect.max.y - ue60.scene_view_rect.min.y;
+        const auto extent_valid = width > 0 && height > 0 && width <= 16384 && height <= 16384;
+        const auto scale_valid = std::isfinite(ue60.viewport_scale_ui) &&
+            ue60.viewport_scale_ui > 0.0f && ue60.viewport_scale_ui <= 16.0f;
+
+        if (ue60.renderer != renderer || ue60.window == nullptr || !extent_valid || !scale_valid ||
+            !is_readable_process_range((uintptr_t)ue60.window, sizeof(void*)) ||
+            (ue60.window_viewport != nullptr && !is_readable_process_range((uintptr_t)ue60.window_viewport, sizeof(void*))) ||
+            (ue60.viewport_info != nullptr && !is_readable_process_range((uintptr_t)ue60.viewport_info, sizeof(void*))))
+        {
+            SPDLOG_WARN_ONCE("[UE6.0][SlateUI] Rejected unvalidated FSlateDrawWindowPassInputs candidate");
+            return false;
+        }
+
+        out = {};
+        out.renderer = ue60.renderer;
+        out.window_element_list = ue60.window_element_list;
+        out.window = ue60.window;
+        out.viewport_info = ue60.viewport_info;
+        out.cursor_position = ue60.cursor_position;
+        out.scene_view_rect = ue60.scene_view_rect;
+        out.viewport_scale_ui = ue60.viewport_scale_ui;
+
+        if (out_window_viewport != nullptr) {
+            *out_window_viewport = ue60.window_viewport;
+        }
+
+        SPDLOG_INFO_ONCE("[UE6.0][SlateUI] Using source-validated UE6.0 FSlateDrawWindowPassInputs layout");
+        return true;
+    }
+
     if (is_ue_5_8()) {
         if (!is_readable_process_range((uintptr_t)candidate, sizeof(UE58SlateDrawWindowPassInputs))) {
             return false;
@@ -18317,7 +18333,7 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
     }
 
     if (ue58) {
-        if (!is_ue_5_8() ||
+        if (!uses_ue58_compatible_runtime_profile() ||
             !supports_ue57_dedicated_ui_target() ||
             g_framework == nullptr ||
             (!g_framework->is_dx12() && !is_ue58_dx11_dedicated_ui_backend()))
@@ -20833,18 +20849,33 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
     UE55SlateDrawWindowPassInputs ue55_inputs_full{};
-    bool a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
+    const auto& compatibility = uevr::compat::get();
+
+    if (compatibility.version.major == 6 && !compatibility.source_validated) {
+        SPDLOG_ERROR_ONCE("[UE6][SlateUI] Unsupported UE6 minor; bypassing Slate interception");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
+    bool a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs, &slate_viewport);
     bool a4_has_ue_5_5_full_inputs = a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full);
     bool ue55_inputs_are_from_windows_array = false;
     void* ue55_draw_window_outputs_ptr = a2;
 
-    if (!a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs(a4, a2, ue55_inputs)) {
+    if (!a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs(a4, a2, ue55_inputs, &slate_viewport)) {
         // Some UE5.5 builds return FSlateDrawWindowPassOutputs by hidden sret
         // pointer, so RCX is the output struct and RDX is the renderer.
         a4_is_ue_5_5_variant = true;
         a4_has_ue_5_5_full_inputs = try_read_ue55_slate_draw_inputs_full(a4, a2, ue55_inputs_full);
         ue55_draw_window_outputs_ptr = renderer;
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 sret FSlateDrawWindowPassInputs layout");
+    }
+
+    if (compatibility.slate_input_layout == uevr::compat::SlateInputLayout::UE60 &&
+        (!a4_is_ue_5_5_variant || !a4_has_ue_5_5_full_inputs ||
+         (slate_viewport != nullptr && !looks_like_vtable_object(slate_viewport))))
+    {
+        SPDLOG_WARN_ONCE("[UE6.0][SlateUI] Slate inputs failed structural validation; preserving the engine DrawWindow path");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
     if (!a4_is_ue_5_5_variant &&
@@ -20939,7 +20970,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     if (!a4_is_ue_5_5_variant) {
         // How are we going to fix this on UE5.5?
         g_hook->get_slate_thread_worker()->execute((FRHICommandListImmediate*)a2);
-    } else if (!supports_ue55_dedicated_ui_target_for_current_game()) {
+    } else if (!supports_ue55_dedicated_ui_target_for_current_game() &&
+               compatibility.slate_input_layout != uevr::compat::SlateInputLayout::UE60) {
         const auto window = (uintptr_t)ue55_inputs.window;
 
         static std::optional<size_t> viewport_offset = [&]() -> std::optional<size_t> {
@@ -21308,7 +21340,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         }
     }
 
-    if (is_ue_5_8() &&
+    if (uses_ue58_compatible_runtime_profile() &&
         supports_ue57_dedicated_ui_target() &&
         a4_is_ue_5_5_variant &&
         rtm != nullptr)
@@ -21511,7 +21543,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (slate_resource == nullptr) {
-        if (is_ue_5_8()) {
+        if (uses_ue58_compatible_runtime_profile()) {
             if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
                 g_hook->attempt_hook_ue58_slate_output_texture_register();
             }
@@ -21559,7 +21591,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
 
         if (engine_texture_native_ok &&
             rtm->get_render_target() == nullptr &&
-            !is_ue_5_8() &&
+            !uses_ue58_compatible_runtime_profile() &&
             !naruto_waiting_for_verified_scene_target)
         {
             SPDLOG_WARN_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Adopting Slate viewport texture as render target fallback");
@@ -21571,7 +21603,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
                 "[Naruto][UE4.16][RT] Deferring flat Slate viewport adoption until completed Draw confirms the VR-sized scene target");
-        } else if (engine_texture_native_ok && rtm->get_render_target() == nullptr && is_ue_5_8()) {
+        } else if (engine_texture_native_ok && rtm->get_render_target() == nullptr && uses_ue58_compatible_runtime_profile()) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
                 "[UE5.8][RT] Deferring Slate viewport texture adoption until UGameViewportClient::Draw confirms the scene target");
@@ -21617,13 +21649,13 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     }
 
     if (is_ue_5_7_or_newer()) {
-        if (is_ue_5_8()) {
+        if (uses_ue58_compatible_runtime_profile()) {
             if (!g_hook->m_hooked_ue58_slate_output_texture_register) {
                 g_hook->attempt_hook_ue58_slate_output_texture_register();
             }
         }
 
-        if (!is_ue_5_8() ||
+        if (!uses_ue58_compatible_runtime_profile() ||
             is_ue58_dx11_dedicated_ui_backend() ||
             supports_bimbo_ue58_dx12_owned_ui_target())
         {
@@ -23583,7 +23615,7 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
         reset_dedicated_ui_creation_state();
     }
 
-    if (is_ue_5_8() &&
+    if (uses_ue58_compatible_runtime_profile() &&
         !is_ue58_dx11_dedicated_ui_backend() &&
         !supports_bimbo_ue58_dx12_owned_ui_target())
     {

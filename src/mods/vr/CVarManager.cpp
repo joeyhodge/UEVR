@@ -12,6 +12,7 @@
 #include <utility/String.hpp>
 
 #include <sdk/CVar.hpp>
+#include <sdk/EngineVersion.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/ConsoleManager.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -33,17 +34,7 @@ bool is_ue_5_1_dx12_backend_for_cvars() {
         return false;
     }
 
-    static const bool is_ue_5_1 = []() {
-        const auto found_version = sdk::search_for_version(utility::get_executable());
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            return version == "5.1" || version.starts_with("5.1.");
-        }
-
-        const auto disk_version = sdk::get_file_version_info();
-        return disk_version.dwFileVersionMS == 0x00050001;
-    }();
+    static const bool is_ue_5_1 = sdk::get_engine_version().is(5, 1);
 
     return is_ue_5_1;
 }
@@ -81,13 +72,7 @@ bool is_windrose_ue56_dx12_current_game_for_cvars() {
             return false;
         }
 
-        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
-            const auto version = utility::narrow(*found_version);
-            return version == "5.6" || version.starts_with("5.6.");
-        }
-
-        const auto disk_version = sdk::get_file_version_info();
-        return disk_version.dwFileVersionMS == 0x00050006;
+        return sdk::get_engine_version().is(5, 6);
     }();
 
     return result;
@@ -95,20 +80,8 @@ bool is_windrose_ue56_dx12_current_game_for_cvars() {
 
 bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
-        int major{};
-        int minor{};
-
-        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
-            if (swscanf_s(found_version->c_str(), L"%d.%d", &major, &minor) == 2) {
-                return major < 5 || (major == 5 && minor <= 4);
-            }
-        }
-
-        const auto disk_version = sdk::get_file_version_info();
-        major = (int)((disk_version.dwFileVersionMS >> 16) & 0xffff);
-        minor = (int)(disk_version.dwFileVersionMS & 0xffff);
-
-        return major < 5 || (major == 5 && minor <= 4);
+        const auto& version = sdk::get_engine_version();
+        return version.major < 5 || (version.major == 5 && version.minor <= 4);
     }();
 
     return result;

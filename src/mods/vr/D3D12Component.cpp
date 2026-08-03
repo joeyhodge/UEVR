@@ -29,6 +29,7 @@
 #include "d3d12/DirectXTK.hpp"
 
 #include "D3D12Component.hpp"
+#include "UECompatibility.hpp"
 
 //#define AFR_DEPTH_TEMP_DISABLED
 
@@ -119,19 +120,8 @@ bool copy_resource_depth_descriptors_compatible(
         src_family == dst_family;
 }
 bool is_ue58_runtime_cached() {
-    static const bool is_ue58 = []() {
-        const auto file_version = sdk::get_file_version_info();
-
-        if (file_version.dwFileVersionMS == 0x00050008) {
-            return true;
-        }
-
-        const auto embedded_version =
-            utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-        return embedded_version.starts_with("5.8");
-    }();
-
-    return is_ue58;
+    const auto& version = uevr::compat::get().version;
+    return version.is(5, 8) || version.is(6, 0);
 }
 
 void prepare_openxr_swapchain_recreate(VR* vr, uint32_t reasons) {
@@ -246,9 +236,7 @@ bool is_dead_island_2_ue425_current_game() {
             return false;
         }
 
-        const auto version = sdk::get_file_version_info();
-        return HIWORD(version.dwFileVersionMS) == 4 &&
-            LOWORD(version.dwFileVersionMS) == 25;
+        return uevr::compat::is_exact(4, 25);
     }();
 
     return result;
@@ -473,17 +461,7 @@ bool is_ue_5_1_dx12_backend() {
         return false;
     }
 
-    static const bool result = []() {
-        const auto found_version = sdk::search_for_version(utility::get_executable());
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            return version == "5.1" || version.starts_with("5.1.");
-        }
-
-        const auto disk_version = sdk::get_file_version_info();
-        return disk_version.dwFileVersionMS == 0x00050001;
-    }();
+    static const bool result = uevr::compat::is_exact(5, 1);
 
     return result;
 }

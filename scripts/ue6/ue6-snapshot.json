@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "target": {
+    "name": "UE6 Phase 1",
+    "archiveCommit": "3e62f9ca59cb493c7e435569483c2a9dfd83af02",
+    "version": {
+      "major": 6,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "baseline": {
+    "name": "UE5.8.1",
+    "archiveCommit": "dcc331c30ec045ba3ba7e25f36490a0b988649f5",
+    "version": {
+      "major": 5,
+      "minor": 8,
+      "patch": 1
+    }
+  },
+  "files": [
+    {
+      "severity": "critical",
+      "area": "engine-version-boundary",
+      "path": "Engine/Build/Build.version",
+      "targetSha256": "FCA02D910724985FD1D51015CA0F27947FCB86A3FACD50679DB2763A2C9120AF",
+      "baselineSha256": "29F7A3E61C24327147037EE15928D1BD1603FB65BCD19058E8381E26A12D38BD"
+    },
+    {
+      "severity": "critical",
+      "area": "scene-view-layout",
+      "path": "Engine/Source/Runtime/Engine/Public/SceneView.h",
+      "targetSha256": "640C74531355550896F23E72AA469E4E0D80AC2FF7102DD816F26D7A9C69508B",
+      "baselineSha256": "60C49099E222C1CD5415795213E3DF03F4F2888513216F034F292E5800B06DDC"
+    },
+    {
+      "severity": "critical",
+      "area": "scene-view-extension-vtable",
+      "path": "Engine/Source/Runtime/Engine/Public/SceneViewExtension.h",
+      "targetSha256": "B8C9072167BCB3BB00F6E21556E6B28733940BF3F762EDB36F461C3A0CA5742C",
+      "baselineSha256": "7D9B652434FE5BA934A574B889CFB6FCDB2855B82B6DBA9853F0EE03A2868BA2"
+    },
+    {
+      "severity": "critical",
+      "area": "stereo-rendering-vtable",
+      "path": "Engine/Source/Runtime/Engine/Public/StereoRendering.h",
+      "targetSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7",
+      "baselineSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7"
+    },
+    {
+      "severity": "critical",
+      "area": "xr-tracking-vtable",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IXRTrackingSystem.h",
+      "targetSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89",
+      "baselineSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89"
+    },
+    {
+      "severity": "critical",
+      "area": "hmd-vtable",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IHeadMountedDisplay.h",
+      "targetSha256": "059BB77AE45B4A821C44EC68E0837457322154C681FF722F410B62628CE27CB3",
+      "baselineSha256": "B8A2B9180EBD47843A2B30EA6DB76A7D5381583392097B0BC9105D58061C684E"
+    },
+    {
+      "severity": "critical",
+      "area": "render-target-manager-vtable",
+      "path": "Engine/Source/Runtime/Engine/Public/StereoRenderTargetManager.h",
+      "targetSha256": "591867C821FF718BB1A5EE7A5E93543E595BB7E3D8D4CD854E4C2DD0E3CD4249",
+      "baselineSha256": "591867C821FF718BB1A5EE7A5E93543E595BB7E3D8D4CD854E4C2DD0E3CD4249"
+    },
+    {
+      "severity": "critical",
+      "area": "rhi-command-list-layout",
+      "path": "Engine/Source/Runtime/RHI/Public/RHICommandList.h",
+      "targetSha256": "4C6592A5699476DE582520E57F58D4956312325960274D9AE31C12BE2924B19E",
+      "baselineSha256": "DD409BC5B84F0B7CA96BF0995491DAF018276A8C95B123C825E2E429B9408738"
+    },
+    {
+      "severity": "critical",
+      "area": "viewport-render-target-vtables",
+      "path": "Engine/Source/Runtime/Engine/Public/UnrealClient.h",
+      "targetSha256": "ECA094D5ECDDC3FB133DE29A0E2A8158D2E1330115E09FAC920BABC97D019418",
+      "baselineSha256": "DDFF2ACD146D534452042ED415461798FA0BFA4DF5CAD752E3D08D8582AF10D9"
+    },
+    {
+      "severity": "critical",
+      "area": "slate-renderer-vtable",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.h",
+      "targetSha256": "C9325EC99E11A28C0A14EFCC1AD0DFBE7B9EE98DCD0BA9A2A062AF0334A12BBC",
+      "baselineSha256": "C9325EC99E11A28C0A14EFCC1AD0DFBE7B9EE98DCD0BA9A2A062AF0334A12BBC"
+    },
+    {
+      "severity": "critical",
+      "area": "slate-draw-input-layout",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.cpp",
+      "targetSha256": "C9759C4EE1FA6362B9E3DE14617A46CE790CCE91EA5B95C02AC2BC7F851817A6",
+      "baselineSha256": "AD4DE2F2E26B3E265890DC873399651CBD6134166B43965B393D5A6258F5FBED"
+    },
+    {
+      "severity": "critical",
+      "area": "uobject-array-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UObjectArray.h",
+      "targetSha256": "2B499018F5A4509811076C4461113DE79AA5E5F09A4ED196CE7A9EC30D3D7F8C",
+      "baselineSha256": "3E49FD65C877F1914A7613CCE566FC19F73E5612CC91B2AE8A47CA03953C9221"
+    },
+    {
+      "severity": "critical",
+      "area": "fname-layout",
+      "path": "Engine/Source/Runtime/Core/Public/UObject/NameTypes.h",
+      "targetSha256": "A9A6D865249A64BF142DBF7D896F38C7C30F2DFFCD79BC335978E3F295DF0763",
+      "baselineSha256": "D5C0E85A53D7EC56A4D77F06DB8AD6ECE805BE31285DADF3CBEF8CA2330F467C"
+    },
+    {
+      "severity": "critical",
+      "area": "ffield-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/Field.h",
+      "targetSha256": "8D8F1AC76F0038C8A937455EF228A96EBCD344C55E6717343A77F12716749FEC",
+      "baselineSha256": "8D8F1AC76F0038C8A937455EF228A96EBCD344C55E6717343A77F12716749FEC"
+    },
+    {
+      "severity": "critical",
+      "area": "fproperty-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h",
+      "targetSha256": "D4DA1AE5042D4754097803D87FB0FFEF9406DC0DDAD5A63D366AFBAB1A6D5898",
+      "baselineSha256": "BB9705086A01C5AB0F620C1541651F3F2A1314A0E4C6646D53FBD70C5DB609B5"
+    },
+    {
+      "severity": "critical",
+      "area": "console-variable-vtable",
+      "path": "Engine/Source/Runtime/Core/Public/HAL/IConsoleManager.h",
+      "targetSha256": "C4420A8EEC58D6F5CA3CDE1713680A77163DA2DB0537F7A12EDBDB07672552E1",
+      "baselineSha256": "C4420A8EEC58D6F5CA3CDE1713680A77163DA2DB0537F7A12EDBDB07672552E1"
+    },
+    {
+      "severity": "support",
+      "area": "scene-view-owner",
+      "path": "Engine/Source/Runtime/Engine/Public/SceneViewOwner.h",
+      "targetSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F",
+      "baselineSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F"
+    },
+    {
+      "severity": "support",
+      "area": "stereo-pass-types",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/HeadMountedDisplayTypes.h",
+      "targetSha256": "FAE3497BE40CD7D800620792D9DE8D618C59A9DC4CDD449AD7390012A0DA6A6D",
+      "baselineSha256": "8AD74DE577586BF95E88C0B756D0A8D906E22E043DEF01A38F0F7D81DD15AC93"
+    },
+    {
+      "severity": "support",
+      "area": "render-graph-builder-layout",
+      "path": "Engine/Source/Runtime/RenderCore/Public/RenderGraphBuilder.h",
+      "targetSha256": "ED66804A3CC9EBCC83DFB7635BAF04D9C160424B73F924596FE596F5B3292919",
+      "baselineSha256": "ED66804A3CC9EBCC83DFB7635BAF04D9C160424B73F924596FE596F5B3292919"
+    }
+  ]
+}

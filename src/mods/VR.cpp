@@ -48,6 +48,7 @@
 #include "VR.hpp"
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
+#include "vr/UECompatibility.hpp"
 
 namespace {
 bool is_stalker2_executable_cached();
@@ -85,37 +86,15 @@ bool VR::on_openxr_resolution_scale_changed(
 
     const auto legacy_live_policy = []() {
         static const auto result = []() {
-            const auto disk_version = sdk::get_file_version_info();
-            const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-            if (str_version != "0.00") {
-                const auto live_allowed =
-                    str_version.starts_with("4.27") ||
-                    str_version.starts_with("5.3") ||
-                    str_version.starts_with("5.4") ||
-                    str_version.starts_with("5.5") ||
-                    str_version.starts_with("5.6") ||
-                    str_version.starts_with("5.7") ||
-                    str_version.starts_with("5.8") ||
-                    str_version.starts_with("5.9");
-
-                return OpenXRResolutionReconfigurePolicy{
-                    .live_allowed = live_allowed,
-                    .version = str_version,
-                    .reason = live_allowed ? "legacy_safe_band" : "blocked_ue50_52_or_unknown"
-                };
-            }
-
-            const auto major = (disk_version.dwFileVersionMS >> 16) & 0xFFFF;
-            const auto minor = disk_version.dwFileVersionMS & 0xFFFF;
-            const auto live_allowed = (major == 4 && minor == 27) || (major == 5 && minor >= 3);
-            std::ostringstream version{};
-            version << "file_version_" << major << "." << minor;
+            const auto& compatibility = uevr::compat::get();
+            const auto version = utility::narrow(sdk::format_engine_version(compatibility.version, true));
 
             return OpenXRResolutionReconfigurePolicy{
-                .live_allowed = live_allowed,
-                .version = version.str(),
-                .reason = live_allowed ? "legacy_safe_file_version_band" : "blocked_file_version"
+                .live_allowed = compatibility.supports_live_openxr_resize,
+                .version = version.empty() ? "0.00" : version,
+                .reason = compatibility.supports_live_openxr_resize
+                    ? (compatibility.version.is(6, 0) ? "source_validated_ue60" : "legacy_safe_band")
+                    : "blocked_unvalidated_engine_profile"
             };
         }();
 
@@ -195,18 +174,7 @@ std::string hitch_timestamp_suffix() {
 }
 
 bool is_ue_5_7_or_newer_for_ui_layer_pose() {
-    static const auto result = []() {
-        const auto disk_version = sdk::get_file_version_info();
-        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
-
-        if (str_version != "0.00") {
-            return str_version.starts_with("5.7") || str_version.starts_with("5.8") || str_version.starts_with("5.9");
-        }
-
-        return disk_version.dwFileVersionMS >= 0x50007;
-    }();
-
-    return result;
+    return uevr::compat::get().supports_ui_layer_pose;
 }
 
 double quat_delta_degrees(const glm::quat& a, const glm::quat& b) {
@@ -249,9 +217,7 @@ bool is_dead_island_2_ue425_executable_cached() {
             return false;
         }
 
-        const auto version = sdk::get_file_version_info();
-        return HIWORD(version.dwFileVersionMS) == 4 &&
-            LOWORD(version.dwFileVersionMS) == 25;
+        return uevr::compat::is_exact(4, 25);
     }();
 
     return result;
@@ -327,10 +293,7 @@ struct GameFovResolver {
 GameFovResolver g_game_fov_resolver{};
 
 bool is_ue418_executable() {
-    static const auto result = []() {
-        const auto version = sdk::search_for_version(utility::get_executable()).value_or(L"");
-        return version.starts_with(L"4.18");
-    }();
+    static const auto result = uevr::compat::is_exact(4, 18);
 
     return result;
 }

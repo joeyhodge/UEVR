@@ -11,6 +11,7 @@
 
 #include <sdk/UObjectBase.hpp>
 #include <sdk/UObjectArray.hpp>
+#include <sdk/EngineVersion.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FField.hpp>
 #include <sdk/FProperty.hpp>
@@ -61,39 +62,15 @@ constexpr size_t STALKER2_CLASS_BROWSER_CLASS_CAP = 256;
 constexpr size_t STALKER2_CLASS_BROWSER_OBJECT_CAP = 128;
 
 bool is_ue_5_1_uobjecthook_guard_enabled() {
-    static const bool is_ue_5_1 = []() {
-        const auto disk_version = sdk::get_file_version_info();
-        const auto found_version = sdk::search_for_version(GetModuleHandleW(nullptr));
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            return version == "5.1" || version.starts_with("5.1.");
-        }
-
-        return disk_version.dwFileVersionMS == 0x00050001;
-    }();
+    static const bool is_ue_5_1 = sdk::get_engine_version().is(5, 1);
 
     return is_ue_5_1;
 }
 
 bool is_ue4_14_through_4_17_uobjecthook_guard_enabled() {
     static const bool result = []() {
-        const auto disk_version = sdk::get_file_version_info();
-        const auto found_version = sdk::search_for_version(utility::get_executable());
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            int major = 0;
-            int minor = 0;
-
-            if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
-                return major == 4 && minor >= 14 && minor <= 17;
-            }
-        }
-
-        const auto major = HIWORD(disk_version.dwFileVersionMS);
-        const auto minor = LOWORD(disk_version.dwFileVersionMS);
-        return major == 4 && minor >= 14 && minor <= 17;
+        const auto& version = sdk::get_engine_version();
+        return version.major == 4 && version.minor >= 14 && version.minor <= 17;
     }();
 
     return result;
@@ -101,22 +78,8 @@ bool is_ue4_14_through_4_17_uobjecthook_guard_enabled() {
 
 bool is_ue4_11_through_4_17_motion_controller_source() {
     static const bool result = []() {
-        const auto disk_version = sdk::get_file_version_info();
-        const auto found_version = sdk::search_for_version(utility::get_executable());
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            int major = 0;
-            int minor = 0;
-
-            if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
-                return major == 4 && minor >= 11 && minor <= 17;
-            }
-        }
-
-        const auto major = HIWORD(disk_version.dwFileVersionMS);
-        const auto minor = LOWORD(disk_version.dwFileVersionMS);
-        return major == 4 && minor >= 11 && minor <= 17;
+        const auto& version = sdk::get_engine_version();
+        return version.major == 4 && version.minor >= 11 && version.minor <= 17;
     }();
 
     return result;
@@ -150,22 +113,8 @@ bool is_everwind_uobjecthook_guard_enabled() {
 }
 
 bool is_ue_5_5_or_newer_uobjecthook() {
-    static const auto disk_version = sdk::get_file_version_info();
-    static const auto found_version = sdk::search_for_version(utility::get_executable());
-
-    if (found_version) {
-        const auto version = utility::narrow(*found_version);
-        int major = 0;
-        int minor = 0;
-
-        if (std::sscanf(version.c_str(), "%d.%d", &major, &minor) == 2) {
-            return major > 5 || (major == 5 && minor >= 5);
-        }
-    }
-
-    const auto major = HIWORD(disk_version.dwFileVersionMS);
-    const auto minor = LOWORD(disk_version.dwFileVersionMS);
-    return major > 5 || (major == 5 && minor >= 5);
+    const auto& version = sdk::get_engine_version();
+    return version.is(6, 0) || (version.major == 5 && version.minor >= 5);
 }
 
 bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool is_double) {

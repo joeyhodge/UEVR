@@ -4,6 +4,7 @@
 #include <utility/String.hpp>
 
 #include <sdk/FRenderTargetPool.hpp>
+#include <sdk/EngineVersion.hpp>
 #include <sdk/EngineModule.hpp>
 #include <sdk/Utility.hpp>
 #include <sdk/threading/RHIThreadWorker.hpp>
@@ -16,17 +17,7 @@ RenderTargetPoolHook* g_hook{nullptr};
 
 namespace {
 bool is_ue_5_1() {
-    static const bool result = []() {
-        const auto found_version = sdk::search_for_version(GetModuleHandleW(nullptr));
-
-        if (found_version) {
-            const auto version = utility::narrow(*found_version);
-            return version == "5.1" || version.starts_with("5.1.");
-        }
-
-        const auto disk_version = sdk::get_file_version_info();
-        return disk_version.dwFileVersionMS == 0x00050001;
-    }();
+    static const bool result = sdk::get_engine_version().is(5, 1);
 
     return result;
 }

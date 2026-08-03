@@ -15,6 +15,7 @@
 #include <imgui.h>
 
 #include <sdk/CVar.hpp>
+#include <sdk/EngineVersion.hpp>
 #include <sdk/Globals.hpp>
 #include <sdk/Utility.hpp>
 
@@ -161,9 +162,7 @@ bool is_dead_island_2_ue425_executable() {
             return false;
         }
 
-        const auto version = sdk::get_file_version_info();
-        return HIWORD(version.dwFileVersionMS) == 4 &&
-            LOWORD(version.dwFileVersionMS) == 25;
+        return sdk::get_engine_version().is(4, 25);
     }();
 
     return result;
@@ -2236,7 +2235,7 @@ OpenXR::PipelineState OpenXR::get_submit_state() {
             "[Everspace2][OpenXR][coherent-submit] Active executable=ES2-Win64-Shipping.exe "
             "runtime=OpenXR renderer=D3D12 engine={} persistent_pose_latch=false "
             "slate_target_redirect=false global_mixed_frame_fallback=false",
-            utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"unknown")));
+            utility::narrow(sdk::format_engine_version(sdk::get_engine_version(), true)));
         SPDLOG_INFO_ONCE(
             "[Everspace2][OpenXR][coherent-submit] Prior rejected paths remain disabled: "
             "persistent pose latching produced multi-second stale poses; Slate target redirection "
