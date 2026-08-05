@@ -959,6 +959,41 @@ private:
         FailedClosed,
     };
 
+    struct GhostingFixOwner {
+        sdk::UObject* engine{};
+        int32_t engine_index{-1};
+        int32_t engine_serial{};
+        uintptr_t game_instance_slot{};
+        sdk::UObject* game_instance{};
+        int32_t game_instance_index{-1};
+        int32_t game_instance_serial{};
+        uintptr_t local_players_header{};
+        uintptr_t local_players_data{};
+        int32_t local_players_count{};
+        int32_t local_players_capacity{};
+        uintptr_t local_player_slot{};
+        sdk::UObject* local_player{};
+        int32_t local_player_index{-1};
+        int32_t local_player_serial{};
+        uintptr_t view_states_header{};
+        uintptr_t view_states_data{};
+        int32_t view_states_count{};
+        int32_t view_states_capacity{};
+        uint32_t view_state_stride{};
+        uintptr_t eye_state_slot[2]{};
+        uintptr_t viewport_client_slot{};
+        sdk::UObject* viewport_client{};
+        int32_t viewport_client_index{-1};
+        int32_t viewport_client_serial{};
+        uintptr_t world_slot{};
+        sdk::UObject* world{};
+        int32_t world_index{-1};
+        int32_t world_serial{};
+        uint32_t last_validated_frame{};
+        uint32_t stable_frames{};
+        bool verified{};
+    };
+
     struct GhostingFixPair {
         sdk::FSceneViewStateInterface* eye_state[2]{};
         sdk::FSceneViewStateInterface* pending_eye_state[2]{};
@@ -976,7 +1011,14 @@ private:
         uint32_t generation{};
         bool orientation_confirmed{};
         bool logged_naturally_separated{};
+        bool logged_owner_unavailable{};
+        bool logged_owner_stabilizing{};
+        GhostingFixOwner owner{};
     };
+
+    static bool bind_ghosting_fix_owner(GhostingFixPair& pair);
+    static bool validate_ghosting_fix_owner(const GhostingFixPair& pair);
+    static bool refresh_ghosting_fix_owner(GhostingFixPair& pair);
 
     enum class SplitScreenCompatibilityState : uint8_t {
         Off,
@@ -1021,6 +1063,7 @@ private:
         uint8_t ghosting_bootstrap_attempts{};
         bool ghosting_bootstrap_ready{};
         bool ghosting_logged_bootstrap_deferred{};
+        bool ghosting_bootstrap_was_enabled{};
 
         std::unordered_map<sdk::FSceneView*, SplitScreenViewMetadata> splitscreen_views{};
         uint32_t splitscreen_metadata_frame{};
@@ -1259,6 +1302,9 @@ private:
     bool m_ignore_next_engine_tick{false};
     void* m_last_destroyed_viewport{nullptr}; // used to check if the viewport is destroyed when we call FViewport::Draw again
     void** m_last_viewport_vtable{nullptr};
+    std::atomic_uint64_t m_synced_draw_lifecycle_generation{1};
+    std::atomic<void*> m_synced_draw_viewport{nullptr};
+    std::atomic<void*> m_synced_draw_viewport_client{nullptr};
 
 
     bool m_analyzing_view_extensions{false};
