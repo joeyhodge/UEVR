@@ -5231,12 +5231,69 @@ struct GhostingRawArrayHeader {
 
 static_assert(sizeof(GhostingRawArrayHeader) == 0x10);
 
+enum class GhostingUObjectValidationMode : uint8_t {
+    ObjectArray,
+    UObjectHook,
+};
+
+enum class GhostingOwnerResolveFailure : uint8_t {
+    None,
+    InvalidSceneStates,
+    EngineUnavailable,
+    EngineLifetime,
+    GameInstanceProperty,
+    GameInstanceLifetime,
+    LocalPlayersProperty,
+    LocalPlayersArray,
+    LocalPlayerSlot,
+    LocalPlayerLifetime,
+    ViewStateStorage,
+    ViewportClient,
+    World,
+};
+
+const char* ghosting_owner_failure_name(GhostingOwnerResolveFailure failure) {
+    switch (failure) {
+    case GhostingOwnerResolveFailure::None: return "none";
+    case GhostingOwnerResolveFailure::InvalidSceneStates: return "invalid scene states";
+    case GhostingOwnerResolveFailure::EngineUnavailable: return "engine unavailable";
+    case GhostingOwnerResolveFailure::EngineLifetime: return "engine lifetime";
+    case GhostingOwnerResolveFailure::GameInstanceProperty: return "GameInstance property";
+    case GhostingOwnerResolveFailure::GameInstanceLifetime: return "GameInstance lifetime";
+    case GhostingOwnerResolveFailure::LocalPlayersProperty: return "LocalPlayers property";
+    case GhostingOwnerResolveFailure::LocalPlayersArray: return "LocalPlayers array";
+    case GhostingOwnerResolveFailure::LocalPlayerSlot: return "LocalPlayer slot";
+    case GhostingOwnerResolveFailure::LocalPlayerLifetime: return "LocalPlayer lifetime";
+    case GhostingOwnerResolveFailure::ViewStateStorage: return "scene-state storage";
+    case GhostingOwnerResolveFailure::ViewportClient: return "viewport client";
+    case GhostingOwnerResolveFailure::World: return "viewport world";
+    default: return "unknown";
+    }
+}
+
+struct GhostingUObjectIdentity {
+    uintptr_t vtable{};
+    uintptr_t object_class{};
+    int32_t internal_index{-1};
+    int32_t serial{};
+};
+
+struct GhostingOwnerResolveDiagnostic {
+    GhostingOwnerResolveFailure failure{GhostingOwnerResolveFailure::None};
+    int32_t local_player_index{-1};
+    int32_t local_player_count{};
+};
+
 struct GhostingFixOwnerCandidate {
     sdk::UObject* engine{};
+    uintptr_t engine_vtable{};
+    uintptr_t engine_class{};
     int32_t engine_index{-1};
     int32_t engine_serial{};
     uintptr_t game_instance_slot{};
     sdk::UObject* game_instance{};
+    uintptr_t game_instance_vtable{};
+    uintptr_t game_instance_class{};
     int32_t game_instance_index{-1};
     int32_t game_instance_serial{};
     uintptr_t local_players_header{};
@@ -5245,6 +5302,8 @@ struct GhostingFixOwnerCandidate {
     int32_t local_players_capacity{};
     uintptr_t local_player_slot{};
     sdk::UObject* local_player{};
+    uintptr_t local_player_vtable{};
+    uintptr_t local_player_class{};
     int32_t local_player_index{-1};
     int32_t local_player_serial{};
     uintptr_t view_states_header{};
@@ -5252,15 +5311,22 @@ struct GhostingFixOwnerCandidate {
     int32_t view_states_count{};
     int32_t view_states_capacity{};
     uint32_t view_state_stride{};
+    uintptr_t view_state_reference_vtable{};
     uintptr_t eye_state_slot[2]{};
     uintptr_t viewport_client_slot{};
     sdk::UObject* viewport_client{};
+    uintptr_t viewport_client_vtable{};
+    uintptr_t viewport_client_class{};
     int32_t viewport_client_index{-1};
     int32_t viewport_client_serial{};
     uintptr_t world_slot{};
     sdk::UObject* world{};
+    uintptr_t world_vtable{};
+    uintptr_t world_class{};
     int32_t world_index{-1};
     int32_t world_serial{};
+    bool view_states_are_array{};
+    bool uses_uobject_hook_validation{};
 };
 
 bool ghosting_is_valid_scene_state(sdk::FSceneViewStateInterface* state) {
@@ -5330,13 +5396,19 @@ bool ghosting_object_vtable_matches(void* object, void** expected_vtable) {
     }
 }
 
+bool ghosting_can_use_uobject_hook() {
+    auto& object_hook = UObjectHook::get();
+    return object_hook != nullptr &&
+        object_hook->is_fully_hooked() &&
+        !object_hook->is_disabled();
+}
+
 bool ghosting_is_live_uobject(
     sdk::UObject* object,
-    int32_t expected_index = -1,
-    bool validate_serial = false,
-    int32_t expected_serial = 0,
-    int32_t* out_index = nullptr,
-    int32_t* out_serial = nullptr)
+    GhostingUObjectValidationMode validation_mode = GhostingUObjectValidationMode::ObjectArray,
+    const GhostingUObjectIdentity* expected_identity = nullptr,
+    GhostingUObjectIdentity* out_identity = nullptr,
+    bool validate_membership = true)
 {
     const auto address = reinterpret_cast<uintptr_t>(object);
     if (address == 0) {
@@ -5359,22 +5431,43 @@ bool ghosting_is_live_uobject(
         return false;
     }
 
-    if (expected_index >= 0 && internal_index != expected_index) {
-        return false;
-    }
-
-    if (!ghosting_object_array_contains(
-            address,
-            internal_index,
-            validate_serial,
-            expected_serial,
-            out_serial))
+    if (expected_identity != nullptr &&
+        (vtable != expected_identity->vtable ||
+         object_class != expected_identity->object_class ||
+         internal_index != expected_identity->internal_index))
     {
         return false;
     }
 
-    if (out_index != nullptr) {
-        *out_index = internal_index;
+    int32_t serial{};
+    if (validate_membership) {
+        if (validation_mode == GhostingUObjectValidationMode::ObjectArray) {
+            if (!ghosting_object_array_contains(
+                    address,
+                    internal_index,
+                    expected_identity != nullptr,
+                    expected_identity != nullptr ? expected_identity->serial : 0,
+                    &serial))
+            {
+                return false;
+            }
+        } else {
+            auto& object_hook = UObjectHook::get();
+            if (!ghosting_can_use_uobject_hook() ||
+                !object_hook->exists(reinterpret_cast<sdk::UObjectBase*>(object)))
+            {
+                return false;
+            }
+        }
+    }
+
+    if (out_identity != nullptr) {
+        *out_identity = {
+            .vtable = vtable,
+            .object_class = object_class,
+            .internal_index = internal_index,
+            .serial = serial,
+        };
     }
 
     return true;
@@ -5406,9 +5499,10 @@ bool ghosting_read_object_property(
     sdk::UObject* object,
     std::wstring_view property,
     uintptr_t& out_slot,
-    sdk::UObject*& out_value)
+    sdk::UObject*& out_value,
+    GhostingUObjectValidationMode validation_mode)
 {
-    if (!ghosting_is_live_uobject(object)) {
+    if (!ghosting_is_live_uobject(object, validation_mode)) {
         return false;
     }
 
@@ -5503,9 +5597,80 @@ bool ghosting_resolve_view_state_slots(
         out.view_states_count = header.count;
         out.view_states_capacity = header.capacity;
         out.view_state_stride = stride;
+        out.view_state_reference_vtable = expected_vtable;
         out.eye_state_slot[0] = state_slots[0];
         out.eye_state_slot[1] = state_slots[1];
+        out.view_states_are_array = true;
         return true;
+    }
+
+    return false;
+}
+
+bool ghosting_resolve_direct_view_state_slots(
+    uintptr_t local_player_address,
+    uintptr_t controller_id_data,
+    sdk::FSceneViewStateInterface* left_state,
+    sdk::FSceneViewStateInterface* right_state,
+    GhostingFixOwnerCandidate& out)
+{
+    if (controller_id_data <= local_player_address + sdk::UObjectBase::get_class_size()) {
+        return false;
+    }
+
+    const auto lower_bound = std::max(
+        local_player_address + sdk::UObjectBase::get_class_size(),
+        controller_id_data > 0x180 ? controller_id_data - 0x180 : local_player_address);
+    const auto first_candidate = (lower_bound + alignof(void*) - 1) & ~(alignof(void*) - 1);
+    const std::array<uint32_t, 5> strides{0x28, 0x38, 0x20, 0x30, 0x40};
+
+    for (const auto stride : strides) {
+        for (auto first = first_candidate;
+             first + stride + (2 * sizeof(uintptr_t)) <= controller_id_data;
+             first += sizeof(uintptr_t))
+        {
+            const auto second = first + stride;
+            uintptr_t first_vtable{};
+            uintptr_t second_vtable{};
+            uintptr_t first_virtual{};
+            uintptr_t first_state{};
+            uintptr_t second_state{};
+            if (!safe_read_value(first, first_vtable) ||
+                first_vtable == 0 ||
+                !safe_read_value(second, second_vtable) ||
+                first_vtable != second_vtable ||
+                !safe_read_value(first_vtable, first_virtual) ||
+                first_virtual == 0 ||
+                !is_executable_process_range(first_virtual, 1) ||
+                !safe_read_value(first + sizeof(uintptr_t), first_state) ||
+                !safe_read_value(second + sizeof(uintptr_t), second_state))
+            {
+                continue;
+            }
+
+            const auto left = reinterpret_cast<uintptr_t>(left_state);
+            const auto right = reinterpret_cast<uintptr_t>(right_state);
+            const bool natural_order = first_state == left && second_state == right;
+            const bool swapped_order = first_state == right && second_state == left;
+            if (!natural_order && !swapped_order) {
+                continue;
+            }
+
+            out.view_states_header = 0;
+            out.view_states_data = first;
+            out.view_states_count = 2;
+            out.view_states_capacity = 2;
+            out.view_state_stride = stride;
+            out.view_state_reference_vtable = first_vtable;
+            out.eye_state_slot[0] = natural_order
+                ? first + sizeof(uintptr_t)
+                : second + sizeof(uintptr_t);
+            out.eye_state_slot[1] = natural_order
+                ? second + sizeof(uintptr_t)
+                : first + sizeof(uintptr_t);
+            out.view_states_are_array = false;
+            return true;
+        }
     }
 
     return false;
@@ -5514,29 +5679,47 @@ bool ghosting_resolve_view_state_slots(
 bool ghosting_resolve_current_owner(
     sdk::FSceneViewStateInterface* left_state,
     sdk::FSceneViewStateInterface* right_state,
-    GhostingFixOwnerCandidate& out)
+    GhostingFixOwnerCandidate& out,
+    GhostingUObjectValidationMode validation_mode,
+    GhostingOwnerResolveDiagnostic& diagnostic)
 {
+    diagnostic = {};
     if (!ghosting_is_valid_scene_state(left_state) ||
         !ghosting_is_valid_scene_state(right_state) ||
         left_state == right_state)
     {
+        diagnostic.failure = GhostingOwnerResolveFailure::InvalidSceneStates;
         return false;
     }
 
     auto* const engine = reinterpret_cast<sdk::UObject*>(sdk::UEngine::get());
-    int32_t engine_index{-1};
-    int32_t engine_serial{};
-    if (!ghosting_is_live_uobject(engine, -1, false, 0, &engine_index, &engine_serial)) {
+    if (engine == nullptr) {
+        diagnostic.failure = GhostingOwnerResolveFailure::EngineUnavailable;
+        return false;
+    }
+
+    GhostingUObjectIdentity engine_identity{};
+    if (!ghosting_is_live_uobject(engine, validation_mode, nullptr, &engine_identity)) {
+        diagnostic.failure = GhostingOwnerResolveFailure::EngineLifetime;
         return false;
     }
 
     uintptr_t game_instance_slot{};
     sdk::UObject* game_instance{};
-    int32_t game_instance_index{-1};
-    int32_t game_instance_serial{};
-    if (!ghosting_read_object_property(engine, L"GameInstance", game_instance_slot, game_instance) ||
-        !ghosting_is_live_uobject(game_instance, -1, false, 0, &game_instance_index, &game_instance_serial))
+    if (!ghosting_read_object_property(
+            engine,
+            L"GameInstance",
+            game_instance_slot,
+            game_instance,
+            validation_mode))
     {
+        diagnostic.failure = GhostingOwnerResolveFailure::GameInstanceProperty;
+        return false;
+    }
+
+    GhostingUObjectIdentity game_instance_identity{};
+    if (!ghosting_is_live_uobject(game_instance, validation_mode, nullptr, &game_instance_identity)) {
+        diagnostic.failure = GhostingOwnerResolveFailure::GameInstanceLifetime;
         return false;
     }
 
@@ -5544,6 +5727,12 @@ bool ghosting_resolve_current_owner(
     try {
         local_players_header = reinterpret_cast<uintptr_t>(game_instance->get_property_data(L"LocalPlayers"));
     } catch (...) {
+        diagnostic.failure = GhostingOwnerResolveFailure::LocalPlayersProperty;
+        return false;
+    }
+
+    if (local_players_header == 0) {
+        diagnostic.failure = GhostingOwnerResolveFailure::LocalPlayersProperty;
         return false;
     }
 
@@ -5551,160 +5740,212 @@ bool ghosting_resolve_current_owner(
     if (!ghosting_read_array_header(local_players_header, 8, 32, local_players) ||
         !is_readable_process_range(local_players.data, static_cast<size_t>(local_players.count) * sizeof(uintptr_t)))
     {
+        diagnostic.failure = GhostingOwnerResolveFailure::LocalPlayersArray;
         return false;
     }
 
-    uintptr_t local_player_address{};
-    if (!safe_read_value(local_players.data, local_player_address)) {
-        return false;
-    }
+    diagnostic.local_player_count = local_players.count;
+    diagnostic.failure = GhostingOwnerResolveFailure::LocalPlayerSlot;
 
-    auto* const local_player = reinterpret_cast<sdk::UObject*>(local_player_address);
-    int32_t local_player_index{-1};
-    int32_t local_player_serial{};
-    if (!ghosting_is_live_uobject(local_player, -1, false, 0, &local_player_index, &local_player_serial)) {
-        return false;
-    }
-
-    FixedCapacityList<uintptr_t, 20> view_state_headers{};
-    const auto add_header = [&](uintptr_t address) {
-        if (address < local_player_address + sdk::UObjectBase::get_class_size() ||
-            address >= local_player_address + 0x800 ||
-            (address & (alignof(void*) - 1)) != 0)
-        {
-            return;
+    for (int32_t player_ordinal = 0; player_ordinal < local_players.count; ++player_ordinal) {
+        diagnostic.local_player_index = player_ordinal;
+        const auto local_player_slot =
+            local_players.data + static_cast<uintptr_t>(player_ordinal) * sizeof(uintptr_t);
+        uintptr_t local_player_address{};
+        if (!safe_read_value(local_player_slot, local_player_address)) {
+            continue;
         }
 
-        for (const auto existing : view_state_headers) {
-            if (existing == address) {
+        auto* const local_player = reinterpret_cast<sdk::UObject*>(local_player_address);
+        GhostingUObjectIdentity local_player_identity{};
+        if (!ghosting_is_live_uobject(local_player, validation_mode, nullptr, &local_player_identity)) {
+            diagnostic.failure = GhostingOwnerResolveFailure::LocalPlayerLifetime;
+            continue;
+        }
+
+        uintptr_t controller_id_data{};
+        uintptr_t viewport_override_data{};
+        try {
+            controller_id_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ControllerId"));
+        } catch (...) {
+            controller_id_data = 0;
+        }
+        try {
+            viewport_override_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ViewportClientOverride"));
+        } catch (...) {
+            viewport_override_data = 0;
+        }
+
+        if (controller_id_data == 0) {
+            diagnostic.failure = GhostingOwnerResolveFailure::ViewStateStorage;
+            continue;
+        }
+
+        FixedCapacityList<uintptr_t, 20> view_state_headers{};
+        const auto add_header = [&](uintptr_t address) {
+            if (address < local_player_address + sdk::UObjectBase::get_class_size() ||
+                address >= local_player_address + 0x800 ||
+                (address & (alignof(void*) - 1)) != 0)
+            {
                 return;
             }
+
+            for (const auto existing : view_state_headers) {
+                if (existing == address) {
+                    return;
+                }
+            }
+
+            view_state_headers.try_push_back(address);
+        };
+
+        if (viewport_override_data >= sizeof(GhostingRawArrayHeader)) {
+            add_header(viewport_override_data - sizeof(GhostingRawArrayHeader));
         }
+        if (controller_id_data >= sizeof(GhostingRawArrayHeader)) {
+            add_header(controller_id_data - sizeof(GhostingRawArrayHeader));
 
-        view_state_headers.try_push_back(address);
-    };
-
-    uintptr_t controller_id_data{};
-    uintptr_t viewport_override_data{};
-    try {
-        controller_id_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ControllerId"));
-        viewport_override_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ViewportClientOverride"));
-    } catch (...) {
-        return false;
-    }
-
-    if (viewport_override_data >= sizeof(GhostingRawArrayHeader)) {
-        add_header(viewport_override_data - sizeof(GhostingRawArrayHeader));
-    }
-    if (controller_id_data >= sizeof(GhostingRawArrayHeader)) {
-        add_header(controller_id_data - sizeof(GhostingRawArrayHeader));
-
-        // Source places ViewStates directly before ControllerId through UE5.7.
-        // The bounded fallback remains pair-validated for licensee padding/layout changes.
-        for (uintptr_t distance = 0x18; distance <= 0x80; distance += sizeof(uintptr_t)) {
-            if (controller_id_data >= distance) {
-                add_header(controller_id_data - distance);
+            // ViewStates is immediately before ControllerId in stock array layouts.
+            // The bounded candidates remain exact-pair validated for licensee padding.
+            for (uintptr_t distance = 0x18; distance <= 0x80; distance += sizeof(uintptr_t)) {
+                if (controller_id_data >= distance) {
+                    add_header(controller_id_data - distance);
+                }
             }
         }
-    }
 
-    GhostingFixOwnerCandidate candidate{};
-    bool found_view_states = false;
-    for (const auto header : view_state_headers) {
-        candidate = {};
-        if (ghosting_resolve_view_state_slots(header, left_state, right_state, candidate)) {
-            found_view_states = true;
-            break;
+        GhostingFixOwnerCandidate candidate{};
+        bool found_view_states = false;
+        for (const auto header : view_state_headers) {
+            candidate = {};
+            if (ghosting_resolve_view_state_slots(header, left_state, right_state, candidate)) {
+                found_view_states = true;
+                break;
+            }
         }
-    }
 
-    if (!found_view_states) {
-        return false;
-    }
+        // UE4.11-4.24 use adjacent ViewState/StereoViewState references instead
+        // of the later TArray. Accept only two contiguous wrappers containing
+        // this exact learned pair.
+        if (!found_view_states) {
+            candidate = {};
+            found_view_states = ghosting_resolve_direct_view_state_slots(
+                local_player_address,
+                controller_id_data,
+                left_state,
+                right_state,
+                candidate);
+        }
 
-    uintptr_t viewport_client_slot{};
-    sdk::UObject* viewport_client{};
-    int32_t viewport_client_index{-1};
-    int32_t viewport_client_serial{};
-    uintptr_t world_slot{};
-    sdk::UObject* world{};
-    int32_t world_index{-1};
-    int32_t world_serial{};
-    const auto try_viewport_client = [&](std::wstring_view property) {
-        uintptr_t candidate_slot{};
-        sdk::UObject* candidate_viewport{};
-        int32_t candidate_viewport_index{-1};
-        int32_t candidate_viewport_serial{};
-        if (!ghosting_read_object_property(local_player, property, candidate_slot, candidate_viewport) ||
-            !ghosting_is_live_uobject(
-                candidate_viewport,
-                -1,
-                false,
-                0,
-                &candidate_viewport_index,
-                &candidate_viewport_serial))
+        if (!found_view_states) {
+            diagnostic.failure = GhostingOwnerResolveFailure::ViewStateStorage;
+            continue;
+        }
+
+        uintptr_t viewport_client_slot{};
+        sdk::UObject* viewport_client{};
+        GhostingUObjectIdentity viewport_client_identity{};
+        uintptr_t world_slot{};
+        sdk::UObject* world{};
+        GhostingUObjectIdentity world_identity{};
+        bool saw_live_viewport = false;
+        const auto try_viewport_client = [&](std::wstring_view property) {
+            uintptr_t candidate_slot{};
+            sdk::UObject* candidate_viewport{};
+            GhostingUObjectIdentity candidate_viewport_identity{};
+            if (!ghosting_read_object_property(
+                    local_player,
+                    property,
+                    candidate_slot,
+                    candidate_viewport,
+                    validation_mode) ||
+                !ghosting_is_live_uobject(
+                    candidate_viewport,
+                    validation_mode,
+                    nullptr,
+                    &candidate_viewport_identity))
+            {
+                return false;
+            }
+
+            saw_live_viewport = true;
+            uintptr_t candidate_world_slot{};
+            sdk::UObject* candidate_world{};
+            GhostingUObjectIdentity candidate_world_identity{};
+            if (!ghosting_read_object_property(
+                    candidate_viewport,
+                    L"World",
+                    candidate_world_slot,
+                    candidate_world,
+                    validation_mode) ||
+                !ghosting_is_live_uobject(
+                    candidate_world,
+                    validation_mode,
+                    nullptr,
+                    &candidate_world_identity))
+            {
+                return false;
+            }
+
+            viewport_client_slot = candidate_slot;
+            viewport_client = candidate_viewport;
+            viewport_client_identity = candidate_viewport_identity;
+            world_slot = candidate_world_slot;
+            world = candidate_world;
+            world_identity = candidate_world_identity;
+            return true;
+        };
+
+        if (!try_viewport_client(L"ViewportClientOverride") &&
+            !try_viewport_client(L"ViewportClient"))
         {
-            return false;
+            diagnostic.failure = saw_live_viewport
+                ? GhostingOwnerResolveFailure::World
+                : GhostingOwnerResolveFailure::ViewportClient;
+            continue;
         }
 
-        uintptr_t candidate_world_slot{};
-        sdk::UObject* candidate_world{};
-        int32_t candidate_world_index{-1};
-        int32_t candidate_world_serial{};
-        if (!ghosting_read_object_property(candidate_viewport, L"World", candidate_world_slot, candidate_world) ||
-            !ghosting_is_live_uobject(
-                candidate_world,
-                -1,
-                false,
-                0,
-                &candidate_world_index,
-                &candidate_world_serial))
-        {
-            return false;
-        }
-
-        viewport_client_slot = candidate_slot;
-        viewport_client = candidate_viewport;
-        viewport_client_index = candidate_viewport_index;
-        viewport_client_serial = candidate_viewport_serial;
-        world_slot = candidate_world_slot;
-        world = candidate_world;
-        world_index = candidate_world_index;
-        world_serial = candidate_world_serial;
+        candidate.engine = engine;
+        candidate.engine_vtable = engine_identity.vtable;
+        candidate.engine_class = engine_identity.object_class;
+        candidate.engine_index = engine_identity.internal_index;
+        candidate.engine_serial = engine_identity.serial;
+        candidate.game_instance_slot = game_instance_slot;
+        candidate.game_instance = game_instance;
+        candidate.game_instance_vtable = game_instance_identity.vtable;
+        candidate.game_instance_class = game_instance_identity.object_class;
+        candidate.game_instance_index = game_instance_identity.internal_index;
+        candidate.game_instance_serial = game_instance_identity.serial;
+        candidate.local_players_header = local_players_header;
+        candidate.local_players_data = local_players.data;
+        candidate.local_players_count = local_players.count;
+        candidate.local_players_capacity = local_players.capacity;
+        candidate.local_player_slot = local_player_slot;
+        candidate.local_player = local_player;
+        candidate.local_player_vtable = local_player_identity.vtable;
+        candidate.local_player_class = local_player_identity.object_class;
+        candidate.local_player_index = local_player_identity.internal_index;
+        candidate.local_player_serial = local_player_identity.serial;
+        candidate.viewport_client_slot = viewport_client_slot;
+        candidate.viewport_client = viewport_client;
+        candidate.viewport_client_vtable = viewport_client_identity.vtable;
+        candidate.viewport_client_class = viewport_client_identity.object_class;
+        candidate.viewport_client_index = viewport_client_identity.internal_index;
+        candidate.viewport_client_serial = viewport_client_identity.serial;
+        candidate.world_slot = world_slot;
+        candidate.world = world;
+        candidate.world_vtable = world_identity.vtable;
+        candidate.world_class = world_identity.object_class;
+        candidate.world_index = world_identity.internal_index;
+        candidate.world_serial = world_identity.serial;
+        candidate.uses_uobject_hook_validation =
+            validation_mode == GhostingUObjectValidationMode::UObjectHook;
+        out = candidate;
+        diagnostic.failure = GhostingOwnerResolveFailure::None;
         return true;
-    };
-
-    if (!try_viewport_client(L"ViewportClientOverride") &&
-        !try_viewport_client(L"ViewportClient"))
-    {
-        return false;
     }
 
-    candidate.engine = engine;
-    candidate.engine_index = engine_index;
-    candidate.engine_serial = engine_serial;
-    candidate.game_instance_slot = game_instance_slot;
-    candidate.game_instance = game_instance;
-    candidate.game_instance_index = game_instance_index;
-    candidate.game_instance_serial = game_instance_serial;
-    candidate.local_players_header = local_players_header;
-    candidate.local_players_data = local_players.data;
-    candidate.local_players_count = local_players.count;
-    candidate.local_players_capacity = local_players.capacity;
-    candidate.local_player_slot = local_players.data;
-    candidate.local_player = local_player;
-    candidate.local_player_index = local_player_index;
-    candidate.local_player_serial = local_player_serial;
-    candidate.viewport_client_slot = viewport_client_slot;
-    candidate.viewport_client = viewport_client;
-    candidate.viewport_client_index = viewport_client_index;
-    candidate.viewport_client_serial = viewport_client_serial;
-    candidate.world_slot = world_slot;
-    candidate.world = world;
-    candidate.world_index = world_index;
-    candidate.world_serial = world_serial;
-    out = candidate;
-    return true;
+    return false;
 }
 
 bool avowed_is_live_uobject(uintptr_t object, uintptr_t* out_vtable = nullptr, uintptr_t* out_class = nullptr) {
@@ -12252,16 +12493,54 @@ bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
 
 bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
     GhostingFixOwnerCandidate candidate{};
-    if (!ghosting_resolve_current_owner(pair.eye_state[0], pair.eye_state[1], candidate)) {
+    GhostingOwnerResolveDiagnostic object_array_diagnostic{};
+    GhostingOwnerResolveDiagnostic object_hook_diagnostic{};
+    bool resolved = ghosting_resolve_current_owner(
+        pair.eye_state[0],
+        pair.eye_state[1],
+        candidate,
+        GhostingUObjectValidationMode::ObjectArray,
+        object_array_diagnostic);
+
+    const bool hook_fallback_available = ghosting_can_use_uobject_hook();
+    if (!resolved && hook_fallback_available) {
+        resolved = ghosting_resolve_current_owner(
+            pair.eye_state[0],
+            pair.eye_state[1],
+            candidate,
+            GhostingUObjectValidationMode::UObjectHook,
+            object_hook_diagnostic);
+    }
+
+    if (!resolved) {
+        if (!pair.logged_owner_unavailable) {
+            pair.logged_owner_unavailable = true;
+            SPDLOG_WARN(
+                "[GhostingFix] Scene-state owner resolution failed closed "
+                "direct_stage={} direct_player={}/{} hook_available={} hook_stage={} hook_player={}/{}",
+                ghosting_owner_failure_name(object_array_diagnostic.failure),
+                object_array_diagnostic.local_player_index,
+                object_array_diagnostic.local_player_count,
+                hook_fallback_available,
+                hook_fallback_available
+                    ? ghosting_owner_failure_name(object_hook_diagnostic.failure)
+                    : "unavailable",
+                object_hook_diagnostic.local_player_index,
+                object_hook_diagnostic.local_player_count);
+        }
         return false;
     }
 
     pair.owner = {
         .engine = candidate.engine,
+        .engine_vtable = candidate.engine_vtable,
+        .engine_class = candidate.engine_class,
         .engine_index = candidate.engine_index,
         .engine_serial = candidate.engine_serial,
         .game_instance_slot = candidate.game_instance_slot,
         .game_instance = candidate.game_instance,
+        .game_instance_vtable = candidate.game_instance_vtable,
+        .game_instance_class = candidate.game_instance_class,
         .game_instance_index = candidate.game_instance_index,
         .game_instance_serial = candidate.game_instance_serial,
         .local_players_header = candidate.local_players_header,
@@ -12270,6 +12549,8 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
         .local_players_capacity = candidate.local_players_capacity,
         .local_player_slot = candidate.local_player_slot,
         .local_player = candidate.local_player,
+        .local_player_vtable = candidate.local_player_vtable,
+        .local_player_class = candidate.local_player_class,
         .local_player_index = candidate.local_player_index,
         .local_player_serial = candidate.local_player_serial,
         .view_states_header = candidate.view_states_header,
@@ -12277,49 +12558,151 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
         .view_states_count = candidate.view_states_count,
         .view_states_capacity = candidate.view_states_capacity,
         .view_state_stride = candidate.view_state_stride,
+        .view_state_reference_vtable = candidate.view_state_reference_vtable,
         .eye_state_slot = {candidate.eye_state_slot[0], candidate.eye_state_slot[1]},
         .viewport_client_slot = candidate.viewport_client_slot,
         .viewport_client = candidate.viewport_client,
+        .viewport_client_vtable = candidate.viewport_client_vtable,
+        .viewport_client_class = candidate.viewport_client_class,
         .viewport_client_index = candidate.viewport_client_index,
         .viewport_client_serial = candidate.viewport_client_serial,
         .world_slot = candidate.world_slot,
         .world = candidate.world,
+        .world_vtable = candidate.world_vtable,
+        .world_class = candidate.world_class,
         .world_index = candidate.world_index,
         .world_serial = candidate.world_serial,
         .last_validated_frame = g_frame_count,
         .stable_frames = 1,
+        .view_states_are_array = candidate.view_states_are_array,
+        .uses_uobject_hook_validation = candidate.uses_uobject_hook_validation,
         .verified = true,
     };
+
+    if (candidate.uses_uobject_hook_validation) {
+        SPDLOG_WARN(
+            "[GhostingFix] Bound exact LocalPlayer scene-state ownership through the authoritative UObjectHook set "
+            "after direct FUObjectArray validation failed at stage={} owner={:x} storage={} stride=0x{:x}",
+            ghosting_owner_failure_name(object_array_diagnostic.failure),
+            reinterpret_cast<uintptr_t>(candidate.local_player),
+            candidate.view_states_are_array ? "array" : "legacy pair",
+            candidate.view_state_stride);
+    }
+
     pair.logged_owner_unavailable = false;
     pair.logged_owner_stabilizing = false;
+    pair.logged_owner_validation_failed = false;
     return true;
 }
 
-bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(const GhostingFixPair& pair) {
+bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(
+    const GhostingFixPair& pair,
+    const char** failure_stage)
+{
+    if (failure_stage != nullptr) {
+        *failure_stage = nullptr;
+    }
+
+    const auto fail = [&](const char* stage) {
+        if (failure_stage != nullptr) {
+            *failure_stage = stage;
+        }
+        return false;
+    };
+
     const auto& owner = pair.owner;
     if (!owner.verified ||
         !ghosting_is_valid_scene_state(pair.eye_state[0]) ||
         !ghosting_is_valid_scene_state(pair.eye_state[1]) ||
-        pair.eye_state[0] == pair.eye_state[1] ||
-        !ghosting_is_live_uobject(owner.engine, owner.engine_index, true, owner.engine_serial) ||
+        pair.eye_state[0] == pair.eye_state[1])
+    {
+        return fail("scene states");
+    }
+
+    const auto validation_mode = owner.uses_uobject_hook_validation
+        ? GhostingUObjectValidationMode::UObjectHook
+        : GhostingUObjectValidationMode::ObjectArray;
+    const bool validate_individual_membership = !owner.uses_uobject_hook_validation;
+
+    if (owner.uses_uobject_hook_validation) {
+        auto& object_hook = UObjectHook::get();
+        const std::array<sdk::UObjectBase*, 5> objects{
+            reinterpret_cast<sdk::UObjectBase*>(owner.engine),
+            reinterpret_cast<sdk::UObjectBase*>(owner.game_instance),
+            reinterpret_cast<sdk::UObjectBase*>(owner.local_player),
+            reinterpret_cast<sdk::UObjectBase*>(owner.viewport_client),
+            reinterpret_cast<sdk::UObjectBase*>(owner.world),
+        };
+        if (!ghosting_can_use_uobject_hook() ||
+            !object_hook->all_exist(objects.data(), objects.size()))
+        {
+            return fail("UObjectHook membership");
+        }
+    }
+
+    const GhostingUObjectIdentity engine_identity{
+        owner.engine_vtable,
+        owner.engine_class,
+        owner.engine_index,
+        owner.engine_serial,
+    };
+    const GhostingUObjectIdentity game_instance_identity{
+        owner.game_instance_vtable,
+        owner.game_instance_class,
+        owner.game_instance_index,
+        owner.game_instance_serial,
+    };
+    const GhostingUObjectIdentity local_player_identity{
+        owner.local_player_vtable,
+        owner.local_player_class,
+        owner.local_player_index,
+        owner.local_player_serial,
+    };
+    const GhostingUObjectIdentity viewport_client_identity{
+        owner.viewport_client_vtable,
+        owner.viewport_client_class,
+        owner.viewport_client_index,
+        owner.viewport_client_serial,
+    };
+    const GhostingUObjectIdentity world_identity{
+        owner.world_vtable,
+        owner.world_class,
+        owner.world_index,
+        owner.world_serial,
+    };
+
+    if (!ghosting_is_live_uobject(
+            owner.engine,
+            validation_mode,
+            &engine_identity,
+            nullptr,
+            validate_individual_membership) ||
         !ghosting_is_live_uobject(
             owner.game_instance,
-            owner.game_instance_index,
-            true,
-            owner.game_instance_serial) ||
+            validation_mode,
+            &game_instance_identity,
+            nullptr,
+            validate_individual_membership) ||
         !ghosting_is_live_uobject(
             owner.local_player,
-            owner.local_player_index,
-            true,
-            owner.local_player_serial) ||
+            validation_mode,
+            &local_player_identity,
+            nullptr,
+            validate_individual_membership) ||
         !ghosting_is_live_uobject(
             owner.viewport_client,
-            owner.viewport_client_index,
-            true,
-            owner.viewport_client_serial) ||
-        !ghosting_is_live_uobject(owner.world, owner.world_index, true, owner.world_serial))
+            validation_mode,
+            &viewport_client_identity,
+            nullptr,
+            validate_individual_membership) ||
+        !ghosting_is_live_uobject(
+            owner.world,
+            validation_mode,
+            &world_identity,
+            nullptr,
+            validate_individual_membership))
     {
-        return false;
+        return fail("UObject identity");
     }
 
     uintptr_t current_game_instance{};
@@ -12335,38 +12718,56 @@ bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(const GhostingFixPair
         !safe_read_value(owner.world_slot, current_world) ||
         current_world != reinterpret_cast<uintptr_t>(owner.world))
     {
-        return false;
+        return fail("owner pointer chain");
     }
 
     GhostingRawArrayHeader local_players{};
-    GhostingRawArrayHeader view_states{};
     if (!ghosting_read_array_header(owner.local_players_header, 8, 32, local_players) ||
         local_players.data != owner.local_players_data ||
         local_players.count != owner.local_players_count ||
-        local_players.capacity != owner.local_players_capacity ||
-        !ghosting_read_array_header(owner.view_states_header, 8, 16, view_states) ||
-        view_states.data != owner.view_states_data ||
-        view_states.count != owner.view_states_count ||
-        view_states.capacity != owner.view_states_capacity)
+        local_players.capacity != owner.local_players_capacity)
     {
-        return false;
+        return fail("LocalPlayers array");
     }
 
-    const auto storage_size = static_cast<size_t>(view_states.count) * owner.view_state_stride;
-    if (owner.view_state_stride == 0 ||
-        storage_size / owner.view_state_stride != static_cast<size_t>(view_states.count) ||
-        !is_readable_process_range(view_states.data, storage_size))
+    int32_t view_state_count = owner.view_states_count;
+    if (owner.view_states_are_array) {
+        GhostingRawArrayHeader view_states{};
+        if (!ghosting_read_array_header(owner.view_states_header, 8, 16, view_states) ||
+            view_states.data != owner.view_states_data ||
+            view_states.count != owner.view_states_count ||
+            view_states.capacity != owner.view_states_capacity)
+        {
+            return fail("ViewStates array");
+        }
+        view_state_count = view_states.count;
+    } else if (owner.view_states_header != 0 ||
+               owner.view_states_count != 2 ||
+               owner.view_states_capacity != 2)
     {
-        return false;
+        return fail("legacy view-state pair");
+    }
+
+    const auto storage_size = static_cast<size_t>(view_state_count) * owner.view_state_stride;
+    if (owner.view_state_stride == 0 ||
+        storage_size / owner.view_state_stride != static_cast<size_t>(view_state_count) ||
+        !is_readable_process_range(owner.view_states_data, storage_size))
+    {
+        return fail("scene-state storage bounds");
     }
 
     uintptr_t current_eye_state[2]{};
+    uintptr_t current_reference_vtable[2]{};
     if (!safe_read_value(owner.eye_state_slot[0], current_eye_state[0]) ||
         !safe_read_value(owner.eye_state_slot[1], current_eye_state[1]) ||
+        !safe_read_value(owner.eye_state_slot[0] - sizeof(uintptr_t), current_reference_vtable[0]) ||
+        !safe_read_value(owner.eye_state_slot[1] - sizeof(uintptr_t), current_reference_vtable[1]) ||
+        current_reference_vtable[0] != owner.view_state_reference_vtable ||
+        current_reference_vtable[1] != owner.view_state_reference_vtable ||
         current_eye_state[0] != reinterpret_cast<uintptr_t>(pair.eye_state[0]) ||
         current_eye_state[1] != reinterpret_cast<uintptr_t>(pair.eye_state[1]))
     {
-        return false;
+        return fail("eye-state slots");
     }
 
     return true;
@@ -12383,10 +12784,22 @@ bool FFakeStereoRenderingHook::refresh_ghosting_fix_owner(GhostingFixPair& pair)
         return true;
     }
 
-    if (!validate_ghosting_fix_owner(pair)) {
+    const char* failure_stage{};
+    if (!validate_ghosting_fix_owner(pair, &failure_stage)) {
+        if (!pair.logged_owner_validation_failed) {
+            pair.logged_owner_validation_failed = true;
+            SPDLOG_WARN(
+                "[GhostingFix] Verified owner became invalid at stage={}; keeping remap fail-closed "
+                "scene={:x} generation={} owner={:x}",
+                failure_stage != nullptr ? failure_stage : "unknown",
+                pair.scene,
+                pair.generation,
+                reinterpret_cast<uintptr_t>(pair.owner.local_player));
+        }
         return false;
     }
 
+    pair.logged_owner_validation_failed = false;
     pair.owner.last_validated_frame = g_frame_count;
     if (pair.owner.stable_frames < std::numeric_limits<uint32_t>::max()) {
         ++pair.owner.stable_frames;
@@ -13138,7 +13551,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                         if (!ghosting_pair.owner.verified && !ghosting_pair.logged_owner_unavailable) {
                             ghosting_pair.logged_owner_unavailable = true;
                             SPDLOG_WARN(
-                                "[GhostingFix] Refusing right-eye scene-state replacement until both states are owned by the current LocalPlayer ViewStates array "
+                                "[GhostingFix] Refusing right-eye scene-state replacement until both states are owned by current LocalPlayer scene-state storage "
                                 "scene={:x} generation={} left={:x} right={:x}",
                                 scene_id,
                                 ghosting_pair.generation,
@@ -13147,7 +13560,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                         } else if (ghosting_pair.owner.verified && !ghosting_pair.logged_owner_stabilizing) {
                             ghosting_pair.logged_owner_stabilizing = true;
                             SPDLOG_INFO(
-                                "[GhostingFix] Waiting for verified ViewStates ownership to stabilize before replacement "
+                                "[GhostingFix] Waiting for verified LocalPlayer scene-state ownership to stabilize before replacement "
                                 "scene={:x} generation={} stable_frames={}/{} stride=0x{:x}",
                                 scene_id,
                                 ghosting_pair.generation,
