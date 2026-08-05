@@ -2591,6 +2591,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         m_game_tex.srv_heap != nullptr;
     const auto use_2d_screen =
         is_2d_screen || shf_auto_2d_screen || mixtape_auto_2d_screen || halo_electra_renderer_2d_screen;
+    const auto carry_ue58_dedicated_ui_spectator =
+        is_ue58_runtime_cached() &&
+        is_actually_afr &&
+        ui_target != nullptr &&
+        vr->m_desktop_fix->value() &&
+        !use_2d_screen;
     bool spectator_mirror_drawn = false;
 
     if (shf_auto_2d_screen) {
@@ -2641,6 +2647,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         draw_spectator_view(commands.cmd_list.Get(), is_right_eye_frame, &view_game_tex, std::nullopt, false, false, active_ui_tex);
         spectator_mirror_drawn = true;
+
+        if (carry_ue58_dedicated_ui_spectator && is_right_eye_frame) {
+            // The command list is queued by the caller before the next
+            // desktop Present, so the following AFR frame can safely copy it.
+            m_ue58_dedicated_ui_spectator_valid = true;
+        }
 
         const auto has_2d_screen_textures =
             m_2d_screen_tex[0].texture.Get() != nullptr &&
@@ -3048,6 +3060,26 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
+    // The dedicated UE5.8 UI copy invokes draw_2d_view only on the right-eye
+    // AFR frame. Carry that completed desktop composition into the alternate
+    // backbuffer so the spectator never alternates with the untouched game
+    // Present. This is desktop-only and leaves all OpenXR images unchanged.
+    if (carry_ue58_dedicated_ui_spectator &&
+        !is_right_eye_frame &&
+        !spectator_mirror_drawn &&
+        m_ue58_dedicated_ui_spectator_valid)
+    {
+        if (carry_forward_spectator_backbuffer()) {
+            spectator_mirror_drawn = true;
+            SPDLOG_INFO_ONCE(
+                "[UE5.8][spectator] Carrying the completed dedicated-UI spectator image across alternate Synced/AFR desktop presents");
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[UE5.8][spectator] No completed desktop backbuffer or command slot was ready for AFR spectator carry-forward");
+        }
+    }
+
     /*else if (m_game_tex.texture.Get() != nullptr) {
         m_game_tex.commands.wait(INFINITE);
         draw_spectator_view(m_game_tex.commands.cmd_list.Get(), is_right_eye_frame);
@@ -3073,6 +3105,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         auto& spectator_commands = m_ue58_spectator_tex.commands;
         spectator_commands.wait(INFINITE);
         const auto spectator_desc = effective_game_tex->texture->GetDesc();
+
         D3D12_BOX left_eye_box{};
         left_eye_box.left = 0;
         left_eye_box.top = 0;
@@ -4181,6 +4214,87 @@ void D3D12Component::draw_spectator_view(
     command_list->ResourceBarrier(1, &barrier);
 }
 
+bool D3D12Component::carry_forward_spectator_backbuffer() {
+    if (g_framework == nullptr) {
+        return false;
+    }
+
+    const auto& hook = g_framework->get_d3d12_hook();
+    if (hook == nullptr) {
+        return false;
+    }
+
+    const auto device = hook->get_device();
+    const auto swapchain = hook->get_swap_chain();
+    if (device == nullptr || swapchain == nullptr) {
+        return false;
+    }
+
+    const auto index = swapchain->GetCurrentBackBufferIndex();
+    ComPtr<ID3D12Resource> backbuffer{};
+    if (FAILED(swapchain->GetBuffer(index, IID_PPV_ARGS(&backbuffer)))) {
+        return false;
+    }
+
+    if (index >= m_backbuffer_textures.size()) {
+        m_backbuffer_textures.resize(index + 1);
+    }
+
+    for (auto& texture : m_backbuffer_textures) {
+        if (texture == nullptr) {
+            texture = std::make_unique<d3d12::TextureContext>();
+        }
+    }
+
+    auto& current = m_backbuffer_textures[index];
+    if (current == nullptr) {
+        return false;
+    }
+
+    if (current->texture.Get() != backbuffer.Get() &&
+        !current->setup(device, backbuffer.Get(), std::nullopt, std::nullopt, L"Backbuffer"))
+    {
+        return false;
+    }
+
+    if (m_backbuffer_textures.size() < 2) {
+        return false;
+    }
+
+    const auto previous_index =
+        (index + m_backbuffer_textures.size() - 1) % m_backbuffer_textures.size();
+    const auto& previous = m_backbuffer_textures[previous_index];
+    if (previous == nullptr ||
+        previous->texture == nullptr ||
+        previous->texture.Get() == backbuffer.Get())
+    {
+        return false;
+    }
+
+    // Queue ordering guarantees the previous spectator draw completes before
+    // this copy. Select a retired allocator without blocking the render thread.
+    d3d12::CommandContext* commands = nullptr;
+    for (uint32_t offset = 0; offset < m_generic_commands.size(); ++offset) {
+        auto& candidate = m_generic_commands[(index + offset) % m_generic_commands.size()];
+        if (candidate.ready() && candidate.try_wait()) {
+            commands = &candidate;
+            break;
+        }
+    }
+
+    if (commands == nullptr) {
+        return false;
+    }
+
+    commands->copy(
+        previous->texture.Get(),
+        backbuffer.Get(),
+        D3D12_RESOURCE_STATE_PRESENT,
+        D3D12_RESOURCE_STATE_PRESENT);
+    commands->execute();
+    return true;
+}
+
 void D3D12Component::clear_backbuffer() {
     auto& hook = g_framework->get_d3d12_hook();
     auto device = hook->get_device();
@@ -4310,6 +4424,7 @@ void D3D12Component::on_reset(VR* vr) {
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
     m_ue58_spectator_tex.reset();
+    m_ue58_dedicated_ui_spectator_valid = false;
     m_scene_capture_tex.reset();
     m_shf_mono_scene_tex.reset();
     m_halo_electra_quad_source_tex.reset();
