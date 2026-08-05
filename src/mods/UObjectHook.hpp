@@ -49,6 +49,21 @@ public:
         return exists_unsafe(object);
     }
 
+    bool all_exist(sdk::UObjectBase* const* objects, size_t count) const {
+        if (objects == nullptr || count == 0) {
+            return false;
+        }
+
+        std::shared_lock _{m_mutex};
+        for (size_t i = 0; i < count; ++i) {
+            if (objects[i] == nullptr || !exists_unsafe(objects[i])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     void activate();
 
     bool is_disabled() const {
