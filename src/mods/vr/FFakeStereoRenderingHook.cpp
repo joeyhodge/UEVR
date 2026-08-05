@@ -5388,6 +5388,490 @@ bool safe_read_value(uintptr_t address, T& out) {
     return true;
 }
 
+struct GhostingRawArrayHeader {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t capacity{};
+};
+
+static_assert(sizeof(GhostingRawArrayHeader) == 0x10);
+
+struct GhostingFixOwnerCandidate {
+    sdk::UObject* engine{};
+    int32_t engine_index{-1};
+    int32_t engine_serial{};
+    uintptr_t game_instance_slot{};
+    sdk::UObject* game_instance{};
+    int32_t game_instance_index{-1};
+    int32_t game_instance_serial{};
+    uintptr_t local_players_header{};
+    uintptr_t local_players_data{};
+    int32_t local_players_count{};
+    int32_t local_players_capacity{};
+    uintptr_t local_player_slot{};
+    sdk::UObject* local_player{};
+    int32_t local_player_index{-1};
+    int32_t local_player_serial{};
+    uintptr_t view_states_header{};
+    uintptr_t view_states_data{};
+    int32_t view_states_count{};
+    int32_t view_states_capacity{};
+    uint32_t view_state_stride{};
+    uintptr_t eye_state_slot[2]{};
+    uintptr_t viewport_client_slot{};
+    sdk::UObject* viewport_client{};
+    int32_t viewport_client_index{-1};
+    int32_t viewport_client_serial{};
+    uintptr_t world_slot{};
+    sdk::UObject* world{};
+    int32_t world_index{-1};
+    int32_t world_serial{};
+};
+
+bool ghosting_is_valid_scene_state(sdk::FSceneViewStateInterface* state) {
+    if (state == nullptr || !is_readable_process_range((uintptr_t)state, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    uintptr_t first_virtual{};
+    return safe_read_value((uintptr_t)state, vtable) &&
+        vtable != 0 &&
+        safe_read_value(vtable, first_virtual) &&
+        first_virtual != 0 &&
+        is_executable_process_range(first_virtual, 1) &&
+        utility::get_module_within((void*)vtable).has_value();
+}
+
+bool ghosting_object_array_contains(
+    uintptr_t object,
+    int32_t internal_index,
+    bool validate_serial,
+    int32_t expected_serial,
+    int32_t* out_serial)
+{
+    auto* const object_array = sdk::FUObjectArray::get();
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    __try {
+        const auto object_count = object_array->get_object_count();
+        if (object_count <= 0 || internal_index < 0 || internal_index >= object_count) {
+            return false;
+        }
+
+        auto* const item = object_array->get_object(internal_index);
+        if (item == nullptr) {
+            return false;
+        }
+
+        const auto serial = item->get_serial_number();
+        if (item->get_object() != reinterpret_cast<sdk::UObjectBase*>(object) ||
+            (validate_serial && serial != expected_serial))
+        {
+            return false;
+        }
+
+        if (out_serial != nullptr) {
+            *out_serial = serial;
+        }
+
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ghosting_object_vtable_matches(void* object, void** expected_vtable) {
+    if (object == nullptr || expected_vtable == nullptr) {
+        return false;
+    }
+
+    __try {
+        return *reinterpret_cast<void***>(object) == expected_vtable;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ghosting_is_live_uobject(
+    sdk::UObject* object,
+    int32_t expected_index = -1,
+    bool validate_serial = false,
+    int32_t expected_serial = 0,
+    int32_t* out_index = nullptr,
+    int32_t* out_serial = nullptr)
+{
+    const auto address = reinterpret_cast<uintptr_t>(object);
+    if (address == 0) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    uintptr_t first_virtual{};
+    uintptr_t object_class{};
+    int32_t internal_index{-1};
+    if (!safe_read_value(address, vtable) ||
+        vtable == 0 ||
+        !safe_read_value(vtable, first_virtual) ||
+        first_virtual == 0 ||
+        !is_executable_process_range(first_virtual, 1) ||
+        !safe_read_value(address + sdk::UObjectBase::get_class_private_offset(), object_class) ||
+        object_class == 0 ||
+        !safe_read_value(address + sdk::UObjectBase::get_internal_index_offset(), internal_index))
+    {
+        return false;
+    }
+
+    if (expected_index >= 0 && internal_index != expected_index) {
+        return false;
+    }
+
+    if (!ghosting_object_array_contains(
+            address,
+            internal_index,
+            validate_serial,
+            expected_serial,
+            out_serial))
+    {
+        return false;
+    }
+
+    if (out_index != nullptr) {
+        *out_index = internal_index;
+    }
+
+    return true;
+}
+
+bool ghosting_read_array_header(
+    uintptr_t address,
+    int32_t maximum_count,
+    int32_t maximum_capacity,
+    GhostingRawArrayHeader& out)
+{
+    GhostingRawArrayHeader header{};
+    if (!safe_read_value(address, header) ||
+        header.data == 0 ||
+        (header.data & (alignof(void*) - 1)) != 0 ||
+        header.count <= 0 ||
+        header.count > maximum_count ||
+        header.capacity < header.count ||
+        header.capacity > maximum_capacity)
+    {
+        return false;
+    }
+
+    out = header;
+    return true;
+}
+
+bool ghosting_read_object_property(
+    sdk::UObject* object,
+    std::wstring_view property,
+    uintptr_t& out_slot,
+    sdk::UObject*& out_value)
+{
+    if (!ghosting_is_live_uobject(object)) {
+        return false;
+    }
+
+    try {
+        const auto property_data = reinterpret_cast<uintptr_t>(object->get_property_data(property));
+        uintptr_t value{};
+        if (property_data == 0 || !safe_read_value(property_data, value)) {
+            return false;
+        }
+
+        out_slot = property_data;
+        out_value = reinterpret_cast<sdk::UObject*>(value);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ghosting_resolve_view_state_slots(
+    uintptr_t header_address,
+    sdk::FSceneViewStateInterface* left_state,
+    sdk::FSceneViewStateInterface* right_state,
+    GhostingFixOwnerCandidate& out)
+{
+    GhostingRawArrayHeader header{};
+    if (!ghosting_read_array_header(header_address, 8, 16, header)) {
+        return false;
+    }
+
+    const bool prefers_modern_stride =
+        is_ue_5_5_runtime() || is_ue_5_6_or_newer();
+    const std::array<uint32_t, 2> strides = prefers_modern_stride
+        ? std::array<uint32_t, 2>{0x38, 0x28}
+        : std::array<uint32_t, 2>{0x28, 0x38};
+
+    for (const auto stride : strides) {
+        const auto storage_size = static_cast<size_t>(header.count) * stride;
+        if (storage_size / stride != static_cast<size_t>(header.count) ||
+            !is_readable_process_range(header.data, storage_size))
+        {
+            continue;
+        }
+
+        uintptr_t state_slots[2]{};
+        uintptr_t expected_vtable{};
+        bool valid_layout = true;
+
+        for (int32_t i = 0; i < header.count; ++i) {
+            const auto element = header.data + static_cast<uintptr_t>(i) * stride;
+            uintptr_t vtable{};
+            uintptr_t first_virtual{};
+            uintptr_t state{};
+            if (!safe_read_value(element, vtable) ||
+                vtable == 0 ||
+                !safe_read_value(vtable, first_virtual) ||
+                first_virtual == 0 ||
+                !is_executable_process_range(first_virtual, 1) ||
+                !safe_read_value(element + sizeof(uintptr_t), state))
+            {
+                valid_layout = false;
+                break;
+            }
+
+            if (expected_vtable == 0) {
+                expected_vtable = vtable;
+            } else if (vtable != expected_vtable) {
+                valid_layout = false;
+                break;
+            }
+
+            if (state != 0 &&
+                !ghosting_is_valid_scene_state(reinterpret_cast<sdk::FSceneViewStateInterface*>(state)))
+            {
+                valid_layout = false;
+                break;
+            }
+
+            if (state == reinterpret_cast<uintptr_t>(left_state)) {
+                state_slots[0] = element + sizeof(uintptr_t);
+            }
+            if (state == reinterpret_cast<uintptr_t>(right_state)) {
+                state_slots[1] = element + sizeof(uintptr_t);
+            }
+        }
+
+        if (!valid_layout || state_slots[0] == 0 || state_slots[1] == 0 || state_slots[0] == state_slots[1]) {
+            continue;
+        }
+
+        out.view_states_header = header_address;
+        out.view_states_data = header.data;
+        out.view_states_count = header.count;
+        out.view_states_capacity = header.capacity;
+        out.view_state_stride = stride;
+        out.eye_state_slot[0] = state_slots[0];
+        out.eye_state_slot[1] = state_slots[1];
+        return true;
+    }
+
+    return false;
+}
+
+bool ghosting_resolve_current_owner(
+    sdk::FSceneViewStateInterface* left_state,
+    sdk::FSceneViewStateInterface* right_state,
+    GhostingFixOwnerCandidate& out)
+{
+    if (!ghosting_is_valid_scene_state(left_state) ||
+        !ghosting_is_valid_scene_state(right_state) ||
+        left_state == right_state)
+    {
+        return false;
+    }
+
+    auto* const engine = reinterpret_cast<sdk::UObject*>(sdk::UEngine::get());
+    int32_t engine_index{-1};
+    int32_t engine_serial{};
+    if (!ghosting_is_live_uobject(engine, -1, false, 0, &engine_index, &engine_serial)) {
+        return false;
+    }
+
+    uintptr_t game_instance_slot{};
+    sdk::UObject* game_instance{};
+    int32_t game_instance_index{-1};
+    int32_t game_instance_serial{};
+    if (!ghosting_read_object_property(engine, L"GameInstance", game_instance_slot, game_instance) ||
+        !ghosting_is_live_uobject(game_instance, -1, false, 0, &game_instance_index, &game_instance_serial))
+    {
+        return false;
+    }
+
+    uintptr_t local_players_header{};
+    try {
+        local_players_header = reinterpret_cast<uintptr_t>(game_instance->get_property_data(L"LocalPlayers"));
+    } catch (...) {
+        return false;
+    }
+
+    GhostingRawArrayHeader local_players{};
+    if (!ghosting_read_array_header(local_players_header, 8, 32, local_players) ||
+        !is_readable_process_range(local_players.data, static_cast<size_t>(local_players.count) * sizeof(uintptr_t)))
+    {
+        return false;
+    }
+
+    uintptr_t local_player_address{};
+    if (!safe_read_value(local_players.data, local_player_address)) {
+        return false;
+    }
+
+    auto* const local_player = reinterpret_cast<sdk::UObject*>(local_player_address);
+    int32_t local_player_index{-1};
+    int32_t local_player_serial{};
+    if (!ghosting_is_live_uobject(local_player, -1, false, 0, &local_player_index, &local_player_serial)) {
+        return false;
+    }
+
+    FixedCapacityList<uintptr_t, 20> view_state_headers{};
+    const auto add_header = [&](uintptr_t address) {
+        if (address < local_player_address + sdk::UObjectBase::get_class_size() ||
+            address >= local_player_address + 0x800 ||
+            (address & (alignof(void*) - 1)) != 0)
+        {
+            return;
+        }
+
+        for (const auto existing : view_state_headers) {
+            if (existing == address) {
+                return;
+            }
+        }
+
+        view_state_headers.try_push_back(address);
+    };
+
+    uintptr_t controller_id_data{};
+    uintptr_t viewport_override_data{};
+    try {
+        controller_id_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ControllerId"));
+        viewport_override_data = reinterpret_cast<uintptr_t>(local_player->get_property_data(L"ViewportClientOverride"));
+    } catch (...) {
+        return false;
+    }
+
+    if (viewport_override_data >= sizeof(GhostingRawArrayHeader)) {
+        add_header(viewport_override_data - sizeof(GhostingRawArrayHeader));
+    }
+    if (controller_id_data >= sizeof(GhostingRawArrayHeader)) {
+        add_header(controller_id_data - sizeof(GhostingRawArrayHeader));
+
+        // Source places ViewStates directly before ControllerId through UE5.7.
+        // The bounded fallback remains pair-validated for licensee padding/layout changes.
+        for (uintptr_t distance = 0x18; distance <= 0x80; distance += sizeof(uintptr_t)) {
+            if (controller_id_data >= distance) {
+                add_header(controller_id_data - distance);
+            }
+        }
+    }
+
+    GhostingFixOwnerCandidate candidate{};
+    bool found_view_states = false;
+    for (const auto header : view_state_headers) {
+        candidate = {};
+        if (ghosting_resolve_view_state_slots(header, left_state, right_state, candidate)) {
+            found_view_states = true;
+            break;
+        }
+    }
+
+    if (!found_view_states) {
+        return false;
+    }
+
+    uintptr_t viewport_client_slot{};
+    sdk::UObject* viewport_client{};
+    int32_t viewport_client_index{-1};
+    int32_t viewport_client_serial{};
+    uintptr_t world_slot{};
+    sdk::UObject* world{};
+    int32_t world_index{-1};
+    int32_t world_serial{};
+    const auto try_viewport_client = [&](std::wstring_view property) {
+        uintptr_t candidate_slot{};
+        sdk::UObject* candidate_viewport{};
+        int32_t candidate_viewport_index{-1};
+        int32_t candidate_viewport_serial{};
+        if (!ghosting_read_object_property(local_player, property, candidate_slot, candidate_viewport) ||
+            !ghosting_is_live_uobject(
+                candidate_viewport,
+                -1,
+                false,
+                0,
+                &candidate_viewport_index,
+                &candidate_viewport_serial))
+        {
+            return false;
+        }
+
+        uintptr_t candidate_world_slot{};
+        sdk::UObject* candidate_world{};
+        int32_t candidate_world_index{-1};
+        int32_t candidate_world_serial{};
+        if (!ghosting_read_object_property(candidate_viewport, L"World", candidate_world_slot, candidate_world) ||
+            !ghosting_is_live_uobject(
+                candidate_world,
+                -1,
+                false,
+                0,
+                &candidate_world_index,
+                &candidate_world_serial))
+        {
+            return false;
+        }
+
+        viewport_client_slot = candidate_slot;
+        viewport_client = candidate_viewport;
+        viewport_client_index = candidate_viewport_index;
+        viewport_client_serial = candidate_viewport_serial;
+        world_slot = candidate_world_slot;
+        world = candidate_world;
+        world_index = candidate_world_index;
+        world_serial = candidate_world_serial;
+        return true;
+    };
+
+    if (!try_viewport_client(L"ViewportClientOverride") &&
+        !try_viewport_client(L"ViewportClient"))
+    {
+        return false;
+    }
+
+    candidate.engine = engine;
+    candidate.engine_index = engine_index;
+    candidate.engine_serial = engine_serial;
+    candidate.game_instance_slot = game_instance_slot;
+    candidate.game_instance = game_instance;
+    candidate.game_instance_index = game_instance_index;
+    candidate.game_instance_serial = game_instance_serial;
+    candidate.local_players_header = local_players_header;
+    candidate.local_players_data = local_players.data;
+    candidate.local_players_count = local_players.count;
+    candidate.local_players_capacity = local_players.capacity;
+    candidate.local_player_slot = local_players.data;
+    candidate.local_player = local_player;
+    candidate.local_player_index = local_player_index;
+    candidate.local_player_serial = local_player_serial;
+    candidate.viewport_client_slot = viewport_client_slot;
+    candidate.viewport_client = viewport_client;
+    candidate.viewport_client_index = viewport_client_index;
+    candidate.viewport_client_serial = viewport_client_serial;
+    candidate.world_slot = world_slot;
+    candidate.world = world;
+    candidate.world_index = world_index;
+    candidate.world_serial = world_serial;
+    out = candidate;
+    return true;
+}
+
 bool avowed_is_live_uobject(uintptr_t object, uintptr_t* out_vtable = nullptr, uintptr_t* out_class = nullptr) {
     if (!avowed_is_current_game() || object == 0) {
         return false;
@@ -9632,6 +10116,13 @@ void* FFakeStereoRenderingHook::viewport_destructor_hook(void* viewport, void* a
 
     SPDLOG_INFO("FViewport::~FViewport called: {:x}", (uintptr_t)_ReturnAddress());
 
+    if (g_hook->m_synced_draw_viewport.load(std::memory_order_acquire) == viewport) {
+        g_hook->m_synced_draw_viewport.store(nullptr, std::memory_order_release);
+        g_hook->m_synced_draw_viewport_client.store(nullptr, std::memory_order_release);
+        g_hook->m_last_destroyed_viewport = viewport;
+        g_hook->m_synced_draw_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     // Call the original destructor.
     auto call_orig = [&]() -> void* {
         ZoneScopedN("FViewport::~FViewport");
@@ -10976,6 +11467,15 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
 
+    const auto tracked_viewport = g_hook->m_synced_draw_viewport.load(std::memory_order_acquire);
+    const auto tracked_viewport_client = g_hook->m_synced_draw_viewport_client.load(std::memory_order_acquire);
+    if (tracked_viewport != viewport || tracked_viewport_client != viewport_client) {
+        g_hook->m_synced_draw_viewport.store(viewport, std::memory_order_release);
+        g_hook->m_synced_draw_viewport_client.store(viewport_client, std::memory_order_release);
+        g_hook->m_last_destroyed_viewport = nullptr;
+        g_hook->m_synced_draw_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
+    }
+
     if (dune_awakening_is_current_game() && g_framework->is_game_data_intialized()) {
         static auto last_playable_pawn_seen = std::chrono::steady_clock::time_point{};
         static bool saw_playable_pawn = false;
@@ -11230,30 +11730,83 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     // on the start of the next engine tick, before the world ticks again.
     // that will allow both views and the world to be drawn in sync with no artifacts.
     if (in_engine_tick && vr->is_using_synchronized_afr() && g_frame_count % 2 == 0) {
+        const auto queued_lifecycle_generation =
+            g_hook->m_synced_draw_lifecycle_generation.load(std::memory_order_acquire);
+        const auto queued_viewport_vtable = g_hook->m_last_viewport_vtable;
+        const auto queued_synced_method = vr->get_synced_sequential_method();
+        const bool queued_ghosting_fix_enabled = vr->is_ghosting_fix_enabled();
+        uint32_t queued_ghosting_generation{};
+        uintptr_t queued_ghosting_scene{};
+        bool queued_ghosting_owner_required{};
+
+        if (queued_ghosting_fix_enabled) {
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            queued_ghosting_generation = g_hook->m_sceneview_data.ghosting_pair.generation;
+            queued_ghosting_scene = g_hook->m_sceneview_data.ghosting_pair.scene;
+            queued_ghosting_owner_required =
+                g_hook->m_sceneview_data.ghosting_state == GhostingFixState::Active;
+        }
+
         GameThreadWorker::get().enqueue([=]() {
-            if (g_hook->m_viewport_draw_hook && viewport != g_hook->m_last_destroyed_viewport) {
-                __try {
-                    if (*(void***)viewport != g_hook->m_last_viewport_vtable) {
-                        SPDLOG_ERROR("FViewport::Draw called on a viewport with a different vtable! This is not expected!");
-                        return;
-                    }
-                } __except (EXCEPTION_EXECUTE_HANDLER) {
-                    SPDLOG_ERROR("FViewport::Draw called with a bad viewport pointer! This is not expected!");
+            if (!g_hook->m_viewport_draw_hook ||
+                viewport == nullptr ||
+                viewport == g_hook->m_last_destroyed_viewport ||
+                g_hook->m_synced_draw_lifecycle_generation.load(std::memory_order_acquire) != queued_lifecycle_generation ||
+                g_hook->m_synced_draw_viewport.load(std::memory_order_acquire) != viewport ||
+                g_hook->m_synced_draw_viewport_client.load(std::memory_order_acquire) != viewport_client)
+            {
+                return;
+            }
+
+            auto& current_vr = VR::get();
+            if (!current_vr->is_using_synchronized_afr() ||
+                current_vr->get_synced_sequential_method() != queued_synced_method ||
+                current_vr->is_ghosting_fix_enabled() != queued_ghosting_fix_enabled)
+            {
+                return;
+            }
+
+            if (!ghosting_is_live_uobject(reinterpret_cast<sdk::UObject*>(viewport_client))) {
+                return;
+            }
+
+            if (queued_ghosting_fix_enabled) {
+                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                const auto& pair = g_hook->m_sceneview_data.ghosting_pair;
+                if (pair.generation != queued_ghosting_generation || pair.scene != queued_ghosting_scene) {
                     return;
                 }
 
-                const auto viewport_draw = (void (*)(void*, bool))g_hook->m_viewport_draw_hook.target();
-                viewport_draw(viewport, true);
-
-                auto& vr = VR::get();
-                const auto method = vr->get_synced_sequential_method();
-                
-                if (method == VR::SyncedSequentialMethod::SKIP_TICK) {
-                    g_hook->m_ignore_next_engine_tick = true;
-                    //g_hook->m_ignore_next_viewport_draw = true;
-                } else if (method == VR::SyncedSequentialMethod::SKIP_DRAW) {
-                    g_hook->m_ignore_next_viewport_draw = true;
+                if (queued_ghosting_owner_required) {
+                    const bool pending_generation_change =
+                        pair.pending_scene != 0 ||
+                        pair.pending_eye_state[0] != nullptr ||
+                        pair.pending_eye_state[1] != nullptr;
+                    const auto minimum_stable_frames = medium_is_current_game() ? 12u : 2u;
+                    if (g_hook->m_sceneview_data.ghosting_state != GhostingFixState::Active ||
+                        pending_generation_change ||
+                        pair.owner.stable_frames < minimum_stable_frames ||
+                        !validate_ghosting_fix_owner(pair))
+                    {
+                        return;
+                    }
                 }
+            }
+
+            if (!ghosting_object_vtable_matches(viewport, queued_viewport_vtable)) {
+                return;
+            }
+
+            const auto viewport_draw = (void (*)(void*, bool))g_hook->m_viewport_draw_hook.target();
+            viewport_draw(viewport, true);
+
+            const auto method = current_vr->get_synced_sequential_method();
+
+            if (method == VR::SyncedSequentialMethod::SKIP_TICK) {
+                g_hook->m_ignore_next_engine_tick = true;
+                //g_hook->m_ignore_next_viewport_draw = true;
+            } else if (method == VR::SyncedSequentialMethod::SKIP_DRAW) {
+                g_hook->m_ignore_next_viewport_draw = true;
             }
         });
     }
@@ -11870,6 +12423,151 @@ bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
 }
 
+bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
+    GhostingFixOwnerCandidate candidate{};
+    if (!ghosting_resolve_current_owner(pair.eye_state[0], pair.eye_state[1], candidate)) {
+        return false;
+    }
+
+    pair.owner = {
+        .engine = candidate.engine,
+        .engine_index = candidate.engine_index,
+        .engine_serial = candidate.engine_serial,
+        .game_instance_slot = candidate.game_instance_slot,
+        .game_instance = candidate.game_instance,
+        .game_instance_index = candidate.game_instance_index,
+        .game_instance_serial = candidate.game_instance_serial,
+        .local_players_header = candidate.local_players_header,
+        .local_players_data = candidate.local_players_data,
+        .local_players_count = candidate.local_players_count,
+        .local_players_capacity = candidate.local_players_capacity,
+        .local_player_slot = candidate.local_player_slot,
+        .local_player = candidate.local_player,
+        .local_player_index = candidate.local_player_index,
+        .local_player_serial = candidate.local_player_serial,
+        .view_states_header = candidate.view_states_header,
+        .view_states_data = candidate.view_states_data,
+        .view_states_count = candidate.view_states_count,
+        .view_states_capacity = candidate.view_states_capacity,
+        .view_state_stride = candidate.view_state_stride,
+        .eye_state_slot = {candidate.eye_state_slot[0], candidate.eye_state_slot[1]},
+        .viewport_client_slot = candidate.viewport_client_slot,
+        .viewport_client = candidate.viewport_client,
+        .viewport_client_index = candidate.viewport_client_index,
+        .viewport_client_serial = candidate.viewport_client_serial,
+        .world_slot = candidate.world_slot,
+        .world = candidate.world,
+        .world_index = candidate.world_index,
+        .world_serial = candidate.world_serial,
+        .last_validated_frame = g_frame_count,
+        .stable_frames = 1,
+        .verified = true,
+    };
+    pair.logged_owner_unavailable = false;
+    pair.logged_owner_stabilizing = false;
+    return true;
+}
+
+bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(const GhostingFixPair& pair) {
+    const auto& owner = pair.owner;
+    if (!owner.verified ||
+        !ghosting_is_valid_scene_state(pair.eye_state[0]) ||
+        !ghosting_is_valid_scene_state(pair.eye_state[1]) ||
+        pair.eye_state[0] == pair.eye_state[1] ||
+        !ghosting_is_live_uobject(owner.engine, owner.engine_index, true, owner.engine_serial) ||
+        !ghosting_is_live_uobject(
+            owner.game_instance,
+            owner.game_instance_index,
+            true,
+            owner.game_instance_serial) ||
+        !ghosting_is_live_uobject(
+            owner.local_player,
+            owner.local_player_index,
+            true,
+            owner.local_player_serial) ||
+        !ghosting_is_live_uobject(
+            owner.viewport_client,
+            owner.viewport_client_index,
+            true,
+            owner.viewport_client_serial) ||
+        !ghosting_is_live_uobject(owner.world, owner.world_index, true, owner.world_serial))
+    {
+        return false;
+    }
+
+    uintptr_t current_game_instance{};
+    uintptr_t current_local_player{};
+    uintptr_t current_viewport_client{};
+    uintptr_t current_world{};
+    if (!safe_read_value(owner.game_instance_slot, current_game_instance) ||
+        current_game_instance != reinterpret_cast<uintptr_t>(owner.game_instance) ||
+        !safe_read_value(owner.local_player_slot, current_local_player) ||
+        current_local_player != reinterpret_cast<uintptr_t>(owner.local_player) ||
+        !safe_read_value(owner.viewport_client_slot, current_viewport_client) ||
+        current_viewport_client != reinterpret_cast<uintptr_t>(owner.viewport_client) ||
+        !safe_read_value(owner.world_slot, current_world) ||
+        current_world != reinterpret_cast<uintptr_t>(owner.world))
+    {
+        return false;
+    }
+
+    GhostingRawArrayHeader local_players{};
+    GhostingRawArrayHeader view_states{};
+    if (!ghosting_read_array_header(owner.local_players_header, 8, 32, local_players) ||
+        local_players.data != owner.local_players_data ||
+        local_players.count != owner.local_players_count ||
+        local_players.capacity != owner.local_players_capacity ||
+        !ghosting_read_array_header(owner.view_states_header, 8, 16, view_states) ||
+        view_states.data != owner.view_states_data ||
+        view_states.count != owner.view_states_count ||
+        view_states.capacity != owner.view_states_capacity)
+    {
+        return false;
+    }
+
+    const auto storage_size = static_cast<size_t>(view_states.count) * owner.view_state_stride;
+    if (owner.view_state_stride == 0 ||
+        storage_size / owner.view_state_stride != static_cast<size_t>(view_states.count) ||
+        !is_readable_process_range(view_states.data, storage_size))
+    {
+        return false;
+    }
+
+    uintptr_t current_eye_state[2]{};
+    if (!safe_read_value(owner.eye_state_slot[0], current_eye_state[0]) ||
+        !safe_read_value(owner.eye_state_slot[1], current_eye_state[1]) ||
+        current_eye_state[0] != reinterpret_cast<uintptr_t>(pair.eye_state[0]) ||
+        current_eye_state[1] != reinterpret_cast<uintptr_t>(pair.eye_state[1]))
+    {
+        return false;
+    }
+
+    return true;
+}
+
+bool FFakeStereoRenderingHook::refresh_ghosting_fix_owner(GhostingFixPair& pair) {
+    if (!pair.owner.verified && !bind_ghosting_fix_owner(pair)) {
+        return false;
+    }
+
+    // UObject GC and LocalPlayer mutation run on the game thread. A successful
+    // validation remains authoritative for later views in this same engine frame.
+    if (pair.owner.last_validated_frame == g_frame_count) {
+        return true;
+    }
+
+    if (!validate_ghosting_fix_owner(pair)) {
+        return false;
+    }
+
+    pair.owner.last_validated_frame = g_frame_count;
+    if (pair.owner.stable_frames < std::numeric_limits<uint32_t>::max()) {
+        ++pair.owner.stable_frames;
+    }
+
+    return true;
+}
+
 // FSceneView constructor hook
 sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView* view, sdk::FSceneViewInitOptions* init_options, void* a3, void* a4) {
     SPDLOG_INFO_ONCE("Called FSceneView constructor for the first time");
@@ -12226,14 +12924,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     auto& ghosting_observation_serial = g_hook->m_sceneview_data.ghosting_observation_serial;
 
     const auto is_valid_scene_state = [](sdk::FSceneViewStateInterface* state) {
-        if (state == nullptr || !is_readable_process_range((uintptr_t)state, sizeof(uintptr_t))) {
-            return false;
-        }
-
-        const auto vtable = *(uintptr_t*)state;
-        return vtable != 0 &&
-            is_readable_process_range(vtable, sizeof(uintptr_t)) &&
-            utility::get_module_within((void*)vtable).has_value();
+        return ghosting_is_valid_scene_state(state);
     };
 
     const bool ghosting_fix_can_remap =
@@ -12263,6 +12954,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         g_hook->m_sceneview_data.ghosting_bootstrap_attempts = 0;
         g_hook->m_sceneview_data.ghosting_bootstrap_ready = false;
         g_hook->m_sceneview_data.ghosting_logged_bootstrap_deferred = false;
+        g_hook->m_sceneview_data.ghosting_bootstrap_was_enabled =
+            vr->is_ghosting_fix_bootstrap_enabled();
     } else if (!g_hook->m_has_view_extensions_installed || !g_hook->m_sceneview_data.constructor_hook) {
         if (ghosting_pair.scene == 0) {
             ghosting_state = GhostingFixState::WaitingForHooks;
@@ -12286,6 +12979,40 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto scene_id = (uintptr_t)init_options_scene;
         const auto eye_index = true_index & 1;
         const auto other_eye_index = eye_index ^ 1;
+        const bool bootstrap_enabled = vr->is_ghosting_fix_bootstrap_enabled();
+
+        const bool bootstrap_option_changed =
+            bootstrap_enabled != g_hook->m_sceneview_data.ghosting_bootstrap_was_enabled;
+        if (bootstrap_option_changed) {
+            g_hook->m_sceneview_data.ghosting_bootstrap_was_enabled = bootstrap_enabled;
+            g_hook->m_sceneview_data.ghosting_learning_start_observation = observation;
+            g_hook->m_sceneview_data.ghosting_fail_observation = 0;
+            g_hook->m_sceneview_data.ghosting_bootstrap_scene = ghosting_pair.scene;
+            g_hook->m_sceneview_data.ghosting_bootstrap_last_frame = g_frame_count;
+            g_hook->m_sceneview_data.ghosting_bootstrap_stable_frames = 0;
+            g_hook->m_sceneview_data.ghosting_bootstrap_next_attempt_frame = g_frame_count;
+            g_hook->m_sceneview_data.ghosting_bootstrap_pulse_until_frame = 0;
+            g_hook->m_sceneview_data.ghosting_bootstrap_attempts = 0;
+            g_hook->m_sceneview_data.ghosting_bootstrap_ready = false;
+            g_hook->m_sceneview_data.ghosting_logged_bootstrap_deferred = false;
+
+            if (ghosting_state == GhostingFixState::FailedClosed) {
+                const bool has_existing_pair =
+                    is_valid_scene_state(ghosting_pair.eye_state[0]) &&
+                    is_valid_scene_state(ghosting_pair.eye_state[1]) &&
+                    ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1] &&
+                    ghosting_pair.orientation_confirmed;
+                ghosting_state = has_existing_pair
+                    ? GhostingFixState::PairReady
+                    : GhostingFixState::LearningViewStates;
+            }
+
+            SPDLOG_INFO(
+                "[GhostingFix] Bootstrap {} changed; re-arming scene-state learning for scene={:x} generation={}",
+                bootstrap_enabled ? "enabled" : "disabled",
+                ghosting_pair.scene,
+                ghosting_pair.generation);
+        }
 
         const auto begin_learning = [&](const char* reason) {
             auto next_generation = ghosting_pair.generation + 1;
@@ -12324,7 +13051,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         };
 
         const auto fail_closed_if_timed_out = [&]() {
-            if (!vr->is_ghosting_fix_bootstrap_enabled()) {
+            if (!bootstrap_enabled) {
                 return false;
             }
 
@@ -12376,10 +13103,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
             if (scene_change_confirmed) {
                 const bool can_preserve_verified_pair =
+                    !medium_is_current_game() &&
                     ghosting_pair.orientation_confirmed &&
                     is_valid_scene_state(ghosting_pair.eye_state[0]) &&
                     is_valid_scene_state(ghosting_pair.eye_state[1]) &&
                     ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1] &&
+                    validate_ghosting_fix_owner(ghosting_pair) &&
                     !ghosting_pair.pending_scene_has_unknown_state;
 
                 if (can_preserve_verified_pair) {
@@ -12419,6 +13148,15 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             ghosting_pair.pending_scene_observations[0] = 0;
             ghosting_pair.pending_scene_observations[1] = 0;
             ghosting_pair.pending_scene_has_unknown_state = false;
+        }
+
+        if (!skip_current_view &&
+            !began_new_generation &&
+            ghosting_pair.owner.verified &&
+            !refresh_ghosting_fix_owner(ghosting_pair))
+        {
+            begin_learning("LocalPlayer/ViewStates ownership changed");
+            began_new_generation = true;
         }
 
         if (!skip_current_view &&
@@ -12476,6 +13214,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     ghosting_pair.eye_state[other_eye_index] != init_options_scene_state))
             {
                 ghosting_pair.eye_state[eye_index] = init_options_scene_state;
+                ghosting_pair.owner = {};
+                ghosting_pair.logged_owner_unavailable = false;
+                ghosting_pair.logged_owner_stabilizing = false;
                 ghosting_pair.pending_left_source_state = nullptr;
                 ghosting_pair.pending_left_source_observations = 0;
                 ghosting_pair.pending_left_source_frame = 0;
@@ -12523,6 +13264,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
                         if (swapped) {
                             std::swap(ghosting_pair.eye_state[0], ghosting_pair.eye_state[1]);
+                            ghosting_pair.owner = {};
+                            ghosting_pair.logged_owner_unavailable = false;
+                            ghosting_pair.logged_owner_stabilizing = false;
                             g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = 0;
                             g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = {};
                             ghosting_pair.logged_naturally_separated = false;
@@ -12544,6 +13288,14 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     }
                 }
 
+                const bool owner_is_current =
+                    ghosting_pair.orientation_confirmed &&
+                    refresh_ghosting_fix_owner(ghosting_pair);
+                const uint32_t required_owner_stable_frames = medium_is_current_game() ? 12u : 2u;
+                const bool owner_ready_for_replacement =
+                    owner_is_current &&
+                    ghosting_pair.owner.stable_frames >= required_owner_stable_frames;
+
                 if (!ghosting_pair.orientation_confirmed) {
                     ghosting_state = GhostingFixState::OrientingViewStates;
                     fail_closed_if_timed_out();
@@ -12553,42 +13305,73 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     const bool replaced_scene_state =
                         init_options_scene_state != ghosting_pair.eye_state[1];
 
-                    init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+                    if (replaced_scene_state && !owner_ready_for_replacement) {
+                        ghosting_state = GhostingFixState::PairReady;
 
-                    if (replaced_scene_state) {
-                        init_options->set_scene_state(ghosting_pair.eye_state[1]);
-                    }
-
-                    restore_init_options_after_constructor = true;
-
-                    if (replaced_scene_state) {
-                        ghosting_state = GhostingFixState::Active;
-                        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = observation;
-                        g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = now;
-                        ++g_hook->m_sceneview_data.ghosting_right_eye_remap_count;
-
-                        if (first_remap_for_generation) {
-                            SPDLOG_INFO(
-                                "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state "
-                                "scene={:x} generation={} source={:x} left={:x} right={:x}",
+                        if (!ghosting_pair.owner.verified && !ghosting_pair.logged_owner_unavailable) {
+                            ghosting_pair.logged_owner_unavailable = true;
+                            SPDLOG_WARN(
+                                "[GhostingFix] Refusing right-eye scene-state replacement until both states are owned by the current LocalPlayer ViewStates array "
+                                "scene={:x} generation={} left={:x} right={:x}",
                                 scene_id,
                                 ghosting_pair.generation,
-                                (uintptr_t)init_options_scene_state,
                                 (uintptr_t)ghosting_pair.eye_state[0],
                                 (uintptr_t)ghosting_pair.eye_state[1]);
+                        } else if (ghosting_pair.owner.verified && !ghosting_pair.logged_owner_stabilizing) {
+                            ghosting_pair.logged_owner_stabilizing = true;
+                            SPDLOG_INFO(
+                                "[GhostingFix] Waiting for verified ViewStates ownership to stabilize before replacement "
+                                "scene={:x} generation={} stable_frames={}/{} stride=0x{:x}",
+                                scene_id,
+                                ghosting_pair.generation,
+                                ghosting_pair.owner.stable_frames,
+                                required_owner_stable_frames,
+                                ghosting_pair.owner.view_state_stride);
                         }
-                    } else {
-                        ghosting_state = GhostingFixState::NaturallySeparated;
 
-                        if (!ghosting_pair.logged_naturally_separated) {
-                            ghosting_pair.logged_naturally_separated = true;
-                            SPDLOG_INFO(
-                                "[GhostingFix] AFR right eye already owns its dedicated scene state "
-                                "scene={:x} generation={} left={:x} right={:x}; no pointer replacement needed",
-                                scene_id,
-                                ghosting_pair.generation,
-                                (uintptr_t)ghosting_pair.eye_state[0],
-                                (uintptr_t)ghosting_pair.eye_state[1]);
+                        fail_closed_if_timed_out();
+                    } else {
+                        ghosting_pair.logged_owner_unavailable = false;
+
+                        init_options->set_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
+
+                        if (replaced_scene_state) {
+                            init_options->set_scene_state(ghosting_pair.eye_state[1]);
+                        }
+
+                        restore_init_options_after_constructor = true;
+
+                        if (replaced_scene_state) {
+                            ghosting_state = GhostingFixState::Active;
+                            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation = observation;
+                            g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time = now;
+                            ++g_hook->m_sceneview_data.ghosting_right_eye_remap_count;
+
+                            if (first_remap_for_generation) {
+                                SPDLOG_INFO(
+                                    "[GhostingFix] Remapping AFR right-eye FSceneView to dedicated scene state "
+                                    "scene={:x} generation={} source={:x} left={:x} right={:x} owner={:x} stride=0x{:x}",
+                                    scene_id,
+                                    ghosting_pair.generation,
+                                    (uintptr_t)init_options_scene_state,
+                                    (uintptr_t)ghosting_pair.eye_state[0],
+                                    (uintptr_t)ghosting_pair.eye_state[1],
+                                    (uintptr_t)ghosting_pair.owner.local_player,
+                                    ghosting_pair.owner.view_state_stride);
+                            }
+                        } else {
+                            ghosting_state = GhostingFixState::NaturallySeparated;
+
+                            if (!ghosting_pair.logged_naturally_separated) {
+                                ghosting_pair.logged_naturally_separated = true;
+                                SPDLOG_INFO(
+                                    "[GhostingFix] AFR right eye already owns its dedicated scene state "
+                                    "scene={:x} generation={} left={:x} right={:x}; no pointer replacement needed",
+                                    scene_id,
+                                    ghosting_pair.generation,
+                                    (uintptr_t)ghosting_pair.eye_state[0],
+                                    (uintptr_t)ghosting_pair.eye_state[1]);
+                            }
                         }
                     }
                 } else if (
@@ -12601,7 +13384,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             } else {
                 ghosting_state = GhostingFixState::LearningViewStates;
 
-                if (!vr->is_ghosting_fix_bootstrap_enabled() &&
+                if (!bootstrap_enabled &&
                     !g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled)
                 {
                     g_hook->m_sceneview_data.ghosting_logged_bootstrap_disabled = true;
@@ -12618,8 +13401,15 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             is_valid_scene_state(ghosting_pair.eye_state[1]) &&
             ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1] &&
             ghosting_pair.orientation_confirmed;
+        const bool medium_needs_owner_bootstrap =
+            medium_is_current_game() &&
+            has_valid_pair &&
+            ghosting_state != GhostingFixState::NaturallySeparated &&
+            !ghosting_pair.owner.verified;
+        const bool bootstrap_pair_satisfied =
+            has_valid_pair && !medium_needs_owner_bootstrap;
 
-        if (!vr->is_ghosting_fix_bootstrap_enabled()) {
+        if (!bootstrap_enabled) {
             // Toggling Bootstrap off is the explicit safe reset. If it is
             // enabled again later, relearn stability instead of inheriting an
             // exhausted startup attempt budget.
@@ -12631,10 +13421,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             g_hook->m_sceneview_data.ghosting_bootstrap_attempts = 0;
             g_hook->m_sceneview_data.ghosting_bootstrap_ready = false;
             g_hook->m_sceneview_data.ghosting_logged_bootstrap_deferred = false;
-        } else if (has_valid_pair || ghosting_state == GhostingFixState::FailedClosed) {
+        } else if (bootstrap_pair_satisfied || ghosting_state == GhostingFixState::FailedClosed) {
             g_hook->m_sceneview_data.ghosting_bootstrap_pulse_until_frame = 0;
 
-            if (has_valid_pair) {
+            if (bootstrap_pair_satisfied) {
                 g_hook->m_sceneview_data.ghosting_bootstrap_attempts = 0;
             }
         } else {
@@ -17345,10 +18135,16 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         {
             std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
             const auto& ghosting_pair = g_hook->m_sceneview_data.ghosting_pair;
-            const bool ghosting_needs_second_state =
+            const bool missing_or_shared_eye_state =
                 ghosting_pair.eye_state[0] == nullptr ||
                 ghosting_pair.eye_state[1] == nullptr ||
                 ghosting_pair.eye_state[0] == ghosting_pair.eye_state[1];
+            const bool medium_needs_owner_bootstrap =
+                medium_is_current_game() &&
+                g_hook->m_sceneview_data.ghosting_state != GhostingFixState::NaturallySeparated &&
+                !ghosting_pair.owner.verified;
+            const bool ghosting_needs_second_state =
+                missing_or_shared_eye_state || medium_needs_owner_bootstrap;
             const bool bootstrap_allowed =
                 is_stereo_enabled &&
                 vr->is_ghosting_fix_enabled() &&
