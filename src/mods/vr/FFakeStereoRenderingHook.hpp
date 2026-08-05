@@ -961,10 +961,14 @@ private:
 
     struct GhostingFixOwner {
         sdk::UObject* engine{};
+        uintptr_t engine_vtable{};
+        uintptr_t engine_class{};
         int32_t engine_index{-1};
         int32_t engine_serial{};
         uintptr_t game_instance_slot{};
         sdk::UObject* game_instance{};
+        uintptr_t game_instance_vtable{};
+        uintptr_t game_instance_class{};
         int32_t game_instance_index{-1};
         int32_t game_instance_serial{};
         uintptr_t local_players_header{};
@@ -973,6 +977,8 @@ private:
         int32_t local_players_capacity{};
         uintptr_t local_player_slot{};
         sdk::UObject* local_player{};
+        uintptr_t local_player_vtable{};
+        uintptr_t local_player_class{};
         int32_t local_player_index{-1};
         int32_t local_player_serial{};
         uintptr_t view_states_header{};
@@ -980,17 +986,24 @@ private:
         int32_t view_states_count{};
         int32_t view_states_capacity{};
         uint32_t view_state_stride{};
+        uintptr_t view_state_reference_vtable{};
         uintptr_t eye_state_slot[2]{};
         uintptr_t viewport_client_slot{};
         sdk::UObject* viewport_client{};
+        uintptr_t viewport_client_vtable{};
+        uintptr_t viewport_client_class{};
         int32_t viewport_client_index{-1};
         int32_t viewport_client_serial{};
         uintptr_t world_slot{};
         sdk::UObject* world{};
+        uintptr_t world_vtable{};
+        uintptr_t world_class{};
         int32_t world_index{-1};
         int32_t world_serial{};
         uint32_t last_validated_frame{};
         uint32_t stable_frames{};
+        bool view_states_are_array{};
+        bool uses_uobject_hook_validation{};
         bool verified{};
     };
 
@@ -1013,11 +1026,12 @@ private:
         bool logged_naturally_separated{};
         bool logged_owner_unavailable{};
         bool logged_owner_stabilizing{};
+        bool logged_owner_validation_failed{};
         GhostingFixOwner owner{};
     };
 
     static bool bind_ghosting_fix_owner(GhostingFixPair& pair);
-    static bool validate_ghosting_fix_owner(const GhostingFixPair& pair);
+    static bool validate_ghosting_fix_owner(const GhostingFixPair& pair, const char** failure_stage = nullptr);
     static bool refresh_ghosting_fix_owner(GhostingFixPair& pair);
 
     enum class SplitScreenCompatibilityState : uint8_t {
