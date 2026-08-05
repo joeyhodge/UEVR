@@ -125,6 +125,7 @@ private:
         bool prefer_left_eye = false,
         bool source_is_single_eye = false,
         d3d12::TextureContext* ui_tex_override = nullptr);
+    bool carry_forward_spectator_backbuffer();
     bool ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source);
     void reset_ue58_converted_ui_textures(bool reset_sources = true);
     bool ensure_ue58_slate_ui_consumer_fence(ID3D12Device* device);
@@ -240,6 +241,7 @@ private:
     uint64_t m_ue58_converted_ui_consumer_fence_value{};
     d3d12::TextureContext m_game_tex{};
     d3d12::TextureContext m_ue58_spectator_tex{};
+    bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};
     d3d12::TextureContext m_shf_mono_scene_tex{};
     static constexpr uint32_t DIBR_FRAME_SLOT_COUNT = 3;
