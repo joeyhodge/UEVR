@@ -90,6 +90,13 @@ bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
 
+uint64_t steady_clock_milliseconds() noexcept {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+constexpr uint64_t SCENE_CAPTURE_FAILED_RETRY_DELAY_MS = 500;
+
 template <typename T, size_t Capacity>
 class FixedCapacityList {
 public:
@@ -27335,6 +27342,12 @@ sdk::UTexture* VRRenderTargetManager_Base::get_scene_capture_utexture() {
 }
 
 bool VRRenderTargetManager_Base::create_scene_capture() try {
+    if (steady_clock_milliseconds() <
+        scene_capture_retry_after_ms.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+
     // Some failure/transition paths reach this from the render thread. Queue a
     // single game-thread request instead of spawning UObjects off-thread.
     if (!GameThreadWorker::get().is_same_thread()) {
@@ -27397,6 +27410,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         if (creation_scheduled || generation != scene_capture_generation.load(std::memory_order_acquire)) {
             return;
         }
+
+        scene_capture_retry_after_ms.store(
+            steady_clock_milliseconds() + SCENE_CAPTURE_FAILED_RETRY_DELAY_MS,
+            std::memory_order_release);
 
         in_flight_target = nullptr;
         in_flight_scene_capture_generation = 0;
@@ -27531,6 +27548,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     this->in_flight_scene_capture_generation = generation;
 
     const auto fail_generation = [this, generation]() {
+        scene_capture_retry_after_ms.store(
+            steady_clock_milliseconds() + SCENE_CAPTURE_FAILED_RETRY_DELAY_MS,
+            std::memory_order_release);
+
         GameThreadWorker::get().enqueue([this, generation]() {
             if (generation != scene_capture_generation.load(std::memory_order_acquire) ||
                 in_flight_scene_capture_generation != generation)
@@ -27634,6 +27655,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 scene_capture_target = tgt;
                 in_flight_target = nullptr;
                 in_flight_scene_capture_generation = 0;
+                scene_capture_retry_after_ms.store(0, std::memory_order_release);
                 SPDLOG_INFO("Scene capture texture fully created for generation {}!", generation);
             });
 
