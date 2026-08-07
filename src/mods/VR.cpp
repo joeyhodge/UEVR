@@ -8407,10 +8407,18 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_native_stereo_fix->draw("Enabled");
             if (!m_native_stereo_fix->value()) {
                 draw_status_badge("Native Fix status:", "skipped: disabled", skipped_color);
-            } else if (is_using_afr()) {
-                draw_status_badge("Native Fix status:", "skipped: Synced/AFR path", skipped_color);
+            } else if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+                draw_status_badge("Native Fix status:", "skipped: Native Stereo rendering required", skipped_color);
+            } else if (m_fake_stereo_hook == nullptr) {
+                draw_status_badge("Native Fix status:", "unavailable: stereo hook not installed", blocked_color);
             } else if (is_native_stereo_fix_enabled()) {
-                draw_status_badge("Native Fix status:", "active", active_color);
+                const auto* status = m_fake_stereo_hook->get_native_stereo_fix_status_text();
+                const auto color = m_fake_stereo_hook->is_native_stereo_fix_operational()
+                    ? active_color
+                    : std::string_view{status}.find("failed closed") != std::string_view::npos
+                        ? blocked_color
+                        : skipped_color;
+                draw_status_badge("Native Fix status:", status, color);
             } else {
                 draw_status_badge("Native Fix status:", "skipped: title/runtime guard", blocked_color);
             }
