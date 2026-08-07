@@ -1194,6 +1194,7 @@ private:
     std::atomic<uint64_t> m_native_stereo_packet_serial{};
     std::atomic<uint64_t> m_native_stereo_consumed_serial{};
     std::atomic<uint64_t> m_native_stereo_rejected_capture_generation{};
+    std::atomic<uint64_t> m_native_stereo_ue57_capability_failure_generation{};
     std::atomic_bool m_native_stereo_localplayer_bootstrap_failed{};
 
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
