@@ -254,6 +254,9 @@ private:
     d3d12::TextureContext m_ue58_spectator_tex{};
     bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};
+    uint64_t m_scene_capture_generation{};
+    uint32_t m_scene_capture_width{};
+    uint32_t m_scene_capture_height{};
     d3d12::TextureContext m_shf_mono_scene_tex{};
     static constexpr uint32_t DIBR_FRAME_SLOT_COUNT = 3;
     struct DIBRFrameSlot {

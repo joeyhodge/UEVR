@@ -14303,7 +14303,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 } else if (!is_dibr_preview_engine_supported()) {
                     draw_status_badge("DIBR status:", "blocked: tracing DSV/RDG depth candidates", blocked_color);
                     ImGui::TextWrapped("Trace: %s", m_d3d12.get_dibr_preview_depth_trace_summary().c_str());
-                } else if (m_native_stereo_fix->value()) {
+                } else if (is_native_stereo_fix_enabled()) {
                     draw_status_badge("DIBR status:", "blocked: disable Native Stereo Fix", blocked_color);
                 } else if (m_extreme_compat_mode->value() || m_sceneview_compatibility_mode->value() || m_splitscreen_compatibility_mode->value()) {
                     draw_status_badge("DIBR status:", "blocked: compatibility mode is active", blocked_color);
@@ -14397,10 +14397,18 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_native_stereo_fix->draw("Enabled");
             if (!m_native_stereo_fix->value()) {
                 draw_status_badge("Native Fix status:", "skipped: disabled", skipped_color);
-            } else if (is_using_afr()) {
-                draw_status_badge("Native Fix status:", "skipped: Synced/AFR path", skipped_color);
+            } else if (m_rendering_method->value() != RenderingMethod::NATIVE_STEREO) {
+                draw_status_badge("Native Fix status:", "skipped: Native Stereo rendering required", skipped_color);
+            } else if (m_fake_stereo_hook == nullptr) {
+                draw_status_badge("Native Fix status:", "unavailable: stereo hook not installed", blocked_color);
             } else if (is_native_stereo_fix_enabled()) {
-                draw_status_badge("Native Fix status:", "active", active_color);
+                const auto* status = m_fake_stereo_hook->get_native_stereo_fix_status_text();
+                const auto color = m_fake_stereo_hook->is_native_stereo_fix_operational()
+                    ? active_color
+                    : std::string_view{status}.find("failed closed") != std::string_view::npos
+                        ? blocked_color
+                        : skipped_color;
+                draw_status_badge("Native Fix status:", status, color);
             } else {
                 draw_status_badge("Native Fix status:", "skipped: title/runtime guard", blocked_color);
             }

@@ -50,6 +50,8 @@ class AActor;
 class UObject;
 class USceneCaptureComponent2D;
 class UTexture;
+class FRenderTarget;
+class FSceneInterface;
 class FSceneViewFamily;
 class FSceneView;
 }
@@ -59,6 +61,15 @@ class FSceneView;
 // so we need a unified way of storing data that can be used for all versions
 struct VRRenderTargetManager_Base {
 public:
+    struct SceneCaptureTargetSnapshot {
+        Microsoft::WRL::ComPtr<IUnknown> native_resource{};
+        FRHITexture2D* rhi_texture{};
+        uintptr_t owner_texture{};
+        uint64_t generation{};
+        uint32_t width{};
+        uint32_t height{};
+    };
+
     struct Everspace2D3D12SceneTargetSnapshot {
         Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
         D3D12_RESOURCE_DESC desc{};
@@ -137,6 +148,12 @@ public:
         retire_everspace2_scene_target_snapshot(const char* reason);
 
     FRHITexture2D* get_scene_capture_render_target();
+    std::shared_ptr<const SceneCaptureTargetSnapshot> get_scene_capture_target_snapshot() const {
+        return scene_capture_target_snapshot.load(std::memory_order_acquire);
+    }
+    uint64_t get_scene_capture_generation() const {
+        return scene_capture_generation.load(std::memory_order_acquire);
+    }
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
     void reset_ue58_scene_target_observation() {
         ue58_pending_scene_target = nullptr;
@@ -197,6 +214,12 @@ public:
     }
 
 protected:
+    uint64_t invalidate_scene_capture_generation(const char* reason);
+    bool publish_scene_capture_target_snapshot(
+        sdk::UTexture* owner_texture,
+        FRHITexture2D* rhi_texture,
+        uint64_t generation);
+
     void retain_everspace2_dedicated_ui_target(FRHITexture2D* rt);
 
     struct VerifiedFTexture2D {
@@ -290,6 +313,11 @@ protected:
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
+    uint64_t in_flight_scene_capture_generation{};
+    std::atomic_bool scene_capture_lifetime_active{};
+    std::atomic_bool scene_capture_creation_requested{};
+    std::atomic_bool scene_capture_destruction_requested{};
+    std::atomic<uint64_t> scene_capture_request_serial{};
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
@@ -310,6 +338,8 @@ protected:
     uint32_t ue58_pending_scene_target_observations{0};
     std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
     std::atomic<uint64_t> everspace2_scene_target_generation{};
+    std::atomic<std::shared_ptr<const SceneCaptureTargetSnapshot>> scene_capture_target_snapshot{};
+    std::atomic<uint64_t> scene_capture_generation{};
 };
 
 struct VRRenderTargetManager : IStereoRenderTargetManager, VRRenderTargetManager_Base {
@@ -603,6 +633,28 @@ public:
         uint8_t eye{};
     };
 
+    struct NativeStereoFramePacket {
+        std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> capture{};
+        sdk::FSceneViewFamily* family{};
+        sdk::FSceneView* left_view{};
+        sdk::FSceneView* right_view{};
+        sdk::FSceneViewStateInterface* left_state{};
+        sdk::FSceneViewStateInterface* right_state{};
+        sdk::FRenderTarget* main_target{};
+        sdk::FSceneInterface* scene{};
+        uint64_t serial{};
+        uint64_t capture_generation{};
+        uint32_t engine_frame{};
+        int32_t render_frame{};
+        int32_t player_index{-1};
+        uint32_t left_pass{};
+        uint32_t right_pass{};
+    };
+
+    std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(int32_t render_frame) const;
+    void note_native_stereo_frame_packet_consumed(uint64_t serial);
+    void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
+
     std::optional<DuneTrueStereoFrameSnapshot> get_dune_true_stereo_frame_snapshot() const {
         const auto packed = m_dune_true_stereo_frame.load(std::memory_order_acquire);
         if ((packed & 0x2ull) == 0) {
@@ -807,6 +859,8 @@ public:
     static void pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family);
 
     const char* get_ghosting_fix_status_text();
+    const char* get_native_stereo_fix_status_text() const;
+    bool is_native_stereo_fix_operational() const;
     const char* get_dibr_single_view_status_text() const;
     bool is_dibr_single_view_active() const;
     uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
@@ -963,6 +1017,36 @@ private:
         FailedClosed,
     };
 
+    enum class NativeStereoFixState : uint8_t {
+        Off,
+        WaitingForHooks,
+        WaitingForTarget,
+        LearningMainFamily,
+        LearningEyePair,
+        TransitionHold,
+        PairReady,
+        Active,
+        FailedClosed,
+    };
+
+    struct NativeStereoViewMetadata {
+        sdk::FSceneViewFamily* family{};
+        sdk::FSceneViewStateInterface* state{};
+        sdk::FSceneInterface* scene{};
+        int32_t player_index{-1};
+        bool player_index_valid{};
+        uint32_t original_stereo_pass{};
+        uint32_t frame{};
+        FIntRect view_rect{};
+        FIntRect constrained_view_rect{};
+        uint64_t projection_hash{};
+        bool projection_valid{};
+    };
+
+    void set_native_stereo_fix_state(NativeStereoFixState state, const char* detail = nullptr);
+    void invalidate_native_stereo_frame_packet(NativeStereoFixState state, const char* detail);
+    void publish_native_stereo_frame_packet(std::shared_ptr<const NativeStereoFramePacket> packet);
+
     struct GhostingFixOwner {
         sdk::UObject* engine{};
         uintptr_t engine_vtable{};
@@ -1034,9 +1118,9 @@ private:
         GhostingFixOwner owner{};
     };
 
-    static bool bind_ghosting_fix_owner(GhostingFixPair& pair);
+    static bool bind_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
     static bool validate_ghosting_fix_owner(const GhostingFixPair& pair, const char** failure_stage = nullptr);
-    static bool refresh_ghosting_fix_owner(GhostingFixPair& pair);
+    static bool refresh_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
 
     enum class SplitScreenCompatibilityState : uint8_t {
         Off,
@@ -1083,6 +1167,16 @@ private:
         bool ghosting_logged_bootstrap_deferred{};
         bool ghosting_bootstrap_was_enabled{};
 
+        // Source-backed pair used only to separate Native Fix histories when
+        // legacy LocalPlayer code feeds both constructors the left-eye state.
+        GhostingFixPair native_stereo_state_pair{};
+        std::unordered_map<sdk::FSceneView*, NativeStereoViewMetadata> native_stereo_views{};
+        uint32_t native_stereo_metadata_frame{};
+        uintptr_t native_stereo_target{};
+        uintptr_t native_stereo_scene{};
+        uint64_t native_stereo_capture_generation{};
+        uint32_t native_stereo_stable_frames{};
+
         std::unordered_map<sdk::FSceneView*, SplitScreenViewMetadata> splitscreen_views{};
         uint32_t splitscreen_metadata_frame{};
         uint32_t splitscreen_last_success_frame{};
@@ -1094,6 +1188,13 @@ private:
         std::unordered_map<sdk::FSceneViewStateInterface*, sdk::FSceneViewInitOptionsUE5> view_init_options_ue5{};
         std::unordered_set<uintptr_t> seen_retaddrs{};
     } m_sceneview_data;
+
+    std::atomic<NativeStereoFixState> m_native_stereo_fix_state{NativeStereoFixState::Off};
+    std::atomic<std::shared_ptr<const NativeStereoFramePacket>> m_native_stereo_frame_packet{};
+    std::atomic<uint64_t> m_native_stereo_packet_serial{};
+    std::atomic<uint64_t> m_native_stereo_consumed_serial{};
+    std::atomic<uint64_t> m_native_stereo_rejected_capture_generation{};
+    std::atomic_bool m_native_stereo_localplayer_bootstrap_failed{};
 
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
     safetyhook::InlineHook m_tick_hook{};
@@ -1126,6 +1227,7 @@ private:
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
+    std::atomic<bool> m_render_module_begin_render_viewfamily_observed{};
 
     // DIBR single-view state is separate from Native Stereo Fix. It only
     // controls the temporary renderer-visible view count after D3D12 has

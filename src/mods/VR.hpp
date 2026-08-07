@@ -611,7 +611,9 @@ public:
             return false;
         }
 
-        return m_native_stereo_fix->value() && !is_using_afr();
+        return m_native_stereo_fix->value() &&
+            m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+            !is_using_afr();
     }
 
     bool is_native_stereo_fix_same_pass_enabled() const {
@@ -689,7 +691,7 @@ public:
             m_is_d3d12 &&
             runtime != nullptr &&
             runtime->is_openxr() &&
-            !m_native_stereo_fix->value() &&
+            !is_native_stereo_fix_enabled() &&
             !m_extreme_compat_mode->value() &&
             !m_sceneview_compatibility_mode->value() &&
             !m_splitscreen_compatibility_mode->value() &&
@@ -711,7 +713,7 @@ public:
             m_is_d3d12 &&
             runtime != nullptr &&
             runtime->is_openxr() &&
-            !m_native_stereo_fix->value() &&
+            !is_native_stereo_fix_enabled() &&
             !m_extreme_compat_mode->value() &&
             !m_sceneview_compatibility_mode->value() &&
             !m_splitscreen_compatibility_mode->value() &&
