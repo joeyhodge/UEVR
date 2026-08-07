@@ -53,6 +53,7 @@
 #include <sdk/APlayerCameraManager.hpp>
 #include <sdk/FStructProperty.hpp>
 #include <sdk/FSceneViewFamily.hpp>
+#include <sdk/FMalloc.hpp>
 
 #include <sdk/UGameplayStatics.hpp>
 #include <sdk/APawn.hpp>
@@ -125,6 +126,629 @@ public:
 private:
     std::array<T, Capacity> m_storage{};
     size_t m_size{};
+};
+
+struct UE57FSceneViewFamilyFunctions {
+    using CopyConstructor = sdk::FSceneViewFamily*(__fastcall*)(
+        sdk::FSceneViewFamily*,
+        const sdk::FSceneViewFamily*);
+    using DeletingDestructor = void*(__fastcall*)(sdk::FSceneViewFamily*, uint32_t);
+
+    CopyConstructor copy_constructor{};
+    DeletingDestructor deleting_destructor{};
+    uintptr_t vtable{};
+};
+
+std::optional<UE57FSceneViewFamilyFunctions> resolve_ue57_fsceneviewfamily_functions(uintptr_t expected_vtable) {
+    struct ResolverCache {
+        std::mutex mutex{};
+        bool attempted{};
+        HMODULE module{};
+        std::optional<UE57FSceneViewFamilyFunctions> functions{};
+    };
+
+    static ResolverCache cache{};
+
+    if (expected_vtable == 0 || !is_readable_process_range(expected_vtable, sizeof(uintptr_t))) {
+        SPDLOG_ERROR("[UE5.7][NativeStereoFix] FSceneViewFamily vtable is unavailable for copy-constructor resolution");
+        return std::nullopt;
+    }
+
+    const auto module = utility::get_module_within(expected_vtable).value_or(nullptr);
+    if (module == nullptr) {
+        SPDLOG_ERROR("[UE5.7][NativeStereoFix] FSceneViewFamily vtable is not owned by a loaded module");
+        return std::nullopt;
+    }
+
+    std::scoped_lock lock{cache.mutex};
+
+    // The live object is normally FSceneViewFamilyContext, while the copy
+    // constructor produces a base FSceneViewFamily. Cache by module instead of
+    // the live derived vtable so alternate family subclasses cannot rescan the
+    // executable from the render thread.
+    if (cache.attempted && cache.module == module) {
+        return cache.functions;
+    }
+
+    cache.attempted = true;
+    cache.module = module;
+    cache.functions.reset();
+
+    constexpr std::array<uint8_t, 10> copy_prefix{
+        0x48, 0x8D, 0x71, 0x08, 0x45, 0x33, 0xE4, 0x4C, 0x89, 0x26,
+    };
+    constexpr std::array<uint8_t, 3> vtable_lea_prefix{0x48, 0x8D, 0x05};
+    constexpr std::array<uint8_t, 10> copy_source_suffix{
+        0x48, 0x89, 0x01, 0x48, 0x8B, 0xFA, 0x48, 0x63, 0x6A, 0x10,
+    };
+    constexpr std::array<uint8_t, 15> deleting_destructor_prefix{
+        0x48, 0x89, 0x5C, 0x24, 0x08, 0x57, 0x48, 0x83, 0xEC, 0x20,
+        0x8B, 0xDA, 0x48, 0x8B, 0xF9,
+    };
+    constexpr std::array<uint8_t, 13> deleting_destructor_size_guard{
+        0xF6, 0xC3, 0x01, 0x74, 0x0D, 0xBA, 0x98, 0x01, 0x00, 0x00,
+        0x48, 0x8B, 0xCF,
+    };
+    constexpr size_t complete_destructor_call_offset = 0x0F;
+    constexpr size_t deleting_destructor_guard_offset = 0x14;
+    constexpr size_t delete_call_offset = 0x21;
+    constexpr std::array<std::array<uint8_t, 7>, 4> owned_interface_loads{{
+        {0x48, 0x8B, 0x89, 0x60, 0x01, 0x00, 0x00},
+        {0x48, 0x8B, 0x8B, 0x68, 0x01, 0x00, 0x00},
+        {0x48, 0x8B, 0x8B, 0x70, 0x01, 0x00, 0x00},
+        {0x48, 0x8B, 0x8B, 0x78, 0x01, 0x00, 0x00},
+    }};
+    constexpr size_t complete_destructor_probe_size = 0x70;
+
+    const auto resolve_deleting_destructor = [&](uintptr_t candidate_vtable) -> std::optional<uintptr_t> {
+        uintptr_t deleting_destructor_address{};
+        std::memcpy(
+            &deleting_destructor_address,
+            reinterpret_cast<const void*>(candidate_vtable),
+            sizeof(deleting_destructor_address));
+
+        if (!is_executable_process_range(deleting_destructor_address, sizeof(void*)) ||
+            utility::get_module_within(deleting_destructor_address).value_or(nullptr) != module ||
+            !is_readable_process_range(deleting_destructor_address, delete_call_offset + 1) ||
+            std::memcmp(
+                reinterpret_cast<const void*>(deleting_destructor_address),
+                deleting_destructor_prefix.data(),
+                deleting_destructor_prefix.size()) != 0 ||
+            *reinterpret_cast<const uint8_t*>(deleting_destructor_address + complete_destructor_call_offset) != 0xE8 ||
+            std::memcmp(
+                reinterpret_cast<const void*>(deleting_destructor_address + deleting_destructor_guard_offset),
+                deleting_destructor_size_guard.data(),
+                deleting_destructor_size_guard.size()) != 0 ||
+            *reinterpret_cast<const uint8_t*>(deleting_destructor_address + delete_call_offset) != 0xE8)
+        {
+            return std::nullopt;
+        }
+
+        int32_t complete_destructor_displacement{};
+        std::memcpy(
+            &complete_destructor_displacement,
+            reinterpret_cast<const void*>(deleting_destructor_address + complete_destructor_call_offset + 1),
+            sizeof(complete_destructor_displacement));
+        const auto complete_destructor_address = deleting_destructor_address +
+            complete_destructor_call_offset + 5 + complete_destructor_displacement;
+
+        if (!is_executable_process_range(complete_destructor_address, complete_destructor_probe_size) ||
+            utility::get_module_within(complete_destructor_address).value_or(nullptr) != module)
+        {
+            return std::nullopt;
+        }
+
+        const auto complete_destructor_begin = reinterpret_cast<const uint8_t*>(complete_destructor_address);
+        const auto complete_destructor_end = complete_destructor_begin + complete_destructor_probe_size;
+        for (const auto& load : owned_interface_loads) {
+            if (std::search(
+                    complete_destructor_begin,
+                    complete_destructor_end,
+                    load.begin(),
+                    load.end()) == complete_destructor_end)
+            {
+                return std::nullopt;
+            }
+        }
+
+        return deleting_destructor_address;
+    };
+
+    uintptr_t copy_constructor_address{};
+    uintptr_t copy_constructor_vtable{};
+    uintptr_t deleting_destructor_address{};
+    size_t copy_constructor_candidates{};
+    size_t copy_signature_matches{};
+    const auto module_base = reinterpret_cast<uintptr_t>(module);
+    const auto module_size = utility::get_module_size(module).value_or(0);
+    const auto module_end = module_base + module_size;
+    constexpr const char* copy_signature =
+        "48 8D 71 08 45 33 E4 4C 89 26 48 8D 05 ? ? ? ? "
+        "48 89 01 48 8B FA 48 63 6A 10";
+
+    uintptr_t scan_cursor = module_base;
+    while (module_size != 0 && scan_cursor < module_end) {
+        const auto match = utility::scan(scan_cursor, module_end - scan_cursor, copy_signature);
+        if (!match) {
+            break;
+        }
+
+        scan_cursor = *match + 1;
+        ++copy_signature_matches;
+        const auto vtable_instruction_address = *match + copy_prefix.size();
+        const auto instruction = utility::resolve_instruction(vtable_instruction_address);
+        if (!instruction || !std::string_view{instruction->instrux.Mnemonic}.starts_with("LEA")) {
+            continue;
+        }
+
+        const auto resolved_vtable = utility::resolve_displacement(instruction->addr, &instruction->instrux);
+        const auto function_start = utility::find_function_start_unwind(instruction->addr);
+        const auto function_entry = utility::find_function_entry(instruction->addr);
+        if (!resolved_vtable || !function_start || !function_entry ||
+            !is_readable_process_range(*resolved_vtable, sizeof(uintptr_t)) ||
+            utility::get_module_within(*resolved_vtable).value_or(nullptr) != module)
+        {
+            continue;
+        }
+
+        const auto entry_start = module_base + function_entry->BeginAddress;
+        const auto function_size = static_cast<size_t>(function_entry->EndAddress - function_entry->BeginAddress);
+        if (*function_start != entry_start || function_size < 0x300 || function_size > 0x1000 ||
+            instruction->addr < *function_start + copy_prefix.size())
+        {
+            continue;
+        }
+
+        const auto vtable_write_offset = instruction->addr - *function_start;
+        if (vtable_write_offset < 0x20 || vtable_write_offset > 0x38 ||
+            !is_readable_process_range(instruction->addr - copy_prefix.size(), copy_prefix.size()) ||
+            !is_readable_process_range(instruction->addr, 7 + copy_source_suffix.size()) ||
+            std::memcmp(
+                reinterpret_cast<const void*>(instruction->addr - copy_prefix.size()),
+                copy_prefix.data(),
+                copy_prefix.size()) != 0 ||
+            std::memcmp(
+                reinterpret_cast<const void*>(instruction->addr),
+                vtable_lea_prefix.data(),
+                vtable_lea_prefix.size()) != 0 ||
+            std::memcmp(
+                reinterpret_cast<const void*>(instruction->addr + 7),
+                copy_source_suffix.data(),
+                copy_source_suffix.size()) != 0)
+        {
+            continue;
+        }
+
+        const auto candidate_deleting_destructor = resolve_deleting_destructor(*resolved_vtable);
+        if (!candidate_deleting_destructor) {
+            continue;
+        }
+
+        if (copy_constructor_address != *function_start) {
+            copy_constructor_address = *function_start;
+            copy_constructor_vtable = *resolved_vtable;
+            deleting_destructor_address = *candidate_deleting_destructor;
+            ++copy_constructor_candidates;
+        }
+    }
+
+    if (copy_constructor_candidates != 1 ||
+        !is_executable_process_range(copy_constructor_address, sizeof(void*)) ||
+        !is_executable_process_range(deleting_destructor_address, sizeof(void*)))
+    {
+        SPDLOG_ERROR(
+            "[UE5.7][NativeStereoFix] Expected exactly one source-and-layout-proven FSceneViewFamily copy constructor; "
+            "found {} from {} source-shaped signature match(es)",
+            copy_constructor_candidates,
+            copy_signature_matches);
+        return std::nullopt;
+    }
+
+    cache.functions = UE57FSceneViewFamilyFunctions{
+        .copy_constructor = reinterpret_cast<UE57FSceneViewFamilyFunctions::CopyConstructor>(copy_constructor_address),
+        .deleting_destructor = reinterpret_cast<UE57FSceneViewFamilyFunctions::DeletingDestructor>(deleting_destructor_address),
+        .vtable = copy_constructor_vtable,
+    };
+
+    SPDLOG_INFO(
+        "[UE5.7][NativeStereoFix] Resolved base FSceneViewFamily vtable RVA 0x{:x}, copy constructor RVA 0x{:x}, "
+        "deleting destructor RVA 0x{:x}; live family vtable RVA 0x{:x}",
+        copy_constructor_vtable - module_base,
+        copy_constructor_address - module_base,
+        deleting_destructor_address - module_base,
+        expected_vtable - module_base);
+    return cache.functions;
+}
+
+bool validate_ue57_cloned_view_array(
+    const sdk::TArray<sdk::FSceneView*>* source,
+    const sdk::TArray<sdk::FSceneView*>* clone,
+    int32_t max_count)
+{
+    if (source == nullptr || clone == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(source), sizeof(*source)) ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(clone), sizeof(*clone)) ||
+        source->count < 0 || source->count > max_count || source->capacity < source->count ||
+        clone->count != source->count || clone->capacity < clone->count)
+    {
+        return false;
+    }
+
+    if (source->count == 0) {
+        return true;
+    }
+
+    const auto entries_size = sizeof(sdk::FSceneView*) * static_cast<size_t>(source->count);
+    if (source->data == nullptr || clone->data == nullptr || source->data == clone->data ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(source->data), entries_size) ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(clone->data), entries_size))
+    {
+        return false;
+    }
+
+    return std::equal(source->data, source->data + source->count, clone->data);
+}
+
+bool try_set_ue57_scene_view_family(
+    sdk::FSceneView* view,
+    sdk::FSceneViewFamily* expected_current,
+    sdk::FSceneViewFamily* replacement)
+{
+    if (view == nullptr || expected_current == nullptr || replacement == nullptr ||
+        view->get_view_family() != expected_current ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(view), sizeof(uintptr_t)))
+    {
+        return false;
+    }
+
+    uintptr_t first_slot{};
+    std::memcpy(&first_slot, view, sizeof(first_slot));
+    const bool has_vtable =
+        first_slot != 0 &&
+        is_readable_process_range(first_slot, sizeof(uintptr_t)) &&
+        utility::get_module_within(first_slot).has_value();
+    const auto family_slot = reinterpret_cast<uintptr_t>(view) + (has_vtable ? sizeof(uintptr_t) : 0u);
+
+    if (!is_writable_process_range(family_slot, sizeof(replacement))) {
+        return false;
+    }
+
+    std::memcpy(reinterpret_cast<void*>(family_slot), &replacement, sizeof(replacement));
+    return view->get_view_family() == replacement;
+}
+
+class UE57FSceneViewSingletonPrimaryOverride {
+public:
+    UE57FSceneViewSingletonPrimaryOverride() = default;
+    UE57FSceneViewSingletonPrimaryOverride(const UE57FSceneViewSingletonPrimaryOverride&) = delete;
+    UE57FSceneViewSingletonPrimaryOverride& operator=(const UE57FSceneViewSingletonPrimaryOverride&) = delete;
+
+    ~UE57FSceneViewSingletonPrimaryOverride() {
+        restore();
+    }
+
+    bool initialize(
+        sdk::FSceneView* view,
+        sdk::FSceneViewFamily* expected_family,
+        const char*& failure_reason)
+    {
+        failure_reason = nullptr;
+
+        if (view == nullptr || expected_family == nullptr || view->get_view_family() != expected_family) {
+            failure_reason = "secondary singleton view or Family backlink changed";
+            return false;
+        }
+
+        const auto view_address = reinterpret_cast<uintptr_t>(view);
+        const auto metadata_address = view_address + ue57_stereo_pass_offset;
+        if (!is_readable_process_range(metadata_address, ue57_stereo_metadata_span) ||
+            !is_writable_process_range(metadata_address, ue57_stereo_metadata_span))
+        {
+            failure_reason = "secondary singleton stereo metadata is not safely writable";
+            return false;
+        }
+
+        std::memcpy(&m_saved_stereo_pass, reinterpret_cast<const void*>(metadata_address), sizeof(m_saved_stereo_pass));
+        std::memcpy(
+            &m_saved_primary_view_index,
+            reinterpret_cast<const void*>(view_address + ue57_primary_view_index_offset),
+            sizeof(m_saved_primary_view_index));
+
+        if (m_saved_stereo_pass != static_cast<uint32_t>(EStereoscopicPass::eSSP_SECONDARY) ||
+            m_saved_primary_view_index != 0)
+        {
+            failure_reason = "secondary singleton stereo metadata did not match the proven two-eye layout";
+            return false;
+        }
+
+        m_view = view;
+        m_active = true;
+
+        constexpr uint32_t primary_stereo_pass = EStereoscopicPass::eSSP_PRIMARY;
+        constexpr int32_t singleton_primary_view_index = 0;
+        std::memcpy(
+            reinterpret_cast<void*>(metadata_address),
+            &primary_stereo_pass,
+            sizeof(primary_stereo_pass));
+        std::memcpy(
+            reinterpret_cast<void*>(view_address + ue57_primary_view_index_offset),
+            &singleton_primary_view_index,
+            sizeof(singleton_primary_view_index));
+
+        uint32_t applied_stereo_pass{};
+        int32_t applied_primary_view_index{-1};
+        std::memcpy(&applied_stereo_pass, reinterpret_cast<const void*>(metadata_address), sizeof(applied_stereo_pass));
+        std::memcpy(
+            &applied_primary_view_index,
+            reinterpret_cast<const void*>(view_address + ue57_primary_view_index_offset),
+            sizeof(applied_primary_view_index));
+
+        if (applied_stereo_pass != primary_stereo_pass ||
+            applied_primary_view_index != singleton_primary_view_index)
+        {
+            const bool restored = restore();
+            failure_reason = restored
+                ? "secondary singleton could not be adapted to an internal primary view"
+                : "secondary singleton metadata could not be restored after adaptation failed";
+            return false;
+        }
+
+        return true;
+    }
+
+    bool restore() {
+        if (!m_active) {
+            return true;
+        }
+
+        if (m_view == nullptr) {
+            return false;
+        }
+
+        const auto view_address = reinterpret_cast<uintptr_t>(m_view);
+        const auto metadata_address = view_address + ue57_stereo_pass_offset;
+        if (!is_readable_process_range(metadata_address, ue57_stereo_metadata_span) ||
+            !is_writable_process_range(metadata_address, ue57_stereo_metadata_span))
+        {
+            return false;
+        }
+
+        std::memcpy(
+            reinterpret_cast<void*>(metadata_address),
+            &m_saved_stereo_pass,
+            sizeof(m_saved_stereo_pass));
+        std::memcpy(
+            reinterpret_cast<void*>(view_address + ue57_primary_view_index_offset),
+            &m_saved_primary_view_index,
+            sizeof(m_saved_primary_view_index));
+
+        uint32_t restored_stereo_pass{};
+        int32_t restored_primary_view_index{-1};
+        std::memcpy(&restored_stereo_pass, reinterpret_cast<const void*>(metadata_address), sizeof(restored_stereo_pass));
+        std::memcpy(
+            &restored_primary_view_index,
+            reinterpret_cast<const void*>(view_address + ue57_primary_view_index_offset),
+            sizeof(restored_primary_view_index));
+
+        if (restored_stereo_pass != m_saved_stereo_pass ||
+            restored_primary_view_index != m_saved_primary_view_index)
+        {
+            return false;
+        }
+
+        m_active = false;
+        m_view = nullptr;
+        return true;
+    }
+
+private:
+    // Verified against UE5.7 FSceneView's native copy constructor in Venice.
+    static constexpr size_t ue57_stereo_pass_offset = 0xDD0;
+    static constexpr size_t ue57_primary_view_index_offset = 0xDD8;
+    static constexpr size_t ue57_stereo_metadata_span =
+        ue57_primary_view_index_offset + sizeof(int32_t) - ue57_stereo_pass_offset;
+
+    sdk::FSceneView* m_view{};
+    uint32_t m_saved_stereo_pass{};
+    int32_t m_saved_primary_view_index{};
+    bool m_active{};
+};
+
+class UE57FSceneViewFamilyClone {
+public:
+    UE57FSceneViewFamilyClone() = default;
+    UE57FSceneViewFamilyClone(const UE57FSceneViewFamilyClone&) = delete;
+    UE57FSceneViewFamilyClone& operator=(const UE57FSceneViewFamilyClone&) = delete;
+
+    ~UE57FSceneViewFamilyClone() {
+        reset();
+    }
+
+    bool initialize(
+        sdk::FSceneViewFamily* source,
+        uintptr_t expected_vtable,
+        const char*& failure_reason,
+        bool& capability_failure)
+    {
+        failure_reason = nullptr;
+        capability_failure = false;
+
+        if (source == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(source), ue57_scene_view_family_size))
+        {
+            failure_reason = "source family is unreadable";
+            return false;
+        }
+
+        uintptr_t source_vtable{};
+        std::memcpy(&source_vtable, source, sizeof(source_vtable));
+        if (source_vtable != expected_vtable) {
+            failure_reason = "source family vtable changed before cloning";
+            return false;
+        }
+
+        m_functions = resolve_ue57_fsceneviewfamily_functions(expected_vtable);
+        if (!m_functions) {
+            failure_reason = "copy constructor or destructor could not be proven";
+            capability_failure = true;
+            return false;
+        }
+
+        for (size_t index = 0; index < m_borrowed_owned_interfaces.size(); ++index) {
+            std::memcpy(
+                &m_borrowed_owned_interfaces[index],
+                reinterpret_cast<const void*>(
+                    reinterpret_cast<uintptr_t>(source) + ue57_owned_interface_offset + index * sizeof(uintptr_t)),
+                sizeof(uintptr_t));
+        }
+
+        m_allocator = sdk::FMalloc::get();
+        if (m_allocator == nullptr) {
+            failure_reason = "engine allocator is unavailable";
+            return false;
+        }
+
+        constexpr size_t guarded_family_storage_size = 0x1000;
+        m_object = reinterpret_cast<sdk::FSceneViewFamily*>(
+            m_allocator->malloc(guarded_family_storage_size, 16));
+        if (m_object == nullptr) {
+            failure_reason = "engine allocation for cloned family failed";
+            return false;
+        }
+        std::memset(m_object, 0, guarded_family_storage_size);
+
+        const auto copy_result = m_functions->copy_constructor(m_object, source);
+        m_constructed = true;
+        if (copy_result != m_object) {
+            failure_reason = "copy constructor returned an unexpected object";
+            reset();
+            return false;
+        }
+
+        uintptr_t cloned_vtable{};
+        std::memcpy(&cloned_vtable, m_object, sizeof(cloned_vtable));
+        const auto source_views = source->get_views();
+        const auto cloned_views = m_object->get_views();
+        const auto source_all_views = source_views != nullptr ? source_views + 1 : nullptr;
+        const auto cloned_all_views = cloned_views != nullptr ? cloned_views + 1 : nullptr;
+        std::array<uintptr_t, ue57_owned_interface_count> cloned_owned_interfaces{};
+        for (size_t index = 0; index < cloned_owned_interfaces.size(); ++index) {
+            std::memcpy(
+                &cloned_owned_interfaces[index],
+                reinterpret_cast<const void*>(
+                    reinterpret_cast<uintptr_t>(m_object) + ue57_owned_interface_offset + index * sizeof(uintptr_t)),
+                sizeof(uintptr_t));
+        }
+
+        if (cloned_vtable != m_functions->vtable ||
+            !validate_ue57_cloned_view_array(source_views, cloned_views, 16) ||
+            !validate_ue57_cloned_view_array(source_all_views, cloned_all_views, 32) ||
+            source_all_views->count != 0 || cloned_all_views->count != 0 ||
+            cloned_owned_interfaces != m_borrowed_owned_interfaces ||
+            m_object->get_render_target() != source->get_render_target() ||
+            m_object->get_scene_interface() != source->get_scene_interface())
+        {
+            failure_reason = "copy constructor output failed structural validation";
+            reset();
+            return false;
+        }
+
+        return true;
+    }
+
+    sdk::FSceneViewFamily* get() const {
+        return m_object;
+    }
+
+    bool mark_additional_view_family(const char*& failure_reason) {
+        failure_reason = nullptr;
+
+        if (!m_constructed || m_object == nullptr) {
+            failure_reason = "cloned family was not constructed";
+            return false;
+        }
+
+        const auto flag_address = reinterpret_cast<uintptr_t>(m_object) + ue57_additional_view_family_offset;
+        if (!is_readable_process_range(flag_address, sizeof(uint8_t)) ||
+            !is_writable_process_range(flag_address, sizeof(uint8_t)))
+        {
+            failure_reason = "cloned family additional-family flag is not safely writable";
+            return false;
+        }
+
+        uint8_t current_value{};
+        std::memcpy(&current_value, reinterpret_cast<const void*>(flag_address), sizeof(current_value));
+        if (current_value > 1) {
+            failure_reason = "cloned family additional-family flag had an invalid value";
+            return false;
+        }
+
+        constexpr uint8_t additional_view_family = 1;
+        std::memcpy(
+            reinterpret_cast<void*>(flag_address),
+            &additional_view_family,
+            sizeof(additional_view_family));
+
+        uint8_t applied_value{};
+        std::memcpy(&applied_value, reinterpret_cast<const void*>(flag_address), sizeof(applied_value));
+        if (applied_value != additional_view_family) {
+            failure_reason = "cloned family additional-family flag did not persist";
+            return false;
+        }
+
+        return true;
+    }
+
+private:
+    static constexpr size_t ue57_scene_view_family_size = 0x198;
+    static constexpr size_t ue57_additional_view_family_offset = 0xB0;
+    static constexpr size_t ue57_owned_interface_offset = 0x160;
+    static constexpr size_t ue57_owned_interface_count = 4;
+
+    void release_borrowed_interface_ownership() {
+        if (!m_constructed || m_object == nullptr) {
+            return;
+        }
+
+        for (size_t index = 0; index < m_borrowed_owned_interfaces.size(); ++index) {
+            const auto slot = reinterpret_cast<uintptr_t>(m_object) +
+                ue57_owned_interface_offset + index * sizeof(uintptr_t);
+            uintptr_t current{};
+            std::memcpy(&current, reinterpret_cast<const void*>(slot), sizeof(current));
+
+            // A non-null pointer copied from the source remains source-owned.
+            // A pointer installed later by a view extension remains clone-owned.
+            if (m_borrowed_owned_interfaces[index] != 0 &&
+                current == m_borrowed_owned_interfaces[index])
+            {
+                constexpr uintptr_t null_interface{};
+                std::memcpy(reinterpret_cast<void*>(slot), &null_interface, sizeof(null_interface));
+            }
+        }
+    }
+
+    void reset() {
+        if (m_constructed && m_object != nullptr && m_functions) {
+            release_borrowed_interface_ownership();
+            m_functions->deleting_destructor(m_object, 0);
+        }
+
+        if (m_object != nullptr && m_allocator != nullptr) {
+            m_allocator->free(m_object);
+        }
+
+        m_constructed = false;
+        m_object = nullptr;
+        m_allocator = nullptr;
+        m_functions.reset();
+        m_borrowed_owned_interfaces = {};
+    }
+
+    std::optional<UE57FSceneViewFamilyFunctions> m_functions{};
+    sdk::FMalloc* m_allocator{};
+    sdk::FSceneViewFamily* m_object{};
+    std::array<uintptr_t, ue57_owned_interface_count> m_borrowed_owned_interfaces{};
+    bool m_constructed{};
 };
 
 std::mutex g_shf_texture_probe_mutex{};
@@ -14957,6 +15581,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
         if (!native_stereo_fix_enabled) {
             g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::Off, nullptr);
+            g_hook->m_native_stereo_ue57_capability_failure_generation.store(0, std::memory_order_release);
             std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
             g_hook->m_sceneview_data.native_stereo_views.clear();
             g_hook->m_sceneview_data.native_stereo_metadata_frame = 0;
@@ -15484,6 +16109,17 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 NativeStereoFixState::FailedClosed,
                 "retiring a capture generation rejected by the compositor path");
             rtm->destroy_scene_capture();
+            call_original();
+            return;
+        }
+
+        if (is_ue_5_7_or_newer() && !is_ue_5_8_or_newer() &&
+            native_capture_snapshot->generation ==
+                g_hook->m_native_stereo_ue57_capability_failure_generation.load(std::memory_order_acquire))
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "UE5.7 linked-family capability is unavailable for this capture generation");
             call_original();
             return;
         }
@@ -16016,6 +16652,206 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
+    const auto publish_native_packet = [&]() {
+        auto packet = std::make_shared<NativeStereoFramePacket>();
+        packet->capture = native_capture_snapshot;
+        packet->family = view_family;
+        packet->left_view = native_left_view;
+        packet->right_view = native_right_view;
+        packet->left_state = native_left_metadata.state;
+        packet->right_state = native_right_metadata.state;
+        packet->main_target = original_target;
+        packet->scene = view_family_scene;
+        packet->serial = g_hook->m_native_stereo_packet_serial.fetch_add(1, std::memory_order_acq_rel) + 1;
+        packet->capture_generation = native_capture_snapshot->generation;
+        packet->engine_frame = g_frame_count;
+        packet->render_frame = vr->m_render_frame_count;
+        packet->player_index = native_left_metadata.player_index;
+        packet->left_pass = native_left_metadata.original_stereo_pass;
+        packet->right_pass = native_right_metadata.original_stereo_pass;
+        g_hook->publish_native_stereo_frame_packet(std::move(packet));
+    };
+
+    const bool use_ue57_linked_family_transaction =
+        is_ue_5_7_or_newer() && !is_ue_5_8_or_newer();
+
+    if (use_ue57_linked_family_transaction) {
+        const auto fail_closed = [&](const char* reason) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[UE5.7][NativeStereoFix] Preserving the original two-view family because the linked-family transaction failed validation: {}",
+                reason);
+            call_original();
+        };
+
+        if (!uses_tarrayview) {
+            fail_closed("BeginRenderingViewFamilies did not expose the UE5.7 TArrayView ABI");
+            return;
+        }
+
+        UE57FSceneViewFamilyClone right_family_clone{};
+        const char* clone_failure_reason{};
+        bool clone_capability_failure{};
+        if (!right_family_clone.initialize(
+                view_family,
+                expected_vtable,
+                clone_failure_reason,
+                clone_capability_failure))
+        {
+            if (clone_capability_failure) {
+                g_hook->m_native_stereo_ue57_capability_failure_generation.store(
+                    native_capture_snapshot->generation,
+                    std::memory_order_release);
+            }
+            fail_closed(
+                clone_failure_reason != nullptr
+                    ? clone_failure_reason
+                    : "FSceneViewFamily clone initialization failed");
+            return;
+        }
+        g_hook->m_native_stereo_ue57_capability_failure_generation.store(0, std::memory_order_release);
+
+        auto* const right_family = right_family_clone.get();
+        auto* const right_views = right_family != nullptr ? right_family->get_views() : nullptr;
+        if (right_family == nullptr || right_views == nullptr || right_views->data == nullptr ||
+            right_views->count != prev_count || right_views->capacity < right_views->count ||
+            !is_readable_process_range(
+                reinterpret_cast<uintptr_t>(right_views->data),
+                sizeof(sdk::FSceneView*) * static_cast<size_t>(right_views->count)))
+        {
+            fail_closed("cloned family lost its validated Views storage");
+            return;
+        }
+
+        const char* additional_family_failure_reason{};
+        if (!right_family_clone.mark_additional_view_family(additional_family_failure_reason)) {
+            fail_closed(
+                additional_family_failure_reason != nullptr
+                    ? additional_family_failure_reason
+                    : "cloned family could not be marked as additional");
+            return;
+        }
+
+        right_family->set_render_target(rtfrt);
+        if (right_family->get_render_target() != rtfrt ||
+            right_family->get_scene_interface() != view_family_scene)
+        {
+            fail_closed("cloned family target or scene identity changed");
+            return;
+        }
+
+        std::array<sdk::FSceneViewFamily*, max_sane_view_families + 1> linked_family_storage{};
+        size_t linked_family_count{};
+        size_t selected_family_occurrences{};
+        bool linked_family_overflow{};
+        for (const auto family : view_families) {
+            if (linked_family_count >= linked_family_storage.size()) {
+                linked_family_overflow = true;
+                break;
+            }
+            linked_family_storage[linked_family_count++] = family;
+            if (family == view_family) {
+                if (linked_family_count >= linked_family_storage.size()) {
+                    linked_family_overflow = true;
+                    break;
+                }
+                linked_family_storage[linked_family_count++] = right_family;
+                ++selected_family_occurrences;
+            }
+        }
+
+        if (linked_family_overflow || selected_family_occurrences != 1 ||
+            linked_family_count != view_families.size() + 1)
+        {
+            fail_closed("selected family was not unique in the original family list");
+            return;
+        }
+
+        if (!try_set_ue57_scene_view_family(native_right_view, view_family, right_family)) {
+            fail_closed("secondary view Family backlink could not be redirected safely");
+            return;
+        }
+
+        utility::ScopeGuard restore_right_view_family{[&]() {
+            if (native_right_view->get_view_family() == right_family) {
+                try_set_ue57_scene_view_family(native_right_view, right_family, view_family);
+            }
+        }};
+
+        UE57FSceneViewSingletonPrimaryOverride right_singleton_primary{};
+        const char* singleton_primary_failure_reason{};
+        if (!right_singleton_primary.initialize(
+                native_right_view,
+                right_family,
+                singleton_primary_failure_reason))
+        {
+            const bool right_singleton_restored = right_singleton_primary.restore();
+            const bool right_family_restored =
+                native_right_view->get_view_family() == view_family ||
+                (native_right_view->get_view_family() == right_family &&
+                    try_set_ue57_scene_view_family(native_right_view, right_family, view_family));
+            if (!right_singleton_restored || !right_family_restored) {
+                g_hook->invalidate_native_stereo_frame_packet(
+                    NativeStereoFixState::FailedClosed,
+                    "secondary singleton metadata or Family backlink could not be restored after adaptation failed");
+                SPDLOG_ERROR(
+                    "[UE5.7][NativeStereoFix] Refusing fallback rendering because the singleton transaction could not be restored");
+                return;
+            }
+
+            fail_closed(
+                singleton_primary_failure_reason != nullptr
+                    ? singleton_primary_failure_reason
+                    : "secondary singleton could not be adapted safely");
+            return;
+        }
+
+        views.data[0] = native_left_view;
+        views.data[1] = native_right_view;
+        views.count = 1;
+        right_views->data[0] = native_right_view;
+        right_views->count = 1;
+
+        TArrayViewViewFamily linked_family_array{
+            linked_family_storage.data(),
+            static_cast<int32_t>(linked_family_count),
+        };
+
+        SPDLOG_INFO_ONCE(
+            "[UE5.7][NativeStereoFix] Rendering linked eye families with the secondary singleton adapted to an internal primary view");
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+            render_module,
+            canvas,
+            reinterpret_cast<sdk::FSceneViewFamily*>(&linked_family_array));
+
+        const bool right_singleton_restored = right_singleton_primary.restore();
+        const auto right_family_after_render = native_right_view->get_view_family();
+        const bool right_family_restored =
+            right_family_after_render == view_family ||
+            (right_family_after_render == right_family &&
+                try_set_ue57_scene_view_family(native_right_view, right_family, view_family));
+        views.data[0] = original_first;
+        views.data[1] = original_second;
+        views.count = prev_count;
+        view_family->set_render_target(original_target);
+
+        if (!right_singleton_restored || !right_family_restored ||
+            native_right_view->get_view_family() != view_family)
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "secondary singleton metadata or Family backlink was not restored after linked rendering");
+            SPDLOG_ERROR_EVERY_N_SEC(
+                2,
+                "[UE5.7][NativeStereoFix] Linked rendering completed, but the secondary singleton transaction could not be restored");
+            return;
+        }
+
+        publish_native_packet();
+        return;
+    }
+
     const auto runtime_frame_count = runtime->internal_frame_count;
 
     // The second render must consume the same runtime pose assignment as the
@@ -16071,23 +16907,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family);
     }
 
-    auto packet = std::make_shared<NativeStereoFramePacket>();
-    packet->capture = native_capture_snapshot;
-    packet->family = view_family;
-    packet->left_view = native_left_view;
-    packet->right_view = native_right_view;
-    packet->left_state = native_left_metadata.state;
-    packet->right_state = native_right_metadata.state;
-    packet->main_target = original_target;
-    packet->scene = view_family_scene;
-    packet->serial = g_hook->m_native_stereo_packet_serial.fetch_add(1, std::memory_order_acq_rel) + 1;
-    packet->capture_generation = native_capture_snapshot->generation;
-    packet->engine_frame = g_frame_count;
-    packet->render_frame = vr->m_render_frame_count;
-    packet->player_index = native_left_metadata.player_index;
-    packet->left_pass = native_left_metadata.original_stereo_pass;
-    packet->right_pass = native_right_metadata.original_stereo_pass;
-    g_hook->publish_native_stereo_frame_packet(std::move(packet));
+    publish_native_packet();
 }
 
 void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family) {
