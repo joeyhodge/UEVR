@@ -25157,13 +25157,28 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
     const auto w = VR::get()->get_hmd_width();
     const auto h = VR::get()->get_hmd_height();
 
-    if (w != this->last_width || h != this->last_height || g_hook->should_recreate_textures()) {
+    const bool dimensions_changed = w != this->last_width || h != this->last_height;
+    const bool texture_recreation_requested = g_hook->should_recreate_textures();
+
+    if (dimensions_changed || texture_recreation_requested) {
         SPDLOG_INFO("Reallocating view target! {} {} -> {} {}", this->last_width, this->last_height, w, h);
+
+        const auto preserved_capture = !dimensions_changed && texture_recreation_requested
+            ? get_preservable_scene_capture_for_same_size_reallocation(w, h)
+            : nullptr;
 
         this->last_width = w;
         this->last_height = h;
         this->wants_depth_reallocate = true;
-        this->destroy_scene_capture();
+
+        if (preserved_capture != nullptr) {
+            SPDLOG_INFO(
+                "[NativeStereoFix] Preserving scene-capture generation {} across validated same-size D3D12 view-target reset",
+                preserved_capture->generation);
+        } else {
+            this->destroy_scene_capture();
+        }
+
         g_hook->set_should_recreate_textures(false);
         return true;
     }
@@ -26437,6 +26452,59 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
         expected_width,
         expected_height);
     return true;
+}
+
+std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot>
+VRRenderTargetManager_Base::get_preservable_scene_capture_for_same_size_reallocation(
+    uint32_t width,
+    uint32_t height) const
+{
+    const auto vr = VR::get();
+    if (vr == nullptr || !vr->is_native_stereo_fix_enabled() ||
+        g_framework->get_renderer_type() != Framework::RendererType::D3D12 ||
+        width == 0 || height == 0 ||
+        !scene_capture_lifetime_active.load(std::memory_order_acquire) ||
+        scene_capture_creation_requested.load(std::memory_order_acquire) ||
+        scene_capture_destruction_requested.load(std::memory_order_acquire))
+    {
+        return nullptr;
+    }
+
+    const auto snapshot = get_scene_capture_target_snapshot();
+    const auto generation = scene_capture_generation.load(std::memory_order_acquire);
+    if (snapshot == nullptr || generation == 0 || snapshot->generation != generation ||
+        snapshot->width != width || snapshot->height != height ||
+        snapshot->owner_texture == 0 || snapshot->rhi_texture == nullptr ||
+        snapshot->native_resource.Get() == nullptr)
+    {
+        return nullptr;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> texture{};
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    if (FAILED(snapshot->native_resource.As(&texture)) || texture == nullptr ||
+        FAILED(texture->GetDevice(IID_PPV_ARGS(&resource_device))) || resource_device == nullptr)
+    {
+        return nullptr;
+    }
+
+    const auto& hook = g_framework->get_d3d12_hook();
+    const auto expected_device = hook != nullptr ? hook->get_device() : nullptr;
+    const auto desc = texture->GetDesc();
+    const bool bgra_compatible =
+        desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+
+    if (expected_device == nullptr || resource_device.Get() != expected_device ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || !bgra_compatible ||
+        desc.Width != width || desc.Height != height ||
+        desc.MipLevels != 1 || desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1)
+    {
+        return nullptr;
+    }
+
+    return snapshot;
 }
 
 void VRRenderTargetManager_Base::destroy_scene_capture() {
