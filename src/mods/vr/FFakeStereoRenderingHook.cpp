@@ -89,6 +89,45 @@ namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
+
+template <typename T, size_t Capacity>
+class FixedCapacityList {
+public:
+    bool try_push_back(const T& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = value;
+        return true;
+    }
+
+    bool try_push_back(T&& value) {
+        if (m_size >= Capacity) {
+            return false;
+        }
+
+        m_storage[m_size++] = std::move(value);
+        return true;
+    }
+
+    void clear() { m_size = 0; }
+    bool empty() const { return m_size == 0; }
+    size_t size() const { return m_size; }
+    T* begin() { return m_storage.data(); }
+    T* end() { return m_storage.data() + m_size; }
+    const T* begin() const { return m_storage.data(); }
+    const T* end() const { return m_storage.data() + m_size; }
+    T& front() { return m_storage[0]; }
+    const T& front() const { return m_storage[0]; }
+    T& operator[](size_t index) { return m_storage[index]; }
+    const T& operator[](size_t index) const { return m_storage[index]; }
+
+private:
+    std::array<T, Capacity> m_storage{};
+    size_t m_size{};
+};
+
 template <typename T>
 bool safe_read_value(uintptr_t address, T& out);
 
@@ -16343,6 +16382,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
 
     const auto uses_tarrayview = sdk::FSceneViewFamily::has_vtable() && first_word != expected_vtable;
+    constexpr size_t max_sane_view_families = 16;
     sdk::FSceneViewFamily* view_family = view_family_candidate;
     std::vector<sdk::FSceneViewFamily*> view_families{};
 
@@ -16355,7 +16395,6 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         TArrayViewViewFamily view_family_array{};
         std::memcpy(&view_family_array, view_family_candidate, sizeof(view_family_array));
 
-        constexpr uint32_t max_sane_view_families = 16;
         if (view_family_array.data == nullptr || view_family_array.count == 0 ||
             view_family_array.count > max_sane_view_families ||
             !is_readable_process_range(
@@ -16411,7 +16450,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         std::vector<sdk::FSceneView*> entries{};
     };
 
-    FixedCapacityList<SplitScreenViewsRestore, max_sane_view_families> split_screen_restores{};
+    std::vector<SplitScreenViewsRestore> split_screen_restores{};
     std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> native_capture_snapshot{};
     sdk::FSceneView* native_left_view{};
     sdk::FSceneView* native_right_view{};

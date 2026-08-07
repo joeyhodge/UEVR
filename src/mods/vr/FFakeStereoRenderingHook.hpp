@@ -1131,6 +1131,10 @@ private:
         uint32_t generation{};
         bool orientation_confirmed{};
         bool logged_naturally_separated{};
+        bool logged_owner_unavailable{};
+        bool logged_owner_stabilizing{};
+        bool logged_owner_validation_failed{};
+        GhostingFixOwner owner{};
     };
 
     static bool bind_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
