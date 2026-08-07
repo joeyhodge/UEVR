@@ -633,22 +633,111 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
+    auto native_stereo_packet = ffsr != nullptr
+        ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count)
+        : nullptr;
+    D3D11_TEXTURE2D_DESC scene_capture_desc{};
+    bool scene_capture_packet_ready = false;
 
-    if (vr->is_native_stereo_fix_enabled()) {
-        const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
-        const auto scene_capture_rt = scene_capture != nullptr ? (ID3D11Texture2D*)scene_capture->get_native_resource() : nullptr;
+    if (vr->is_native_stereo_fix_enabled() && native_stereo_packet != nullptr) {
+        ComPtr<ID3D11Texture2D> scene_capture_rt{};
+        ComPtr<ID3D11Device> scene_capture_device{};
+        const auto capture = native_stereo_packet->capture;
+        const auto query_result = capture != nullptr
+            ? capture->native_resource.As(&scene_capture_rt)
+            : E_NOINTERFACE;
 
-        if (scene_capture_rt != nullptr && scene_capture_rt != m_scene_capture_tex_ref.tex.Get()) {
-            D3D11_TEXTURE2D_DESC desc{};
-            scene_capture_rt->GetDesc(&desc);
+        if (SUCCEEDED(query_result) && scene_capture_rt != nullptr) {
+            scene_capture_rt->GetDesc(&scene_capture_desc);
+            scene_capture_rt->GetDevice(&scene_capture_device);
 
-            spdlog::info("[VR] Scene capture texture format: {}, {}x{}", (uint32_t)desc.Format, desc.Width, desc.Height);
-            m_scene_capture_tex_ref.set(scene_capture_rt, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM);
-        } else if (scene_capture_rt == nullptr && m_scene_capture_tex_ref.has_texture()) {
-            m_scene_capture_tex_ref.reset();
+            const bool bgra_compatible =
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            const bool desc_valid =
+                scene_capture_device.Get() == device && bgra_compatible &&
+                scene_capture_desc.Width == static_cast<uint32_t>(vr->get_hmd_width()) &&
+                scene_capture_desc.Height == static_cast<uint32_t>(vr->get_hmd_height()) &&
+                scene_capture_desc.MipLevels == 1 && scene_capture_desc.ArraySize == 1 &&
+                scene_capture_desc.SampleDesc.Count == 1;
+
+            if (desc_valid) {
+                const auto view_format = scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS
+                    ? DXGI_FORMAT_B8G8R8A8_UNORM
+                    : scene_capture_desc.Format;
+
+                if (m_scene_capture_generation != capture->generation ||
+                    scene_capture_rt.Get() != m_scene_capture_tex_ref.tex.Get())
+                {
+                    m_scene_capture_tex_ref.reset();
+                    m_scene_capture_generation = 0;
+                    if (m_scene_capture_tex_ref.set(scene_capture_rt.Get(), view_format, view_format)) {
+                        m_scene_capture_generation = capture->generation;
+                        m_scene_capture_width = scene_capture_desc.Width;
+                        m_scene_capture_height = scene_capture_desc.Height;
+                        spdlog::info(
+                            "[NativeStereoFix][D3D11] Accepted scene capture generation {} format {} {}x{}",
+                            capture->generation,
+                            static_cast<uint32_t>(scene_capture_desc.Format),
+                            scene_capture_desc.Width,
+                            scene_capture_desc.Height);
+                    }
+                }
+
+                scene_capture_packet_ready =
+                    m_scene_capture_generation == capture->generation &&
+                    m_scene_capture_tex_ref.has_texture();
+            } else {
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[NativeStereoFix][D3D11] Rejecting capture generation {} device_match={} format={} size={}x{} mips={} array={} samples={}",
+                    capture->generation,
+                    scene_capture_device.Get() == device,
+                    static_cast<uint32_t>(scene_capture_desc.Format),
+                    scene_capture_desc.Width,
+                    scene_capture_desc.Height,
+                    scene_capture_desc.MipLevels,
+                    scene_capture_desc.ArraySize,
+                    scene_capture_desc.SampleDesc.Count);
+            }
         }
-    } else {
-        m_scene_capture_tex_ref.reset();
+    }
+
+    if (native_stereo_packet != nullptr && !scene_capture_packet_ready && ffsr != nullptr) {
+        ffsr->reject_native_stereo_frame_packet(
+            native_stereo_packet->serial,
+            "D3D11 rejected the capture resource or its views");
+    }
+
+    if (!scene_capture_packet_ready) {
+        bool cached_capture_is_current = false;
+
+        if (native_stereo_packet == nullptr &&
+            vr->is_native_stereo_fix_enabled() &&
+            m_scene_capture_generation != 0 &&
+            m_scene_capture_tex_ref.has_texture())
+        {
+            const auto current_capture = ffsr != nullptr
+                ? ffsr->get_render_target_manager()->get_scene_capture_target_snapshot()
+                : nullptr;
+            ComPtr<ID3D11Texture2D> current_resource{};
+
+            cached_capture_is_current =
+                current_capture != nullptr &&
+                current_capture->generation == m_scene_capture_generation &&
+                SUCCEEDED(current_capture->native_resource.As(&current_resource)) &&
+                current_resource.Get() == m_scene_capture_tex_ref.tex.Get();
+        }
+
+        if (!cached_capture_is_current) {
+            m_scene_capture_tex_ref.reset();
+            m_scene_capture_generation = 0;
+            m_scene_capture_width = 0;
+            m_scene_capture_height = 0;
+        }
+
+        native_stereo_packet.reset();
     }
 
     // Update the UI overlay. Days Gone normally composites Slate through BendTemporalAA
@@ -808,7 +897,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
         if (!is_afr) {
             // Render right side to right screen tex
-            if (m_scene_capture_tex_ref.has_texture() && m_scene_capture_tex_ref.has_srv()) {
+            if (native_stereo_packet != nullptr &&
+                m_scene_capture_tex_ref.has_texture() &&
+                m_scene_capture_tex_ref.has_srv())
+            {
                 render_srv_to_rtv(
                     m_game_batch.get(),
                     m_scene_capture_tex_ref,
@@ -1086,7 +1178,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             } else {
                 // Copy over the entire double wide back buffer instead
-                if (!m_scene_capture_tex_ref.has_texture()) {
+                if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), nullptr);
                 } else {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, nullptr, [&](ID3D11Texture2D* render_target) {
@@ -1098,9 +1190,28 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                             .bottom = m_backbuffer_size[1],
                             .back = 1
                         };
+                        const D3D11_BOX right_src_box{
+                            .left = 0,
+                            .top = 0,
+                            .front = 0,
+                            .right = m_scene_capture_width,
+                            .bottom = m_scene_capture_height,
+                            .back = 1,
+                        };
 
                         context->CopySubresourceRegion(render_target, 0, 0, 0, 0, backbuffer.Get(), 0, &left_src_box);
-                        context->CopySubresourceRegion(render_target, 0, m_backbuffer_size[0] / 2, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &left_src_box);
+                        context->CopySubresourceRegion(
+                            render_target,
+                            0,
+                            m_backbuffer_size[0] / 2,
+                            0,
+                            0,
+                            m_scene_capture_tex_ref.tex.Get(),
+                            0,
+                            &right_src_box);
+                        if (native_stereo_packet != nullptr) {
+                            ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                        }
                     });
                 }
 
@@ -1192,7 +1303,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             }
 
             // Copy the back buffer to the right eye texture.
-            if (!m_scene_capture_tex_ref.has_texture()) {
+            if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                 D3D11_BOX src_box{};
                 if (!vr->is_extreme_compatibility_mode_enabled()) {
                     if (!is_afr) {
@@ -1221,16 +1332,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
                 context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, backbuffer.Get(), 0, &src_box);
             } else {
-                D3D11_BOX left_src_box{
+                D3D11_BOX right_src_box{
                     .left = 0,
                     .top = 0,
                     .front = 0,
-                    .right = m_backbuffer_size[0] / 2,
-                    .bottom = m_backbuffer_size[1],
+                    .right = m_scene_capture_width,
+                    .bottom = m_scene_capture_height,
                     .back = 1
                 };
 
-                context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &left_src_box);
+                context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &right_src_box);
+                if (native_stereo_packet != nullptr) {
+                    ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                }
             }
 
             if (m_is_shader_setup) {
@@ -1465,6 +1579,10 @@ void D3D11Component::on_reset(VR* vr) {
     m_extreme_compat_backbuffer.Reset();
     m_converted_backbuffer.Reset();
     m_extreme_compat_backbuffer_ctx.reset();
+    m_scene_capture_tex_ref.reset();
+    m_scene_capture_generation = 0;
+    m_scene_capture_width = 0;
+    m_scene_capture_height = 0;
     m_left_eye_tex.Reset();
     m_right_eye_tex.Reset();
     m_left_eye_rtv.Reset();
