@@ -27102,6 +27102,23 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         return false;
     }
 
+    // A render-thread publication can trail the game-thread UObject handoff.
+    // Do not replace a live target while its generation is still being published;
+    // doing so creates and destroys a capture actor every frame.
+    if (this->scene_capture_target != nullptr) {
+        try {
+            if (this->scene_capture_target.valid()) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[NativeStereoFix] Waiting for existing scene-capture generation {} to publish",
+                    scene_capture_generation.load(std::memory_order_acquire));
+                return false;
+            }
+        } catch (...) {
+            // The stale target is retired by destroy_scene_capture below.
+        }
+    }
+
     // This is necessary for offset calculations to succeed.
     if (FRHITexture2D::get_vtable() == nullptr) {
         SPDLOG_WARN("[VRRenderTargetManager] FRHITexture2D vtable is null, waiting for it to be set!");
@@ -27313,16 +27330,27 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 
             hook_frt(frt);
 
-            RHIThreadWorker::get().enqueue([this, tgt, generation, rhi_texture]() {
+            // The RHI worker can be starved on newer parallel-RHI paths. Publish
+            // from the render thread, where the FRenderTarget has just proven the
+            // RHI texture is ready, and retain the native resource before exposing it.
+            if (!publish_scene_capture_target_snapshot(
+                    reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                    rhi_texture,
+                    generation))
+            {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[NativeStereoFix] Waiting for scene-capture generation {} native resource publication",
+                    generation);
+                return false;
+            }
+
+            RHIThreadWorker::get().enqueue([this, tgt, generation]() {
                 if (generation != scene_capture_generation.load(std::memory_order_acquire) || !tgt.valid()) {
                     return;
                 }
 
                 scene_capture_target_rhi_thread = tgt;
-                publish_scene_capture_target_snapshot(
-                    reinterpret_cast<sdk::UTexture*>(tgt.get()),
-                    rhi_texture,
-                    generation);
             });
 
             GameThreadWorker::get().enqueue([this, tgt, generation]() {
