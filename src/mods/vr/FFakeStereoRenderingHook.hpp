@@ -219,6 +219,9 @@ protected:
         sdk::UTexture* owner_texture,
         FRHITexture2D* rhi_texture,
         uint64_t generation);
+    std::shared_ptr<const SceneCaptureTargetSnapshot> get_preservable_scene_capture_for_same_size_reallocation(
+        uint32_t width,
+        uint32_t height) const;
 
     void retain_everspace2_dedicated_ui_target(FRHITexture2D* rt);
 
