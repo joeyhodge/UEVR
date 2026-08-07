@@ -318,6 +318,7 @@ protected:
     std::atomic_bool scene_capture_creation_requested{};
     std::atomic_bool scene_capture_destruction_requested{};
     std::atomic<uint64_t> scene_capture_request_serial{};
+    std::atomic<uint64_t> scene_capture_retry_after_ms{};
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
