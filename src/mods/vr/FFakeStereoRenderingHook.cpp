@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <d3d11.h>
+#include <d3d12.h>
 #include <winternl.h>
 
 #include <asmjit/asmjit.h>
@@ -2954,6 +2955,17 @@ bool is_ue_4_26_runtime() {
     return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 26;
 }
 
+bool is_ue_4_25_runtime() {
+    static const auto disk_version = sdk::get_file_version_info();
+    static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+
+    if (str_version != "0.00") {
+        return str_version.starts_with("4.25");
+    }
+
+    return HIWORD(disk_version.dwFileVersionMS) == 4 && LOWORD(disk_version.dwFileVersionMS) == 25;
+}
+
 bool is_ue_4_16_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -4651,23 +4663,25 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
-    // UE4.26.1 source, the Psychonauts 2 PDB, and archived UE4.26 UEVR logs
-    // place UObject::PostInitProperties at slot 8. ULocalPlayer overrides that
-    // slot to size and allocate ViewStates from GetDesiredNumberOfViews.
-    if (is_ue_4_26_runtime()) {
-        constexpr uint32_t UE426_POST_INIT_PROPERTIES_SLOT = 8;
+    // UE4.25/4.25Plus and UE4.26 source place UObject::PostInitProperties at
+    // slot 8. ULocalPlayer overrides it to size and allocate ViewStates from
+    // GetDesiredNumberOfViews. Keep this source-informed path separate from
+    // the changing UE5 layouts.
+    if (is_ue_4_25_runtime() || is_ue_4_26_runtime()) {
+        constexpr uint32_t UE425_426_POST_INIT_PROPERTIES_SLOT = 8;
+        const auto runtime_label = is_ue_4_25_runtime() ? "UE4.25" : "UE4.26";
 
         if (validate_source_informed_post_init_slot(
                 object_vtable,
                 localplayer_vtable,
-                UE426_POST_INIT_PROPERTIES_SLOT,
-                "UE4.26 ULocalPlayer::PostInitProperties",
+                UE425_426_POST_INIT_PROPERTIES_SLOT,
+                runtime_label,
                 false))
         {
-            return UE426_POST_INIT_PROPERTIES_SLOT;
+            return UE425_426_POST_INIT_PROPERTIES_SLOT;
         }
 
-        SPDLOG_WARN("[UE4.26][PostInitProperties] Slot 8 did not validate; skipping LocalPlayer bootstrap for safety");
+        SPDLOG_WARN("[{}][PostInitProperties] Slot 8 did not validate; skipping LocalPlayer bootstrap for safety", runtime_label);
         return std::nullopt;
     }
 
@@ -5030,6 +5044,10 @@ bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wr
 
 std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
     constexpr uint32_t max_stack_depth = 32;
+    // The renderer entry is close to the view-extension callback. Launch-loop
+    // frames farther up the stack can have the same small-wrapper/direct-call
+    // shape but are not recurring render entry points.
+    constexpr uint32_t max_renderer_stack_index = 10;
     std::array<uintptr_t, max_stack_depth> stack{};
     const auto depth = RtlCaptureStackBackTrace(
         0,
@@ -5045,7 +5063,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
     // frames are BeginRenderingViewFamilies and its small singular wrapper.
     // Validate that wrapper's exact direct CALL instead of guessing from the
     // first captured frame.
-    for (uint32_t i = 1; i + 1 < depth; ++i) {
+    for (uint32_t i = 1; i + 1 < depth && i <= max_renderer_stack_index; ++i) {
         const auto callee = get_runtime_function_range(stack[i]);
         const auto caller = get_runtime_function_range(stack[i + 1]);
 
@@ -5057,13 +5075,16 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
             continue;
         }
 
-        auto score = 0;
+        // Only UE5's singular wrapper is evidence for its plural callee. A
+        // generic direct-call pair can otherwise resolve GuardedMain through
+        // GuardedMainWrapper on UE4 and install a hook that never runs again.
+        if (!has_begin_rendering_viewfamily_wrapper_shape(*caller)) {
+            continue;
+        }
+
+        auto score = 100;
         score += static_cast<int>(std::min<size_t>(callee->size() / 0x100, 32));
         score += static_cast<int>((0x180 - caller->size()) / 8);
-
-        if (has_begin_rendering_viewfamily_wrapper_shape(*caller)) {
-            score += 100;
-        }
 
         if (score > best_score) {
             best_score = score;
@@ -5089,7 +5110,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
         constexpr size_t min_renderer_size = 0x200;
         constexpr size_t max_renderer_size = 0x4000;
 
-        for (uint32_t i = 1; i < depth; ++i) {
+        for (uint32_t i = 1; i < depth && i <= max_renderer_stack_index; ++i) {
             const auto candidate = get_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
@@ -5231,6 +5252,12 @@ struct GhostingRawArrayHeader {
 
 static_assert(sizeof(GhostingRawArrayHeader) == 0x10);
 
+bool ghosting_read_array_header(
+    uintptr_t address,
+    int32_t maximum_count,
+    int32_t maximum_capacity,
+    GhostingRawArrayHeader& out);
+
 enum class GhostingUObjectValidationMode : uint8_t {
     ObjectArray,
     UObjectHook,
@@ -5342,6 +5369,197 @@ bool ghosting_is_valid_scene_state(sdk::FSceneViewStateInterface* state) {
         first_virtual != 0 &&
         is_executable_process_range(first_virtual, 1) &&
         utility::get_module_within((void*)vtable).has_value();
+}
+
+struct LegacyLocalPlayerViewStatesSnapshot {
+    uintptr_t header_address{};
+    GhostingRawArrayHeader header{};
+    uintptr_t reference_vtable{};
+};
+
+bool validate_ue425_426_view_states_array(
+    uintptr_t header_address,
+    LegacyLocalPlayerViewStatesSnapshot& out)
+{
+    constexpr uint32_t VIEW_STATE_REFERENCE_STRIDE = 0x28;
+
+    GhostingRawArrayHeader header{};
+    if (!ghosting_read_array_header(header_address, 8, 16, header)) {
+        return false;
+    }
+
+    const auto storage_size = static_cast<size_t>(header.count) * VIEW_STATE_REFERENCE_STRIDE;
+    if (storage_size / VIEW_STATE_REFERENCE_STRIDE != static_cast<size_t>(header.count) ||
+        !is_readable_process_range(header.data, storage_size))
+    {
+        return false;
+    }
+
+    uintptr_t expected_vtable{};
+    for (int32_t i = 0; i < header.count; ++i) {
+        const auto element = header.data + static_cast<uintptr_t>(i) * VIEW_STATE_REFERENCE_STRIDE;
+        uintptr_t vtable{};
+        uintptr_t first_virtual{};
+        uintptr_t state{};
+
+        if (!safe_read_value(element, vtable) ||
+            vtable == 0 ||
+            !safe_read_value(vtable, first_virtual) ||
+            first_virtual == 0 ||
+            !is_executable_process_range(first_virtual, 1) ||
+            !utility::get_module_within(reinterpret_cast<void*>(vtable)).has_value() ||
+            !safe_read_value(element + sizeof(uintptr_t), state))
+        {
+            return false;
+        }
+
+        if (expected_vtable == 0) {
+            expected_vtable = vtable;
+        } else if (vtable != expected_vtable) {
+            return false;
+        }
+
+        if (state != 0 &&
+            !ghosting_is_valid_scene_state(reinterpret_cast<sdk::FSceneViewStateInterface*>(state)))
+        {
+            return false;
+        }
+    }
+
+    out = {
+        .header_address = header_address,
+        .header = header,
+        .reference_vtable = expected_vtable,
+    };
+    return true;
+}
+
+bool ue425_426_view_state_is_valid(
+    const LegacyLocalPlayerViewStatesSnapshot& snapshot,
+    int32_t index)
+{
+    constexpr uint32_t VIEW_STATE_REFERENCE_STRIDE = 0x28;
+
+    if (index < 0 || index >= snapshot.header.count) {
+        return false;
+    }
+
+    uintptr_t state{};
+    const auto state_slot = snapshot.header.data +
+        static_cast<uintptr_t>(index) * VIEW_STATE_REFERENCE_STRIDE +
+        sizeof(uintptr_t);
+    if (!safe_read_value(state_slot, state) || state == 0) {
+        return false;
+    }
+
+    return ghosting_is_valid_scene_state(
+        reinterpret_cast<sdk::FSceneViewStateInterface*>(state));
+}
+
+bool ue425_426_view_states_have_distinct_pair(const LegacyLocalPlayerViewStatesSnapshot& snapshot) {
+    constexpr uint32_t VIEW_STATE_REFERENCE_STRIDE = 0x28;
+
+    if (snapshot.header.count < 2 ||
+        !ue425_426_view_state_is_valid(snapshot, 0) ||
+        !ue425_426_view_state_is_valid(snapshot, 1))
+    {
+        return false;
+    }
+
+    uintptr_t left{};
+    uintptr_t right{};
+    safe_read_value(snapshot.header.data + sizeof(uintptr_t), left);
+    safe_read_value(
+        snapshot.header.data + VIEW_STATE_REFERENCE_STRIDE + sizeof(uintptr_t),
+        right);
+    return left != right;
+}
+
+bool ue425_426_read_view_state_pair(
+    const LegacyLocalPlayerViewStatesSnapshot& snapshot,
+    sdk::FSceneViewStateInterface*& left,
+    sdk::FSceneViewStateInterface*& right)
+{
+    constexpr uint32_t VIEW_STATE_REFERENCE_STRIDE = 0x28;
+    uintptr_t left_address{};
+    uintptr_t right_address{};
+
+    if (!ue425_426_view_states_have_distinct_pair(snapshot) ||
+        !safe_read_value(snapshot.header.data + sizeof(uintptr_t), left_address) ||
+        !safe_read_value(
+            snapshot.header.data + VIEW_STATE_REFERENCE_STRIDE + sizeof(uintptr_t),
+            right_address))
+    {
+        return false;
+    }
+
+    left = reinterpret_cast<sdk::FSceneViewStateInterface*>(left_address);
+    right = reinterpret_cast<sdk::FSceneViewStateInterface*>(right_address);
+    return ghosting_is_valid_scene_state(left) &&
+        ghosting_is_valid_scene_state(right) &&
+        left != right;
+}
+
+std::optional<LegacyLocalPlayerViewStatesSnapshot> resolve_ue425_426_view_states(uintptr_t localplayer) {
+    constexpr uintptr_t STOCK_VIEW_STATES_OFFSET = 0xA8;
+    std::array<uintptr_t, 2> candidates{};
+    size_t candidate_count{};
+
+    const auto add_candidate = [&](uintptr_t candidate) {
+        if (candidate == 0 || candidate < localplayer) {
+            return;
+        }
+
+        for (size_t i = 0; i < candidate_count; ++i) {
+            if (candidates[i] == candidate) {
+                return;
+            }
+        }
+
+        if (candidate_count < candidates.size()) {
+            candidates[candidate_count++] = candidate;
+        }
+    };
+
+    // UE4.25.4 and UE4.26.0 source place the private ViewStates TArray
+    // immediately before the reflected ControllerId. Prefer that relationship
+    // so licensee builds do not depend on the stock absolute class offset.
+    try {
+        auto* const local_player_object = reinterpret_cast<sdk::UObject*>(localplayer);
+        const auto controller_id_data =
+            reinterpret_cast<uintptr_t>(local_player_object->get_property_data(L"ControllerId"));
+        if (controller_id_data >= localplayer + sizeof(GhostingRawArrayHeader) &&
+            controller_id_data < localplayer + 0x1000)
+        {
+            add_candidate(controller_id_data - sizeof(GhostingRawArrayHeader));
+        }
+    } catch (...) {
+    }
+
+    // Shipping PDBs for the stock 4.25/4.25Plus/4.26 layout put ViewStates at
+    // 0xA8. It remains a validated fallback when reflected property lookup is
+    // unavailable, never an unchecked write target.
+    add_candidate(localplayer + STOCK_VIEW_STATES_OFFSET);
+
+    std::optional<LegacyLocalPlayerViewStatesSnapshot> resolved{};
+    for (size_t i = 0; i < candidate_count; ++i) {
+        LegacyLocalPlayerViewStatesSnapshot candidate{};
+        if (!validate_ue425_426_view_states_array(candidates[i], candidate)) {
+            continue;
+        }
+
+        if (resolved && resolved->header_address != candidate.header_address) {
+            SPDLOG_WARN(
+                "[NativeStereoFix][UE4.25/4.26] Refusing ambiguous LocalPlayer ViewStates candidates {:x} and {:x}",
+                resolved->header_address,
+                candidate.header_address);
+            return std::nullopt;
+        }
+
+        resolved = candidate;
+    }
+
+    return resolved;
 }
 
 bool ghosting_object_array_contains(
@@ -12491,7 +12709,7 @@ bool FFakeStereoRenderingHook::is_in_viewport_client_draw() const {
     return m_in_viewport_client_draw && GameThreadWorker::get().is_same_thread();
 }
 
-bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
+bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label) {
     GhostingFixOwnerCandidate candidate{};
     GhostingOwnerResolveDiagnostic object_array_diagnostic{};
     GhostingOwnerResolveDiagnostic object_hook_diagnostic{};
@@ -12516,8 +12734,9 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
         if (!pair.logged_owner_unavailable) {
             pair.logged_owner_unavailable = true;
             SPDLOG_WARN(
-                "[GhostingFix] Scene-state owner resolution failed closed "
+                "[{}] Scene-state owner resolution failed closed "
                 "direct_stage={} direct_player={}/{} hook_available={} hook_stage={} hook_player={}/{}",
+                log_label,
                 ghosting_owner_failure_name(object_array_diagnostic.failure),
                 object_array_diagnostic.local_player_index,
                 object_array_diagnostic.local_player_count,
@@ -12581,8 +12800,9 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair) {
 
     if (candidate.uses_uobject_hook_validation) {
         SPDLOG_WARN(
-            "[GhostingFix] Bound exact LocalPlayer scene-state ownership through the authoritative UObjectHook set "
+            "[{}] Bound exact LocalPlayer scene-state ownership through the authoritative UObjectHook set "
             "after direct FUObjectArray validation failed at stage={} owner={:x} storage={} stride=0x{:x}",
+            log_label,
             ghosting_owner_failure_name(object_array_diagnostic.failure),
             reinterpret_cast<uintptr_t>(candidate.local_player),
             candidate.view_states_are_array ? "array" : "legacy pair",
@@ -12773,8 +12993,8 @@ bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(
     return true;
 }
 
-bool FFakeStereoRenderingHook::refresh_ghosting_fix_owner(GhostingFixPair& pair) {
-    if (!pair.owner.verified && !bind_ghosting_fix_owner(pair)) {
+bool FFakeStereoRenderingHook::refresh_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label) {
+    if (!pair.owner.verified && !bind_ghosting_fix_owner(pair, log_label)) {
         return false;
     }
 
@@ -12789,8 +13009,9 @@ bool FFakeStereoRenderingHook::refresh_ghosting_fix_owner(GhostingFixPair& pair)
         if (!pair.logged_owner_validation_failed) {
             pair.logged_owner_validation_failed = true;
             SPDLOG_WARN(
-                "[GhostingFix] Verified owner became invalid at stage={}; keeping remap fail-closed "
+                "[{}] Verified owner became invalid at stage={}; keeping remap fail-closed "
                 "scene={:x} generation={} owner={:x}",
+                log_label,
                 failure_stage != nullptr ? failure_stage : "unknown",
                 pair.scene,
                 pair.generation,
@@ -12873,7 +13094,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         }
     }
 
-    std::scoped_lock ___{g_hook->m_sceneview_data.mtx};
+    std::scoped_lock sceneview_lock{g_hook->m_sceneview_data.mtx};
 
     const auto retaddr = (uintptr_t)_ReturnAddress();
 
@@ -12898,6 +13119,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     auto init_options_ue5 = (sdk::FSceneViewInitOptionsUE5*)init_options;
 
     const auto init_options_scene_state = init_options->get_scene_state();
+    auto* native_effective_scene_state = init_options_scene_state;
     const auto init_options_original_stereo_pass = init_options->get_stereo_pass();
     const auto init_options_player_index = init_options->get_player_index();
     const auto init_options_view_family = init_options->get_view_family();
@@ -13101,10 +13323,66 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     const auto init_options_stereo_pass = init_options_original_stereo_pass;
 
+    FIntRect native_view_rect{};
+    FIntRect native_constrained_view_rect{};
+    uint64_t native_projection_hash = 1469598103934665603ull;
+    bool native_projection_valid = true;
+    bool native_projection_nonzero = false;
+
+    const auto hash_projection = [&](const void* data, size_t size) {
+        const auto* bytes = static_cast<const uint8_t*>(data);
+        for (size_t index = 0; index < size; ++index) {
+            native_projection_hash ^= bytes[index];
+            native_projection_hash *= 1099511628211ull;
+        }
+    };
+    const auto validate_projection = [&](const auto* values) {
+        for (size_t index = 0; index < 16; ++index) {
+            if (!std::isfinite(values[index])) {
+                native_projection_valid = false;
+                return;
+            }
+            native_projection_nonzero = native_projection_nonzero || std::abs(values[index]) > 1.0e-12;
+        }
+    };
+
+    if (is_ue50_to_53) {
+        std::memcpy(native_view_rect.bounds, init_options_ue50_to_53->view_rect, sizeof(native_view_rect.bounds));
+        std::memcpy(native_constrained_view_rect.bounds, init_options_ue50_to_53->constrained_view_rect, sizeof(native_constrained_view_rect.bounds));
+        const auto* values = reinterpret_cast<const double*>(&init_options_ue50_to_53->projection_matrix);
+        validate_projection(values);
+        hash_projection(values, sizeof(init_options_ue50_to_53->projection_matrix));
+    } else if (is_ue5) {
+        std::memcpy(native_view_rect.bounds, init_options_ue5->view_rect, sizeof(native_view_rect.bounds));
+        std::memcpy(native_constrained_view_rect.bounds, init_options_ue5->constrained_view_rect, sizeof(native_constrained_view_rect.bounds));
+        const auto* values = reinterpret_cast<const double*>(&init_options_ue5->projection_matrix);
+        validate_projection(values);
+        hash_projection(values, sizeof(init_options_ue5->projection_matrix));
+    } else {
+        std::memcpy(native_view_rect.bounds, init_options->view_rect, sizeof(native_view_rect.bounds));
+        std::memcpy(native_constrained_view_rect.bounds, init_options->constrained_view_rect, sizeof(native_constrained_view_rect.bounds));
+        const auto* values = reinterpret_cast<const float*>(&init_options->projection_matrix);
+        validate_projection(values);
+        hash_projection(values, sizeof(init_options->projection_matrix));
+    }
+
+    native_projection_valid = native_projection_valid && native_projection_nonzero && native_projection_hash != 0;
+
     std::optional<uint32_t> views_original_count{};
 
-    if (vr->is_native_stereo_fix_enabled() && init_options_stereo_pass > EStereoscopicPass::eSSP_PRIMARY) {
-        if (g_hook->get_render_target_manager()->get_scene_capture_render_target() != nullptr) {
+    if (vr->is_native_stereo_fix_enabled() && init_options_stereo_pass == EStereoscopicPass::eSSP_SECONDARY) {
+        const auto rtm = g_hook->get_render_target_manager();
+        const auto capture_snapshot = rtm != nullptr ? rtm->get_scene_capture_target_snapshot() : nullptr;
+        const bool capture_generation_ready =
+            capture_snapshot != nullptr &&
+            capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            capture_snapshot->rhi_texture != nullptr &&
+            capture_snapshot->native_resource != nullptr;
+
+        // Do not mutate only the secondary constructor while a replacement
+        // target is still being created or retired. That produces a hybrid
+        // frame where both final eyes can originate from the primary view.
+        if (capture_generation_ready) {
             const bool is_ue55_or_newer = is_ue_5_5_runtime() || is_ue_5_6_or_newer();
             const bool force_primary_constructor_pass = subnautica2_is_current_game();
             const bool preserve_secondary_pass =
@@ -13144,6 +13422,32 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     SPDLOG_INFO_ONCE(
                         "[NativeStereoFix] Hiding FSceneViewFamily views during secondary-view construction");
                 }
+            }
+        }
+    }
+
+    if (vr->is_native_stereo_fix_enabled() &&
+        (is_ue_4_25_runtime() || is_ue_4_26_runtime()) &&
+        init_options_original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY)
+    {
+        auto& pair = g_hook->m_sceneview_data.native_stereo_state_pair;
+        const bool pair_matches_constructor =
+            init_options_scene_state == pair.eye_state[0] ||
+            init_options_scene_state == pair.eye_state[1];
+
+        if (pair_matches_constructor) {
+            const bool owner_ready = g_hook->refresh_ghosting_fix_owner(pair, "NativeStereoFix");
+
+            if (!owner_ready) {
+                // Retry ownership discovery after a level/GC transition, but
+                // never use a stale pointer chain in the current frame.
+                pair.owner = {};
+            } else if (pair.owner.stable_frames >= 2 && init_options_scene_state == pair.eye_state[0]) {
+                init_options->set_scene_state(pair.eye_state[1]);
+                native_effective_scene_state = pair.eye_state[1];
+                restore_init_options_after_constructor = true;
+                SPDLOG_INFO_ONCE(
+                    "[NativeStereoFix][UE4.25/4.26] Routing the secondary FSceneView to the source-validated right-eye ViewState");
             }
         }
     }
@@ -13708,6 +14012,42 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     last_index++;
 
     auto result = g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
+
+    if (vr->is_native_stereo_fix_enabled()) {
+        auto& native_views = g_hook->m_sceneview_data.native_stereo_views;
+        if (g_hook->m_sceneview_data.native_stereo_metadata_frame != g_frame_count) {
+            native_views.clear();
+            g_hook->m_sceneview_data.native_stereo_metadata_frame = g_frame_count;
+        }
+
+        const bool valid_stereo_pass =
+            init_options_original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
+            init_options_original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY;
+        const auto player_index = init_options_player_index.value_or(-1);
+        const bool player_index_valid = init_options_player_index.has_value();
+
+        if (result != nullptr && init_options_view_family != nullptr &&
+            valid_stereo_pass &&
+            (!player_index_valid || (player_index >= 0 && player_index <= 255)))
+        {
+            native_views[result] = NativeStereoViewMetadata{
+                .family = init_options_view_family,
+                .state = native_effective_scene_state,
+                .scene = init_options_scene,
+                .player_index = player_index,
+                .player_index_valid = player_index_valid,
+                .original_stereo_pass = init_options_original_stereo_pass,
+                .frame = g_frame_count,
+                .view_rect = native_view_rect,
+                .constrained_view_rect = native_constrained_view_rect,
+                .projection_hash = native_projection_hash,
+                .projection_valid = native_projection_valid,
+            };
+        }
+    } else {
+        g_hook->m_sceneview_data.native_stereo_views.clear();
+        g_hook->m_sceneview_data.native_stereo_metadata_frame = 0;
+    }
 
     if (vr->is_splitscreen_compatibility_enabled()) {
         auto& split_views = g_hook->m_sceneview_data.splitscreen_views;
@@ -14388,6 +14728,7 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
 
 void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family_candidate) {
     ZoneScopedN("BeginRenderViewFamilyReal");
+    g_hook->m_render_module_begin_render_viewfamily_observed.store(true, std::memory_order_release);
     const auto profile_engine_render = should_profile_engine_render_timing();
     const auto begin_render_viewfamily_real_start =
         profile_engine_render ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -14414,6 +14755,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     if (!vr->is_hmd_active() || (!native_stereo_fix_enabled && !split_screen_enabled)) {
         avowed_native_fix_gate_reset("hmd inactive or native stereo fix disabled");
+        if (!native_stereo_fix_enabled) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::Off, nullptr);
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            g_hook->m_sceneview_data.native_stereo_views.clear();
+            g_hook->m_sceneview_data.native_stereo_metadata_frame = 0;
+            g_hook->m_sceneview_data.native_stereo_target = 0;
+            g_hook->m_sceneview_data.native_stereo_scene = 0;
+            g_hook->m_sceneview_data.native_stereo_capture_generation = 0;
+            g_hook->m_sceneview_data.native_stereo_stable_frames = 0;
+        }
         rtm->destroy_scene_capture();
 
         if (!split_screen_enabled) {
@@ -14447,7 +14798,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
-    const auto strict_candidate_validation = dune_awakening_is_current_game() || split_screen_enabled;
+    const auto strict_candidate_validation =
+        dune_awakening_is_current_game() || split_screen_enabled || native_stereo_fix_enabled;
     const auto expected_vtable = reinterpret_cast<uintptr_t>(sdk::FSceneViewFamily::get_vtable_ptr());
     uintptr_t first_word{};
     std::memcpy(&first_word, view_family_candidate, sizeof(first_word));
@@ -14526,6 +14878,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     };
 
     FixedCapacityList<SplitScreenViewsRestore, max_sane_view_families> split_screen_restores{};
+    std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> native_capture_snapshot{};
+    sdk::FSceneView* native_left_view{};
+    sdk::FSceneView* native_right_view{};
+    NativeStereoViewMetadata native_left_metadata{};
+    NativeStereoViewMetadata native_right_metadata{};
     utility::ScopeGuard restore_split_screen_views{[&]() {
         for (size_t index = split_screen_restores.size(); index > 0; --index) {
             auto& restore = split_screen_restores[index - 1];
@@ -14886,6 +15243,238 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         }
     }
 
+    if (native_stereo_fix_enabled) {
+        if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "source-validated LocalPlayer ViewStates bootstrap failed");
+            call_original();
+            return;
+        }
+
+        native_capture_snapshot = rtm->get_scene_capture_target_snapshot();
+        if (native_capture_snapshot == nullptr ||
+            native_capture_snapshot->generation != rtm->get_scene_capture_generation() ||
+            native_capture_snapshot->rhi_texture == nullptr ||
+            native_capture_snapshot->native_resource == nullptr)
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::WaitingForTarget,
+                "capture target is not published");
+            rtm->create_scene_capture();
+            call_original();
+            return;
+        }
+
+        if (native_capture_snapshot->generation ==
+            g_hook->m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire))
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "retiring a capture generation rejected by the compositor path");
+            rtm->destroy_scene_capture();
+            call_original();
+            return;
+        }
+
+        const auto expected_viewport = rtm->get_viewport();
+        const auto rect_is_sane = [](const FIntRect& rect) {
+            const auto width = static_cast<int64_t>(rect.bounds[2]) - rect.bounds[0];
+            const auto height = static_cast<int64_t>(rect.bounds[3]) - rect.bounds[1];
+            return width > 0 && height > 0 && width <= 32768 && height <= 32768;
+        };
+
+        sdk::FSceneViewFamily* selected_family{};
+        size_t selected_family_count{};
+
+        for (const auto family : view_families) {
+            if (family == nullptr || expected_viewport == nullptr ||
+                family->get_render_target() != expected_viewport ||
+                family->get_scene_interface() == nullptr)
+            {
+                continue;
+            }
+
+            auto* const candidate_views = family->get_views();
+            if (candidate_views == nullptr ||
+                !is_readable_process_range(reinterpret_cast<uintptr_t>(candidate_views), sizeof(*candidate_views)) ||
+                candidate_views->count != 2 || candidate_views->capacity < 2 ||
+                candidate_views->data == nullptr ||
+                !is_readable_process_range(reinterpret_cast<uintptr_t>(candidate_views->data), sizeof(void*) * 2) ||
+                !sdk::FSceneViewFamily::validate_views(family, candidate_views, 2) ||
+                candidate_views->data[0] == nullptr || candidate_views->data[1] == nullptr ||
+                candidate_views->data[0] == candidate_views->data[1])
+            {
+                continue;
+            }
+
+            NativeStereoViewMetadata primary{};
+            NativeStereoViewMetadata secondary{};
+            sdk::FSceneView* primary_view{};
+            sdk::FSceneView* secondary_view{};
+            bool pair_valid = true;
+            const char* pair_reject_reason = nullptr;
+
+            {
+                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                const auto& metadata = g_hook->m_sceneview_data.native_stereo_views;
+                for (uint32_t view_index = 0; view_index < 2; ++view_index) {
+                    auto* const candidate_view = candidate_views->data[view_index];
+                    const auto metadata_it = metadata.find(candidate_view);
+                    if (metadata_it == metadata.end()) {
+                        pair_valid = false;
+                        pair_reject_reason = "family view is missing same-frame constructor metadata";
+                        break;
+                    }
+
+                    const auto& item = metadata_it->second;
+                    if (item.frame != g_frame_count) {
+                        pair_valid = false;
+                        pair_reject_reason = "constructor metadata belongs to another engine frame";
+                        break;
+                    }
+                    if (item.family != family || item.scene != family->get_scene_interface()) {
+                        pair_valid = false;
+                        pair_reject_reason = "constructor family/scene identity changed";
+                        break;
+                    }
+                    if (item.player_index_valid && (item.player_index < 0 || item.player_index > 255)) {
+                        pair_valid = false;
+                        pair_reject_reason = "PlayerIndex is outside the validated range";
+                        break;
+                    }
+                    if (item.state == nullptr || !ghosting_is_valid_scene_state(item.state)) {
+                        pair_valid = false;
+                        pair_reject_reason = "scene state is null or invalid";
+                        break;
+                    }
+                    if (!item.projection_valid || !rect_is_sane(item.view_rect) ||
+                        !rect_is_sane(item.constrained_view_rect))
+                    {
+                        pair_valid = false;
+                        pair_reject_reason = "projection or view rectangle is invalid";
+                        break;
+                    }
+
+                    if (item.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY && primary_view == nullptr) {
+                        primary = item;
+                        primary_view = candidate_view;
+                    } else if (item.original_stereo_pass == EStereoscopicPass::eSSP_SECONDARY && secondary_view == nullptr) {
+                        secondary = item;
+                        secondary_view = candidate_view;
+                    } else {
+                        pair_valid = false;
+                        pair_reject_reason = "stereo passes do not form one PRIMARY/SECONDARY pair";
+                        break;
+                    }
+                }
+            }
+
+            if (pair_valid &&
+                (primary_view == nullptr || secondary_view == nullptr || primary_view == secondary_view))
+            {
+                pair_valid = false;
+                pair_reject_reason = "distinct PRIMARY/SECONDARY view pointers were not proven";
+            }
+            if (pair_valid && primary.player_index_valid != secondary.player_index_valid) {
+                pair_valid = false;
+                pair_reject_reason = "PlayerIndex availability differs between eyes";
+            }
+            if (pair_valid && primary.player_index_valid && primary.player_index != secondary.player_index) {
+                pair_valid = false;
+                pair_reject_reason = "PRIMARY/SECONDARY views belong to different players";
+            }
+            if (pair_valid && primary.state == secondary.state) {
+                pair_valid = false;
+                pair_reject_reason = "PRIMARY/SECONDARY views share one scene state";
+            }
+
+            if (!pair_valid) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[NativeStereoFix] Candidate eye pair rejected: {} family={:x} views={:x}/{:x} "
+                    "states={:x}/{:x} passes={}/{} players={}/{} frame={}",
+                    pair_reject_reason != nullptr ? pair_reject_reason : "unknown validation failure",
+                    reinterpret_cast<uintptr_t>(family),
+                    reinterpret_cast<uintptr_t>(candidate_views->data[0]),
+                    reinterpret_cast<uintptr_t>(candidate_views->data[1]),
+                    reinterpret_cast<uintptr_t>(primary.state),
+                    reinterpret_cast<uintptr_t>(secondary.state),
+                    primary.original_stereo_pass,
+                    secondary.original_stereo_pass,
+                    primary.player_index,
+                    secondary.player_index,
+                    g_frame_count);
+                continue;
+            }
+
+            if (!primary.player_index_valid) {
+                // UE4.8-4.15 predate FSceneViewInitOptions::PlayerIndex. The
+                // exact two-view main family, PRIMARY/SECONDARY passes, common
+                // scene, and distinct validated scene states are the complete
+                // source-backed identity available on those versions.
+                SPDLOG_INFO_ONCE(
+                    "[NativeStereoFix] Using the validated pre-UE4.16 two-view eye-pair fallback without PlayerIndex");
+            }
+
+            ++selected_family_count;
+            selected_family = family;
+            native_left_view = primary_view;
+            native_right_view = secondary_view;
+            native_left_metadata = primary;
+            native_right_metadata = secondary;
+        }
+
+        if (selected_family_count != 1 || selected_family == nullptr) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                selected_family_count == 0
+                    ? NativeStereoFixState::LearningEyePair
+                    : NativeStereoFixState::FailedClosed,
+                selected_family_count == 0
+                    ? "no exact main-family eye pair was proven"
+                    : "multiple main-family eye pairs were ambiguous");
+            call_original();
+            return;
+        }
+
+        view_family = selected_family;
+        const auto target_address = reinterpret_cast<uintptr_t>(view_family->get_render_target());
+        const auto scene_address = reinterpret_cast<uintptr_t>(view_family->get_scene_interface());
+
+        bool transition_hold = false;
+        {
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            const bool identity_changed =
+                g_hook->m_sceneview_data.native_stereo_target != target_address ||
+                g_hook->m_sceneview_data.native_stereo_scene != scene_address ||
+                g_hook->m_sceneview_data.native_stereo_capture_generation != native_capture_snapshot->generation;
+
+            if (identity_changed) {
+                g_hook->m_sceneview_data.native_stereo_target = target_address;
+                g_hook->m_sceneview_data.native_stereo_scene = scene_address;
+                g_hook->m_sceneview_data.native_stereo_capture_generation = native_capture_snapshot->generation;
+                g_hook->m_sceneview_data.native_stereo_stable_frames = 1;
+            } else if (g_hook->m_sceneview_data.native_stereo_stable_frames < 2) {
+                ++g_hook->m_sceneview_data.native_stereo_stable_frames;
+            }
+
+            transition_hold = g_hook->m_sceneview_data.native_stereo_stable_frames < 2;
+        }
+
+        if (transition_hold) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::TransitionHold,
+                "main target/scene/capture generation changed");
+            call_original();
+            return;
+        }
+    }
+
+    if (view_family == nullptr || IsBadReadPtr(view_family, sizeof(void*))) {
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        return;
+    }
+
     auto views_ptr = view_family->get_views();
     if (views_ptr == nullptr) {
         call_original();
@@ -14920,10 +15509,17 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     const auto rt = rtm->get_scene_capture_utexture();
-    const auto rtrsrc = rt != nullptr ? (sdk::FTextureRenderTargetResource*)rt->get_resource() : nullptr;
+    const auto rtrsrc = rt != nullptr ? reinterpret_cast<sdk::FTextureRenderTargetResource*>(rt->get_resource()) : nullptr;
     const auto rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
-    const auto scene_capture_rhi = rtm->get_scene_capture_render_target();
+    auto* const rt_texture_ref = rtfrt != nullptr ? rtfrt->get_render_target_texture() : nullptr;
+    auto* const scene_capture_rhi = rt_texture_ref != nullptr ? *rt_texture_ref : nullptr;
     const auto scene_capture_native = avowed_try_get_native_resource(scene_capture_rhi);
+    const bool capture_transaction_valid =
+        native_capture_snapshot != nullptr && rt != nullptr && rtfrt != nullptr &&
+        reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
+        scene_capture_rhi != nullptr && scene_capture_rhi == native_capture_snapshot->rhi_texture &&
+        native_capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+        native_capture_snapshot->native_resource != nullptr;
 
     if (avowed_is_current_game()) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -14939,7 +15535,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             g_hook->m_fixed_localplayer_view_count);
     }
 
-    if (rtfrt == nullptr) {
+    if (!capture_transaction_valid) {
         avowed_native_fix_gate_update(
             (uintptr_t)view_family->get_scene_interface(),
             0,
@@ -14947,12 +15543,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             scene_capture_native,
             false);
 
-        // This is fine to call constantly because we use an in-flight render target
-        // that gets unset after the texture is fully created. This function exits early otherwise.
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::WaitingForTarget,
+            "capture UObject/FRenderTarget/RHI generation did not match");
         rtm->create_scene_capture();
-        views.count = 1;
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
-        views.count = prev_count;
+        call_original();
         return;
     }
 
@@ -14967,7 +15562,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             scene_capture_native,
             false);
 
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::LearningMainFamily,
+            "selected family lost its render target");
+        call_original();
         return;
     }
 
@@ -14982,77 +15580,122 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         &avowed_gate_stable_frames,
         &avowed_gate_required_frames);
 
-    bool wants_swap = false;
-    if (views.count > 1) {
-        views.count = 1;
-        wants_swap = !avowed_is_current_game() || avowed_gate_ready;
-
-        if (avowed_is_current_game() && !avowed_gate_ready) {
-            SPDLOG_INFO_EVERY_N_SEC(
-                2,
-                "[Avowed][NativeStereoFix] Suppressing right-eye pass during render transition stabilization stable={}/{}",
-                avowed_gate_stable_frames,
-                avowed_gate_required_frames);
-        }
-
-        if (wants_swap) {
-            auto runtime = vr->get_runtime();
-            const auto frame_count = runtime->internal_frame_count;
-
-            // We need to clone the VR state from last frame to this frame
-            if (runtime->is_openxr()) {
-                auto openxr = (runtimes::OpenXR*)runtime;
-                std::scoped_lock __{ openxr->sync_assignment_mtx };
-
-                const auto last_frame = (frame_count) % runtimes::OpenXR::QUEUE_SIZE;
-                const auto now_frame = (frame_count + 1) % runtimes::OpenXR::QUEUE_SIZE;
-                openxr->pipeline_states[now_frame] = openxr->pipeline_states[last_frame];
-                openxr->pipeline_states[now_frame].frame_count = now_frame;
-            } else {
-                auto openvr = (runtimes::OpenVR*)runtime;
-                std::unique_lock __{ openvr->pose_mtx };
-
-                const auto last_frame = (frame_count) % openvr->pose_queue.size();
-                const auto now_frame = (frame_count + 1) % openvr->pose_queue.size();
-                openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
-            }
-        }
-
+    if (avowed_is_current_game() && !avowed_gate_ready) {
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::TransitionHold,
+            "Avowed render transition is not stable");
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Avowed][NativeStereoFix] Preserving the original two-view render during transition stabilization stable={}/{}",
+            avowed_gate_stable_frames,
+            avowed_gate_required_frames);
+        call_original();
+        return;
     }
 
-    g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
+    if (prev_count != 2 || native_left_view == nullptr || native_right_view == nullptr ||
+        native_left_view == native_right_view ||
+        native_left_metadata.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY ||
+        native_right_metadata.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY)
+    {
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::FailedClosed,
+            "selected eye transaction changed before rendering");
+        call_original();
+        return;
+    }
 
-    if (wants_swap) {
-        if (avowed_is_current_game()) {
-            SPDLOG_INFO_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Executing right-eye second render pass into scene capture target");
-        }
-
-        // Swap out the existing render target for our custom one
-        // Also, the entire point of swapping the render target
-        // instead of "just" re-using the existing one is that doing that causes a 90% FPS drop
-        // because the engine is still working on the old render target
-        const auto original_target = view_family_target;
-
-        view_family->set_render_target(rtfrt);
-
-        auto scene = (sdk::FScene*)view_family->get_scene_interface();
-
-        if (scene != nullptr) {
-            // We decrement the frame count because it fixes motion vectors in the right eye.
-            scene->decrement_frame_count();
-        }
-        
-        std::swap(views[0], views[1]);
-
-        // Call it again
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family_candidate);
-
-        std::swap(views[0], views[1]);
-
+    auto* const original_first = views.data[0];
+    auto* const original_second = views.data[1];
+    const auto original_target = view_family_target;
+    utility::ScopeGuard restore_native_transaction{[&]() {
+        views.data[0] = original_first;
+        views.data[1] = original_second;
+        views.count = prev_count;
         view_family->set_render_target(original_target);
+    }};
+
+    auto runtime = vr->get_runtime();
+    if (runtime == nullptr || (!runtime->is_openxr() && !runtime->is_openvr())) {
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::FailedClosed,
+            "active XR runtime is unavailable or unsupported");
+        call_original();
+        return;
     }
 
-    views.count = prev_count;
+    const auto runtime_frame_count = runtime->internal_frame_count;
+
+    // The second render must consume the same runtime pose assignment as the
+    // first render. This only clones UEVR's bounded queue entry; it does not
+    // wait for or mutate engine render resources.
+    if (runtime->is_openxr()) {
+        auto* openxr = static_cast<runtimes::OpenXR*>(runtime);
+        std::scoped_lock lock{openxr->sync_assignment_mtx};
+        const auto last_frame = runtime_frame_count % runtimes::OpenXR::QUEUE_SIZE;
+        const auto now_frame = (runtime_frame_count + 1) % runtimes::OpenXR::QUEUE_SIZE;
+        openxr->pipeline_states[now_frame] = openxr->pipeline_states[last_frame];
+        openxr->pipeline_states[now_frame].frame_count = now_frame;
+    } else {
+        auto* openvr = static_cast<runtimes::OpenVR*>(runtime);
+        if (openvr->pose_queue.empty()) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "OpenVR pose queue is unavailable");
+            call_original();
+            return;
+        }
+
+        std::unique_lock lock{openvr->pose_mtx};
+        const auto last_frame = runtime_frame_count % openvr->pose_queue.size();
+        const auto now_frame = (runtime_frame_count + 1) % openvr->pose_queue.size();
+        openvr->pose_queue[now_frame] = openvr->pose_queue[last_frame];
+    }
+
+    // Render the proven primary view through the game's complete original
+    // family array so auxiliary families keep their normal behavior.
+    views.data[0] = native_left_view;
+    views.data[1] = native_right_view;
+    views.count = 1;
+    call_original();
+
+    // Render only the proven secondary view into the generation-owned target.
+    view_family->set_render_target(rtfrt);
+    views.data[0] = native_right_view;
+    views.count = 1;
+
+    if (auto* scene = reinterpret_cast<sdk::FScene*>(view_family_scene); scene != nullptr) {
+        scene->decrement_frame_count();
+    }
+
+    if (uses_tarrayview) {
+        sdk::FSceneViewFamily* selected_family = view_family;
+        TArrayViewViewFamily second_family_array{&selected_family, 1};
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+            render_module,
+            canvas,
+            reinterpret_cast<sdk::FSceneViewFamily*>(&second_family_array));
+    } else {
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family);
+    }
+
+    auto packet = std::make_shared<NativeStereoFramePacket>();
+    packet->capture = native_capture_snapshot;
+    packet->family = view_family;
+    packet->left_view = native_left_view;
+    packet->right_view = native_right_view;
+    packet->left_state = native_left_metadata.state;
+    packet->right_state = native_right_metadata.state;
+    packet->main_target = original_target;
+    packet->scene = view_family_scene;
+    packet->serial = g_hook->m_native_stereo_packet_serial.fetch_add(1, std::memory_order_acq_rel) + 1;
+    packet->capture_generation = native_capture_snapshot->generation;
+    packet->engine_frame = g_frame_count;
+    packet->render_frame = vr->m_render_frame_count;
+    packet->player_index = native_left_metadata.player_index;
+    packet->left_pass = native_left_metadata.original_stereo_pass;
+    packet->right_pass = native_right_metadata.original_stereo_pass;
+    g_hook->publish_native_stereo_frame_packet(std::move(packet));
 }
 
 void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family) {
@@ -15160,9 +15803,32 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     static BeginRenderViewFamilyRealFn begin_rendering_view_family_real_fn = nullptr;
     static uint32_t resolver_attempts = 0;
     static uint32_t calls_until_retry = 0;
+    static uint32_t callbacks_since_install = 0;
 
     const bool needs_begin_rendering_viewfamilies_hook =
         vr->is_native_stereo_fix_enabled() || vr->is_splitscreen_compatibility_enabled();
+
+    if (begin_rendering_view_family_real_fn != nullptr &&
+        needs_begin_rendering_viewfamilies_hook &&
+        !g_hook->m_render_module_begin_render_viewfamily_observed.load(std::memory_order_acquire))
+    {
+        ++callbacks_since_install;
+
+        // A correct outer renderer hook must run before this callback can be
+        // reached on the next frame. Retire a non-recurring stack false
+        // positive and resolve again from the current renderer stack.
+        if (callbacks_since_install >= 2) {
+            SPDLOG_WARN(
+                "[ViewFamilySelector] Installed renderer-entry hook was never observed; "
+                "discarding candidate {:x} and retrying fail-closed",
+                reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn));
+            g_hook->m_render_module_begin_render_viewfamily_hook = {};
+            g_hook->m_render_module_begin_render_viewfamily_observed.store(false, std::memory_order_release);
+            begin_rendering_view_family_real_fn = nullptr;
+            callbacks_since_install = 0;
+            calls_until_retry = 0;
+        }
+    }
 
     if (begin_rendering_view_family_real_fn == nullptr && needs_begin_rendering_viewfamilies_hook) {
         if (calls_until_retry > 0) {
@@ -15185,6 +15851,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
             begin_rendering_view_family_real_fn =
                 reinterpret_cast<BeginRenderViewFamilyRealFn>(*candidate);
+            g_hook->m_render_module_begin_render_viewfamily_observed.store(false, std::memory_order_release);
+            callbacks_since_install = 0;
             SPDLOG_INFO(
                 "[ViewFamilySelector] Resolved BeginRenderingViewFamilies real function at {:x} on attempt {}",
                 reinterpret_cast<uintptr_t>(begin_rendering_view_family_real_fn),
@@ -15262,6 +15930,179 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
     }
 }
 
+void FFakeStereoRenderingHook::set_native_stereo_fix_state(
+    NativeStereoFixState state,
+    const char* detail)
+{
+    const auto previous = m_native_stereo_fix_state.exchange(state, std::memory_order_acq_rel);
+    if (previous == state) {
+        return;
+    }
+
+    if (detail != nullptr) {
+        SPDLOG_INFO("[NativeStereoFix] state={} ({})", get_native_stereo_fix_status_text(), detail);
+    } else {
+        SPDLOG_INFO("[NativeStereoFix] state={}", get_native_stereo_fix_status_text());
+    }
+}
+
+void FFakeStereoRenderingHook::invalidate_native_stereo_frame_packet(
+    NativeStereoFixState state,
+    const char* detail)
+{
+    m_native_stereo_frame_packet.store(nullptr, std::memory_order_release);
+    set_native_stereo_fix_state(state, detail);
+}
+
+void FFakeStereoRenderingHook::publish_native_stereo_frame_packet(
+    std::shared_ptr<const NativeStereoFramePacket> packet)
+{
+    if (packet == nullptr || packet->capture == nullptr) {
+        invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, "invalid producer packet");
+        return;
+    }
+
+    if (packet->capture_generation == m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire)) {
+        invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, "capture generation was rejected by the compositor path");
+        return;
+    }
+
+    m_native_stereo_frame_packet.store(std::move(packet), std::memory_order_release);
+
+    // PairReady is useful while proving the first compositor handoff. Once a
+    // packet has been consumed, keep the externally visible state latched at
+    // Active instead of cycling Learning -> PairReady -> Active every frame.
+    // Besides making the UI unreadable, that cycle generated three synchronous
+    // log writes per rendered frame on some UE4 titles.
+    if (m_native_stereo_fix_state.load(std::memory_order_acquire) != NativeStereoFixState::Active) {
+        set_native_stereo_fix_state(NativeStereoFixState::PairReady, "right-eye render completed");
+    }
+}
+
+std::shared_ptr<const FFakeStereoRenderingHook::NativeStereoFramePacket>
+FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t render_frame) const {
+    const auto vr = VR::get();
+    if (vr == nullptr || !vr->is_native_stereo_fix_enabled()) {
+        return nullptr;
+    }
+
+    const auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    if (packet == nullptr || packet->capture == nullptr) {
+        return nullptr;
+    }
+
+    const auto render_frame_delta =
+        static_cast<int64_t>(render_frame) - static_cast<int64_t>(packet->render_frame);
+    const bool exact_render_frame = render_frame_delta == 0;
+    const bool same_engine_frame_present_grace =
+        packet->engine_frame == g_frame_count &&
+        (render_frame_delta == -1 || render_frame_delta == 1);
+
+    // Some games issue an additional Present without another engine draw. The
+    // UEVR render counter can advance on that Present even though this packet
+    // was produced by the current engine frame. Permit only that adjacent
+    // counter skew; generation, native resource, and engine-frame identity are
+    // still validated below, so an older scene can never cross a game tick or
+    // target transition.
+    if (!exact_render_frame && !same_engine_frame_present_grace) {
+        return nullptr;
+    }
+
+    if (same_engine_frame_present_grace) {
+        SPDLOG_INFO_ONCE(
+            "[NativeStereoFix] Accepting current-engine-frame packet across an adjacent duplicate Present "
+            "(packet_render_frame={} submit_render_frame={})",
+            packet->render_frame,
+            render_frame);
+    }
+
+    if (packet->capture_generation == m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire)) {
+        return nullptr;
+    }
+
+    const auto rtm = const_cast<FFakeStereoRenderingHook*>(this)->get_render_target_manager();
+    const auto current_capture = rtm != nullptr ? rtm->get_scene_capture_target_snapshot() : nullptr;
+    if (current_capture == nullptr ||
+        current_capture->generation != packet->capture_generation ||
+        current_capture->generation != packet->capture->generation ||
+        current_capture->rhi_texture != packet->capture->rhi_texture ||
+        current_capture->native_resource.Get() != packet->capture->native_resource.Get())
+    {
+        return nullptr;
+    }
+
+    return packet;
+}
+
+void FFakeStereoRenderingHook::note_native_stereo_frame_packet_consumed(uint64_t serial) {
+    const auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    if (packet == nullptr || packet->serial != serial) {
+        return;
+    }
+
+    m_native_stereo_consumed_serial.store(serial, std::memory_order_release);
+    set_native_stereo_fix_state(NativeStereoFixState::Active, "validated right-eye resource submitted");
+}
+
+void FFakeStereoRenderingHook::reject_native_stereo_frame_packet(uint64_t serial, const char* detail) {
+    if (m_native_stereo_consumed_serial.load(std::memory_order_acquire) >= serial) {
+        return;
+    }
+
+    auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    if (packet == nullptr || packet->serial != serial) {
+        return;
+    }
+
+    const auto rejected_generation = packet->capture_generation;
+    if (!m_native_stereo_frame_packet.compare_exchange_strong(
+            packet,
+            nullptr,
+            std::memory_order_acq_rel,
+            std::memory_order_acquire))
+    {
+        return;
+    }
+
+    m_native_stereo_rejected_capture_generation.store(rejected_generation, std::memory_order_release);
+    set_native_stereo_fix_state(NativeStereoFixState::FailedClosed, detail);
+
+    // A newer producer packet may have won the race immediately after the
+    // compare-exchange. Do not leave its status hidden behind an older failure.
+    const auto current = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    if (current != nullptr && current->serial > serial && current->capture_generation != rejected_generation) {
+        set_native_stereo_fix_state(NativeStereoFixState::PairReady, "new capture generation superseded a rejected packet");
+    }
+}
+
+const char* FFakeStereoRenderingHook::get_native_stereo_fix_status_text() const {
+    switch (m_native_stereo_fix_state.load(std::memory_order_acquire)) {
+    case NativeStereoFixState::WaitingForHooks:
+        return "waiting for SceneView/render hooks";
+    case NativeStereoFixState::WaitingForTarget:
+        return "waiting for a generation-safe capture target";
+    case NativeStereoFixState::LearningMainFamily:
+        return "learning the main viewport family";
+    case NativeStereoFixState::LearningEyePair:
+        return "learning an exact primary/secondary eye pair";
+    case NativeStereoFixState::TransitionHold:
+        return "transition hold; rendering the original eye pair";
+    case NativeStereoFixState::PairReady:
+        return "right eye rendered; waiting for compositor submit";
+    case NativeStereoFixState::Active:
+        return "active";
+    case NativeStereoFixState::FailedClosed:
+        return "failed closed; preserving the original eye pair";
+    case NativeStereoFixState::Off:
+    default:
+        return "disabled";
+    }
+}
+
+bool FFakeStereoRenderingHook::is_native_stereo_fix_operational() const {
+    return m_native_stereo_fix_state.load(std::memory_order_acquire) == NativeStereoFixState::Active;
+}
+
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
     ZoneScopedN("PreRenderViewFamily_RenderThread");
     const auto profile_engine_render = should_profile_engine_render_timing();
@@ -15320,15 +16161,37 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     }
 
     const auto frame_count = *(uint32_t*)((uintptr_t)&view_family + SceneViewExtensionAnalyzer::frame_count_offset);
-    static uint32_t last_frame = 0;
+    struct NativePreRenderKey {
+        uint32_t frame{};
+        uintptr_t family{};
+        uintptr_t scene{};
+        uintptr_t target{};
+        uint64_t capture_generation{};
+    };
+    static NativePreRenderKey last_native_key{};
 
-    // We only want to run this logic on the first "frame" (left eye) passed through here
-    // When using Native Stereo Fix
-    if (vr->is_native_stereo_fix_enabled() && frame_count == last_frame) {
-        return;
+    if (vr->is_native_stereo_fix_enabled()) {
+        const NativePreRenderKey current_key{
+            .frame = frame_count,
+            .family = reinterpret_cast<uintptr_t>(&view_family),
+            .scene = reinterpret_cast<uintptr_t>(view_family.get_scene_interface()),
+            .target = reinterpret_cast<uintptr_t>(view_family.get_render_target()),
+            .capture_generation = g_hook->get_render_target_manager()->get_scene_capture_generation(),
+        };
+
+        if (current_key.frame == last_native_key.frame &&
+            current_key.family == last_native_key.family &&
+            current_key.scene == last_native_key.scene &&
+            current_key.target == last_native_key.target &&
+            current_key.capture_generation == last_native_key.capture_generation)
+        {
+            return;
+        }
+
+        last_native_key = current_key;
+    } else {
+        last_native_key = {};
     }
-
-    last_frame = frame_count;
 
     static bool is_ue5_rdg_builder = false;
     static uint32_t ue5_command_offset = 0;
@@ -17611,14 +18474,17 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         !vr->is_splitscreen_compatibility_enabled() &&
         !vr->is_sceneview_compatibility_enabled() &&
         ghosting_bootstrap_ready;
-    // UE4.26 games commonly create ULocalPlayer before UEVR installs the fake
-    // stereo device. A valid GetDesiredNumberOfViews hook therefore cannot
-    // retroactively allocate the missing right-eye ViewState.
+    // ULocalPlayer can be created before UEVR installs the fake stereo device.
+    // A valid GetDesiredNumberOfViews hook then cannot retroactively allocate
+    // the missing right-eye ViewState. Preserve the established Native Fix
+    // bootstrap on every supported engine, with source-validated handling for
+    // the UE4.25/4.26 layouts below.
     const bool ue426_needs_localplayer_bootstrap = is_ue_4_26_runtime();
+    const bool native_needs_localplayer_bootstrap = vr->is_native_stereo_fix_enabled();
     const bool wants_localplayer_bootstrap =
         wants_ghosting_bootstrap ||
         ue426_needs_localplayer_bootstrap ||
-        vr->is_native_stereo_fix_enabled() ||
+        native_needs_localplayer_bootstrap ||
         vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
         !g_hook->m_get_desired_number_of_views_hook;
@@ -18058,48 +18924,56 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (vr->is_native_stereo_fix_enabled()) {
+        if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "source-validated LocalPlayer ViewStates bootstrap failed");
+            return 1;
+        }
+
         auto rtm = g_hook->get_render_target_manager();
-        const auto scene_capture_rt_ready = rtm->get_scene_capture_render_target() != nullptr;
-        const auto scene_capture_utexture_ready = rtm->get_scene_capture_utexture() != nullptr;
+        const auto capture_snapshot = rtm->get_scene_capture_target_snapshot();
+        const auto scene_capture_rt_ready =
+            capture_snapshot != nullptr &&
+            capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            capture_snapshot->rhi_texture != nullptr &&
+            capture_snapshot->native_resource != nullptr;
         const auto fsceneview_hook_ready = !!g_hook->m_sceneview_data.constructor_hook;
-        const auto begin_viewfamily_hook_ready = !!g_hook->m_render_module_begin_render_viewfamily_hook;
+        const auto begin_viewfamily_hook_ready =
+            !!g_hook->m_render_module_begin_render_viewfamily_hook &&
+            g_hook->m_render_module_begin_render_viewfamily_observed.load(std::memory_order_acquire);
 
         if (avowed_is_current_game()) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "[Avowed][NativeStereoFix] GetDesiredNumberOfViews state: stereo_enabled={} scene_rt={} scene_utexture={} fsceneview_hook={} begin_viewfamily_hook={} fixed_localplayer={}",
+                "[Avowed][NativeStereoFix] GetDesiredNumberOfViews state: stereo_enabled={} scene_rt={} fsceneview_hook={} begin_viewfamily_hook={} fixed_localplayer={}",
                 is_stereo_enabled,
                 scene_capture_rt_ready,
-                scene_capture_utexture_ready,
                 fsceneview_hook_ready,
                 begin_viewfamily_hook_ready,
                 g_hook->m_fixed_localplayer_view_count);
         }
 
-        if ((!scene_capture_rt_ready || !fsceneview_hook_ready || !begin_viewfamily_hook_ready)) {
-            if (rtm->get_scene_capture_utexture() == nullptr) {
-                rtm->create_scene_capture();
-            }
-
-            if (avowed_is_current_game()) {
-                SPDLOG_INFO_EVERY_N_SEC(2, "[Avowed][NativeStereoFix] Returning one view while native-fix prerequisites initialize");
-            }
-
-            return 1; // wait for the scene capture render target to be set and FSceneView constructor to be hooked
+        if (!fsceneview_hook_ready || !begin_viewfamily_hook_ready) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::WaitingForHooks,
+                "constructor or BeginRenderingViewFamily hook is unavailable");
+            return 1;
         }
 
-        if (avowed_is_current_game()) {
-            uint32_t stable_frames = 0;
-            uint32_t required_frames = AVOWED_NATIVE_FIX_STABLE_FRAMES;
+        if (!scene_capture_rt_ready) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::WaitingForTarget,
+                "capture target is initializing");
+            rtm->create_scene_capture();
 
-            if (!avowed_native_fix_gate_ready(&stable_frames, &required_frames)) {
-                SPDLOG_INFO_EVERY_N_SEC(
-                    2,
-                    "[Avowed][NativeStereoFix] Returning one view while render transition stabilizes stable={}/{}",
-                    stable_frames,
-                    required_frames);
-                return 1;
-            }
+            return 1;
+        }
+
+        if (!g_hook->is_native_stereo_fix_operational()) {
+            g_hook->set_native_stereo_fix_state(
+                NativeStereoFixState::LearningEyePair,
+                "requesting two views for exact pair validation");
         }
     }
 
@@ -18437,6 +19311,12 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     SPDLOG_INFO("Searching for PostInitProperties virtual function...");
 
+    if (localplayer == 0 || IsBadReadPtr(reinterpret_cast<void*>(localplayer), sizeof(void*))) {
+        SPDLOG_WARN("[PostInitProperties] Refusing unreadable LocalPlayer candidate {:x}", localplayer);
+        g_hook->m_fixed_localplayer_view_count = true;
+        return;
+    }
+
     if (is_deadzone_ue56_executable()) {
         // Deadzone Rogue's UE5.6.1 retail build can OOM while resolving
         // UObject::StaticClass() through FName/object scans during this
@@ -18494,35 +19374,88 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    const auto ue426_post_init = is_ue_4_26_runtime();
+    const auto ue425_426_post_init = is_ue_4_25_runtime() || is_ue_4_26_runtime();
+    const auto legacy_runtime_label = is_ue_4_25_runtime() ? "UE4.25" : "UE4.26";
+    std::optional<LegacyLocalPlayerViewStatesSnapshot> legacy_view_states{};
+    const auto publish_legacy_native_pair = [&](const LegacyLocalPlayerViewStatesSnapshot& snapshot) {
+        sdk::FSceneViewStateInterface* left_state{};
+        sdk::FSceneViewStateInterface* right_state{};
+        if (!ue425_426_read_view_state_pair(snapshot, left_state, right_state)) {
+            return false;
+        }
 
-    if (ue426_post_init) {
-        // Verified in UE4.26.1 source and multiple shipping builds:
-        // ULocalPlayer::ViewStates is TArray<TSharedPtr<...>> at 0xA8.
-        constexpr uintptr_t UE426_VIEW_STATES_NUM_OFFSET = 0xB0;
-        const auto view_state_num_address = localplayer + UE426_VIEW_STATES_NUM_OFFSET;
+        std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+        auto& pair = g_hook->m_sceneview_data.native_stereo_state_pair;
+        if (pair.eye_state[0] != left_state || pair.eye_state[1] != right_state) {
+            const auto next_generation = pair.generation + 1;
+            pair = {};
+            pair.eye_state[0] = left_state;
+            pair.eye_state[1] = right_state;
+            pair.generation = next_generation;
+            SPDLOG_INFO(
+                "[NativeStereoFix][{}] Published source-validated LocalPlayer ViewState pair left={:x} right={:x} generation={}",
+                legacy_runtime_label,
+                reinterpret_cast<uintptr_t>(left_state),
+                reinterpret_cast<uintptr_t>(right_state),
+                pair.generation);
+        }
 
-        if (IsBadReadPtr(reinterpret_cast<void*>(view_state_num_address), sizeof(int32_t))) {
-            SPDLOG_WARN("[UE4.26][PostInitProperties] ViewStates.Num is unreadable; refusing LocalPlayer bootstrap");
+        g_hook->m_native_stereo_localplayer_bootstrap_failed.store(false, std::memory_order_release);
+        return true;
+    };
+
+    if (ue425_426_post_init) {
+        legacy_view_states = resolve_ue425_426_view_states(localplayer);
+        if (!legacy_view_states) {
+            SPDLOG_WARN(
+                "[{}][PostInitProperties] Could not uniquely validate the source-backed ViewStates array; refusing LocalPlayer bootstrap",
+                legacy_runtime_label);
+            g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
             g_hook->m_fixed_localplayer_view_count = true;
             return;
         }
 
-        const auto view_state_count = *reinterpret_cast<const int32_t*>(view_state_num_address);
+        const auto view_state_count = legacy_view_states->header.count;
 
         if (view_state_count >= 2 && view_state_count <= 8) {
-            SPDLOG_INFO("[UE4.26][PostInitProperties] LocalPlayer already has {} ViewStates; bootstrap is not needed", view_state_count);
+            if (!publish_legacy_native_pair(*legacy_view_states)) {
+                SPDLOG_WARN(
+                    "[{}][PostInitProperties] Existing ViewStates do not contain a distinct validated eye pair; refusing LocalPlayer bootstrap",
+                    legacy_runtime_label);
+                g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
+                g_hook->m_fixed_localplayer_view_count = true;
+                return;
+            }
+
+            SPDLOG_INFO(
+                "[{}][PostInitProperties] LocalPlayer already has {} validated ViewStates at {:x}; bootstrap is not needed",
+                legacy_runtime_label,
+                view_state_count,
+                legacy_view_states->header_address);
             g_hook->m_fixed_localplayer_view_count = true;
             return;
         }
 
         if (view_state_count != 1) {
-            SPDLOG_WARN("[UE4.26][PostInitProperties] Unexpected ViewStates.Num={}; refusing LocalPlayer bootstrap", view_state_count);
+            SPDLOG_WARN("[{}][PostInitProperties] Unexpected ViewStates.Num={}; refusing LocalPlayer bootstrap", legacy_runtime_label, view_state_count);
+            g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
             g_hook->m_fixed_localplayer_view_count = true;
             return;
         }
 
-        SPDLOG_INFO("[UE4.26][PostInitProperties] Existing LocalPlayer has one ViewState; allocating the right-eye state");
+        if (!ue425_426_view_state_is_valid(*legacy_view_states, 0)) {
+            SPDLOG_WARN(
+                "[{}][PostInitProperties] The existing left-eye ViewState is null or stale; refusing LocalPlayer bootstrap",
+                legacy_runtime_label);
+            g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
+            g_hook->m_fixed_localplayer_view_count = true;
+            return;
+        }
+
+        SPDLOG_INFO(
+            "[{}][PostInitProperties] Existing LocalPlayer has one validated ViewState at {:x}; allocating the right-eye state",
+            legacy_runtime_label,
+            legacy_view_states->header_address);
     }
 
     const auto ue51_post_init = is_ue_5_1_dx_backend();
@@ -18530,7 +19463,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     const auto ue53_post_init = is_ue_5_3_dx_backend();
     const auto prospi_ue427_post_init = is_ue_4_27_runtime() && prospi_is_current_game();
     const auto needs_source_informed_post_init =
-        ue426_post_init ||
+        ue425_426_post_init ||
         prospi_ue427_post_init ||
         is_ue_5_7_or_newer() ||
         is_ue_5_6_dx12_backend() ||
@@ -18544,7 +19477,10 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if ((ue426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+    if ((ue425_426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+        if (ue425_426_post_init) {
+            g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
+        }
         g_hook->m_sceneview_data.known_scene_states.clear();
         g_hook->m_fixed_localplayer_view_count = true;
         return;
@@ -18604,12 +19540,6 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     if (idx) {
         SPDLOG_INFO("Calling PostInitProperties on local player!");
 
-        // Get PEB and set debugger present
-        auto peb = (PEB*)__readgsqword(0x60);
-
-        const auto old = peb->BeingDebugged;
-        peb->BeingDebugged = true;
-
         // If the exception count exceeds a certain amount, we need to un-nop the function call because it was supposed to return a pointer.
         static auto exception_count = 0;
         static std::vector<Patch::Ptr> patches{};
@@ -18622,13 +19552,30 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         if (post_init_instruction &&
             std::string_view{post_init_instruction->Mnemonic}.starts_with("RET"))
         {
-            SPDLOG_INFO(
-                "[PostInitProperties] Source-verified slot {} is a no-op shipping thunk; no bootstrap call is required",
-                *idx);
+            if (ue425_426_post_init) {
+                SPDLOG_ERROR(
+                    "[{}][PostInitProperties] Source-verified slot {} is a no-op and cannot allocate the missing right-eye ViewState",
+                    legacy_runtime_label,
+                    *idx);
+                g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
+            } else {
+                SPDLOG_INFO(
+                    "[PostInitProperties] Source-verified slot {} is a no-op shipping thunk; no bootstrap call is required",
+                    *idx);
+            }
             g_hook->m_sceneview_data.known_scene_states.clear();
             g_hook->m_fixed_localplayer_view_count = true;
             return;
         }
+
+        // Some debug/development engine builds select assertion behavior from
+        // this PEB bit. Restore it on every exit from the bootstrap call.
+        auto* peb = reinterpret_cast<PEB*>(__readgsqword(0x60));
+        const auto old_debugger_state = peb->BeingDebugged;
+        peb->BeingDebugged = true;
+        utility::ScopeGuard restore_debugger_state{[&]() {
+            peb->BeingDebugged = old_debugger_state;
+        }};
 
         // Scan through all of the branches of PostInitProperties to find any assertions
         // The assertion we're looking for is easily identified by a string that it loads in RCX, named "!Reference"
@@ -18729,30 +19676,43 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         };
 
         const auto exception_handler = AddVectoredExceptionHandler(1, seh_handler);
+        utility::ScopeGuard remove_exception_handler{[&]() {
+            if (exception_handler != nullptr) {
+                RemoveVectoredExceptionHandler(exception_handler);
+            }
+        }};
 
-        m_sceneview_data.inside_post_init_properties = true;
-        post_init_properties(localplayer);
-        m_sceneview_data.inside_post_init_properties = false;
+        {
+            m_sceneview_data.inside_post_init_properties = true;
+            utility::ScopeGuard leave_post_init{[&]() {
+                m_sceneview_data.inside_post_init_properties = false;
+            }};
+            post_init_properties(localplayer);
+        }
 
         SPDLOG_INFO("PostInitProperties called!");
 
-        if (ue426_post_init) {
-            constexpr uintptr_t UE426_VIEW_STATES_NUM_OFFSET = 0xB0;
-            const auto view_state_num_address = localplayer + UE426_VIEW_STATES_NUM_OFFSET;
-
-            if (!IsBadReadPtr(reinterpret_cast<void*>(view_state_num_address), sizeof(int32_t))) {
-                const auto view_state_count = *reinterpret_cast<const int32_t*>(view_state_num_address);
-                if (view_state_count >= 2 && view_state_count <= 8) {
-                    SPDLOG_INFO("[UE4.26][PostInitProperties] Bootstrap completed with {} ViewStates", view_state_count);
-                } else {
-                    SPDLOG_ERROR("[UE4.26][PostInitProperties] Bootstrap returned with invalid ViewStates.Num={}", view_state_count);
-                }
+        if (ue425_426_post_init) {
+            LegacyLocalPlayerViewStatesSnapshot post_bootstrap_view_states{};
+            if (legacy_view_states &&
+                validate_ue425_426_view_states_array(
+                    legacy_view_states->header_address,
+                    post_bootstrap_view_states) &&
+                post_bootstrap_view_states.header.count >= 2 &&
+                post_bootstrap_view_states.header.count <= 8 &&
+                publish_legacy_native_pair(post_bootstrap_view_states))
+            {
+                SPDLOG_INFO(
+                    "[{}][PostInitProperties] Bootstrap completed with {} distinct validated ViewStates",
+                    legacy_runtime_label,
+                    post_bootstrap_view_states.header.count);
+            } else {
+                SPDLOG_ERROR(
+                    "[{}][PostInitProperties] Bootstrap did not produce a distinct validated eye-state pair; failing closed",
+                    legacy_runtime_label);
+                g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
             }
         }
-
-        // remove the handler
-        RemoveVectoredExceptionHandler(exception_handler);
-        peb->BeingDebugged = old;
     }
 
     g_hook->m_sceneview_data.known_scene_states.clear();
@@ -24544,35 +25504,211 @@ void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx,
     ++rtm->last_texture_index;
 }
 
-void VRRenderTargetManager_Base::destroy_scene_capture() try {
-    if (this->scene_capture_actor != nullptr && this->in_flight_target == nullptr) {
-        SPDLOG_INFO("Destroying scene capture!");
+uint64_t VRRenderTargetManager_Base::invalidate_scene_capture_generation(const char* reason) {
+    const auto generation = scene_capture_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+    scene_capture_target_snapshot.store(nullptr, std::memory_order_release);
 
-        if (this->scene_capture_actor.valid()) {
-            this->scene_capture_actor->destroy_actor();
+    if (reason != nullptr) {
+        SPDLOG_INFO("[NativeStereoFix] Invalidated scene-capture generation {} ({})", generation, reason);
+    }
+
+    return generation;
+}
+
+bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
+    sdk::UTexture* owner_texture,
+    FRHITexture2D* rhi_texture,
+    uint64_t generation)
+{
+    if (owner_texture == nullptr || rhi_texture == nullptr ||
+        generation == 0 || generation != scene_capture_generation.load(std::memory_order_acquire))
+    {
+        return false;
+    }
+
+    auto* native = reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource());
+    if (native == nullptr) {
+        return false;
+    }
+
+    const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
+    const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
+    bool resource_valid = false;
+
+    if (g_framework->get_renderer_type() == Framework::RendererType::D3D11) {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture{};
+        Microsoft::WRL::ComPtr<ID3D11Device> resource_device{};
+        D3D11_TEXTURE2D_DESC desc{};
+
+        if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&texture))) && texture != nullptr) {
+            texture->GetDesc(&desc);
+            texture->GetDevice(&resource_device);
+            const auto& hook = g_framework->get_d3d11_hook();
+            const auto expected_device = hook != nullptr ? hook->get_device() : nullptr;
+            const bool bgra_compatible =
+                desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+                desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            resource_valid =
+                expected_device != nullptr && resource_device.Get() == expected_device &&
+                bgra_compatible && desc.Width == expected_width && desc.Height == expected_height &&
+                desc.MipLevels == 1 && desc.ArraySize == 1 && desc.SampleDesc.Count == 1;
+        }
+    } else if (g_framework->get_renderer_type() == Framework::RendererType::D3D12) {
+        Microsoft::WRL::ComPtr<ID3D12Resource> texture{};
+        Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+        D3D12_RESOURCE_DESC desc{};
+
+        if (SUCCEEDED(native->QueryInterface(IID_PPV_ARGS(&texture))) && texture != nullptr) {
+            desc = texture->GetDesc();
+            texture->GetDevice(IID_PPV_ARGS(&resource_device));
+            const auto& hook = g_framework->get_d3d12_hook();
+            const auto expected_device = hook != nullptr ? hook->get_device() : nullptr;
+            const bool bgra_compatible =
+                desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+                desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            resource_valid =
+                expected_device != nullptr && resource_device.Get() == expected_device &&
+                desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && bgra_compatible &&
+                desc.Width == expected_width && desc.Height == expected_height &&
+                desc.MipLevels == 1 && desc.DepthOrArraySize == 1 && desc.SampleDesc.Count == 1;
         }
     }
 
-    if (this->in_flight_target == nullptr) {
-        this->scene_capture_actor = nullptr;
-        this->scene_capture_component = nullptr;
-        this->scene_capture_target = nullptr;
-
-        RHIThreadWorker::get().enqueue([this]() -> void {
-            this->scene_capture_target_rhi_thread = nullptr;
-        });
+    if (!resource_valid) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[NativeStereoFix] Refusing to publish a scene-capture resource that does not match the active RHI/device/eye extent");
+        return false;
     }
-} catch (const std::exception& e) {
-    SPDLOG_ERROR("[VRRenderTargetManager] Exception in destroy_scene_capture: {}", e.what());
-    this->scene_capture_target = nullptr;
+
+    Microsoft::WRL::ComPtr<IUnknown> retained_native{};
+    if (FAILED(native->QueryInterface(IID_PPV_ARGS(&retained_native))) || retained_native == nullptr) {
+        SPDLOG_WARN("[NativeStereoFix] Scene-capture native resource did not expose IUnknown");
+        return false;
+    }
+
+    auto snapshot = std::make_shared<SceneCaptureTargetSnapshot>();
+    snapshot->native_resource = std::move(retained_native);
+    snapshot->rhi_texture = rhi_texture;
+    snapshot->owner_texture = reinterpret_cast<uintptr_t>(owner_texture);
+    snapshot->generation = generation;
+    snapshot->width = expected_width;
+    snapshot->height = expected_height;
+
+    if (generation != scene_capture_generation.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    scene_capture_target_snapshot.store(std::move(snapshot), std::memory_order_release);
+    SPDLOG_INFO(
+        "[NativeStereoFix] Published scene-capture generation {} rhi={:x} native={:x} {}x{}",
+        generation,
+        reinterpret_cast<uintptr_t>(rhi_texture),
+        reinterpret_cast<uintptr_t>(native),
+        expected_width,
+        expected_height);
+    return true;
+}
+
+void VRRenderTargetManager_Base::destroy_scene_capture() {
+    // UObject destruction must stay on the game thread. BeginRenderingViewFamily
+    // and compositor rejection can retire a target from the render thread, so
+    // invalidate its publication immediately and defer only the UObject work.
+    if (!GameThreadWorker::get().is_same_thread()) {
+        const bool has_published_or_owned_state =
+            scene_capture_lifetime_active.load(std::memory_order_acquire);
+        const bool has_queued_creation = scene_capture_creation_requested.load(std::memory_order_acquire);
+
+        if (!has_published_or_owned_state && !has_queued_creation)
+        {
+            return;
+        }
+
+        scene_capture_request_serial.fetch_add(1, std::memory_order_acq_rel);
+
+        // Advancing the request serial is sufficient to cancel a queued create
+        // that has not yet produced any UObject state.
+        if (!has_published_or_owned_state) {
+            return;
+        }
+
+        if (scene_capture_destruction_requested.exchange(true, std::memory_order_acq_rel)) {
+            scene_capture_target_snapshot.store(nullptr, std::memory_order_release);
+            return;
+        }
+
+        const auto invalidated_generation = invalidate_scene_capture_generation("off-thread destroy request");
+        try {
+            GameThreadWorker::get().enqueue([this, invalidated_generation]() {
+                scene_capture_destruction_requested.store(false, std::memory_order_release);
+
+                if (scene_capture_generation.load(std::memory_order_acquire) != invalidated_generation) {
+                    return;
+                }
+
+                destroy_scene_capture();
+            });
+        } catch (...) {
+            scene_capture_destruction_requested.store(false, std::memory_order_release);
+            SPDLOG_ERROR("[NativeStereoFix] Failed to queue scene-capture destruction on the game thread");
+        }
+        return;
+    }
+
+    scene_capture_request_serial.fetch_add(1, std::memory_order_acq_rel);
+    scene_capture_destruction_requested.store(false, std::memory_order_release);
+    const bool has_capture_state =
+        scene_capture_lifetime_active.exchange(false, std::memory_order_acq_rel) ||
+        in_flight_target != nullptr ||
+        scene_capture_actor != nullptr ||
+        scene_capture_component != nullptr ||
+        scene_capture_target != nullptr ||
+        scene_capture_target_rhi_thread != nullptr ||
+        scene_capture_target_snapshot.load(std::memory_order_acquire) != nullptr;
+
+    if (!has_capture_state) {
+        return;
+    }
+
+    const auto invalidated_generation = invalidate_scene_capture_generation("destroy");
+    in_flight_target = nullptr;
+    in_flight_scene_capture_generation = 0;
+
+    try {
+        if (this->scene_capture_actor != nullptr) {
+            SPDLOG_INFO("Destroying scene capture!");
+
+            if (this->scene_capture_actor.valid()) {
+                this->scene_capture_actor->destroy_actor();
+            }
+        }
+    } catch (const std::exception& e) {
+        SPDLOG_ERROR("[VRRenderTargetManager] Exception destroying scene-capture actor: {}", e.what());
+    } catch (...) {
+        SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception destroying scene-capture actor");
+    }
+
     this->scene_capture_actor = nullptr;
     this->scene_capture_component = nullptr;
-    
-    RHIThreadWorker::get().enqueue([this]() -> void {
-        this->scene_capture_target_rhi_thread = nullptr;
-    });
-} catch (...) {
-    SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in destroy_scene_capture!");
+    this->scene_capture_target = nullptr;
+
+    try {
+        RHIThreadWorker::get().enqueue([this, invalidated_generation]() -> void {
+            if (scene_capture_generation.load(std::memory_order_acquire) != invalidated_generation) {
+                return;
+            }
+            this->scene_capture_target_rhi_thread = nullptr;
+        });
+    } catch (const std::exception& e) {
+        // The published snapshot was already retired. Leave the RHI-thread
+        // weak reference in place so a later destroy can retry safely rather
+        // than clearing a potentially newer generation from this thread.
+        SPDLOG_ERROR("[VRRenderTargetManager] Failed to queue scene-capture RHI retirement: {}", e.what());
+    } catch (...) {
+        SPDLOG_ERROR("[VRRenderTargetManager] Failed to queue scene-capture RHI retirement");
+    }
 }
 
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
@@ -25302,6 +26438,13 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
 }
 
 FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
+    if (const auto snapshot = get_scene_capture_target_snapshot();
+        snapshot != nullptr &&
+        snapshot->generation == scene_capture_generation.load(std::memory_order_acquire))
+    {
+        return snapshot->rhi_texture;
+    }
+
     if (this->in_flight_target != nullptr) {
         return nullptr;
     }
@@ -25372,6 +26515,33 @@ sdk::UTexture* VRRenderTargetManager_Base::get_scene_capture_utexture() {
 }
 
 bool VRRenderTargetManager_Base::create_scene_capture() try {
+    // Some failure/transition paths reach this from the render thread. Queue a
+    // single game-thread request instead of spawning UObjects off-thread.
+    if (!GameThreadWorker::get().is_same_thread()) {
+        const auto request_serial = scene_capture_request_serial.load(std::memory_order_acquire);
+        if (scene_capture_creation_requested.exchange(true, std::memory_order_acq_rel)) {
+            return false;
+        }
+
+        try {
+            GameThreadWorker::get().enqueue([this, request_serial]() {
+                scene_capture_creation_requested.store(false, std::memory_order_release);
+
+                if (scene_capture_request_serial.load(std::memory_order_acquire) != request_serial) {
+                    return;
+                }
+
+                create_scene_capture();
+            });
+        } catch (...) {
+            scene_capture_creation_requested.store(false, std::memory_order_release);
+            SPDLOG_ERROR("[NativeStereoFix] Failed to queue scene-capture creation on the game thread");
+        }
+        return false;
+    }
+
+    scene_capture_creation_requested.store(false, std::memory_order_release);
+
     if (this->in_flight_target != nullptr) {
         return false;
     }
@@ -25383,6 +26553,24 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     }
 
     destroy_scene_capture();
+    const auto generation = invalidate_scene_capture_generation("create");
+    scene_capture_lifetime_active.store(true, std::memory_order_release);
+    bool creation_scheduled = false;
+    utility::ScopeGuard cleanup_failed_creation{[this, generation, &creation_scheduled]() {
+        if (creation_scheduled || generation != scene_capture_generation.load(std::memory_order_acquire)) {
+            return;
+        }
+
+        in_flight_target = nullptr;
+        in_flight_scene_capture_generation = 0;
+        destroy_scene_capture();
+
+        // destroy_scene_capture only advances a generation when partial state
+        // exists. Retire an otherwise empty failed generation explicitly.
+        if (generation == scene_capture_generation.load(std::memory_order_acquire)) {
+            invalidate_scene_capture_generation("create setup failed");
+        }
+    }};
 
     SPDLOG_INFO("Creating scene capture!");
 
@@ -25499,186 +26687,134 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 
     static const auto utex_c = sdk::UTexture::static_class();
 
-    // Enqueue offset lookup on the render thread because that's when the resource is actually created.
-    if (!already_updated) {
-        this->in_flight_target = tgt;
+    // All asynchronous publication is tied to this generation. Jobs from a
+    // previous world/target are allowed to retire, but can never publish into
+    // a newer Native Stereo Fix session.
+    this->in_flight_target = tgt;
+    this->in_flight_scene_capture_generation = generation;
 
-        // Repeats every render loop for 5 seconds, times out if the texture is not created.
-        RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task = [this, tgt]() -> bool {
-            try {
-                if (!tgt.valid()) {
-                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                    GameThreadWorker::get().enqueue([this]() -> void {
-                        this->in_flight_target = nullptr;
-                        destroy_scene_capture();
-                    });
-                    return true;
-                }
-    
-                if (sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
-                    SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
-    
-                    if (auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource(); rsrc != nullptr) {
-                        const bool success = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
-                        const auto frt = success ? rsrc->as_render_target() : nullptr;
-    
-                        if (frt != nullptr) {
-                            sdk::FRenderTarget::update_offsets(frt);
+    const auto fail_generation = [this, generation]() {
+        GameThreadWorker::get().enqueue([this, generation]() {
+            if (generation != scene_capture_generation.load(std::memory_order_acquire) ||
+                in_flight_scene_capture_generation != generation)
+            {
+                return;
+            }
 
-                            if (frt->get_render_target_texture() == nullptr || *frt->get_render_target_texture() == nullptr) {
-                                SPDLOG_WARN("Waiting for render target texture to be valid...");
-                                return false;
-                            }
-    
-                            hook_frt(frt);
-    
-                            RHIThreadWorker::get().enqueue([this, tgt]() -> void {
-                                if (!tgt.valid()) {
-                                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                                    this->scene_capture_target_rhi_thread = nullptr;
-                                    return;
-                                }
+            in_flight_target = nullptr;
+            in_flight_scene_capture_generation = 0;
+            destroy_scene_capture();
+        });
+    };
 
-                                this->scene_capture_target_rhi_thread = tgt;
-                            });
-                            
-                            GameThreadWorker::get().enqueue([this, tgt]() -> void {
-                                if (!tgt.valid()) {
-                                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                                    this->in_flight_target = nullptr;
-                                    destroy_scene_capture();
-                                    return;
-                                }
-                                
-                                this->scene_capture_target = tgt;
-                                this->in_flight_target = nullptr;
-    
-                                SPDLOG_INFO("Scene capture texture created!");
-                            });
-    
-                            already_updated = true;
-        
-                            return true;
-                        }
-    
-                        SPDLOG_WARN("Waiting for render target to be valid...");
-    
-                        return false; // Keep waiting until it works.
-                    }
-                } else {
-                    SPDLOG_ERROR("Failed to update render resource offset for scene capture target!");
-                }
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("[VRRenderTargetManager] Exception in create_scene_capture (offset lookup): {}", e.what());
-                GameThreadWorker::get().enqueue([this]() -> void {
-                    this->in_flight_target = nullptr;
-                    destroy_scene_capture();
-                });
-                return true;
-            } catch (...) {
-                SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in create_scene_capture (offset lookup)!");
-                GameThreadWorker::get().enqueue([this]() -> void {
-                    this->in_flight_target = nullptr;
-                    destroy_scene_capture();
-                });
+    RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task =
+        [this, tgt, generation, fail_generation]() -> bool {
+        if (generation != scene_capture_generation.load(std::memory_order_acquire)) {
+            return true;
+        }
+
+        try {
+            if (!tgt.valid()) {
+                SPDLOG_ERROR("Scene capture target was destroyed between threads!");
+                fail_generation();
                 return true;
             }
 
-            return false;
-        };
-
-        RenderThreadWorker::ConditionalJobTimeoutFunc render_thread_on_timeout = [this]() {
-            SPDLOG_ERROR("Timed out waiting for scene capture texture to be created!");
-            GameThreadWorker::get().enqueue([this]() -> void {
-                this->in_flight_target = nullptr;
-                destroy_scene_capture();
-            });
-        };
-
-        RenderThreadWorker::get().enqueue_conditional(render_thread_conditional_task, render_thread_on_timeout, std::chrono::seconds(2));
-    
-        SPDLOG_INFO("Waiting for scene capture texture to be created...");
-    } else {
-        this->in_flight_target = tgt;
-
-        RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task = [this, tgt]() -> bool {
-            try {
-                if (!tgt.valid()) {
-                    SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                    GameThreadWorker::get().enqueue([this]() -> void {
-                        this->in_flight_target = nullptr;
-                        destroy_scene_capture();
-                    });
-    
-                    return true;
-                }
-    
-                auto rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource();
-                auto frt = rsrc != nullptr ? rsrc->as_render_target() : nullptr;
-                auto frttex = frt != nullptr ? frt->get_render_target_texture() : nullptr;
-    
-                // Wait until FRenderTarget is not null.
-                if (frt == nullptr || frttex == nullptr || *frttex == nullptr) {
-                    SPDLOG_WARN("Waiting for render target to be valid...");
+            if (!already_updated) {
+                if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                    SPDLOG_WARN("Waiting for scene-capture render-resource offset discovery...");
                     return false;
                 }
-    
-                hook_frt(frt);
-    
-                RHIThreadWorker::get().enqueue([this, tgt]() -> void {
-                    if (!tgt.valid()) {
-                        SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                        this->scene_capture_target_rhi_thread = nullptr;
-                        return;
-                    }
 
-                    this->scene_capture_target_rhi_thread = tgt;
-                });
-    
-                GameThreadWorker::get().enqueue([this, tgt]() -> void {
-                    if (!tgt.valid()) {
-                        SPDLOG_ERROR("Scene capture target was destroyed between threads!");
-                        this->in_flight_target = nullptr;
-                        destroy_scene_capture();
-                        return;
-                    }
-    
-                    this->in_flight_target = nullptr;
-                    this->scene_capture_target = tgt;
-    
-                    SPDLOG_INFO("Scene capture texture fully created!");
-                });
-    
-                return true;
-            } catch (const std::exception& e) {
-                SPDLOG_ERROR("[VRRenderTargetManager] Exception in create_scene_capture: {}", e.what());
-                GameThreadWorker::get().enqueue([this]() -> void {
-                    this->in_flight_target = nullptr;
-                    destroy_scene_capture();
-                });
-                return true;
-            } catch (...) {
-                SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in create_scene_capture!");
-                GameThreadWorker::get().enqueue([this]() -> void {
-                    this->in_flight_target = nullptr;
-                    destroy_scene_capture();
-                });
-                return true;
+                SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
             }
-        };
 
-        RenderThreadWorker::ConditionalJobTimeoutFunc render_thread_on_timeout = [this]() {
-            SPDLOG_ERROR("Timed out waiting for scene capture texture to be created!");
-            GameThreadWorker::get().enqueue([this]() -> void {
-                this->in_flight_target = nullptr;
-                destroy_scene_capture();
+            auto* rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(tgt->get_resource());
+            if (rsrc == nullptr) {
+                return false;
+            }
+
+            if (!already_updated && !sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc)) {
+                SPDLOG_WARN("Waiting for scene-capture FRenderTarget vtable discovery...");
+                return false;
+            }
+
+            auto* frt = rsrc->as_render_target();
+            if (frt == nullptr) {
+                return false;
+            }
+
+            if (!already_updated) {
+                sdk::FRenderTarget::update_offsets(frt);
+            }
+
+            auto* const texture_ref = frt->get_render_target_texture();
+            auto* const rhi_texture = texture_ref != nullptr ? *texture_ref : nullptr;
+            if (rhi_texture == nullptr) {
+                SPDLOG_WARN("Waiting for scene capture render target texture to be valid...");
+                return false;
+            }
+
+            hook_frt(frt);
+
+            RHIThreadWorker::get().enqueue([this, tgt, generation, rhi_texture]() {
+                if (generation != scene_capture_generation.load(std::memory_order_acquire) || !tgt.valid()) {
+                    return;
+                }
+
+                scene_capture_target_rhi_thread = tgt;
+                publish_scene_capture_target_snapshot(
+                    reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                    rhi_texture,
+                    generation);
             });
-        };
 
-        RenderThreadWorker::get().enqueue_conditional(render_thread_conditional_task, render_thread_on_timeout, std::chrono::seconds(2));
+            GameThreadWorker::get().enqueue([this, tgt, generation]() {
+                if (generation != scene_capture_generation.load(std::memory_order_acquire) ||
+                    in_flight_scene_capture_generation != generation)
+                {
+                    return;
+                }
 
-        SPDLOG_INFO("Waiting for scene capture texture to be created...");
-    }
+                if (!tgt.valid()) {
+                    in_flight_target = nullptr;
+                    in_flight_scene_capture_generation = 0;
+                    destroy_scene_capture();
+                    return;
+                }
+
+                scene_capture_target = tgt;
+                in_flight_target = nullptr;
+                in_flight_scene_capture_generation = 0;
+                SPDLOG_INFO("Scene capture texture fully created for generation {}!", generation);
+            });
+
+            already_updated = true;
+            return true;
+        } catch (const std::exception& e) {
+            SPDLOG_ERROR("[VRRenderTargetManager] Exception in create_scene_capture: {}", e.what());
+            fail_generation();
+            return true;
+        } catch (...) {
+            SPDLOG_ERROR("[VRRenderTargetManager] Unknown exception in create_scene_capture!");
+            fail_generation();
+            return true;
+        }
+    };
+
+    RenderThreadWorker::ConditionalJobTimeoutFunc render_thread_on_timeout =
+        [generation, fail_generation]() {
+        SPDLOG_ERROR("Timed out waiting for scene capture generation {} to be created!", generation);
+        fail_generation();
+    };
+
+    RenderThreadWorker::get().enqueue_conditional(
+        render_thread_conditional_task,
+        render_thread_on_timeout,
+        std::chrono::seconds(2));
+    creation_scheduled = true;
+
+    SPDLOG_INFO("Waiting for scene capture generation {} to be created...", generation);
 
     return true;
 } catch (const std::exception& e) {
