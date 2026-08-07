@@ -17984,27 +17984,49 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
 
     const auto render_frame_delta =
         static_cast<int64_t>(render_frame) - static_cast<int64_t>(packet->render_frame);
+    const auto engine_frame_delta =
+        static_cast<uint32_t>(g_frame_count - packet->engine_frame);
     const bool exact_render_frame = render_frame_delta == 0;
     const bool same_engine_frame_present_grace =
-        packet->engine_frame == g_frame_count &&
-        (render_frame_delta == -1 || render_frame_delta == 1);
+        packet->engine_frame == g_frame_count;
+    const bool next_engine_frame_handoff =
+        render_frame_delta == 1 && engine_frame_delta == 1;
 
-    // Some games issue an additional Present without another engine draw. The
-    // UEVR render counter can advance on that Present even though this packet
-    // was produced by the current engine frame. Permit only that adjacent
-    // counter skew; generation, native resource, and engine-frame identity are
-    // still validated below, so an older scene can never cross a game tick or
-    // target transition.
-    if (!exact_render_frame && !same_engine_frame_present_grace) {
+    // A game can issue several Presents without another engine draw while the
+    // OpenXR frame counter continues to advance. The packet remains current for
+    // that engine frame regardless of the counter delta. Generation and native
+    // resource identity are still validated below, so this cannot carry a
+    // right-eye source across a game tick or target transition.
+    // The present thread can also observe the next engine frame immediately
+    // after the render thread publishes a completed packet. Permit exactly
+    // that one-frame pipeline handoff; wider cross-frame reuse remains closed.
+    if (!exact_render_frame && !same_engine_frame_present_grace && !next_engine_frame_handoff) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[NativeStereoFix] Refusing stale submit packet packet_render_frame={} submit_render_frame={} "
+            "delta={} packet_engine_frame={} current_engine_frame={} engine_delta={} serial={} consumed_serial={}",
+            packet->render_frame,
+            render_frame,
+            render_frame_delta,
+            packet->engine_frame,
+            g_frame_count,
+            engine_frame_delta,
+            packet->serial,
+            m_native_stereo_consumed_serial.load(std::memory_order_acquire));
         return nullptr;
     }
 
-    if (same_engine_frame_present_grace) {
+    if (!exact_render_frame && (same_engine_frame_present_grace || next_engine_frame_handoff)) {
         SPDLOG_INFO_ONCE(
-            "[NativeStereoFix] Accepting current-engine-frame packet across an adjacent duplicate Present "
-            "(packet_render_frame={} submit_render_frame={})",
+            "[NativeStereoFix] Accepting validated packet across asynchronous Present handoff "
+            "(packet_render_frame={} submit_render_frame={} delta={} packet_engine_frame={} "
+            "current_engine_frame={} engine_delta={})",
             packet->render_frame,
-            render_frame);
+            render_frame,
+            render_frame_delta,
+            packet->engine_frame,
+            g_frame_count,
+            engine_frame_delta);
     }
 
     if (packet->capture_generation == m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire)) {
