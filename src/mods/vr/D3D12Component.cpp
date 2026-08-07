@@ -2365,6 +2365,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
 
     const auto frame_count = vr->m_render_frame_count;
+    auto native_stereo_packet = ffsr != nullptr
+        ? ffsr->get_native_stereo_frame_packet_for_submit(frame_count)
+        : nullptr;
+    auto* const native_stereo_hook = ffsr.get();
 
     const auto real_backbuffer_copy_needs_setup = [&]() {
         if (backbuffer.Get() != real_backbuffer.Get() ||
@@ -2606,61 +2610,191 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
     }
 
-    if (vr->is_native_stereo_fix_enabled()) {
-        const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
-        const auto scene_capture_rt = scene_capture != nullptr ? (ID3D12Resource*)scene_capture->get_native_resource() : nullptr;
+    bool scene_capture_packet_ready = false;
+    const auto retire_native_scene_capture = [&]() {
+        if (m_scene_capture_tex.texture.Get() != nullptr) {
+            // The Native Fix source is borrowed by the runtime copy command
+            // lists. Retire those GPU users only when the source generation
+            // changes; never add a wait to the steady-state frame path.
+            if (runtime->is_openxr()) {
+                m_openxr.wait_for_all_copies();
+            } else if (runtime->is_openvr()) {
+                for (auto& texture_ctx : m_openvr.right_eye_tex) {
+                    texture_ctx.commands.wait(INFINITE);
+                }
+            }
+        }
+
+        m_scene_capture_tex.reset();
+        m_scene_capture_generation = 0;
+        m_scene_capture_width = 0;
+        m_scene_capture_height = 0;
+    };
+
+    if (vr->is_native_stereo_fix_enabled() && native_stereo_packet != nullptr) {
+        ComPtr<ID3D12Resource> scene_capture_rt{};
+        ComPtr<ID3D12Device4> scene_capture_device{};
+        const auto capture = native_stereo_packet->capture;
+        const auto query_result = capture != nullptr
+            ? capture->native_resource.As(&scene_capture_rt)
+            : E_NOINTERFACE;
+        D3D12_RESOURCE_DESC scene_capture_desc{};
+
+        if (SUCCEEDED(query_result) && scene_capture_rt != nullptr) {
+            scene_capture_desc = scene_capture_rt->GetDesc();
+            scene_capture_rt->GetDevice(IID_PPV_ARGS(&scene_capture_device));
+        }
+
+        const bool bgra_compatible =
+            scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+            scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        const bool desc_valid =
+            scene_capture_rt != nullptr &&
+            scene_capture_device.Get() == device &&
+            scene_capture_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            bgra_compatible &&
+            scene_capture_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) &&
+            scene_capture_desc.Height == static_cast<uint32_t>(vr->get_hmd_height()) &&
+            scene_capture_desc.DepthOrArraySize == 1 &&
+            scene_capture_desc.MipLevels == 1 &&
+            scene_capture_desc.SampleDesc.Count == 1;
 
         if (is_avowed_current_game()) {
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "[Avowed][D3D12][NativeStereoFix] Scene capture texture state: rhi={} native={} cached={} game_tex={}",
-                (uintptr_t)scene_capture,
-                (uintptr_t)scene_capture_rt,
+                "[Avowed][D3D12][NativeStereoFix] Scene capture texture state: generation={} native={} cached={} game_tex={}",
+                capture != nullptr ? capture->generation : 0,
+                (uintptr_t)scene_capture_rt.Get(),
                 (uintptr_t)m_scene_capture_tex.texture.Get(),
                 (uintptr_t)m_game_tex.texture.Get());
         }
 
-        if (scene_capture_rt != nullptr && m_scene_capture_tex.texture.Get() != scene_capture_rt) {
-            spdlog::info("[VR] Setting up scene capture texture as reference to original");
+        if (desc_valid) {
+            const auto view_format = scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS
+                ? DXGI_FORMAT_B8G8R8A8_UNORM
+                : scene_capture_desc.Format;
 
-            if (!m_scene_capture_tex.setup(device, scene_capture_rt, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM, L"Scene Capture Texture")) {
-                spdlog::error("[VR] Failed to fully setup scene capture texture.");
-                m_scene_capture_tex.reset();
+            if (m_scene_capture_generation != capture->generation ||
+                m_scene_capture_tex.texture.Get() != scene_capture_rt.Get())
+            {
+                retire_native_scene_capture();
+
+                if (m_scene_capture_tex.setup(device, scene_capture_rt.Get(), view_format, view_format, L"Native Stereo Scene Capture Texture")) {
+                    m_scene_capture_generation = capture->generation;
+                    m_scene_capture_width = static_cast<uint32_t>(scene_capture_desc.Width);
+                    m_scene_capture_height = scene_capture_desc.Height;
+                    spdlog::info(
+                        "[NativeStereoFix][D3D12] Accepted scene capture generation {} format {} {}x{}",
+                        capture->generation,
+                        static_cast<uint32_t>(scene_capture_desc.Format),
+                        scene_capture_desc.Width,
+                        scene_capture_desc.Height);
+                } else {
+                    spdlog::error("[NativeStereoFix][D3D12] Failed to set up validated scene capture texture");
+                    m_scene_capture_tex.reset();
+                }
             }
+
+            scene_capture_packet_ready =
+                m_scene_capture_generation == capture->generation &&
+                m_scene_capture_tex.texture.Get() == scene_capture_rt.Get();
+        } else {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[NativeStereoFix][D3D12] Rejecting capture generation {} device_match={} dimension={} format={} size={}x{} mips={} array={} samples={}",
+                capture != nullptr ? capture->generation : 0,
+                scene_capture_device.Get() == device,
+                static_cast<uint32_t>(scene_capture_desc.Dimension),
+                static_cast<uint32_t>(scene_capture_desc.Format),
+                scene_capture_desc.Width,
+                scene_capture_desc.Height,
+                scene_capture_desc.MipLevels,
+                scene_capture_desc.DepthOrArraySize,
+                scene_capture_desc.SampleDesc.Count);
+        }
+    }
+
+    if (native_stereo_packet != nullptr && !scene_capture_packet_ready && native_stereo_hook != nullptr) {
+        native_stereo_hook->reject_native_stereo_frame_packet(
+            native_stereo_packet->serial,
+            "D3D12 rejected the capture resource or its descriptors");
+    }
+
+    if (!scene_capture_packet_ready) {
+        bool cached_capture_is_current = false;
+
+        // A duplicate Present can occur between engine draws. Preserve the
+        // descriptor context across that packet-less call when the target
+        // manager still publishes the exact same generation and resource.
+        // Submission paths below remain packet-gated, so this only avoids a
+        // needless GPU wait and descriptor rebuild on the next valid frame.
+        if (native_stereo_packet == nullptr &&
+            vr->is_native_stereo_fix_enabled() &&
+            m_scene_capture_generation != 0 &&
+            m_scene_capture_tex.texture.Get() != nullptr)
+        {
+            const auto current_capture = ffsr != nullptr
+                ? ffsr->get_render_target_manager()->get_scene_capture_target_snapshot()
+                : nullptr;
+            ComPtr<ID3D12Resource> current_resource{};
+
+            cached_capture_is_current =
+                current_capture != nullptr &&
+                current_capture->generation == m_scene_capture_generation &&
+                SUCCEEDED(current_capture->native_resource.As(&current_resource)) &&
+                current_resource.Get() == m_scene_capture_tex.texture.Get();
         }
 
-        if (scene_capture_rt == nullptr && m_scene_capture_tex.texture.Get() != nullptr) {
-            spdlog::info("[VR] Resetting scene capture texture");
-
-            m_scene_capture_tex.reset();
+        if (!cached_capture_is_current) {
+            retire_native_scene_capture();
         }
-    } else {
-        m_scene_capture_tex.reset();
+
+        native_stereo_packet.reset();
     }
 
     // We need to render the scene capture texture to the right side of the double wide texture
-    auto pre_render = [&](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
-        if (render_target == nullptr) {
+    auto pre_render = [
+        left_source = m_game_tex.texture,
+        right_source = m_scene_capture_tex.texture,
+        left_width = m_backbuffer_size[0] / 2,
+        left_height = m_backbuffer_size[1],
+        right_width = m_scene_capture_width,
+        right_height = m_scene_capture_height,
+        native_stereo_packet,
+        native_stereo_hook](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
+        if (render_target == nullptr || left_source == nullptr || right_source == nullptr || native_stereo_packet == nullptr) {
             return;
         }
 
-        // Also the same for right, even though it's not a double wide texture
         D3D12_BOX left_src_box{
             .left = 0,
             .top = 0,
             .front = 0,
-            .right = m_backbuffer_size[0] / 2,
-            .bottom = m_backbuffer_size[1],
+            .right = left_width,
+            .bottom = left_height,
+            .back = 1
+        };
+        D3D12_BOX right_src_box{
+            .left = 0,
+            .top = 0,
+            .front = 0,
+            .right = right_width,
+            .bottom = right_height,
             .back = 1
         };
 
         commands.copy_region_stereo(
-            m_game_tex.texture.Get(), m_scene_capture_tex.texture.Get(), render_target,
-            &left_src_box, &left_src_box,
-            0, 0, 0, m_backbuffer_size[0] / 2, 0, 0,
+            left_source.Get(), right_source.Get(), render_target,
+            &left_src_box, &right_src_box,
+            0, 0, 0, left_width, 0, 0,
             D3D12_RESOURCE_STATE_RENDER_TARGET,
             D3D12_RESOURCE_STATE_RENDER_TARGET
         );
+
+        if (native_stereo_hook != nullptr) {
+            native_stereo_hook->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+        }
     };
 
     // For copying the real backbuffer if we need to
@@ -3343,7 +3477,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (!is_afr) {
-                if (!use_mono_flat_screen_source && m_scene_capture_tex.texture.Get() != nullptr) {
+                if (!use_mono_flat_screen_source &&
+                    native_stereo_packet != nullptr &&
+                    m_scene_capture_tex.texture.Get() != nullptr)
+                {
                     d3d12::render_srv_to_rtv(
                         m_game_batch.get(),
                         commands.cmd_list.Get(),
@@ -4011,12 +4148,23 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         auto left_source_state = scene_source_state;
                         auto right_source_state = scene_source_state;
 
-                        if (!shf_using_mono_expansion && m_scene_capture_tex.texture.Get() != nullptr && m_game_tex.texture.Get() != nullptr) {
+                        const bool using_native_scene_capture =
+                            !shf_using_mono_expansion &&
+                            native_stereo_packet != nullptr &&
+                            m_scene_capture_tex.texture.Get() != nullptr &&
+                            m_game_tex.texture.Get() != nullptr;
+
+                        if (using_native_scene_capture) {
                             left_source = m_game_tex.texture;
                             right_source = m_scene_capture_tex.texture;
                             left_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
                             right_source_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
-                            right_src_box = left_src_box;
+                            right_src_box.left = 0;
+                            right_src_box.top = 0;
+                            right_src_box.right = m_scene_capture_width;
+                            right_src_box.bottom = m_scene_capture_height;
+                            right_src_box.front = 0;
+                            right_src_box.back = 1;
                         }
 
                         SPDLOG_INFO_ONCE(
@@ -4028,7 +4176,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         m_openxr.copy(
                             native_stereo_array_swapchain,
                             nullptr,
-                            [left_source, right_source, left_src_box, right_src_box, left_source_state, right_source_state](
+                            [left_source, right_source, left_src_box, right_src_box, left_source_state, right_source_state,
+                                using_native_scene_capture, native_stereo_packet, native_stereo_hook](
                                 d3d12::CommandContext& commands,
                                 ID3D12Resource* dst) mutable {
                                 commands.copy_region_to_subresource(
@@ -4045,11 +4194,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                                     1,
                                     right_source_state,
                                     D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+                                if (using_native_scene_capture && native_stereo_packet != nullptr && native_stereo_hook != nullptr) {
+                                    native_stereo_hook->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                                }
                             },
                             std::nullopt,
                             D3D12_RESOURCE_STATE_RENDER_TARGET,
                             nullptr);
-                    } else if (m_scene_capture_tex.texture.Get() == nullptr ||
+                    } else if (native_stereo_packet == nullptr ||
+                               m_scene_capture_tex.texture.Get() == nullptr ||
                                shf_using_mono_expansion ||
                                dune_using_hmd_mono_expansion) {
                         m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), scene_source_state, nullptr);
@@ -4094,10 +4248,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (!is_afr) {
-                if (m_scene_capture_tex.texture.Get() == nullptr) {
+                if (native_stereo_packet == nullptr || m_scene_capture_tex.texture.Get() == nullptr) {
                     m_openvr.copy_right(backbuffer.Get(), scene_source_state);
                 } else {
                     m_openvr.copy_left_to_right(m_scene_capture_tex.texture.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+                    if (native_stereo_packet != nullptr && native_stereo_hook != nullptr) {
+                        native_stereo_hook->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                    }
                 }
             } else {
                 m_openvr.copy_left_to_right(backbuffer.Get(), scene_source_state);
@@ -5042,6 +5199,12 @@ void D3D12Component::on_reset(VR* vr) {
 
     auto runtime = vr->get_runtime();
 
+    // OpenXR copy contexts can still reference the borrowed Native Fix source.
+    // Drain them before releasing any source or descriptor wrappers below.
+    if (runtime->is_openxr() && runtime->loaded) {
+        m_openxr.wait_for_all_copies();
+    }
+
     for (auto& ctx : m_openvr.left_eye_tex) {
         ctx.reset();
     }
@@ -5073,6 +5236,9 @@ void D3D12Component::on_reset(VR* vr) {
     m_ue58_spectator_tex.reset();
     m_ue58_dedicated_ui_spectator_valid = false;
     m_scene_capture_tex.reset();
+    m_scene_capture_generation = 0;
+    m_scene_capture_width = 0;
+    m_scene_capture_height = 0;
     m_shf_mono_scene_tex.reset();
     m_halo_electra_quad_source_tex.reset();
     m_shf_mono_scene_commands.reset();
@@ -5093,8 +5259,6 @@ void D3D12Component::on_reset(VR* vr) {
     m_graphics_memory.reset();
 
     if (runtime->is_openxr() && runtime->loaded) {
-        m_openxr.wait_for_all_copies();
-
         auto& rt_pool = vr->get_render_target_pool_hook();
         ComPtr<ID3D12Resource> scene_depth_tex{rt_pool->get_texture<ID3D12Resource>(L"SceneDepthZ")};
 
