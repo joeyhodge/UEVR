@@ -5819,6 +5819,163 @@ bool direct_call_returns_to(uintptr_t return_address, uintptr_t expected_target)
     return static_cast<uintptr_t>(return_address + displacement) == expected_target;
 }
 
+bool indirect_virtual_call_returns_to(uintptr_t return_address, uint8_t slot_offset) {
+    constexpr size_t minimum_call_size = 3;
+
+    if (return_address < minimum_call_size ||
+        !is_readable_process_range(return_address - minimum_call_size, minimum_call_size))
+    {
+        return false;
+    }
+
+    // CALL qword ptr [reg+disp8]. A REX prefix, when needed, precedes these
+    // final three bytes and does not change this validation.
+    const auto call = reinterpret_cast<const uint8_t*>(return_address - minimum_call_size);
+    const auto modrm = call[1];
+    return call[0] == 0xFF &&
+           (modrm & 0xC0) == 0x40 &&
+           (modrm & 0x38) == 0x10 &&
+           (modrm & 0x07) != 0x04 &&
+           call[2] == slot_offset;
+}
+
+bool has_ue426_427_begin_rendering_viewfamily_shape(const RuntimeFunctionRange& function) {
+    if (function.size() < 0x200 || function.size() > 0x4000 ||
+        !is_readable_process_range(function.begin, function.size()))
+    {
+        return false;
+    }
+
+    const auto bytes = reinterpret_cast<const uint8_t*>(function.begin);
+    bool writes_frame_number = false;
+    bool calls_begin_render_viewfamily = false;
+
+    for (size_t i = 0; i + 3 < function.size(); ++i) {
+        size_t opcode_index = i;
+        uint8_t rex{};
+        if (bytes[opcode_index] >= 0x40 && bytes[opcode_index] <= 0x4F) {
+            rex = bytes[opcode_index++];
+        }
+
+        if (opcode_index + 2 >= function.size()) {
+            break;
+        }
+
+        const auto opcode = bytes[opcode_index];
+        const auto modrm = bytes[opcode_index + 1];
+        const auto uses_disp8 = (modrm & 0xC0) == 0x40;
+        const auto uses_sib = (modrm & 0x07) == 0x04;
+        const auto displacement_index = opcode_index + (uses_sib ? 3 : 2);
+
+        if (!uses_disp8 || displacement_index >= function.size()) {
+            continue;
+        }
+
+        // UE4.26/4.27 FSceneViewFamily::FrameNumber is a uint32 at +0x5c.
+        // Accept any compiler-selected base/source register, but reject a
+        // REX.W qword store.
+        if (opcode == 0x89 && (rex & 0x08) == 0 && bytes[displacement_index] == 0x5C) {
+            writes_frame_number = true;
+        }
+
+        // ISceneViewExtension::BeginRenderViewFamily is virtual slot 5, so its
+        // byte displacement is 5 * sizeof(void*) == 0x28.
+        if (opcode == 0xFF &&
+            (modrm & 0x38) == 0x10 &&
+            bytes[displacement_index] == 0x28)
+        {
+            calls_begin_render_viewfamily = true;
+        }
+
+        if (writes_frame_number && calls_begin_render_viewfamily) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::optional<RuntimeFunctionRange> get_ue426_427_begin_rendering_viewfamily_range(
+    uintptr_t callback_return)
+{
+    constexpr uint8_t unwind_flag_chaininfo = 0x4;
+    constexpr uint32_t max_chain_depth = 4;
+
+    if (!indirect_virtual_call_returns_to(callback_return, 0x28)) {
+        return std::nullopt;
+    }
+
+    DWORD64 image_base64{};
+    const auto runtime_function = RtlLookupFunctionEntry(
+        static_cast<DWORD64>(callback_return),
+        &image_base64,
+        nullptr);
+    const auto current_range = get_runtime_function_range(callback_return);
+
+    if (runtime_function == nullptr || image_base64 == 0 || !current_range) {
+        return std::nullopt;
+    }
+
+    auto combined = *current_range;
+    auto chained_entry = *runtime_function;
+    const auto image_base = static_cast<uintptr_t>(image_base64);
+
+    for (uint32_t depth = 0; depth <= max_chain_depth; ++depth) {
+        if (has_ue426_427_begin_rendering_viewfamily_shape(combined)) {
+            return combined;
+        }
+
+        if (depth == max_chain_depth || chained_entry.UnwindData == 0) {
+            break;
+        }
+
+        const auto unwind_address = image_base + chained_entry.UnwindData;
+        if (unwind_address < image_base || !is_readable_process_range(unwind_address, 4)) {
+            break;
+        }
+
+        const auto unwind_info = reinterpret_cast<const uint8_t*>(unwind_address);
+        const auto version = unwind_info[0] & 0x07;
+        const auto flags = unwind_info[0] >> 3;
+        if (version != 1 || (flags & unwind_flag_chaininfo) == 0) {
+            break;
+        }
+
+        const auto unwind_code_count = static_cast<size_t>(unwind_info[2]);
+        const auto aligned_code_count = (unwind_code_count + 1) & ~size_t{1};
+        const auto chained_entry_address =
+            unwind_address + 4 + aligned_code_count * sizeof(uint16_t);
+        if (chained_entry_address < unwind_address ||
+            !is_readable_process_range(chained_entry_address, sizeof(RUNTIME_FUNCTION)))
+        {
+            break;
+        }
+
+        RUNTIME_FUNCTION parent_entry{};
+        std::memcpy(
+            &parent_entry,
+            reinterpret_cast<const void*>(chained_entry_address),
+            sizeof(parent_entry));
+
+        const auto parent_begin = image_base + parent_entry.BeginAddress;
+        const auto parent_end = image_base + parent_entry.EndAddress;
+        if (parent_begin < image_base || parent_end <= parent_begin ||
+            parent_end != combined.begin || parent_entry.UnwindData == 0 ||
+            combined.end - parent_begin > 0x4000 ||
+            !is_executable_process_range(
+                parent_begin,
+                std::min<size_t>(parent_end - parent_begin, 16)))
+        {
+            break;
+        }
+
+        combined.begin = parent_begin;
+        chained_entry = parent_entry;
+    }
+
+    return std::nullopt;
+}
+
 bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
     // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
     // this as corroborating evidence rather than the sole resolver condition.
@@ -5838,7 +5995,9 @@ bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wr
     return contains(store_r8_to_stack) && contains(load_r8_from_stack);
 }
 
-std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
+std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
+    uintptr_t direct_callback_return = 0)
+{
     constexpr uint32_t max_stack_depth = 32;
     // The renderer entry is close to the view-extension callback. Launch-loop
     // frames farther up the stack can have the same small-wrapper/direct-call
@@ -5852,14 +6011,47 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
         nullptr);
 
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto source_validated_ue4 = is_ue_4_26_runtime() || is_ue_4_27_runtime();
     std::optional<uintptr_t> best_candidate{};
     int best_score = std::numeric_limits<int>::min();
+
+    // UE4.26/4.27 calls slot 5 directly from FRendererModule::
+    // BeginRenderingViewFamily. The callback's own return address is stronger
+    // evidence than reconstructing that frame through RtlCaptureStackBackTrace.
+    if (source_validated_ue4 && direct_callback_return != 0) {
+        const auto direct_segment = get_runtime_function_range(direct_callback_return);
+        const auto direct_candidate =
+            get_ue426_427_begin_rendering_viewfamily_range(direct_callback_return);
+        const auto direct_candidate_valid =
+            direct_candidate.has_value() &&
+            direct_candidate->image_base == game_module;
+
+        if (direct_candidate_valid) {
+            SPDLOG_INFO(
+                "[UE4.26/4.27][ViewFamilySelector] Resolved source-validated callback caller "
+                "target={:x} size={:x} return={:x}",
+                direct_candidate->begin,
+                direct_candidate->size(),
+                direct_callback_return);
+            return direct_candidate->begin;
+        }
+
+        SPDLOG_WARN_ONCE(
+            "[UE4.26/4.27][ViewFamilySelector] Rejected callback caller return={:x} "
+            "function={:x} size={:x} game_module={} slot5_call={} renderer_shape={}",
+            direct_callback_return,
+            direct_segment ? direct_segment->begin : 0,
+            direct_segment ? direct_segment->size() : 0,
+            direct_segment && direct_segment->image_base == game_module,
+            indirect_virtual_call_returns_to(direct_callback_return, 0x28),
+            direct_candidate.has_value());
+    }
 
     // The view-extension callback runs inside CreateSceneRenderers. The next
     // frames are BeginRenderingViewFamilies and its small singular wrapper.
     // Validate that wrapper's exact direct CALL instead of guessing from the
     // first captured frame.
-    for (uint32_t i = 1; i + 1 < depth && i <= max_renderer_stack_index; ++i) {
+    for (uint32_t i = 1; !source_validated_ue4 && i + 1 < depth && i <= max_renderer_stack_index; ++i) {
         const auto callee = get_runtime_function_range(stack[i]);
         const auto caller = get_runtime_function_range(stack[i + 1]);
 
@@ -5907,7 +6099,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
         constexpr size_t max_renderer_size = 0x4000;
 
         for (uint32_t i = 1; i < depth && i <= max_renderer_stack_index; ++i) {
-            const auto candidate = get_runtime_function_range(stack[i]);
+            const auto candidate = source_validated_ue4
+                ? get_ue426_427_begin_rendering_viewfamily_range(stack[i])
+                : get_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
                 candidate->size() > max_renderer_size)
@@ -5915,14 +6109,31 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack() {
                 continue;
             }
 
+            if (source_validated_ue4 &&
+                (!indirect_virtual_call_returns_to(stack[i], 0x28) ||
+                 !has_ue426_427_begin_rendering_viewfamily_shape(*candidate)))
+            {
+                continue;
+            }
+
             best_candidate = candidate->begin;
-            SPDLOG_INFO(
-                "[ViewFamilySelector] Resolved direct BeginRenderingViewFamily entry from stack "
-                "target={:x} size={:x} return={:x} stack_index={}",
-                candidate->begin,
-                candidate->size(),
-                stack[i],
-                i);
+            if (source_validated_ue4) {
+                SPDLOG_INFO(
+                    "[UE4.26/4.27][ViewFamilySelector] Resolved source-validated direct "
+                    "BeginRenderingViewFamily entry target={:x} size={:x} return={:x} stack_index={}",
+                    candidate->begin,
+                    candidate->size(),
+                    stack[i],
+                    i);
+            } else {
+                SPDLOG_INFO(
+                    "[ViewFamilySelector] Resolved direct BeginRenderingViewFamily entry from stack "
+                    "target={:x} size={:x} return={:x} stack_index={}",
+                    candidate->begin,
+                    candidate->size(),
+                    stack[i],
+                    i);
+            }
             break;
         }
     }
@@ -12936,6 +13147,12 @@ struct SceneViewExtensionAnalyzer {
         uint32_t frame_count_offset_a3{0};
         uint32_t times_frame_count_correct_a2{0};
         uint32_t times_frame_count_correct_a3{0};
+        uint32_t ue4_source_frame_a2{0};
+        uint32_t ue4_source_frame_a3{0};
+        uint32_t ue4_source_valid_a2{0};
+        uint32_t ue4_source_valid_a3{0};
+        uint32_t ue4_source_advances_a2{0};
+        uint32_t ue4_source_advances_a3{0};
         std::array<uint8_t, 0x100> a2_data{};
         std::array<uint8_t, 0x100> a3_data{};
     };
@@ -12952,9 +13169,179 @@ struct SceneViewExtensionAnalyzer {
     static inline uint32_t pre_render_viewfamily_renderthread_index{0};
     static inline uint32_t frame_count_offset{0};
 
+    static constexpr uint32_t UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX = 5;
+    static constexpr uint32_t UE426_427_PRE_RENDER_VIEWFAMILY_INDEX = 6;
+    static constexpr uint32_t UE426_427_IS_ACTIVE_INDEX = 14;
+    static constexpr uint32_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
+    static constexpr uint32_t UE426_427_VIEW_MODE_OFFSET = 0x10;
+    static constexpr uint32_t UE426_427_RENDER_TARGET_OFFSET = 0x18;
+
     static bool validate_cached_discovery(void** original_vtable, const nlohmann::json& cached);
     static bool try_apply_cached_discovery(void** original_vtable);
     static void save_cached_discovery();
+
+    static bool read_ue426_427_view_family_frame(uintptr_t candidate, uint32_t& frame) {
+        struct RawViewsArray {
+            uintptr_t data;
+            int32_t count;
+            int32_t capacity;
+        };
+
+        constexpr int32_t max_sane_views = 16;
+        if (candidate == 0 || (candidate & (alignof(void*) - 1)) != 0 ||
+            !is_readable_process_range(candidate, 0x100))
+        {
+            return false;
+        }
+
+        RawViewsArray views{};
+        int32_t view_mode{};
+        uintptr_t render_target{};
+        std::memcpy(&views, reinterpret_cast<const void*>(candidate), sizeof(views));
+        std::memcpy(
+            &view_mode,
+            reinterpret_cast<const void*>(candidate + UE426_427_VIEW_MODE_OFFSET),
+            sizeof(view_mode));
+        std::memcpy(
+            &render_target,
+            reinterpret_cast<const void*>(candidate + UE426_427_RENDER_TARGET_OFFSET),
+            sizeof(render_target));
+        std::memcpy(
+            &frame,
+            reinterpret_cast<const void*>(candidate + UE426_427_FRAME_NUMBER_OFFSET),
+            sizeof(frame));
+
+        // UE4.26/4.27 FSceneViewFamily is non-polymorphic: Views starts at +0,
+        // ViewMode is +0x10, RenderTarget is +0x18, and FrameNumber is +0x5c.
+        // Do not interpret Views.Data as a vtable (FSceneViewFamily gained a
+        // vptr in later engine layouts).
+        if (views.count <= 0 || views.count > max_sane_views ||
+            views.capacity < views.count || views.capacity > 1024 ||
+            views.data == 0 ||
+            !is_readable_process_range(
+                views.data,
+                sizeof(uintptr_t) * static_cast<size_t>(views.count)) ||
+            view_mode < 0 || view_mode > 64 ||
+            render_target == 0 ||
+            !is_readable_process_range(render_target, sizeof(uintptr_t)) ||
+            frame < 10 || frame == std::numeric_limits<uint32_t>::max())
+        {
+            return false;
+        }
+
+        std::array<uintptr_t, max_sane_views> view_ptrs{};
+        std::memcpy(
+            view_ptrs.data(),
+            reinterpret_cast<const void*>(views.data),
+            sizeof(uintptr_t) * static_cast<size_t>(views.count));
+        for (int32_t i = 0; i < views.count; ++i) {
+            const auto view = view_ptrs[static_cast<size_t>(i)];
+            if (view == 0 || (view & (alignof(void*) - 1)) != 0 ||
+                !is_readable_process_range(view, 0x20))
+            {
+                return false;
+            }
+        }
+
+        uintptr_t render_target_vtable{};
+        uintptr_t first_virtual{};
+        std::memcpy(
+            &render_target_vtable,
+            reinterpret_cast<const void*>(render_target),
+            sizeof(render_target_vtable));
+        if (render_target_vtable == 0 ||
+            !is_readable_process_range(render_target_vtable, sizeof(first_virtual)) ||
+            !utility::get_module_within(reinterpret_cast<void*>(render_target_vtable)).has_value())
+        {
+            return false;
+        }
+
+        std::memcpy(
+            &first_virtual,
+            reinterpret_cast<const void*>(render_target_vtable),
+            sizeof(first_virtual));
+        if (!is_executable_process_range(first_virtual, 1)) {
+            return false;
+        }
+
+        return true;
+    }
+
+    static void observe_ue426_427_source_frame(
+        uintptr_t candidate,
+        uint32_t& previous_frame,
+        uint32_t& valid_observations,
+        uint32_t& advancing_observations)
+    {
+        uint32_t frame{};
+        if (!read_ue426_427_view_family_frame(candidate, frame)) {
+            return;
+        }
+
+        if (previous_frame != 0 && frame >= previous_frame && frame - previous_frame <= 64) {
+            ++valid_observations;
+            if (frame > previous_frame) {
+                ++advancing_observations;
+            }
+        }
+
+        previous_frame = frame;
+    }
+
+    static bool try_apply_ue426_427_source_fallback() {
+        if ((!is_ue_4_26_runtime() && !is_ue_4_27_runtime()) ||
+            !has_found_is_active_this_frame_index ||
+            is_active_this_frame_index != UE426_427_IS_ACTIVE_INDEX ||
+            index_0_called ||
+            has_found_begin_render_viewfamily)
+        {
+            return false;
+        }
+
+        const auto begin_it = functions.find(UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX);
+        const auto pre_render_it = functions.find(UE426_427_PRE_RENDER_VIEWFAMILY_INDEX);
+        if (begin_it == functions.end() || pre_render_it == functions.end()) {
+            return false;
+        }
+
+        const auto& begin = begin_it->second;
+        const auto& pre_render = pre_render_it->second;
+        constexpr uint32_t minimum_calls = 8;
+        constexpr uint32_t minimum_valid_observations = 6;
+        if (begin.call_count < minimum_calls || pre_render.call_count < minimum_calls ||
+            begin.ue4_source_valid_a2 < minimum_valid_observations ||
+            pre_render.ue4_source_valid_a3 < minimum_valid_observations ||
+            begin.ue4_source_advances_a2 == 0 || pre_render.ue4_source_advances_a3 == 0 ||
+            begin.ue4_source_frame_a2 == 0 || pre_render.ue4_source_frame_a3 == 0 ||
+            std::abs(
+                static_cast<int64_t>(begin.ue4_source_frame_a2) -
+                static_cast<int64_t>(pre_render.ue4_source_frame_a3)) > 64)
+        {
+            return false;
+        }
+
+        has_found_begin_render_viewfamily = true;
+        begin_render_viewfamily_index = UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX;
+        pre_render_viewfamily_renderthread_index = UE426_427_PRE_RENDER_VIEWFAMILY_INDEX;
+        frame_count_offset = UE426_427_FRAME_NUMBER_OFFSET;
+        sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+
+        SPDLOG_INFO(
+            "[UE4.26/4.27][ViewExtension] Applied source-validated fallback "
+            "BeginRenderViewFamily={} PreRenderViewFamily_RenderThread={} IsActiveThisFrame={} "
+            "FrameNumber=0x{:x} begin_calls={} pre_render_calls={} begin_advances={} pre_render_advances={}",
+            begin_render_viewfamily_index,
+            pre_render_viewfamily_renderthread_index,
+            is_active_this_frame_index,
+            frame_count_offset,
+            begin.call_count,
+            pre_render.call_count,
+            begin.ue4_source_advances_a2,
+            pre_render.ue4_source_advances_a3);
+
+        setup_view_extension_hook();
+        return true;
+    }
 
     template<int N>
     static bool analysis_dummy_stage1(ISceneViewExtension* extension, uintptr_t a2, uintptr_t a3, uintptr_t a4) {
@@ -13020,6 +13407,26 @@ struct SceneViewExtensionAnalyzer {
         }
 
         std::scoped_lock _{dummy_mutex};
+
+        if constexpr (N == UE426_427_BEGIN_RENDER_VIEWFAMILY_INDEX) {
+            auto& func = functions[N];
+            observe_ue426_427_source_frame(
+                a2,
+                func.ue4_source_frame_a2,
+                func.ue4_source_valid_a2,
+                func.ue4_source_advances_a2);
+        } else if constexpr (N == UE426_427_PRE_RENDER_VIEWFAMILY_INDEX) {
+            auto& func = functions[N];
+            observe_ue426_427_source_frame(
+                a3,
+                func.ue4_source_frame_a3,
+                func.ue4_source_valid_a3,
+                func.ue4_source_advances_a3);
+        }
+
+        if (try_apply_ue426_427_source_fallback()) {
+            return false;
+        }
 
         if (functions.contains(N)) {
             auto& func = functions[N];
@@ -17215,7 +17622,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
             const auto candidate = dune_awakening_is_current_game()
                 ? resolve_dune_begin_rendering_viewfamilies()
-                : resolve_begin_rendering_viewfamilies_from_stack();
+                : resolve_begin_rendering_viewfamilies_from_stack(
+                    reinterpret_cast<uintptr_t>(_ReturnAddress()));
             if (!candidate) {
                 SPDLOG_WARN(
                     "[ViewFamilySelector] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
