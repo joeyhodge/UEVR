@@ -402,26 +402,24 @@ bool try_set_ue57_scene_view_family(
     sdk::FSceneViewFamily* replacement)
 {
     if (view == nullptr || expected_current == nullptr || replacement == nullptr ||
-        view->get_view_family() != expected_current ||
         !is_readable_process_range(reinterpret_cast<uintptr_t>(view), sizeof(uintptr_t)))
     {
         return false;
     }
 
-    uintptr_t first_slot{};
-    std::memcpy(&first_slot, view, sizeof(first_slot));
-    const bool has_vtable =
-        first_slot != 0 &&
-        is_readable_process_range(first_slot, sizeof(uintptr_t)) &&
-        utility::get_module_within(first_slot).has_value();
-    const auto family_slot = reinterpret_cast<uintptr_t>(view) + (has_vtable ? sizeof(uintptr_t) : 0u);
+    const auto family_offset = view->get_view_family_offset(expected_current);
+    if (!family_offset.has_value()) {
+        return false;
+    }
+
+    const auto family_slot = reinterpret_cast<uintptr_t>(view) + *family_offset;
 
     if (!is_writable_process_range(family_slot, sizeof(replacement))) {
         return false;
     }
 
     std::memcpy(reinterpret_cast<void*>(family_slot), &replacement, sizeof(replacement));
-    return view->get_view_family() == replacement;
+    return view->has_view_family(replacement);
 }
 
 class UE57FSceneViewSingletonPrimaryOverride {
@@ -441,7 +439,7 @@ public:
     {
         failure_reason = nullptr;
 
-        if (view == nullptr || expected_family == nullptr || view->get_view_family() != expected_family) {
+        if (view == nullptr || expected_family == nullptr || !view->has_view_family(expected_family)) {
             failure_reason = "secondary singleton view or Family backlink changed";
             return false;
         }
