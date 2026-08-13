@@ -1119,6 +1119,7 @@ private:
     };
 
     static bool bind_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
+    static bool orient_daysgone_ghosting_fix_pair_from_owner(GhostingFixPair& pair);
     static bool validate_ghosting_fix_owner(const GhostingFixPair& pair, const char** failure_stage = nullptr);
     static bool refresh_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
 
