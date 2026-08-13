@@ -5436,6 +5436,29 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
+    // Days Gone's customized UE4.11 layout places PostInitProperties at slot
+    // 15. Its ULocalPlayer override allocates the exact FSceneViewStateReference
+    // wrappers at +0x90 and +0xB8 that the guarded owner resolver validates.
+    if (daysgone_is_current_game()) {
+        constexpr uint32_t DAYSGONE_UE411_POST_INIT_PROPERTIES_SLOT = 15;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                DAYSGONE_UE411_POST_INIT_PROPERTIES_SLOT,
+                "Days Gone UE4.11 UObject::PostInitProperties",
+                false,
+                true))
+        {
+            return DAYSGONE_UE411_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN(
+            "[PostInitProperties] Days Gone UE4.11 slot 15 did not validate; "
+            "skipping Ghosting Fix bootstrap for safety");
+        return std::nullopt;
+    }
+
     // ProSpi 4.27.2 shipped layout validates at slot 8 in the live log/PDB path.
     // Do not force the modern UE5 slot here; if slot 8 is not provably callable,
     // fail closed instead of scanning broad/random LocalPlayer virtuals.
@@ -6837,6 +6860,65 @@ bool ghosting_resolve_direct_view_state_slots(
     sdk::FSceneViewStateInterface* right_state,
     GhostingFixOwnerCandidate& out)
 {
+    if (daysgone_is_current_game()) {
+        constexpr uintptr_t FIRST_REFERENCE_OFFSET = 0x90;
+        constexpr uintptr_t SECOND_REFERENCE_OFFSET = 0xB8;
+        constexpr uint32_t REFERENCE_STRIDE =
+            static_cast<uint32_t>(SECOND_REFERENCE_OFFSET - FIRST_REFERENCE_OFFSET);
+        constexpr size_t STORAGE_END_OFFSET = SECOND_REFERENCE_OFFSET + (2 * sizeof(uintptr_t));
+
+        const auto first = local_player_address + FIRST_REFERENCE_OFFSET;
+        const auto second = local_player_address + SECOND_REFERENCE_OFFSET;
+        uintptr_t first_vtable{};
+        uintptr_t second_vtable{};
+        uintptr_t first_virtual{};
+        uintptr_t first_state{};
+        uintptr_t second_state{};
+
+        if (is_readable_process_range(local_player_address, STORAGE_END_OFFSET) &&
+            safe_read_value(first, first_vtable) &&
+            first_vtable != 0 &&
+            safe_read_value(second, second_vtable) &&
+            first_vtable == second_vtable &&
+            safe_read_value(first_vtable, first_virtual) &&
+            first_virtual != 0 &&
+            is_executable_process_range(first_virtual, 1) &&
+            safe_read_value(first + sizeof(uintptr_t), first_state) &&
+            safe_read_value(second + sizeof(uintptr_t), second_state))
+        {
+            const auto left = reinterpret_cast<uintptr_t>(left_state);
+            const auto right = reinterpret_cast<uintptr_t>(right_state);
+            const bool natural_order = first_state == left && second_state == right;
+            const bool swapped_order = first_state == right && second_state == left;
+
+            if (natural_order || swapped_order) {
+                out.view_states_header = 0;
+                out.view_states_data = first;
+                out.view_states_count = 2;
+                out.view_states_capacity = 2;
+                out.view_state_stride = REFERENCE_STRIDE;
+                out.view_state_reference_vtable = first_vtable;
+                out.eye_state_slot[0] = natural_order
+                    ? first + sizeof(uintptr_t)
+                    : second + sizeof(uintptr_t);
+                out.eye_state_slot[1] = natural_order
+                    ? second + sizeof(uintptr_t)
+                    : first + sizeof(uintptr_t);
+                out.view_states_are_array = false;
+
+                SPDLOG_INFO_ONCE(
+                    "[GhostingFix][DaysGone] Validated exact UE4.11 LocalPlayer "
+                    "ViewState/StereoViewState storage owner={:x} first=+0x{:x} "
+                    "second=+0x{:x} stride=0x{:x}",
+                    local_player_address,
+                    FIRST_REFERENCE_OFFSET,
+                    SECOND_REFERENCE_OFFSET,
+                    REFERENCE_STRIDE);
+                return true;
+            }
+        }
+    }
+
     if (controller_id_data <= local_player_address + sdk::UObjectBase::get_class_size()) {
         return false;
     }
@@ -6999,7 +7081,22 @@ bool ghosting_resolve_current_owner(
             viewport_override_data = 0;
         }
 
-        if (controller_id_data == 0) {
+        GhostingFixOwnerCandidate candidate{};
+        bool found_view_states = false;
+
+        // Days Gone's UE4.11 fork does not expose ControllerId through the
+        // reflected LocalPlayer layout. Resolve its two exact, BN-validated
+        // scene-state references before relying on reflected boundaries.
+        if (daysgone_is_current_game()) {
+            found_view_states = ghosting_resolve_direct_view_state_slots(
+                local_player_address,
+                controller_id_data,
+                left_state,
+                right_state,
+                candidate);
+        }
+
+        if (!found_view_states && controller_id_data == 0) {
             diagnostic.failure = GhostingOwnerResolveFailure::ViewStateStorage;
             continue;
         }
@@ -7037,13 +7134,13 @@ bool ghosting_resolve_current_owner(
             }
         }
 
-        GhostingFixOwnerCandidate candidate{};
-        bool found_view_states = false;
-        for (const auto header : view_state_headers) {
-            candidate = {};
-            if (ghosting_resolve_view_state_slots(header, left_state, right_state, candidate)) {
-                found_view_states = true;
-                break;
+        if (!found_view_states) {
+            for (const auto header : view_state_headers) {
+                candidate = {};
+                if (ghosting_resolve_view_state_slots(header, left_state, right_state, candidate)) {
+                    found_view_states = true;
+                    break;
+                }
             }
         }
 
@@ -14024,6 +14121,105 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair, co
     return true;
 }
 
+bool FFakeStereoRenderingHook::orient_daysgone_ghosting_fix_pair_from_owner(GhostingFixPair& pair) {
+    if (!daysgone_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx11() ||
+        !ghosting_is_valid_scene_state(pair.eye_state[0]) ||
+        !ghosting_is_valid_scene_state(pair.eye_state[1]) ||
+        pair.eye_state[0] == pair.eye_state[1])
+    {
+        return false;
+    }
+
+    GhostingFixOwnerCandidate candidate{};
+    GhostingOwnerResolveDiagnostic object_array_diagnostic{};
+    GhostingOwnerResolveDiagnostic object_hook_diagnostic{};
+    bool resolved = ghosting_resolve_current_owner(
+        pair.eye_state[0],
+        pair.eye_state[1],
+        candidate,
+        GhostingUObjectValidationMode::ObjectArray,
+        object_array_diagnostic);
+
+    if (!resolved && ghosting_can_use_uobject_hook()) {
+        resolved = ghosting_resolve_current_owner(
+            pair.eye_state[0],
+            pair.eye_state[1],
+            candidate,
+            GhostingUObjectValidationMode::UObjectHook,
+            object_hook_diagnostic);
+    }
+
+    constexpr uintptr_t FIRST_REFERENCE_OFFSET = 0x90;
+    constexpr uintptr_t SECOND_REFERENCE_OFFSET = 0xB8;
+    constexpr uint32_t REFERENCE_STRIDE =
+        static_cast<uint32_t>(SECOND_REFERENCE_OFFSET - FIRST_REFERENCE_OFFSET);
+
+    if (!resolved ||
+        candidate.local_player == nullptr ||
+        candidate.view_states_are_array ||
+        candidate.view_states_header != 0 ||
+        candidate.view_states_count != 2 ||
+        candidate.view_states_capacity != 2 ||
+        candidate.view_state_stride != REFERENCE_STRIDE ||
+        candidate.view_states_data !=
+            reinterpret_cast<uintptr_t>(candidate.local_player) + FIRST_REFERENCE_OFFSET)
+    {
+        return false;
+    }
+
+    uintptr_t primary_state_address{};
+    uintptr_t secondary_state_address{};
+    if (!safe_read_value(candidate.view_states_data + sizeof(uintptr_t), primary_state_address) ||
+        !safe_read_value(
+            candidate.view_states_data + REFERENCE_STRIDE + sizeof(uintptr_t),
+            secondary_state_address))
+    {
+        return false;
+    }
+
+    auto* const primary_state =
+        reinterpret_cast<sdk::FSceneViewStateInterface*>(primary_state_address);
+    auto* const secondary_state =
+        reinterpret_cast<sdk::FSceneViewStateInterface*>(secondary_state_address);
+    const bool natural_order =
+        primary_state == pair.eye_state[0] && secondary_state == pair.eye_state[1];
+    const bool swapped_order =
+        primary_state == pair.eye_state[1] && secondary_state == pair.eye_state[0];
+
+    if ((!natural_order && !swapped_order) ||
+        !ghosting_is_valid_scene_state(primary_state) ||
+        !ghosting_is_valid_scene_state(secondary_state) ||
+        primary_state == secondary_state)
+    {
+        return false;
+    }
+
+    pair.eye_state[0] = primary_state;
+    pair.eye_state[1] = secondary_state;
+    pair.orientation_confirmed = true;
+    pair.owner = {};
+    pair.pending_left_source_state = nullptr;
+    pair.pending_left_source_observations = 0;
+    pair.pending_left_source_frame = 0;
+    pair.pending_left_source_frame_valid = false;
+    pair.logged_owner_unavailable = false;
+    pair.logged_owner_stabilizing = false;
+    pair.logged_owner_validation_failed = false;
+    pair.logged_naturally_separated = false;
+
+    SPDLOG_INFO(
+        "[GhostingFix][DaysGone] Confirmed AFR eye ownership from exact LocalPlayer "
+        "ViewState/StereoViewState slots owner={:x} generation={} primary={:x} secondary={:x} swapped={}",
+        reinterpret_cast<uintptr_t>(candidate.local_player),
+        pair.generation,
+        primary_state_address,
+        secondary_state_address,
+        swapped_order);
+    return true;
+}
+
 bool FFakeStereoRenderingHook::validate_ghosting_fix_owner(
     const GhostingFixPair& pair,
     const char** failure_stage)
@@ -14732,6 +14928,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto scene_id = (uintptr_t)init_options_scene;
         const auto eye_index = true_index & 1;
         const auto other_eye_index = eye_index ^ 1;
+        const bool daysgone_exact_owner_orientation =
+            daysgone_is_current_game() &&
+            g_framework != nullptr &&
+            g_framework->is_dx11();
         const bool bootstrap_enabled = vr->is_ghosting_fix_bootstrap_enabled();
 
         const bool bootstrap_option_changed =
@@ -14990,16 +15190,20 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1];
 
             if (has_valid_pair) {
+                if (daysgone_exact_owner_orientation && !ghosting_pair.orientation_confirmed) {
+                    orient_daysgone_ghosting_fix_pair_from_owner(ghosting_pair);
+                }
+
                 // Bootstrap can construct both candidate states in one engine
                 // frame, before AFR eye ownership is stable. Treat the pair as
                 // unordered until the same raw state is observed repeatedly
                 // on later left-eye frames.
-                if (eye_index == 0) {
-                    if (ghosting_pair.pending_left_source_state == init_options_scene_state) {
-                        const bool is_new_engine_frame =
-                            !ghosting_pair.pending_left_source_frame_valid ||
-                            ghosting_pair.pending_left_source_frame != g_frame_count;
+                if (!daysgone_exact_owner_orientation && eye_index == 0) {
+                    const bool is_new_engine_frame =
+                        !ghosting_pair.pending_left_source_frame_valid ||
+                        ghosting_pair.pending_left_source_frame != g_frame_count;
 
+                    if (ghosting_pair.pending_left_source_state == init_options_scene_state) {
                         if (is_new_engine_frame &&
                             ghosting_pair.pending_left_source_observations < std::numeric_limits<uint8_t>::max())
                         {
@@ -15012,7 +15216,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     ghosting_pair.pending_left_source_frame = g_frame_count;
                     ghosting_pair.pending_left_source_frame_valid = true;
 
-                    if (ghosting_pair.pending_left_source_observations >= ORIENTATION_CONFIRMATION_LEFT_OBSERVATIONS) {
+                    if (ghosting_pair.pending_left_source_observations >= ORIENTATION_CONFIRMATION_LEFT_OBSERVATIONS)
+                    {
                         const bool swapped = ghosting_pair.eye_state[0] != init_options_scene_state;
 
                         if (swapped) {
@@ -15113,7 +15318,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                                     ghosting_pair.owner.view_state_stride);
                             }
                         } else {
-                            ghosting_state = GhostingFixState::NaturallySeparated;
+                            const bool daysgone_has_applied_remap =
+                                daysgone_exact_owner_orientation &&
+                                g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation != 0;
+                            ghosting_state = daysgone_has_applied_remap
+                                ? GhostingFixState::Active
+                                : GhostingFixState::NaturallySeparated;
 
                             if (!ghosting_pair.logged_naturally_separated) {
                                 ghosting_pair.logged_naturally_separated = true;
@@ -15128,6 +15338,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                         }
                     }
                 } else if (
+                    !(daysgone_exact_owner_orientation && owner_is_current) &&
                     ghosting_state != GhostingFixState::NaturallySeparated &&
                     (g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
                      now - g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time > std::chrono::milliseconds{500}))
@@ -17696,9 +17907,10 @@ const char* FFakeStereoRenderingHook::get_ghosting_fix_status_text() {
     case GhostingFixState::NaturallySeparated:
         return "paired; engine histories already separate";
     case GhostingFixState::Active:
-        if (m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
+        if (!daysgone_is_current_game() &&
+            (m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
             std::chrono::steady_clock::now() - m_sceneview_data.ghosting_last_right_eye_remap_time >
-                std::chrono::milliseconds{500})
+                std::chrono::milliseconds{500}))
         {
             return "paired; right-eye remap stale";
         }
