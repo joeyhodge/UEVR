@@ -740,9 +740,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         native_stereo_packet.reset();
     }
 
-    // Update the UI overlay. Days Gone normally composites Slate through BendTemporalAA
-    // into the scene. When the game-specific overlay path is enabled, use the captured
-    // SlateIntermediateBuffer and key black out into a real OpenXR UI layer.
+    // Days Gone bypasses the normal viewport UI target and feeds a private
+    // SlateIntermediateBuffer into BendTemporalAA. AHUD consumes that exact
+    // target while leaving every other game's UI path unchanged.
     const auto daysgone_menu_is_in_scene = is_daysgone_executable();
     auto* daysgone_native_ui_target = static_cast<ID3D11Texture2D*>(nullptr);
     D3D11_TEXTURE2D_DESC daysgone_native_ui_desc{};
@@ -752,8 +752,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         daysgone_menu_is_in_scene &&
         vr != nullptr &&
         vr->is_daysgone_bend_ui_placement_fix_enabled();
+    const bool daysgone_ahud_active =
+        daysgone_menu_is_in_scene &&
+        vr != nullptr &&
+        runtime != nullptr &&
+        runtime->is_openxr() &&
+        vr->is_hmd_active() &&
+        vr->is_ahud_compatibility_enabled();
+    const bool daysgone_slate_target_requested =
+        ffsr != nullptr &&
+        (daysgone_ahud_active ||
+         (daysgone_bend_fix_active && ffsr->should_use_daysgone_slate_ui_overlay()));
 
-    if (daysgone_bend_fix_active && ffsr != nullptr && ffsr->should_use_daysgone_slate_ui_overlay()) {
+    if (daysgone_slate_target_requested) {
         daysgone_native_ui_target = reinterpret_cast<ID3D11Texture2D*>(ffsr->get_daysgone_slate_native_ui_target());
         if (daysgone_native_ui_target != nullptr &&
             is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(daysgone_native_ui_target)))
@@ -769,6 +780,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto using_daysgone_native_ui_target = daysgone_native_ui_target != nullptr;
+    const auto using_daysgone_ahud_ui_target =
+        using_daysgone_native_ui_target && daysgone_ahud_active;
+
+    if (!daysgone_ahud_active && m_daysgone_ahud_was_active) {
+        if (ffsr != nullptr) {
+            ffsr->reset_daysgone_ahud_overlay_readiness();
+        }
+        if (vr != nullptr) {
+            vr->get_overlay_component().get_openxr().reset_daysgone_ahud_pose();
+        }
+    }
+    m_daysgone_ahud_was_active = daysgone_ahud_active;
+
     const auto ui_target = (!using_daysgone_native_ui_target && !daysgone_menu_is_in_scene)
         ? ffsr->get_render_target_manager()->get_ui_target()
         : nullptr;
@@ -789,7 +813,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             SPDLOG_INFO_EVERY_N_SEC(
                 5,
-                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
+                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer route={} native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
+                using_daysgone_ahud_ui_target ? "AHUD fixed-stage" : "Bend placement",
                 (uintptr_t)native_ui_target,
                 daysgone_native_ui_desc.Width,
                 daysgone_native_ui_desc.Height,
@@ -798,9 +823,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 ffsr->get_daysgone_slate_ui_key_threshold(),
                 ffsr->get_daysgone_slate_ui_key_softness(),
                 ffsr->get_daysgone_slate_ui_key_opacity(),
-                ffsr->get_daysgone_slate_ui_offset_x(),
-                ffsr->get_daysgone_slate_ui_offset_y(),
-                ffsr->get_daysgone_slate_ui_scale());
+                using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
+                using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
+                using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale());
         } else if (is_naruto_executable() && native_ui_target != nullptr) {
             D3D11_TEXTURE2D_DESC desc{};
             native_ui_target->GetDesc(&desc);
@@ -832,7 +857,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 D3D11_TEXTURE2D_DESC desc{};
                 native->GetDesc(&desc);
 
-                if (runtime->is_openxr()) {
+                if (runtime->is_openxr() && !using_daysgone_ahud_ui_target) {
                     if (auto it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
                         it != vr->m_openxr->swapchains.end()) 
                     {
@@ -960,7 +985,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             } else {
                 if (m_engine_ui_ref.has_texture() && m_engine_ui_ref.has_srv()) {
                     if (using_daysgone_native_ui_target && ensure_daysgone_ui_key_resources()) {
-                        m_openxr.copy(
+                        const auto copied = m_openxr.copy(
                             (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
                             nullptr,
                             nullptr,
@@ -971,10 +996,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_key_threshold(),
                                     ffsr->get_daysgone_slate_ui_key_softness(),
                                     ffsr->get_daysgone_slate_ui_key_opacity(),
-                                    ffsr->get_daysgone_slate_ui_offset_x(),
-                                    ffsr->get_daysgone_slate_ui_offset_y(),
-                                    ffsr->get_daysgone_slate_ui_scale(),
-                                    ffsr->should_split_daysgone_slate_ui_overlay(),
+                                    using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
+                                    using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
+                                    using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale(),
+                                    using_daysgone_ahud_ui_target ? false : ffsr->should_split_daysgone_slate_ui_overlay(),
                                     ffsr->get_daysgone_slate_ui_menu_src_x(),
                                     ffsr->get_daysgone_slate_ui_menu_src_y(),
                                     ffsr->get_daysgone_slate_ui_menu_src_w(),
@@ -985,6 +1010,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_footer_src_y(),
                                     ffsr->get_daysgone_slate_ui_footer_src_h());
                             });
+                        if (copied && using_daysgone_ahud_ui_target) {
+                            ffsr->note_daysgone_ahud_overlay_submitted();
+                        }
                     } else if (ui_invert_alpha > 0.0f && ensure_ui_invert_resources()) {
                         m_openxr.copy(
                             (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
@@ -1237,7 +1265,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&right_layer->get());
                 }
             } else if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
-                const auto slate_layer = openxr_overlay.generate_slate_layer();
+                const auto slate_layer = daysgone_ahud_active && using_daysgone_ahud_ui_target
+                    ? openxr_overlay.generate_daysgone_ahud_slate_layer()
+                    : openxr_overlay.generate_slate_layer();
 
                 if (slate_layer) {
                     quad_layers.push_back(&slate_layer->get());
@@ -1572,6 +1602,14 @@ void D3D11Component::on_post_present(VR* vr) {
 
 void D3D11Component::on_reset(VR* vr) {
     m_force_reset = true;
+    m_daysgone_ahud_was_active = false;
+
+    if (vr != nullptr) {
+        if (vr->m_fake_stereo_hook != nullptr) {
+            vr->m_fake_stereo_hook->reset_daysgone_ahud_overlay_readiness();
+        }
+        vr->get_overlay_component().get_openxr().reset_daysgone_ahud_pose();
+    }
 
     m_backbuffer_rtv.Reset();
     m_backbuffer.Reset();
@@ -3095,13 +3133,13 @@ void D3D11Component::OpenXR::destroy_swapchains() {
     vr->m_openxr->swapchains.clear();
 }
 
-void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box, std::function<void(ID3D11Texture2D*)> pre_commands) {
+bool D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box, std::function<void(ID3D11Texture2D*)> pre_commands) {
     std::scoped_lock _{this->mtx};
 
     auto vr = VR::get();
 
     if (vr->m_openxr->frame_state.shouldRender != XR_TRUE) {
-        return;
+        return false;
     }
 
     if (!vr->m_openxr->frame_began) {
@@ -3111,12 +3149,12 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
 
     if (!this->contexts.contains(swapchain_idx)) {
         spdlog::error("[VR] OpenXR: Trying to copy to swapchain {} but it doesn't exist.", swapchain_idx);
-        return;
+        return false;
     }
 
     if (!vr->m_openxr->swapchains.contains(swapchain_idx)) {
         spdlog::error("[VR] OpenXR: Trying to copy to swapchain {} but it doesn't exist.", swapchain_idx);
-        return;
+        return false;
     }
 
     if (this->contexts[swapchain_idx].num_textures_acquired > 0) {
@@ -3176,12 +3214,15 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
 
             if (result != XR_SUCCESS) {
                 spdlog::error("[VR] xrReleaseSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
-                return;
+                return false;
             }
 
             ctx.num_textures_acquired--;
             ctx.ever_acquired = true;
+            return true;
         }
     }
+
+    return false;
 }
 } // namespace vrmod
