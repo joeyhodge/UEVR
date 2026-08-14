@@ -61,9 +61,11 @@ float4 SpritePixelShader(float4 color : COLOR0, float2 texCoord : TEXCOORD0) : S
     float4 tex = Texture.Sample(TextureSampler, texCoord);
     float threshold = saturate(color.r);
     float softness = max(color.g, 0.001);
+    float invertAmount = saturate(color.b);
     float opacity = saturate(color.a);
     float luma = max(max(tex.r, tex.g), tex.b);
     float alpha = smoothstep(threshold, threshold + softness, luma) * opacity;
+    alpha = lerp(alpha, 1.0 - alpha, invertAmount);
     return float4(tex.rgb, alpha);
 }
 )";
@@ -817,7 +819,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             SPDLOG_INFO_EVERY_N_SEC(
                 5,
-                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer route={} native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
+                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer route={} native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) invert={:.3f} offset=({:.1f},{:.1f}) scale={:.3f}",
                 using_daysgone_ahud_ui_target ? "AHUD fixed-stage" : "Bend placement",
                 (uintptr_t)native_ui_target,
                 daysgone_native_ui_desc.Width,
@@ -827,6 +829,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 ffsr->get_daysgone_slate_ui_key_threshold(),
                 ffsr->get_daysgone_slate_ui_key_softness(),
                 ffsr->get_daysgone_slate_ui_key_opacity(),
+                vr->get_overlay_component().get_ui_invert_alpha(),
                 using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
                 using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
                 using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale());
@@ -1002,6 +1005,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_key_threshold(),
                                     ffsr->get_daysgone_slate_ui_key_softness(),
                                     ffsr->get_daysgone_slate_ui_key_opacity(),
+                                    ui_invert_alpha,
                                     using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
                                     using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
                                     using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale(),
@@ -2052,6 +2056,7 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
     float threshold,
     float softness,
     float opacity,
+    float invert_amount,
     float offset_x,
     float offset_y,
     float scale,
@@ -2131,7 +2136,7 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
     const auto tint = DirectX::XMVectorSet(
         std::clamp(threshold, 0.0f, 0.5f),
         std::clamp(softness, 0.001f, 0.5f),
-        1.0f,
+        std::clamp(invert_amount, 0.0f, 1.0f),
         std::clamp(opacity, 0.0f, 2.0f));
 
     auto set_custom_shaders = [&]() {
