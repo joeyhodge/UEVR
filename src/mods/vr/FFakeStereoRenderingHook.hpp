@@ -709,6 +709,14 @@ public:
             m_daysgone_slate_native_ui_target.load() != 0;
     }
 
+    void note_daysgone_ahud_overlay_submitted();
+
+    void reset_daysgone_ahud_overlay_readiness() {
+        m_daysgone_ahud_overlay_ready.store(false, std::memory_order_release);
+        m_daysgone_ahud_overlay_last_submit_frame.store(0, std::memory_order_relaxed);
+        m_daysgone_slate_consumer_target_frame.store(0, std::memory_order_relaxed);
+    }
+
     float get_daysgone_slate_ui_key_threshold() const {
         return m_daysgone_bend_ui_key_threshold->value();
     }
@@ -985,6 +993,13 @@ private:
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
     static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_slate_texture_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_temporal_slate_texture_hook(safetyhook::Context& ctx);
+    bool try_redirect_daysgone_bend_slate_texture(
+        uintptr_t pass,
+        uintptr_t loaded_rhi_texture,
+        const char* variant,
+        uintptr_t& replacement_rhi_texture);
     static void windrose_hfsm_state_enter_hook(void* state);
     static void windrose_hfsm_state_exit_hook(void* state, uintptr_t destination_name);
     static void windrose_hfsm_component_enter_hook(void* component);
@@ -1217,6 +1232,8 @@ private:
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_slate_texture_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_temporal_slate_texture_hook{};
     safetyhook::MidHook m_naruto_ue416_init_dynamic_rhi_size_hook{};
     safetyhook::MidHook m_naruto_ue416_projection_rect_hook{};
     safetyhook::MidHook m_naruto_ue416_draw_stereo_predicate_hook{};
@@ -1307,8 +1324,19 @@ private:
     std::atomic<uintptr_t> m_daysgone_slate_native_ui_target{0};
     std::atomic<uint32_t> m_daysgone_slate_native_ui_width{0};
     std::atomic<uint32_t> m_daysgone_slate_native_ui_height{0};
+    static constexpr size_t DAYSGONE_RECENT_SLATE_TARGET_COUNT = 4;
+    std::array<std::atomic<uintptr_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_pooled_targets{};
+    std::array<std::atomic<uintptr_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_native_targets{};
+    std::array<std::atomic<uint32_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_target_frames{};
+    std::atomic<uint32_t> m_daysgone_recent_slate_target_write_index{0};
+    std::atomic<uint32_t> m_daysgone_slate_consumer_target_frame{0};
+    std::atomic_bool m_daysgone_ahud_overlay_ready{false};
+    std::atomic<uint32_t> m_daysgone_ahud_overlay_last_submit_frame{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_seen{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_crop_suppressed{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_consumer_seen{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_rejected{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_suppressed{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_extent_overrides{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_shader_param_overrides{0};
     std::chrono::steady_clock::time_point m_daysgone_ui_telemetry_last_queue{};
