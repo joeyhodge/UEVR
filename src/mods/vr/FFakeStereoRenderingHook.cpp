@@ -23754,6 +23754,36 @@ void FFakeStereoRenderingHook::daysgone_slate_intermediate_buffer_hook(safetyhoo
         return;
     }
 
+    // Keep a short render-thread history. Bend can rotate among multiple
+    // Slate intermediates, so identity matching must not depend on whichever
+    // one happened to be the most recent when the consumer hook runs.
+    const auto recent_index =
+        g_hook->m_daysgone_recent_slate_target_write_index.fetch_add(1, std::memory_order_relaxed) %
+        DAYSGONE_RECENT_SLATE_TARGET_COUNT;
+    g_hook->m_daysgone_recent_slate_pooled_targets[recent_index].store(
+        reinterpret_cast<uintptr_t>(slate_texture),
+        std::memory_order_relaxed);
+    g_hook->m_daysgone_recent_slate_target_frames[recent_index].store(
+        g_frame_count,
+        std::memory_order_relaxed);
+    g_hook->m_daysgone_recent_slate_native_targets[recent_index].store(
+        reinterpret_cast<uintptr_t>(candidate.native),
+        std::memory_order_release);
+
+    // Once the exact Bend consumer has identified the texture actually bound
+    // as SlateCompositeTexture, keep that authoritative source. The producer
+    // can rotate through additional 1920x1080 and HMD-sized intermediates in
+    // the same frame; publishing each of those caused UI source churn.
+    const auto consumer_frame =
+        g_hook->m_daysgone_slate_consumer_target_frame.load(std::memory_order_acquire);
+    const auto consumer_age = static_cast<uint32_t>(g_frame_count - consumer_frame);
+    if (g_hook->m_daysgone_ahud_overlay_ready.load(std::memory_order_acquire) &&
+        consumer_frame != 0 &&
+        consumer_age <= 4)
+    {
+        return;
+    }
+
     const auto last_target = g_hook->m_daysgone_slate_intermediate_last_target.load();
     const auto last_native = g_hook->m_daysgone_slate_native_ui_target.load();
     if (last_target == (uintptr_t)slate_texture && last_native == (uintptr_t)candidate.native) {
@@ -23815,17 +23845,90 @@ void FFakeStereoRenderingHook::attempt_hook_daysgone_bend_taa_composite() {
         SPDLOG_WARN(
             "[DaysGone][BendTAA] Refusing composite hook at {:x}: byte signature mismatch",
             hook_address);
+    } else {
+        auto hook_result = safetyhook::create_mid(
+            (void*)hook_address,
+            &FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook);
+        if (!hook_result) {
+            SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA composite at {:x}", hook_address);
+        } else {
+            m_daysgone_bend_taa_composite_hook = std::move(hook_result);
+            SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA Slate composite at {:x}", hook_address);
+        }
+    }
+
+    // Hook the exact shader-resource loads for the two Bend temporal variants.
+    // Replacing only SlateCompositeTexture preserves temporal AA, the scene
+    // texture, and every non-Slate pass.
+    constexpr uintptr_t kSlateTextureLoadSignatureRva = 0x201CF09;
+    constexpr uintptr_t kSlateTextureLoadedHookRva = 0x201CF11;
+    constexpr std::array<uint8_t, 16> kSlateTextureLoadExpectedBytes{
+        0x48, 0x8B, 0x45, 0x20,
+        0x4C, 0x8B, 0x70, 0x10,
+        0x66, 0x44, 0x39, 0xAF, 0xD6, 0x00, 0x00, 0x00,
+    };
+
+    const auto slate_load_signature = module + kSlateTextureLoadSignatureRva;
+    const auto slate_loaded_hook = module + kSlateTextureLoadedHookRva;
+    if (!is_executable_process_range(slate_load_signature, kSlateTextureLoadExpectedBytes.size()) ||
+        std::memcmp(
+            (void*)slate_load_signature,
+            kSlateTextureLoadExpectedBytes.data(),
+            kSlateTextureLoadExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing Slate texture-binding hook at {:x}: byte signature mismatch",
+            slate_loaded_hook);
         return;
     }
 
-    auto hook_result = safetyhook::create_mid((void*)hook_address, &FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook);
-    if (!hook_result) {
-        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook BendTemporalAA composite at {:x}", hook_address);
+    auto slate_hook_result = safetyhook::create_mid(
+        (void*)slate_loaded_hook,
+        &FFakeStereoRenderingHook::daysgone_bend_taa_slate_texture_hook);
+    if (!slate_hook_result) {
+        SPDLOG_WARN("[DaysGone][BendTAA] Failed to hook Slate texture binding at {:x}", slate_loaded_hook);
         return;
     }
 
-    m_daysgone_bend_taa_composite_hook = std::move(hook_result);
-    SPDLOG_INFO("[DaysGone][BendTAA] Hooked BendTemporalAA Slate composite at {:x}", hook_address);
+    m_daysgone_bend_taa_slate_texture_hook = std::move(slate_hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked exact CopyTemporalAA Slate texture binding at {:x}", slate_loaded_hook);
+
+    constexpr uintptr_t kTemporalSlateTextureLoadSignatureRva = 0x201D9BD;
+    constexpr uintptr_t kTemporalSlateTextureLoadedHookRva = 0x201D9C5;
+    constexpr std::array<uint8_t, 17> kTemporalSlateTextureLoadExpectedBytes{
+        0x48, 0x8B, 0x43, 0x20,
+        0x48, 0x8B, 0x70, 0x10,
+        0x66, 0x41, 0x83, 0xBD, 0xE6, 0x00, 0x00, 0x00, 0x00,
+    };
+
+    const auto temporal_slate_load_signature = module + kTemporalSlateTextureLoadSignatureRva;
+    const auto temporal_slate_loaded_hook = module + kTemporalSlateTextureLoadedHookRva;
+    if (!is_executable_process_range(
+            temporal_slate_load_signature,
+            kTemporalSlateTextureLoadExpectedBytes.size()) ||
+        std::memcmp(
+            (void*)temporal_slate_load_signature,
+            kTemporalSlateTextureLoadExpectedBytes.data(),
+            kTemporalSlateTextureLoadExpectedBytes.size()) != 0)
+    {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Refusing temporal Slate texture-binding hook at {:x}: byte signature mismatch",
+            temporal_slate_loaded_hook);
+        return;
+    }
+
+    auto temporal_slate_hook_result = safetyhook::create_mid(
+        (void*)temporal_slate_loaded_hook,
+        &FFakeStereoRenderingHook::daysgone_bend_taa_temporal_slate_texture_hook);
+    if (!temporal_slate_hook_result) {
+        SPDLOG_WARN(
+            "[DaysGone][BendTAA] Failed to hook temporal Slate texture binding at {:x}",
+            temporal_slate_loaded_hook);
+        return;
+    }
+
+    m_daysgone_bend_taa_temporal_slate_texture_hook = std::move(temporal_slate_hook_result);
+    SPDLOG_INFO("[DaysGone][BendTAA] Hooked temporal Slate texture binding at {:x}", temporal_slate_loaded_hook);
 }
 
 void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Context& ctx) {
@@ -23869,6 +23972,198 @@ void FFakeStereoRenderingHook::daysgone_bend_taa_composite_hook(safetyhook::Cont
         had_crop,
         (unsigned long long)g_hook->m_daysgone_bend_taa_composite_seen.load(),
         (unsigned long long)g_hook->m_daysgone_bend_taa_composite_crop_suppressed.load());
+}
+
+void FFakeStereoRenderingHook::daysgone_bend_taa_slate_texture_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr) {
+        return;
+    }
+
+    uintptr_t replacement{};
+    if (g_hook->try_redirect_daysgone_bend_slate_texture(
+            static_cast<uintptr_t>(ctx.rbp),
+            static_cast<uintptr_t>(ctx.r14),
+            "CopyTemporalAA",
+            replacement))
+    {
+        ctx.r14 = replacement;
+    }
+}
+
+void FFakeStereoRenderingHook::daysgone_bend_taa_temporal_slate_texture_hook(safetyhook::Context& ctx) {
+    if (g_hook == nullptr) {
+        return;
+    }
+
+    uintptr_t replacement{};
+    if (g_hook->try_redirect_daysgone_bend_slate_texture(
+            static_cast<uintptr_t>(ctx.rbx),
+            static_cast<uintptr_t>(ctx.rsi),
+            "BendTemporalAA",
+            replacement))
+    {
+        ctx.rsi = replacement;
+    }
+}
+
+void FFakeStereoRenderingHook::note_daysgone_ahud_overlay_submitted() {
+    // Use the same render-generation clock as the Bend hooks. This avoids a
+    // timer query in either render hot path and keeps suppression fail-open if
+    // the extracted layer stops receiving successful submissions.
+    m_daysgone_ahud_overlay_last_submit_frame.store(g_frame_count, std::memory_order_relaxed);
+    m_daysgone_ahud_overlay_ready.store(true, std::memory_order_release);
+}
+
+bool FFakeStereoRenderingHook::try_redirect_daysgone_bend_slate_texture(
+    uintptr_t pass,
+    uintptr_t loaded_rhi_texture,
+    const char* variant,
+    uintptr_t& replacement_rhi_texture)
+{
+    replacement_rhi_texture = 0;
+
+    if (g_hook == nullptr ||
+        !daysgone_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx11())
+    {
+        return false;
+    }
+
+    auto vr = VR::get();
+    if (vr == nullptr ||
+        vr->get_runtime() == nullptr ||
+        !vr->get_runtime()->is_openxr() ||
+        !vr->is_hmd_active() ||
+        !vr->is_ahud_compatibility_enabled())
+    {
+        return false;
+    }
+
+    const auto consumer_seen =
+        m_daysgone_bend_taa_slate_consumer_seen.fetch_add(1, std::memory_order_relaxed) + 1;
+    uintptr_t slate_pooled_target{};
+    if (!daysgone_read_value(pass + 0x20, slate_pooled_target) || slate_pooled_target == 0) {
+        m_daysgone_bend_taa_slate_rejected.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    uintptr_t slate_rhi_texture{};
+    if (!daysgone_read_value(slate_pooled_target + 0x10, slate_rhi_texture) ||
+        slate_rhi_texture == 0 ||
+        slate_rhi_texture != loaded_rhi_texture)
+    {
+        m_daysgone_bend_taa_slate_rejected.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    DaysGoneD3D11TextureCandidate slate_candidate{};
+    if (!daysgone_try_get_d3d11_texture_candidate(
+            reinterpret_cast<FRHITexture2D*>(slate_pooled_target),
+            slate_candidate) ||
+        !daysgone_is_plausible_slate_ui_desc(slate_candidate.desc))
+    {
+        m_daysgone_bend_taa_slate_rejected.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    bool is_recent_captured_slate_target = false;
+    uintptr_t matched_capture_wrapper{};
+    uint32_t matched_capture_frame{};
+    for (size_t i = 0; i < DAYSGONE_RECENT_SLATE_TARGET_COUNT; ++i) {
+        const auto captured_native =
+            m_daysgone_recent_slate_native_targets[i].load(std::memory_order_acquire);
+        const auto captured_frame =
+            m_daysgone_recent_slate_target_frames[i].load(std::memory_order_relaxed);
+        const auto frame_age = static_cast<uint32_t>(g_frame_count - captured_frame);
+        if (captured_native == reinterpret_cast<uintptr_t>(slate_candidate.native) && frame_age <= 4) {
+            is_recent_captured_slate_target = true;
+            matched_capture_wrapper =
+                m_daysgone_recent_slate_pooled_targets[i].load(std::memory_order_relaxed);
+            matched_capture_frame = captured_frame;
+            break;
+        }
+    }
+
+    if (!is_recent_captured_slate_target) {
+        m_daysgone_bend_taa_slate_rejected.fetch_add(1, std::memory_order_relaxed);
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[DaysGone][AHUD] {} Slate consumer did not match a current captured target; preserving it seen={} rejected={}",
+            variant,
+            (unsigned long long)consumer_seen,
+            (unsigned long long)m_daysgone_bend_taa_slate_rejected.load());
+        return false;
+    }
+
+    // The consumer, not the producer, is the authoritative answer to which
+    // rotating intermediate contains the final Slate UI for this frame. This
+    // event-driven publication also picks up newly opened and resized windows
+    // without polling or walking the UObject widget tree.
+    m_daysgone_slate_intermediate_last_target.store(matched_capture_wrapper, std::memory_order_relaxed);
+    m_daysgone_slate_native_ui_width.store(slate_candidate.desc.Width, std::memory_order_relaxed);
+    m_daysgone_slate_native_ui_height.store(slate_candidate.desc.Height, std::memory_order_relaxed);
+    m_daysgone_slate_native_ui_target.store(
+        reinterpret_cast<uintptr_t>(slate_candidate.native),
+        std::memory_order_release);
+    m_daysgone_slate_consumer_target_frame.store(g_frame_count, std::memory_order_release);
+
+    const auto last_submit_frame = m_daysgone_ahud_overlay_last_submit_frame.load(std::memory_order_relaxed);
+    const auto submit_age = static_cast<uint32_t>(g_frame_count - last_submit_frame);
+    if (!m_daysgone_ahud_overlay_ready.load(std::memory_order_acquire) ||
+        last_submit_frame == 0 ||
+        submit_age > 8)
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[DaysGone][AHUD] Selected the consumed Slate target; preserving its scene composite until the fixed UI layer submits");
+        return false;
+    }
+
+    // Stock UE4.11 and this Bend fork place GSystemTextures.BlackDummy at
+    // GSystemTextures+0x38. It is a transparent float4(0,0,0,0), so replacing
+    // only this exact SRV removes the duplicate without skipping the pass.
+    constexpr uintptr_t kBlackDummyPooledTargetRva = 0x4A6E8E8;
+    const auto module = reinterpret_cast<uintptr_t>(utility::get_executable());
+    uintptr_t black_pooled_target{};
+    uintptr_t black_rhi_texture{};
+    uintptr_t black_rhi_vtable{};
+    uintptr_t black_rhi_first_virtual{};
+    if (module == 0 ||
+        !daysgone_read_value(module + kBlackDummyPooledTargetRva, black_pooled_target) ||
+        black_pooled_target == 0 ||
+        !daysgone_read_value(black_pooled_target + 0x10, black_rhi_texture) ||
+        black_rhi_texture == 0 ||
+        !daysgone_read_value(black_rhi_texture, black_rhi_vtable) ||
+        black_rhi_vtable == 0 ||
+        !daysgone_read_value(black_rhi_vtable, black_rhi_first_virtual) ||
+        black_rhi_first_virtual == 0 ||
+        !is_executable_process_range(black_rhi_first_virtual, 1))
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            5,
+            "[DaysGone][AHUD] BlackDummy is not ready; preserving the original Bend Slate composite");
+        return false;
+    }
+
+    replacement_rhi_texture = black_rhi_texture;
+    const auto suppressed = m_daysgone_bend_taa_slate_suppressed.fetch_add(1) + 1;
+    SPDLOG_INFO_EVERY_N_SEC(
+        5,
+        "[DaysGone][AHUD] Redirected {} SlateCompositeTexture to transparent BlackDummy "
+        "pass={:x} pooled={:x} captured_wrapper={:x} capture_frame={} native={:x} "
+        "slate={:x} black={:x} count={}",
+        variant,
+        pass,
+        slate_pooled_target,
+        matched_capture_wrapper,
+        matched_capture_frame,
+        reinterpret_cast<uintptr_t>(slate_candidate.native),
+        slate_rhi_texture,
+        black_rhi_texture,
+        (unsigned long long)suppressed);
+
+    return true;
 }
 
 void FFakeStereoRenderingHook::update_daysgone_ui_telemetry() {
@@ -24083,7 +24378,23 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
     }
 
     auto vr = VR::get();
-    const bool enabled = vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled();
+    const bool ahud_owns_ui =
+        vr != nullptr &&
+        vr->get_runtime() != nullptr &&
+        vr->get_runtime()->is_openxr() &&
+        vr->is_hmd_active() &&
+        vr->is_ahud_compatibility_enabled();
+    const bool enabled =
+        vr != nullptr &&
+        vr->is_daysgone_bend_ui_placement_fix_enabled() &&
+        !ahud_owns_ui;
+
+    // The AHUD route consumes Bend's final Slate intermediate, so newly opened
+    // menus and resized windows are picked up by the render-target hook. Do not
+    // rescan or rewrite the UObject widget tree from a periodic watchdog.
+    if (ahud_owns_ui) {
+        SPDLOG_INFO_ONCE("[DaysGone][AHUD] Final-Slate tracking replaces the widget reapply watchdog");
+    }
     if (!enabled && !m_daysgone_bend_ui_originals.captured && !daysgone_has_slate_widget_originals() &&
         !g_daysgone_slate_composite_cvar.forced)
     {
@@ -24167,7 +24478,16 @@ void FFakeStereoRenderingHook::update_daysgone_bend_ui_placement_fix() {
         }
 
         auto vr = VR::get();
-        if (vr != nullptr && vr->is_daysgone_bend_ui_placement_fix_enabled()) {
+        const bool ahud_owns_ui =
+            vr != nullptr &&
+            vr->get_runtime() != nullptr &&
+            vr->get_runtime()->is_openxr() &&
+            vr->is_hmd_active() &&
+            vr->is_ahud_compatibility_enabled();
+        if (vr != nullptr &&
+            vr->is_daysgone_bend_ui_placement_fix_enabled() &&
+            !ahud_owns_ui)
+        {
             apply_daysgone_bend_ui_placement_fix_game_thread();
         } else {
             restore_daysgone_bend_ui_placement_fix_game_thread();
