@@ -165,18 +165,23 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_slate_quad(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
         std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> generate_slate_cylinder(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
         std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_slate_layer(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
+        std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_daysgone_ahud_slate_layer();
+        void reset_daysgone_ahud_pose();
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_framework_ui_quad();
         
     private:
@@ -184,6 +189,7 @@ private:
         XrCompositionLayerQuad m_slate_layer_right{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder_right{};
+        UILayerPoseBasis m_daysgone_ahud_pose_basis{};
         XrCompositionLayerQuad m_framework_ui_layer{};
         OverlayComponent* m_parent{ nullptr };
         

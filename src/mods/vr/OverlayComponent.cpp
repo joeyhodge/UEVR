@@ -15,6 +15,7 @@
 namespace vrmod {
 void OverlayComponent::on_reset() {
     m_overlay_data = {};
+    m_openxr.reset_daysgone_ahud_pose();
 }
 
 std::optional<std::string> OverlayComponent::on_initialize_openvr() {
@@ -849,7 +850,8 @@ const char* get_ui_layer_pose_refusal_reason(const UILayerPoseBasis* pose_basis,
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_slate_quad(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     auto& vr = VR::get();
 
@@ -882,7 +884,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     layer.eyeVisibility = eye;
 
     auto glm_matrix = glm::identity<glm::mat4>();
-    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto follows_view = !force_stage_space && vr->m_overlay_component.m_ui_follows_view->value();
     const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
     const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
     const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
@@ -981,7 +983,8 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
 std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComponent::OpenXR::generate_slate_cylinder(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     auto& vr = VR::get();
 
@@ -1010,7 +1013,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     layer.eyeVisibility = eye;
     
     auto glm_matrix = glm::identity<glm::mat4>();
-    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto follows_view = !force_stage_space && vr->m_overlay_component.m_ui_follows_view->value();
     const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
     const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
     const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
@@ -1074,31 +1077,64 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
 std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> OverlayComponent::OpenXR::generate_slate_layer(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     switch ((OverlayComponent::OverlayType)m_parent->m_slate_overlay_type->value()) {
     default:
     case OverlayComponent::OverlayType::QUAD:
-        if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
+        if (auto result = generate_slate_quad(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 
         return std::nullopt;
     case OverlayComponent::OverlayType::CYLINDER:
         if (!VR::get()->get_runtime()->is_cylinder_layer_allowed()) {
-            if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
+            if (auto result = generate_slate_quad(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
                 return *(XrCompositionLayerBaseHeader*)&result.value().get();
             }
 
             return std::nullopt;
         }
 
-        if (auto result = generate_slate_cylinder(swapchain, eye, pose_basis); result.has_value()) {
+        if (auto result = generate_slate_cylinder(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 
         return std::nullopt;
     };
+}
+
+std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>>
+OverlayComponent::OpenXR::generate_daysgone_ahud_slate_layer() {
+    auto vr = VR::get();
+    if (vr == nullptr) {
+        return std::nullopt;
+    }
+
+    if (!m_daysgone_ahud_pose_basis.valid) {
+        m_daysgone_ahud_pose_basis.valid = true;
+        m_daysgone_ahud_pose_basis.stabilizer_allowed = true;
+        m_daysgone_ahud_pose_basis.rotation_offset = vr->get_rotation_offset();
+        m_daysgone_ahud_pose_basis.pre_flattened_rotation =
+            vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
+            ? vr->get_pre_flattened_rotation()
+            : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+        m_daysgone_ahud_pose_basis.standing_origin = vr->get_standing_origin();
+        m_daysgone_ahud_pose_basis.capture_time = std::chrono::steady_clock::now();
+
+        SPDLOG_INFO("[DaysGone][AHUD] Latched the UI layer in OpenXR stage space");
+    }
+
+    return generate_slate_layer(
+        runtimes::OpenXR::SwapchainIndex::UI,
+        XR_EYE_VISIBILITY_BOTH,
+        &m_daysgone_ahud_pose_basis,
+        true);
+}
+
+void OverlayComponent::OpenXR::reset_daysgone_ahud_pose() {
+    m_daysgone_ahud_pose_basis = {};
 }
 
 
