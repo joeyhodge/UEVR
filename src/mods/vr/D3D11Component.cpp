@@ -783,12 +783,16 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     const auto using_daysgone_ahud_ui_target =
         using_daysgone_native_ui_target && daysgone_ahud_active;
 
-    if (!daysgone_ahud_active && m_daysgone_ahud_was_active) {
+    if (daysgone_ahud_active != m_daysgone_ahud_was_active) {
         if (ffsr != nullptr) {
             ffsr->reset_daysgone_ahud_overlay_readiness();
         }
         if (vr != nullptr) {
             vr->get_overlay_component().get_openxr().reset_daysgone_ahud_pose();
+        }
+
+        if (daysgone_ahud_active) {
+            SPDLOG_INFO("[DaysGone][AHUD] Armed fixed-stage UI after OpenXR/HMD became ready");
         }
     }
     m_daysgone_ahud_was_active = daysgone_ahud_active;
@@ -857,16 +861,18 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 D3D11_TEXTURE2D_DESC desc{};
                 native->GetDesc(&desc);
 
-                if (runtime->is_openxr() && !using_daysgone_ahud_ui_target) {
-                    if (auto it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
-                        it != vr->m_openxr->swapchains.end()) 
-                    {
-                        const auto& uisc = it->second;
-                        if (desc.Width != uisc.width ||
-                            desc.Height != uisc.height)
+                if (runtime->is_openxr()) {
+                    if (!using_daysgone_ahud_ui_target) {
+                        if (auto it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
+                            it != vr->m_openxr->swapchains.end())
                         {
-                            SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
-                            ffsr->set_should_recreate_textures(true);
+                            const auto& uisc = it->second;
+                            if (desc.Width != uisc.width ||
+                                desc.Height != uisc.height)
+                            {
+                                SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
+                                ffsr->set_should_recreate_textures(true);
+                            }
                         }
                     }
                 } else if (m_ui_tex != nullptr) {
