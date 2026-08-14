@@ -74,6 +74,7 @@ private:
         float threshold,
         float softness,
         float opacity,
+        float invert_amount,
         float offset_x,
         float offset_y,
         float scale,
