@@ -1257,6 +1257,18 @@ Subnautica2UE56SceneTargetBootstrapState g_subnautica2_ue56_scene_target_bootstr
 constexpr auto SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_RETRY = std::chrono::milliseconds(250);
 constexpr uint32_t SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS = 24;
 
+struct PokemonEmeraldUE56SceneTargetBootstrapState {
+    uintptr_t texture{};
+    uintptr_t vtable{};
+    std::chrono::steady_clock::time_point last_attempt{};
+    uint32_t attempts{};
+};
+
+std::mutex g_pokemon_emerald_ue56_scene_target_bootstrap_mutex{};
+PokemonEmeraldUE56SceneTargetBootstrapState g_pokemon_emerald_ue56_scene_target_bootstrap{};
+constexpr auto POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_RETRY = std::chrono::milliseconds(250);
+constexpr uint32_t POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS = 24;
+
 struct UE51RenderTargetChurnStats {
     uint64_t allocate_seen{};
     uint64_t ui_created{};
@@ -1905,6 +1917,27 @@ bool subnautica2_is_current_game() {
         return exe_path &&
             (exe_path->find(L"Subnautica2-Win64-Shipping") != std::wstring::npos ||
              exe_path->find(L"Subnautica2-WinGDK-Shipping") != std::wstring::npos);
+    }();
+
+    return result;
+}
+
+bool pokemon_emerald_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\pokemonemerald.exe") ||
+               lowered.ends_with(L"/pokemonemerald.exe") ||
+               lowered == L"pokemonemerald.exe";
     }();
 
     return result;
@@ -4737,6 +4770,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             everspace2_is_current_game() ||
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
+            pokemon_emerald_is_current_game() ||
             is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
@@ -4758,6 +4792,7 @@ bool should_preserve_promoted_ue55_slate_target() {
     return aphelion_is_current_game() ||
         mechwarrior_clans_is_current_game() ||
         everwind_is_current_game() ||
+        pokemon_emerald_is_current_game() ||
         is_deadzone_ue56_executable();
 }
 
@@ -5167,6 +5202,21 @@ bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DE
     }
 }
 
+bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4** out) {
+    if (out == nullptr) {
+        return false;
+    }
+
+    *out = nullptr;
+
+    __try {
+        return resource != nullptr && SUCCEEDED(resource->GetDevice(IID_PPV_ARGS(out))) && *out != nullptr;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *out = nullptr;
+        return false;
+    }
+}
+
 std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
     if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return std::nullopt;
@@ -5434,6 +5484,143 @@ bool subnautica2_ue56_try_bootstrap_scene_target(
         "[Subnautica2][UE5.6][RT bootstrap] Accepted FSceneViewport target on attempt {}/{}: rhi={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
         attempt,
         SUBNAUTICA2_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS,
+        (uintptr_t)texture,
+        (uintptr_t)native,
+        desc.Width,
+        desc.Height,
+        (uint32_t)desc.Format,
+        (uint32_t)desc.Flags);
+
+    if (out_native != nullptr) {
+        *out_native = native;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = desc;
+    }
+
+    return true;
+}
+
+bool pokemon_emerald_ue56_try_bootstrap_scene_target(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native,
+    D3D12_RESOURCE_DESC* out_desc)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    const bool known_viewport_source =
+        source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
+
+    // Pokemon Emerald's matching BinFoldV3 PDB confirms that this UE5.6
+    // viewport candidate is FD3D12Texture and GetNativeResource is vtable slot
+    // 7. Keep the general UE5.6 probe disabled and admit only this exact game,
+    // RHI, engine, and source after runtime descriptor/device validation.
+    if (!pokemon_emerald_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        !known_viewport_source ||
+        texture == nullptr ||
+        IsBadReadPtr(texture, sizeof(void*)))
+    {
+        return false;
+    }
+
+    void* vtable = nullptr;
+
+    try {
+        vtable = *(void**)texture;
+    } catch (...) {
+        return false;
+    }
+
+    if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 8)) {
+        return false;
+    }
+
+    uint32_t attempt{};
+    bool should_probe{};
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::scoped_lock _{g_pokemon_emerald_ue56_scene_target_bootstrap_mutex};
+        auto& state = g_pokemon_emerald_ue56_scene_target_bootstrap;
+
+        if (state.texture != (uintptr_t)texture || state.vtable != (uintptr_t)vtable) {
+            state = {
+                .texture = (uintptr_t)texture,
+                .vtable = (uintptr_t)vtable,
+            };
+        }
+
+        if (state.attempts < POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS &&
+            (state.last_attempt.time_since_epoch().count() == 0 ||
+             now - state.last_attempt >= POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_RETRY))
+        {
+            state.last_attempt = now;
+            attempt = ++state.attempts;
+            should_probe = true;
+        }
+    }
+
+    if (!should_probe) {
+        return false;
+    }
+
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+
+    if (!ue55_dx12_try_get_native_resource_direct(texture, source, &native, &desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[PokemonEmerald][UE5.6][RT bootstrap] Attempt {}/{} did not yield a validated native scene target; retaining the strict fallback",
+            attempt,
+            POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS);
+        return false;
+    }
+
+    ID3D12Device4* resource_device_raw{};
+    if (!get_d3d12_resource_device_guarded(native, &resource_device_raw)) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PokemonEmerald][UE5.6][RT bootstrap] Rejected native candidate {:x}: resource device was unavailable",
+            (uintptr_t)native);
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    resource_device.Attach(resource_device_raw);
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+    const auto expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+
+    if (expected_device == nullptr || resource_device.Get() != expected_device ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0)
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[PokemonEmerald][UE5.6][RT bootstrap] Rejected native candidate {:x}: device_match={} dim={} size={}x{} flags=0x{:x}",
+            (uintptr_t)native,
+            expected_device != nullptr && resource_device.Get() == expected_device,
+            (uint32_t)desc.Dimension,
+            desc.Width,
+            desc.Height,
+            (uint32_t)desc.Flags);
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[PokemonEmerald][UE5.6][RT bootstrap] Accepted FSceneViewport target on attempt {}/{}: rhi={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
+        attempt,
+        POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS,
         (uintptr_t)texture,
         (uintptr_t)native,
         desc.Width,
@@ -6965,6 +7152,98 @@ std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
 
         SPDLOG_INFO(
             "[Dune][NativeStereoFix] Resolved verified BeginRenderingViewFamilies wrapper={:x} target={:x}",
+            *wrapper,
+            target);
+        return target;
+    }();
+
+    return resolved;
+}
+
+bool validate_pokemon_emerald_begin_rendering_viewfamilies_target(uintptr_t target) {
+    const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    const auto function = get_runtime_function_range(target);
+
+    if (!function || function->begin != target || function->image_base != game_module ||
+        function->size() < 0x200 || function->size() > 0x4000)
+    {
+        return false;
+    }
+
+    // Pokemon Emerald's UE5.6 plural renderer preserves the TArrayView passed
+    // in R8, then reads its data pointer and signed count from +0/+8. Require
+    // all three operations so the exact wrapper cannot resolve another large
+    // renderer function with an incompatible first argument.
+    const auto validation_size = std::min<size_t>(function->size(), 0x100);
+    return utility::scan(target, validation_size, "4D 8B E0").has_value() &&
+           utility::scan(target, validation_size, "49 8B 3C 24").has_value() &&
+           utility::scan(target, validation_size, "49 63 5C 24 08").has_value();
+}
+
+std::optional<uintptr_t> resolve_pokemon_emerald_begin_rendering_viewfamilies() {
+    if (!pokemon_emerald_is_current_game() || !is_ue_5_6_dx12_backend()) {
+        return std::nullopt;
+    }
+
+    static const auto resolved = []() -> std::optional<uintptr_t> {
+        const auto module = utility::get_executable();
+
+        // Matching UE5.6.1 source and the game's BinFoldV3 PDB identify this as
+        // FRendererModule::BeginRenderingViewFamily. It constructs a one-item
+        // TArrayView and directly calls the plural entry used by Native Fix.
+        constexpr auto wrapper_pattern =
+            "48 83 EC 38 C7 44 24 28 01 00 00 00 48 8D 44 24 50 "
+            "48 89 44 24 20 0F 28 44 24 20 4C 89 44 24 50 "
+            "4C 8D 44 24 20 66 0F 7F 44 24 20 E8 ? ? ? ? "
+            "48 83 C4 38 C3";
+        constexpr size_t call_offset = 0x2B;
+
+        const auto wrapper = utility::scan(module, wrapper_pattern);
+        if (!wrapper) {
+            SPDLOG_ERROR(
+                "[PokemonEmerald][UE5.6][NativeStereoFix] Refusing activation: "
+                "the verified singular BeginRenderingViewFamily wrapper was not found");
+            return std::nullopt;
+        }
+
+        const auto wrapper_function = get_runtime_function_range(*wrapper);
+        if (!wrapper_function || wrapper_function->begin != *wrapper ||
+            wrapper_function->image_base != reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) ||
+            wrapper_function->size() > 0x80)
+        {
+            SPDLOG_ERROR(
+                "[PokemonEmerald][UE5.6][NativeStereoFix] Refusing activation: "
+                "wrapper at {:x} failed function-boundary validation",
+                *wrapper);
+            return std::nullopt;
+        }
+
+        const auto call_address = *wrapper + call_offset;
+        if (!is_readable_process_range(call_address, 5) ||
+            *reinterpret_cast<const uint8_t*>(call_address) != 0xE8)
+        {
+            SPDLOG_ERROR(
+                "[PokemonEmerald][UE5.6][NativeStereoFix] Refusing activation: "
+                "wrapper at {:x} has no verified direct CALL",
+                *wrapper);
+            return std::nullopt;
+        }
+
+        int32_t displacement{};
+        std::memcpy(&displacement, reinterpret_cast<const void*>(call_address + 1), sizeof(displacement));
+        const auto target = static_cast<uintptr_t>(call_address + 5 + displacement);
+
+        if (!validate_pokemon_emerald_begin_rendering_viewfamilies_target(target)) {
+            SPDLOG_ERROR(
+                "[PokemonEmerald][UE5.6][NativeStereoFix] Refusing activation: "
+                "plural target {:x} failed TArrayView validation",
+                target);
+            return std::nullopt;
+        }
+
+        SPDLOG_INFO(
+            "[PokemonEmerald][UE5.6][NativeStereoFix] Resolved verified "
+            "BeginRenderingViewFamilies wrapper={:x} target={:x}",
             *wrapper,
             target);
         return target;
@@ -13025,9 +13304,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     const bool dune_viewport_adoption = dune_awakening_is_current_game();
+    const bool pokemon_emerald_ue56_dx12_viewport_adoption =
+        pokemon_emerald_is_current_game() && is_ue_5_6_dx12_backend();
     const bool allow_scene_viewport_rt_adoption =
         dune_viewport_adoption || ue58_viewport_adoption ||
-        naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption;
+        naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
+        pokemon_emerald_ue56_dx12_viewport_adoption;
     const auto log_prefix = dune_viewport_adoption
         ? "[Dune][RT]"
         : (ue58_viewport_adoption
@@ -13036,7 +13318,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 ? "[Naruto][UE4.16][RT]"
                 : (dead_island_2_ue425_dx12_viewport_adoption
                     ? "[DeadIsland2][UE4.25][RT]"
-                    : "[SHf]")));
+                    : (pokemon_emerald_ue56_dx12_viewport_adoption
+                        ? "[PokemonEmerald][UE5.6][RT]"
+                        : "[SHf]"))));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
@@ -13115,13 +13399,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption && is_naruto_post_draw;
     const bool is_dead_island_2_viewport_refresh =
         dead_island_2_ue425_dx12_viewport_adoption && is_dead_island_2_post_draw;
+    const bool is_pokemon_emerald_viewport_refresh =
+        pokemon_emerald_ue56_dx12_viewport_adoption &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
         !is_dune_viewport_refresh &&
         !is_ue58_viewport_refresh &&
         !is_naruto_viewport_refresh &&
-        !is_dead_island_2_viewport_refresh)
+        !is_dead_island_2_viewport_refresh &&
+        !is_pokemon_emerald_viewport_refresh)
     {
         return;
     }
@@ -13188,6 +13477,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
         shf_probe_scene_viewport_memory(viewport, source, nullptr);
         SPDLOG_INFO_EVERY_N_SEC(2, "{} FSceneViewport render target is not available yet from {}", log_prefix, source_name);
+        return;
+    }
+
+    // The wrapper already exposes its current native resource dynamically, so
+    // only re-run the guarded bootstrap when the engine rotates the wrapper.
+    if (pokemon_emerald_ue56_dx12_viewport_adoption && candidate == current_target) {
         return;
     }
 
@@ -13260,13 +13555,20 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         native_resource = everspace2_candidate->native_resource.Get();
         desc = everspace2_candidate->desc;
     } else if (is_ue_5_6_dx12_backend()) {
+        const bool is_known_viewport_source =
+            source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
         const bool is_subnautica2_viewport_bootstrap =
             subnautica2_is_current_game() &&
-            source != nullptr &&
-            std::string_view{source} == "UGameViewportClient::Draw viewport";
-        const bool discovered = is_subnautica2_viewport_bootstrap
-            ? subnautica2_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
-            : ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc);
+            is_known_viewport_source;
+        const bool is_pokemon_emerald_viewport_bootstrap =
+            pokemon_emerald_is_current_game() &&
+            is_known_viewport_source;
+        const bool discovered =
+            is_subnautica2_viewport_bootstrap
+                ? subnautica2_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
+                : is_pokemon_emerald_viewport_bootstrap
+                    ? pokemon_emerald_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
+                    : ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc);
 
         if (!discovered) {
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
@@ -18757,8 +19059,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
 
             const auto candidate = dune_awakening_is_current_game()
                 ? resolve_dune_begin_rendering_viewfamilies()
-                : resolve_begin_rendering_viewfamilies_from_stack(
-                    reinterpret_cast<uintptr_t>(_ReturnAddress()));
+                : pokemon_emerald_is_current_game()
+                    ? resolve_pokemon_emerald_begin_rendering_viewfamilies()
+                    : resolve_begin_rendering_viewfamilies_from_stack(
+                        reinterpret_cast<uintptr_t>(_ReturnAddress()));
             if (!candidate) {
                 SPDLOG_WARN(
                     "[ViewFamilySelector] Failed to resolve BeginRenderingViewFamilies on attempt {}; "
@@ -29457,12 +29761,12 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             }
 
             // UKismetRenderingLibrary uses WorldContextObject as both the world
-            // lookup and the new render target's Outer. ES2 replaces UWorld
-            // during the opening cinematic, so a world-owned UI target is
-            // collected while Slate/RDG can still reference its RHI resource.
-            // UGameInstance resolves the same world but persists across travel.
+            // lookup and the new render target's Outer. These guarded titles
+            // replace UWorld during travel, so keep the rooted UI object under
+            // the persistent GameInstance instead of the retiring world.
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
+                pokemon_emerald_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
                 supports_naruto_ue416_dedicated_ui_target() ||
@@ -29479,6 +29783,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (pokemon_emerald_is_current_game()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[PokemonEmerald][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (supports_dead_island_2_ue425_dedicated_ui_target()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
