@@ -6613,7 +6613,10 @@ bool indirect_virtual_call_returns_to(uintptr_t return_address, uint8_t slot_off
            call[2] == slot_offset;
 }
 
-bool has_ue426_427_begin_rendering_viewfamily_shape(const RuntimeFunctionRange& function) {
+bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
+    const RuntimeFunctionRange& function,
+    uint8_t frame_number_offset)
+{
     if (function.size() < 0x200 || function.size() > 0x4000 ||
         !is_readable_process_range(function.begin, function.size()))
     {
@@ -6645,10 +6648,12 @@ bool has_ue426_427_begin_rendering_viewfamily_shape(const RuntimeFunctionRange& 
             continue;
         }
 
-        // UE4.26/4.27 FSceneViewFamily::FrameNumber is a uint32 at +0x5c.
-        // Accept any compiler-selected base/source register, but reject a
-        // REX.W qword store.
-        if (opcode == 0x89 && (rex & 0x08) == 0 && bytes[displacement_index] == 0x5C) {
+        // UE4.25 uses +0x3c; UE4.26/4.27 use +0x5c. Accept any
+        // compiler-selected base/source register, but reject a REX.W qword store.
+        if (opcode == 0x89 &&
+            (rex & 0x08) == 0 &&
+            bytes[displacement_index] == frame_number_offset)
+        {
             writes_frame_number = true;
         }
 
@@ -6669,8 +6674,9 @@ bool has_ue426_427_begin_rendering_viewfamily_shape(const RuntimeFunctionRange& 
     return false;
 }
 
-std::optional<RuntimeFunctionRange> get_ue426_427_begin_rendering_viewfamily_range(
-    uintptr_t callback_return)
+std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_viewfamily_range(
+    uintptr_t callback_return,
+    uint8_t frame_number_offset)
 {
     constexpr uint8_t unwind_flag_chaininfo = 0x4;
     constexpr uint32_t max_chain_depth = 4;
@@ -6695,7 +6701,10 @@ std::optional<RuntimeFunctionRange> get_ue426_427_begin_rendering_viewfamily_ran
     const auto image_base = static_cast<uintptr_t>(image_base64);
 
     for (uint32_t depth = 0; depth <= max_chain_depth; ++depth) {
-        if (has_ue426_427_begin_rendering_viewfamily_shape(combined)) {
+        if (has_source_validated_ue4_begin_rendering_viewfamily_shape(
+                combined,
+                frame_number_offset))
+        {
             return combined;
         }
 
@@ -6785,25 +6794,36 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         nullptr);
 
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
-    const auto source_validated_ue4 = is_ue_4_26_runtime() || is_ue_4_27_runtime();
+    const auto source_validated_ue425 = is_ue_4_25_runtime();
+    const auto source_validated_ue426_427 = is_ue_4_26_runtime() || is_ue_4_27_runtime();
+    const auto source_validated_ue4 = source_validated_ue425 || source_validated_ue426_427;
+    constexpr uint8_t UE425_FRAME_NUMBER_OFFSET = 0x3C;
+    constexpr uint8_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
+    const auto source_frame_number_offset = source_validated_ue425
+        ? UE425_FRAME_NUMBER_OFFSET
+        : UE426_427_FRAME_NUMBER_OFFSET;
+    const auto source_runtime_label = source_validated_ue425 ? "UE4.25" : "UE4.26/4.27";
     std::optional<uintptr_t> best_candidate{};
     int best_score = std::numeric_limits<int>::min();
 
-    // UE4.26/4.27 calls slot 5 directly from FRendererModule::
+    // UE4.25-4.27 call slot 5 directly from FRendererModule::
     // BeginRenderingViewFamily. The callback's own return address is stronger
     // evidence than reconstructing that frame through RtlCaptureStackBackTrace.
     if (source_validated_ue4 && direct_callback_return != 0) {
         const auto direct_segment = get_runtime_function_range(direct_callback_return);
         const auto direct_candidate =
-            get_ue426_427_begin_rendering_viewfamily_range(direct_callback_return);
+            get_source_validated_ue4_begin_rendering_viewfamily_range(
+                direct_callback_return,
+                source_frame_number_offset);
         const auto direct_candidate_valid =
             direct_candidate.has_value() &&
             direct_candidate->image_base == game_module;
 
         if (direct_candidate_valid) {
             SPDLOG_INFO(
-                "[UE4.26/4.27][ViewFamilySelector] Resolved source-validated callback caller "
+                "[{}][ViewFamilySelector] Resolved source-validated callback caller "
                 "target={:x} size={:x} return={:x}",
+                source_runtime_label,
                 direct_candidate->begin,
                 direct_candidate->size(),
                 direct_callback_return);
@@ -6811,8 +6831,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         }
 
         SPDLOG_WARN_ONCE(
-            "[UE4.26/4.27][ViewFamilySelector] Rejected callback caller return={:x} "
+            "[{}][ViewFamilySelector] Rejected callback caller return={:x} "
             "function={:x} size={:x} game_module={} slot5_call={} renderer_shape={}",
+            source_runtime_label,
             direct_callback_return,
             direct_segment ? direct_segment->begin : 0,
             direct_segment ? direct_segment->size() : 0,
@@ -6874,7 +6895,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
 
         for (uint32_t i = 1; i < depth && i <= max_renderer_stack_index; ++i) {
             const auto candidate = source_validated_ue4
-                ? get_ue426_427_begin_rendering_viewfamily_range(stack[i])
+                ? get_source_validated_ue4_begin_rendering_viewfamily_range(
+                    stack[i],
+                    source_frame_number_offset)
                 : get_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
@@ -6885,7 +6908,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
 
             if (source_validated_ue4 &&
                 (!indirect_virtual_call_returns_to(stack[i], 0x28) ||
-                 !has_ue426_427_begin_rendering_viewfamily_shape(*candidate)))
+                 !has_source_validated_ue4_begin_rendering_viewfamily_shape(
+                     *candidate,
+                     source_frame_number_offset)))
             {
                 continue;
             }
@@ -6893,8 +6918,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             best_candidate = candidate->begin;
             if (source_validated_ue4) {
                 SPDLOG_INFO(
-                    "[UE4.26/4.27][ViewFamilySelector] Resolved source-validated direct "
+                    "[{}][ViewFamilySelector] Resolved source-validated direct "
                     "BeginRenderingViewFamily entry target={:x} size={:x} return={:x} stack_index={}",
+                    source_runtime_label,
                     candidate->begin,
                     candidate->size(),
                     stack[i],
@@ -21182,11 +21208,12 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     // the missing right-eye ViewState. Preserve the established Native Fix
     // bootstrap on every supported engine, with source-validated handling for
     // the UE4.25/4.26 layouts below.
-    const bool ue426_needs_localplayer_bootstrap = is_ue_4_26_runtime();
+    const bool ue425_426_needs_localplayer_bootstrap =
+        is_ue_4_25_runtime() || is_ue_4_26_runtime();
     const bool native_needs_localplayer_bootstrap = vr->is_native_stereo_fix_enabled();
     const bool wants_localplayer_bootstrap =
         wants_ghosting_bootstrap ||
-        ue426_needs_localplayer_bootstrap ||
+        ue425_426_needs_localplayer_bootstrap ||
         native_needs_localplayer_bootstrap ||
         vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
