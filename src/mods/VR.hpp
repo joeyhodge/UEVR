@@ -486,6 +486,11 @@ public:
                m_extreme_compat_mode->value() == true;
     }
 
+    bool is_using_native_stereo() const {
+        return m_rendering_method->value() == RenderingMethod::NATIVE_STEREO &&
+               !is_using_afr();
+    }
+
     bool is_using_synchronized_afr() const {
         return m_rendering_method->value() == RenderingMethod::SYNCHRONIZED ||
                (m_extreme_compat_mode->value() && m_rendering_method->value() == RenderingMethod::NATIVE_STEREO);
