@@ -1623,6 +1623,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     const auto dune_use_final_present_backbuffer =
         is_dune_awakening_current_game() &&
+        !vr->is_using_native_stereo() &&
         vr->m_fake_stereo_hook != nullptr &&
         (vr->m_fake_stereo_hook->is_dune_character_creation_active() ||
          vr->m_fake_stereo_hook->dune_has_live_pawn());
