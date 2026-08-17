@@ -8389,40 +8389,6 @@ std::optional<uintptr_t> locate_vtable_from_constructor_rip_references(uintptr_t
 }
 }
 
-namespace detail {
-// True for scalar (SD) and packed (PD) double-precision *arithmetic*, in both the legacy
-// SSE2 and the VEX/EVEX encodings. Games built with /arch:AVX or newer emit only the
-// V-prefixed forms, which carry entirely different bddisasm instruction IDs
-// (ND_INS_VADDSD is 734, ND_INS_ADDSD is 21), so matching on the enum alone misses them.
-//
-// Conversions are deliberately excluded: a float-precision binary can legitimately contain
-// a stray CVTSS2SD for an unrelated double literal, which proves nothing about the layout
-// of the struct this function operates on.
-bool is_double_precision_arithmetic(std::string_view mnemonic) {
-    if (mnemonic.size() > 1 && mnemonic.front() == 'V') {
-        mnemonic.remove_prefix(1); // VEX/EVEX encoding of the same operation
-    }
-
-    if (!mnemonic.ends_with("SD") && !mnemonic.ends_with("PD")) {
-        return false;
-    }
-
-    if (mnemonic.starts_with("CVT")) {
-        return false;
-    }
-
-    // FMA mnemonics carry an operand-order suffix (FMADD231SD), so match on the root.
-    static constexpr std::string_view roots[]{
-        "ADD", "SUB", "MUL", "DIV", "SQRT", "MAX", "MIN",
-        "FMADD", "FMSUB", "FNMADD", "FNMSUB", "HADD", "HSUB",
-    };
-
-    return std::any_of(std::begin(roots), std::end(roots), [mnemonic](std::string_view root) {
-        return mnemonic.starts_with(root);
-    });
-}
-}
-
 // Scan through function instructions to detect usage of double
 // floating point precision instructions.
 bool is_using_double_precision(uintptr_t addr) {
@@ -8447,7 +8413,7 @@ bool is_using_double_precision(uintptr_t addr) {
             return utility::ExhaustionResult::BREAK;
         }
 
-        if (detail::is_double_precision_arithmetic(mnemonic)) {
+        if (ix.Instruction == ND_INS_ADDSD || ix.Instruction == ND_INS_VADDSD) {
             SPDLOG_INFO("[UE5 Detected] Detected Double precision arithmetic ({}) at {:x}", mnemonic, (uintptr_t)ip);
             result = true;
             return utility::ExhaustionResult::BREAK;
