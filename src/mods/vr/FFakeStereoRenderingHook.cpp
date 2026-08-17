@@ -6582,6 +6582,93 @@ std::optional<RuntimeFunctionRange> get_runtime_function_range(uintptr_t address
     };
 }
 
+std::optional<RuntimeFunctionRange> get_canonical_runtime_function_range(uintptr_t address) {
+    constexpr uint8_t unwind_flag_ehandler = 0x1;
+    constexpr uint8_t unwind_flag_uhandler = 0x2;
+    constexpr uint8_t unwind_flag_chaininfo = 0x4;
+    constexpr uint32_t max_chain_depth = 4;
+    constexpr size_t max_combined_size = 0x4000;
+
+    DWORD64 image_base64{};
+    const auto runtime_function = RtlLookupFunctionEntry(
+        static_cast<DWORD64>(address),
+        &image_base64,
+        nullptr);
+    const auto current_range = get_runtime_function_range(address);
+
+    if (runtime_function == nullptr || image_base64 == 0 || !current_range) {
+        return std::nullopt;
+    }
+
+    auto combined = *current_range;
+    auto chained_entry = *runtime_function;
+    const auto image_base = static_cast<uintptr_t>(image_base64);
+
+    for (uint32_t depth = 0; depth <= max_chain_depth; ++depth) {
+        if (chained_entry.UnwindData == 0) {
+            return combined;
+        }
+
+        const auto unwind_address = image_base + chained_entry.UnwindData;
+        if (unwind_address < image_base || !is_readable_process_range(unwind_address, 4)) {
+            return std::nullopt;
+        }
+
+        const auto unwind_info = reinterpret_cast<const uint8_t*>(unwind_address);
+        const auto version = unwind_info[0] & 0x07;
+        const auto flags = unwind_info[0] >> 3;
+        if (version != 1) {
+            return std::nullopt;
+        }
+
+        if ((flags & unwind_flag_chaininfo) == 0) {
+            return combined;
+        }
+
+        // CHAININFO cannot be combined with an exception or unwind handler.
+        if ((flags & (unwind_flag_ehandler | unwind_flag_uhandler)) != 0 ||
+            depth == max_chain_depth)
+        {
+            return std::nullopt;
+        }
+
+        const auto unwind_code_count = static_cast<size_t>(unwind_info[2]);
+        const auto aligned_code_count = (unwind_code_count + 1) & ~size_t{1};
+        const auto chained_entry_address =
+            unwind_address + 4 + aligned_code_count * sizeof(uint16_t);
+        if (chained_entry_address < unwind_address ||
+            !is_readable_process_range(chained_entry_address, sizeof(RUNTIME_FUNCTION)))
+        {
+            return std::nullopt;
+        }
+
+        RUNTIME_FUNCTION parent_entry{};
+        std::memcpy(
+            &parent_entry,
+            reinterpret_cast<const void*>(chained_entry_address),
+            sizeof(parent_entry));
+
+        const auto parent_begin = image_base + parent_entry.BeginAddress;
+        const auto parent_end = image_base + parent_entry.EndAddress;
+        if (parent_begin < image_base || parent_end <= parent_begin ||
+            parent_begin >= combined.begin || parent_end != combined.begin ||
+            combined.end - parent_begin > max_combined_size ||
+            !is_executable_process_range(
+                parent_begin,
+                std::min<size_t>(parent_end - parent_begin, 16)))
+        {
+            return std::nullopt;
+        }
+
+        // A chained .pdata entry is a continuation of the parent function, not
+        // a callable ABI entry. Expand to the parent before installing a hook.
+        combined.begin = parent_begin;
+        chained_entry = parent_entry;
+    }
+
+    return std::nullopt;
+}
+
 bool direct_call_returns_to(uintptr_t return_address, uintptr_t expected_target) {
     constexpr size_t direct_call_size = 5;
 
@@ -6864,8 +6951,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     // Validate that wrapper's exact direct CALL instead of guessing from the
     // first captured frame.
     for (uint32_t i = 1; !source_validated_ue4 && i + 1 < depth && i <= max_renderer_stack_index; ++i) {
-        const auto callee = get_runtime_function_range(stack[i]);
-        const auto caller = get_runtime_function_range(stack[i + 1]);
+        const auto callee_segment = get_runtime_function_range(stack[i]);
+        const auto callee = get_canonical_runtime_function_range(stack[i]);
+        const auto caller = get_canonical_runtime_function_range(stack[i + 1]);
 
         if (!callee || !caller || callee->begin == caller->begin ||
             callee->image_base != game_module || caller->image_base != game_module ||
@@ -6889,6 +6977,12 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         if (score > best_score) {
             best_score = score;
             best_candidate = callee->begin;
+            if (callee_segment && callee_segment->begin != callee->begin) {
+                SPDLOG_INFO(
+                    "[ViewFamilySelector] Canonicalized chained renderer callee segment={:x} target={:x}",
+                    callee_segment->begin,
+                    callee->begin);
+            }
             SPDLOG_INFO(
                 "[ViewFamilySelector] BeginRenderingViewFamilies candidate target={:x} size={:x} "
                 "wrapper={:x} wrapper_size={:x} return={:x} stack_index={} score={}",
@@ -6915,11 +7009,14 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         constexpr size_t max_renderer_size = 0x4000;
 
         for (uint32_t i = 1; i < depth && i <= max_renderer_stack_index; ++i) {
+            const auto candidate_segment = source_validated_ue4
+                ? std::optional<RuntimeFunctionRange>{}
+                : get_runtime_function_range(stack[i]);
             const auto candidate = source_validated_ue4
                 ? get_source_validated_ue4_begin_rendering_viewfamily_range(
                     stack[i],
                     source_frame_number_offset)
-                : get_runtime_function_range(stack[i]);
+                : get_canonical_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
                 candidate->size() > max_renderer_size)
@@ -6947,6 +7044,12 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
                     stack[i],
                     i);
             } else {
+                if (candidate_segment && candidate_segment->begin != candidate->begin) {
+                    SPDLOG_INFO(
+                        "[ViewFamilySelector] Canonicalized chained renderer frame segment={:x} target={:x}",
+                        candidate_segment->begin,
+                        candidate->begin);
+                }
                 SPDLOG_INFO(
                     "[ViewFamilySelector] Resolved direct BeginRenderingViewFamily entry from stack "
                     "target={:x} size={:x} return={:x} stack_index={}",
