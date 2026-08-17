@@ -6625,7 +6625,16 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     const RuntimeFunctionRange& function,
     uint8_t frame_number_offset)
 {
-    if (function.size() < 0x200 || function.size() > 0x4000 ||
+    // Some optimized UE4.25 builds split this function at the extension loop.
+    // The chained parent plus callback region can be smaller than 0x200 while
+    // still containing both source-derived signatures.
+    constexpr size_t UE425_MIN_RENDERER_SIZE = 0x180;
+    constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
+    const auto minimum_size = frame_number_offset == 0x3C
+        ? UE425_MIN_RENDERER_SIZE
+        : DEFAULT_MIN_RENDERER_SIZE;
+
+    if (function.size() < minimum_size || function.size() > 0x4000 ||
         !is_readable_process_range(function.begin, function.size()))
     {
         return false;
@@ -6898,7 +6907,11 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         // while optimized newer builds can inline away the small plural wrapper.
         // The first substantial game-module frame above this view-extension
         // callback is the renderer entry point itself.
-        constexpr size_t min_renderer_size = 0x200;
+        constexpr size_t UE425_MIN_RENDERER_SIZE = 0x180;
+        constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
+        const auto min_renderer_size = source_validated_ue425
+            ? UE425_MIN_RENDERER_SIZE
+            : DEFAULT_MIN_RENDERER_SIZE;
         constexpr size_t max_renderer_size = 0x4000;
 
         for (uint32_t i = 1; i < depth && i <= max_renderer_stack_index; ++i) {
