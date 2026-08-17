@@ -1861,9 +1861,17 @@ bool dimension_shift_is_auxiliary_view_family(sdk::FSceneViewFamily* view_family
 }
 
 bool dune_should_preserve_native_viewport_target() {
-    return dune_awakening_is_current_game() &&
-        g_hook != nullptr &&
-        (g_hook->is_dune_character_creation_active() || g_hook->dune_has_live_pawn());
+    if (!dune_awakening_is_current_game() ||
+        g_hook == nullptr ||
+        (!g_hook->is_dune_character_creation_active() && !g_hook->dune_has_live_pawn()))
+    {
+        return false;
+    }
+
+    // Native Stereo needs UEVR's separate stereo target. Keep the legacy AMD
+    // custom-present viewport only for Synced, AFR, DIBR, and fallback modes.
+    const auto vr = VR::get();
+    return vr == nullptr || !vr->is_using_native_stereo();
 }
 
 bool dune_is_auxiliary_view_family(sdk::FSceneViewFamily* view_family, const char* source) {
