@@ -13,6 +13,7 @@
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
+#include "mods/GameSpecific.hpp"
 #include "render/D3D12Diagnostics.hpp"
 #include "render/ShaderOverrideRegistry.hpp"
 
@@ -53,7 +54,8 @@ bool should_preserve_present_params_for_current_game() {
 bool is_dune_awakening_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"DuneSandbox-Win64-Shipping") != std::wstring::npos;
+        return uevr::games::dune_experimental_rendering_enabled &&
+               exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
     }();
 
     return result;

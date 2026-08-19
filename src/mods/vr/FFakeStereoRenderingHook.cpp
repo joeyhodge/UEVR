@@ -1408,6 +1408,16 @@ bool avowed_is_current_game() {
 bool dune_awakening_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return uevr::games::dune_experimental_rendering_enabled &&
+               exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
+bool dune_native_fix_renderer_resolver_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
     }();
 
@@ -7234,7 +7244,14 @@ bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const auto function = get_runtime_function_range(target);
 
-    if (!function || function->begin != target || function->image_base != game_module || function->size() < 0x200) {
+    // Current Dune builds split this renderer body across adjacent unwind
+    // ranges; the entry range is 0x1f1 bytes even though execution continues
+    // into the next range. Only the entry prologue is needed for the ABI proof.
+    constexpr size_t minimum_entry_size = 0x40;
+    constexpr size_t maximum_entry_size = 0x4000;
+    if (!function || function->begin != target || function->image_base != game_module ||
+        function->size() < minimum_entry_size || function->size() > maximum_entry_size)
+    {
         return false;
     }
 
@@ -7248,7 +7265,7 @@ bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
 }
 
 std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
-    if (!dune_awakening_is_current_game()) {
+    if (!dune_native_fix_renderer_resolver_is_current_game()) {
         return std::nullopt;
     }
 
@@ -19222,7 +19239,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             ++resolver_attempts;
             calls_until_retry = 30;
 
-            const auto candidate = dune_awakening_is_current_game()
+            // Keep the signature-validated Dune renderer resolver available
+            // even while its retired D3D12/custom-present experiments remain
+            // disabled. The generic stack fallback can otherwise select an
+            // unrelated large renderer frame with a different ABI.
+            const auto candidate = dune_native_fix_renderer_resolver_is_current_game()
                 ? resolve_dune_begin_rendering_viewfamilies()
                 : pokemon_emerald_is_current_game()
                     ? resolve_pokemon_emerald_begin_rendering_viewfamilies()
