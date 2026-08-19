@@ -7327,6 +7327,55 @@ std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
     return resolved;
 }
 
+bool validate_dune_renderer_view_family(
+    sdk::FSceneViewFamily* family,
+    uintptr_t expected_vtable,
+    uintptr_t actual_vtable)
+{
+    if (!dune_native_fix_renderer_resolver_is_current_game() ||
+        family == nullptr || expected_vtable == 0 || actual_vtable == 0 ||
+        actual_vtable == expected_vtable || !sdk::FSceneViewFamily::has_offsets())
+    {
+        return false;
+    }
+
+    const auto executable = utility::get_executable();
+    if (executable == nullptr ||
+        !is_readable_process_range(actual_vtable, sizeof(uintptr_t)) ||
+        utility::get_module_within(reinterpret_cast<void*>(actual_vtable)).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    uintptr_t first_virtual{};
+    std::memcpy(&first_virtual, reinterpret_cast<const void*>(actual_vtable), sizeof(first_virtual));
+    if (!is_executable_process_range(first_virtual, 1) ||
+        utility::get_module_within(reinterpret_cast<void*>(first_virtual)).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    auto* const views = family->get_views();
+    constexpr int32_t max_sane_views = 16;
+    if (views == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(views), sizeof(*views)) ||
+        views->count <= 0 || views->count > max_sane_views ||
+        views->capacity < views->count || views->data == nullptr ||
+        !is_readable_process_range(
+            reinterpret_cast<uintptr_t>(views->data),
+            sizeof(sdk::FSceneView*) * static_cast<size_t>(views->count)))
+    {
+        return false;
+    }
+
+    // Dune reaches this entry with base FSceneViewFamily objects as well as
+    // renderer-owned family variants. Their vtables can differ while retaining
+    // the validated base layout and per-view Family back-links.
+    return family->get_render_target() != nullptr &&
+           family->get_scene_interface() != nullptr &&
+           sdk::FSceneViewFamily::validate_views(family, views, max_sane_views);
+}
+
 bool validate_pokemon_emerald_begin_rendering_viewfamilies_target(uintptr_t target) {
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const auto function = get_runtime_function_range(target);
@@ -17612,9 +17661,22 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 uintptr_t actual_vtable{};
                 std::memcpy(&actual_vtable, family, sizeof(actual_vtable));
 
-                if (expected_vtable == 0 || actual_vtable != expected_vtable) {
+                const auto accepted_dune_renderer_family =
+                    actual_vtable != expected_vtable &&
+                    validate_dune_renderer_view_family(family, expected_vtable, actual_vtable);
+                if (expected_vtable == 0 ||
+                    (actual_vtable != expected_vtable && !accepted_dune_renderer_family))
+                {
                     reject_candidate("unexpected FSceneViewFamily vtable");
                     return;
+                }
+
+                if (accepted_dune_renderer_family) {
+                    SPDLOG_INFO_ONCE(
+                        "[Dune][NativeStereoFix] Accepted structurally validated polymorphic family "
+                        "vtable={:x} discovered_family_vtable={:x}",
+                        actual_vtable,
+                        expected_vtable);
                 }
             }
         }
