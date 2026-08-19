@@ -14462,6 +14462,17 @@ struct SceneViewExtensionAnalyzer {
     static constexpr uint32_t UE426_427_VIEW_MODE_OFFSET = 0x10;
     static constexpr uint32_t UE426_427_RENDER_TARGET_OFFSET = 0x18;
 
+    // Dune is a UE5.2.1 build. These slots and family offsets are fixed by the
+    // matching source and independently confirmed by both runtime logs.
+    static constexpr uint32_t DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX = 5;
+    static constexpr uint32_t DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX = 6;
+    static constexpr uint32_t DUNE_UE52_PRE_RENDER_VIEW_INDEX = 7;
+    static constexpr uint32_t DUNE_UE52_IS_ACTIVE_INTERNAL_INDEX = 22;
+    static constexpr uint32_t DUNE_UE52_VIEWS_OFFSET = 0x8;
+    static constexpr uint32_t DUNE_UE52_RENDER_TARGET_OFFSET = 0x20;
+    static constexpr uint32_t DUNE_UE52_SCENE_OFFSET = 0x28;
+    static constexpr uint32_t DUNE_UE52_FRAME_NUMBER_OFFSET = 0x84;
+
     static bool validate_cached_discovery(void** original_vtable, const nlohmann::json& cached);
     static bool try_apply_cached_discovery(void** original_vtable);
     static void save_cached_discovery();
@@ -14629,6 +14640,35 @@ struct SceneViewExtensionAnalyzer {
         return true;
     }
 
+    static bool try_apply_dune_ue52_source_layout(uint32_t observed_is_active_index) {
+        if (!dune_native_fix_renderer_resolver_is_current_game() ||
+            index_0_called ||
+            observed_is_active_index != DUNE_UE52_IS_ACTIVE_INTERNAL_INDEX ||
+            has_found_begin_render_viewfamily)
+        {
+            return false;
+        }
+
+        has_found_begin_render_viewfamily = true;
+        begin_render_viewfamily_index = DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX;
+        pre_render_viewfamily_renderthread_index = DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX;
+        frame_count_offset = DUNE_UE52_FRAME_NUMBER_OFFSET;
+        sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+
+        SPDLOG_INFO(
+            "[Dune][ViewExtension] Applied source-validated UE5.2 mapping "
+            "BeginRenderViewFamily={} PreRenderViewFamily_RenderThread={} "
+            "PreRenderView_RenderThread={} IsActiveThisFrame_Internal={} FrameNumber=0x{:x}",
+            begin_render_viewfamily_index,
+            pre_render_viewfamily_renderthread_index,
+            DUNE_UE52_PRE_RENDER_VIEW_INDEX,
+            observed_is_active_index,
+            frame_count_offset);
+
+        setup_view_extension_hook();
+        return true;
+    }
+
     template<int N>
     static bool analysis_dummy_stage1(ISceneViewExtension* extension, uintptr_t a2, uintptr_t a3, uintptr_t a4) {
         if (N == 0) {
@@ -14673,6 +14713,12 @@ struct SceneViewExtensionAnalyzer {
 
             has_found_is_active_this_frame_index = true;
             is_active_this_frame_index = max_index;
+
+            // Dune's UE5.2 interface layout is known. Bypass the generic
+            // frame-counter heuristic, which can confuse PreRenderView's
+            // FSceneView argument (or stale registers from GetPriority) for an
+            // FSceneViewFamily and install an ABI-incompatible callback.
+            try_apply_dune_ue52_source_layout(max_index);
         } else {
             if (functions[N].call_count == 1) {
                 SPDLOG_INFO("[Stage 1] ISceneViewExtension Index {} called for the first time!", N);
@@ -14685,6 +14731,12 @@ struct SceneViewExtensionAnalyzer {
     template<int N>
     static bool analysis_dummy_stage2(ISceneViewExtension* extension, uintptr_t a2, uintptr_t a3, uintptr_t a4) {
         if (has_found_begin_render_viewfamily) {
+            return false;
+        }
+
+        if (dune_native_fix_renderer_resolver_is_current_game() && has_found_is_active_this_frame_index) {
+            SPDLOG_WARN_ONCE(
+                "[Dune][ViewExtension] Source mapping validation failed; refusing unsafe heuristic callback discovery");
             return false;
         }
 
@@ -14851,8 +14903,28 @@ struct SceneViewExtensionAnalyzer {
                 setup_view_family_index + 3);
         }
 
-        // PreRenderViewFamily_RenderThread
-        g_view_extension_vtable[pre_render_viewfamily_renderthread_index] = (uintptr_t)&FFakeStereoRenderingHook::pre_render_viewfamily_renderthread;
+        const bool use_dune_ue52_source_callbacks =
+            dune_native_fix_renderer_resolver_is_current_game() &&
+            !index_0_called &&
+            begin_render_viewfamily_index == DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX &&
+            pre_render_viewfamily_renderthread_index == DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX &&
+            is_active_this_frame_index == DUNE_UE52_IS_ACTIVE_INTERNAL_INDEX &&
+            frame_count_offset == DUNE_UE52_FRAME_NUMBER_OFFSET;
+
+        // Prefer the family callback, but also install a correctly typed
+        // per-view adapter. Dune has been observed calling slot 7 without slot
+        // 6 on some systems; the adapter resolves and validates the owning
+        // family instead of treating FSceneView as FSceneViewFamily.
+        g_view_extension_vtable[pre_render_viewfamily_renderthread_index] =
+            (uintptr_t)&FFakeStereoRenderingHook::pre_render_viewfamily_renderthread;
+        if (use_dune_ue52_source_callbacks) {
+            g_view_extension_vtable[DUNE_UE52_PRE_RENDER_VIEW_INDEX] =
+                (uintptr_t)&FFakeStereoRenderingHook::pre_render_view_renderthread;
+            SPDLOG_INFO(
+                "[Dune][ViewExtension] Installed source-typed render-thread callbacks at family slot {} and view slot {}",
+                pre_render_viewfamily_renderthread_index,
+                DUNE_UE52_PRE_RENDER_VIEW_INDEX);
+        }
 
         SPDLOG_INFO("Done setting up BeginRenderViewFamily hook!");
     }
@@ -19226,7 +19298,126 @@ bool FFakeStereoRenderingHook::is_native_stereo_fix_operational() const {
     return m_native_stereo_fix_state.load(std::memory_order_acquire) == NativeStereoFixState::Active;
 }
 
+void FFakeStereoRenderingHook::pre_render_view_renderthread(
+    ISceneViewExtension* extension,
+    sdk::FRHICommandListBase* cmd_list,
+    sdk::FSceneView& view)
+{
+    if (!dune_native_fix_renderer_resolver_is_current_game()) {
+        return;
+    }
+
+    auto* const family = view.get_view_family();
+    if (family == nullptr ||
+        !is_readable_process_range(
+            reinterpret_cast<uintptr_t>(family),
+            SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET + sizeof(uint32_t)))
+    {
+        SPDLOG_WARN_ONCE("[Dune][ViewExtension] Rejected PreRenderView callback without a readable owning family");
+        return;
+    }
+
+    uintptr_t family_vtable{};
+    uintptr_t first_virtual{};
+    uintptr_t render_target{};
+    uintptr_t scene{};
+    uint32_t frame{};
+    sdk::TArray<sdk::FSceneView*> views{};
+    const auto family_address = reinterpret_cast<uintptr_t>(family);
+    std::memcpy(&family_vtable, reinterpret_cast<const void*>(family_address), sizeof(family_vtable));
+    std::memcpy(
+        &views,
+        reinterpret_cast<const void*>(family_address + SceneViewExtensionAnalyzer::DUNE_UE52_VIEWS_OFFSET),
+        sizeof(views));
+    std::memcpy(
+        &render_target,
+        reinterpret_cast<const void*>(family_address + SceneViewExtensionAnalyzer::DUNE_UE52_RENDER_TARGET_OFFSET),
+        sizeof(render_target));
+    std::memcpy(
+        &scene,
+        reinterpret_cast<const void*>(family_address + SceneViewExtensionAnalyzer::DUNE_UE52_SCENE_OFFSET),
+        sizeof(scene));
+    std::memcpy(
+        &frame,
+        reinterpret_cast<const void*>(family_address + SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET),
+        sizeof(frame));
+
+    if (family_vtable == 0 ||
+        !is_readable_process_range(family_vtable, sizeof(first_virtual)))
+    {
+        SPDLOG_WARN_ONCE("[Dune][ViewExtension] Rejected PreRenderView callback with an unreadable family vtable");
+        return;
+    }
+
+    std::memcpy(&first_virtual, reinterpret_cast<const void*>(family_vtable), sizeof(first_virtual));
+
+    if (!is_executable_process_range(first_virtual, 1) ||
+        views.data == nullptr ||
+        views.count <= 0 || views.count > 16 ||
+        views.capacity < views.count || views.capacity > 1024 ||
+        !is_readable_process_range(
+            reinterpret_cast<uintptr_t>(views.data),
+            sizeof(sdk::FSceneView*) * static_cast<size_t>(views.count)) ||
+        render_target == 0 ||
+        !is_readable_process_range(render_target, sizeof(uintptr_t)) ||
+        scene == 0 ||
+        !is_readable_process_range(scene, sizeof(uintptr_t)) ||
+        frame < 10 || frame == std::numeric_limits<uint32_t>::max())
+    {
+        SPDLOG_WARN_ONCE("[Dune][ViewExtension] Rejected PreRenderView callback with an invalid UE5.2 family layout");
+        return;
+    }
+
+    bool owns_view = false;
+    for (int32_t i = 0; i < views.count; ++i) {
+        if (views.data[i] == &view) {
+            owns_view = true;
+            break;
+        }
+    }
+
+    if (!owns_view || !view.has_view_family(family)) {
+        SPDLOG_WARN_ONCE("[Dune][ViewExtension] Rejected PreRenderView callback whose view is not owned by the candidate family");
+        return;
+    }
+
+    pre_render_viewfamily_renderthread(extension, cmd_list, *family);
+}
+
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
+    if (dune_native_fix_renderer_resolver_is_current_game() &&
+        SceneViewExtensionAnalyzer::frame_count_offset == SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET)
+    {
+        const auto family_address = reinterpret_cast<uintptr_t>(&view_family);
+        if (!is_readable_process_range(
+                family_address + SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET,
+                sizeof(uint32_t)))
+        {
+            SPDLOG_WARN_ONCE("[Dune][ViewExtension] Rejected unreadable render-thread family callback");
+            return;
+        }
+
+        uint32_t frame{};
+        std::memcpy(
+            &frame,
+            reinterpret_cast<const void*>(family_address + SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET),
+            sizeof(frame));
+
+        struct DunePreRenderKey {
+            uint32_t frame{};
+            uintptr_t family{};
+        };
+        static thread_local DunePreRenderKey last_dune_key{};
+        const DunePreRenderKey current_dune_key{frame, family_address};
+        if (current_dune_key.frame == last_dune_key.frame &&
+            current_dune_key.family == last_dune_key.family)
+        {
+            return;
+        }
+
+        last_dune_key = current_dune_key;
+    }
+
     ZoneScopedN("PreRenderViewFamily_RenderThread");
     const auto profile_engine_render = should_profile_engine_render_timing();
     const auto prerender_viewfamily_rt_start =
