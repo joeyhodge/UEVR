@@ -7,6 +7,12 @@
 
 namespace uevr::games {
 
+// The legacy Dune rendering experiment depends on binary-specific D3D12
+// descriptor and render-target hooks. Current game builds no longer match
+// those guards, so keep every Dune-only runtime path retired and use UEVR's
+// generic rendering paths instead.
+inline constexpr bool dune_experimental_rendering_enabled = false;
+
 inline std::wstring lowercase_path(std::wstring_view path) {
     std::wstring lowered{path};
     std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
