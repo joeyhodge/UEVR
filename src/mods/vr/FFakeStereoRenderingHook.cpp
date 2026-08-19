@@ -1973,7 +1973,17 @@ bool daysgone_is_current_game() {
 }
 
 constexpr size_t DAYS_GONE_VIEW_FAMILY_FRAME_NUMBER_OFFSET = 0x48;
+constexpr size_t DAYS_GONE_VIEW_FAMILY_USE_SEPARATE_RENDER_TARGET_OFFSET = 0x20;
+constexpr size_t DAYS_GONE_VIEW_FAMILY_RESOLVE_SCENE_OFFSET = 0x4E;
+constexpr size_t DAYS_GONE_SCENE_VIEW_IS_SCENE_CAPTURE_OFFSET = 0x1276;
 constexpr size_t DAYS_GONE_BEGIN_RENDERING_FRAME_SCAN_SIZE = 0x90;
+
+struct DaysGoneOffscreenViewContract {
+    std::array<uintptr_t, 3> flags{};
+    std::array<uint8_t, 3> original_values{};
+};
+
+constexpr std::array<uint8_t, 3> DAYS_GONE_OFFSCREEN_VIEW_VALUES{1, 0, 1};
 
 struct DaysGoneNativeFrameOverride {
     sdk::FSceneViewFamily* family{};
@@ -2004,6 +2014,84 @@ bool write_daysgone_frame_value(uintptr_t address, uint32_t value) {
     std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(value));
     uint32_t observed{};
     return read_daysgone_frame_value(address, observed) && observed == value;
+}
+
+bool read_daysgone_bool(uintptr_t address, uint8_t& value) {
+    if (!is_readable_process_range(address, sizeof(value))) {
+        return false;
+    }
+
+    std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(value));
+    return value <= 1;
+}
+
+bool write_daysgone_bool(uintptr_t address, uint8_t value) {
+    if (value > 1 || !is_writable_process_range(address, sizeof(value))) {
+        return false;
+    }
+
+    std::memcpy(reinterpret_cast<void*>(address), &value, sizeof(value));
+    uint8_t observed{};
+    return read_daysgone_bool(address, observed) && observed == value;
+}
+
+bool validate_daysgone_offscreen_view_contract(
+    sdk::FSceneView* right_view,
+    sdk::FSceneViewFamily* family,
+    DaysGoneOffscreenViewContract& contract,
+    const char*& failure_reason)
+{
+    failure_reason = nullptr;
+    const auto view_address = reinterpret_cast<uintptr_t>(right_view);
+    const auto family_address = reinterpret_cast<uintptr_t>(family);
+    if (view_address == 0 || family_address == 0 ||
+        view_address > std::numeric_limits<uintptr_t>::max() -
+            DAYS_GONE_SCENE_VIEW_IS_SCENE_CAPTURE_OFFSET ||
+        family_address > std::numeric_limits<uintptr_t>::max() -
+            DAYS_GONE_VIEW_FAMILY_RESOLVE_SCENE_OFFSET)
+    {
+        failure_reason = "view or family address overflowed the UE4.11 layout";
+        return false;
+    }
+
+    contract.flags = {
+        view_address + DAYS_GONE_SCENE_VIEW_IS_SCENE_CAPTURE_OFFSET,
+        family_address + DAYS_GONE_VIEW_FAMILY_USE_SEPARATE_RENDER_TARGET_OFFSET,
+        family_address + DAYS_GONE_VIEW_FAMILY_RESOLVE_SCENE_OFFSET,
+    };
+    for (size_t index = 0; index < contract.flags.size(); ++index) {
+        if (!read_daysgone_bool(contract.flags[index], contract.original_values[index]) ||
+            !is_writable_process_range(contract.flags[index], sizeof(uint8_t)))
+        {
+            failure_reason = "Bend offscreen view/family flags did not validate";
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool restore_daysgone_offscreen_view_contract(const DaysGoneOffscreenViewContract& contract) {
+    bool restored{true};
+    for (size_t index = 0; index < contract.flags.size(); ++index) {
+        restored = write_daysgone_bool(
+            contract.flags[index],
+            contract.original_values[index]) && restored;
+    }
+    return restored;
+}
+
+bool apply_daysgone_offscreen_view_contract(const DaysGoneOffscreenViewContract& contract) {
+    for (size_t index = 0; index < contract.flags.size(); ++index) {
+        if (!write_daysgone_bool(
+                contract.flags[index],
+                DAYS_GONE_OFFSCREEN_VIEW_VALUES[index]))
+        {
+            restore_daysgone_offscreen_view_contract(contract);
+            return false;
+        }
+    }
+    return true;
 }
 
 uintptr_t resolve_daysgone_gframe_number(uintptr_t begin_rendering_view_family) {
@@ -18845,6 +18933,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     const auto use_daysgone_same_frame_render =
         daysgone_is_current_game() && g_framework != nullptr && g_framework->is_dx11();
     uint32_t daysgone_frame_before{};
+    DaysGoneOffscreenViewContract daysgone_offscreen_contract{};
     if (use_daysgone_same_frame_render) {
         uint32_t family_frame_before{};
         if (SceneViewExtensionAnalyzer::frame_count_offset !=
@@ -18864,6 +18953,36 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             call_original();
             return;
         }
+
+        const char* contract_failure_reason{};
+        if (!validate_daysgone_offscreen_view_contract(
+                native_right_view,
+                view_family,
+                daysgone_offscreen_contract,
+                contract_failure_reason))
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                contract_failure_reason != nullptr
+                    ? contract_failure_reason
+                    : "Days Gone offscreen-view contract did not validate");
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[DaysGone][NativeFix] Preserving the original two-view render because the "
+                "UE4.11 offscreen-view contract was unavailable: {}",
+                contract_failure_reason != nullptr
+                    ? contract_failure_reason
+                    : "unknown validation failure");
+            call_original();
+            return;
+        }
+
+        SPDLOG_INFO_ONCE(
+            "[DaysGone][NativeFix] Validated Bend offscreen-view contract: "
+            "bIsSceneCapture={} bUseSeparateRenderTarget={} bResolveScene={}",
+            daysgone_offscreen_contract.original_values[0],
+            daysgone_offscreen_contract.original_values[1],
+            daysgone_offscreen_contract.original_values[2]);
     }
 
     const auto runtime_frame_count = runtime->internal_frame_count;
@@ -18958,15 +19077,57 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         }
     }};
 
-    if (uses_tarrayview) {
-        sdk::FSceneViewFamily* selected_family = view_family;
-        TArrayViewViewFamily second_family_array{&selected_family, 1};
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
-            render_module,
-            canvas,
-            reinterpret_cast<sdk::FSceneViewFamily*>(&second_family_array));
+    const auto render_secondary_view = [&]() {
+        if (uses_tarrayview) {
+            sdk::FSceneViewFamily* selected_family = view_family;
+            TArrayViewViewFamily second_family_array{&selected_family, 1};
+            g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+                render_module,
+                canvas,
+                reinterpret_cast<sdk::FSceneViewFamily*>(&second_family_array));
+        } else {
+            g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+                render_module,
+                canvas,
+                view_family);
+        }
+    };
+
+    bool daysgone_offscreen_contract_restored{true};
+    if (use_daysgone_same_frame_render) {
+        if (!apply_daysgone_offscreen_view_contract(daysgone_offscreen_contract)) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "Days Gone right render could not enter the Bend offscreen contract");
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[DaysGone][NativeFix] Right-eye render rejected because "
+                "the Bend offscreen view/family flags could not be committed");
+            return;
+        }
+
+        {
+            utility::ScopeGuard restore_offscreen_contract{[&]() {
+                daysgone_offscreen_contract_restored =
+                    restore_daysgone_offscreen_view_contract(daysgone_offscreen_contract);
+            }};
+            SPDLOG_INFO_ONCE(
+                "[DaysGone][NativeFix] Rendering SECONDARY with Bend's validated final-color offscreen contract");
+            render_secondary_view();
+        }
+
+        if (!daysgone_offscreen_contract_restored) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "Days Gone right render offscreen flags were not restored");
+            SPDLOG_ERROR_EVERY_N_SEC(
+                2,
+                "[DaysGone][NativeFix] Right-eye render completed, but "
+                "the Bend offscreen view/family flags could not be restored");
+            return;
+        }
     } else {
-        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(render_module, canvas, view_family);
+        render_secondary_view();
     }
 
     if (use_daysgone_same_frame_render) {
