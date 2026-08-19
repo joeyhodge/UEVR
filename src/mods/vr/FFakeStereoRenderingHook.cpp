@@ -6806,6 +6806,10 @@ bool indirect_virtual_call_returns_to(uintptr_t return_address, uint8_t slot_off
            call[2] == slot_offset;
 }
 
+constexpr uint8_t UE425_FRAME_NUMBER_OFFSET = 0x3C;
+constexpr uint8_t MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET = 0x44;
+constexpr uint8_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
+
 bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     const RuntimeFunctionRange& function,
     uint8_t frame_number_offset)
@@ -6815,7 +6819,10 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     // still containing both source-derived signatures.
     constexpr size_t UE425_MIN_RENDERER_SIZE = 0x180;
     constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
-    const auto minimum_size = frame_number_offset == 0x3C
+    const auto uses_ue425_layout =
+        frame_number_offset == UE425_FRAME_NUMBER_OFFSET ||
+        frame_number_offset == MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET;
+    const auto minimum_size = uses_ue425_layout
         ? UE425_MIN_RENDERER_SIZE
         : DEFAULT_MIN_RENDERER_SIZE;
 
@@ -6850,8 +6857,9 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
             continue;
         }
 
-        // UE4.25 uses +0x3c; UE4.26/4.27 use +0x5c. Accept any
-        // compiler-selected base/source register, but reject a REX.W qword store.
+        // Stock/SHCO UE4.25 uses +0x3c, The Medium's UE4.25Plus fork
+        // uses +0x44, and UE4.26/4.27 use +0x5c. Accept any compiler-selected
+        // base/source register, but reject a REX.W qword store.
         if (opcode == 0x89 &&
             (rex & 0x08) == 0 &&
             bytes[displacement_index] == frame_number_offset)
@@ -6999,12 +7007,15 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     const auto source_validated_ue425 = is_ue_4_25_runtime();
     const auto source_validated_ue426_427 = is_ue_4_26_runtime() || is_ue_4_27_runtime();
     const auto source_validated_ue4 = source_validated_ue425 || source_validated_ue426_427;
-    constexpr uint8_t UE425_FRAME_NUMBER_OFFSET = 0x3C;
-    constexpr uint8_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
+    const auto medium_ue425plus = source_validated_ue425 && medium_is_current_game();
     const auto source_frame_number_offset = source_validated_ue425
-        ? UE425_FRAME_NUMBER_OFFSET
+        ? (medium_ue425plus
+            ? MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET
+            : UE425_FRAME_NUMBER_OFFSET)
         : UE426_427_FRAME_NUMBER_OFFSET;
-    const auto source_runtime_label = source_validated_ue425 ? "UE4.25" : "UE4.26/4.27";
+    const auto source_runtime_label = medium_ue425plus
+        ? "Medium UE4.25Plus"
+        : (source_validated_ue425 ? "UE4.25" : "UE4.26/4.27");
     std::optional<uintptr_t> best_candidate{};
     int best_score = std::numeric_limits<int>::min();
 
