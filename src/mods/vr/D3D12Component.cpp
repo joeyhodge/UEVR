@@ -2,6 +2,7 @@
 
 #include <openvr.h>
 #include <utility/Module.hpp>
+#include <utility/Scan.hpp>
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
 #include <utility/Logging.hpp>
@@ -355,6 +356,15 @@ bool is_dune_awakening_current_game() {
     return result;
 }
 
+bool is_dune_descriptor_guard_candidate() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
+    }();
+
+    return result;
+}
+
 std::array<uintptr_t, 2> g_dune_null_residency_reference{};
 std::atomic_uint64_t g_dune_null_residency_reference_count{};
 safetyhook::MidHook g_dune_descriptor_cache_null_guard{};
@@ -381,26 +391,23 @@ void dune_descriptor_cache_null_guard(safetyhook::Context& ctx) {
     }
 }
 
-void apply_dune_descriptor_cache_guard() {
-    if (!is_dune_awakening_current_game()) {
+void apply_dune_descriptor_cache_guard(VR* vr) {
+    if (!is_dune_descriptor_guard_candidate() ||
+        vr == nullptr ||
+        !vr->is_using_native_stereo())
+    {
         return;
     }
 
     // Dune's custom UE5.2 residency-reference loop lacks the null check present
     // in the surrounding render-target logic. Guard only that dereference,
     // leaving residency tracking enabled for every valid offscreen target.
-    constexpr uintptr_t DUNE_DESCRIPTOR_TRACKING_LOAD_RVA = 0x5516c47;
-    constexpr uintptr_t DUNE_NULL_REFERENCE_DEREFERENCE_RVA = 0x5516c5d;
-    constexpr uintptr_t DUNE_DESCRIPTOR_TRACKING_GUARD_RVA = 0xb4fc7b4;
-    constexpr std::array<uint8_t, 29> EXPECTED_DESCRIPTOR_TRACKING_BYTES{
-        0x0f, 0xb6, 0x0d, 0x66, 0x5b, 0xfe, 0x05,
-        0x48, 0x89, 0x7c, 0x24, 0x20,
-        0x48, 0x8b, 0x13,
-        0x48, 0x8b, 0xf8,
-        0x84, 0xc9,
-        0x74, 0x1e,
+    constexpr auto DUNE_DESCRIPTOR_TRACKING_PATTERN =
+        "0F B6 0D ? ? ? ? 48 89 7C 24 20 48 8B 13 48 8B F8 "
+        "84 C9 74 1E 48 83 7A 08 00 74 17";
+    constexpr uintptr_t NULL_REFERENCE_DEREFERENCE_OFFSET = 0x16;
+    constexpr std::array<uint8_t, 5> EXPECTED_DEREFERENCE_BYTES{
         0x48, 0x83, 0x7a, 0x08, 0x00,
-        0x74, 0x17,
     };
 
     static bool s_attempted = false;
@@ -412,62 +419,64 @@ void apply_dune_descriptor_cache_guard() {
     const auto module = utility::get_executable();
     const auto module_base = reinterpret_cast<uintptr_t>(module);
     const auto module_size = utility::get_module_size(module).value_or(0);
+    const auto module_end = module_base + module_size;
 
-    if (module_base == 0 || module_size <= DUNE_DESCRIPTOR_TRACKING_GUARD_RVA) {
+    if (module_base == 0 || module_size == 0 || module_end < module_base) {
         SPDLOG_WARN(
-            "[Dune][D3D12] Descriptor-cache guard skipped because executable image is smaller than expected base={:x} size=0x{:x}",
+            "[Dune][D3D12] Descriptor-cache guard skipped because the executable range is invalid base={:x} size=0x{:x}",
             module_base,
             module_size);
         return;
     }
 
-    const auto signature_address = reinterpret_cast<const uint8_t*>(module_base + DUNE_DESCRIPTOR_TRACKING_LOAD_RVA);
-    if (std::memcmp(signature_address, EXPECTED_DESCRIPTOR_TRACKING_BYTES.data(), EXPECTED_DESCRIPTOR_TRACKING_BYTES.size()) != 0) {
+    const auto sequence = utility::scan(module, DUNE_DESCRIPTOR_TRACKING_PATTERN);
+    if (!sequence ||
+        *sequence < module_base ||
+        *sequence + NULL_REFERENCE_DEREFERENCE_OFFSET + EXPECTED_DEREFERENCE_BYTES.size() > module_end)
+    {
         SPDLOG_WARN(
-            "[Dune][D3D12] Descriptor-cache null guard signature mismatch at {:x}; leaving Dune D3D12 code untouched",
-            module_base + DUNE_DESCRIPTOR_TRACKING_LOAD_RVA);
+            "[Dune][D3D12] Descriptor-cache null guard signature was not found; leaving Dune D3D12 code untouched");
         return;
     }
 
-    auto* const guard_byte = reinterpret_cast<uint8_t*>(module_base + DUNE_DESCRIPTOR_TRACKING_GUARD_RVA);
-    const auto hook_address = module_base + DUNE_NULL_REFERENCE_DEREFERENCE_RVA;
+    const auto second_start = *sequence + 1;
+    if (second_start < module_end &&
+        utility::scan(second_start, module_end - second_start, DUNE_DESCRIPTOR_TRACKING_PATTERN).has_value())
+    {
+        SPDLOG_WARN(
+            "[Dune][D3D12] Descriptor-cache null guard signature is ambiguous; leaving Dune D3D12 code untouched");
+        return;
+    }
+
+    const auto hook_address = *sequence + NULL_REFERENCE_DEREFERENCE_OFFSET;
+    const auto* const hook_bytes = reinterpret_cast<const uint8_t*>(hook_address);
+    if (!std::equal(
+            EXPECTED_DEREFERENCE_BYTES.begin(),
+            EXPECTED_DEREFERENCE_BYTES.end(),
+            hook_bytes))
+    {
+        SPDLOG_WARN(
+            "[Dune][D3D12] Descriptor-cache null guard instruction did not validate at {:x}; leaving Dune D3D12 code untouched",
+            hook_address);
+        return;
+    }
+
     auto hook_result = safetyhook::create_mid(
         reinterpret_cast<void*>(hook_address),
         &dune_descriptor_cache_null_guard);
     if (!hook_result) {
         SPDLOG_ERROR(
-            "[Dune][D3D12] Failed to install narrow SetRenderTargets null guard at {:x}; retaining disabled residency tracking fallback",
+            "[Dune][D3D12] Failed to install narrow SetRenderTargets null guard at {:x}",
             hook_address);
-
-        DWORD old_protect{};
-        if (VirtualProtect(guard_byte, sizeof(*guard_byte), PAGE_READWRITE, &old_protect)) {
-            *guard_byte = 0;
-            DWORD ignored{};
-            VirtualProtect(guard_byte, sizeof(*guard_byte), old_protect, &ignored);
-        }
         return;
     }
 
     g_dune_descriptor_cache_null_guard = std::move(hook_result);
 
-    DWORD old_protect{};
-    if (!VirtualProtect(guard_byte, sizeof(*guard_byte), PAGE_READWRITE, &old_protect)) {
-        SPDLOG_ERROR(
-            "[Dune][D3D12] Narrow null guard installed, but descriptor tracking could not be restored at {:x}; last_error={}",
-            reinterpret_cast<uintptr_t>(guard_byte),
-            GetLastError());
-        return;
-    }
-
-    *guard_byte = 1;
-
-    DWORD ignored{};
-    VirtualProtect(guard_byte, sizeof(*guard_byte), old_protect, &ignored);
-
     SPDLOG_WARN(
-        "[Dune][D3D12] Installed narrow SetRenderTargets null guard at {:x}; restored valid descriptor residency tracking byte {:x}",
+        "[Dune][D3D12] Installed signature-validated Native SetRenderTargets null guard at {:x} (RVA 0x{:x})",
         hook_address,
-        reinterpret_cast<uintptr_t>(guard_byte));
+        hook_address - module_base);
 }
 
 bool is_ue_5_1_dx12_backend() {
@@ -1571,7 +1580,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }};
 
     m_last_on_frame = std::chrono::steady_clock::now();
-    apply_dune_descriptor_cache_guard();
+    apply_dune_descriptor_cache_guard(vr);
     bool defer_stalker2_transition_openxr = false;
 
     auto close_openxr_setup_failure_frame = [&]() {
