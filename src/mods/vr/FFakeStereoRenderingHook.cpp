@@ -19877,6 +19877,15 @@ void FFakeStereoRenderingHook::pre_render_view_renderthread(
         return;
     }
 
+    // The Dune public-test build can invoke slot 7 before the view's Family
+    // backlink is readable. Render-thread jobs must still make progress.
+    bool delegated_worker_pump = false;
+    utility::ScopeGuard render_thread_worker_guard{[&]() {
+        if (!delegated_worker_pump) {
+            RenderThreadWorker::get().execute();
+        }
+    }};
+
     auto* const family = view.get_view_family();
     if (family == nullptr ||
         !is_readable_process_range(
@@ -19951,10 +19960,17 @@ void FFakeStereoRenderingHook::pre_render_view_renderthread(
         return;
     }
 
+    delegated_worker_pump = true;
     pre_render_viewfamily_renderthread(extension, cmd_list, *family);
 }
 
 void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family) {
+    // Install this before Dune validation and de-duplication so a delegated
+    // slot-7 callback always services the queue exactly once.
+    utility::ScopeGuard render_thread_worker_guard{[]() {
+        RenderThreadWorker::get().execute();
+    }};
+
     if (dune_native_fix_renderer_resolver_is_current_game() &&
         SceneViewExtensionAnalyzer::frame_count_offset == SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET)
     {
@@ -19999,10 +20015,6 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
 
         g_prerender_viewfamily_rt_timing.add(std::chrono::steady_clock::now() - prerender_viewfamily_rt_start);
         log_engine_render_timing_if_needed();
-    }};
-
-    utility::ScopeGuard _{[]() {
-        RenderThreadWorker::get().execute();
     }};
 
     SPDLOG_INFO_ONCE("Called PreRenderViewFamily_RenderThread for the first time");
