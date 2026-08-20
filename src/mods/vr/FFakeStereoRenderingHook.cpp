@@ -7191,11 +7191,26 @@ bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
 
     // Dune's UE5.2 implementation consumes the TArrayView passed in R8 at the
     // start of the plural function: its data pointer is at +0 and count at +8.
-    // Requiring both reads prevents an exact-wrapper false positive from ever
-    // being installed as a Native Stereo Fix hook.
+    // The retail build reads those fields directly from R8, while the public
+    // test build first preserves R8 in RDI. Require the alias assignment and
+    // both field reads for the latter so either compiler allocation proves the
+    // same ABI without weakening the exact-wrapper resolver.
     const auto validation_size = std::min<size_t>(function->size(), 0x100);
-    return utility::scan(target, validation_size, "4D 8B 20").has_value() &&
-           utility::scan(target, validation_size, "49 63 40 08").has_value();
+    const auto direct_data_read = utility::scan(target, validation_size, "4D 8B 20");
+    const auto direct_count_read = utility::scan(target, validation_size, "49 63 40 08");
+    const auto direct_r8_layout =
+        direct_data_read.has_value() && direct_count_read.has_value() &&
+        *direct_data_read < *direct_count_read;
+    const auto preserve_r8_in_rdi = utility::scan(target, validation_size, "49 8B F8");
+    const auto preserved_data_read = utility::scan(target, validation_size, "4C 8B 27");
+    const auto preserved_count_read = utility::scan(target, validation_size, "48 63 47 08");
+    const auto preserved_rdi_layout =
+        preserve_r8_in_rdi.has_value() && preserved_data_read.has_value() &&
+        preserved_count_read.has_value() &&
+        *preserve_r8_in_rdi < *preserved_data_read &&
+        *preserved_data_read < *preserved_count_read;
+
+    return direct_r8_layout || preserved_rdi_layout;
 }
 
 std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
