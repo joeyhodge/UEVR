@@ -1456,6 +1456,7 @@ private:
     bool m_wants_texture_recreation{false};
     bool m_has_view_extension_hook{false};
     bool m_has_game_viewport_client_draw_hook{false};
+    std::atomic_bool m_game_viewport_client_draw_observed{false};
     std::atomic_bool m_dead_island_2_viewport_allocation_requested{false};
     bool m_skip_next_adjust_view_rect{true};
     bool m_inside_slate_draw_window{false};

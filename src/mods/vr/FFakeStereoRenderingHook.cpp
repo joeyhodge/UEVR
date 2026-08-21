@@ -8820,30 +8820,100 @@ DunePlayerState detect_dune_player_state() {
     return character_creation_state;
 }
 
-std::optional<uintptr_t> locate_vtable_from_constructor_rip_references(uintptr_t constructor) {
-    constexpr auto MAX_CONSTRUCTOR_SCAN_BYTES = 0x800;
-    auto best_candidate = std::optional<uintptr_t>{};
+struct FakeStereoConstructorLayout {
+    uintptr_t constructor{};
+    uintptr_t primary_vtable{};
+    uintptr_t secondary_vtable{};
+};
 
-    for (auto ip = constructor; ip < constructor + MAX_CONSTRUCTOR_SCAN_BYTES;) {
-        const auto decoded = utility::decode_one((uint8_t*)ip);
+std::optional<FakeStereoConstructorLayout> inspect_fake_stereo_constructor_range(
+    const RuntimeFunctionRange& function,
+    bool scan_chained_body = false)
+{
+    constexpr size_t max_scan_bytes = 0x100;
+    auto scan_end = std::min(function.end, function.begin + max_scan_bytes);
 
-        if (!decoded || decoded->Length == 0) {
+    // MSVC may describe the root of a chained function with only its prologue
+    // range. The chained entry still explicitly identifies the real ABI entry,
+    // so a small executable-only scan from that root is safe and reaches the
+    // constructor body without crossing into arbitrary neighboring functions.
+    if (scan_chained_body && is_executable_process_range(function.begin, max_scan_bytes)) {
+        scan_end = function.begin + max_scan_bytes;
+    }
+    std::optional<uint32_t> this_alias{};
+    std::optional<uint32_t> loaded_vtable_register{};
+    std::optional<uintptr_t> loaded_vtable{};
+    std::optional<uintptr_t> primary_vtable{};
+    std::optional<uintptr_t> secondary_vtable{};
+
+    const auto is_this_register = [&](uint32_t reg) {
+        return reg == NDR_RCX || (this_alias && reg == *this_alias);
+    };
+
+    for (auto ip = function.begin; ip < scan_end;) {
+        const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
+        if (!decoded || decoded->Length == 0 || ip + decoded->Length > scan_end) {
             break;
         }
 
-        if (decoded->OperandsCount >= 2 &&
-            decoded->IsRipRelative &&
-            (decoded->Instruction == ND_INS_LEA || decoded->Instruction == ND_INS_MOV) &&
+        if (decoded->Instruction == ND_INS_MOV && decoded->OperandsCount >= 2 &&
             decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[0].Size == sizeof(uintptr_t) &&
+            decoded->Operands[1].Type == ND_OP_REG &&
+            decoded->Operands[1].Size == sizeof(uintptr_t) &&
+            is_this_register(decoded->Operands[1].Info.Register.Reg))
+        {
+            this_alias = static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+        }
+
+        if (decoded->Instruction == ND_INS_LEA && decoded->OperandsCount >= 2 &&
+            decoded->IsRipRelative &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[0].Size == sizeof(uintptr_t) &&
             decoded->Operands[1].Type == ND_OP_MEM)
         {
-            const auto referenced_addr = utility::resolve_displacement(ip);
+            const auto candidate = utility::resolve_displacement(ip, &*decoded);
+            const auto candidate_module = candidate ? utility::get_module_within(*candidate) : std::nullopt;
 
-            if (referenced_addr && looks_like_virtual_function_table(*referenced_addr)) {
-                SPDLOG_INFO("Found FFakeStereoRendering vtable candidate via constructor RIP reference at {:x} -> {:x}",
-                            ip, *referenced_addr);
-                best_candidate = *referenced_addr;
-                break;
+            if (candidate && candidate_module &&
+                reinterpret_cast<uintptr_t>(*candidate_module) == function.image_base &&
+                looks_like_virtual_function_table(*candidate))
+            {
+                loaded_vtable_register = static_cast<uint32_t>(decoded->Operands[0].Info.Register.Reg);
+                loaded_vtable = *candidate;
+            } else {
+                loaded_vtable_register.reset();
+                loaded_vtable.reset();
+            }
+        }
+
+        if (loaded_vtable_register && loaded_vtable &&
+            decoded->Instruction == ND_INS_MOV && decoded->OperandsCount >= 2 &&
+            decoded->Operands[0].Type == ND_OP_MEM &&
+            decoded->Operands[0].Size == sizeof(uintptr_t) &&
+            decoded->Operands[0].Info.Memory.HasBase &&
+            !decoded->Operands[0].Info.Memory.HasIndex &&
+            is_this_register(decoded->Operands[0].Info.Memory.Base) &&
+            decoded->Operands[1].Type == ND_OP_REG &&
+            decoded->Operands[1].Size == sizeof(uintptr_t) &&
+            decoded->Operands[1].Info.Register.Reg == *loaded_vtable_register)
+        {
+            const auto displacement = decoded->Operands[0].Info.Memory.HasDisp
+                ? decoded->Operands[0].Info.Memory.Disp
+                : 0;
+
+            if (displacement == 0) {
+                primary_vtable = *loaded_vtable;
+            } else if (displacement == sizeof(uintptr_t)) {
+                secondary_vtable = *loaded_vtable;
+            }
+
+            if (primary_vtable && secondary_vtable && *primary_vtable != *secondary_vtable) {
+                return FakeStereoConstructorLayout{
+                    .constructor = function.begin,
+                    .primary_vtable = *primary_vtable,
+                    .secondary_vtable = *secondary_vtable,
+                };
             }
         }
 
@@ -8854,7 +8924,35 @@ std::optional<uintptr_t> locate_vtable_from_constructor_rip_references(uintptr_t
         ip += decoded->Length;
     }
 
-    return best_candidate;
+    return std::nullopt;
+}
+
+std::optional<FakeStereoConstructorLayout> locate_fake_stereo_constructor_layout(uintptr_t constructor_hint) {
+    constexpr size_t max_unwind_parent_distance = 0x2000;
+    const auto direct_function = get_runtime_function_range(constructor_hint);
+    const auto unwind_parent = utility::find_function_start_unwind(constructor_hint);
+
+    // A local-static CVar initializer can occupy a chained .pdata segment even
+    // though it executes as part of the constructor. Follow only that explicit
+    // unwind relationship; never walk into an arbitrary neighboring function.
+    if (unwind_parent && *unwind_parent <= constructor_hint &&
+        constructor_hint - *unwind_parent <= max_unwind_parent_distance)
+    {
+        const auto parent_function = get_runtime_function_range(*unwind_parent);
+        if (parent_function &&
+            (!direct_function || parent_function->image_base == direct_function->image_base))
+        {
+            if (const auto layout = inspect_fake_stereo_constructor_range(*parent_function, true)) {
+                return layout;
+            }
+        }
+    }
+
+    if (direct_function) {
+        return inspect_fake_stereo_constructor_range(*direct_function);
+    }
+
+    return std::nullopt;
 }
 }
 
@@ -8865,7 +8963,13 @@ bool is_using_double_precision(uintptr_t addr) {
 
     bool result = false;
 
-    utility::exhaustive_decode((uint8_t*)addr, 50, [&](INSTRUX& ix, uintptr_t ip) -> utility::ExhaustionResult {
+    // UE5.8.2's optimized FFakeStereoRenderingDevice::CalculateStereoViewOffset
+    // performs its conclusive FVector3d stores late in the function. Keep the
+    // accepted instruction set narrow, but inspect enough of the validated view
+    // math function to reach those stores.
+    constexpr size_t MAX_VIEW_MATH_SCAN_INSTRUCTIONS = 256;
+
+    utility::exhaustive_decode((uint8_t*)addr, MAX_VIEW_MATH_SCAN_INSTRUCTIONS, [&](INSTRUX& ix, uintptr_t ip) -> utility::ExhaustionResult {
         const std::string_view mnemonic{ix.Mnemonic};
 
         if (mnemonic.starts_with("CALL")) {
@@ -12812,6 +12916,7 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
 
 bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
     SPDLOG_INFO("Attempting to hook UGameViewportClient::Draw...");
+    m_game_viewport_client_draw_observed.store(false, std::memory_order_release);
 
     // We need to cache the canvas index before we hook the draw function or else this doesn't work.
     sdk::FViewport::get_debug_canvas_index();
@@ -13696,7 +13801,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         std::strcmp(source, "UGameViewportClient::Draw post") == 0;
     const bool is_ue58_render_family_fallback =
         ue58_viewport_adoption &&
-        !m_has_game_viewport_client_draw_hook &&
+        (!m_has_game_viewport_client_draw_hook ||
+         !m_game_viewport_client_draw_observed.load(std::memory_order_acquire)) &&
         source != nullptr &&
         (std::strcmp(source, "FSceneViewFamily::RenderTarget") == 0 ||
          std::strcmp(source, "BeginRenderingViewFamily RenderTarget") == 0);
@@ -14242,11 +14348,32 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewportClient* viewport_client, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4) {
     ZoneScopedN(__FUNCTION__);
 
+    auto* const draw_dispatch_this = viewport_client;
+    const auto uobject_this_adjustment = sdk::UGameViewportClient::get_draw_uobject_this_adjustment();
+    auto* const uobject_viewport_client = reinterpret_cast<sdk::UGameViewportClient*>(
+        reinterpret_cast<intptr_t>(draw_dispatch_this) + uobject_this_adjustment);
+
+    if (draw_dispatch_this == nullptr ||
+        uobject_viewport_client == nullptr ||
+        IsBadReadPtr(draw_dispatch_this, sizeof(void*)) ||
+        IsBadReadPtr(uobject_viewport_client, sizeof(void*)))
+    {
+        SPDLOG_ERROR_ONCE(
+            "UGameViewportClient::Draw received an invalid this pointer (dispatch={:x}, UObject={:x}, adjustment={})",
+            reinterpret_cast<uintptr_t>(draw_dispatch_this),
+            reinterpret_cast<uintptr_t>(uobject_viewport_client),
+            uobject_this_adjustment);
+        g_hook->m_gameviewportclient_draw_hook.call(draw_dispatch_this, viewport, canvas, a4);
+        return;
+    }
+
+    g_hook->m_game_viewport_client_draw_observed.store(true, std::memory_order_release);
+
     const auto tracked_viewport = g_hook->m_synced_draw_viewport.load(std::memory_order_acquire);
     const auto tracked_viewport_client = g_hook->m_synced_draw_viewport_client.load(std::memory_order_acquire);
-    if (tracked_viewport != viewport || tracked_viewport_client != viewport_client) {
+    if (tracked_viewport != viewport || tracked_viewport_client != uobject_viewport_client) {
         g_hook->m_synced_draw_viewport.store(viewport, std::memory_order_release);
-        g_hook->m_synced_draw_viewport_client.store(viewport_client, std::memory_order_release);
+        g_hook->m_synced_draw_viewport_client.store(uobject_viewport_client, std::memory_order_release);
         g_hook->m_last_destroyed_viewport = nullptr;
         g_hook->m_synced_draw_lifecycle_generation.fetch_add(1, std::memory_order_acq_rel);
     }
@@ -14335,7 +14462,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     auto call_orig = [=]() {
         ZoneScopedN("UGameViewportClient::Draw");
-        g_hook->m_gameviewportclient_draw_hook.call(viewport_client, viewport, canvas, a4);
+        g_hook->m_gameviewportclient_draw_hook.call(draw_dispatch_this, viewport, canvas, a4);
 
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
@@ -14395,7 +14522,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
             "[DeadIsland2][UE4.25][RT] Requested one-time viewport stereo allocation after validated Draw remained desktop-sized");
     }
 
-    g_hook->attempt_hook_split_fiction_haze_view_builder(viewport_client);
+    g_hook->attempt_hook_split_fiction_haze_view_builder(uobject_viewport_client);
 
     static uint32_t hook_attempts = 0;
     static bool run_anyways = false;
@@ -14444,7 +14571,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     const auto& mods = g_framework->get_mods()->get_mods();
 
     for (const auto& mod : mods) {
-        mod->on_pre_viewport_client_draw(viewport_client, viewport, canvas);
+        mod->on_pre_viewport_client_draw(uobject_viewport_client, viewport, canvas);
     }
 
     call_orig();
@@ -14528,7 +14655,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
                 viewport == g_hook->m_last_destroyed_viewport ||
                 g_hook->m_synced_draw_lifecycle_generation.load(std::memory_order_acquire) != queued_lifecycle_generation ||
                 g_hook->m_synced_draw_viewport.load(std::memory_order_acquire) != viewport ||
-                g_hook->m_synced_draw_viewport_client.load(std::memory_order_acquire) != viewport_client)
+                g_hook->m_synced_draw_viewport_client.load(std::memory_order_acquire) != uobject_viewport_client)
             {
                 return;
             }
@@ -14541,7 +14668,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
                 return;
             }
 
-            if (!ghosting_is_live_uobject(reinterpret_cast<sdk::UObject*>(viewport_client))) {
+            if (!ghosting_is_live_uobject(reinterpret_cast<sdk::UObject*>(uobject_viewport_client))) {
                 return;
             }
 
@@ -14587,7 +14714,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
     }
 
     for (const auto& mod : mods) {
-        mod->on_post_viewport_client_draw(viewport_client, viewport, canvas);
+        mod->on_post_viewport_client_draw(uobject_viewport_client, viewport, canvas);
     }
 }
 
@@ -19333,7 +19460,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     if (is_ue_5_8() &&
         runtime->is_openxr() &&
         runtime->ready() &&
-        !g_hook->m_has_game_viewport_client_draw_hook)
+        (!g_hook->m_has_game_viewport_client_draw_hook ||
+         !g_hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire)))
     {
         // UE5.8 can strip the usual UGameViewportClient::Draw anchors while
         // still reaching BeginRenderViewFamily. Publish a fresh pose here so
@@ -21435,6 +21563,18 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
         return std::nullopt;
     }
 
+    const auto string_reference_owner = *fake_stereo_rendering_constructor;
+    if (const auto layout = locate_fake_stereo_constructor_layout(string_reference_owner)) {
+        fake_stereo_rendering_constructor = layout->constructor;
+
+        if (*fake_stereo_rendering_constructor != string_reference_owner) {
+            SPDLOG_INFO(
+                "Normalized FFakeStereoRendering constructor from outlined CVar segment {:x} to {:x}",
+                string_reference_owner,
+                *fake_stereo_rendering_constructor);
+        }
+    }
+
     SPDLOG_INFO("FFakeStereoRendering constructor: {:x}", (uintptr_t)*fake_stereo_rendering_constructor);
     cached_result = *fake_stereo_rendering_constructor;
 
@@ -21488,32 +21628,37 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
         return result;
     }
 
+    if (const auto layout = locate_fake_stereo_constructor_layout(*fake_stereo_rendering_constructor)) {
+        SPDLOG_INFO(
+            "FFakeStereoRendering VTable: {:x} (validated primary constructor assignment; secondary={:x})",
+            layout->primary_vtable,
+            layout->secondary_vtable);
+        cached_result = layout->primary_vtable;
+        return layout->primary_vtable;
+    }
+
     const auto vtable_ref = utility::scan(*fake_stereo_rendering_constructor, 100, "48 8D 05 ? ? ? ?");
 
-    if (!vtable_ref) {
-        SPDLOG_WARN("Failed to find FFakeStereoRendering VTable Reference through legacy pattern, trying constructor RIP-reference scan");
+    if (vtable_ref) {
+        const auto legacy_candidate = utility::calculate_absolute(*vtable_ref + 3);
 
-        if (const auto vtable_from_constructor = locate_vtable_from_constructor_rip_references(*fake_stereo_rendering_constructor)) {
-            SPDLOG_INFO("FFakeStereoRendering VTable: {:x}", *vtable_from_constructor);
-            cached_result = vtable_from_constructor;
-            return vtable_from_constructor;
+        if (legacy_candidate && looks_like_virtual_function_table(legacy_candidate)) {
+            SPDLOG_INFO("FFakeStereoRendering VTable: {:x}", legacy_candidate);
+            cached_result = legacy_candidate;
+            return legacy_candidate;
         }
 
-        SPDLOG_ERROR("Failed to find FFakeStereoRendering VTable Reference");
-        return std::nullopt;
+        // Optimized constructors can reference console-variable help strings before assigning
+        // the vtable. Never cache that first RIP-relative address unless it is actually a table.
+        SPDLOG_WARN(
+            "Rejected legacy FFakeStereoRendering vtable candidate at {:x}",
+            legacy_candidate);
+    } else {
+        SPDLOG_WARN("Failed to find FFakeStereoRendering VTable Reference through legacy pattern");
     }
 
-    const auto vtable = utility::calculate_absolute(*vtable_ref + 3);
-
-    if (!vtable) {
-        SPDLOG_ERROR("Failed to find FFakeStereoRendering VTable");
-        return std::nullopt;
-    }
-
-    SPDLOG_INFO("FFakeStereoRendering VTable: {:x}", (uintptr_t)vtable);
-    cached_result = vtable;
-
-    return vtable;
+    SPDLOG_ERROR("Failed to find a validated FFakeStereoRendering VTable");
+    return std::nullopt;
 }
 
 std::optional<uintptr_t> FFakeStereoRenderingHook::locate_active_stereo_rendering_device() {
@@ -21860,7 +22005,12 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     // while also allowing the desktop view to initially display
     // if the HMD is not on at the start. It only allows
     // stereo to be enabled if it starts from the first call to IsStereoEnabled inside UGameViewportClient::Draw.
-    if (hook->m_has_game_viewport_client_draw_hook) {
+    const bool has_usable_game_viewport_draw =
+        hook->m_has_game_viewport_client_draw_hook &&
+        (!is_ue_5_8() ||
+         hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire));
+
+    if (has_usable_game_viewport_draw) {
         if (GameThreadWorker::get().is_same_thread()) {
             if (hook->m_in_viewport_client_draw && !hook->m_was_in_viewport_client_draw) {
                 const auto is_hmd_active = VR::get()->is_hmd_active();
@@ -22098,7 +22248,10 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
                 SPDLOG_INFO_ONCE(
                     "[Everspace2][OpenXR][render-pose] Publishing HMD poses from CalculateStereoViewOffset");
             }
-        } else if (!g_hook->m_has_view_extension_hook && !g_hook->m_has_game_viewport_client_draw_hook) {
+        } else if (!g_hook->m_has_view_extension_hook &&
+                   (!g_hook->m_has_game_viewport_client_draw_hook ||
+                    (is_ue_5_8() &&
+                     !g_hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire)))) {
             vr->update_hmd_state();
         }
     }
