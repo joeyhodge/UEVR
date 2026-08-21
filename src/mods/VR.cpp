@@ -2296,6 +2296,15 @@ bool is_mixtape_executable() {
     return is_mixtape;
 }
 
+bool is_the_sinking_city_2_executable() {
+    static const bool is_the_sinking_city_2 = []() {
+        const auto module_path = utility::get_module_pathw(utility::get_executable());
+        return module_path.has_value() && uevr::games::is_the_sinking_city_2_executable_path(*module_path);
+    }();
+
+    return is_the_sinking_city_2;
+}
+
 bool is_halo_campaign_evolved_executable() {
     static const bool is_halo = []() {
         const auto module_path = utility::get_module_pathw(utility::get_executable());
@@ -3456,6 +3465,202 @@ MixtapeAuto2DDecision evaluate_mixtape_auto_2d(sdk::UGameEngine* engine) {
     }
 
     return {};
+}
+
+struct TheSinkingCity2BinkUiDecision {
+    bool active{false};
+    std::string widget{};
+    std::string player{};
+    std::string url{};
+    std::optional<bool> initialized{};
+    std::optional<bool> playing{};
+    std::optional<bool> paused{};
+};
+
+TheSinkingCity2BinkUiDecision evaluate_the_sinking_city_2_bink_ui(sdk::UGameEngine* engine) try {
+    (void)engine;
+
+    static const std::wstring widget_class_name =
+        L"WidgetBlueprintGeneratedClass /Game/Blueprints/UI/Widgets/Cinematics/BinkVideoWidget.BinkVideoWidget_C";
+    static const std::wstring player_class_name = L"Class /Script/BinkMediaPlayer.BinkMediaPlayer";
+    static constexpr std::wstring_view expected_player_name =
+        L"/NarrationFeatures/VideoStarterBinkPlayer.VideoStarterBinkPlayer";
+
+    sdk::UObject* visible_widget{};
+    for (auto* widget : get_live_objects_by_class_name(widget_class_name)) {
+        const auto in_viewport = call_object_bool_function(widget, L"IsInViewport");
+        const auto visible = call_object_bool_function(widget, L"IsVisible");
+        const bool is_visible = visible.has_value() ? *visible : in_viewport.value_or(false);
+
+        if (is_visible) {
+            visible_widget = widget;
+            break;
+        }
+    }
+
+    if (visible_widget == nullptr) {
+        return {};
+    }
+
+    for (auto* player : get_live_objects_by_class_name(player_class_name)) {
+        const auto player_name = player->get_full_name();
+        if (player_name.find(expected_player_name) == std::wstring::npos) {
+            continue;
+        }
+
+        TheSinkingCity2BinkUiDecision decision{};
+        decision.widget = get_log_object_name(visible_widget);
+        decision.player = utility::narrow(player_name);
+        decision.initialized = call_object_bool_function(player, L"IsInitialized");
+        decision.playing = call_object_bool_function(player, L"IsPlaying");
+        decision.paused = call_object_bool_function(player, L"IsPaused");
+
+        const auto url = read_mixtape_bink_url(player);
+        if (url.has_value()) {
+            decision.url = utility::narrow(*url);
+        }
+
+        // Visibility and initialization intentionally keep the layer active
+        // while Bink is paused; IsPlaying alone drops out on pause screens.
+        decision.active = decision.initialized.value_or(false) &&
+                          url.has_value() && contains_case_insensitive(*url, L".bk2");
+        return decision;
+    }
+
+    return {};
+} catch (...) {
+    SPDLOG_WARNING_EVERY_N_SEC(
+        5,
+        "[TheSinkingCity2][BinkUI] Failed closed while validating the movie widget/player");
+    return {};
+}
+
+safetyhook::InlineHook g_the_sinking_city_2_bink_per_frame_info_hook{};
+std::once_flag g_the_sinking_city_2_bink_per_frame_info_hook_once{};
+std::atomic_bool g_the_sinking_city_2_bink_per_frame_info_hook_ready{false};
+
+// UE5.8.2 Bink's overlay path passes this 32-byte packet immediately before
+// drawing to the viewport target. Redirecting this one packet keeps Bink's
+// decode, timing, pause, and aspect-ratio behavior intact while moving the
+// actual draw into UEVR's dedicated UI texture.
+struct TheSinkingCity2BinkPerFrameInfo {
+    void* rhi_command_list{};
+    void* render_target{};
+    int32_t target_kind{};
+    int32_t width{};
+    int32_t height{};
+    int32_t hdr_output{};
+};
+
+static_assert(sizeof(TheSinkingCity2BinkPerFrameInfo) == 0x20);
+static_assert(offsetof(TheSinkingCity2BinkPerFrameInfo, render_target) == 0x8);
+static_assert(offsetof(TheSinkingCity2BinkPerFrameInfo, width) == 0x14);
+
+void the_sinking_city_2_bink_set_per_frame_info(const TheSinkingCity2BinkPerFrameInfo* frame_info) {
+    if (frame_info == nullptr || frame_info->rhi_command_list == nullptr ||
+        frame_info->render_target == nullptr || frame_info->target_kind != 4 ||
+        frame_info->width <= 0 || frame_info->height <= 0)
+    {
+        g_the_sinking_city_2_bink_per_frame_info_hook.call<void>(frame_info);
+        return;
+    }
+
+    auto& vr = VR::get();
+    if (vr == nullptr || !vr->is_the_sinking_city_2_bink_ui_active()) {
+        g_the_sinking_city_2_bink_per_frame_info_hook.call<void>(frame_info);
+        return;
+    }
+
+    auto& fake_stereo_hook = vr->get_fake_stereo_hook();
+    auto* const render_target_manager =
+        fake_stereo_hook != nullptr ? fake_stereo_hook->get_render_target_manager() : nullptr;
+    auto* const dedicated_ui_target =
+        render_target_manager != nullptr ? render_target_manager->get_dedicated_ui_target() : nullptr;
+    const auto dedicated_ui_width =
+        render_target_manager != nullptr ? render_target_manager->get_dedicated_ui_width() : 0;
+    const auto dedicated_ui_height =
+        render_target_manager != nullptr ? render_target_manager->get_dedicated_ui_height() : 0;
+
+    if (dedicated_ui_target == nullptr || dedicated_ui_width == 0 || dedicated_ui_height == 0 ||
+        dedicated_ui_width > 16384 || dedicated_ui_height > 16384 ||
+        frame_info->render_target == dedicated_ui_target)
+    {
+        g_the_sinking_city_2_bink_per_frame_info_hook.call<void>(frame_info);
+        return;
+    }
+
+    auto redirected = *frame_info;
+    redirected.render_target = dedicated_ui_target;
+    redirected.width = static_cast<int32_t>(dedicated_ui_width);
+    redirected.height = static_cast<int32_t>(dedicated_ui_height);
+    redirected.hdr_output = 0;
+
+    SPDLOG_INFO_ONCE(
+        "[TheSinkingCity2][BinkUI] Redirecting the native Bink overlay from the viewport target {:x} "
+        "({}x{}) to the dedicated UI target {:x} ({}x{})",
+        reinterpret_cast<uintptr_t>(frame_info->render_target),
+        frame_info->width,
+        frame_info->height,
+        reinterpret_cast<uintptr_t>(dedicated_ui_target),
+        dedicated_ui_width,
+        dedicated_ui_height);
+    g_the_sinking_city_2_bink_per_frame_info_hook.call<void>(&redirected);
+}
+
+bool ensure_the_sinking_city_2_bink_target_hook() {
+    std::call_once(g_the_sinking_city_2_bink_per_frame_info_hook_once, []() {
+        const auto module = utility::get_executable();
+        const auto module_size = utility::get_module_size(module).value_or(0);
+        const auto module_base = reinterpret_cast<uintptr_t>(module);
+        const auto module_end = module_base + module_size;
+
+        if (module == nullptr || module_size == 0 || module_end < module_base) {
+            SPDLOG_WARN("[TheSinkingCity2][BinkUI] Executable image was unavailable; leaving Bink rendering untouched");
+            return;
+        }
+
+        // BinkPluginSetPerFrameInfo in the shipped UE5.8.0 executable. The
+        // complete two-MOVUPS body is unique and an update fails open if it
+        // changes rather than falling back to an RVA.
+        static constexpr std::string_view pattern =
+            "0F 10 01 0F 11 05 ? ? ? ? 0F 10 49 10 0F 11 0D ? ? ? ? C3";
+        const auto target = utility::scan(module_base, module_size, std::string{pattern});
+
+        if (!target.has_value()) {
+            SPDLOG_WARN("[TheSinkingCity2][BinkUI] Native Bink target signature was not found; leaving Bink rendering untouched");
+            return;
+        }
+
+        const auto next = *target + 1;
+        if (next >= module_end ||
+            utility::scan(next, module_end - next, std::string{pattern}).has_value())
+        {
+            SPDLOG_WARN("[TheSinkingCity2][BinkUI] Native Bink target signature was ambiguous; leaving Bink rendering untouched");
+            return;
+        }
+
+        auto hook = safetyhook::create_inline(
+            reinterpret_cast<void*>(*target),
+            &the_sinking_city_2_bink_set_per_frame_info,
+            safetyhook::InlineHook::StartDisabled);
+        if (!hook) {
+            SPDLOG_WARN("[TheSinkingCity2][BinkUI] Failed to create the native Bink target hook; leaving Bink rendering untouched");
+            return;
+        }
+
+        g_the_sinking_city_2_bink_per_frame_info_hook = std::move(hook);
+        const auto enabled = g_the_sinking_city_2_bink_per_frame_info_hook.enable();
+        if (!enabled.has_value()) {
+            (void)g_the_sinking_city_2_bink_per_frame_info_hook.disable();
+            SPDLOG_WARN("[TheSinkingCity2][BinkUI] Failed to enable the native Bink target hook; leaving Bink rendering untouched");
+            return;
+        }
+
+        g_the_sinking_city_2_bink_per_frame_info_hook_ready.store(true, std::memory_order_release);
+        SPDLOG_INFO("[TheSinkingCity2][BinkUI] Native Bink dedicated-UI redirect armed at {:x}", *target);
+    });
+
+    return g_the_sinking_city_2_bink_per_frame_info_hook_ready.load(std::memory_order_acquire);
 }
 
 safetyhook::InlineHook g_halo_electra_present_video_frame_hook{};
@@ -7438,6 +7643,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_shf_auto_2d_mode(engine);
     update_dispatch_auto_2d_mode(engine);
     update_mixtape_auto_2d_mode(engine);
+    update_the_sinking_city_2_bink_ui_state(engine);
     update_halo_electra_cinematic_state(engine);
     update_windrose_meta_ui_auto_2d_mode();
 
@@ -8502,6 +8708,42 @@ void VR::update_mixtape_auto_2d_mode(sdk::UGameEngine* engine) {
     if (m_mixtape_auto_2d_active.exchange(false, std::memory_order_relaxed)) {
         m_2d_screen_mode->value() = m_mixtape_auto_2d_previous_mode;
         spdlog::info("[Mixtape][Auto2D] active=false restored={}", m_mixtape_auto_2d_previous_mode);
+    }
+}
+
+void VR::update_the_sinking_city_2_bink_ui_state(sdk::UGameEngine* engine) {
+    if (!is_the_sinking_city_2_executable()) {
+        return;
+    }
+
+    (void)ensure_the_sinking_city_2_bink_target_hook();
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_the_sinking_city_2_bink_ui_last_sample.time_since_epoch().count() != 0 &&
+        now - m_the_sinking_city_2_bink_ui_last_sample < std::chrono::milliseconds(250))
+    {
+        return;
+    }
+
+    m_the_sinking_city_2_bink_ui_last_sample = now;
+    const auto decision = evaluate_the_sinking_city_2_bink_ui(engine);
+    const bool was_active = m_the_sinking_city_2_bink_ui_active.exchange(decision.active, std::memory_order_acq_rel);
+
+    if (was_active == decision.active) {
+        return;
+    }
+
+    if (decision.active) {
+        spdlog::info(
+            "[TheSinkingCity2][BinkUI] active=true widget={} player={} url={} initialized={} playing={} paused={}",
+            decision.widget.empty() ? "unresolved" : decision.widget,
+            decision.player.empty() ? "unresolved" : decision.player,
+            decision.url.empty() ? "unresolved" : decision.url,
+            decision.initialized.has_value() ? (*decision.initialized ? "true" : "false") : "unresolved",
+            decision.playing.has_value() ? (*decision.playing ? "true" : "false") : "unresolved",
+            decision.paused.has_value() ? (*decision.paused ? "true" : "false") : "unresolved");
+    } else {
+        spdlog::info("[TheSinkingCity2][BinkUI] active=false; native overlay routing is idle");
     }
 }
 

@@ -899,6 +899,10 @@ public:
         return m_halo_electra_cinematic_active.load(std::memory_order_relaxed);
     }
 
+    bool is_the_sinking_city_2_bink_ui_active() const {
+        return m_the_sinking_city_2_bink_ui_active.load(std::memory_order_acquire);
+    }
+
     void set_windrose_meta_ui_2d_state_active(
         std::string_view state_name,
         uintptr_t state_id,
@@ -1009,6 +1013,7 @@ private:
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
+    void update_the_sinking_city_2_bink_ui_state(sdk::UGameEngine* engine);
     void update_halo_electra_cinematic_state(sdk::UGameEngine* engine);
     void update_windrose_meta_ui_auto_2d_mode();
     void update_imgui_state_from_vr_controller_fallback();
@@ -1283,6 +1288,8 @@ private:
     std::chrono::steady_clock::time_point m_mixtape_auto_2d_last_sample{};
     std::atomic_bool m_mixtape_auto_2d_active{false};
     bool m_mixtape_auto_2d_previous_mode{false};
+    std::chrono::steady_clock::time_point m_the_sinking_city_2_bink_ui_last_sample{};
+    std::atomic_bool m_the_sinking_city_2_bink_ui_active{false};
     std::chrono::steady_clock::time_point m_halo_electra_restore_after{};
     std::atomic_bool m_halo_electra_cinematic_active{false};
     struct WindroseMetaUiToken {
