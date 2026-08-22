@@ -17993,6 +17993,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     NativeStereoViewMetadata native_left_metadata{};
     NativeStereoViewMetadata native_right_metadata{};
     bool use_ue58_linked_singleton_transaction{};
+    D3D11Hook* daysgone_snapshot_hook{};
+    uint64_t daysgone_snapshot_transaction{};
+    bool daysgone_snapshot_packet_published{};
+    utility::ScopeGuard cancel_unpublished_daysgone_snapshot{[&]() {
+        if (daysgone_snapshot_hook != nullptr && daysgone_snapshot_transaction != 0 &&
+            !daysgone_snapshot_packet_published)
+        {
+            daysgone_snapshot_hook->cancel_daysgone_native_snapshot(daysgone_snapshot_transaction);
+        }
+    }};
     utility::ScopeGuard restore_split_screen_views{[&]() {
         for (size_t index = split_screen_restores.size(); index > 0; --index) {
             auto& restore = split_screen_restores[index - 1];
@@ -18900,12 +18910,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         packet->scene = view_family_scene;
         packet->serial = g_hook->m_native_stereo_packet_serial.fetch_add(1, std::memory_order_acq_rel) + 1;
         packet->capture_generation = native_capture_snapshot->generation;
+        packet->d3d11_snapshot_transaction = daysgone_snapshot_transaction;
         packet->engine_frame = g_frame_count;
         packet->render_frame = vr->m_render_frame_count;
         packet->player_index = native_left_metadata.player_index;
         packet->left_pass = native_left_metadata.original_stereo_pass;
         packet->right_pass = native_right_metadata.original_stereo_pass;
         g_hook->publish_native_stereo_frame_packet(std::move(packet));
+        if (daysgone_snapshot_transaction != 0) {
+            daysgone_snapshot_packet_published = true;
+        }
     };
 
     if (use_ue58_linked_singleton_transaction) {
@@ -19198,6 +19212,21 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     uint32_t daysgone_frame_before{};
     DaysGoneOffscreenViewContract daysgone_offscreen_contract{};
     if (use_daysgone_same_frame_render) {
+        daysgone_snapshot_hook = g_framework->get_d3d11_hook().get();
+        if (daysgone_snapshot_hook == nullptr ||
+            !daysgone_snapshot_hook->prepare_daysgone_native_snapshot())
+        {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "Days Gone persistent D3D11 snapshot boundary is unavailable");
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[DaysGone][NativeFix] Preserving the original two-view render because the "
+                "live D3D11 OM/CS snapshot boundary could not be installed");
+            call_original();
+            return;
+        }
+
         uint32_t family_frame_before{};
         if (SceneViewExtensionAnalyzer::frame_count_offset !=
                 DAYS_GONE_VIEW_FAMILY_FRAME_NUMBER_OFFSET ||
@@ -19358,6 +19387,21 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     bool daysgone_offscreen_contract_restored{true};
     if (use_daysgone_same_frame_render) {
+        daysgone_snapshot_transaction = daysgone_snapshot_hook->begin_daysgone_native_snapshot(
+            native_capture_snapshot->generation,
+            native_capture_snapshot->width,
+            native_capture_snapshot->height);
+        if (daysgone_snapshot_transaction == 0) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "Days Gone persistent right-eye snapshot transaction could not be armed");
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[DaysGone][NativeFix] Right-eye render rejected because the persistent "
+                "D3D11 snapshot transaction could not be armed");
+            return;
+        }
+
         if (!apply_daysgone_offscreen_view_contract(daysgone_offscreen_contract)) {
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::FailedClosed,

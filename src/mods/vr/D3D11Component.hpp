@@ -166,6 +166,7 @@ private:
     TextureContext m_engine_tex_ref{};
     TextureContext m_scene_capture_tex_ref{};
     uint64_t m_scene_capture_generation{};
+    uint64_t m_scene_capture_snapshot_transaction{};
     uint32_t m_scene_capture_width{};
     uint32_t m_scene_capture_height{};
     std::array<TextureContext, 2> m_2d_screen_tex{};
