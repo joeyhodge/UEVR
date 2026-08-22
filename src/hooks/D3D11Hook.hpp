@@ -1,10 +1,16 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <functional>
+#include <memory>
+#include <mutex>
 
 #include <d3d11.h>
 #include <dxgi.h>
 #include <wrl.h>
+
+#include <safetyhook/inline_hook.hpp>
 
 #include "utility/PointerHook.hpp"
 
@@ -47,6 +53,23 @@ public:
         ID3D11Resource* original_target);
     static void end_naruto_slate_ui_capture();
 
+    struct DaysGoneNativeSnapshot {
+        Microsoft::WRL::ComPtr<ID3D11Texture2D> texture{};
+        D3D11_TEXTURE2D_DESC desc{};
+        uint64_t capture_generation{};
+        uint64_t transaction_serial{};
+    };
+
+    // Days Gone finalizes each renderer into the left region of its packed
+    // BGRA target. Snapshot the secondary transaction after that compute pass
+    // so Present receives stable, correctly converted eye pixels.
+    bool prepare_daysgone_native_snapshot();
+    uint64_t begin_daysgone_native_snapshot(uint64_t capture_generation, uint32_t width, uint32_t height);
+    void cancel_daysgone_native_snapshot(uint64_t transaction_serial);
+    std::shared_ptr<const DaysGoneNativeSnapshot> get_daysgone_native_snapshot(
+        uint64_t transaction_serial,
+        uint64_t capture_generation) const;
+
     ID3D11Device* get_device() { return m_device; }
     IDXGISwapChain* get_swap_chain() { return m_swap_chain; } // The "active" swap chain.
     auto get_swapchain_0() { return m_swapchain_0; }
@@ -79,10 +102,32 @@ protected:
     std::unique_ptr<PointerHook> m_ps_set_shader_hook{};
     std::unique_ptr<PointerHook> m_draw_indexed_hook{};
     void** m_naruto_draw_context_vtable{};
+    std::unique_ptr<PointerHook> m_daysgone_cs_set_uavs_hook{};
+    safetyhook::InlineHook m_daysgone_dispatch_hook{};
+    void** m_daysgone_context_vtable{};
+    ID3D11DeviceContext* m_daysgone_native_snapshot_context{};
+    std::mutex m_daysgone_context_hook_mutex{};
     OnPresentFn m_on_present{ nullptr };
     OnPresentFn m_on_post_present{ nullptr };
     OnResizeBuffersFn m_on_resize_buffers{ nullptr };
     ComPtr<ID3D11Texture2D> m_last_depthstencil_used{};
+
+    static constexpr size_t DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT = 4;
+    mutable std::mutex m_daysgone_native_snapshot_mutex{};
+    std::atomic_bool m_daysgone_native_snapshot_armed{false};
+    std::atomic_uint64_t m_daysgone_native_snapshot_transaction_counter{};
+    std::atomic_uint64_t m_daysgone_native_snapshot_transaction{};
+    std::atomic_uint64_t m_daysgone_native_snapshot_generation{};
+    std::atomic_uint32_t m_daysgone_native_snapshot_width{};
+    std::atomic_uint32_t m_daysgone_native_snapshot_height{};
+    ComPtr<ID3D11Device> m_daysgone_native_snapshot_device{};
+    ComPtr<ID3D11Texture2D> m_daysgone_native_packed_target{};
+    D3D11_TEXTURE2D_DESC m_daysgone_native_packed_desc{};
+    uint64_t m_daysgone_native_packed_transaction{};
+    std::array<std::shared_ptr<DaysGoneNativeSnapshot>, DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT>
+        m_daysgone_native_snapshot_slots{};
+    size_t m_daysgone_native_snapshot_next_slot{};
+    std::atomic<std::shared_ptr<const DaysGoneNativeSnapshot>> m_daysgone_native_snapshot_ready{};
 
     static HRESULT WINAPI present(IDXGISwapChain* swap_chain, UINT sync_interval, UINT flags);
     static HRESULT WINAPI resize_buffers(IDXGISwapChain* swap_chain, UINT buffer_count, UINT width, UINT height, DXGI_FORMAT new_format, UINT swap_chain_flags);
@@ -93,10 +138,27 @@ protected:
     static void WINAPI vs_set_shader(ID3D11DeviceContext* context, ID3D11VertexShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI ps_set_shader(ID3D11DeviceContext* context, ID3D11PixelShader* shader, ID3D11ClassInstance* const* class_instances, UINT num_class_instances);
     static void WINAPI draw_indexed(ID3D11DeviceContext* context, UINT index_count, UINT start_index_location, INT base_vertex_location);
+    static void WINAPI daysgone_cs_set_unordered_access_views(
+        ID3D11DeviceContext* context,
+        UINT start_slot,
+        UINT num_uavs,
+        ID3D11UnorderedAccessView* const* uavs,
+        const UINT* initial_counts);
+    static void WINAPI daysgone_dispatch(
+        ID3D11DeviceContext* context,
+        UINT thread_group_count_x,
+        UINT thread_group_count_y,
+        UINT thread_group_count_z);
     static void WINAPI set_render_targets(
         ID3D11DeviceContext* context, UINT num_views, ID3D11RenderTargetView* const* rtvs, ID3D11DepthStencilView* dsv);
 
     void hook_create_uav(ID3D11Device* device);
     void hook_create_texture2d(ID3D11Device* device);
     void hook_naruto_draw_indexed(ID3D11Device* device);
+    bool hook_daysgone_native_context(ID3D11Device* device);
+    void reset_daysgone_native_snapshot_state();
+    bool create_daysgone_native_snapshot_slots_locked(
+        const D3D11_TEXTURE2D_DESC& packed_desc,
+        uint32_t eye_width,
+        uint32_t eye_height);
 };
