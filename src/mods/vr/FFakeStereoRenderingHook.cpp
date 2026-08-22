@@ -1922,6 +1922,15 @@ bool pokemon_emerald_is_current_game() {
     return result;
 }
 
+bool deadzone2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && exe_path->find(L"Deadzone2Steam-Win64-Shipping.exe") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
 bool daysgone_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -30565,8 +30574,12 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             scene_capture_c,
             world);
     } else {
+        // Deadzone2's AddComponentByClass completes and registers immediately
+        // when bDeferredFinish is false. This path assigns the texture before
+        // finishing, so defer it and invoke FinishAddComponent exactly once.
+        const auto defer_component_finish = deadzone2_is_current_game();
         this->scene_capture_component = static_cast<sdk::USceneCaptureComponent2D*>(
-            this->scene_capture_actor->add_component_by_class(scene_capture_c, false));
+            this->scene_capture_actor->add_component_by_class(scene_capture_c, defer_component_finish));
     }
 
     if (this->scene_capture_component == nullptr) {
