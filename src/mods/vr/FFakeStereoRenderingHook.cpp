@@ -17820,8 +17820,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> native_capture_snapshot{};
     sdk::FSceneView* native_left_view{};
     sdk::FSceneView* native_right_view{};
+    sdk::FSceneViewFamily* native_left_family{};
+    sdk::FSceneViewFamily* native_right_family{};
     NativeStereoViewMetadata native_left_metadata{};
     NativeStereoViewMetadata native_right_metadata{};
+    bool use_ue58_linked_singleton_transaction{};
     utility::ScopeGuard restore_split_screen_views{[&]() {
         for (size_t index = split_screen_restores.size(); index > 0; --index) {
             auto& restore = split_screen_restores[index - 1];
@@ -18371,8 +18374,172 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             selected_family = family;
             native_left_view = primary_view;
             native_right_view = secondary_view;
+            native_left_family = family;
+            native_right_family = family;
             native_left_metadata = primary;
             native_right_metadata = secondary;
+        }
+
+        // UE5.8 can submit an already-linked PRIMARY/SECONDARY renderer pair as
+        // two singleton families. Preserve that native topology rather than
+        // manufacturing another family or weakening the established two-view
+        // family validator.
+        if (selected_family_count == 0 && is_ue_5_8_or_newer() && uses_tarrayview) {
+            struct LinkedSingletonCandidate {
+                sdk::FSceneViewFamily* family{};
+                sdk::FSceneView* view{};
+                NativeStereoViewMetadata metadata{};
+            };
+
+            FixedCapacityList<LinkedSingletonCandidate, 2> linked_candidates{};
+            bool linked_candidates_ambiguous{};
+            const char* linked_reject_reason{};
+
+            for (const auto family : view_families) {
+                if (family == nullptr || expected_viewport == nullptr ||
+                    family->get_render_target() != expected_viewport ||
+                    family->get_scene_interface() == nullptr)
+                {
+                    continue;
+                }
+
+                auto* const candidate_views = family->get_views();
+                if (candidate_views == nullptr ||
+                    !is_readable_process_range(reinterpret_cast<uintptr_t>(candidate_views), sizeof(*candidate_views)) ||
+                    candidate_views->count != 1 || candidate_views->capacity < 1 ||
+                    candidate_views->data == nullptr ||
+                    !is_readable_process_range(reinterpret_cast<uintptr_t>(candidate_views->data), sizeof(void*)) ||
+                    !sdk::FSceneViewFamily::validate_views(family, candidate_views, 1) ||
+                    candidate_views->data[0] == nullptr)
+                {
+                    continue;
+                }
+
+                auto* const candidate_view = candidate_views->data[0];
+                NativeStereoViewMetadata item{};
+                bool metadata_found{};
+                {
+                    std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+                    const auto& metadata = g_hook->m_sceneview_data.native_stereo_views;
+                    const auto metadata_it = metadata.find(candidate_view);
+                    if (metadata_it != metadata.end()) {
+                        item = metadata_it->second;
+                        metadata_found = true;
+                    }
+                }
+
+                if (!metadata_found) {
+                    linked_reject_reason = "singleton view is missing same-frame constructor metadata";
+                    continue;
+                }
+                if (item.frame != g_frame_count) {
+                    linked_reject_reason = "singleton constructor metadata belongs to another engine frame";
+                    continue;
+                }
+                if (item.family != family || item.scene != family->get_scene_interface()) {
+                    linked_reject_reason = "singleton constructor family/scene identity changed";
+                    continue;
+                }
+                if (item.player_index_valid && (item.player_index < 0 || item.player_index > 255)) {
+                    linked_reject_reason = "singleton PlayerIndex is outside the validated range";
+                    continue;
+                }
+                if (item.state == nullptr || !ghosting_is_valid_scene_state(item.state)) {
+                    linked_reject_reason = "singleton scene state is null or invalid";
+                    continue;
+                }
+                if (!item.projection_valid || !rect_is_sane(item.view_rect) ||
+                    !rect_is_sane(item.constrained_view_rect))
+                {
+                    linked_reject_reason = "singleton projection or view rectangle is invalid";
+                    continue;
+                }
+                if (item.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY &&
+                    item.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY)
+                {
+                    linked_reject_reason = "singleton stereo pass is neither PRIMARY nor SECONDARY";
+                    continue;
+                }
+
+                if (!linked_candidates.try_push_back(LinkedSingletonCandidate{
+                        .family = family,
+                        .view = candidate_view,
+                        .metadata = item,
+                    }))
+                {
+                    linked_candidates_ambiguous = true;
+                    linked_reject_reason = "more than two viewport singleton families were eligible";
+                    break;
+                }
+            }
+
+            if (!linked_candidates_ambiguous && linked_candidates.size() == 2) {
+                const LinkedSingletonCandidate* primary{};
+                const LinkedSingletonCandidate* secondary{};
+                for (const auto& candidate : linked_candidates) {
+                    if (candidate.metadata.original_stereo_pass == EStereoscopicPass::eSSP_PRIMARY) {
+                        if (primary != nullptr) {
+                            linked_reject_reason = "multiple PRIMARY singleton families were eligible";
+                            primary = nullptr;
+                            break;
+                        }
+                        primary = &candidate;
+                    } else {
+                        if (secondary != nullptr) {
+                            linked_reject_reason = "multiple SECONDARY singleton families were eligible";
+                            secondary = nullptr;
+                            break;
+                        }
+                        secondary = &candidate;
+                    }
+                }
+
+                bool pair_valid = primary != nullptr && secondary != nullptr;
+                if (pair_valid && (primary->family == secondary->family || primary->view == secondary->view)) {
+                    pair_valid = false;
+                    linked_reject_reason = "linked singleton family or view identity was not distinct";
+                }
+                if (pair_valid && primary->metadata.scene != secondary->metadata.scene) {
+                    pair_valid = false;
+                    linked_reject_reason = "linked singleton families belong to different scenes";
+                }
+                if (pair_valid && primary->metadata.player_index_valid != secondary->metadata.player_index_valid) {
+                    pair_valid = false;
+                    linked_reject_reason = "linked singleton PlayerIndex availability differs between eyes";
+                }
+                if (pair_valid && primary->metadata.player_index_valid &&
+                    primary->metadata.player_index != secondary->metadata.player_index)
+                {
+                    pair_valid = false;
+                    linked_reject_reason = "linked singleton views belong to different players";
+                }
+                if (pair_valid && primary->metadata.state == secondary->metadata.state) {
+                    pair_valid = false;
+                    linked_reject_reason = "linked singleton views share one scene state";
+                }
+
+                if (pair_valid) {
+                    selected_family_count = 1;
+                    selected_family = primary->family;
+                    native_left_view = primary->view;
+                    native_right_view = secondary->view;
+                    native_left_family = primary->family;
+                    native_right_family = secondary->family;
+                    native_left_metadata = primary->metadata;
+                    native_right_metadata = secondary->metadata;
+                    use_ue58_linked_singleton_transaction = true;
+                }
+            } else if (!linked_candidates_ambiguous) {
+                linked_reject_reason = "exactly two viewport singleton families were not present";
+            }
+
+            if (!use_ue58_linked_singleton_transaction) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[UE5.8][NativeStereoFix] Linked singleton eye pair not yet proven: {} eligible={}",
+                    linked_reject_reason != nullptr ? linked_reject_reason : "no eligible linked singleton metadata",
+                    linked_candidates.size());
+            }
         }
 
         if (selected_family_count != 1 || selected_family == nullptr) {
@@ -18543,28 +18710,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
-    if (prev_count != 2 || native_left_view == nullptr || native_right_view == nullptr ||
-        native_left_view == native_right_view ||
-        native_left_metadata.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY ||
-        native_right_metadata.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY)
-    {
-        g_hook->invalidate_native_stereo_frame_packet(
-            NativeStereoFixState::FailedClosed,
-            "selected eye transaction changed before rendering");
-        call_original();
-        return;
-    }
-
-    auto* const original_first = views.data[0];
-    auto* const original_second = views.data[1];
     const auto original_target = view_family_target;
-    utility::ScopeGuard restore_native_transaction{[&]() {
-        views.data[0] = original_first;
-        views.data[1] = original_second;
-        views.count = prev_count;
-        view_family->set_render_target(original_target);
-    }};
-
     auto runtime = vr->get_runtime();
     if (runtime == nullptr || (!runtime->is_openxr() && !runtime->is_openvr())) {
         g_hook->invalidate_native_stereo_frame_packet(
@@ -18593,6 +18739,111 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         packet->right_pass = native_right_metadata.original_stereo_pass;
         g_hook->publish_native_stereo_frame_packet(std::move(packet));
     };
+
+    if (use_ue58_linked_singleton_transaction) {
+        const auto fail_closed = [&](const char* reason) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[UE5.8][NativeStereoFix] Preserving the original linked families because the "
+                "singleton transaction failed validation: {}",
+                reason);
+            call_original();
+        };
+
+        if (!uses_tarrayview || native_left_family != view_family ||
+            native_right_family == nullptr || native_right_family == native_left_family ||
+            prev_count != 1 || views.data == nullptr || views.data[0] != native_left_view)
+        {
+            fail_closed("validated linked singleton identity changed before rendering");
+            return;
+        }
+
+        auto* const right_views = native_right_family->get_views();
+        if (right_views == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(right_views), sizeof(*right_views)) ||
+            right_views->count != 1 || right_views->capacity < 1 || right_views->data == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(right_views->data), sizeof(void*)) ||
+            right_views->data[0] != native_right_view ||
+            !sdk::FSceneViewFamily::validate_views(native_right_family, right_views, 1) ||
+            native_left_metadata.family != native_left_family ||
+            native_right_metadata.family != native_right_family ||
+            native_left_metadata.scene != view_family_scene ||
+            native_right_metadata.scene != view_family_scene)
+        {
+            fail_closed("validated secondary singleton storage or metadata changed before rendering");
+            return;
+        }
+
+        size_t left_family_occurrences{};
+        size_t right_family_occurrences{};
+        for (const auto family : view_families) {
+            left_family_occurrences += family == native_left_family ? 1u : 0u;
+            right_family_occurrences += family == native_right_family ? 1u : 0u;
+        }
+        if (left_family_occurrences != 1 || right_family_occurrences != 1) {
+            fail_closed("linked singleton families were not unique in the original family array");
+            return;
+        }
+
+        const auto original_right_target = native_right_family->get_render_target();
+        if (original_right_target != original_target) {
+            fail_closed("linked singleton families do not share the validated main viewport target");
+            return;
+        }
+
+        native_right_family->set_render_target(rtfrt);
+        if (native_right_family->get_render_target() != rtfrt) {
+            native_right_family->set_render_target(original_right_target);
+            fail_closed("secondary singleton capture target redirection did not commit");
+            return;
+        }
+
+        utility::ScopeGuard restore_right_target{[&]() {
+            native_right_family->set_render_target(original_right_target);
+        }};
+
+        SPDLOG_INFO_ONCE(
+            "[UE5.8][NativeStereoFix] Rendering the validated linked PRIMARY/SECONDARY singleton families "
+            "in one native renderer transaction");
+        call_original();
+
+        native_right_family->set_render_target(original_right_target);
+        if (native_right_family->get_render_target() != original_right_target) {
+            g_hook->invalidate_native_stereo_frame_packet(
+                NativeStereoFixState::FailedClosed,
+                "secondary singleton main target was not restored after rendering");
+            SPDLOG_ERROR_EVERY_N_SEC(
+                2,
+                "[UE5.8][NativeStereoFix] Linked rendering completed, but the secondary family target "
+                "could not be restored");
+            return;
+        }
+
+        publish_native_packet();
+        return;
+    }
+
+    if (prev_count != 2 || native_left_view == nullptr || native_right_view == nullptr ||
+        native_left_view == native_right_view ||
+        native_left_metadata.original_stereo_pass != EStereoscopicPass::eSSP_PRIMARY ||
+        native_right_metadata.original_stereo_pass != EStereoscopicPass::eSSP_SECONDARY)
+    {
+        g_hook->invalidate_native_stereo_frame_packet(
+            NativeStereoFixState::FailedClosed,
+            "selected eye transaction changed before rendering");
+        call_original();
+        return;
+    }
+
+    auto* const original_first = views.data[0];
+    auto* const original_second = views.data[1];
+    utility::ScopeGuard restore_native_transaction{[&]() {
+        views.data[0] = original_first;
+        views.data[1] = original_second;
+        views.count = prev_count;
+        view_family->set_render_target(original_target);
+    }};
 
     const bool use_ue57_linked_family_transaction =
         is_ue_5_7_or_newer() && !is_ue_5_8_or_newer();
