@@ -209,8 +209,25 @@ public:
         return last_viewport;
     }
 
+    sdk::FRenderTarget* get_view_family_render_target() const {
+        if (auto* const validated = validated_view_family_render_target.load(std::memory_order_acquire);
+            validated != nullptr)
+        {
+            return validated;
+        }
+
+        return reinterpret_cast<sdk::FRenderTarget*>(last_viewport);
+    }
+
+    void set_view_family_render_target(sdk::FRenderTarget* target) {
+        validated_view_family_render_target.store(target, std::memory_order_release);
+    }
+
     void set_viewport(sdk::FViewport* vp) {
         last_viewport = vp;
+        if (vp != nullptr) {
+            set_view_family_render_target(reinterpret_cast<sdk::FRenderTarget*>(vp));
+        }
     }
 
 protected:
@@ -337,6 +354,7 @@ protected:
     uint64_t dedicated_ui_generation{0};
     uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
+    std::atomic<sdk::FRenderTarget*> validated_view_family_render_target{};
     FRHITexture2D* ue58_pending_scene_target{nullptr};
     void* ue58_pending_native_resource{nullptr};
     uint32_t ue58_pending_scene_target_observations{0};
