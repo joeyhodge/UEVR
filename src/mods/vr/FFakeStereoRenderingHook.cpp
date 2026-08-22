@@ -13931,6 +13931,31 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         native_is_texture2d = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     }
 
+    if (ue58_viewport_adoption) {
+        const auto capture_snapshot = rtm->get_scene_capture_target_snapshot();
+        const bool current_capture =
+            capture_snapshot != nullptr &&
+            capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            capture_snapshot->rhi_texture != nullptr &&
+            capture_snapshot->native_resource != nullptr;
+        const bool matches_capture_wrapper =
+            current_capture && candidate == capture_snapshot->rhi_texture;
+        const bool matches_capture_native =
+            current_capture && native_resource_identity != nullptr &&
+            reinterpret_cast<uintptr_t>(native_resource_identity) ==
+                reinterpret_cast<uintptr_t>(capture_snapshot->native_resource.Get());
+
+        if (matches_capture_wrapper || matches_capture_native) {
+            // The linked-family Native Fix renders its secondary family into a
+            // one-eye capture target. That target passes through the same
+            // BeginRenderingViewFamily observation as the packed main target;
+            // never let it reset or replace the scene source used by Present.
+            SPDLOG_INFO_ONCE(
+                "[UE5.8][RT] Ignoring the Native Stereo Fix capture target during main scene-target adoption");
+            return;
+        }
+    }
+
     if (native_resource_identity == nullptr ||
         !native_is_texture2d ||
         native_width == 0 ||
@@ -14011,6 +14036,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 (uintptr_t)native_resource_identity,
                 stable_observations);
         }
+    }
+
+    if (is_ue58_render_family_fallback) {
+        rtm->set_view_family_render_target(reinterpret_cast<sdk::FRenderTarget*>(viewport));
+        SPDLOG_INFO_ONCE(
+            "[UE5.8][RT] Retained the twice-validated FSceneViewFamily render-target identity for Draw-less viewports");
     }
 
     if (everspace2_direct_observation) {
@@ -15859,7 +15890,144 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
-    if (!g_hook->is_in_viewport_client_draw() || !vr->is_hmd_active()) {
+    const bool inside_viewport_client_draw = g_hook->is_in_viewport_client_draw();
+    const bool capture_passive_ue58_native_metadata =
+        !inside_viewport_client_draw &&
+        vr->is_hmd_active() &&
+        vr->is_native_stereo_fix_enabled() &&
+        is_ue_5_8();
+
+    if (capture_passive_ue58_native_metadata) {
+        NativeStereoViewMetadata metadata{};
+        bool metadata_valid = false;
+
+        if (init_options != nullptr &&
+            is_readable_process_range(reinterpret_cast<uintptr_t>(init_options), 0x200))
+        {
+            sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+
+            auto* const resolved_family = init_options->get_view_family();
+            auto* const resolved_state = init_options->get_scene_state();
+            const auto resolved_player_index = init_options->get_player_index();
+            const auto resolved_stereo_pass = init_options->get_stereo_pass();
+            auto* const rtm = g_hook->get_render_target_manager();
+            auto* const expected_viewport =
+                rtm != nullptr ? rtm->get_view_family_render_target() : nullptr;
+            auto* const family = resolved_family;
+            const auto player_index = resolved_player_index.value_or(-1);
+            const bool player_index_valid = resolved_player_index.has_value();
+
+            const bool source_layout_valid =
+                family != nullptr &&
+                resolved_state != nullptr &&
+                is_readable_process_range(reinterpret_cast<uintptr_t>(resolved_state), sizeof(void*)) &&
+                (resolved_stereo_pass == EStereoscopicPass::eSSP_PRIMARY ||
+                 resolved_stereo_pass == EStereoscopicPass::eSSP_SECONDARY) &&
+                (!player_index_valid || (player_index >= 0 && player_index <= 255));
+            bool family_layout_valid =
+                source_layout_valid &&
+                expected_viewport != nullptr &&
+                sdk::FSceneViewFamily::has_offsets();
+
+            if (source_layout_valid && expected_viewport != nullptr && !family_layout_valid) {
+                family_layout_valid = sdk::FSceneViewFamily::update_offsets(family, expected_viewport);
+            }
+
+            if (family_layout_valid) {
+                g_hook->note_scene_view_family_offsets_ready();
+
+                auto* const scene = family->get_scene_interface();
+                const auto stereo_pass = resolved_stereo_pass;
+                const bool identity_valid =
+                    family->get_render_target() == expected_viewport &&
+                    scene != nullptr &&
+                    is_readable_process_range(reinterpret_cast<uintptr_t>(scene), sizeof(void*));
+
+                // The engine places ViewFamily immediately after the 0x158-byte
+                // projection-data prefix. MSVC rounds the C++ base type up to its
+                // 16-byte alignment, so reading derived aggregate members shifts
+                // every UE5.8 identity field by eight bytes. Only the projection
+                // prefix uses fixed, source-backed offsets; identity comes from
+                // UESDK's independently resolved runtime offsets above.
+                constexpr uintptr_t projection_matrix_offset = 0xA0;
+                constexpr uintptr_t view_rect_offset = 0x120;
+                constexpr uintptr_t constrained_view_rect_offset = 0x148;
+                constexpr size_t projection_matrix_size = sizeof(double) * 16;
+                const auto* const option_bytes = reinterpret_cast<const uint8_t*>(init_options);
+                double projection_values[16]{};
+                std::memcpy(
+                    projection_values,
+                    option_bytes + projection_matrix_offset,
+                    projection_matrix_size);
+                uint64_t projection_hash = 1469598103934665603ull;
+                bool projection_valid = true;
+                bool projection_nonzero = false;
+
+                for (size_t index = 0; index < 16; ++index) {
+                    if (!std::isfinite(projection_values[index])) {
+                        projection_valid = false;
+                        break;
+                    }
+                    projection_nonzero =
+                        projection_nonzero || std::abs(projection_values[index]) > 1.0e-12;
+                }
+
+                const auto* const projection_bytes =
+                    reinterpret_cast<const uint8_t*>(projection_values);
+                for (size_t index = 0; index < projection_matrix_size; ++index) {
+                    projection_hash ^= projection_bytes[index];
+                    projection_hash *= 1099511628211ull;
+                }
+
+                FIntRect view_rect{};
+                FIntRect constrained_view_rect{};
+                std::memcpy(
+                    view_rect.bounds,
+                    option_bytes + view_rect_offset,
+                    sizeof(view_rect.bounds));
+                std::memcpy(
+                    constrained_view_rect.bounds,
+                    option_bytes + constrained_view_rect_offset,
+                    sizeof(constrained_view_rect.bounds));
+                metadata = NativeStereoViewMetadata{
+                    .family = family,
+                    .state = resolved_state,
+                    .scene = scene,
+                    .player_index = player_index,
+                    .player_index_valid = player_index_valid,
+                    .original_stereo_pass = stereo_pass,
+                    .frame = g_frame_count,
+                    .view_rect = view_rect,
+                    .constrained_view_rect = constrained_view_rect,
+                    .projection_hash = projection_hash,
+                    .projection_valid =
+                        projection_valid && projection_nonzero && projection_hash != 0,
+                };
+                metadata_valid = identity_valid && metadata.projection_valid;
+            }
+        }
+
+        auto* const result =
+            g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(
+                view, init_options, a3, a4);
+
+        if (metadata_valid && result != nullptr && result->has_view_family(metadata.family)) {
+            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
+            auto& native_views = g_hook->m_sceneview_data.native_stereo_views;
+            if (g_hook->m_sceneview_data.native_stereo_metadata_frame != g_frame_count) {
+                native_views.clear();
+                g_hook->m_sceneview_data.native_stereo_metadata_frame = g_frame_count;
+            }
+            native_views[result] = metadata;
+
+            SPDLOG_INFO_ONCE(
+                "[UE5.8][NativeStereoFix] Capturing passive FSceneView metadata outside UGameViewportClient::Draw");
+        }
+
+        return result;
+    }
+
+    if (!inside_viewport_client_draw || !vr->is_hmd_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
 
@@ -18230,7 +18398,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        const auto expected_viewport = rtm->get_viewport();
+        const auto expected_viewport = rtm->get_view_family_render_target();
         const auto rect_is_sane = [](const FIntRect& rect) {
             const auto width = static_cast<int64_t>(rect.bounds[2]) - rect.bounds[0];
             const auto height = static_cast<int64_t>(rect.bounds[3]) - rect.bounds[1];
@@ -22725,7 +22893,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             return 1;
         }
 
-        if (!g_hook->is_native_stereo_fix_operational()) {
+        const auto native_fix_state =
+            g_hook->m_native_stereo_fix_state.load(std::memory_order_acquire);
+        if (native_fix_state != NativeStereoFixState::PairReady &&
+            native_fix_state != NativeStereoFixState::Active)
+        {
             g_hook->set_native_stereo_fix_state(
                 NativeStereoFixState::LearningEyePair,
                 "requesting two views for exact pair validation");
