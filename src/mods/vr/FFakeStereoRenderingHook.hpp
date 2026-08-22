@@ -666,6 +666,7 @@ public:
         sdk::FSceneInterface* scene{};
         uint64_t serial{};
         uint64_t capture_generation{};
+        uint64_t d3d11_snapshot_transaction{};
         uint32_t engine_frame{};
         int32_t render_frame{};
         int32_t player_index{-1};
