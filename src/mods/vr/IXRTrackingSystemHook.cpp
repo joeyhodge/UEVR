@@ -1,6 +1,9 @@
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <bdshemu.h>
 #include <spdlog/spdlog.h>
@@ -57,7 +60,13 @@ bool is_daysgone_executable() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
 
-        return exe_path && exe_path->find(L"DaysGone.exe") != std::wstring::npos;
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto separator = exe_path->find_last_of(L"\\/");
+        const auto filename = separator == std::wstring::npos ? *exe_path : exe_path->substr(separator + 1);
+        return _wcsicmp(filename.c_str(), L"DaysGone.exe") == 0;
     }();
 
     return result;
@@ -187,7 +196,7 @@ bool is_direct_aim_compatibility_requested() {
         return true;
     }
 
-    if (is_daysgone_controller_aim_requested()) {
+    if (is_daysgone_executable() && VR::get()->is_any_aim_method_active()) {
         return true;
     }
 
@@ -209,6 +218,13 @@ bool is_direct_aim_compatibility_active() {
         return false;
     }
 
+    // Days Gone must never fall through to the incomplete UE4.11 fake-HMD
+    // route while a non-game aim method is selected. The ManualAim bridge
+    // independently fails open whenever its native contract is unavailable.
+    if (is_daysgone_executable()) {
+        return vr->is_any_aim_method_active();
+    }
+
     if (vr->is_controller_camera_conflict_guard_active()) {
         return false;
     }
@@ -225,10 +241,6 @@ bool is_direct_aim_compatibility_active() {
         // mutates the camera-manager ProcessViewRotation output directly.
         // Route HMD/controller aim through the later reflected controller path.
         return vr->is_headlocked_aim_enabled() || (vr->is_controller_aim_enabled() && vr->is_using_controllers());
-    }
-
-    if (is_daysgone_controller_aim_requested()) {
-        return vr->is_using_controllers();
     }
 
     if (is_ue4_14_through_4_17()) {
@@ -744,6 +756,49 @@ bool is_writable_process_range(uintptr_t address, size_t size) {
            protect == PAGE_EXECUTE_WRITECOPY;
 }
 
+static bool is_readable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const auto base = (uintptr_t)mbi.BaseAddress;
+    if (address + size > base + mbi.RegionSize || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+        return false;
+    }
+
+    return true;
+}
+
+static bool is_executable_process_address(uintptr_t address) {
+    if (!is_readable_process_range(address, 1)) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery((void*)address, &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+template <typename T>
+static bool read_process_value(uintptr_t address, T& value) {
+    if (!is_readable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(T));
+    return true;
+}
+
 template <typename T>
 bool can_write(T* ptr) {
     return ptr != nullptr && is_writable_process_range((uintptr_t)ptr, sizeof(T));
@@ -759,6 +814,140 @@ bool finite_quat(const glm::quat& q) {
 
 bool finite_euler(const glm::vec3& v) {
     return finite_vec3(v);
+}
+
+static bool has_memory_displacement(const INSTRUX& ix, uint64_t displacement) {
+    for (uint32_t i = 0; i < ix.OperandsCount; ++i) {
+        const auto& operand = ix.Operands[i];
+
+        if (operand.Type == ND_OP_MEM && operand.Info.Memory.HasDisp &&
+            static_cast<uint64_t>(operand.Info.Memory.Disp) == displacement)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool validate_daysgone_six_axis_decoder(uintptr_t candidate) {
+    if (!is_daysgone_executable() || !is_executable_process_address(candidate) ||
+        utility::get_module_within(candidate).value_or(nullptr) != utility::get_executable())
+    {
+        return false;
+    }
+
+    bool saw_flags = false;
+    bool saw_scale = false;
+    bool saw_orientation_state = false;
+    bool saw_output_store = false;
+    uint32_t scalar_multiplies = 0;
+    uint32_t tests = 0;
+    uint32_t instructions = 0;
+
+    utility::exhaustive_decode((uint8_t*)candidate, 1800, [&](INSTRUX& ix, uintptr_t) -> utility::ExhaustionResult {
+        ++instructions;
+        saw_flags |= has_memory_displacement(ix, 0x444);
+        saw_scale |= has_memory_displacement(ix, 0x448);
+        saw_orientation_state |= has_memory_displacement(ix, 0x3f0);
+
+        if (ix.Instruction == ND_INS_MULSS) {
+            ++scalar_multiplies;
+        } else if (ix.Instruction == ND_INS_TEST) {
+            ++tests;
+        }
+
+        if (ix.Instruction == ND_INS_MOV && ix.OperandsCount >= 2 &&
+            ix.Operands[0].Type == ND_OP_MEM && ix.Operands[0].Size == sizeof(uint64_t) &&
+            ix.Operands[1].Type == ND_OP_REG)
+        {
+            saw_output_store = true;
+        }
+
+        if (std::string_view{ix.Mnemonic}.starts_with("CALL")) {
+            return utility::ExhaustionResult::STEP_OVER;
+        }
+
+        return utility::ExhaustionResult::CONTINUE;
+    });
+
+    return instructions >= 100 && saw_flags && saw_scale && saw_orientation_state &&
+           saw_output_store && scalar_multiplies >= 4 && tests >= 3;
+}
+
+struct DaysGoneSixAxisDecoderContract {
+    uintptr_t decoder{};
+    uintptr_t return_address{};
+};
+
+static std::optional<DaysGoneSixAxisDecoderContract> find_daysgone_six_axis_decoder(uintptr_t manual_aim_update) {
+    if (!is_executable_process_address(manual_aim_update) ||
+        utility::get_module_within(manual_aim_update).value_or(nullptr) != utility::get_executable())
+    {
+        return std::nullopt;
+    }
+
+    bool saw_hidden_pair = false;
+    bool saw_six_axis_flags = false;
+    bool saw_camera_owner = false;
+    bool saw_active_camera_array = false;
+    bool saw_active_camera_count = false;
+    std::unordered_map<uintptr_t, uintptr_t> direct_calls{};
+
+    utility::exhaustive_decode((uint8_t*)manual_aim_update, 2600, [&](INSTRUX& ix, uintptr_t ip) -> utility::ExhaustionResult {
+        saw_hidden_pair |= has_memory_displacement(ix, 0x430);
+        saw_six_axis_flags |= has_memory_displacement(ix, 0x444);
+        saw_camera_owner |= has_memory_displacement(ix, 0x28);
+        saw_active_camera_array |= has_memory_displacement(ix, 0x35d0);
+        saw_active_camera_count |= has_memory_displacement(ix, 0x35d8);
+
+        if (!std::string_view{ix.Mnemonic}.starts_with("CALL")) {
+            return utility::ExhaustionResult::CONTINUE;
+        }
+
+        if (ix.InstructionBytes[0] == 0xE8) {
+            if (const auto target = utility::resolve_displacement(ip); target &&
+                utility::get_module_within(*target).value_or(nullptr) == utility::get_executable())
+            {
+                const auto return_address = ip + ix.Length;
+                const auto [it, inserted] = direct_calls.emplace(*target, return_address);
+
+                if (!inserted && it->second != return_address) {
+                    // A decoder reached from more than one point in the update
+                    // is not the unique native contract this bridge requires.
+                    it->second = 0;
+                }
+            }
+        }
+
+        return utility::ExhaustionResult::STEP_OVER;
+    });
+
+    if (!saw_hidden_pair || !saw_six_axis_flags || !saw_camera_owner ||
+        !saw_active_camera_array || !saw_active_camera_count)
+    {
+        return std::nullopt;
+    }
+
+    std::optional<DaysGoneSixAxisDecoderContract> result{};
+
+    for (const auto& [candidate, return_address] : direct_calls) {
+        if (return_address == 0 || !validate_daysgone_six_axis_decoder(candidate)) {
+            continue;
+        }
+
+        if (result.has_value() && result->decoder != candidate) {
+            SPDLOG_WARN("[DaysGone][AimBridge] ManualAim update contained multiple six-axis decoder candidates; refusing to hook");
+            return std::nullopt;
+        }
+
+        result = DaysGoneSixAxisDecoderContract{
+            .decoder = candidate,
+            .return_address = return_address,
+        };
+    }
+
+    return result;
 }
 }
 
@@ -850,27 +1039,596 @@ void IXRTrackingSystemHook::pre_initialize() {
 void IXRTrackingSystemHook::on_draw_ui() {
 }
 
+bool IXRTrackingSystemHook::try_install_daysgone_manual_aim_bridge(sdk::UObject* manual_aim_cdo) try {
+    if (!is_daysgone_executable() || manual_aim_cdo == nullptr || m_daysgone_six_axis_aim_hook) {
+        return static_cast<bool>(m_daysgone_six_axis_aim_hook);
+    }
+
+    constexpr size_t MANUAL_AIM_UPDATE_VTABLE_INDEX = 67;
+    uintptr_t vtable{};
+
+    if (!detail::read_process_value((uintptr_t)manual_aim_cdo, vtable) ||
+        !detail::is_readable_process_range(
+            vtable,
+            sizeof(uintptr_t) * (MANUAL_AIM_UPDATE_VTABLE_INDEX + 1)) ||
+        utility::get_module_within(vtable).value_or(nullptr) != utility::get_executable())
+    {
+        return false;
+    }
+
+    if (m_daysgone_rejected_manual_aim_vtable == vtable) {
+        return false;
+    }
+
+    uintptr_t manual_aim_update{};
+    if (!detail::read_process_value(
+            vtable + (MANUAL_AIM_UPDATE_VTABLE_INDEX * sizeof(uintptr_t)),
+            manual_aim_update) ||
+        !detail::is_executable_process_address(manual_aim_update) ||
+        utility::get_module_within(manual_aim_update).value_or(nullptr) != utility::get_executable())
+    {
+        m_daysgone_rejected_manual_aim_vtable = vtable;
+        SPDLOG_WARN("[DaysGone][AimBridge] ManualAim slot 67 failed executable validation; native aim remains unchanged");
+        return false;
+    }
+
+    // Resolve the decoder through the validated native virtual contract. No
+    // executable address is persisted or assumed across Days Gone builds.
+    const auto decoder = detail::find_daysgone_six_axis_decoder(manual_aim_update);
+    if (!decoder.has_value()) {
+        m_daysgone_rejected_manual_aim_vtable = vtable;
+        SPDLOG_WARN("[DaysGone][AimBridge] ManualAim slot 67 did not contain one validated six-axis decoder; native aim remains unchanged");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(decoder->decoder),
+        &IXRTrackingSystemHook::daysgone_six_axis_aim_bridge);
+
+    if (!hook) {
+        m_daysgone_rejected_manual_aim_vtable = vtable;
+        SPDLOG_WARN("[DaysGone][AimBridge] Failed to hook the validated six-axis decoder; native aim remains unchanged");
+        return false;
+    }
+
+    m_daysgone_manual_aim_update = manual_aim_update;
+    m_daysgone_six_axis_decoder = decoder->decoder;
+    m_daysgone_six_axis_decoder_return_address = decoder->return_address;
+    m_daysgone_six_axis_aim_hook = std::move(hook);
+
+    const auto executable = (uintptr_t)utility::get_executable();
+    SPDLOG_INFO(
+        "[DaysGone][AimBridge] Installed validated player ManualAim bridge: slot=67 update=+0x{:x} decoder=+0x{:x} return=+0x{:x}",
+        m_daysgone_manual_aim_update - executable,
+        m_daysgone_six_axis_decoder - executable,
+        m_daysgone_six_axis_decoder_return_address - executable);
+    return true;
+} catch (...) {
+    SPDLOG_WARN("[DaysGone][AimBridge] Exception while resolving the native ManualAim contract; native aim remains unchanged");
+    return false;
+}
+
+bool IXRTrackingSystemHook::validate_daysgone_manual_aim_object(sdk::UObject* manual_aim) const try {
+    if (!is_daysgone_executable() || manual_aim == nullptr ||
+        m_daysgone_player_manual_aim_class == nullptr || m_daysgone_manual_aim_update == 0 ||
+        !is_live_legacy_aim_object(manual_aim) ||
+        !manual_aim->is_a(m_daysgone_player_manual_aim_class))
+    {
+        return false;
+    }
+
+    constexpr size_t MANUAL_AIM_UPDATE_VTABLE_INDEX = 67;
+    constexpr uintptr_t HIDDEN_PAIR_OFFSET = 0x430;
+    constexpr uintptr_t SIX_AXIS_FLAGS_OFFSET = 0x444;
+    constexpr uintptr_t SIX_AXIS_LERP_OFFSET = 0x44c;
+    constexpr uintptr_t CAMERA_OWNER_OFFSET = 0x28;
+    constexpr uintptr_t ACTIVE_CAMERA_ARRAY_OFFSET = 0x35d0;
+    constexpr uintptr_t ACTIVE_CAMERA_COUNT_OFFSET = 0x35d8;
+
+    const auto base = (uintptr_t)manual_aim;
+    uintptr_t vtable{};
+    uintptr_t update{};
+    uintptr_t camera_owner{};
+    uintptr_t active_camera_array{};
+    uint32_t active_camera_count{};
+    uintptr_t first_active_camera{};
+    uint8_t flags{};
+    float hidden_pair[2]{};
+    float six_axis_lerp{};
+
+    if (!detail::is_readable_process_range(base, SIX_AXIS_LERP_OFFSET + sizeof(float)) ||
+        !detail::read_process_value(base, vtable) ||
+        !detail::read_process_value(
+            vtable + (MANUAL_AIM_UPDATE_VTABLE_INDEX * sizeof(uintptr_t)),
+            update) ||
+        update != m_daysgone_manual_aim_update ||
+        !detail::read_process_value(base + CAMERA_OWNER_OFFSET, camera_owner) ||
+        !detail::read_process_value(camera_owner + ACTIVE_CAMERA_ARRAY_OFFSET, active_camera_array) ||
+        !detail::read_process_value(camera_owner + ACTIVE_CAMERA_COUNT_OFFSET, active_camera_count) ||
+        active_camera_count == 0 || active_camera_count > 128 ||
+        !detail::read_process_value(active_camera_array, first_active_camera) ||
+        first_active_camera != base ||
+        !detail::read_process_value(base + SIX_AXIS_FLAGS_OFFSET, flags) ||
+        (flags & 1) == 0 ||
+        !detail::read_process_value(base + HIDDEN_PAIR_OFFSET, hidden_pair) ||
+        !detail::read_process_value(base + SIX_AXIS_LERP_OFFSET, six_axis_lerp))
+    {
+        return false;
+    }
+
+    return std::isfinite(hidden_pair[0]) && std::isfinite(hidden_pair[1]) &&
+           std::isfinite(six_axis_lerp);
+} catch (...) {
+    return false;
+}
+
+void IXRTrackingSystemHook::invalidate_daysgone_manual_aim_sample() {
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_desired_aim_sample_time_ms.store(0, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
+}
+
+bool IXRTrackingSystemHook::publish_daysgone_manual_aim_sample(sdk::UGameEngine* engine) try {
+    auto& vr = VR::get();
+
+    if (!is_daysgone_executable() || engine == nullptr || !m_daysgone_six_axis_aim_hook ||
+        m_daysgone_active_manual_aim.load(std::memory_order_acquire) == nullptr ||
+        !vr->is_hmd_active() || !vr->is_any_aim_method_active() ||
+        vr->is_controller_camera_conflict_guard_active() ||
+        !is_legacy_aim_reflection_ready())
+    {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto aim_method = vr->get_aim_method();
+    const auto wants_controller = vr->is_controller_aim_enabled();
+
+    if (wants_controller && !vr->is_using_controllers()) {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto world = engine->get_world();
+    const auto controller = resolve_player_controller_for_aim(engine, world);
+
+    if (world == nullptr || controller == nullptr || !is_live_legacy_aim_object(controller)) {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto controller_object = reinterpret_cast<sdk::UObject*>(controller);
+    const auto control_rotation_data = controller_object->get_property_data(L"ControlRotation");
+    glm::vec3 control_rotation{};
+
+    if (control_rotation_data == nullptr ||
+        !detail::read_process_value((uintptr_t)control_rotation_data, control_rotation) ||
+        !detail::finite_euler(control_rotation))
+    {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto view_mat_inverse = glm::yawPitchRoll(
+        glm::radians(-control_rotation.y),
+        glm::radians(control_rotation.x),
+        glm::radians(-control_rotation.z));
+    auto view_inverse = glm::normalize(glm::quat{view_mat_inverse});
+
+    if (!detail::finite_quat(view_inverse)) {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    // Honor the existing user setting, but never auto-enable it. The previous
+    // experiment changed this global and also recentered/rewrote rotation
+    // offsets, which caused reversed aim and apparent world-scale/ghosting.
+    if (vr->is_decoupled_pitch_enabled()) {
+        view_inverse = utility::math::flatten(view_inverse);
+
+        if (!detail::finite_quat(view_inverse)) {
+            invalidate_daysgone_manual_aim_sample();
+            return false;
+        }
+    }
+
+    glm::quat source_rotation = glm::identity<glm::quat>();
+
+    if (!wants_controller) {
+        if (aim_method != VR::AimMethod::HEAD) {
+            invalidate_daysgone_manual_aim_sample();
+            return false;
+        }
+
+        source_rotation = glm::normalize(glm::quat{vr->get_rotation(0)});
+    } else {
+        glm::vec3 controller_forward{};
+        glm::vec3 controller_position{};
+        glm::quat controller_rotation{};
+
+        if (aim_method == VR::AimMethod::RIGHT_CONTROLLER || aim_method == VR::AimMethod::LEFT_CONTROLLER) {
+            const auto controller_index = aim_method == VR::AimMethod::RIGHT_CONTROLLER
+                ? vr->get_right_controller_index()
+                : vr->get_left_controller_index();
+            controller_rotation = glm::normalize(glm::quat{vr->get_aim_rotation(controller_index)});
+            controller_position = glm::vec3{vr->get_aim_position(controller_index)};
+            controller_forward = controller_rotation * glm::vec3{0.0f, 0.0f, 1.0f};
+        } else if (aim_method == VR::AimMethod::TWO_HANDED_RIGHT) {
+            const auto right_index = vr->get_right_controller_index();
+            const auto left_index = vr->get_left_controller_index();
+            const auto raw_delta = glm::vec3{vr->get_aim_position(left_index) - vr->get_aim_position(right_index)};
+            const auto delta_len_sq = glm::dot(raw_delta, raw_delta);
+
+            if (!detail::finite_vec3(raw_delta) || delta_len_sq <= 0.000001f) {
+                invalidate_daysgone_manual_aim_sample();
+                return false;
+            }
+
+            controller_rotation = utility::math::to_quat(glm::normalize(raw_delta));
+            controller_position = glm::vec3{vr->get_aim_position(right_index)};
+            controller_forward = controller_rotation * glm::vec3{0.0f, 0.0f, -1.0f};
+        } else if (aim_method == VR::AimMethod::TWO_HANDED_LEFT) {
+            const auto right_index = vr->get_right_controller_index();
+            const auto left_index = vr->get_left_controller_index();
+            const auto raw_delta = glm::vec3{vr->get_aim_position(right_index) - vr->get_aim_position(left_index)};
+            const auto delta_len_sq = glm::dot(raw_delta, raw_delta);
+
+            if (!detail::finite_vec3(raw_delta) || delta_len_sq <= 0.000001f) {
+                invalidate_daysgone_manual_aim_sample();
+                return false;
+            }
+
+            controller_rotation = utility::math::to_quat(glm::normalize(raw_delta));
+            controller_position = glm::vec3{vr->get_aim_position(left_index)};
+            controller_forward = controller_rotation * glm::vec3{0.0f, 0.0f, -1.0f};
+        } else {
+            invalidate_daysgone_manual_aim_sample();
+            return false;
+        }
+
+        const auto controller_end = controller_position + (controller_forward * 1000.0f);
+        const auto adjusted_forward_delta = controller_end - glm::vec3{vr->get_standing_origin()};
+        const auto adjusted_forward_len_sq = glm::dot(adjusted_forward_delta, adjusted_forward_delta);
+
+        if (!detail::finite_vec3(adjusted_forward_delta) || adjusted_forward_len_sq <= 0.000001f) {
+            invalidate_daysgone_manual_aim_sample();
+            return false;
+        }
+
+        // Bend owns interpolation. Publishing the raw OpenXR sightline avoids
+        // the old double interpolation and the old rotation-offset mutation.
+        source_rotation = utility::math::to_quat(glm::normalize(adjusted_forward_delta));
+    }
+
+    const auto rotation_offset = vr->get_rotation_offset();
+    if (!detail::finite_quat(source_rotation) || !detail::finite_quat(rotation_offset)) {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto wanted_rotation = glm::normalize(rotation_offset * source_rotation);
+    const auto relative_rotation = glm::normalize(view_inverse * wanted_rotation);
+    const auto euler = glm::degrees(utility::math::euler_angles_from_steamvr(relative_rotation));
+
+    if (!detail::finite_euler(euler)) {
+        invalidate_daysgone_manual_aim_sample();
+        return false;
+    }
+
+    const auto yaw = std::remainder(euler.y, 360.0f);
+    const auto pitch = std::remainder(euler.x, 360.0f);
+    const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    // Odd generations are being written. The decoder consumes only one
+    // stable even generation, even if Bend evaluates ManualAim more than once.
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_desired_yaw_degrees.store(yaw, std::memory_order_relaxed);
+    m_daysgone_desired_pitch_degrees.store(pitch, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sample_time_ms.store(now_ms, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
+    return true;
+} catch (...) {
+    invalidate_daysgone_manual_aim_sample();
+    SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][AimBridge] Failed to publish a side-effect-free OpenXR aim sample");
+    return false;
+}
+
+void IXRTrackingSystemHook::update_daysgone_manual_aim_bridge(sdk::UGameEngine* engine) try {
+    if (!is_daysgone_executable()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+
+    if (!m_daysgone_six_axis_aim_hook) {
+        if (now < m_daysgone_manual_aim_next_retry) {
+            invalidate_daysgone_manual_aim_sample();
+            return;
+        }
+
+        if (!is_legacy_aim_reflection_ready()) {
+            m_daysgone_manual_aim_next_retry = now + std::chrono::seconds(1);
+            invalidate_daysgone_manual_aim_sample();
+            return;
+        }
+
+        if (m_daysgone_manual_aim_class == nullptr) {
+            m_daysgone_manual_aim_class = sdk::find_uobject<sdk::UClass>(
+                L"Class /Script/BendGame.BendCamManualAim",
+                false);
+        }
+
+        if (m_daysgone_player_manual_aim_class == nullptr) {
+            m_daysgone_player_manual_aim_class = sdk::find_uobject<sdk::UClass>(
+                L"BlueprintGeneratedClass /Game/Libraries/Blueprints/Cameras/AimCameras/BendPlayerCamManualAim.BendPlayerCamManualAim_C",
+                false);
+        }
+
+        if (m_daysgone_manual_aim_class == nullptr || m_daysgone_player_manual_aim_class == nullptr ||
+            m_daysgone_manual_aim_class->get_properties_size() != 0x4d8 ||
+            m_daysgone_player_manual_aim_class->get_properties_size() != 0x4e0 ||
+            !m_daysgone_player_manual_aim_class->is_a(m_daysgone_manual_aim_class))
+        {
+            m_daysgone_manual_aim_next_retry = now + std::chrono::seconds(1);
+            invalidate_daysgone_manual_aim_sample();
+            return;
+        }
+
+        const auto pivot_lerp = m_daysgone_manual_aim_class->find_property(L"m_fPivotYGoalLerp");
+        const auto six_axis_aim = m_daysgone_manual_aim_class->find_property(L"m_bSixAxisAim");
+        const auto six_axis_scale = m_daysgone_manual_aim_class->find_property(L"m_fSixAxisScale");
+        const auto six_axis_lerp = m_daysgone_manual_aim_class->find_property(L"m_fSixAxisLerp");
+
+        if (pivot_lerp == nullptr || pivot_lerp->get_offset() != 0x440 ||
+            six_axis_aim == nullptr || six_axis_aim->get_offset() != 0x444 ||
+            six_axis_scale == nullptr || six_axis_scale->get_offset() != 0x448 ||
+            six_axis_lerp == nullptr || six_axis_lerp->get_offset() != 0x44c)
+        {
+            SPDLOG_WARN_ONCE("[DaysGone][AimBridge] Reflected ManualAim layout did not match the validated UE4.11 contract; bridge remains disabled");
+            m_daysgone_manual_aim_next_retry = now + std::chrono::seconds(1);
+            invalidate_daysgone_manual_aim_sample();
+            return;
+        }
+
+        const auto manual_aim_cdo = m_daysgone_manual_aim_class->get_class_default_object();
+        if (manual_aim_cdo == nullptr || !is_live_legacy_aim_object(manual_aim_cdo) ||
+            !manual_aim_cdo->is_a(m_daysgone_manual_aim_class) ||
+            !try_install_daysgone_manual_aim_bridge(manual_aim_cdo))
+        {
+            m_daysgone_manual_aim_next_retry = now + std::chrono::seconds(1);
+            invalidate_daysgone_manual_aim_sample();
+            return;
+        }
+    }
+
+    const auto observed = m_daysgone_observed_manual_aim.load(std::memory_order_acquire);
+    if (!validate_daysgone_manual_aim_object(observed)) {
+        m_daysgone_active_manual_aim.store(nullptr, std::memory_order_release);
+        m_daysgone_pending_manual_aim = nullptr;
+        m_daysgone_pending_manual_aim_confirmations = 0;
+        invalidate_daysgone_manual_aim_sample();
+        return;
+    }
+
+    const auto active = m_daysgone_active_manual_aim.load(std::memory_order_acquire);
+    if (active != observed) {
+        if (m_daysgone_pending_manual_aim == observed) {
+            ++m_daysgone_pending_manual_aim_confirmations;
+        } else {
+            m_daysgone_pending_manual_aim = observed;
+            m_daysgone_pending_manual_aim_confirmations = 1;
+        }
+
+        m_daysgone_active_manual_aim.store(nullptr, std::memory_order_release);
+        invalidate_daysgone_manual_aim_sample();
+
+        // Require the same live player ManualAim on two consecutive game
+        // ticks. Its first transition frame remains entirely native.
+        if (m_daysgone_pending_manual_aim_confirmations < 2) {
+            return;
+        }
+
+        m_daysgone_active_manual_aim.store(observed, std::memory_order_release);
+        m_daysgone_pending_manual_aim = nullptr;
+        m_daysgone_pending_manual_aim_confirmations = 0;
+        SPDLOG_INFO("[DaysGone][AimBridge] Validated active BendPlayerCamManualAim {}", (void*)observed);
+    }
+
+    publish_daysgone_manual_aim_sample(engine);
+} catch (...) {
+    m_daysgone_active_manual_aim.store(nullptr, std::memory_order_release);
+    m_daysgone_pending_manual_aim = nullptr;
+    m_daysgone_pending_manual_aim_confirmations = 0;
+    invalidate_daysgone_manual_aim_sample();
+    m_daysgone_manual_aim_next_retry = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][AimBridge] Native ManualAim validation failed; preserving Bend input");
+}
+
+void* IXRTrackingSystemHook::daysgone_six_axis_aim_bridge(void* manual_aim, float* output_pair) {
+    const auto decoder_return_address = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const auto result = g_hook->m_daysgone_six_axis_aim_hook.call<void*>(manual_aim, output_pair);
+
+    if (!is_daysgone_executable() || manual_aim == nullptr ||
+        decoder_return_address != g_hook->m_daysgone_six_axis_decoder_return_address ||
+        !detail::is_writable_process_range((uintptr_t)output_pair, sizeof(float) * 2))
+    {
+        return result;
+    }
+
+    constexpr uintptr_t HIDDEN_PAIR_OFFSET = 0x430;
+    constexpr uintptr_t SIX_AXIS_FLAGS_OFFSET = 0x444;
+    constexpr uintptr_t SIX_AXIS_SCALE_OFFSET = 0x448;
+    constexpr uintptr_t SIX_AXIS_LERP_OFFSET = 0x44c;
+    constexpr uintptr_t CAMERA_OWNER_OFFSET = 0x28;
+    constexpr uintptr_t ACTIVE_CAMERA_ARRAY_OFFSET = 0x35d0;
+    constexpr uintptr_t ACTIVE_CAMERA_COUNT_OFFSET = 0x35d8;
+
+    const auto base = (uintptr_t)manual_aim;
+    uintptr_t camera_owner{};
+    uintptr_t active_camera_array{};
+    uint32_t active_camera_count{};
+    uintptr_t first_active_camera{};
+    uint8_t flags{};
+
+    // Mirror Bend's own accumulation ownership test before even publishing an
+    // observed object. This keeps inactive transition/cinematic camera layers
+    // out of the game-thread validator without calling UObject code here.
+    if (!detail::is_readable_process_range(base, SIX_AXIS_LERP_OFFSET + sizeof(float)) ||
+        !detail::read_process_value(base + CAMERA_OWNER_OFFSET, camera_owner) ||
+        !detail::read_process_value(camera_owner + ACTIVE_CAMERA_ARRAY_OFFSET, active_camera_array) ||
+        !detail::read_process_value(camera_owner + ACTIVE_CAMERA_COUNT_OFFSET, active_camera_count) ||
+        active_camera_count == 0 || active_camera_count > 128 ||
+        !detail::read_process_value(active_camera_array, first_active_camera) ||
+        first_active_camera != base ||
+        !detail::read_process_value(base + SIX_AXIS_FLAGS_OFFSET, flags) ||
+        (flags & 1) == 0)
+    {
+        return result;
+    }
+
+    g_hook->m_daysgone_observed_manual_aim.store(
+        reinterpret_cast<sdk::UObject*>(manual_aim),
+        std::memory_order_release);
+
+    if (!VR::get()->is_hmd_active() || !VR::get()->is_any_aim_method_active() ||
+        VR::get()->is_controller_camera_conflict_guard_active() ||
+        g_hook->m_daysgone_active_manual_aim.load(std::memory_order_acquire) != manual_aim)
+    {
+        return result;
+    }
+
+    float native_pair[2]{};
+    std::memcpy(native_pair, output_pair, sizeof(native_pair));
+    if (!std::isfinite(native_pair[0]) || !std::isfinite(native_pair[1])) {
+        return result;
+    }
+
+    const auto sequence_before = g_hook->m_daysgone_desired_aim_sequence.load(std::memory_order_acquire);
+    if (sequence_before == 0 || (sequence_before & 1) != 0) {
+        return result;
+    }
+
+    const auto desired_yaw_degrees =
+        g_hook->m_daysgone_desired_yaw_degrees.load(std::memory_order_relaxed);
+    const auto desired_pitch_degrees =
+        g_hook->m_daysgone_desired_pitch_degrees.load(std::memory_order_relaxed);
+    const auto sample_time_ms =
+        g_hook->m_daysgone_desired_aim_sample_time_ms.load(std::memory_order_relaxed);
+    const auto sequence_after = g_hook->m_daysgone_desired_aim_sequence.load(std::memory_order_acquire);
+    const auto now_ms = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+    if (sequence_before != sequence_after || (sequence_after & 1) != 0 ||
+        sample_time_ms == 0 || now_ms < sample_time_ms || now_ms - sample_time_ms > 250 ||
+        !std::isfinite(desired_yaw_degrees) || !std::isfinite(desired_pitch_degrees))
+    {
+        return result;
+    }
+
+    float hidden_pair[2]{};
+    float six_axis_scale{};
+    float six_axis_lerp{};
+    if (!detail::read_process_value(base + HIDDEN_PAIR_OFFSET, hidden_pair) ||
+        !detail::read_process_value(base + SIX_AXIS_SCALE_OFFSET, six_axis_scale) ||
+        !detail::read_process_value(base + SIX_AXIS_LERP_OFFSET, six_axis_lerp) ||
+        !std::isfinite(hidden_pair[0]) || !std::isfinite(hidden_pair[1]) ||
+        !std::isfinite(six_axis_scale) || !std::isfinite(six_axis_lerp))
+    {
+        return result;
+    }
+
+    auto consumed_sequence = g_hook->m_daysgone_consumed_aim_sequence.load(std::memory_order_relaxed);
+    if (consumed_sequence == sequence_after ||
+        !g_hook->m_daysgone_consumed_aim_sequence.compare_exchange_strong(
+            consumed_sequence,
+            sequence_after,
+            std::memory_order_acq_rel,
+            std::memory_order_relaxed))
+    {
+        // Bend may evaluate the active ManualAim more than once. Suppress only
+        // duplicate copies of an already-consumed OpenXR sample.
+        output_pair[0] = 0.0f;
+        output_pair[1] = 0.0f;
+        return result;
+    }
+
+    constexpr float PI = 3.14159265358979323846f;
+    constexpr float TWO_PI = PI * 2.0f;
+    auto target_yaw = glm::radians(std::remainder(desired_yaw_degrees, 360.0f));
+    auto target_pitch = glm::radians(std::remainder(desired_pitch_degrees, 360.0f));
+
+    // The native decoder applies these settings before returning its yaw/pitch
+    // pair, so apply them to the replacement target in the same coordinate
+    // space. Bend still owns accumulation, interpolation, and pitch clamps.
+    if ((flags & 0x2) != 0) {
+        target_yaw = -target_yaw;
+    }
+    if ((flags & 0x4) != 0) {
+        target_pitch = -target_pitch;
+    }
+
+    const auto yaw_delta = std::remainder(target_yaw - hidden_pair[0], TWO_PI);
+    const auto pitch_delta = std::clamp(target_pitch - hidden_pair[1], -PI, PI);
+
+    if (!std::isfinite(yaw_delta) || !std::isfinite(pitch_delta)) {
+        return result;
+    }
+
+    // Validated order is yaw then pitch, in radians.
+    output_pair[0] = yaw_delta;
+    output_pair[1] = pitch_delta;
+
+    auto next_log = g_hook->m_daysgone_aim_trace_next_log_ms.load(std::memory_order_relaxed);
+    if (now_ms >= next_log &&
+        g_hook->m_daysgone_aim_trace_next_log_ms.compare_exchange_strong(
+            next_log,
+            now_ms + 1000,
+            std::memory_order_relaxed))
+    {
+        SPDLOG_INFO(
+            "[DaysGone][AimBridge] native=[{:.6f},{:.6f}] desired_deg=[yaw {:.3f},pitch {:.3f}] hidden=[{:.6f},{:.6f}] delta=[{:.6f},{:.6f}] flags=0x{:02x} scale={:.3f} lerp={:.3f}",
+            native_pair[0],
+            native_pair[1],
+            desired_yaw_degrees,
+            desired_pitch_degrees,
+            hidden_pair[0],
+            hidden_pair[1],
+            output_pair[0],
+            output_pair[1],
+            static_cast<uint32_t>(flags),
+            six_axis_scale,
+            six_axis_lerp);
+    }
+
+    return result;
+}
+
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     auto& vr = VR::get();
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
     const auto daysgone_controller_aim = is_daysgone_controller_aim_requested();
+    const auto daysgone_aim = is_daysgone_executable() && vr->is_any_aim_method_active();
     const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
     const auto suppress_legacy_fake_hmd_for_aim = legacy_ue4_direct_aim && vr->is_any_aim_method_active();
+
+    update_daysgone_manual_aim_bridge(engine);
 
     if (direct_aim_compat_requested && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
         if (legacy_ue4_direct_aim && vr->is_controller_camera_conflict_guard_active()) {
             SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Direct aim is blocked by Controller-Camera Conflict Guard; legacy fake HMD remains disabled");
-        } else if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
-            SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because Controller-Camera Conflict Guard blocks the safe direct controller-aim path");
-            vr->set_aim_method(VR::AimMethod::GAME);
+        } else if (daysgone_aim && vr->is_controller_camera_conflict_guard_active()) {
+            SPDLOG_WARN_ONCE("[DaysGone][Aim] Controller-Camera Conflict Guard blocks the ManualAim bridge; preserving the selected aim method");
             return;
         } else if (aim_method == VR::AimMethod::HEAD) {
             if (legacy_ue4_direct_aim) {
                 SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct HMD aim without installing the legacy fake IHeadMountedDisplay");
+            } else if (daysgone_aim) {
+                SPDLOG_INFO_ONCE("[DaysGone][Aim] Routing HMD aim through BendPlayerCamManualAim six-axis input");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing HMD aim on UE5.6 through ProcessViewRotation; unsafe direct UObject/FName fallback is disabled");
             } else {
@@ -880,7 +1638,8 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             if (legacy_ue4_direct_aim && vr->is_controller_aim_enabled()) {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Waiting for motion-controller tracking; legacy fake HMD remains disabled");
             } else if (daysgone_controller_aim) {
-                SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because controller tracking is not actively available");
+                SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][Aim] Motion-controller tracking is temporarily unavailable; preserving the selected controller aim method");
+                return;
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             } else {
@@ -894,7 +1653,7 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
             if (legacy_ue4_direct_aim) {
                 SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct controller aim without installing the legacy fake IHeadMountedDisplay");
             } else if (daysgone_controller_aim) {
-                SPDLOG_WARN_ONCE("[DaysGone][Aim] Using direct controller-aim fallback; skipping legacy UE4.11 HMD/ProcessViewRotation controller aim hooks");
+                SPDLOG_INFO_ONCE("[DaysGone][Aim] Routing controller aim through BendPlayerCamManualAim six-axis input");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
             } else {
@@ -914,14 +1673,21 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     if (direct_aim_compat_active) {
         if (legacy_ue4_direct_aim) {
             SPDLOG_INFO_ONCE("[UE4.14-4.17][Aim] Driving guarded direct control-rotation updates");
-        } else if (daysgone_controller_aim) {
-            SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving Days Gone controller aim through direct control rotation updates");
+        } else if (daysgone_aim) {
+            SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving the guarded native ManualAim bridge without changing ControlRotation");
         } else if (deadzone_direct_aim) {
             SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
         } else {
             SPDLOG_INFO_ONCE("[AimCompat] Driving direct aim fallback through control rotation updates");
         }
-        manual_update_control_rotation(engine);
+
+        if (!daysgone_aim) {
+            manual_update_control_rotation(engine);
+        }
+    }
+
+    if (is_daysgone_executable()) {
+        return;
     }
 
     auto& data = m_process_view_rotation_data;
@@ -946,6 +1712,10 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (is_daysgone_executable()) {
+        return;
+    }
+
     if (VR::get()->is_controller_camera_conflict_guard_active()) {
         return;
     }
@@ -1341,6 +2111,12 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
 }
 
 void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* engine_override) {
+    if (is_daysgone_executable()) {
+        // Days Gone is driven only through the validated native ManualAim
+        // decoder. Never re-enter the legacy ControlRotation experiment.
+        return;
+    }
+
     if (VR::get()->is_controller_camera_conflict_guard_active()) {
         return;
     }
