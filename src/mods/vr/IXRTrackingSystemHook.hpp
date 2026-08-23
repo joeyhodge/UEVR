@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <memory>
 
 #include <sdk/StereoStuff.hpp>
@@ -12,6 +14,8 @@
 namespace sdk {
 class UEngine;
 class UGameEngine;
+class UClass;
+class UObject;
 class IXRTrackingSystem;
 class IXRCamera;
 class IHeadMountedDisplay;
@@ -100,6 +104,13 @@ private:
 
     void pre_update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
 
+    void update_daysgone_manual_aim_bridge(sdk::UGameEngine* engine);
+    bool try_install_daysgone_manual_aim_bridge(sdk::UObject* manual_aim_cdo);
+    bool validate_daysgone_manual_aim_object(sdk::UObject* manual_aim) const;
+    bool publish_daysgone_manual_aim_sample(sdk::UGameEngine* engine);
+    void invalidate_daysgone_manual_aim_sample();
+    static void* daysgone_six_axis_aim_bridge(void* manual_aim, float* output_pair);
+
     FFakeStereoRenderingHook* m_stereo_hook{nullptr};
 
     struct TrackingSystem {
@@ -148,6 +159,24 @@ private:
     uintptr_t m_addr_of_process_view_rotation_ptr{};
     //std::unique_ptr<PointerHook> m_process_view_rotation_hook{};
     safetyhook::InlineHook m_process_view_rotation_hook{};
+    safetyhook::InlineHook m_daysgone_six_axis_aim_hook{};
+    std::atomic<sdk::UObject*> m_daysgone_observed_manual_aim{};
+    std::atomic<sdk::UObject*> m_daysgone_active_manual_aim{};
+    std::atomic<float> m_daysgone_desired_pitch_degrees{};
+    std::atomic<float> m_daysgone_desired_yaw_degrees{};
+    std::atomic<uint64_t> m_daysgone_desired_aim_sequence{};
+    std::atomic<uint64_t> m_daysgone_consumed_aim_sequence{};
+    std::atomic<uint64_t> m_daysgone_desired_aim_sample_time_ms{};
+    std::atomic<uint64_t> m_daysgone_aim_trace_next_log_ms{};
+    sdk::UClass* m_daysgone_manual_aim_class{};
+    sdk::UClass* m_daysgone_player_manual_aim_class{};
+    sdk::UObject* m_daysgone_pending_manual_aim{};
+    uint32_t m_daysgone_pending_manual_aim_confirmations{};
+    uintptr_t m_daysgone_manual_aim_update{};
+    uintptr_t m_daysgone_six_axis_decoder{};
+    uintptr_t m_daysgone_six_axis_decoder_return_address{};
+    uintptr_t m_daysgone_rejected_manual_aim_vtable{};
+    std::chrono::steady_clock::time_point m_daysgone_manual_aim_next_retry{};
     bool m_attempted_hook_view_rotation{false};
     bool m_initialized{false};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
