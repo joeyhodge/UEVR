@@ -1466,6 +1466,27 @@ bool medium_is_current_game() {
     return result;
 }
 
+bool observer_system_redux_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\observersystemredux.exe") ||
+               lowered.ends_with(L"/observersystemredux.exe") ||
+               lowered == L"observersystemredux.exe";
+    }();
+
+    return result;
+}
+
 bool dead_island_2_ue425_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -6854,6 +6875,92 @@ std::optional<RuntimeFunctionRange> get_runtime_function_range(uintptr_t address
     };
 }
 
+bool runtime_function_gap_is_covered_by_entries_chained_to_parent(
+    uintptr_t image_base,
+    const RUNTIME_FUNCTION& expected_parent,
+    uintptr_t gap_begin,
+    uintptr_t gap_end)
+{
+    constexpr uint8_t unwind_flag_ehandler = 0x1;
+    constexpr uint8_t unwind_flag_uhandler = 0x2;
+    constexpr uint8_t unwind_flag_chaininfo = 0x4;
+    constexpr uint32_t max_covering_entries = 8;
+    constexpr size_t max_covered_gap_size = 0x1000;
+
+    if (image_base == 0 || gap_begin < image_base || gap_end <= gap_begin ||
+        gap_end - gap_begin > max_covered_gap_size)
+    {
+        return false;
+    }
+
+    auto cursor = gap_begin;
+    for (uint32_t index = 0; index < max_covering_entries && cursor < gap_end; ++index) {
+        DWORD64 covering_image_base64{};
+        const auto covering_entry = RtlLookupFunctionEntry(
+            static_cast<DWORD64>(cursor),
+            &covering_image_base64,
+            nullptr);
+
+        if (covering_entry == nullptr ||
+            static_cast<uintptr_t>(covering_image_base64) != image_base ||
+            covering_entry->UnwindData == 0)
+        {
+            return false;
+        }
+
+        const auto covering_begin = image_base + covering_entry->BeginAddress;
+        const auto covering_end = image_base + covering_entry->EndAddress;
+        if (covering_begin < image_base || covering_end <= covering_begin ||
+            covering_begin != cursor || covering_end > gap_end ||
+            !is_executable_process_range(
+                covering_begin,
+                std::min<size_t>(covering_end - covering_begin, 16)))
+        {
+            return false;
+        }
+
+        const auto unwind_address = image_base + covering_entry->UnwindData;
+        if (unwind_address < image_base || !is_readable_process_range(unwind_address, 4)) {
+            return false;
+        }
+
+        const auto unwind_info = reinterpret_cast<const uint8_t*>(unwind_address);
+        const auto version = unwind_info[0] & 0x07;
+        const auto flags = unwind_info[0] >> 3;
+        if (version != 1 || (flags & unwind_flag_chaininfo) == 0 ||
+            (flags & (unwind_flag_ehandler | unwind_flag_uhandler)) != 0)
+        {
+            return false;
+        }
+
+        const auto unwind_code_count = static_cast<size_t>(unwind_info[2]);
+        const auto aligned_code_count = (unwind_code_count + 1) & ~size_t{1};
+        const auto chained_entry_address =
+            unwind_address + 4 + aligned_code_count * sizeof(uint16_t);
+        if (chained_entry_address < unwind_address ||
+            !is_readable_process_range(chained_entry_address, sizeof(RUNTIME_FUNCTION)))
+        {
+            return false;
+        }
+
+        RUNTIME_FUNCTION chained_parent{};
+        std::memcpy(
+            &chained_parent,
+            reinterpret_cast<const void*>(chained_entry_address),
+            sizeof(chained_parent));
+        if (chained_parent.BeginAddress != expected_parent.BeginAddress ||
+            chained_parent.EndAddress != expected_parent.EndAddress ||
+            chained_parent.UnwindData != expected_parent.UnwindData)
+        {
+            return false;
+        }
+
+        cursor = covering_end;
+    }
+
+    return cursor == gap_end;
+}
+
 std::optional<RuntimeFunctionRange> get_canonical_runtime_function_range(uintptr_t address) {
     constexpr uint8_t unwind_flag_ehandler = 0x1;
     constexpr uint8_t unwind_flag_uhandler = 0x2;
@@ -6981,7 +7088,7 @@ bool indirect_virtual_call_returns_to(uintptr_t return_address, uint8_t slot_off
 }
 
 constexpr uint8_t UE425_FRAME_NUMBER_OFFSET = 0x3C;
-constexpr uint8_t MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET = 0x44;
+constexpr uint8_t UE425PLUS_FRAME_NUMBER_OFFSET = 0x44;
 constexpr uint8_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
 
 bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
@@ -6995,7 +7102,7 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
     const auto uses_ue425_layout =
         frame_number_offset == UE425_FRAME_NUMBER_OFFSET ||
-        frame_number_offset == MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET;
+        frame_number_offset == UE425PLUS_FRAME_NUMBER_OFFSET;
     const auto minimum_size = uses_ue425_layout
         ? UE425_MIN_RENDERER_SIZE
         : DEFAULT_MIN_RENDERER_SIZE;
@@ -7031,9 +7138,9 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
             continue;
         }
 
-        // Stock/SHCO UE4.25 uses +0x3c, The Medium's UE4.25Plus fork
-        // uses +0x44, and UE4.26/4.27 use +0x5c. Accept any compiler-selected
-        // base/source register, but reject a REX.W qword store.
+        // Stock/SHCO UE4.25 uses +0x3c, the Medium and Observer System Redux
+        // UE4.25Plus forks use +0x44, and UE4.26/4.27 use +0x5c. Accept any
+        // compiler-selected base/source register, but reject a REX.W qword store.
         if (opcode == 0x89 &&
             (rex & 0x08) == 0 &&
             bytes[displacement_index] == frame_number_offset)
@@ -7060,7 +7167,8 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
 
 std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_viewfamily_range(
     uintptr_t callback_return,
-    uint8_t frame_number_offset)
+    uint8_t frame_number_offset,
+    bool allow_covered_nonadjacent_parent)
 {
     constexpr uint8_t unwind_flag_chaininfo = 0x4;
     constexpr uint32_t max_chain_depth = 4;
@@ -7127,13 +7235,35 @@ std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_vie
         const auto parent_begin = image_base + parent_entry.BeginAddress;
         const auto parent_end = image_base + parent_entry.EndAddress;
         if (parent_begin < image_base || parent_end <= parent_begin ||
-            parent_end != combined.begin || parent_entry.UnwindData == 0 ||
+            parent_begin >= combined.begin || parent_entry.UnwindData == 0 ||
             combined.end - parent_begin > 0x4000 ||
             !is_executable_process_range(
                 parent_begin,
                 std::min<size_t>(parent_end - parent_begin, 16)))
         {
             break;
+        }
+
+        const auto parent_is_adjacent = parent_end == combined.begin;
+        const auto parent_gap_is_covered =
+            allow_covered_nonadjacent_parent &&
+            parent_end < combined.begin &&
+            runtime_function_gap_is_covered_by_entries_chained_to_parent(
+                image_base,
+                parent_entry,
+                parent_end,
+                combined.begin);
+        if (!parent_is_adjacent && !parent_gap_is_covered) {
+            break;
+        }
+
+        if (parent_gap_is_covered) {
+            SPDLOG_INFO_ONCE(
+                "[ObserverSystemRedux][ViewFamilySelector] Accepted a fully covered "
+                "non-adjacent CHAININFO parent gap begin={:x} end={:x} root={:x}",
+                parent_end,
+                combined.begin,
+                parent_begin);
         }
 
         combined.begin = parent_begin;
@@ -7182,14 +7312,19 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     const auto source_validated_ue426_427 = is_ue_4_26_runtime() || is_ue_4_27_runtime();
     const auto source_validated_ue4 = source_validated_ue425 || source_validated_ue426_427;
     const auto medium_ue425plus = source_validated_ue425 && medium_is_current_game();
+    const auto observer_ue425plus =
+        source_validated_ue425 && observer_system_redux_is_current_game();
+    const auto custom_ue425plus_layout = medium_ue425plus || observer_ue425plus;
     const auto source_frame_number_offset = source_validated_ue425
-        ? (medium_ue425plus
-            ? MEDIUM_UE425PLUS_FRAME_NUMBER_OFFSET
+        ? (custom_ue425plus_layout
+            ? UE425PLUS_FRAME_NUMBER_OFFSET
             : UE425_FRAME_NUMBER_OFFSET)
         : UE426_427_FRAME_NUMBER_OFFSET;
-    const auto source_runtime_label = medium_ue425plus
-        ? "Medium UE4.25Plus"
-        : (source_validated_ue425 ? "UE4.25" : "UE4.26/4.27");
+    const auto source_runtime_label = observer_ue425plus
+        ? "Observer System Redux UE4.25Plus"
+        : (medium_ue425plus
+            ? "Medium UE4.25Plus"
+            : (source_validated_ue425 ? "UE4.25" : "UE4.26/4.27"));
     std::optional<uintptr_t> best_candidate{};
     int best_score = std::numeric_limits<int>::min();
 
@@ -7201,7 +7336,8 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         const auto direct_candidate =
             get_source_validated_ue4_begin_rendering_viewfamily_range(
                 direct_callback_return,
-                source_frame_number_offset);
+                source_frame_number_offset,
+                observer_ue425plus);
         const auto direct_candidate_valid =
             direct_candidate.has_value() &&
             direct_candidate->image_base == game_module;
@@ -7298,7 +7434,8 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             const auto candidate = source_validated_ue4
                 ? get_source_validated_ue4_begin_rendering_viewfamily_range(
                     stack[i],
-                    source_frame_number_offset)
+                    source_frame_number_offset,
+                    observer_ue425plus)
                 : get_canonical_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
