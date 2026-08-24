@@ -4951,6 +4951,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     return (aphelion_is_current_game() ||
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
+            stalker2_uses_ue55_draw_windows_array_layout() ||
             redemption_sin_eternal_is_current_game() ||
             everspace2_is_current_game() ||
             directive8020_is_current_game() ||
