@@ -1,6 +1,8 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string_view>
 #include <unordered_map>
 
