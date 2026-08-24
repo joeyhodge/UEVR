@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cstdint>
-#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <array>
 #include <memory>
 
 #include <sdk/StereoStuff.hpp>
@@ -14,8 +14,6 @@
 namespace sdk {
 class UEngine;
 class UGameEngine;
-class UClass;
-class UObject;
 class IXRTrackingSystem;
 class IXRCamera;
 class IHeadMountedDisplay;
@@ -104,12 +102,14 @@ private:
 
     void pre_update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot);
 
-    void update_daysgone_manual_aim_bridge(sdk::UGameEngine* engine);
-    bool try_install_daysgone_manual_aim_bridge(sdk::UObject* manual_aim_cdo);
-    bool validate_daysgone_manual_aim_object(sdk::UObject* manual_aim) const;
-    bool publish_daysgone_manual_aim_sample(sdk::UGameEngine* engine);
-    void invalidate_daysgone_manual_aim_sample();
-    static void* daysgone_six_axis_aim_bridge(void* manual_aim, float* output_pair);
+    void update_daysgone_weapon_aim_bridge(sdk::UGameEngine* engine);
+    bool try_install_daysgone_weapon_aim_bridge(void* weapon);
+    bool validate_daysgone_weapon_object(void* weapon) const;
+    bool publish_daysgone_weapon_aim_sample(glm::vec3* published_desired = nullptr);
+    void invalidate_daysgone_weapon_aim_sample();
+    void update_daysgone_reticle_alignment(uintptr_t controller, const glm::vec3& desired);
+    void restore_daysgone_reticle_alignment();
+    static void daysgone_weapon_aim_trace(safetyhook::Context& ctx);
 
     FFakeStereoRenderingHook* m_stereo_hook{nullptr};
 
@@ -159,24 +159,21 @@ private:
     uintptr_t m_addr_of_process_view_rotation_ptr{};
     //std::unique_ptr<PointerHook> m_process_view_rotation_hook{};
     safetyhook::InlineHook m_process_view_rotation_hook{};
-    safetyhook::InlineHook m_daysgone_six_axis_aim_hook{};
-    std::atomic<sdk::UObject*> m_daysgone_observed_manual_aim{};
-    std::atomic<sdk::UObject*> m_daysgone_active_manual_aim{};
-    std::atomic<float> m_daysgone_desired_pitch_degrees{};
-    std::atomic<float> m_daysgone_desired_yaw_degrees{};
+    safetyhook::MidHook m_daysgone_weapon_aim_trace_hook{};
+    std::atomic<void*> m_daysgone_active_pawn{};
+    std::atomic<float> m_daysgone_desired_aim_x{};
+    std::atomic<float> m_daysgone_desired_aim_y{};
+    std::atomic<float> m_daysgone_desired_aim_z{};
     std::atomic<uint64_t> m_daysgone_desired_aim_sequence{};
-    std::atomic<uint64_t> m_daysgone_consumed_aim_sequence{};
     std::atomic<uint64_t> m_daysgone_desired_aim_sample_time_ms{};
     std::atomic<uint64_t> m_daysgone_aim_trace_next_log_ms{};
-    sdk::UClass* m_daysgone_manual_aim_class{};
-    sdk::UClass* m_daysgone_player_manual_aim_class{};
-    sdk::UObject* m_daysgone_pending_manual_aim{};
-    uint32_t m_daysgone_pending_manual_aim_confirmations{};
-    uintptr_t m_daysgone_manual_aim_update{};
-    uintptr_t m_daysgone_six_axis_decoder{};
-    uintptr_t m_daysgone_six_axis_decoder_return_address{};
-    uintptr_t m_daysgone_rejected_manual_aim_vtable{};
-    std::chrono::steady_clock::time_point m_daysgone_manual_aim_next_retry{};
+    uintptr_t m_daysgone_weapon_aim_trace_update{};
+    uintptr_t m_daysgone_rejected_weapon_vtable{};
+    std::chrono::steady_clock::time_point m_daysgone_weapon_aim_next_retry{};
+    void* m_daysgone_reticle_visual{};
+    glm::vec2 m_daysgone_reticle_original_translation{};
+    bool m_daysgone_reticle_original_captured{};
+    uint64_t m_daysgone_reticle_next_log_ms{};
     bool m_attempted_hook_view_rotation{false};
     bool m_initialized{false};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
