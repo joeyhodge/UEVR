@@ -35,12 +35,20 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+option(UEVR_BUILD_COMPATIBILITY_TESTS "Build the offline compatibility policy tests" OFF)
+if(UEVR_BUILD_COMPATIBILITY_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(dependencies/submodules/UESDK)
 
 set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 message(STATUS "Using vendored safetyhook (b62c7356f3e364209a2ae14489550156d7b58b8b + UEVR patches)...")
 add_subdirectory(dependencies/vendor/safetyhook)
 """
+
+[conditions]
+compatibility-policy-tests = "UEVR_BUILD_COMPATIBILITY_TESTS"
 
 [target.spdlog]
 type = "static"
@@ -163,6 +171,21 @@ link-libraries = [
     "kananlib",
     "uesdk"
 ]
+
+[target.compatibility-policy-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/CompatibilityPolicyTests.cpp"]
+include-directories = [
+    "src/",
+    "dependencies/submodules/UESDK/src",
+    "dependencies/submodules/glm",
+]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
+"""
 
 [target.vr-plugin-nullifier]
 type = "shared"
