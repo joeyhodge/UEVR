@@ -5,6 +5,7 @@
 #include <sdk/FSceneView.hpp>
 #include <sdk/FSceneViewLayoutPolicy.hpp>
 
+#include "mods/GameSpecific.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 
 namespace {
@@ -247,6 +248,32 @@ void test_version_gates() {
         "UE5.6 non-DX backends must fail closed");
     expect(!should_use_ue56_post_init_slot(false, true, false),
         "other engine versions must not enter the UE5.6-specific gate");
+
+    expect(uevr::games::is_stalker2_legacy_ue51_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0),
+        "legacy Stalker2 UE5.1 must retain its frame-loop guards");
+    expect(!uevr::games::is_stalker2_legacy_ue51_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0x00050005),
+        "updated Stalker2 UE5.5 must not inherit UE5.1 frame-loop guards");
+    expect(!uevr::games::is_stalker2_legacy_ue51_runtime(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.1.1", 0x00050001),
+        "other UE5.1 games must not inherit Stalker2 frame-loop guards");
+    expect(uevr::games::is_stalker2_legacy_ue51_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"unknown", 0x00050001),
+        "legacy Stalker2 must retain the file-version fallback");
+
+    expect(uevr::games::is_stalker2_ue55_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0),
+        "updated Stalker2 UE5.5 must use its validated Slate DrawWindows array layout");
+    expect(!uevr::games::is_stalker2_ue55_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0x00050001),
+        "legacy Stalker2 UE5.1 must not inherit the UE5.5 Slate ABI");
+    expect(!uevr::games::is_stalker2_ue55_runtime(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005),
+        "other UE5.5 games must not inherit the Stalker2 Slate ABI");
+    expect(uevr::games::is_stalker2_ue55_runtime(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"unknown", 0x00050005),
+        "updated Stalker2 must retain the UE5.5 file-version fallback");
 }
 
 } // namespace
