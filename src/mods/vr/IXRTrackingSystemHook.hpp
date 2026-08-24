@@ -105,9 +105,10 @@ private:
     void update_daysgone_weapon_aim_bridge(sdk::UGameEngine* engine);
     bool try_install_daysgone_weapon_aim_bridge(void* weapon);
     bool validate_daysgone_weapon_object(void* weapon) const;
-    bool publish_daysgone_weapon_aim_sample(glm::vec3* published_desired = nullptr);
+    bool publish_daysgone_weapon_aim_sample();
     void invalidate_daysgone_weapon_aim_sample();
-    void update_daysgone_reticle_alignment(uintptr_t controller, const glm::vec3& desired);
+    void invalidate_daysgone_weapon_endpoint_sample();
+    void update_daysgone_reticle_alignment();
     void restore_daysgone_reticle_alignment();
     static void daysgone_weapon_aim_trace(safetyhook::Context& ctx);
 
@@ -161,19 +162,27 @@ private:
     safetyhook::InlineHook m_process_view_rotation_hook{};
     safetyhook::MidHook m_daysgone_weapon_aim_trace_hook{};
     std::atomic<void*> m_daysgone_active_pawn{};
+    std::atomic<void*> m_daysgone_active_controller{};
     std::atomic<float> m_daysgone_desired_aim_x{};
     std::atomic<float> m_daysgone_desired_aim_y{};
     std::atomic<float> m_daysgone_desired_aim_z{};
     std::atomic<uint64_t> m_daysgone_desired_aim_sequence{};
     std::atomic<uint64_t> m_daysgone_desired_aim_sample_time_ms{};
+    std::atomic<float> m_daysgone_weapon_endpoint_x{};
+    std::atomic<float> m_daysgone_weapon_endpoint_y{};
+    std::atomic<float> m_daysgone_weapon_endpoint_z{};
+    std::atomic<uint64_t> m_daysgone_weapon_endpoint_sequence{};
+    std::atomic<uint64_t> m_daysgone_weapon_endpoint_sample_time_ms{};
     std::atomic<uint64_t> m_daysgone_aim_trace_next_log_ms{};
+    void* m_daysgone_reticle_root{};
+    void* m_daysgone_reticle_slot{};
+    float m_daysgone_reticle_original_x{};
+    float m_daysgone_reticle_original_y{};
+    bool m_daysgone_reticle_original_captured{};
+    uint64_t m_daysgone_reticle_next_log_ms{};
     uintptr_t m_daysgone_weapon_aim_trace_update{};
     uintptr_t m_daysgone_rejected_weapon_vtable{};
     std::chrono::steady_clock::time_point m_daysgone_weapon_aim_next_retry{};
-    void* m_daysgone_reticle_visual{};
-    glm::vec2 m_daysgone_reticle_original_translation{};
-    bool m_daysgone_reticle_original_captured{};
-    uint64_t m_daysgone_reticle_next_log_ms{};
     bool m_attempted_hook_view_rotation{false};
     bool m_initialized{false};
     bool m_is_leq_4_25{false}; // <= 4.25, IsHeadTrackingAllowedForWorld does not exist
