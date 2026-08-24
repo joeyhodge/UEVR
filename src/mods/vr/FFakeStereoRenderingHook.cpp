@@ -96,11 +96,6 @@ static_assert(static_cast<int32_t>(VR::SYNCHRONIZED) ==
     static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::Synchronized));
 static_assert(static_cast<int32_t>(VR::ALTERNATING) ==
     static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::Alternating));
-static_assert(static_cast<int32_t>(VR::SYNTHETIC_DIBR) ==
-    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::SyntheticDibr));
-static_assert(static_cast<int32_t>(VR::SYNTHETIC_DIBR_SINGLE_VIEW) ==
-    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::SyntheticDibrSingleView));
-
 namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
@@ -9295,9 +9290,6 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
                 {"ghosting_fix_requested", vr->is_ghosting_fix_enabled()},
                 {"sceneview_compatibility", vr->is_sceneview_compatibility_enabled()},
                 {"splitscreen_compatibility", vr->is_splitscreen_compatibility_enabled()},
-                {"dibr_selected", vr->is_dibr_rendering_method_selected()},
-                {"dibr_preview_active", vr->is_dibr_preview_active()},
-                {"dibr_single_view_requested", vr->is_dibr_single_view_requested()},
                 {"using_2d_screen", vr->is_using_2d_screen()},
                 {"stereo_emulation", vr->is_stereo_emulation_enabled()},
                 {"extreme_compatibility", vr->is_extreme_compatibility_mode_enabled()},
