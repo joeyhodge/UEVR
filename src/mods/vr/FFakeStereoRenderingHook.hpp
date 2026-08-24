@@ -900,6 +900,9 @@ public:
     const char* get_splitscreen_compatibility_status_text();
 
 private:
+    std::string build_hook_provenance_json();
+    void draw_hook_provenance_diagnostics();
+
     std::atomic_bool m_dune_character_creation_active{false};
     std::atomic_bool m_dune_has_live_pawn{false};
     std::atomic_uint64_t m_dune_true_stereo_frame{0};
@@ -1532,6 +1535,9 @@ private:
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
     // Off by default: restores safetyhook's trampoline lock path for games that dislike the faster original-call path.
     const ModToggle::Ptr m_safe_tick_hook{ ModToggle::create("VR_SafeTickHook", false) };
+    bool m_hook_provenance_diagnostics{false};
+    std::string m_hook_provenance_json{};
+    std::string m_hook_provenance_export_status{};
     const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_force_player_camera{ ModToggle::create("VR_DaysGoneBendUI_ForcePlayerCamera", true, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_override_widget_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideWidgetTransform", true, true) };

@@ -59,6 +59,11 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+option(UEVR_BUILD_COMPATIBILITY_TESTS "Build the offline compatibility policy tests" OFF)
+if(UEVR_BUILD_COMPATIBILITY_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(dependencies/submodules/UESDK)
 
 set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
@@ -455,6 +460,53 @@ target_link_libraries(sdk-test PUBLIC
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
 
+# Target compatibility-policy-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET compatibility-policy-tests)
+	set(compatibility-policy-tests_SOURCES "")
+
+	list(APPEND compatibility-policy-tests_SOURCES
+		"tests/CompatibilityPolicyTests.cpp"
+	)
+
+	list(APPEND compatibility-policy-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${compatibility-policy-tests_SOURCES})
+	add_executable(compatibility-policy-tests)
+
+	if(compatibility-policy-tests_SOURCES)
+		target_sources(compatibility-policy-tests PRIVATE ${compatibility-policy-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT compatibility-policy-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${compatibility-policy-tests_SOURCES})
+
+	target_compile_features(compatibility-policy-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(compatibility-policy-tests PRIVATE
+		"src/"
+		"dependencies/submodules/UESDK/src"
+		"dependencies/submodules/glm"
+	)
+
+	target_link_libraries(compatibility-policy-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -793,6 +845,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/pluginloader/UScriptStructFunctions.hpp"
 	"src/mods/uobjecthook/SDKDumper.hpp"
 	"src/mods/vr/CVarManager.hpp"
+	"src/mods/vr/CompatibilityPolicy.hpp"
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
