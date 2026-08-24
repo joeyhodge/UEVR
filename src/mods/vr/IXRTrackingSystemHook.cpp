@@ -709,27 +709,34 @@ constexpr uintptr_t DAYS_GONE_SLATE_HUD_WIDGET_OFFSET = 0xB0;
 constexpr uintptr_t DAYS_GONE_HUD_WIDGET_RETICLES_OFFSET = 0x528;
 constexpr uintptr_t DAYS_GONE_RETICLES_IS_AIMING_OFFSET = 0x2C8;
 constexpr uintptr_t DAYS_GONE_RETICLES_HIDDEN_OFFSET = 0x359;
-constexpr uintptr_t DAYS_GONE_RETICLES_CURRENT_RETICLE_OFFSET = 0x380;
+constexpr uintptr_t DAYS_GONE_WIDGET_SLOT_OFFSET = 0x30;
+constexpr uintptr_t DAYS_GONE_WIDGET_VISIBILITY_OFFSET = 0x91;
+constexpr uintptr_t DAYS_GONE_PANEL_SLOT_PARENT_OFFSET = 0x28;
+constexpr uintptr_t DAYS_GONE_PANEL_SLOT_CONTENT_OFFSET = 0x30;
+constexpr uintptr_t DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET = 0x38;
+constexpr uintptr_t DAYS_GONE_CANVAS_SLOT_AUTO_SIZE_OFFSET = 0x60;
+constexpr uintptr_t DAYS_GONE_PANEL_WIDGET_SLOTS_OFFSET = 0x118;
+constexpr float DAYS_GONE_HUD_DESIGN_WIDTH = 1920.0f;
+constexpr float DAYS_GONE_HUD_DESIGN_HEIGHT = 1080.0f;
+constexpr float DAYS_GONE_RETICLE_SLOT_SIZE = 256.0f;
+// Permit the firing ray to leave the desktop viewport without treating a
+// still-valid projection as a widget failure. This keeps the range bounded to
+// one additional viewport in each direction.
+constexpr float DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET = 1.0f;
 struct DaysGoneReticleDescriptor {
     uintptr_t child_offset{};
-    uintptr_t visual_offset{};
     const char* name{};
+    bool is_scope{};
 };
 
 constexpr std::array<DaysGoneReticleDescriptor, 6> DAYS_GONE_RETICLE_DESCRIPTORS{{
-    {0x270, 0x2B0, "Assault"},
-    {0x278, 0x278, "Crossbow"},
-    {0x280, 0x2A0, "Marksman"},
-    {0x288, 0x260, "Pistol"},
-    // Scope is a full-screen overlay without a weapon Wrapper. Moving either
-    // anonymous image would move the vignette, so preserve its native layout.
-    {0x290, 0x000, "Scope"},
-    {0x298, 0x288, "Shotgun"}
+    {0x270, "Assault", false},
+    {0x278, "Crossbow", false},
+    {0x280, "Marksman", false},
+    {0x288, "Pistol", false},
+    {0x290, "Scope", true},
+    {0x298, "Shotgun", false}
 }};
-constexpr uintptr_t DAYS_GONE_WIDGET_VISIBILITY_OFFSET = 0x91;
-constexpr uintptr_t DAYS_GONE_WIDGET_RENDER_TRANSLATION_OFFSET = 0xB0;
-constexpr float DAYS_GONE_HUD_DESIGN_WIDTH = 1920.0f;
-constexpr float DAYS_GONE_HUD_DESIGN_HEIGHT = 1080.0f;
 constexpr uintptr_t DAYS_GONE_PAWN_AIM_STANCE_OFFSET = 0x1E90;
 constexpr uintptr_t DAYS_GONE_PAWN_WEAPON_MANAGER_OFFSET = 0x1B98;
 constexpr uintptr_t DAYS_GONE_PAWN_EQUIPPED_WEAPON_OFFSET = 0x3568;
@@ -765,6 +772,36 @@ struct DaysGoneVec2 {
     float y{};
 };
 
+struct DaysGoneMargin {
+    float left{};
+    float top{};
+    float right{};
+    float bottom{};
+};
+
+struct DaysGoneAnchors {
+    DaysGoneVec2 minimum{};
+    DaysGoneVec2 maximum{};
+};
+
+struct DaysGoneAnchorData {
+    DaysGoneMargin offsets{};
+    DaysGoneAnchors anchors{};
+    DaysGoneVec2 alignment{};
+};
+
+struct DaysGoneProjectWorldToScreenParams {
+    DaysGoneVector world_location{};
+    DaysGoneVec2 screen_location{};
+    uint8_t return_value{};
+    uint8_t padding[3]{};
+};
+
+struct DaysGoneGetViewportSizeParams {
+    int32_t size_x{};
+    int32_t size_y{};
+};
+
 struct DaysGoneWeakObjectPtr {
     int32_t object_index{-1};
     int32_t object_serial{};
@@ -773,6 +810,11 @@ struct DaysGoneWeakObjectPtr {
 static_assert(sizeof(DaysGoneArray) == 0x10);
 static_assert(sizeof(DaysGoneVector) == 0xC);
 static_assert(sizeof(DaysGoneVec2) == 0x8);
+static_assert(sizeof(DaysGoneMargin) == 0x10);
+static_assert(sizeof(DaysGoneAnchors) == 0x10);
+static_assert(sizeof(DaysGoneAnchorData) == 0x28);
+static_assert(sizeof(DaysGoneProjectWorldToScreenParams) == 0x18);
+static_assert(sizeof(DaysGoneGetViewportSizeParams) == 0x8);
 static_assert(sizeof(DaysGoneWeakObjectPtr) == 0x8);
 
 struct FunctionInfo {
@@ -1050,13 +1092,9 @@ static bool validate_daysgone_weapon_aim_trace_update(uintptr_t candidate, uintp
     return saw_return && matches == 1 && trace_hook_point != 0;
 }
 
-static void* resolve_daysgone_active_reticle_visual(
+static void* resolve_daysgone_active_reticle_root(
     uintptr_t controller,
-    uint8_t& current_reticle,
-    void*& root_reticle,
     const char*& reticle_name) {
-    current_reticle = 0xff;
-    root_reticle = nullptr;
     reticle_name = nullptr;
 
     uintptr_t hud{};
@@ -1078,8 +1116,7 @@ static void* resolve_daysgone_active_reticle_visual(
     uint8_t reticle_hidden{};
     if (!read_process_value(reticles + DAYS_GONE_RETICLES_IS_AIMING_OFFSET, is_aiming) ||
         !read_process_value(reticles + DAYS_GONE_RETICLES_HIDDEN_OFFSET, reticle_hidden) ||
-        !read_process_value(reticles + DAYS_GONE_RETICLES_CURRENT_RETICLE_OFFSET, current_reticle) ||
-        is_aiming == 0 || reticle_hidden != 0 || current_reticle >= 5) {
+        is_aiming == 0 || reticle_hidden != 0) {
         return nullptr;
     }
 
@@ -1096,8 +1133,7 @@ static void* resolve_daysgone_active_reticle_visual(
             continue;
         }
 
-        // ESlateVisibility::Visible, HitTestInvisible, and
-        // SelfHitTestInvisible all draw. Collapsed and Hidden do not.
+        // Visible, HitTestInvisible, and SelfHitTestInvisible all draw.
         if (visibility == 0 || visibility == 3 || visibility == 4) {
             visible_descriptor = &descriptor;
             visible_reticle = child;
@@ -1105,90 +1141,143 @@ static void* resolve_daysgone_active_reticle_visual(
         }
     }
 
-    if (visible_count != 1 || visible_descriptor == nullptr ||
-        visible_descriptor->visual_offset == 0) {
+    // Scope is a full-screen overlay. Never reposition it or an ambiguous
+    // transition where more than one weapon reticle is visible.
+    if (visible_count != 1 || visible_descriptor == nullptr || visible_descriptor->is_scope) {
         return nullptr;
     }
 
-    uintptr_t visual{};
-    if (!read_process_value(
-            visible_reticle + visible_descriptor->visual_offset,
-            visual) ||
-        !is_live_daysgone_object(reinterpret_cast<void*>(visual))) {
-        return nullptr;
-    }
-
-    root_reticle = reinterpret_cast<void*>(visible_reticle);
     reticle_name = visible_descriptor->name;
-    return reinterpret_cast<void*>(visual);
+    return reinterpret_cast<void*>(visible_reticle);
 }
 
-static bool project_daysgone_aim_to_reticle(const glm::vec3& desired, DaysGoneVec2& translation) {
-    if (!std::isfinite(desired.x) || !std::isfinite(desired.y) ||
-        !std::isfinite(desired.z) || desired.x <= 0.05f) {
-        return false;
+static void* resolve_daysgone_centered_reticle_slot(
+    void* root_reticle,
+    DaysGoneAnchorData& layout) {
+    if (!is_live_daysgone_object(root_reticle)) {
+        return nullptr;
     }
 
-    const auto project_eye = [&desired](const Matrix4x4f& projection, glm::vec2& ndc_delta) {
-        for (uint32_t column = 0; column < 4; ++column) {
-            for (uint32_t row = 0; row < 4; ++row) {
-                if (!std::isfinite(projection[column][row])) {
-                    return false;
-                }
-            }
-        }
+    uintptr_t slot{};
+    uintptr_t parent{};
+    uintptr_t content{};
+    uint8_t auto_size{};
+    if (!read_process_value(
+            reinterpret_cast<uintptr_t>(root_reticle) + DAYS_GONE_WIDGET_SLOT_OFFSET,
+            slot) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(slot)) ||
+        !read_process_value(slot + DAYS_GONE_PANEL_SLOT_PARENT_OFFSET, parent) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(parent)) ||
+        !read_process_value(slot + DAYS_GONE_PANEL_SLOT_CONTENT_OFFSET, content) ||
+        content != reinterpret_cast<uintptr_t>(root_reticle) ||
+        !read_process_value(slot + DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET, layout) ||
+        !read_process_value(slot + DAYS_GONE_CANVAS_SLOT_AUTO_SIZE_OFFSET, auto_size) ||
+        auto_size != 0) {
+        return nullptr;
+    }
 
-        // UEVR's projection is the Unreal row-vector matrix represented in
-        // GLM storage. Reorder UE forward/right/up into projection x/y/z, then
-        // subtract straight-ahead so asymmetric eye frusta do not bias the HUD.
-        const auto clip = projection * glm::vec4{desired.y, desired.z, desired.x, 1.0f};
-        const auto center = projection * glm::vec4{0.0f, 0.0f, 1.0f, 1.0f};
-        if (!std::isfinite(clip.w) || !std::isfinite(center.w) ||
-            std::abs(clip.w) < 0.0001f || std::abs(center.w) < 0.0001f) {
-            return false;
-        }
-
-        const auto projected = glm::vec2{clip.x, clip.y} / clip.w;
-        const auto projected_center = glm::vec2{center.x, center.y} / center.w;
-        ndc_delta = projected - projected_center;
-        return std::isfinite(ndc_delta.x) && std::isfinite(ndc_delta.y);
+    const auto nearly_equal = [](float value, float expected, float tolerance = 0.01f) {
+        return std::isfinite(value) && std::abs(value - expected) <= tolerance;
     };
 
-    glm::vec2 left{};
-    glm::vec2 right{};
-    const auto& vr = VR::get();
-    if (!project_eye(vr->get_projection_matrix(VRRuntime::Eye::LEFT), left) ||
-        !project_eye(vr->get_projection_matrix(VRRuntime::Eye::RIGHT), right)) {
-        return false;
+    if (!nearly_equal(layout.anchors.minimum.x, 0.5f) ||
+        !nearly_equal(layout.anchors.minimum.y, 0.5f) ||
+        !nearly_equal(layout.anchors.maximum.x, 0.5f) ||
+        !nearly_equal(layout.anchors.maximum.y, 0.5f) ||
+        !nearly_equal(layout.alignment.x, 0.5f) ||
+        !nearly_equal(layout.alignment.y, 0.5f) ||
+        !nearly_equal(layout.offsets.right, DAYS_GONE_RETICLE_SLOT_SIZE, 1.0f) ||
+        !nearly_equal(layout.offsets.bottom, DAYS_GONE_RETICLE_SLOT_SIZE, 1.0f) ||
+        !std::isfinite(layout.offsets.left) || !std::isfinite(layout.offsets.top) ||
+        std::abs(layout.offsets.left) > DAYS_GONE_HUD_DESIGN_WIDTH ||
+        std::abs(layout.offsets.top) > DAYS_GONE_HUD_DESIGN_HEIGHT) {
+        return nullptr;
     }
 
-    auto ndc = (left + right) * 0.5f;
-    if (!std::isfinite(ndc.x) || !std::isfinite(ndc.y) ||
-        std::abs(ndc.x) > 8.0f || std::abs(ndc.y) > 8.0f) {
-        return false;
+    DaysGoneArray parent_slots{};
+    if (!read_process_value(parent + DAYS_GONE_PANEL_WIDGET_SLOTS_OFFSET, parent_slots) ||
+        parent_slots.count < 1 || parent_slots.count > parent_slots.max ||
+        parent_slots.max > 128 ||
+        !is_readable_process_range(
+            parent_slots.data,
+            static_cast<size_t>(parent_slots.count) * sizeof(uintptr_t))) {
+        return nullptr;
     }
 
-    // Keep a valid reticle on the visible HUD when the requested ray leaves
-    // the current HMD frustum rather than allowing an unbounded widget offset.
-    ndc.x = std::clamp(ndc.x, -0.98f, 0.98f);
-    ndc.y = std::clamp(ndc.y, -0.98f, 0.98f);
-    translation.x = ndc.x * (DAYS_GONE_HUD_DESIGN_WIDTH * 0.5f);
-    translation.y = -ndc.y * (DAYS_GONE_HUD_DESIGN_HEIGHT * 0.5f);
-    return std::isfinite(translation.x) && std::isfinite(translation.y);
+    bool found_slot = false;
+    for (int32_t i = 0; i < parent_slots.count; ++i) {
+        uintptr_t candidate{};
+        if (read_process_value(
+                parent_slots.data + static_cast<uintptr_t>(i) * sizeof(uintptr_t),
+                candidate) && candidate == slot) {
+            found_slot = true;
+            break;
+        }
+    }
+
+    return found_slot ? reinterpret_cast<void*>(slot) : nullptr;
 }
 
-static bool set_daysgone_reticle_translation(void* widget, const DaysGoneVec2& translation) try {
-    if (!is_live_daysgone_object(widget) ||
-        !std::isfinite(translation.x) || !std::isfinite(translation.y)) {
+static bool set_daysgone_canvas_slot_position(void* slot, const DaysGoneVec2& position) try {
+    if (!is_live_daysgone_object(slot) ||
+        !std::isfinite(position.x) || !std::isfinite(position.y)) {
         return false;
     }
 
     struct Params {
-        DaysGoneVec2 translation;
-    } params{translation};
+        DaysGoneVec2 position{};
+    } params{position};
 
-    reinterpret_cast<sdk::UObjectBase*>(widget)->call_function(L"SetRenderTranslation", &params);
-    return true;
+    reinterpret_cast<sdk::UObjectBase*>(slot)->call_function(L"SetPosition", &params);
+
+    DaysGoneAnchorData updated{};
+    return read_process_value(
+               reinterpret_cast<uintptr_t>(slot) + DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET,
+               updated) &&
+        std::isfinite(updated.offsets.left) && std::isfinite(updated.offsets.top) &&
+        std::abs(updated.offsets.left - position.x) <= 0.5f &&
+        std::abs(updated.offsets.top - position.y) <= 0.5f;
+} catch (...) {
+    return false;
+}
+
+static bool project_daysgone_endpoint_to_hud(
+    uintptr_t controller,
+    const DaysGoneVector& endpoint,
+    DaysGoneVec2& centered_position) try {
+    if (!is_live_daysgone_object(reinterpret_cast<void*>(controller)) ||
+        !std::isfinite(endpoint.x) || !std::isfinite(endpoint.y) || !std::isfinite(endpoint.z)) {
+        return false;
+    }
+
+    auto* const controller_object = reinterpret_cast<sdk::UObjectBase*>(controller);
+    DaysGoneProjectWorldToScreenParams projection{};
+    projection.world_location = endpoint;
+    controller_object->call_function(L"ProjectWorldLocationToScreen", &projection);
+
+    DaysGoneGetViewportSizeParams viewport{};
+    controller_object->call_function(L"GetViewportSize", &viewport);
+
+    if (projection.return_value == 0 || viewport.size_x < 640 || viewport.size_x > 16384 ||
+        viewport.size_y < 360 || viewport.size_y > 16384 ||
+        !std::isfinite(projection.screen_location.x) ||
+        !std::isfinite(projection.screen_location.y)) {
+        return false;
+    }
+
+    const auto normalized_x =
+        projection.screen_location.x / static_cast<float>(viewport.size_x) - 0.5f;
+    const auto normalized_y =
+        projection.screen_location.y / static_cast<float>(viewport.size_y) - 0.5f;
+    if (!std::isfinite(normalized_x) || !std::isfinite(normalized_y) ||
+        std::abs(normalized_x) > DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET ||
+        std::abs(normalized_y) > DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET) {
+        return false;
+    }
+
+    centered_position.x = normalized_x * DAYS_GONE_HUD_DESIGN_WIDTH;
+    centered_position.y = normalized_y * DAYS_GONE_HUD_DESIGN_HEIGHT;
+    return std::isfinite(centered_position.x) && std::isfinite(centered_position.y);
 } catch (...) {
     return false;
 }
@@ -1376,8 +1465,19 @@ bool IXRTrackingSystemHook::validate_daysgone_weapon_object(void* weapon) const 
         candidate == m_daysgone_weapon_aim_trace_update;
 }
 
+void IXRTrackingSystemHook::invalidate_daysgone_weapon_endpoint_sample() {
+    m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_weapon_endpoint_x.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_y.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_z.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_sample_time_ms.store(0, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_release);
+}
+
 void IXRTrackingSystemHook::invalidate_daysgone_weapon_aim_sample() {
     m_daysgone_active_pawn.store(nullptr, std::memory_order_release);
+    m_daysgone_active_controller.store(nullptr, std::memory_order_release);
+    invalidate_daysgone_weapon_endpoint_sample();
 
     m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_acq_rel);
     m_daysgone_desired_aim_x.store(0.0f, std::memory_order_relaxed);
@@ -1387,96 +1487,7 @@ void IXRTrackingSystemHook::invalidate_daysgone_weapon_aim_sample() {
     m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
 }
 
-void IXRTrackingSystemHook::restore_daysgone_reticle_alignment() {
-    auto* const visual = m_daysgone_reticle_visual;
-    if (visual != nullptr && m_daysgone_reticle_original_captured &&
-        detail::is_live_daysgone_object(visual)) {
-        detail::set_daysgone_reticle_translation(visual, {
-            m_daysgone_reticle_original_translation.x,
-            m_daysgone_reticle_original_translation.y
-        });
-    }
-
-    m_daysgone_reticle_visual = nullptr;
-    m_daysgone_reticle_original_translation = {};
-    m_daysgone_reticle_original_captured = false;
-}
-
-void IXRTrackingSystemHook::update_daysgone_reticle_alignment(uintptr_t controller, const glm::vec3& desired) {
-    uint8_t current_reticle{};
-    void* root_reticle{};
-    const char* reticle_name{};
-    auto* const visual = detail::resolve_daysgone_active_reticle_visual(
-        controller,
-        current_reticle,
-        root_reticle,
-        reticle_name);
-    detail::DaysGoneVec2 projected{};
-    if (visual == nullptr || !detail::project_daysgone_aim_to_reticle(desired, projected)) {
-        restore_daysgone_reticle_alignment();
-        return;
-    }
-
-    if (visual != m_daysgone_reticle_visual) {
-        restore_daysgone_reticle_alignment();
-
-        detail::DaysGoneVec2 original{};
-        if (!detail::read_process_value(
-                reinterpret_cast<uintptr_t>(visual) + detail::DAYS_GONE_WIDGET_RENDER_TRANSLATION_OFFSET,
-                original) ||
-            !std::isfinite(original.x) || !std::isfinite(original.y) ||
-            std::abs(original.x) > 4096.0f || std::abs(original.y) > 4096.0f) {
-            return;
-        }
-
-        m_daysgone_reticle_visual = visual;
-        m_daysgone_reticle_original_translation = {original.x, original.y};
-        m_daysgone_reticle_original_captured = true;
-        SPDLOG_INFO(
-            "[DaysGone][ReticleAim] Following {} reticle type={} root=0x{:x} visual=0x{:x} baseline=({:.1f},{:.1f})",
-            reticle_name,
-            current_reticle,
-            reinterpret_cast<uintptr_t>(root_reticle),
-            reinterpret_cast<uintptr_t>(visual),
-            original.x,
-            original.y);
-    }
-
-    detail::DaysGoneVec2 target{
-        m_daysgone_reticle_original_translation.x + projected.x,
-        m_daysgone_reticle_original_translation.y + projected.y
-    };
-    detail::DaysGoneVec2 current{};
-    if (!detail::read_process_value(
-            reinterpret_cast<uintptr_t>(visual) + detail::DAYS_GONE_WIDGET_RENDER_TRANSLATION_OFFSET,
-            current)) {
-        restore_daysgone_reticle_alignment();
-        return;
-    }
-
-    const auto differs = std::abs(current.x - target.x) > 0.25f ||
-        std::abs(current.y - target.y) > 0.25f;
-    if (differs && !detail::set_daysgone_reticle_translation(visual, target)) {
-        restore_daysgone_reticle_alignment();
-        return;
-    }
-
-    const auto now_ms = detail::steady_clock_milliseconds();
-    if (now_ms >= m_daysgone_reticle_next_log_ms) {
-        m_daysgone_reticle_next_log_ms = now_ms + 2000;
-        SPDLOG_INFO(
-            "[DaysGone][ReticleAim] {} type={} local=[{:.3f},{:.3f},{:.3f}] translation=({:.1f},{:.1f})",
-            reticle_name,
-            current_reticle,
-            desired.x,
-            desired.y,
-            desired.z,
-            target.x,
-            target.y);
-    }
-}
-
-bool IXRTrackingSystemHook::publish_daysgone_weapon_aim_sample(glm::vec3* published_desired) {
+bool IXRTrackingSystemHook::publish_daysgone_weapon_aim_sample() {
     auto& vr = VR::get();
     if (!is_daysgone_executable() || !vr->is_hmd_active() ||
         !vr->is_any_aim_method_active() || vr->is_controller_camera_conflict_guard_active()) {
@@ -1563,10 +1574,128 @@ bool IXRTrackingSystemHook::publish_daysgone_weapon_aim_sample(glm::vec3* publis
         detail::steady_clock_milliseconds(),
         std::memory_order_relaxed);
     m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
-    if (published_desired != nullptr) {
-        *published_desired = desired;
-    }
     return true;
+}
+
+void IXRTrackingSystemHook::restore_daysgone_reticle_alignment() {
+    auto* const root = m_daysgone_reticle_root;
+    auto* const slot = m_daysgone_reticle_slot;
+    if (root != nullptr && slot != nullptr && m_daysgone_reticle_original_captured) {
+        detail::DaysGoneAnchorData layout{};
+        auto* const validated_slot = detail::resolve_daysgone_centered_reticle_slot(root, layout);
+        if (validated_slot == slot) {
+            detail::set_daysgone_canvas_slot_position(slot, {
+                m_daysgone_reticle_original_x,
+                m_daysgone_reticle_original_y
+            });
+        }
+    }
+
+    m_daysgone_reticle_root = nullptr;
+    m_daysgone_reticle_slot = nullptr;
+    m_daysgone_reticle_original_x = 0.0f;
+    m_daysgone_reticle_original_y = 0.0f;
+    m_daysgone_reticle_original_captured = false;
+}
+
+void IXRTrackingSystemHook::update_daysgone_reticle_alignment() {
+    auto* const controller = m_daysgone_active_controller.load(std::memory_order_acquire);
+    if (!is_daysgone_native_aim_requested() || controller == nullptr ||
+        !detail::is_live_daysgone_object(controller)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    detail::DaysGoneVector endpoint{};
+    uint64_t sample_time{};
+    bool stable_sample = false;
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        const auto sequence_before =
+            m_daysgone_weapon_endpoint_sequence.load(std::memory_order_acquire);
+        if ((sequence_before & 1) != 0) {
+            continue;
+        }
+
+        endpoint.x = m_daysgone_weapon_endpoint_x.load(std::memory_order_relaxed);
+        endpoint.y = m_daysgone_weapon_endpoint_y.load(std::memory_order_relaxed);
+        endpoint.z = m_daysgone_weapon_endpoint_z.load(std::memory_order_relaxed);
+        sample_time = m_daysgone_weapon_endpoint_sample_time_ms.load(std::memory_order_relaxed);
+
+        const auto sequence_after =
+            m_daysgone_weapon_endpoint_sequence.load(std::memory_order_acquire);
+        if (sequence_before == sequence_after && (sequence_after & 1) == 0) {
+            stable_sample = true;
+            break;
+        }
+    }
+
+    const auto now_ms = detail::steady_clock_milliseconds();
+    if (!stable_sample || sample_time == 0 || now_ms < sample_time ||
+        now_ms - sample_time > detail::DAYS_GONE_AIM_SAMPLE_MAX_AGE_MS ||
+        !std::isfinite(endpoint.x) || !std::isfinite(endpoint.y) ||
+        !std::isfinite(endpoint.z)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    const char* reticle_name{};
+    auto* const root = detail::resolve_daysgone_active_reticle_root(
+        reinterpret_cast<uintptr_t>(controller),
+        reticle_name);
+    detail::DaysGoneAnchorData layout{};
+    auto* const slot = detail::resolve_daysgone_centered_reticle_slot(root, layout);
+    if (root == nullptr || slot == nullptr || reticle_name == nullptr) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    if (root != m_daysgone_reticle_root || slot != m_daysgone_reticle_slot) {
+        restore_daysgone_reticle_alignment();
+        m_daysgone_reticle_root = root;
+        m_daysgone_reticle_slot = slot;
+        m_daysgone_reticle_original_x = layout.offsets.left;
+        m_daysgone_reticle_original_y = layout.offsets.top;
+        m_daysgone_reticle_original_captured = true;
+        SPDLOG_INFO(
+            "[DaysGone][ReticleAim] Following validated {} root CanvasPanelSlot "
+            "root=0x{:x} slot=0x{:x} baseline=({:.1f},{:.1f})",
+            reticle_name,
+            reinterpret_cast<uintptr_t>(root),
+            reinterpret_cast<uintptr_t>(slot),
+            m_daysgone_reticle_original_x,
+            m_daysgone_reticle_original_y);
+    }
+
+    detail::DaysGoneVec2 projected{};
+    if (!detail::project_daysgone_endpoint_to_hud(
+            reinterpret_cast<uintptr_t>(controller), endpoint, projected)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    const detail::DaysGoneVec2 target{
+        m_daysgone_reticle_original_x + projected.x,
+        m_daysgone_reticle_original_y + projected.y
+    };
+    if (!std::isfinite(target.x) || !std::isfinite(target.y) ||
+        std::abs(target.x) > detail::DAYS_GONE_HUD_DESIGN_WIDTH ||
+        std::abs(target.y) > detail::DAYS_GONE_HUD_DESIGN_HEIGHT ||
+        !detail::set_daysgone_canvas_slot_position(slot, target)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    if (now_ms >= m_daysgone_reticle_next_log_ms) {
+        m_daysgone_reticle_next_log_ms = now_ms + 2000;
+        SPDLOG_INFO(
+            "[DaysGone][ReticleAim] {} endpoint=[{:.1f},{:.1f},{:.1f}] slot=({:.1f},{:.1f})",
+            reticle_name,
+            endpoint.x,
+            endpoint.y,
+            endpoint.z,
+            target.x,
+            target.y);
+    }
 }
 
 void IXRTrackingSystemHook::update_daysgone_weapon_aim_bridge(sdk::UGameEngine* engine) {
@@ -1638,14 +1767,17 @@ void IXRTrackingSystemHook::update_daysgone_weapon_aim_bridge(sdk::UGameEngine* 
             reinterpret_cast<uintptr_t>(weapon));
     }
 
-    glm::vec3 desired{};
-    if (!publish_daysgone_weapon_aim_sample(&desired)) {
+    if (!publish_daysgone_weapon_aim_sample()) {
         fail_open();
         return;
     }
 
+    // The trace hook publishes a fresh world endpoint during this engine tick.
+    // Never let the post-tick reticle update consume the prior frame.
+    invalidate_daysgone_weapon_endpoint_sample();
+
     m_daysgone_active_pawn.store(reinterpret_cast<void*>(pawn), std::memory_order_release);
-    update_daysgone_reticle_alignment(controller, desired);
+    m_daysgone_active_controller.store(reinterpret_cast<void*>(controller), std::memory_order_release);
 }
 
 void IXRTrackingSystemHook::daysgone_weapon_aim_trace(safetyhook::Context& ctx) {
@@ -1761,6 +1893,13 @@ void IXRTrackingSystemHook::daysgone_weapon_aim_trace(safetyhook::Context& ctx) 
     trace_endpoint->y = rewritten_endpoint.y;
     trace_endpoint->z = rewritten_endpoint.z;
 
+    hook->m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_acq_rel);
+    hook->m_daysgone_weapon_endpoint_x.store(rewritten_endpoint.x, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_y.store(rewritten_endpoint.y, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_z.store(rewritten_endpoint.z, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_sample_time_ms.store(now_ms, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_release);
+
     auto next_log = hook->m_daysgone_aim_trace_next_log_ms.load(std::memory_order_relaxed);
     if (now_ms >= next_log && hook->m_daysgone_aim_trace_next_log_ms.compare_exchange_strong(
             next_log,
@@ -1793,16 +1932,13 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     if (is_daysgone_executable()) {
         if (!is_daysgone_native_aim_requested()) {
             invalidate_daysgone_weapon_aim_sample();
-            restore_daysgone_reticle_alignment();
         } else if (vr->is_controller_camera_conflict_guard_active()) {
             invalidate_daysgone_weapon_aim_sample();
-            restore_daysgone_reticle_alignment();
             SPDLOG_WARN_ONCE(
                 "[DaysGone][WeaponAim] Preserving native game aim because Controller-Camera Conflict Guard is active");
             return;
         } else if (vr->is_controller_aim_enabled() && !vr->is_using_controllers()) {
             invalidate_daysgone_weapon_aim_sample();
-            restore_daysgone_reticle_alignment();
             SPDLOG_WARN_ONCE(
                 "[DaysGone][WeaponAim] Waiting for motion-controller tracking without changing the configured aim method");
             return;
@@ -1892,6 +2028,12 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
     if (is_daysgone_executable()) {
+        if (is_daysgone_native_aim_requested() &&
+            !VR::get()->is_controller_camera_conflict_guard_active()) {
+            update_daysgone_reticle_alignment();
+        } else {
+            restore_daysgone_reticle_alignment();
+        }
         return;
     }
 
