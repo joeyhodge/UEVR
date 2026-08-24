@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstdint>
 #include <cwctype>
 #include <string>
 #include <string_view>
@@ -30,6 +31,36 @@ inline bool is_avowed_executable_path(std::wstring_view path) {
 inline bool is_stalker2_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.find(L"stalker2-win64-shipping") != std::wstring::npos;
+}
+
+inline bool is_stalker2_legacy_ue51_runtime(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms) {
+    if (!is_stalker2_executable_path(path)) {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"0.00" && detected_version != L"unknown") {
+        return detected_version == L"5.1" || detected_version.starts_with(L"5.1.");
+    }
+
+    return file_version_ms == 0x00050001;
+}
+
+inline bool is_stalker2_ue55_runtime(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms) {
+    if (!is_stalker2_executable_path(path)) {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"0.00" && detected_version != L"unknown") {
+        return detected_version == L"5.5" || detected_version.starts_with(L"5.5.");
+    }
+
+    return file_version_ms == 0x00050005;
 }
 
 inline bool is_prospi_executable_path(std::wstring_view path) {
