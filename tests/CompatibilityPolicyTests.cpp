@@ -264,7 +264,7 @@ void test_version_gates() {
 
     expect(uevr::games::is_stalker2_ue55_runtime(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0),
-        "updated Stalker2 UE5.5 must use its validated Slate DrawWindows array layout");
+        "updated Stalker2 UE5.5 must use its validated Slate DrawWindows array and dedicated UI path");
     expect(!uevr::games::is_stalker2_ue55_runtime(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0x00050001),
         "legacy Stalker2 UE5.1 must not inherit the UE5.5 Slate ABI");
