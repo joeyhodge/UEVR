@@ -4756,6 +4756,24 @@ bool is_ue_5_5_runtime() {
     return disk_version.dwFileVersionMS >= 0x50005 && disk_version.dwFileVersionMS < 0x50006;
 }
 
+bool stalker2_uses_ue55_draw_windows_array_layout() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_stalker2_ue55_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
+    }();
+
+    return result;
+}
+
 bool is_ue_5_5_dx_backend() {
     if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
         return false;
@@ -28273,16 +28291,20 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 sret FSlateDrawWindowPassInputs layout");
     }
 
+    const bool use_ue55_draw_windows_array_layout =
+        everwind_is_current_game() || stalker2_uses_ue55_draw_windows_array_layout();
+
     if (!a4_is_ue_5_5_variant &&
-        everwind_is_current_game() &&
+        use_ue55_draw_windows_array_layout &&
         try_read_ue55_slate_draw_windows_first_input(a3, renderer, ue55_inputs, ue55_inputs_full, a4_has_ue_5_5_full_inputs))
     {
-        // Everwind/UE5.5.2's SlateOutputTexture string scan lands on
+        // Some optimized UE5.5 builds resolve the SlateOutputTexture scan to
         // DrawWindows_RenderThread, whose R8 is a TConstArrayView of inputs.
         a4_is_ue_5_5_variant = true;
         ue55_inputs_are_from_windows_array = true;
         ue55_draw_window_outputs_ptr = nullptr;
-        SPDLOG_INFO_ONCE("[SlateRHIRenderer::DrawWindow_RenderThread] Using UE 5.5 DrawWindows array-view layout");
+        SPDLOG_INFO_ONCE(
+            "[SlateRHIRenderer::DrawWindow_RenderThread] Using validated UE 5.5 DrawWindows array-view layout");
     }
 
     if (a4_is_ue_5_5_variant) {
