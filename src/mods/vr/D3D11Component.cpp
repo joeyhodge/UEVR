@@ -711,6 +711,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                     m_scene_capture_snapshot_transaction != selected_transaction ||
                     scene_capture_rt.Get() != m_scene_capture_tex_ref.tex.Get())
                 {
+                    const bool generation_changed =
+                        m_scene_capture_generation != selected_generation;
                     m_scene_capture_tex_ref.reset();
                     m_scene_capture_generation = 0;
                     m_scene_capture_snapshot_transaction = 0;
@@ -719,13 +721,24 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                         m_scene_capture_snapshot_transaction = selected_transaction;
                         m_scene_capture_width = scene_capture_desc.Width;
                         m_scene_capture_height = scene_capture_desc.Height;
-                        spdlog::info(
-                            "[NativeStereoFix][D3D11] Accepted scene capture generation {} transaction {} format {} {}x{}",
-                            selected_generation,
-                            selected_transaction,
-                            static_cast<uint32_t>(scene_capture_desc.Format),
-                            scene_capture_desc.Width,
-                            scene_capture_desc.Height);
+                        if (generation_changed) {
+                            spdlog::info(
+                                "[NativeStereoFix][D3D11] Accepted scene capture generation {} transaction {} format {} {}x{}",
+                                selected_generation,
+                                selected_transaction,
+                                static_cast<uint32_t>(scene_capture_desc.Format),
+                                scene_capture_desc.Width,
+                                scene_capture_desc.Height);
+                        } else {
+                            SPDLOG_INFO_EVERY_N_SEC(
+                                30,
+                                "[NativeStereoFix][D3D11] Scene capture remains active at generation {} transaction {} format {} {}x{}",
+                                selected_generation,
+                                selected_transaction,
+                                static_cast<uint32_t>(scene_capture_desc.Format),
+                                scene_capture_desc.Width,
+                                scene_capture_desc.Height);
+                        }
                     }
                 }
 

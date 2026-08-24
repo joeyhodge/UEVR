@@ -14,15 +14,18 @@
 #include <cmath>
 #include <cstring>
 #include <cwctype>
+#include <fstream>
 #include <future>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
 #include <utility/Module.hpp>
@@ -78,6 +81,7 @@
 #include "../../utility/Logging.hpp"
 
 #include "FFakeStereoRenderingHook.hpp"
+#include "CompatibilityPolicy.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -85,6 +89,17 @@
 
 FFakeStereoRenderingHook* g_hook = nullptr;
 uint32_t g_frame_count{};
+
+static_assert(static_cast<int32_t>(VR::NATIVE_STEREO) ==
+    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::NativeStereo));
+static_assert(static_cast<int32_t>(VR::SYNCHRONIZED) ==
+    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::Synchronized));
+static_assert(static_cast<int32_t>(VR::ALTERNATING) ==
+    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::Alternating));
+static_assert(static_cast<int32_t>(VR::SYNTHETIC_DIBR) ==
+    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::SyntheticDibr));
+static_assert(static_cast<int32_t>(VR::SYNTHETIC_DIBR_SINGLE_VIEW) ==
+    static_cast<int32_t>(uevr::vr_compatibility::RenderingMethod::SyntheticDibrSingleView));
 
 namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
@@ -1314,6 +1329,13 @@ EngineRenderTimingStats g_begin_render_viewfamily_real_timing{};
 EngineRenderTimingStats g_begin_render_viewfamily_timing{};
 EngineRenderTimingStats g_prerender_viewfamily_rt_timing{};
 std::chrono::steady_clock::time_point g_engine_render_last_log{};
+std::mutex g_engine_render_timing_mutex{};
+
+struct EngineRenderTimingSnapshot {
+    EngineRenderTimingStats begin_render_viewfamily_real{};
+    EngineRenderTimingStats begin_render_viewfamily{};
+    EngineRenderTimingStats prerender_viewfamily_rt{};
+};
 
 bool shf_is_current_game() {
     static const bool result = []() {
@@ -4750,11 +4772,7 @@ bool is_ue_5_5_dx12_backend() {
     return is_ue_5_5_runtime();
 }
 
-bool is_ue_5_6_dx12_backend() {
-    if (g_framework == nullptr || !g_framework->is_dx12()) {
-        return false;
-    }
-
+bool is_ue_5_6_runtime() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
@@ -4763,6 +4781,19 @@ bool is_ue_5_6_dx12_backend() {
     }
 
     return disk_version.dwFileVersionMS >= 0x50006 && disk_version.dwFileVersionMS < 0x50007;
+}
+
+bool is_ue_5_6_dx_backend() {
+    const bool dx11 = g_framework != nullptr && g_framework->is_dx11();
+    const bool dx12 = g_framework != nullptr && g_framework->is_dx12();
+    return uevr::vr_compatibility::should_use_ue56_post_init_slot(
+        is_ue_5_6_runtime(),
+        dx11,
+        dx12);
+}
+
+bool is_ue_5_6_dx12_backend() {
+    return g_framework != nullptr && g_framework->is_dx12() && is_ue_5_6_runtime();
 }
 
 bool ue56_dx12_try_get_native_resource(FRHITexture2D* texture, const char* source, ID3D12Resource** out_native = nullptr, D3D12_RESOURCE_DESC* out_desc = nullptr) {
@@ -4956,47 +4987,66 @@ void log_engine_render_timing_if_needed() {
     }
 
     const auto now = std::chrono::steady_clock::now();
+    std::optional<EngineRenderTimingSnapshot> snapshot{};
 
-    if (g_engine_render_last_log.time_since_epoch().count() == 0) {
-        g_engine_render_last_log = now;
-        return;
-    }
-
-    if (now - g_engine_render_last_log < ENGINE_RENDER_TIMING_LOG_INTERVAL) {
-        return;
-    }
-
-    if (g_begin_render_viewfamily_real_timing.count == 0 &&
-        g_begin_render_viewfamily_timing.count == 0 &&
-        g_prerender_viewfamily_rt_timing.count == 0)
     {
+        std::scoped_lock lock{g_engine_render_timing_mutex};
+
+        if (g_engine_render_last_log.time_since_epoch().count() == 0) {
+            g_engine_render_last_log = now;
+            return;
+        }
+
+        if (now - g_engine_render_last_log < ENGINE_RENDER_TIMING_LOG_INTERVAL) {
+            return;
+        }
+
+        if (g_begin_render_viewfamily_real_timing.count == 0 &&
+            g_begin_render_viewfamily_timing.count == 0 &&
+            g_prerender_viewfamily_rt_timing.count == 0)
+        {
+            g_engine_render_last_log = now;
+            return;
+        }
+
+        snapshot = EngineRenderTimingSnapshot{
+            g_begin_render_viewfamily_real_timing,
+            g_begin_render_viewfamily_timing,
+            g_prerender_viewfamily_rt_timing,
+        };
+
         g_engine_render_last_log = now;
-        return;
+        g_begin_render_viewfamily_real_timing.reset();
+        g_begin_render_viewfamily_timing.reset();
+        g_prerender_viewfamily_rt_timing.reset();
     }
 
     auto vr = VR::get();
     const auto hmd_active = vr != nullptr && vr->is_hmd_active();
     const auto native_stereo = vr != nullptr && vr->is_native_stereo_fix_enabled();
+    const auto& timing = *snapshot;
 
     spdlog::info(
         "[UE57][engine-render-profiler] begin_render_viewfamily_real avg={:.2f}ms max={:.2f}ms n={} begin_render_viewfamily avg={:.2f}ms max={:.2f}ms n={} prerender_viewfamily_rt avg={:.2f}ms max={:.2f}ms n={} hmd={} native_stereo={}",
-        g_begin_render_viewfamily_real_timing.avg(),
-        g_begin_render_viewfamily_real_timing.max_ms,
-        g_begin_render_viewfamily_real_timing.count,
-        g_begin_render_viewfamily_timing.avg(),
-        g_begin_render_viewfamily_timing.max_ms,
-        g_begin_render_viewfamily_timing.count,
-        g_prerender_viewfamily_rt_timing.avg(),
-        g_prerender_viewfamily_rt_timing.max_ms,
-        g_prerender_viewfamily_rt_timing.count,
+        timing.begin_render_viewfamily_real.avg(),
+        timing.begin_render_viewfamily_real.max_ms,
+        timing.begin_render_viewfamily_real.count,
+        timing.begin_render_viewfamily.avg(),
+        timing.begin_render_viewfamily.max_ms,
+        timing.begin_render_viewfamily.count,
+        timing.prerender_viewfamily_rt.avg(),
+        timing.prerender_viewfamily_rt.max_ms,
+        timing.prerender_viewfamily_rt.count,
         hmd_active,
         native_stereo
     );
+}
 
-    g_engine_render_last_log = now;
-    g_begin_render_viewfamily_real_timing.reset();
-    g_begin_render_viewfamily_timing.reset();
-    g_prerender_viewfamily_rt_timing.reset();
+void record_engine_render_timing(
+    EngineRenderTimingStats& stats,
+    std::chrono::steady_clock::duration duration) {
+    std::scoped_lock lock{g_engine_render_timing_mutex};
+    stats.add(duration);
 }
 
 bool should_profile_engine_render_timing() {
@@ -6623,7 +6673,7 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
     // for shipped game layouts:
     // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
     // GetDetailedInfoInternal at 9 and PostInitProperties at 10.
-    if (is_ue_5_4_dx_backend() || is_ue_5_5_dx_backend() || is_ue_5_6_dx12_backend() || is_ue_5_7_or_newer()) {
+    if (is_ue_5_4_dx_backend() || is_ue_5_5_dx_backend() || is_ue_5_6_dx_backend() || is_ue_5_7_or_newer()) {
         constexpr uint32_t UE54_PLUS_POST_INIT_PROPERTIES_SLOT = 10;
 
         if (validate_source_informed_post_init_slot(
@@ -9150,7 +9200,8 @@ bool is_using_double_precision(uintptr_t addr) {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
-    m_uses_ue58_rendertarget_manager = is_ue_5_8_or_newer();
+    m_uses_ue58_rendertarget_manager =
+        uevr::vr_compatibility::should_use_ue58_render_target_manager_abi(is_ue_5_8());
 
     if (m_uses_ue58_rendertarget_manager) {
         SPDLOG_INFO("[UE5.8] Render-target-manager ABI defaults to public and requires exact call-pair evidence before using a transitional layout");
@@ -9332,6 +9383,219 @@ void FFakeStereoRenderingHook::on_frame() {
     }
 }
 
+std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
+    try {
+        nlohmann::json result{
+            {"schema_version", 1},
+            {"diagnostic_only", true},
+            {"snapshot_note", "best-effort snapshot; refresh after hook installation stabilizes"},
+        };
+
+        const auto executable = utility::get_executable();
+        const auto executable_path = utility::get_module_pathw(executable);
+        const auto file_version = sdk::get_file_version_info();
+        const auto detected_version = utility::narrow(
+            sdk::search_for_version(executable).value_or(L"unknown"));
+
+        result["process"] = {
+            {"executable", executable_path ? utility::narrow(*executable_path) : "unknown"},
+            {"engine_version", detected_version},
+            {"file_version_ms", file_version.dwFileVersionMS},
+            {"file_version_ls", file_version.dwFileVersionLS},
+        };
+
+        const bool dx11 = g_framework != nullptr && g_framework->is_dx11();
+        const bool dx12 = g_framework != nullptr && g_framework->is_dx12();
+        result["backend"] = dx11 ? "D3D11" : dx12 ? "D3D12" : "unknown";
+
+        const auto ue58_abi = m_ue58_rendertarget_manager_abi.load(std::memory_order_acquire);
+        const char* ue58_abi_name = "not selected";
+        if (m_uses_ue58_rendertarget_manager) {
+            switch (ue58_abi) {
+            case UE58RenderTargetManagerABI::Public:
+                ue58_abi_name = "public";
+                break;
+            case UE58RenderTargetManagerABI::TransitionalDepthSlot:
+                ue58_abi_name = "transitional depth slot";
+                break;
+            default:
+                ue58_abi_name = "awaiting validated call-pair evidence";
+                break;
+            }
+        }
+
+        result["compatibility_policy"] = {
+            {"exact_ue56", is_ue_5_6_runtime()},
+            {"ue56_post_init_slot_10", is_ue_5_6_dx_backend()},
+            {"exact_ue58", is_ue_5_8()},
+            {"ue58_or_newer_detected", is_ue_5_8_or_newer()},
+            {"ue58_rtm_enabled", m_uses_ue58_rendertarget_manager},
+            {"ue58_rtm_abi", ue58_abi_name},
+        };
+
+        if (const auto vr = VR::get(); vr != nullptr) {
+            result["rendering_mode"] = {
+                {"hmd_active", vr->is_hmd_active()},
+                {"using_afr", vr->is_using_afr()},
+                {"using_native_stereo", vr->is_using_native_stereo()},
+                {"native_stereo_fix_active", vr->is_native_stereo_fix_enabled()},
+                {"ghosting_fix_requested", vr->is_ghosting_fix_enabled()},
+                {"sceneview_compatibility", vr->is_sceneview_compatibility_enabled()},
+                {"splitscreen_compatibility", vr->is_splitscreen_compatibility_enabled()},
+                {"dibr_selected", vr->is_dibr_rendering_method_selected()},
+                {"dibr_preview_active", vr->is_dibr_preview_active()},
+                {"dibr_single_view_requested", vr->is_dibr_single_view_requested()},
+                {"using_2d_screen", vr->is_using_2d_screen()},
+                {"stereo_emulation", vr->is_stereo_emulation_enabled()},
+                {"extreme_compatibility", vr->is_extreme_compatibility_mode_enabled()},
+            };
+        } else {
+            result["rendering_mode"] = nullptr;
+        }
+
+        auto hooks = nlohmann::json::array();
+        const auto add_hook = [&hooks](
+                                  const char* name,
+                                  const char* kind,
+                                  bool installed,
+                                  uintptr_t target,
+                                  const char* provenance) {
+            nlohmann::json entry{
+                {"name", name},
+                {"kind", kind},
+                {"installed", installed},
+                {"provenance", provenance},
+            };
+
+            if (target != 0) {
+                entry["target"] = fmt::format("0x{:x}", target);
+            } else {
+                entry["target"] = nullptr;
+            }
+            hooks.push_back(std::move(entry));
+        };
+
+        const auto add_safety_hook = [&add_hook](const char* name, const char* kind, const auto& hook) {
+            const bool installed = static_cast<bool>(hook);
+            add_hook(
+                name,
+                kind,
+                installed,
+                installed ? hook.target_address() : 0,
+                "validated executable target");
+        };
+
+        add_safety_hook("UGameEngine::Tick", "inline", m_tick_hook);
+        add_safety_hook("Slate DrawWindow render thread", "inline", m_slate_thread_hook);
+        add_safety_hook("UGameViewportClient::Draw", "inline", m_gameviewportclient_draw_hook);
+        add_safety_hook("FViewport::Draw", "inline", m_viewport_draw_hook);
+        add_safety_hook("LocalPlayer::SetupViewPoint", "inline", m_localplayer_get_viewpoint_hook);
+        add_safety_hook("BeginRenderViewFamily", "inline", m_render_module_begin_render_viewfamily_hook);
+        add_safety_hook("AdjustViewRect", "inline", m_adjust_view_rect_hook);
+        add_safety_hook("CalculateStereoViewOffset", "inline", m_calculate_stereo_view_offset_hook_inline);
+        add_safety_hook("CalculateStereoProjectionMatrix", "inline", m_calculate_stereo_projection_matrix_hook);
+        add_safety_hook("RenderTexture_RenderThread", "inline", m_render_texture_render_thread_hook);
+        add_safety_hook("Projection matrix post", "mid", m_calculate_stereo_projection_matrix_post_hook);
+        add_safety_hook("Projection data pre", "mid", m_get_projection_data_pre_hook);
+
+        {
+            std::scoped_lock lock{m_sceneview_data.mtx};
+            add_safety_hook("FSceneView constructor", "inline", m_sceneview_data.constructor_hook);
+        }
+
+        const auto add_pointer_hook = [&add_hook](const char* name, const auto& hook) {
+            add_hook(
+                name,
+                "vtable pointer",
+                hook != nullptr,
+                0,
+                "validated vtable slot; target address intentionally not dereferenced");
+        };
+
+        add_pointer_hook("IsStereoEnabled", m_is_stereo_enabled_hook);
+        add_pointer_hook("GetRenderTargetManager", m_get_render_target_manager_hook);
+        add_pointer_hook("GetDesiredNumberOfViews", m_get_desired_number_of_views_hook);
+        add_pointer_hook("GetViewPassForIndex", m_get_view_pass_for_index_hook);
+        add_pointer_hook("UpdateViewportRHI", m_update_viewport_rhi_hook);
+        add_pointer_hook("Viewport GetRenderTargetTexture", m_viewport_get_render_target_texture_hook);
+
+        result["hooks"] = std::move(hooks);
+        result["observations"] = {
+            {"begin_render_viewfamily_observed",
+                m_render_module_begin_render_viewfamily_observed.load(std::memory_order_acquire)},
+            {"game_viewport_draw_observed",
+                m_game_viewport_client_draw_observed.load(std::memory_order_acquire)},
+            {"native_stereo_status", get_native_stereo_fix_status_text()},
+            {"ghosting_status", get_ghosting_fix_status_text()},
+        };
+
+        return result.dump(2);
+    } catch (const std::exception& e) {
+        return nlohmann::json{
+            {"schema_version", 1},
+            {"diagnostic_only", true},
+            {"error", e.what()},
+        }.dump(2);
+    }
+}
+
+void FFakeStereoRenderingHook::draw_hook_provenance_diagnostics() {
+    const bool was_enabled = m_hook_provenance_diagnostics;
+    ImGui::Checkbox("Hook Provenance Diagnostics", &m_hook_provenance_diagnostics);
+    ImGui::SameLine();
+    ImGui::TextDisabled("(read-only, default-off)");
+
+    if (!m_hook_provenance_diagnostics) {
+        return;
+    }
+
+    if (!was_enabled || m_hook_provenance_json.empty()) {
+        m_hook_provenance_json = build_hook_provenance_json();
+        m_hook_provenance_export_status.clear();
+    }
+
+    if (ImGui::Button("Refresh Hook Provenance")) {
+        m_hook_provenance_json = build_hook_provenance_json();
+        m_hook_provenance_export_status.clear();
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Copy Hook Provenance JSON")) {
+        ImGui::SetClipboardText(m_hook_provenance_json.c_str());
+    }
+
+    ImGui::SameLine();
+    if (ImGui::Button("Export Hook Provenance JSON")) {
+        try {
+            m_hook_provenance_json = build_hook_provenance_json();
+            const auto output_path = Framework::get_persistent_dir("hook_provenance.json");
+            std::ofstream output{output_path, std::ios::binary | std::ios::trunc};
+            output.write(
+                m_hook_provenance_json.data(),
+                static_cast<std::streamsize>(m_hook_provenance_json.size()));
+            output.flush();
+
+            m_hook_provenance_export_status = output.good()
+                ? fmt::format("Exported to {}", output_path.string())
+                : fmt::format("Failed to export to {}", output_path.string());
+        } catch (const std::exception& e) {
+            m_hook_provenance_export_status = fmt::format("Export failed: {}", e.what());
+        }
+    }
+
+    if (!m_hook_provenance_export_status.empty()) {
+        ImGui::TextWrapped("%s", m_hook_provenance_export_status.c_str());
+    }
+
+    ImGui::BeginChild(
+        "HookProvenanceJSON",
+        ImVec2(0.0f, 220.0f),
+        true,
+        ImGuiWindowFlags_HorizontalScrollbar);
+    ImGui::TextUnformatted(m_hook_provenance_json.c_str());
+    ImGui::EndChild();
+}
+
 
 void FFakeStereoRenderingHook::on_draw_ui() {
     ZoneScopedN(__FUNCTION__);
@@ -9344,6 +9608,7 @@ void FFakeStereoRenderingHook::on_draw_ui() {
         m_recreate_textures_on_reset->draw("Recreate Textures on Reset");
         m_frame_delay_compensation->draw("Frame Delay Compensation");
         m_use_fmalloc_scene_view_extensions->draw("Use FMalloc for ISceneViewExtensions");
+        draw_hook_provenance_diagnostics();
 
         if (m_tracking_system_hook != nullptr) {
             m_tracking_system_hook->on_draw_ui();
@@ -16859,11 +17124,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     };
 
     const bool ghosting_fix_can_remap =
-        vr->is_ghosting_fix_enabled() &&
-        vr->is_using_afr() &&
-        !vr->is_native_stereo_fix_enabled() &&
-        !vr->is_splitscreen_compatibility_enabled() &&
-        !vr->is_sceneview_compatibility_enabled();
+        uevr::vr_compatibility::should_enable_ghosting_remap(
+            vr->is_ghosting_fix_enabled(),
+            vr->is_using_afr(),
+            vr->is_native_stereo_fix_enabled(),
+            vr->is_splitscreen_compatibility_enabled(),
+            vr->is_sceneview_compatibility_enabled());
 
     if (!ghosting_fix_can_remap) {
         if (ghosting_state != GhostingFixState::Off) {
@@ -18139,7 +18405,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        g_begin_render_viewfamily_real_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_real_start);
+        record_engine_render_timing(
+            g_begin_render_viewfamily_real_timing,
+            std::chrono::steady_clock::now() - begin_render_viewfamily_real_start);
         log_engine_render_timing_if_needed();
     }};
 
@@ -18156,7 +18424,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     // Never suppress the engine's second view until the DIBR presentation path
     // itself is eligible. A stale Native Stereo Fix or compatibility toggle must
     // leave the renderer on its normal path rather than create a hybrid frame.
-    const auto dibr_single_view_eligible = dibr_single_view_requested && vr->is_dibr_preview_active();
+    const auto dibr_single_view_eligible =
+        uevr::vr_compatibility::is_dibr_single_view_eligible(
+            dibr_single_view_requested,
+            vr->is_dibr_preview_active());
     const auto native_stereo_fix_enabled = vr->is_native_stereo_fix_enabled();
     const bool split_screen_enabled = vr->is_splitscreen_compatibility_enabled();
 
@@ -20005,7 +20276,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             return;
         }
 
-        g_begin_render_viewfamily_timing.add(std::chrono::steady_clock::now() - begin_render_viewfamily_start);
+        record_engine_render_timing(
+            g_begin_render_viewfamily_timing,
+            std::chrono::steady_clock::now() - begin_render_viewfamily_start);
         log_engine_render_timing_if_needed();
     }};
 
@@ -20750,7 +21023,9 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             return;
         }
 
-        g_prerender_viewfamily_rt_timing.add(std::chrono::steady_clock::now() - prerender_viewfamily_rt_start);
+        record_engine_render_timing(
+            g_prerender_viewfamily_rt_timing,
+            std::chrono::steady_clock::now() - prerender_viewfamily_rt_start);
         log_engine_render_timing_if_needed();
     }};
 
@@ -24129,7 +24404,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         ue425_426_post_init ||
         prospi_ue427_post_init ||
         is_ue_5_7_or_newer() ||
-        is_ue_5_6_dx12_backend() ||
+        is_ue_5_6_dx_backend() ||
         is_ue_5_5_dx_backend() ||
         is_ue_5_4_dx_backend() ||
         ue53_post_init ||
