@@ -312,6 +312,24 @@ bool is_stalker2_executable_cached() {
     return is_stalker2;
 }
 
+bool is_stalker2_legacy_ue51_runtime_cached() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_stalker2_legacy_ue51_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
+    }();
+
+    return result;
+}
+
 bool is_dune_awakening_executable_cached() {
     static const bool is_dune = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -380,7 +398,7 @@ bool should_defer_game_specific_very_late_openxr_wait(const VRRuntime* runtime, 
     }
 
     const auto game_needs_deferred_wait =
-        is_stalker2_executable_cached() ||
+        is_stalker2_legacy_ue51_runtime_cached() ||
         is_dune_awakening_executable_cached();
 
     if (!game_needs_deferred_wait) {
@@ -3952,7 +3970,7 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
 }
 
 bool VR::should_force_native_stereo_fix_same_pass() const {
-    if (!m_native_stereo_fix->value() || is_using_afr() || !is_stalker2_executable_cached()) {
+    if (!m_native_stereo_fix->value() || is_using_afr() || !is_stalker2_legacy_ue51_runtime_cached()) {
         return false;
     }
 
@@ -5917,7 +5935,7 @@ void VR::dump_hitch_snapshot(std::chrono::steady_clock::duration tick_gap, const
 
 void VR::note_stalker2_transition_stress(const char* reason) {
     if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
-        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !get_runtime()->is_openxr() || !is_stalker2_legacy_ue51_runtime_cached() ||
         !m_openxr->got_first_valid_poses)
     {
         return;
@@ -5956,7 +5974,7 @@ void VR::note_stalker2_transition_stress(const char* reason) {
 
 bool VR::should_defer_stalker2_openxr_frame_for_transition(const char* reason) {
     if (!m_is_d3d12 || m_openxr == nullptr || get_runtime() == nullptr ||
-        !get_runtime()->is_openxr() || !is_stalker2_executable_cached() ||
+        !get_runtime()->is_openxr() || !is_stalker2_legacy_ue51_runtime_cached() ||
         !m_openxr->can_run_frame_loop() || !m_openxr->got_first_valid_poses)
     {
         return false;

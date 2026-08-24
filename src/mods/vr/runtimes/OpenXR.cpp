@@ -145,7 +145,16 @@ bool is_eye_projection_valid(const Vector4f& projection) {
 bool is_stalker2_openxr_frame_loop_guarded() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_stalker2_legacy_ue51_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
     }();
 
     return result;
