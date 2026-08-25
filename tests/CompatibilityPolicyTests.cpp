@@ -274,6 +274,19 @@ void test_version_gates() {
     expect(uevr::games::is_stalker2_ue55_runtime(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"unknown", 0x00050005),
         "updated Stalker2 must retain the UE5.5 file-version fallback");
+
+    expect(uevr::games::stalker2_native_fix_requires_same_pass(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0),
+        "legacy Stalker2 Native Fix must retain the stable same-pass handoff");
+    expect(uevr::games::stalker2_native_fix_requires_same_pass(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0),
+        "updated Stalker2 Native Fix must use the stable same-pass handoff");
+    expect(!uevr::games::stalker2_native_fix_requires_same_pass(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.6.0", 0x00050006),
+        "unvalidated future Stalker2 layouts must fail closed");
+    expect(!uevr::games::stalker2_native_fix_requires_same_pass(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005),
+        "other UE5.5 games must not inherit the Stalker2 Native Fix handoff");
 }
 
 void test_ue58_render_pose_fallback() {
