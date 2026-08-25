@@ -63,6 +63,14 @@ inline bool is_stalker2_ue55_runtime(
     return file_version_ms == 0x00050005;
 }
 
+inline bool stalker2_native_fix_requires_same_pass(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms) {
+    return is_stalker2_legacy_ue51_runtime(path, detected_version, file_version_ms) ||
+           is_stalker2_ue55_runtime(path, detected_version, file_version_ms);
+}
+
 inline bool is_prospi_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.find(L"prospi-win64-shipping") != std::wstring::npos ||
