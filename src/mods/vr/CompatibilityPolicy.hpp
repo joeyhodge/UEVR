@@ -144,4 +144,21 @@ constexpr bool should_use_ue56_post_init_slot(
     return exact_ue56 && (dx11 || dx12);
 }
 
+struct UE58PreViewPoseFallbackInputs {
+    bool exact_ue58{};
+    bool d3d12{};
+    bool openxr{};
+    bool native_stereo{};
+    bool hmd_active{};
+    bool runtime_ready{};
+    bool draw_hook_resolved{};
+};
+
+constexpr bool should_use_ue58_pre_view_pose_fallback(
+    const UE58PreViewPoseFallbackInputs& input) noexcept {
+    return input.exact_ue58 && input.d3d12 && input.openxr &&
+        input.native_stereo && input.hmd_active && input.runtime_ready &&
+        !input.draw_hook_resolved;
+}
+
 } // namespace uevr::vr_compatibility
