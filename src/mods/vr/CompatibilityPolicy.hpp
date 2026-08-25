@@ -144,7 +144,7 @@ constexpr bool should_use_ue56_post_init_slot(
     return exact_ue56 && (dx11 || dx12);
 }
 
-struct UE58PreViewPoseFallbackInputs {
+struct UE58RenderPoseFallbackInputs {
     bool exact_ue58{};
     bool d3d12{};
     bool openxr{};
@@ -154,8 +154,8 @@ struct UE58PreViewPoseFallbackInputs {
     bool draw_hook_resolved{};
 };
 
-constexpr bool should_use_ue58_pre_view_pose_fallback(
-    const UE58PreViewPoseFallbackInputs& input) noexcept {
+constexpr bool should_use_ue58_render_pose_fallback(
+    const UE58RenderPoseFallbackInputs& input) noexcept {
     return input.exact_ue58 && input.d3d12 && input.openxr &&
         input.native_stereo && input.hmd_active && input.runtime_ready &&
         !input.draw_hook_resolved;
