@@ -10763,10 +10763,33 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     struct RegisterCallsite {
         uintptr_t callsite{};
         uintptr_t target{};
+        bool matches_register_external_texture_abi{};
     };
 
     const auto collect_internal_calls_after_ref = [&](uintptr_t ref, uintptr_t max_bytes) {
         std::vector<RegisterCallsite> calls{};
+        std::array<std::optional<INSTRUX>, 3> previous{};
+
+        const auto is_register_move = [](const INSTRUX& ix, uint32_t destination, std::optional<uint32_t> source = std::nullopt) {
+            if (ix.Instruction != ND_INS_MOV || ix.OperandsCount < 2 ||
+                ix.Operands[0].Type != ND_OP_REG ||
+                ix.Operands[0].Info.Register.Reg != destination ||
+                ix.Operands[1].Type != ND_OP_REG)
+            {
+                return false;
+            }
+
+            return !source.has_value() || ix.Operands[1].Info.Register.Reg == *source;
+        };
+
+        const auto zeroes_register = [](const INSTRUX& ix, uint32_t reg) {
+            return ix.Instruction == ND_INS_XOR &&
+                ix.OperandsCount >= 2 &&
+                ix.Operands[0].Type == ND_OP_REG &&
+                ix.Operands[1].Type == ND_OP_REG &&
+                ix.Operands[0].Info.Register.Reg == reg &&
+                ix.Operands[1].Info.Register.Reg == reg;
+        };
 
         for (auto* ip = reinterpret_cast<uint8_t*>(ref); (uintptr_t)ip < ref + max_bytes;) {
             const auto decoded = utility::decode_one(ip);
@@ -10784,7 +10807,24 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                     const auto target_module = utility::get_module_within((void*)*target);
 
                     if (target_module.has_value() && *target_module == *module_within) {
-                        calls.push_back({(uintptr_t)ip, *target});
+                        bool has_rdx_from_rax = false;
+                        bool has_zero_r8 = false;
+                        bool has_rcx_builder = false;
+
+                        for (const auto& prior : previous) {
+                            if (!prior.has_value()) {
+                                continue;
+                            }
+
+                            has_rdx_from_rax |= is_register_move(*prior, NDR_RDX, NDR_RAX);
+                            has_zero_r8 |= zeroes_register(*prior, NDR_R8);
+                            has_rcx_builder |= is_register_move(*prior, NDR_RCX);
+                        }
+
+                        calls.push_back({
+                            (uintptr_t)ip,
+                            *target,
+                            has_rdx_from_rax && has_zero_r8 && has_rcx_builder});
                     }
                 }
             }
@@ -10793,6 +10833,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 break;
             }
 
+            previous[0] = previous[1];
+            previous[1] = previous[2];
+            previous[2] = *decoded;
             ip += decoded->Length;
         }
 
@@ -10828,6 +10871,33 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         if (target_is_reused_for_swapchain_register && !proven_callsites.contains(candidate.callsite)) {
             proven_callsites.insert(candidate.callsite);
             proven_candidates.push_back(candidate);
+        }
+    }
+
+    // The updated The Sinking City 2 UE5.8 DrawWindow body reuses four
+    // targets in both the Slate and spectator paths: a pooled-target wrapper,
+    // RegisterExternalTexture, RDG texture creation, and FMemory::Free. The
+    // old cardinality guard therefore fails closed before the dedicated UI
+    // target can be armed. Narrow only this exact game to the one callsite
+    // whose immediately preceding ABI setup is
+    //   RDX = wrapper return, R8 = 0 flags, RCX = FRDGBuilder.
+    // All other games retain the existing cross-anchor behavior.
+    if (proven_candidates.size() > 3) {
+        const auto executable_path = utility::get_module_pathw(utility::get_executable());
+        const bool is_the_sinking_city_2 = executable_path.has_value() &&
+            uevr::games::is_the_sinking_city_2_executable_path(*executable_path);
+
+        if (is_the_sinking_city_2) {
+            const auto original_count = proven_candidates.size();
+            std::erase_if(proven_candidates, [](const RegisterCallsite& candidate) {
+                return !candidate.matches_register_external_texture_abi;
+            });
+
+            if (proven_candidates.size() == 1) {
+                SPDLOG_WARN(
+                    "[UE5.8][SlateUI] Narrowed The Sinking City 2 updated Slate topology from {} cross-anchor calls to the validated RegisterExternalTexture ABI callsite",
+                    original_count);
+            }
         }
     }
 
