@@ -276,12 +276,54 @@ void test_version_gates() {
         "updated Stalker2 must retain the UE5.5 file-version fallback");
 }
 
+void test_ue58_pre_view_pose_fallback() {
+    using namespace uevr::vr_compatibility;
+
+    UE58PreViewPoseFallbackInputs input{
+        .exact_ue58 = true,
+        .d3d12 = true,
+        .openxr = true,
+        .native_stereo = true,
+        .hmd_active = true,
+        .runtime_ready = true,
+        .draw_hook_resolved = false,
+    };
+
+    expect(should_use_ue58_pre_view_pose_fallback(input),
+        "UE5.8 D3D12 Native may publish a pre-view pose when Draw is unavailable");
+
+    input.exact_ue58 = false;
+    expect(!should_use_ue58_pre_view_pose_fallback(input),
+        "other engine versions must retain their existing pose path");
+
+    input.exact_ue58 = true;
+    input.native_stereo = false;
+    expect(!should_use_ue58_pre_view_pose_fallback(input),
+        "synchronized and alternating rendering must retain their existing pose path");
+
+    input.native_stereo = true;
+    input.d3d12 = false;
+    expect(!should_use_ue58_pre_view_pose_fallback(input),
+        "UE5.8 DX11 must retain its existing BeginRenderViewFamily fallback");
+
+    input.d3d12 = true;
+    input.draw_hook_resolved = true;
+    expect(!should_use_ue58_pre_view_pose_fallback(input),
+        "a resolved Draw hook must retain ownership of pre-view pose publication");
+
+    input.draw_hook_resolved = false;
+    input.runtime_ready = false;
+    expect(!should_use_ue58_pre_view_pose_fallback(input),
+        "an unready OpenXR runtime must fail the pre-view pose fallback closed");
+}
+
 } // namespace
 
 int main() {
     test_scene_view_layouts();
     test_rendering_mode_matrix();
     test_version_gates();
+    test_ue58_pre_view_pose_fallback();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
