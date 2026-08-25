@@ -101,18 +101,18 @@ bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
 
-std::atomic<uint32_t> g_ue58_last_pre_view_pose_frame{
+std::atomic<uint32_t> g_ue58_last_render_pose_frame{
     (std::numeric_limits<uint32_t>::max)()};
-std::atomic<uint32_t> g_ue58_next_pre_view_pose_frame{};
+std::atomic<uint32_t> g_ue58_next_render_pose_frame{};
 
-uint32_t get_ue58_next_pre_view_pose_frame(VRRuntime* runtime) {
-    auto frame_count = g_ue58_next_pre_view_pose_frame.load(std::memory_order_acquire);
+uint32_t get_ue58_next_render_pose_frame(VRRuntime* runtime) {
+    auto frame_count = g_ue58_next_render_pose_frame.load(std::memory_order_acquire);
     if (frame_count != 0 || runtime == nullptr) {
         return frame_count;
     }
 
     const auto initial_frame_count = runtime->internal_frame_count + 1;
-    if (g_ue58_next_pre_view_pose_frame.compare_exchange_strong(
+    if (g_ue58_next_render_pose_frame.compare_exchange_strong(
             frame_count,
             initial_frame_count,
             std::memory_order_acq_rel,
@@ -17698,37 +17698,6 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
 
     auto& vr = VR::get();
 
-    if (vr != nullptr) {
-        const auto runtime = vr->get_runtime();
-        const auto use_ue58_pre_view_pose =
-            uevr::vr_compatibility::should_use_ue58_pre_view_pose_fallback({
-                .exact_ue58 = is_ue_5_8(),
-                .d3d12 = g_framework != nullptr && g_framework->is_dx12(),
-                .openxr = runtime != nullptr && runtime->is_openxr(),
-                .native_stereo = vr->is_using_native_stereo(),
-                .hmd_active = vr->is_hmd_active(),
-                .runtime_ready = runtime != nullptr && runtime->ready(),
-                .draw_hook_resolved = g_hook != nullptr &&
-                    g_hook->m_has_game_viewport_client_draw_hook,
-            });
-
-        if (use_ue58_pre_view_pose) {
-            const auto frame_count = get_ue58_next_pre_view_pose_frame(runtime);
-            if (frame_count != 0 &&
-                g_ue58_last_pre_view_pose_frame.exchange(
-                    frame_count,
-                    std::memory_order_acq_rel) != frame_count)
-            {
-                // SetupViewPoint precedes FSceneView construction. Publishing
-                // here prevents the no-Draw UE5.8 fallback from applying HMD
-                // motion one completed scene view too late.
-                vr->update_hmd_state(true, frame_count);
-                SPDLOG_INFO_ONCE(
-                    "[UE5.8][OpenXR][pre-view-pose] Publishing D3D12 Native HMD poses from SetupViewPoint");
-            }
-        }
-    }
-
     if (dune_awakening_is_current_game() && g_hook != nullptr) {
         g_dune_pending_true_stereo_view.valid = false;
         if (vr == nullptr || !vr->is_dune_true_stereo_enabled()) {
@@ -20017,8 +19986,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         (!g_hook->m_has_game_viewport_client_draw_hook ||
          !g_hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire)))
     {
-        const auto use_ue58_pre_view_pose =
-            uevr::vr_compatibility::should_use_ue58_pre_view_pose_fallback({
+        const auto use_ue58_render_pose =
+            uevr::vr_compatibility::should_use_ue58_render_pose_fallback({
                 .exact_ue58 = true,
                 .d3d12 = g_framework != nullptr && g_framework->is_dx12(),
                 .openxr = true,
@@ -20035,23 +20004,23 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
             // Keep the next token current even while the user temporarily
             // selects another rendering mode, so returning to Native cannot
             // consume a stale frame identifier.
-            g_ue58_next_pre_view_pose_frame.store(frame_count + 1, std::memory_order_release);
+            g_ue58_next_render_pose_frame.store(frame_count + 1, std::memory_order_release);
         }
 
-        if (use_ue58_pre_view_pose &&
-            g_ue58_last_pre_view_pose_frame.load(std::memory_order_acquire) == frame_count)
+        if (use_ue58_render_pose &&
+            g_ue58_last_render_pose_frame.load(std::memory_order_acquire) == frame_count)
         {
             SPDLOG_INFO_ONCE(
-                "[UE5.8][OpenXR][pre-view-pose] SetupViewPoint pose matched BeginRenderViewFamily; skipping the late duplicate update");
+                "[UE5.8][OpenXR][render-pose] First-eye pose matched BeginRenderViewFamily; skipping the late duplicate update");
         } else {
             // DX11 and any D3D12 frame that misses the validated pre-view
             // handoff retain the old fail-open behavior rather than losing
             // tracking or returning to a black HMD.
             vr->update_hmd_state(true, frame_count);
-            if (use_ue58_pre_view_pose) {
+            if (use_ue58_render_pose) {
                 SPDLOG_WARNING_EVERY_N_SEC(
                     2,
-                    "[UE5.8][OpenXR][pre-view-pose] SetupViewPoint handoff missed frame {}; using late pose fallback",
+                    "[UE5.8][OpenXR][render-pose] First-eye handoff missed frame {}; using late pose fallback",
                     frame_count);
             } else {
                 SPDLOG_INFO_ONCE(
@@ -22657,8 +22626,34 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
         //vr->wait_for_present();
 
-        if (everspace2_is_current_game() && !g_hook->m_has_game_viewport_client_draw_hook) {
-            const auto runtime = vr->get_runtime();
+        const auto runtime = vr->get_runtime();
+        const auto use_ue58_render_pose =
+            uevr::vr_compatibility::should_use_ue58_render_pose_fallback({
+                .exact_ue58 = is_ue_5_8(),
+                .d3d12 = g_framework != nullptr && g_framework->is_dx12(),
+                .openxr = runtime != nullptr && runtime->is_openxr(),
+                .native_stereo = vr->is_using_native_stereo(),
+                .hmd_active = vr->is_hmd_active(),
+                .runtime_ready = runtime != nullptr && runtime->ready(),
+                .draw_hook_resolved = g_hook->m_has_game_viewport_client_draw_hook,
+            });
+
+        if (use_ue58_render_pose) {
+            const auto frame_count = get_ue58_next_render_pose_frame(runtime);
+
+            if (frame_count != 0 &&
+                g_ue58_last_render_pose_frame.exchange(
+                    frame_count,
+                    std::memory_order_acq_rel) != frame_count)
+            {
+                // Some UE5.8 D3D12 titles do not execute SetupViewPoint during
+                // steady-state gameplay. Publish immediately before the first
+                // eye consumes the pose instead of one stereo pair later.
+                vr->update_hmd_state(true, frame_count);
+                SPDLOG_INFO_ONCE(
+                    "[UE5.8][OpenXR][render-pose] Publishing D3D12 Native HMD poses before the first eye");
+            }
+        } else if (everspace2_is_current_game() && !g_hook->m_has_game_viewport_client_draw_hook) {
             const auto frame_count = everspace2_get_next_view_pose_frame(runtime);
 
             if (const auto openxr = vr->get_openxr_runtime();
