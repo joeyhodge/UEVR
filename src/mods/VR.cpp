@@ -241,6 +241,24 @@ bool is_stalker2_legacy_ue51_runtime_cached() {
     return result;
 }
 
+bool stalker2_native_fix_requires_same_pass_cached() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::stalker2_native_fix_requires_same_pass(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
+    }();
+
+    return result;
+}
+
 bool is_dune_awakening_executable_cached() {
     static const bool is_dune = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -2616,14 +2634,15 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
 }
 
 bool VR::should_force_native_stereo_fix_same_pass() const {
-    if (!m_native_stereo_fix->value() || is_using_afr() || !is_stalker2_legacy_ue51_runtime_cached()) {
+    if (!m_native_stereo_fix->value() || is_using_afr() || !stalker2_native_fix_requires_same_pass_cached()) {
         return false;
     }
 
-    // Stalker2's UE5.1 render-target handoff is only stable with the native
-    // stereo fix using the original same-pass path. Letting this flip live can
-    // invalidate active render state and crash during cutscene/gameplay RT work.
-    SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass while Native Stereo Fix is enabled");
+    // Both validated Stalker2 layouts tear down renderer-owned allocations if
+    // Native Fix preserves a synthetic SECONDARY renderer transaction. Keep
+    // the original same-pass handoff for Native Fix only; Native and Synced
+    // rendering remain unchanged.
+    SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass for the validated runtime");
     return true;
 }
 
