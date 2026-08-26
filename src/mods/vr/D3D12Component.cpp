@@ -4615,7 +4615,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
             
             if (is_ue58_runtime_cached()) {
-                m_openxr.retire_framework_ui_delayed_release(true);
+                // Keep presenting the last released overlay image until the
+                // new GPU copy retires instead of serializing every frame.
+                // The delayed-release helper still has a bounded recovery wait.
+                m_openxr.retire_framework_ui_delayed_release(false);
             }
 
             if (!suppress_ui_copy && m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI)) {
@@ -6512,11 +6515,6 @@ void D3D12Component::OpenXR::copy_framework_ui_ue58(
         }
     }
 
-    // Give the previous UI copy until the next UI draw to finish before we
-    // acquire a fresh image. This keeps the visible UI layer current without
-    // doing the older immediate wait directly after recording the copy.
-    retire_framework_ui_delayed_release(true);
-
     std::scoped_lock _{this->mtx};
 
     auto vr = VR::get();
@@ -6547,9 +6545,9 @@ void D3D12Component::OpenXR::copy_framework_ui_ue58(
     auto& ctx = ctx_it->second;
 
     if (ctx.framework_ui_pending_release) {
-        SPDLOG_WARNING_EVERY_N_SEC(
+        SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[UE5.8][FrameworkUI] FRAMEWORK_UI copy is still pending after forced retirement; skipping this UI update");
+            "[UE5.8][FrameworkUI] Reusing the last released FRAMEWORK_UI image while the next copy is pending");
         return;
     }
 
