@@ -4903,6 +4903,16 @@ bool is_ue58_dx12_backend() {
     return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx12();
 }
 
+bool supports_the_sinking_city_2_ue58_dx12_owned_ui_target() {
+    static const bool is_the_sinking_city_2 = []() {
+        const auto executable_path = utility::get_module_pathw(utility::get_executable());
+        return executable_path.has_value() &&
+            uevr::games::is_the_sinking_city_2_executable_path(*executable_path);
+    }();
+
+    return is_the_sinking_city_2 && is_ue58_dx12_backend();
+}
+
 bool supports_bimbo_ue58_dx12_owned_ui_target() {
     return bimbo_paradise_is_current_game() &&
         is_ue58_dx12_backend();
@@ -10937,11 +10947,17 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         uintptr_t callsite{};
         uintptr_t target{};
         bool matches_register_external_texture_abi{};
+        uintptr_t previous_internal_callsite{};
+        uintptr_t previous_internal_target{};
+        bool previous_call_matches_pooled_wrapper_input_abi{};
     };
 
     const auto collect_internal_calls_after_ref = [&](uintptr_t ref, uintptr_t max_bytes) {
         std::vector<RegisterCallsite> calls{};
         std::array<std::optional<INSTRUX>, 3> previous{};
+        uintptr_t previous_internal_callsite{};
+        uintptr_t previous_internal_target{};
+        bool previous_call_matches_pooled_wrapper_input_abi{};
 
         const auto is_register_move = [](const INSTRUX& ix, uint32_t destination, std::optional<uint32_t> source = std::nullopt) {
             if (ix.Instruction != ND_INS_MOV || ix.OperandsCount < 2 ||
@@ -10964,6 +10980,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 ix.Operands[1].Info.Register.Reg == reg;
         };
 
+        const auto loads_register_address = [](const INSTRUX& ix, uint32_t destination) {
+            return ix.Instruction == ND_INS_LEA &&
+                ix.OperandsCount >= 2 &&
+                ix.Operands[0].Type == ND_OP_REG &&
+                ix.Operands[0].Info.Register.Reg == destination &&
+                ix.Operands[1].Type == ND_OP_MEM;
+        };
+
         for (auto* ip = reinterpret_cast<uint8_t*>(ref); (uintptr_t)ip < ref + max_bytes;) {
             const auto decoded = utility::decode_one(ip);
 
@@ -10983,6 +11007,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                         bool has_rdx_from_rax = false;
                         bool has_zero_r8 = false;
                         bool has_rcx_builder = false;
+                        bool has_raw_texture_rdx = false;
+                        bool has_name_r8 = false;
+                        bool has_hidden_return_rcx = false;
 
                         for (const auto& prior : previous) {
                             if (!prior.has_value()) {
@@ -10992,12 +11019,23 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                             has_rdx_from_rax |= is_register_move(*prior, NDR_RDX, NDR_RAX);
                             has_zero_r8 |= zeroes_register(*prior, NDR_R8);
                             has_rcx_builder |= is_register_move(*prior, NDR_RCX);
+                            has_raw_texture_rdx |= is_register_move(*prior, NDR_RDX);
+                            has_name_r8 |= is_register_move(*prior, NDR_R8);
+                            has_hidden_return_rcx |= loads_register_address(*prior, NDR_RCX);
                         }
 
                         calls.push_back({
                             (uintptr_t)ip,
                             *target,
-                            has_rdx_from_rax && has_zero_r8 && has_rcx_builder});
+                            has_rdx_from_rax && has_zero_r8 && has_rcx_builder,
+                            previous_internal_callsite,
+                            previous_internal_target,
+                            previous_call_matches_pooled_wrapper_input_abi});
+
+                        previous_internal_callsite = (uintptr_t)ip;
+                        previous_internal_target = *target;
+                        previous_call_matches_pooled_wrapper_input_abi =
+                            has_raw_texture_rdx && has_name_r8 && has_hidden_return_rcx;
                     }
                 }
             }
@@ -11055,22 +11093,31 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     // whose immediately preceding ABI setup is
     //   RDX = wrapper return, R8 = 0 flags, RCX = FRDGBuilder.
     // All other games retain the existing cross-anchor behavior.
-    if (proven_candidates.size() > 3) {
-        const auto executable_path = utility::get_module_pathw(utility::get_executable());
-        const bool is_the_sinking_city_2 = executable_path.has_value() &&
-            uevr::games::is_the_sinking_city_2_executable_path(*executable_path);
+    const auto executable_path = utility::get_module_pathw(utility::get_executable());
+    const bool is_the_sinking_city_2 = executable_path.has_value() &&
+        uevr::games::is_the_sinking_city_2_executable_path(*executable_path);
+    const auto uses_validated_sinking_pooled_wrapper = [](const RegisterCallsite& candidate) {
+        constexpr uintptr_t MAX_POOLED_WRAPPER_DISTANCE = 0x20;
+        const auto wrapper_precedes_register =
+            candidate.previous_internal_callsite != 0 &&
+            candidate.previous_internal_callsite < candidate.callsite &&
+            candidate.callsite - candidate.previous_internal_callsite <= MAX_POOLED_WRAPPER_DISTANCE;
 
-        if (is_the_sinking_city_2) {
-            const auto original_count = proven_candidates.size();
-            std::erase_if(proven_candidates, [](const RegisterCallsite& candidate) {
-                return !candidate.matches_register_external_texture_abi;
-            });
+        return candidate.matches_register_external_texture_abi &&
+            candidate.previous_call_matches_pooled_wrapper_input_abi &&
+            wrapper_precedes_register;
+    };
 
-            if (proven_candidates.size() == 1) {
-                SPDLOG_WARN(
-                    "[UE5.8][SlateUI] Narrowed The Sinking City 2 updated Slate topology from {} cross-anchor calls to the validated RegisterExternalTexture ABI callsite",
-                    original_count);
-            }
+    if (is_the_sinking_city_2) {
+        const auto original_count = proven_candidates.size();
+        std::erase_if(proven_candidates, [&](const RegisterCallsite& candidate) {
+            return !uses_validated_sinking_pooled_wrapper(candidate);
+        });
+
+        if (proven_candidates.size() == 1) {
+            SPDLOG_WARN(
+                "[UE5.8][SlateUI] Narrowed The Sinking City 2 updated Slate topology from {} cross-anchor calls to one validated pooled-wrapper transaction",
+                original_count);
         }
     }
 
@@ -11087,12 +11134,25 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     size_t hooked_count = 0;
 
     for (const auto& candidate : proven_candidates) {
+        // The updated Sinking City 2 path wraps a raw FRHITexture before it
+        // calls the pooled RegisterExternalTexture overload. Hook the proven
+        // wrapper input while RDX is still the raw texture and R8 still holds
+        // the Slate name, then let the engine build the pooled wrapper.
+        const auto use_sinking_pooled_wrapper =
+            is_the_sinking_city_2 && uses_validated_sinking_pooled_wrapper(candidate);
+        const auto hook_callsite = use_sinking_pooled_wrapper
+            ? candidate.previous_internal_callsite
+            : candidate.callsite;
+        const auto hook_target = use_sinking_pooled_wrapper
+            ? candidate.previous_internal_target
+            : candidate.target;
+
         auto hook_result = safetyhook::create_mid(
-            reinterpret_cast<void*>(candidate.callsite),
+            reinterpret_cast<void*>(hook_callsite),
             &FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook);
 
         if (!hook_result) {
-            SPDLOG_ERROR("[UE5.8][SlateUI] Failed to hook proven SlateOutputTexture callsite {:x} -> {:x}", candidate.callsite, candidate.target);
+            SPDLOG_ERROR("[UE5.8][SlateUI] Failed to hook proven SlateOutputTexture callsite {:x} -> {:x}", hook_callsite, hook_target);
             continue;
         }
 
@@ -11100,9 +11160,10 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         ++hooked_count;
 
         SPDLOG_WARN(
-            "[UE5.8][SlateUI] Hooked proven SlateOutputTexture RegisterExternalTexture callsite {:x} -> {:x} in DrawWindow {:x}",
-            candidate.callsite,
-            candidate.target,
+            "[UE5.8][SlateUI] Hooked proven SlateOutputTexture {} callsite {:x} -> {:x} in DrawWindow {:x}",
+            use_sinking_pooled_wrapper ? "pooled-wrapper input" : "RegisterExternalTexture",
+            hook_callsite,
+            hook_target,
             function_start);
     }
 
@@ -31431,7 +31492,8 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 
     if (is_ue_5_8() &&
         !is_ue58_dx11_dedicated_ui_backend() &&
-        !supports_bimbo_ue58_dx12_owned_ui_target())
+        !supports_bimbo_ue58_dx12_owned_ui_target() &&
+        !supports_the_sinking_city_2_ue58_dx12_owned_ui_target())
     {
         // UE5.8 DX12 routes Slate through RDG and promotes a real Slate output.
         // DX11 has the same RDG call but no safe engine-owned output to retain, so
@@ -31624,6 +31686,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                 pokemon_emerald_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
+                supports_the_sinking_city_2_ue58_dx12_owned_ui_target() ||
                 supports_naruto_ue416_dedicated_ui_target() ||
                 supports_dead_island_2_ue425_dedicated_ui_target())
             {
@@ -31642,6 +31705,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[PokemonEmerald][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (supports_the_sinking_city_2_ue58_dx12_owned_ui_target()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[TheSinkingCity2][UE5.8][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (supports_dead_island_2_ue425_dedicated_ui_target()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
