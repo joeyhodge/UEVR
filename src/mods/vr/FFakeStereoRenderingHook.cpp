@@ -4903,6 +4903,14 @@ bool is_ue58_dx12_backend() {
     return is_ue_5_8() && g_framework != nullptr && g_framework->is_dx12();
 }
 
+bool is_validated_ue58_slate_ui_runtime() {
+    static const auto file_version = sdk::get_file_version_info();
+    return is_ue_5_8() &&
+        uevr::vr_compatibility::is_validated_ue58_slate_source_version(
+            file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS);
+}
+
 bool supports_the_sinking_city_2_ue58_dx12_owned_ui_target() {
     static const bool is_the_sinking_city_2 = []() {
         const auto executable_path = utility::get_module_pathw(utility::get_executable());
@@ -4916,6 +4924,23 @@ bool supports_the_sinking_city_2_ue58_dx12_owned_ui_target() {
 bool supports_bimbo_ue58_dx12_owned_ui_target() {
     return bimbo_paradise_is_current_game() &&
         is_ue58_dx12_backend();
+}
+
+bool supports_legacy_allowlisted_ue58_ui_route() {
+    return supports_the_sinking_city_2_ue58_dx12_owned_ui_target() ||
+        supports_bimbo_ue58_dx12_owned_ui_target();
+}
+
+bool supports_validated_automatic_ue58_ui_route() {
+    return is_validated_ue58_slate_ui_runtime() &&
+        g_hook != nullptr &&
+        g_hook->is_ue58_automatic_ui_route_ready();
+}
+
+bool should_create_validated_automatic_ue58_ui_target() {
+    return is_validated_ue58_slate_ui_runtime() &&
+        g_hook != nullptr &&
+        g_hook->requires_ue58_synthetic_ui_target();
 }
 
 bool supports_naruto_ue416_dedicated_ui_target() {
@@ -9485,6 +9510,66 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
             {"ue58_rtm_abi", ue58_abi_name},
         };
 
+        {
+            const auto& diagnostics = m_ue58_slate_ui_capability;
+            const auto scanner_state = diagnostics.scanner_state.load(std::memory_order_acquire);
+            const auto route_abi = diagnostics.route_abi.load(std::memory_order_acquire);
+            const auto capability = diagnostics.capability.load(std::memory_order_acquire);
+            const auto format_address = [](uintptr_t address) -> nlohmann::json {
+                return address != 0 ? nlohmann::json(fmt::format("0x{:x}", address)) : nlohmann::json(nullptr);
+            };
+
+            nlohmann::json ue58_slate_ui{
+                {"applicable", is_ue_5_8()},
+                {"validated_source_runtime", is_validated_ue58_slate_ui_runtime()},
+                {"diagnostic_only", false},
+                {"phase2_capability_routing", true},
+                {"validated_source_versions", {"5.8.0", "5.8.1", "5.8.2"}},
+                {"source_contract", "DrawWindowViewport_RenderThread -> RegisterExternalTexture(SlateOutputTexture)"},
+                {"scanner", {
+                    {"state", uevr::vr_compatibility::to_string(scanner_state)},
+                    {"route_abi", uevr::vr_compatibility::to_string(route_abi)},
+                    {"proven_draw_functions", diagnostics.proven_draw_functions.load(std::memory_order_acquire)},
+                    {"cross_anchor_candidates", diagnostics.cross_anchor_candidates.load(std::memory_order_acquire)},
+                    {"direct_raw_transactions", diagnostics.direct_raw_transactions.load(std::memory_order_acquire)},
+                    {"pooled_wrapper_transactions", diagnostics.pooled_wrapper_transactions.load(std::memory_order_acquire)},
+                    {"unclassified_candidates", diagnostics.unclassified_candidates.load(std::memory_order_acquire)},
+                    {"hooked_callsites", diagnostics.hooked_callsites.load(std::memory_order_acquire)},
+                    {"draw_function", format_address(diagnostics.draw_function.load(std::memory_order_acquire))},
+                    {"first_hook_callsite", format_address(diagnostics.first_hook_callsite.load(std::memory_order_acquire))},
+                    {"first_hook_target", format_address(diagnostics.first_hook_target.load(std::memory_order_acquire))},
+                }},
+                {"runtime", {
+                    {"observation_enabled", is_validated_ue58_slate_ui_runtime() ||
+                        m_hook_provenance_diagnostics.load(std::memory_order_acquire)},
+                    {"full_diagnostics_enabled", m_hook_provenance_diagnostics.load(std::memory_order_acquire)},
+                    {"observations", diagnostics.runtime_observations.load(std::memory_order_acquire)},
+                    {"stable_observations", diagnostics.stable_observations.load(std::memory_order_acquire)},
+                    {"runtime_name_validated", diagnostics.runtime_name_validated.load(std::memory_order_acquire)},
+                    {"target_desc_valid", diagnostics.target_desc_valid.load(std::memory_order_acquire)},
+                    {"scene_relation_valid", diagnostics.scene_relation_valid.load(std::memory_order_acquire)},
+                    {"target_is_scene", diagnostics.target_is_scene.load(std::memory_order_acquire)},
+                    {"target_is_distinct_from_scene", diagnostics.target_is_distinct_from_scene.load(std::memory_order_acquire)},
+                    {"original_target", format_address(diagnostics.original_target.load(std::memory_order_acquire))},
+                    {"scene_target", format_address(diagnostics.scene_target.load(std::memory_order_acquire))},
+                    {"original_width", diagnostics.original_width.load(std::memory_order_acquire)},
+                    {"original_height", diagnostics.original_height.load(std::memory_order_acquire)},
+                    {"original_format", diagnostics.original_format.load(std::memory_order_acquire)},
+                    {"trusted_width", diagnostics.trusted_width.load(std::memory_order_acquire)},
+                    {"trusted_height", diagnostics.trusted_height.load(std::memory_order_acquire)},
+                }},
+                {"inference", uevr::vr_compatibility::to_string(capability)},
+                {"automatic_route_ready",
+                    is_validated_ue58_slate_ui_runtime() &&
+                    uevr::vr_compatibility::should_enable_ue58_automatic_ui_route(capability)},
+                {"synthetic_target_required",
+                    is_validated_ue58_slate_ui_runtime() &&
+                    uevr::vr_compatibility::should_create_ue58_synthetic_ui_target(capability)},
+            };
+
+            result["ue58_slate_ui_capability"] = std::move(ue58_slate_ui);
+        }
+
         if (const auto vr = VR::get(); vr != nullptr) {
             result["rendering_mode"] = {
                 {"hmd_active", vr->is_hmd_active()},
@@ -9592,12 +9677,15 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
 }
 
 void FFakeStereoRenderingHook::draw_hook_provenance_diagnostics() {
-    const bool was_enabled = m_hook_provenance_diagnostics;
-    ImGui::Checkbox("Hook Provenance Diagnostics", &m_hook_provenance_diagnostics);
+    const bool was_enabled = m_hook_provenance_diagnostics.load(std::memory_order_acquire);
+    bool enabled = was_enabled;
+    if (ImGui::Checkbox("Hook Provenance Diagnostics", &enabled)) {
+        m_hook_provenance_diagnostics.store(enabled, std::memory_order_release);
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("(read-only, default-off)");
 
-    if (!m_hook_provenance_diagnostics) {
+    if (!enabled) {
         return;
     }
 
@@ -10819,9 +10907,17 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         return;
     }
 
+    auto& capability = m_ue58_slate_ui_capability;
+    capability.scanner_state.store(
+        uevr::vr_compatibility::UE58SlateScannerState::Scanning,
+        std::memory_order_release);
+
     const auto draw_window = g_hook != nullptr ? g_hook->m_slate_thread_hook.target_address() : 0;
 
     if (draw_window == 0) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::DrawFunctionUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the Slate hook has no target address");
         return;
     }
@@ -10829,6 +10925,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     const auto module_within = utility::get_module_within(draw_window);
 
     if (!module_within.has_value()) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::DrawFunctionUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR("[UE5.8][SlateUI] Cannot scan SlateRHIRenderer because the DrawWindow module was not resolved");
         return;
     }
@@ -10836,6 +10935,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     m_attempted_hook_ue58_slate_output_texture_register = true;
 
     const auto draw_function = utility::find_function_start(draw_window).value_or(draw_window);
+    capability.draw_function.store(draw_function, std::memory_order_release);
 
     struct SlateOutputFunctionRefs {
         std::vector<uintptr_t> base_refs{};
@@ -10913,6 +11013,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
             }
         }
     } catch (...) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::DrawFunctionUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR("[UE5.8][SlateUI] Exception while scanning SlateRHIRenderer for SlateOutputTexture strings");
         return;
     }
@@ -10928,7 +11031,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         }
     }
 
+    capability.proven_draw_functions.store(
+        static_cast<uint32_t>(proven_functions.size()),
+        std::memory_order_release);
+
     if (proven_functions.size() != 1) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::DrawFunctionUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR(
             "[UE5.8][SlateUI] Refusing SlateOutputTexture hook because validated DrawWindow functions={} (expected exactly 1)",
             proven_functions.size());
@@ -10940,6 +11050,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     const auto spectator_refs = spectator_refs_it != spectator_refs_by_function.end() ? spectator_refs_it->second : std::vector<uintptr_t>{};
 
     if (spectator_refs.empty()) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::CallsiteUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR("[UE5.8][SlateUI] Refusing SlateOutputTexture hook because DrawWindow lacks the StereoSpectatorSwapChainTexture validation anchor");
         return;
     }
@@ -10948,6 +11061,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         uintptr_t callsite{};
         uintptr_t target{};
         bool matches_register_external_texture_abi{};
+        bool matches_direct_raw_texture_input_abi{};
         uintptr_t previous_internal_callsite{};
         uintptr_t previous_internal_target{};
         bool previous_call_matches_pooled_wrapper_input_abi{};
@@ -10955,10 +11069,20 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
 
     const auto collect_internal_calls_after_ref = [&](uintptr_t ref, uintptr_t max_bytes) {
         std::vector<RegisterCallsite> calls{};
-        std::array<std::optional<INSTRUX>, 3> previous{};
+        std::array<std::optional<INSTRUX>, 5> previous{};
         uintptr_t previous_internal_callsite{};
         uintptr_t previous_internal_target{};
         bool previous_call_matches_pooled_wrapper_input_abi{};
+
+        std::optional<uint32_t> anchor_name_register{};
+        if (const auto anchor = utility::decode_one(reinterpret_cast<uint8_t*>(ref));
+            anchor && anchor->Instruction == ND_INS_LEA &&
+            anchor->OperandsCount >= 2 &&
+            anchor->Operands[0].Type == ND_OP_REG &&
+            anchor->Operands[1].Type == ND_OP_MEM)
+        {
+            anchor_name_register = anchor->Operands[0].Info.Register.Reg;
+        }
 
         const auto is_register_move = [](const INSTRUX& ix, uint32_t destination, std::optional<uint32_t> source = std::nullopt) {
             if (ix.Instruction != ND_INS_MOV || ix.OperandsCount < 2 ||
@@ -10989,6 +11113,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 ix.Operands[1].Type == ND_OP_MEM;
         };
 
+        const auto loads_register_value = [](const INSTRUX& ix, uint32_t destination) {
+            return ix.Instruction == ND_INS_MOV &&
+                ix.OperandsCount >= 2 &&
+                ix.Operands[0].Type == ND_OP_REG &&
+                ix.Operands[0].Info.Register.Reg == destination &&
+                (ix.Operands[1].Type == ND_OP_REG || ix.Operands[1].Type == ND_OP_MEM);
+        };
+
         for (auto* ip = reinterpret_cast<uint8_t*>(ref); (uintptr_t)ip < ref + max_bytes;) {
             const auto decoded = utility::decode_one(ip);
 
@@ -11011,6 +11143,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                         bool has_raw_texture_rdx = false;
                         bool has_name_r8 = false;
                         bool has_hidden_return_rcx = false;
+                        bool has_zero_r9 = false;
 
                         for (const auto& prior : previous) {
                             if (!prior.has_value()) {
@@ -11020,15 +11153,26 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                             has_rdx_from_rax |= is_register_move(*prior, NDR_RDX, NDR_RAX);
                             has_zero_r8 |= zeroes_register(*prior, NDR_R8);
                             has_rcx_builder |= is_register_move(*prior, NDR_RCX);
-                            has_raw_texture_rdx |= is_register_move(*prior, NDR_RDX);
-                            has_name_r8 |= is_register_move(*prior, NDR_R8);
+                            has_raw_texture_rdx |= loads_register_value(*prior, NDR_RDX);
+                            has_name_r8 |= anchor_name_register.has_value() &&
+                                is_register_move(*prior, NDR_R8, *anchor_name_register);
                             has_hidden_return_rcx |= loads_register_address(*prior, NDR_RCX);
+                            has_zero_r9 |= zeroes_register(*prior, NDR_R9);
                         }
+
+                        const uevr::vr_compatibility::UE58SlateCallABIObservation abi{
+                            .rcx_builder = has_rcx_builder,
+                            .rcx_hidden_return = has_hidden_return_rcx,
+                            .rdx_raw_texture = has_raw_texture_rdx,
+                            .r8_anchor_name = has_name_r8,
+                            .r9_zero_flags = has_zero_r9,
+                        };
 
                         calls.push_back({
                             (uintptr_t)ip,
                             *target,
                             has_rdx_from_rax && has_zero_r8 && has_rcx_builder,
+                            uevr::vr_compatibility::is_ue58_direct_raw_texture_transaction(abi),
                             previous_internal_callsite,
                             previous_internal_target,
                             previous_call_matches_pooled_wrapper_input_abi});
@@ -11036,7 +11180,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                         previous_internal_callsite = (uintptr_t)ip;
                         previous_internal_target = *target;
                         previous_call_matches_pooled_wrapper_input_abi =
-                            has_raw_texture_rdx && has_name_r8 && has_hidden_return_rcx;
+                            uevr::vr_compatibility::is_ue58_pooled_wrapper_input_transaction(abi);
                     }
                 }
             }
@@ -11045,9 +11189,8 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 break;
             }
 
-            previous[0] = previous[1];
-            previous[1] = previous[2];
-            previous[2] = *decoded;
+            std::rotate(previous.begin(), previous.begin() + 1, previous.end());
+            previous.back() = *decoded;
             ip += decoded->Length;
         }
 
@@ -11097,7 +11240,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     const auto executable_path = utility::get_module_pathw(utility::get_executable());
     const bool is_the_sinking_city_2 = executable_path.has_value() &&
         uevr::games::is_the_sinking_city_2_executable_path(*executable_path);
-    const auto uses_validated_sinking_pooled_wrapper = [](const RegisterCallsite& candidate) {
+    const auto uses_validated_pooled_wrapper_transaction = [](const RegisterCallsite& candidate) {
         constexpr uintptr_t MAX_POOLED_WRAPPER_DISTANCE = 0x20;
         const auto wrapper_precedes_register =
             candidate.previous_internal_callsite != 0 &&
@@ -11109,10 +11252,52 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
             wrapper_precedes_register;
     };
 
+    std::unordered_set<uintptr_t> paired_raw_wrapper_callsites{};
+    uint32_t pooled_wrapper_transactions = 0;
+
+    for (const auto& candidate : proven_candidates) {
+        if (!uses_validated_pooled_wrapper_transaction(candidate)) {
+            continue;
+        }
+
+        ++pooled_wrapper_transactions;
+        paired_raw_wrapper_callsites.insert(candidate.previous_internal_callsite);
+    }
+
+    uint32_t direct_raw_transactions = 0;
+    uint32_t unclassified_candidates = 0;
+
+    for (const auto& candidate : proven_candidates) {
+        if (uses_validated_pooled_wrapper_transaction(candidate) ||
+            paired_raw_wrapper_callsites.contains(candidate.callsite))
+        {
+            continue;
+        }
+
+        if (candidate.matches_direct_raw_texture_input_abi) {
+            ++direct_raw_transactions;
+        } else {
+            ++unclassified_candidates;
+        }
+    }
+
+    capability.cross_anchor_candidates.store(
+        static_cast<uint32_t>(proven_candidates.size()),
+        std::memory_order_release);
+    capability.direct_raw_transactions.store(direct_raw_transactions, std::memory_order_release);
+    capability.pooled_wrapper_transactions.store(pooled_wrapper_transactions, std::memory_order_release);
+    capability.unclassified_candidates.store(unclassified_candidates, std::memory_order_release);
+    capability.route_abi.store(
+        uevr::vr_compatibility::classify_ue58_slate_route_abi(
+            true,
+            direct_raw_transactions,
+            pooled_wrapper_transactions),
+        std::memory_order_release);
+
     if (is_the_sinking_city_2) {
         const auto original_count = proven_candidates.size();
         std::erase_if(proven_candidates, [&](const RegisterCallsite& candidate) {
-            return !uses_validated_sinking_pooled_wrapper(candidate);
+            return !uses_validated_pooled_wrapper_transaction(candidate);
         });
 
         if (proven_candidates.size() == 1) {
@@ -11123,6 +11308,9 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     }
 
     if (proven_candidates.empty() || proven_candidates.size() > 3) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::CallsiteUnproven,
+            std::memory_order_release);
         SPDLOG_ERROR(
             "[UE5.8][SlateUI] Failed to prove a safe SlateOutputTexture RegisterExternalTexture callsite set near refs base={:x} layered={:x}; slate_calls={} proven={}",
             latest_base_ref,
@@ -11140,7 +11328,7 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         // wrapper input while RDX is still the raw texture and R8 still holds
         // the Slate name, then let the engine build the pooled wrapper.
         const auto use_sinking_pooled_wrapper =
-            is_the_sinking_city_2 && uses_validated_sinking_pooled_wrapper(candidate);
+            is_the_sinking_city_2 && uses_validated_pooled_wrapper_transaction(candidate);
         const auto hook_callsite = use_sinking_pooled_wrapper
             ? candidate.previous_internal_callsite
             : candidate.callsite;
@@ -11160,6 +11348,11 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         m_ue58_slate_output_texture_register_hooks.emplace_back(std::move(hook_result));
         ++hooked_count;
 
+        if (hooked_count == 1) {
+            capability.first_hook_callsite.store(hook_callsite, std::memory_order_release);
+            capability.first_hook_target.store(hook_target, std::memory_order_release);
+        }
+
         SPDLOG_WARN(
             "[UE5.8][SlateUI] Hooked proven SlateOutputTexture {} callsite {:x} -> {:x} in DrawWindow {:x}",
             use_sinking_pooled_wrapper ? "pooled-wrapper input" : "RegisterExternalTexture",
@@ -11169,9 +11362,16 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
     }
 
     if (hooked_count == 0) {
+        capability.scanner_state.store(
+            uevr::vr_compatibility::UE58SlateScannerState::HookFailed,
+            std::memory_order_release);
         return;
     }
 
+    capability.hooked_callsites.store(static_cast<uint32_t>(hooked_count), std::memory_order_release);
+    capability.scanner_state.store(
+        uevr::vr_compatibility::UE58SlateScannerState::Proven,
+        std::memory_order_release);
     m_hooked_ue58_slate_output_texture_register = true;
 
     if (hooked_count > 1) {
@@ -25649,6 +25849,114 @@ bool ue58_slate_output_is_scene_target(
 }
 }
 
+void FFakeStereoRenderingHook::note_ue58_slate_ui_runtime_observation(
+    uintptr_t original,
+    uintptr_t scene_target,
+    uint64_t width,
+    uint32_t height,
+    uint32_t format,
+    bool target_desc_valid,
+    bool scene_relation_valid,
+    bool target_is_scene,
+    bool target_is_distinct_from_scene,
+    uint32_t expected_width,
+    uint32_t expected_height)
+{
+    if (!is_ue_5_8()) {
+        return;
+    }
+
+    auto& diagnostics = m_ue58_slate_ui_capability;
+
+    // Pointer identities may rotate with the swapchain. Stability therefore
+    // tracks the observed contract (extent, format, and scene relationship),
+    // not one transient resource address.
+    uint64_t signature = 0xcbf29ce484222325ull;
+    const auto mix = [&signature](uint64_t value) {
+        signature ^= value;
+        signature *= 0x100000001b3ull;
+    };
+    mix(width);
+    mix(height);
+    mix(format);
+    mix(expected_width);
+    mix(expected_height);
+    mix(target_desc_valid ? 1ull : 0ull);
+    mix(scene_relation_valid ? 1ull : 0ull);
+    mix(target_is_scene ? 1ull : 0ull);
+    mix(target_is_distinct_from_scene ? 1ull : 0ull);
+
+    const auto previous_signature = diagnostics.last_observation_signature.exchange(signature, std::memory_order_acq_rel);
+    const auto previous_capability = diagnostics.capability.load(std::memory_order_acquire);
+    const bool full_diagnostics = m_hook_provenance_diagnostics.load(std::memory_order_acquire);
+
+    diagnostics.runtime_observations.fetch_add(1, std::memory_order_relaxed);
+
+    // Once a stable route has been established, the render hot path only needs
+    // to compare the compact contract signature. A changed extent, format, or
+    // scene relationship falls through immediately and must prove three fresh
+    // observations before routing resumes.
+    if (!full_diagnostics && previous_signature == signature &&
+        uevr::vr_compatibility::should_enable_ue58_automatic_ui_route(previous_capability))
+    {
+        return;
+    }
+
+    diagnostics.runtime_name_validated.store(true, std::memory_order_release);
+    diagnostics.original_target.store(original, std::memory_order_release);
+    diagnostics.scene_target.store(scene_target, std::memory_order_release);
+    diagnostics.original_width.store(width, std::memory_order_release);
+    diagnostics.original_height.store(height, std::memory_order_release);
+    diagnostics.original_format.store(format, std::memory_order_release);
+    diagnostics.trusted_width.store(expected_width, std::memory_order_release);
+    diagnostics.trusted_height.store(expected_height, std::memory_order_release);
+    diagnostics.target_desc_valid.store(target_desc_valid, std::memory_order_release);
+    diagnostics.scene_relation_valid.store(scene_relation_valid, std::memory_order_release);
+    diagnostics.target_is_scene.store(target_is_scene, std::memory_order_release);
+    diagnostics.target_is_distinct_from_scene.store(target_is_distinct_from_scene, std::memory_order_release);
+
+    uint32_t stable_observations = 1;
+
+    if (previous_signature == signature) {
+        stable_observations = diagnostics.stable_observations.fetch_add(1, std::memory_order_acq_rel) + 1;
+    } else {
+        diagnostics.stable_observations.store(1, std::memory_order_release);
+    }
+
+    const bool trusted_extent_valid = expected_width != 0 && expected_height != 0;
+    const bool target_matches_trusted_extent = target_desc_valid && trusted_extent_valid &&
+        width == expected_width && height == expected_height;
+    const bool scene_extent_differs_from_trusted_extent = target_desc_valid && trusted_extent_valid &&
+        target_is_scene && (width != expected_width || height != expected_height);
+    const auto scanner_state = diagnostics.scanner_state.load(std::memory_order_acquire);
+
+    const auto inferred = uevr::vr_compatibility::evaluate_ue58_dedicated_ui_capability({
+        .exact_ue58 = is_validated_ue58_slate_ui_runtime(),
+        .scanner_proven = scanner_state == uevr::vr_compatibility::UE58SlateScannerState::Proven,
+        .route_abi = diagnostics.route_abi.load(std::memory_order_acquire),
+        .runtime_name_validated = true,
+        .target_desc_valid = target_desc_valid,
+        .scene_relation_valid = scene_relation_valid,
+        .target_is_scene = target_is_scene,
+        .target_is_distinct_from_scene = target_is_distinct_from_scene,
+        .trusted_extent_valid = trusted_extent_valid,
+        .target_matches_trusted_extent = target_matches_trusted_extent,
+        .scene_extent_differs_from_trusted_extent = scene_extent_differs_from_trusted_extent,
+        .stable_observations = stable_observations,
+    });
+
+    diagnostics.capability.store(inferred, std::memory_order_release);
+
+    if (inferred != previous_capability &&
+        uevr::vr_compatibility::should_enable_ue58_automatic_ui_route(inferred))
+    {
+        SPDLOG_WARN_ONCE(
+            "[UE5.8][SlateUI] Enabled validated automatic {} route after {} stable observations",
+            uevr::vr_compatibility::to_string(inferred),
+            stable_observations);
+    }
+}
+
 void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58) {
     const char* tag = ue58 ? "[UE5.8][SlateUI]" : "[UE5.5][SlateUI]";
 
@@ -25680,6 +25988,85 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
     }
 
     auto* rtm = g_hook->get_render_target_manager();
+
+    if (ue58 &&
+        (is_validated_ue58_slate_ui_runtime() ||
+         g_hook->m_hook_provenance_diagnostics.load(std::memory_order_acquire)))
+    {
+        const auto original = reinterpret_cast<FRHITexture2D*>(ctx.rdx);
+        const auto scene_target = rtm != nullptr ? rtm->get_render_target() : nullptr;
+        const auto expected_width = rtm != nullptr ? rtm->get_dedicated_ui_width() : 0;
+        const auto expected_height = rtm != nullptr ? rtm->get_dedicated_ui_height() : 0;
+
+        if (is_ue58_dx11_dedicated_ui_backend()) {
+            D3D11_TEXTURE2D_DESC desc{};
+            void* native{};
+            const bool desc_valid = ue58_dx11_try_get_rhi_texture_desc(original, desc, &native);
+            const bool relation_valid = desc_valid && scene_target != nullptr;
+            const bool is_scene = relation_valid &&
+                ue58_dx11_slate_output_is_scene_target(rtm, original, native, desc);
+
+            g_hook->note_ue58_slate_ui_runtime_observation(
+                reinterpret_cast<uintptr_t>(original),
+                reinterpret_cast<uintptr_t>(scene_target),
+                desc.Width,
+                desc.Height,
+                static_cast<uint32_t>(desc.Format),
+                desc_valid,
+                relation_valid,
+                is_scene,
+                relation_valid && !is_scene,
+                expected_width,
+                expected_height);
+        } else if (g_framework != nullptr && g_framework->is_dx12()) {
+            const auto desc = ue55_try_get_d3d12_desc(original, "UE5.8 diagnostic original SlateOutputTexture");
+            const bool relation_valid = desc.has_value() && scene_target != nullptr;
+            const bool is_scene = relation_valid && ue58_slate_output_is_scene_target(rtm, original, *desc);
+
+            g_hook->note_ue58_slate_ui_runtime_observation(
+                reinterpret_cast<uintptr_t>(original),
+                reinterpret_cast<uintptr_t>(scene_target),
+                desc ? desc->Width : 0,
+                desc ? desc->Height : 0,
+                desc ? static_cast<uint32_t>(desc->Format) : 0,
+                desc.has_value(),
+                relation_valid,
+                is_scene,
+                relation_valid && !is_scene,
+                expected_width,
+                expected_height);
+        }
+    }
+
+    if (ue58 &&
+        !supports_legacy_allowlisted_ue58_ui_route() &&
+        !supports_validated_automatic_ue58_ui_route())
+    {
+        return;
+    }
+
+    if (ue58 &&
+        is_ue58_dx11_dedicated_ui_backend() &&
+        g_hook->get_ue58_dedicated_ui_capability() ==
+            uevr::vr_compatibility::UE58DedicatedUICapability::EngineOwned &&
+        rtm != nullptr)
+    {
+        auto* const original = reinterpret_cast<FRHITexture2D*>(ctx.rdx);
+        D3D11_TEXTURE2D_DESC original_desc{};
+
+        if (ue58_dx11_validate_dedicated_ui_target(
+                rtm,
+                original,
+                rtm->get_dedicated_ui_width(),
+                rtm->get_dedicated_ui_height(),
+                &original_desc))
+        {
+            rtm->set_dedicated_ui_target(original, original_desc.Width, original_desc.Height);
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            rtm->cancel_dedicated_ui_creation_preserving_target(
+                "UE5.8 validated engine-owned DX11 Slate target");
+        }
+    }
 
     if (ue58 && ue58_dx11_route_slate_output_texture(ctx, rtm, tag)) {
         return;
@@ -31492,13 +31879,12 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
     }
 
     if (is_ue_5_8() &&
-        !is_ue58_dx11_dedicated_ui_backend() &&
-        !supports_bimbo_ue58_dx12_owned_ui_target() &&
-        !supports_the_sinking_city_2_ue58_dx12_owned_ui_target())
+        !supports_legacy_allowlisted_ue58_ui_route() &&
+        !should_create_validated_automatic_ue58_ui_target())
     {
-        // UE5.8 DX12 routes Slate through RDG and promotes a real Slate output.
-        // DX11 has the same RDG call but no safe engine-owned output to retain, so
-        // it creates one persistent target and redirects only that RDG registration.
+        // Store the trusted extent, but do not allocate until the validated
+        // runtime contract proves that Slate is receiving the packed scene
+        // target. Engine-owned and unproven routes preserve the original path.
         return;
     }
 
@@ -31507,6 +31893,13 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
 
 bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     if (!supports_dedicated_ui_target_for_current_game() || dedicated_ui_width == 0 || dedicated_ui_height == 0) {
+        return false;
+    }
+
+    if (is_ue_5_8() &&
+        !supports_legacy_allowlisted_ue58_ui_route() &&
+        !should_create_validated_automatic_ue58_ui_target())
+    {
         return false;
     }
 

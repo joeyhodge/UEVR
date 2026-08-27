@@ -30,6 +30,7 @@
 #include <sdk/DynamicRHI.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
+#include "CompatibilityPolicy.hpp"
 #include "UE57SlateSymbols.hpp"
 
 #include "Mod.hpp"
@@ -893,6 +894,17 @@ public:
     const char* get_ghosting_fix_status_text();
     const char* get_native_stereo_fix_status_text() const;
     bool is_native_stereo_fix_operational() const;
+    uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
+        return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);
+    }
+    bool is_ue58_automatic_ui_route_ready() const {
+        return uevr::vr_compatibility::should_enable_ue58_automatic_ui_route(
+            get_ue58_dedicated_ui_capability());
+    }
+    bool requires_ue58_synthetic_ui_target() const {
+        return uevr::vr_compatibility::should_create_ue58_synthetic_ui_target(
+            get_ue58_dedicated_ui_capability());
+    }
     const char* get_dibr_single_view_status_text() const;
     bool is_dibr_single_view_active() const;
     uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
@@ -902,6 +914,18 @@ public:
 private:
     std::string build_hook_provenance_json();
     void draw_hook_provenance_diagnostics();
+    void note_ue58_slate_ui_runtime_observation(
+        uintptr_t original,
+        uintptr_t scene_target,
+        uint64_t width,
+        uint32_t height,
+        uint32_t format,
+        bool target_desc_valid,
+        bool scene_relation_valid,
+        bool target_is_scene,
+        bool target_is_distinct_from_scene,
+        uint32_t expected_width,
+        uint32_t expected_height);
 
     std::atomic_bool m_dune_character_creation_active{false};
     std::atomic_bool m_dune_has_live_pawn{false};
@@ -1257,6 +1281,40 @@ private:
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
+
+    struct UE58SlateUICapabilityDiagnostics {
+        std::atomic<uevr::vr_compatibility::UE58SlateScannerState> scanner_state{
+            uevr::vr_compatibility::UE58SlateScannerState::NotRun};
+        std::atomic<uevr::vr_compatibility::UE58SlateRouteABI> route_abi{
+            uevr::vr_compatibility::UE58SlateRouteABI::Unknown};
+        std::atomic<uevr::vr_compatibility::UE58DedicatedUICapability> capability{
+            uevr::vr_compatibility::UE58DedicatedUICapability::Unproven};
+        std::atomic_uint32_t proven_draw_functions{};
+        std::atomic_uint32_t cross_anchor_candidates{};
+        std::atomic_uint32_t direct_raw_transactions{};
+        std::atomic_uint32_t pooled_wrapper_transactions{};
+        std::atomic_uint32_t unclassified_candidates{};
+        std::atomic_uint32_t hooked_callsites{};
+        std::atomic_uintptr_t draw_function{};
+        std::atomic_uintptr_t first_hook_callsite{};
+        std::atomic_uintptr_t first_hook_target{};
+        std::atomic_uint64_t runtime_observations{};
+        std::atomic_uint32_t stable_observations{};
+        std::atomic_uint64_t last_observation_signature{};
+        std::atomic_uintptr_t original_target{};
+        std::atomic_uintptr_t scene_target{};
+        std::atomic_uint64_t original_width{};
+        std::atomic_uint32_t original_height{};
+        std::atomic_uint32_t original_format{};
+        std::atomic_uint32_t trusted_width{};
+        std::atomic_uint32_t trusted_height{};
+        std::atomic_bool runtime_name_validated{};
+        std::atomic_bool target_desc_valid{};
+        std::atomic_bool scene_relation_valid{};
+        std::atomic_bool target_is_scene{};
+        std::atomic_bool target_is_distinct_from_scene{};
+    } m_ue58_slate_ui_capability{};
+
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_slate_texture_hook{};
@@ -1535,7 +1593,7 @@ private:
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
     // Off by default: restores safetyhook's trampoline lock path for games that dislike the faster original-call path.
     const ModToggle::Ptr m_safe_tick_hook{ ModToggle::create("VR_SafeTickHook", false) };
-    bool m_hook_provenance_diagnostics{false};
+    std::atomic_bool m_hook_provenance_diagnostics{false};
     std::string m_hook_provenance_json{};
     std::string m_hook_provenance_export_status{};
     const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
