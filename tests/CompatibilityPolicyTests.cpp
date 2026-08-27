@@ -330,6 +330,116 @@ void test_ue58_render_pose_fallback() {
         "an unready OpenXR runtime must fail the pre-view pose fallback closed");
 }
 
+void test_ue58_slate_ui_capability() {
+    using namespace uevr::vr_compatibility;
+
+    expect(is_validated_ue58_slate_source_version(0x00050008, 0x00000000),
+        "UE5.8.0 must be eligible for validated Slate capability routing");
+    expect(is_validated_ue58_slate_source_version(0x00050008, 0x00010000),
+        "UE5.8.1 must be eligible for validated Slate capability routing");
+    expect(is_validated_ue58_slate_source_version(0x00050008, 0x00020000),
+        "UE5.8.2 must be eligible for validated Slate capability routing");
+    expect(!is_validated_ue58_slate_source_version(0x00050008, 0x00030000),
+        "an unvalidated future UE5.8 patch must fail automatic Slate routing closed");
+    expect(!is_validated_ue58_slate_source_version(0x00050007, 0x00020000),
+        "UE5.7 must remain outside the UE5.8 Slate capability route");
+
+    UE58SlateCallABIObservation direct_call{
+        .rcx_builder = true,
+        .rdx_raw_texture = true,
+        .r8_anchor_name = true,
+        .r9_zero_flags = true,
+    };
+    expect(is_ue58_direct_raw_texture_transaction(direct_call),
+        "the validated builder/raw/name/zero-flags call shape must classify as direct raw texture");
+
+    direct_call.rcx_hidden_return = true;
+    expect(!is_ue58_direct_raw_texture_transaction(direct_call),
+        "a hidden-return wrapper must not classify as a direct raw-texture transaction");
+
+    UE58SlateCallABIObservation pooled_wrapper{
+        .rcx_hidden_return = true,
+        .rdx_raw_texture = true,
+        .r8_anchor_name = true,
+    };
+    expect(is_ue58_pooled_wrapper_input_transaction(pooled_wrapper),
+        "the validated hidden-return/raw/name call shape must classify as a pooled-wrapper input");
+    pooled_wrapper.r8_anchor_name = false;
+    expect(!is_ue58_pooled_wrapper_input_transaction(pooled_wrapper),
+        "a pooled-wrapper candidate without the proven Slate name register must fail closed");
+
+    expect(classify_ue58_slate_route_abi(false, 1, 0) == UE58SlateRouteABI::Unknown,
+        "UE5.8 Slate ABI classification must wait for a proven DrawWindow function");
+    expect(classify_ue58_slate_route_abi(true, 1, 0) == UE58SlateRouteABI::DirectRawTexture,
+        "one validated raw transaction must classify as the direct ABI");
+    expect(classify_ue58_slate_route_abi(true, 0, 1) == UE58SlateRouteABI::PooledWrapper,
+        "one validated pooled transaction must classify as the wrapper ABI");
+    expect(classify_ue58_slate_route_abi(true, 1, 1) == UE58SlateRouteABI::Ambiguous,
+        "mixed UE5.8 Slate transaction ABIs must fail closed");
+    expect(classify_ue58_slate_route_abi(true, 2, 0) == UE58SlateRouteABI::Ambiguous,
+        "multiple raw transaction candidates must remain ambiguous");
+
+    UE58SlateRuntimeObservation observation{
+        .exact_ue58 = true,
+        .scanner_proven = true,
+        .route_abi = UE58SlateRouteABI::DirectRawTexture,
+    };
+
+    expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Observing,
+        "a proven scanner must still wait for runtime target evidence");
+
+    observation.runtime_name_validated = true;
+    observation.target_desc_valid = true;
+    observation.scene_relation_valid = true;
+    observation.target_is_distinct_from_scene = true;
+    observation.trusted_extent_valid = true;
+    observation.target_matches_trusted_extent = true;
+    observation.stable_observations = 2;
+    expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Observing,
+        "two matching engine-owned observations must not establish capability");
+
+    observation.stable_observations = 3;
+    auto capability = evaluate_ue58_dedicated_ui_capability(observation);
+    expect(capability == UE58DedicatedUICapability::EngineOwned,
+        "three stable distinct window-sized targets must diagnose an engine-owned UI target");
+    expect(should_enable_ue58_automatic_ui_route(capability),
+        "a proven engine-owned target must enable the automatic route");
+    expect(!should_create_ue58_synthetic_ui_target(capability),
+        "an engine-owned target must not allocate a synthetic texture");
+
+    observation.target_is_distinct_from_scene = false;
+    observation.target_matches_trusted_extent = false;
+    observation.target_is_scene = true;
+    observation.scene_extent_differs_from_trusted_extent = true;
+    capability = evaluate_ue58_dedicated_ui_capability(observation);
+    expect(capability == UE58DedicatedUICapability::SyntheticRequired,
+        "three stable packed-scene observations must diagnose a synthetic UI requirement");
+    expect(should_enable_ue58_automatic_ui_route(capability),
+        "a proven packed-scene target must enable the automatic route");
+    expect(should_create_ue58_synthetic_ui_target(capability),
+        "a proven packed-scene target must request one synthetic UI texture");
+
+    observation.target_is_distinct_from_scene = true;
+    expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Quarantined,
+        "contradictory scene ownership evidence must be quarantined");
+    expect(!should_enable_ue58_automatic_ui_route(UE58DedicatedUICapability::Quarantined),
+        "quarantined evidence must preserve the original Slate path");
+    expect(!should_enable_ue58_automatic_ui_route(UE58DedicatedUICapability::Observing),
+        "an observing classifier must preserve the original Slate path");
+
+    observation = {
+        .exact_ue58 = true,
+        .scanner_proven = true,
+        .route_abi = UE58SlateRouteABI::Ambiguous,
+    };
+    expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Quarantined,
+        "an ambiguous static ABI must not become an automatic route candidate");
+
+    observation.exact_ue58 = false;
+    expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Unproven,
+        "UE5.7 and earlier must remain outside the UE5.8 diagnostic policy");
+}
+
 } // namespace
 
 int main() {
@@ -337,6 +447,7 @@ int main() {
     test_rendering_mode_matrix();
     test_version_gates();
     test_ue58_render_pose_fallback();
+    test_ue58_slate_ui_capability();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
