@@ -170,6 +170,7 @@ public:
     protected:
         std::wstring m_frozen_value{};
         sdk::IConsoleVariable** m_cvar{nullptr};
+        sdk::IConsoleVariable* m_manager_cvar{nullptr};
         bool m_setter_unavailable{false};
     };
 
@@ -193,6 +194,8 @@ public:
 
     protected:
         std::optional<sdk::ConsoleVariableDataWrapper> m_cvar_data;
+        sdk::IConsoleVariable* m_manager_cvar{nullptr};
+        bool m_setter_unavailable{false};
     };
 
 private:
