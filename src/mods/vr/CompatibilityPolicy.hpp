@@ -12,6 +12,194 @@ enum class RenderingMethod : int32_t {
     SyntheticDibrSingleView = 4,
 };
 
+// UE5.8 keeps the same high-level Slate source contract across 5.8.0-5.8.2,
+// but optimized games expose either the raw-texture helper or its pooled
+// RegisterExternalTexture transaction.
+enum class UE58SlateRouteABI : uint8_t {
+    Unknown,
+    DirectRawTexture,
+    PooledWrapper,
+    Ambiguous,
+};
+
+enum class UE58SlateScannerState : uint8_t {
+    NotRun,
+    Scanning,
+    DrawFunctionUnproven,
+    CallsiteUnproven,
+    HookFailed,
+    Proven,
+};
+
+enum class UE58DedicatedUICapability : uint8_t {
+    Unproven,
+    Observing,
+    EngineOwned,
+    SyntheticRequired,
+    Quarantined,
+};
+
+struct UE58SlateRuntimeObservation {
+    bool exact_ue58{};
+    bool scanner_proven{};
+    UE58SlateRouteABI route_abi{UE58SlateRouteABI::Unknown};
+    bool runtime_name_validated{};
+    bool target_desc_valid{};
+    bool scene_relation_valid{};
+    bool target_is_scene{};
+    bool target_is_distinct_from_scene{};
+    bool trusted_extent_valid{};
+    bool target_matches_trusted_extent{};
+    bool scene_extent_differs_from_trusted_extent{};
+    uint32_t stable_observations{};
+};
+
+struct UE58SlateCallABIObservation {
+    bool rcx_builder{};
+    bool rcx_hidden_return{};
+    bool rdx_raw_texture{};
+    bool r8_anchor_name{};
+    bool r9_zero_flags{};
+};
+
+constexpr bool is_validated_ue58_slate_source_version(
+    uint32_t file_version_ms,
+    uint32_t file_version_ls) noexcept {
+    const auto major = static_cast<uint16_t>(file_version_ms >> 16);
+    const auto minor = static_cast<uint16_t>(file_version_ms & 0xffffu);
+    const auto patch = static_cast<uint16_t>(file_version_ls >> 16);
+
+    return major == 5 && minor == 8 && patch <= 2;
+}
+
+constexpr bool should_enable_ue58_automatic_ui_route(
+    UE58DedicatedUICapability capability) noexcept {
+    return capability == UE58DedicatedUICapability::EngineOwned ||
+        capability == UE58DedicatedUICapability::SyntheticRequired;
+}
+
+constexpr bool should_create_ue58_synthetic_ui_target(
+    UE58DedicatedUICapability capability) noexcept {
+    return capability == UE58DedicatedUICapability::SyntheticRequired;
+}
+
+constexpr bool is_ue58_direct_raw_texture_transaction(
+    const UE58SlateCallABIObservation& input) noexcept {
+    return input.rcx_builder &&
+        !input.rcx_hidden_return &&
+        input.rdx_raw_texture &&
+        input.r8_anchor_name &&
+        input.r9_zero_flags;
+}
+
+constexpr bool is_ue58_pooled_wrapper_input_transaction(
+    const UE58SlateCallABIObservation& input) noexcept {
+    return input.rcx_hidden_return &&
+        input.rdx_raw_texture &&
+        input.r8_anchor_name;
+}
+
+constexpr UE58SlateRouteABI classify_ue58_slate_route_abi(
+    bool draw_function_proven,
+    uint32_t direct_raw_transactions,
+    uint32_t pooled_wrapper_transactions) noexcept {
+    if (!draw_function_proven) {
+        return UE58SlateRouteABI::Unknown;
+    }
+
+    if (direct_raw_transactions == 1 && pooled_wrapper_transactions == 0) {
+        return UE58SlateRouteABI::DirectRawTexture;
+    }
+
+    if (direct_raw_transactions == 0 && pooled_wrapper_transactions == 1) {
+        return UE58SlateRouteABI::PooledWrapper;
+    }
+
+    return UE58SlateRouteABI::Ambiguous;
+}
+
+constexpr UE58DedicatedUICapability evaluate_ue58_dedicated_ui_capability(
+    const UE58SlateRuntimeObservation& input) noexcept {
+    if (!input.exact_ue58 || !input.scanner_proven) {
+        return UE58DedicatedUICapability::Unproven;
+    }
+
+    if (input.route_abi == UE58SlateRouteABI::Unknown ||
+        input.route_abi == UE58SlateRouteABI::Ambiguous)
+    {
+        return UE58DedicatedUICapability::Quarantined;
+    }
+
+    if (!input.runtime_name_validated || !input.target_desc_valid ||
+        !input.scene_relation_valid || !input.trusted_extent_valid)
+    {
+        return UE58DedicatedUICapability::Observing;
+    }
+
+    if (input.target_is_scene && input.target_is_distinct_from_scene) {
+        return UE58DedicatedUICapability::Quarantined;
+    }
+
+    if (input.target_is_scene && input.scene_extent_differs_from_trusted_extent &&
+        input.stable_observations >= 3)
+    {
+        return UE58DedicatedUICapability::SyntheticRequired;
+    }
+
+    if (input.target_is_distinct_from_scene && input.target_matches_trusted_extent &&
+        input.stable_observations >= 3)
+    {
+        return UE58DedicatedUICapability::EngineOwned;
+    }
+
+    return UE58DedicatedUICapability::Observing;
+}
+
+constexpr const char* to_string(UE58SlateRouteABI value) noexcept {
+    switch (value) {
+    case UE58SlateRouteABI::DirectRawTexture:
+        return "direct raw texture";
+    case UE58SlateRouteABI::PooledWrapper:
+        return "pooled wrapper";
+    case UE58SlateRouteABI::Ambiguous:
+        return "ambiguous";
+    default:
+        return "unknown";
+    }
+}
+
+constexpr const char* to_string(UE58SlateScannerState value) noexcept {
+    switch (value) {
+    case UE58SlateScannerState::Scanning:
+        return "scanning";
+    case UE58SlateScannerState::DrawFunctionUnproven:
+        return "draw function unproven";
+    case UE58SlateScannerState::CallsiteUnproven:
+        return "callsite unproven";
+    case UE58SlateScannerState::HookFailed:
+        return "hook failed";
+    case UE58SlateScannerState::Proven:
+        return "proven";
+    default:
+        return "not run";
+    }
+}
+
+constexpr const char* to_string(UE58DedicatedUICapability value) noexcept {
+    switch (value) {
+    case UE58DedicatedUICapability::Observing:
+        return "observing";
+    case UE58DedicatedUICapability::EngineOwned:
+        return "engine owned";
+    case UE58DedicatedUICapability::SyntheticRequired:
+        return "synthetic required";
+    case UE58DedicatedUICapability::Quarantined:
+        return "quarantined";
+    default:
+        return "unproven";
+    }
+}
+
 struct ModeMatrixInputs {
     RenderingMethod rendering_method{RenderingMethod::NativeStereo};
     bool extreme_compatibility{};
