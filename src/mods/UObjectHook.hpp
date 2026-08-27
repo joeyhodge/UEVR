@@ -158,20 +158,7 @@ public:
         bool adjusting{false};
     };
 
-    std::shared_ptr<MotionControllerState> get_or_add_motion_controller_state(sdk::USceneComponent* component) {
-        {
-            std::shared_lock _{m_mutex};
-            if (auto it = m_motion_controller_attached_components.find(component); it != m_motion_controller_attached_components.end()) {
-                return it->second;
-            }
-        }
-
-        std::unique_lock _{m_mutex};
-        auto result = std::make_shared<MotionControllerState>();
-        return m_motion_controller_attached_components[component] = result;
-
-        return result;
-    }
+    std::shared_ptr<MotionControllerState> get_or_add_motion_controller_state(sdk::USceneComponent* component);
 
     std::optional<std::shared_ptr<MotionControllerState>> get_motion_controller_state(sdk::USceneComponent* component) {
         std::shared_lock _{m_mutex};
