@@ -1349,6 +1349,43 @@ bool UObjectHook::try_track_object(
     return tracked;
 }
 
+std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_motion_controller_state(sdk::USceneComponent* component) {
+    if (component == nullptr) {
+        return nullptr;
+    }
+
+    {
+        std::shared_lock _{m_mutex};
+
+        if (const auto it = m_motion_controller_attached_components.find(component);
+            it != m_motion_controller_attached_components.end()) {
+            return it->second;
+        }
+    }
+
+    if (is_stalker2_uobjecthook_guard_enabled()) {
+        // Stalker2 lazy mode skips the global AddObject hot path. Adopt objects
+        // explicitly handed to the plugin API so profiles can rediscover their
+        // dynamically-created controller components without a full array scan.
+        if (try_track_object(component, "motion-controller API component", true, false)) {
+            if (const auto outer = component->get_outer(); outer != nullptr) {
+                try_track_object(outer, "motion-controller API component outer", true, false);
+            }
+        }
+    }
+
+    std::unique_lock _{m_mutex};
+
+    if (const auto it = m_motion_controller_attached_components.find(component);
+        it != m_motion_controller_attached_components.end()) {
+        return it->second;
+    }
+
+    auto result = std::make_shared<MotionControllerState>();
+    m_motion_controller_attached_components.emplace(component, result);
+    return result;
+}
+
 void UObjectHook::mark_persistent_tracking_miss() {
     m_last_persistent_tracking_miss = std::chrono::steady_clock::now();
     ++m_uobject_array_scan_stats.persistent_tracking_misses;
