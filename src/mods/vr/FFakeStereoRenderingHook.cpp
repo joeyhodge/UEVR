@@ -6825,6 +6825,29 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
         return std::nullopt;
     }
 
+    // SW Zero Company's matching UE5.6.1 binary keeps UObject::PostInitProperties
+    // at slot 10. Its folded inherited body does not satisfy the older broad
+    // body scanner, so validate the exact source/PDB-backed slot instead.
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx_backend()) {
+        constexpr uint32_t SW_ZERO_COMPANY_UE56_POST_INIT_PROPERTIES_SLOT = 10;
+
+        if (validate_source_informed_post_init_slot(
+                object_vtable,
+                localplayer_vtable,
+                SW_ZERO_COMPANY_UE56_POST_INIT_PROPERTIES_SLOT,
+                "SW Zero Company UE5.6 UObject::PostInitProperties",
+                true,
+                true))
+        {
+            return SW_ZERO_COMPANY_UE56_POST_INIT_PROPERTIES_SLOT;
+        }
+
+        SPDLOG_WARN(
+            "[PostInitProperties] SW Zero Company UE5.6 slot 10 did not validate; "
+            "skipping LocalPlayer bootstrap for safety");
+        return std::nullopt;
+    }
+
     // UE 5.4.4, 5.5.4 and 5.6.1 source/PDB put UObject::PostInitProperties at slot 10
     // for shipped game layouts:
     // UObjectBase has 4 virtuals, UObjectBaseUtility has 5, then UObject adds
