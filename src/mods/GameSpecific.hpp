@@ -110,6 +110,28 @@ inline bool is_the_sinking_city_2_executable_path(std::wstring_view path) {
            lowered == L"thesinkingcity2.exe";
 }
 
+inline bool is_sw_zero_company_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\swzerocompany.exe") ||
+           lowered.ends_with(L"/swzerocompany.exe") ||
+           lowered == L"swzerocompany.exe";
+}
+
+inline bool is_sw_zero_company_ue56_runtime(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms) {
+    if (!is_sw_zero_company_executable_path(path)) {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"0.00" && detected_version != L"unknown") {
+        return detected_version == L"5.6" || detected_version.starts_with(L"5.6.");
+    }
+
+    return file_version_ms == 0x00050006;
+}
+
 inline bool is_controller_camera_guard_candidate_path(std::wstring_view path) {
     return is_stalker2_executable_path(path) || is_mechwarrior_clans_executable_path(path);
 }
