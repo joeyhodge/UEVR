@@ -18,7 +18,6 @@
 #include <sdk/Utility.hpp>
 
 #include "Framework.hpp"
-#include "../GameSpecific.hpp"
 
 #include "CVarManager.hpp"
 
@@ -56,52 +55,6 @@ bool is_stalker2_current_game_for_cvars() {
     }();
 
     return result;
-}
-
-bool is_stalker2_ue55_current_game_for_cvars() {
-    static const bool result = []() {
-        const auto exe_path = utility::get_module_pathw(utility::get_executable());
-
-        if (!exe_path) {
-            return false;
-        }
-
-        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"unknown");
-        const auto disk_version = sdk::get_file_version_info();
-        return uevr::games::is_stalker2_ue55_runtime(*exe_path, detected_version, disk_version.dwFileVersionMS);
-    }();
-
-    return result;
-}
-
-sdk::IConsoleVariable* find_stalker2_ue55_manager_cvar(std::wstring_view name) {
-    if (!is_stalker2_ue55_current_game_for_cvars()) {
-        return nullptr;
-    }
-
-    const auto console_manager = sdk::FConsoleManager::get();
-
-    if (console_manager == nullptr) {
-        return nullptr;
-    }
-
-    auto object = console_manager->find(name.data());
-
-    if (object == nullptr) {
-        return nullptr;
-    }
-
-    auto variable = reinterpret_cast<sdk::IConsoleVariable*>(object);
-
-    // Console commands are not variables and do not have the validated Get/Set
-    // slots. Fail closed if the manager returned one for an unexpected name.
-    if (variable->AsCommand() != nullptr) {
-        SPDLOG_WARN("[Stalker2][UE5.5][CVar] Refusing command object returned for {}", utility::narrow(name));
-        return nullptr;
-    }
-
-    SPDLOG_INFO("[Stalker2][UE5.5][CVar] Using ConsoleManager fallback for {}", utility::narrow(name));
-    return variable;
 }
 
 bool is_aphelion_current_game_for_cvars() {
@@ -1245,14 +1198,6 @@ void CVarManager::CVarStandard::update() {
 
     if (m_cvar == nullptr) {
         m_cvar = sdk::find_cvar_cached(m_module, m_name);
-
-        if (m_cvar == nullptr) {
-            m_manager_cvar = find_stalker2_ue55_manager_cvar(m_name);
-
-            if (m_manager_cvar != nullptr) {
-                m_cvar = &m_manager_cvar;
-            }
-        }
     }
 }
 
@@ -1365,24 +1310,7 @@ void CVarManager::CVarData::load_from_config(const utility::Config& cfg, bool se
 void CVarManager::CVarData::save() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data && m_manager_cvar == nullptr) {
-        return;
-    }
-
-    if (m_manager_cvar != nullptr) {
-        switch (m_type) {
-        case Type::BOOL:
-        case Type::INT:
-            m_frozen_int_value = m_manager_cvar->GetInt();
-            break;
-        case Type::FLOAT:
-            m_frozen_float_value = m_manager_cvar->GetFloat();
-            break;
-        default:
-            break;
-        }
-
-        save_internal(cvars_data_txt_name.data());
+    if (!m_cvar_data) {
         return;
     }
 
@@ -1414,45 +1342,17 @@ void CVarManager::CVarData::save() {
 void CVarManager::CVarData::freeze() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_frozen || m_setter_unavailable) {
+    if (!m_frozen) {
         return;
     }
 
-    if (!m_cvar_data && m_manager_cvar == nullptr) {
+    if (!m_cvar_data) {
         return;
     }
 
     if (!m_ever_frozen) {
         m_ever_frozen = true;
         SPDLOG_INFO("[CVarManager] (Data) First time freezing \"{}\"...", utility::narrow(m_name));
-    }
-
-    if (m_manager_cvar != nullptr) {
-        bool needs_set = false;
-        std::wstring value{};
-
-        switch (m_type) {
-        case Type::BOOL:
-        case Type::INT:
-            needs_set = m_manager_cvar->GetInt() != m_frozen_int_value;
-            value = std::to_wstring(m_frozen_int_value);
-            break;
-        case Type::FLOAT:
-            needs_set = m_manager_cvar->GetFloat() != m_frozen_float_value;
-            value = std::to_wstring(m_frozen_float_value);
-            break;
-        default:
-            break;
-        }
-
-        if (needs_set && !m_manager_cvar->Set(value.c_str())) {
-            m_setter_unavailable = true;
-            SPDLOG_WARN(
-                "[Stalker2][UE5.5][CVar] Disabling freeze enforcement for {} because ConsoleManager Set failed",
-                utility::narrow(m_name));
-        }
-
-        return;
     }
 
     // Points to the same thing, just different data internally.
@@ -1481,85 +1381,16 @@ void CVarManager::CVarData::freeze() {
 void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data && m_manager_cvar == nullptr) {
+    if (!m_cvar_data) {
         m_cvar_data = sdk::find_cvar_data_cached(m_module, m_name);
-
-        if (!m_cvar_data) {
-            m_manager_cvar = find_stalker2_ue55_manager_cvar(m_name);
-        }
     }
 }
 
 void CVarManager::CVarData::draw_ui() try {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data && m_manager_cvar == nullptr) {
+    if (!m_cvar_data) {
         ImGui::TextWrapped("Failed to find cvar data: %s", utility::narrow(m_name).c_str());
-        return;
-    }
-
-    if (m_manager_cvar != nullptr) {
-        const auto narrow_name = utility::narrow(m_name);
-        const auto set_value = [this](std::wstring value) {
-            m_setter_unavailable = false;
-            auto cvar = m_manager_cvar;
-
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarData>(shared_from_this()), cvar, value = std::move(value)]() {
-                try {
-                    if (!cvar->Set(value.c_str())) {
-                        sft->m_setter_unavailable = true;
-                        SPDLOG_WARN(
-                            "[Stalker2][UE5.5][CVar] ConsoleManager Set failed for {}",
-                            utility::narrow(sft->get_name()));
-                    }
-                } catch (...) {
-                    sft->m_setter_unavailable = true;
-                    SPDLOG_ERROR(
-                        "[Stalker2][UE5.5][CVar] ConsoleManager Set threw for {}",
-                        utility::narrow(sft->get_name()));
-                }
-            });
-        };
-
-        switch (m_type) {
-        case Type::BOOL: {
-            auto value = static_cast<bool>(m_manager_cvar->GetInt());
-
-            if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
-                m_frozen_int_value = static_cast<int>(value);
-                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_manager_ui");
-                save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_int_value));
-            }
-            break;
-        }
-        case Type::INT: {
-            auto value = m_manager_cvar->GetInt();
-
-            if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
-                m_frozen_int_value = clamp_int_value(value);
-                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_manager_ui");
-                save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_int_value));
-            }
-            break;
-        }
-        case Type::FLOAT: {
-            auto value = m_manager_cvar->GetFloat();
-
-            if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
-                m_frozen_float_value = clamp_float_value(value);
-                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_float_value), "data_manager_ui");
-                save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_float_value));
-            }
-            break;
-        }
-        default:
-            ImGui::TextWrapped("Unimplemented cvar type: %s", narrow_name.c_str());
-            break;
-        }
-
         return;
     }
 
