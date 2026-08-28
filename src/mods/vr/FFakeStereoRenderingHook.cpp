@@ -4994,6 +4994,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
             pokemon_emerald_is_current_game() ||
+            sw_zero_company_ue56_is_current_game() ||
             is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
@@ -5772,6 +5773,62 @@ struct SWZeroCompanyFRHITextureDescObservation {
     uint8_t dimension{};
     uint8_t format{};
 };
+
+FRHITexture2D* sw_zero_company_ue56_get_draw_viewport_scene_target(sdk::FViewport* viewport) {
+    if (!sw_zero_company_ue56_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        viewport == nullptr)
+    {
+        return nullptr;
+    }
+
+    // This binary passes FViewport's +0x08 base subobject to
+    // UGameViewportClient::Draw. FSceneViewport stores the actual scene
+    // FTexture2DRHIRef at complete-object +0x2E0, so the field is +0x2D8 from
+    // the Draw viewport pointer. The generic +0x2E0 helper instead reaches the
+    // adjacent FSlateRenderTargetRHI wrapper and can never pass the validated
+    // FD3D12Texture ABI below.
+    constexpr uintptr_t draw_viewport_scene_texture_offset = 0x2D8;
+    const auto viewport_address = reinterpret_cast<uintptr_t>(viewport);
+
+    if (viewport_address + draw_viewport_scene_texture_offset < viewport_address ||
+        IsBadReadPtr(
+            reinterpret_cast<void*>(viewport_address + draw_viewport_scene_texture_offset),
+            sizeof(FRHITexture2D*)))
+    {
+        return nullptr;
+    }
+
+    FRHITexture2D* texture{};
+
+    __try {
+        texture = *reinterpret_cast<FRHITexture2D**>(
+            viewport_address + draw_viewport_scene_texture_offset);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+
+    if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
+        return nullptr;
+    }
+
+    void** vtable{};
+
+    __try {
+        vtable = *reinterpret_cast<void***>(texture);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+
+    if (vtable == nullptr ||
+        IsBadReadPtr(vtable, sizeof(void*) * 6) ||
+        utility::get_module_within(vtable).value_or(nullptr) != utility::get_executable())
+    {
+        return nullptr;
+    }
+
+    return texture;
+}
 
 bool sw_zero_company_read_texture_desc(
     FRHITexture2D* texture,
@@ -14805,6 +14862,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
 
         candidate = *candidate_ref;
+    } else if (sw_zero_company_ue56_dx12_viewport_adoption) {
+        if (!is_sw_zero_company_viewport_refresh) {
+            return;
+        }
+
+        candidate = sw_zero_company_ue56_get_draw_viewport_scene_target(viewport);
     } else {
         candidate = viewport->get_scene_viewport_render_target_texture_direct();
     }
@@ -25299,13 +25362,16 @@ void ue55_promote_slate_outputs(
         expected_extent ? expected_extent->width : 0,
         expected_extent ? expected_extent->height : 0);
 
-    if (everspace2_is_current_game()) {
-        // ES2 transitions through pooled render targets during cinematics.
-        // Keep the rooted dedicated UI target instead of retaining a transient
-        // DrawWindow output that may be recycled by FRenderTargetPool.
+    if (everspace2_is_current_game() || sw_zero_company_ue56_is_current_game()) {
+        // These titles transition through pooled render targets during
+        // cinematics or viewport setup. Keep the rooted dedicated UI target
+        // instead of retaining a transient DrawWindow output that may be
+        // recycled by FRenderTargetPool.
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[Everspace2][UE5.5][SlateUI] Observed DrawWindow outputs without promoting pooled candidates");
+            "[{}][UE5.{}][SlateUI] Observed DrawWindow outputs without promoting pooled candidates",
+            sw_zero_company_ue56_is_current_game() ? "SWZeroCompany" : "Everspace2",
+            sw_zero_company_ue56_is_current_game() ? "6" : "5");
         return;
     }
 
@@ -31877,6 +31943,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
                 pokemon_emerald_is_current_game() ||
+                sw_zero_company_ue56_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
                 supports_the_sinking_city_2_ue58_dx12_owned_ui_target() ||
@@ -31898,6 +31965,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[PokemonEmerald][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (sw_zero_company_ue56_is_current_game()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[SWZeroCompany][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (supports_the_sinking_city_2_ue58_dx12_owned_ui_target()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
