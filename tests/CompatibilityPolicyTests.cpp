@@ -287,6 +287,22 @@ void test_version_gates() {
     expect(!uevr::games::stalker2_native_fix_requires_same_pass(
                L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005),
         "other UE5.5 games must not inherit the Stalker2 Native Fix handoff");
+
+    expect(uevr::games::is_sw_zero_company_ue56_runtime(
+               L"C:\\Games\\SWZeroCompany.exe", L"5.6.1", 0),
+        "SWZeroCompany UE5.6 must enter only its validated scene-target compatibility path");
+    expect(uevr::games::is_sw_zero_company_ue56_runtime(
+               L"C:/Games/SWZeroCompany.exe", L"unknown", 0x00050006),
+        "SWZeroCompany must retain the exact UE5.6 file-version fallback");
+    expect(!uevr::games::is_sw_zero_company_ue56_runtime(
+               L"C:\\Games\\SWZeroCompany.exe", L"5.7.0", 0x00050006),
+        "SWZeroCompany on another engine minor must fail the UE5.6 path closed");
+    expect(!uevr::games::is_sw_zero_company_ue56_runtime(
+               L"C:\\Games\\SWZeroCompany.exe.backup", L"5.6.1", 0x00050006),
+        "partial SWZeroCompany executable names must not enter the compatibility path");
+    expect(!uevr::games::is_sw_zero_company_ue56_runtime(
+               L"C:\\Games\\Other.exe", L"5.6.1", 0x00050006),
+        "other UE5.6 games must not inherit the SWZeroCompany texture ABI");
 }
 
 void test_ue58_render_pose_fallback() {
