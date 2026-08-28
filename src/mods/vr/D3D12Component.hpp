@@ -240,6 +240,10 @@ private:
     ComPtr<ID3D12Fence> m_ue58_converted_ui_consumer_fence{};
     uint64_t m_ue58_converted_ui_consumer_fence_value{};
     d3d12::TextureContext m_game_tex{};
+    // SW Zero Company renders its separate viewport target as R10 HDR, while
+    // the OpenXR runtime accepts BGRA. Retain the engine source and convert it
+    // into m_game_tex instead of recording an incompatible CopyResource.
+    d3d12::TextureContext m_sw_zero_company_scene_source_tex{};
     d3d12::TextureContext m_ue58_spectator_tex{};
     bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};
