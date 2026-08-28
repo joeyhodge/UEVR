@@ -1769,36 +1769,50 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
-    // Dune's adopted viewport RT can churn and may be typeless, so never bind it
-    // directly as UEVR's game texture. Copy it into an owned stable texture first.
+    const auto is_sw_zero_company_ue56_external_backbuffer =
+        is_sw_zero_company_ue56_dx12_current_game() &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
+    // Volatile engine-owned viewport targets must not be retained as UEVR view
+    // resources. Copy them into an owned texture and restore the engine's state.
     const auto use_stable_external_backbuffer_copy =
         is_shf_external_backbuffer ||
         is_stalker2_ue51_external_backbuffer ||
         is_dune_external_backbuffer ||
-        is_dead_island_2_ue425_external_backbuffer;
+        is_dead_island_2_ue425_external_backbuffer ||
+        is_sw_zero_company_ue56_external_backbuffer;
     // FSceneViewport::EndRenderFrame transitions a separate stereo target to
-    // SRVMask before Present. Dune reaches us after that transition; declaring
-    // the source as RENDER_TARGET creates an invalid barrier and can leave the
-    // showroom/cinematic frame white while starving the render loop.
+    // SRVMask before Present. Declaring these validated sources as RENDER_TARGET
+    // creates an invalid barrier and can poison the engine's next transition.
     const auto volatile_external_source_state =
-        (is_shf_external_backbuffer || is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer)
+        (is_shf_external_backbuffer ||
+         is_dune_external_backbuffer ||
+         is_dead_island_2_ue425_external_backbuffer ||
+         is_sw_zero_company_ue56_external_backbuffer)
             ? ENGINE_SRC_COLOR
             : D3D12_RESOURCE_STATE_RENDER_TARGET;
     const char* stable_external_copy_label =
         is_dune_external_backbuffer ? "Dune" :
         is_dead_island_2_ue425_external_backbuffer ? "DeadIsland2 UE4.25" :
+        is_sw_zero_company_ue56_external_backbuffer ? "SWZeroCompany UE5.6" :
         is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
     const wchar_t* stable_external_copy_name =
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy" :
+        is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
     const wchar_t* stable_external_copy_command_name =
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy Commands" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy Commands" :
+        is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy Commands" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy Commands" : L"SHf Stable Scene Copy Commands";
     const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt =
-        is_shf_external_backbuffer || is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer;
+        is_shf_external_backbuffer ||
+        is_dune_external_backbuffer ||
+        is_dead_island_2_ue425_external_backbuffer ||
+        is_sw_zero_company_ue56_external_backbuffer;
     auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     if (is_stalker2_ue51_external_backbuffer) {
@@ -2053,7 +2067,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc);
 
             if (needs_copy_texture) {
-                if ((is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer) &&
+                if ((is_dune_external_backbuffer ||
+                     is_dead_island_2_ue425_external_backbuffer ||
+                     is_sw_zero_company_ue56_external_backbuffer) &&
                     m_game_tex.texture.Get() != nullptr)
                 {
                     // Startup can use a desktop-sized copy before gameplay
@@ -2095,7 +2111,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 ComPtr<ID3D12Resource> stable_copy{};
                 const auto needs_concrete_stable_view =
-                    is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer;
+                    is_dune_external_backbuffer ||
+                    is_dead_island_2_ue425_external_backbuffer ||
+                    is_sw_zero_company_ue56_external_backbuffer;
                 const auto concrete_stable_view_format = needs_concrete_stable_view
                     ? concrete_color_view_format_for_resource(copy_desc.Format)
                     : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
@@ -2123,8 +2141,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 if (FAILED(device->CreateCommittedResource(&heap_props, D3D12_HEAP_FLAG_NONE, &copy_desc, ENGINE_SRC_COLOR, nullptr, IID_PPV_ARGS(&stable_copy)))) {
                     SPDLOG_ERROR_EVERY_N_SEC(1,
-                        "[{}][D3D12] Failed to create owned stable scene copy [{}x{} fmt={} flags=0x{:x}]; falling back to volatile RT path",
-                        stable_external_copy_label, copy_desc.Width, copy_desc.Height, (uint32_t)copy_desc.Format, (uint32_t)copy_desc.Flags);
+                        "[{}][D3D12] Failed to create owned stable scene copy [{}x{} fmt={} flags=0x{:x}]; applying guarded fallback policy",
+                        stable_external_copy_label,
+                        copy_desc.Width, copy_desc.Height, (uint32_t)copy_desc.Format, (uint32_t)copy_desc.Flags);
                     m_game_tex.reset();
                 } else if (!m_game_tex.setup(device, stable_copy.Get(), stable_rtv_format, stable_srv_format, stable_external_copy_name)) {
                     spdlog::error("[{}][D3D12] Failed to setup owned stable scene copy.", stable_external_copy_label);
@@ -2154,12 +2173,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     SPDLOG_INFO_EVERY_N_SEC(2,
                         "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
                         stable_external_copy_label,
-                        (is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer)
+                        (is_dune_external_backbuffer ||
+                         is_dead_island_2_ue425_external_backbuffer ||
+                         is_sw_zero_company_ue56_external_backbuffer)
                             ? "/mirror/2D using SRVMask source state"
                             : "/mirror/2D");
 
-                    // The spectator reads the owned texture, never Dune's volatile
-                    // typeless viewport target, so descriptor creation is safe here.
+                    // Spectator and HMD consumers read the owned texture, never the
+                    // engine's volatile viewport target.
                     m_skip_spectator_view_for_volatile_external_rt = false;
                     backbuffer = m_game_tex.texture;
                     scene_source_state = ENGINE_SRC_COLOR;
@@ -2167,7 +2188,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (m_game_tex.texture.Get() == nullptr) {
-                if (is_dune_external_backbuffer || is_dead_island_2_ue425_external_backbuffer) {
+                if (is_dune_external_backbuffer ||
+                    is_dead_island_2_ue425_external_backbuffer ||
+                    is_sw_zero_company_ue56_external_backbuffer)
+                {
                     SPDLOG_ERROR_EVERY_N_SEC(
                         1,
                         "[{}][D3D12] Stable scene copy unavailable; refusing volatile viewport RT reference to avoid stale descriptors",
