@@ -155,6 +155,8 @@ public:
         FRHITexture2D* source_texture,
         ID3D12Resource* resource,
         const D3D12_RESOURCE_DESC& desc);
+    std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>
+        retire_sw_zero_company_scene_target_snapshot(const char* reason);
 
     bool publish_everspace2_scene_target_snapshot(
         FRHITexture2D* source_texture,
@@ -866,6 +868,10 @@ public:
 
     bool has_slate_hook() {
         return (bool)m_slate_thread_hook;
+    }
+
+    uintptr_t get_slate_hook_target_address() const {
+        return m_slate_thread_hook.target_address();
     }
 
     bool has_engine_tick_hook() {

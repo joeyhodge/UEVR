@@ -442,15 +442,35 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     if (is_sw_zero_company_ue56_dx12_current_game()) {
         const auto snapshot = rtm->get_sw_zero_company_scene_target_snapshot();
         const auto current_target = rtm->get_render_target();
+        const auto expected_width = static_cast<uint64_t>(vr->get_hmd_width()) * 2ull;
+        const auto expected_height = static_cast<uint32_t>(vr->get_hmd_height());
         if (snapshot == nullptr ||
             snapshot->resource == nullptr ||
             current_target == nullptr ||
-            snapshot->source_texture != reinterpret_cast<uintptr_t>(current_target))
+            snapshot->source_texture != reinterpret_cast<uintptr_t>(current_target) ||
+            expected_width == 0 ||
+            expected_height == 0 ||
+            snapshot->desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            snapshot->desc.Width != expected_width ||
+            snapshot->desc.Height != expected_height ||
+            snapshot->desc.DepthOrArraySize != 1 ||
+            snapshot->desc.MipLevels != 1 ||
+            snapshot->desc.SampleDesc.Count != 1 ||
+            snapshot->desc.Format == DXGI_FORMAT_UNKNOWN ||
+            (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+            (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0)
         {
             SPDLOG_INFO_EVERY_N_SEC(
                 1,
-                "[SWZeroCompany][UE5.6][SceneTargetSnapshot] {} waiting for the exact Draw viewport scene target",
-                consumer != nullptr ? consumer : "<unknown>");
+                "[SWZeroCompany][UE5.6][SceneTargetSnapshot] {} waiting for an exact packed HMD Draw target; observed={}x{} array={} mips={} samples={} expected={}x{}",
+                consumer != nullptr ? consumer : "<unknown>",
+                snapshot != nullptr ? snapshot->desc.Width : 0,
+                snapshot != nullptr ? snapshot->desc.Height : 0,
+                snapshot != nullptr ? snapshot->desc.DepthOrArraySize : 0,
+                snapshot != nullptr ? snapshot->desc.MipLevels : 0,
+                snapshot != nullptr ? snapshot->desc.SampleDesc.Count : 0,
+                expected_width,
+                expected_height);
             return nullptr;
         }
 
@@ -2747,12 +2767,167 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 commands.setup(L"Game Texture Commands");
             }
         }
+    } else if (backbuffer.Get() != real_backbuffer.Get() && is_sw_zero_company_ue56_external_backbuffer) {
+        const auto source_desc = backbuffer->GetDesc();
+        const auto source_view_format = concrete_color_view_format_for_resource(source_desc.Format);
+        const bool source_is_valid_r10 =
+            source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            source_desc.Width > 0 &&
+            source_desc.Height > 0 &&
+            source_desc.DepthOrArraySize == 1 &&
+            source_desc.MipLevels == 1 &&
+            source_desc.SampleDesc.Count == 1 &&
+            (source_desc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+             source_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) &&
+            source_view_format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+            (source_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+            (source_desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) == 0;
+
+        if (!source_is_valid_r10) {
+            SPDLOG_ERROR_EVERY_N_SEC(
+                1,
+                "[SWZeroCompany][UE5.6][D3D12] Refusing scene conversion because the exact R10 viewport contract failed "
+                "[{}x{} depth={} mips={} samples={} fmt={} flags=0x{:x}]",
+                source_desc.Width,
+                source_desc.Height,
+                source_desc.DepthOrArraySize,
+                source_desc.MipLevels,
+                source_desc.SampleDesc.Count,
+                static_cast<uint32_t>(source_desc.Format),
+                static_cast<uint32_t>(source_desc.Flags));
+            m_skip_spectator_view_for_volatile_external_rt = true;
+            return vr::VRCompositorError_None;
+        }
+
+        auto converted_desc = source_desc;
+        converted_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        converted_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        converted_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
+        const bool source_needs_setup =
+            m_sw_zero_company_scene_source_tex.texture.Get() != backbuffer.Get() ||
+            !texture_context_has_views(m_sw_zero_company_scene_source_tex);
+        const bool output_needs_setup =
+            m_game_tex.texture.Get() == nullptr ||
+            !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), converted_desc) ||
+            !texture_context_has_views(m_game_tex);
+
+        if (source_needs_setup || output_needs_setup) {
+            // The source descriptors are referenced by our conversion command
+            // lists, while the converted output can still be in an OpenXR copy.
+            // Drain both users before replacing either context.
+            for (auto& commands : m_game_tex_commands) {
+                if (commands.ready()) {
+                    commands.wait(INFINITE);
+                }
+            }
+
+            if (runtime->is_openxr()) {
+                m_openxr.wait_for_all_copies();
+            }
+
+            m_sw_zero_company_scene_source_tex.reset();
+            m_game_tex.reset();
+
+            if (!m_sw_zero_company_scene_source_tex.setup(
+                    device,
+                    backbuffer.Get(),
+                    *source_view_format,
+                    *source_view_format,
+                    L"SWZeroCompany UE5.6 R10 Scene Source"))
+            {
+                SPDLOG_ERROR(
+                    "[SWZeroCompany][UE5.6][D3D12] Failed to create validated R10 scene-source descriptors");
+                m_sw_zero_company_scene_source_tex.reset();
+                return vr::VRCompositorError_None;
+            }
+
+            D3D12_HEAP_PROPERTIES heap_props{};
+            heap_props.Type = D3D12_HEAP_TYPE_DEFAULT;
+            heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+            heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+            ComPtr<ID3D12Resource> converted_scene{};
+            if (FAILED(device->CreateCommittedResource(
+                    &heap_props,
+                    D3D12_HEAP_FLAG_NONE,
+                    &converted_desc,
+                    ENGINE_SRC_COLOR,
+                    nullptr,
+                    IID_PPV_ARGS(&converted_scene))) ||
+                converted_scene == nullptr)
+            {
+                SPDLOG_ERROR(
+                    "[SWZeroCompany][UE5.6][D3D12] Failed to create owned BGRA scene-conversion texture [{}x{}]",
+                    converted_desc.Width,
+                    converted_desc.Height);
+                m_sw_zero_company_scene_source_tex.reset();
+                return vr::VRCompositorError_None;
+            }
+
+            if (!m_game_tex.setup(
+                    device,
+                    converted_scene.Get(),
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    L"SWZeroCompany UE5.6 BGRA Scene Conversion"))
+            {
+                SPDLOG_ERROR(
+                    "[SWZeroCompany][UE5.6][D3D12] Failed to setup owned BGRA scene-conversion texture");
+                m_sw_zero_company_scene_source_tex.reset();
+                m_game_tex.reset();
+                return vr::VRCompositorError_None;
+            }
+
+            for (auto& commands : m_game_tex_commands) {
+                if (!commands.ready()) {
+                    commands.setup(L"SWZeroCompany UE5.6 Scene Conversion Commands");
+                }
+            }
+
+            SPDLOG_WARN(
+                "[SWZeroCompany][UE5.6][D3D12] Rebuilt exact R10-to-BGRA scene conversion [{}x{} src_fmt={} dst_fmt={}]",
+                source_desc.Width,
+                source_desc.Height,
+                static_cast<uint32_t>(source_desc.Format),
+                static_cast<uint32_t>(converted_desc.Format));
+        }
+
+        const auto idx = swapchain->GetCurrentBackBufferIndex() % m_game_tex_commands.size();
+        auto& command_ctx = m_game_tex_commands[idx];
+        if (m_game_batch == nullptr ||
+            !command_ctx.ready() ||
+            !texture_context_has_views(m_sw_zero_company_scene_source_tex) ||
+            !texture_context_has_views(m_game_tex))
+        {
+            SPDLOG_ERROR_EVERY_N_SEC(
+                1,
+                "[SWZeroCompany][UE5.6][D3D12] R10-to-BGRA conversion is not ready; refusing an incompatible fallback copy");
+            return vr::VRCompositorError_None;
+        }
+
+        command_ctx.wait(INFINITE);
+        d3d12::render_srv_to_rtv(
+            m_game_batch.get(),
+            command_ctx.cmd_list.Get(),
+            m_sw_zero_company_scene_source_tex,
+            m_game_tex,
+            ENGINE_SRC_COLOR,
+            ENGINE_SRC_COLOR);
+        command_ctx.execute();
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[SWZeroCompany][UE5.6][D3D12] Converted R10 scene target to owned BGRA for HMD/mirror/OpenXR");
+
+        m_skip_spectator_view_for_volatile_external_rt = false;
+        backbuffer = m_game_tex.texture;
+        scene_source_state = ENGINE_SRC_COLOR;
     } else if (backbuffer.Get() != real_backbuffer.Get() && (is_shf_external_backbuffer || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
         log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
         if (is_shf_external_backbuffer ||
-            is_dead_island_2_ue425_external_backbuffer ||
-            is_sw_zero_company_ue56_external_backbuffer)
+            is_dead_island_2_ue425_external_backbuffer)
         {
             const auto source_desc = backbuffer->GetDesc();
             const auto needs_copy_texture =
@@ -2761,8 +2936,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (needs_copy_texture) {
                 if ((is_dune_external_backbuffer ||
-                     is_dead_island_2_ue425_external_backbuffer ||
-                     is_sw_zero_company_ue56_external_backbuffer) &&
+                     is_dead_island_2_ue425_external_backbuffer) &&
                     m_game_tex.texture.Get() != nullptr)
                 {
                     // Startup can use a desktop-sized copy before gameplay
@@ -2805,8 +2979,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 ComPtr<ID3D12Resource> stable_copy{};
                 const auto needs_concrete_stable_view =
                     is_dune_external_backbuffer ||
-                    is_dead_island_2_ue425_external_backbuffer ||
-                    is_sw_zero_company_ue56_external_backbuffer;
+                    is_dead_island_2_ue425_external_backbuffer;
                 const auto concrete_stable_view_format = needs_concrete_stable_view
                     ? concrete_color_view_format_for_resource(copy_desc.Format)
                     : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
@@ -2867,8 +3040,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
                         stable_external_copy_label,
                         (is_dune_external_backbuffer ||
-                         is_dead_island_2_ue425_external_backbuffer ||
-                         is_sw_zero_company_ue56_external_backbuffer)
+                         is_dead_island_2_ue425_external_backbuffer)
                             ? "/mirror/2D using SRVMask source state"
                             : "/mirror/2D");
 
@@ -2882,8 +3054,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (m_game_tex.texture.Get() == nullptr) {
                 if (is_dune_external_backbuffer ||
-                    is_dead_island_2_ue425_external_backbuffer ||
-                    is_sw_zero_company_ue56_external_backbuffer)
+                    is_dead_island_2_ue425_external_backbuffer)
                 {
                     SPDLOG_ERROR_EVERY_N_SEC(
                         1,
@@ -5584,6 +5755,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_game_ui_tex.reset();
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
+    m_sw_zero_company_scene_source_tex.reset();
     m_ue58_spectator_tex.reset();
     m_ue58_dedicated_ui_spectator_valid = false;
     m_scene_capture_tex.reset();

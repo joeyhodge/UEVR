@@ -1312,6 +1312,7 @@ struct SWZeroCompanyUE56SceneTargetBootstrapState {
     uintptr_t vtable{};
     std::chrono::steady_clock::time_point last_attempt{};
     uint32_t attempts{};
+    bool validated{};
 };
 
 std::mutex g_sw_zero_company_ue56_scene_target_bootstrap_mutex{};
@@ -2057,6 +2058,139 @@ bool sw_zero_company_ue56_is_current_game() {
     }();
 
     return result;
+}
+
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_RVA = 0x4EC9B80;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_STORE_RVA = 0x4EC9C62;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_HOOK_RVA = 0x4EC9C95;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET = 0x1E4;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET = 0x8;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT = 0xB0;
+constexpr uint8_t SW_ZERO_COMPANY_UE56_PF_B8G8R8A8 = 2;
+constexpr uint8_t SW_ZERO_COMPANY_UE56_PF_A2B10G10R10 = 18;
+
+safetyhook::MidHook g_sw_zero_company_ue56_scene_target_format_hook{};
+std::atomic_bool g_sw_zero_company_ue56_scene_target_format_hook_attempted{};
+
+bool sw_zero_company_ue56_write_scene_target_format(uintptr_t format_address, const char* source) {
+    if (!is_writable_process_range(format_address, sizeof(uint8_t))) {
+        return false;
+    }
+
+    auto& format = *reinterpret_cast<uint8_t*>(format_address);
+    if (format != SW_ZERO_COMPANY_UE56_PF_B8G8R8A8 &&
+        format != SW_ZERO_COMPANY_UE56_PF_A2B10G10R10)
+    {
+        SPDLOG_ERROR_EVERY_N_SEC(
+            1,
+            "[SWZeroCompany][UE5.6][RTFormat] Refusing unexpected SceneTargetFormat {} from {}",
+            format,
+            source != nullptr ? source : "<unknown>");
+        return false;
+    }
+
+    if (format != SW_ZERO_COMPANY_UE56_PF_A2B10G10R10) {
+        format = SW_ZERO_COMPANY_UE56_PF_A2B10G10R10;
+        SPDLOG_WARN_ONCE(
+            "[SWZeroCompany][UE5.6][RTFormat] Selected PF_A2B10G10R10 for the separate viewport target; "
+            "OpenXR conversion remains BGRA");
+    }
+
+    return true;
+}
+
+void sw_zero_company_ue56_scene_target_format_hook(safetyhook::Context& ctx) {
+    if (ctx.rdi < SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT) {
+        return;
+    }
+
+    // InitRHI is invoked on FSceneViewport's FRenderResource base. In this
+    // exact binary RDI is complete-object - 0xB0, making SceneTargetFormat
+    // complete-object +0x1E4 == RDI +0x294.
+    const auto format_address =
+        static_cast<uintptr_t>(ctx.rdi) +
+        SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT +
+        SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET;
+    sw_zero_company_ue56_write_scene_target_format(format_address, "InitRHI mid-hook");
+}
+
+bool sw_zero_company_ue56_install_scene_target_format_hook() {
+    if (g_sw_zero_company_ue56_scene_target_format_hook) {
+        return true;
+    }
+
+    if (g_sw_zero_company_ue56_scene_target_format_hook_attempted.exchange(
+            true,
+            std::memory_order_acq_rel))
+    {
+        return false;
+    }
+
+    const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (executable == 0) {
+        return false;
+    }
+
+    constexpr std::array<uint8_t, 6> expected_format_store{
+        0x88, 0x97, 0x94, 0x02, 0x00, 0x00}; // mov byte ptr [rdi+294h], dl
+    constexpr std::array<uint8_t, 7> expected_hook_instruction{
+        0x48, 0x8D, 0x8F, 0xB0, 0x00, 0x00, 0x00}; // lea rcx, [rdi+B0h]
+
+    const auto init_rhi = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_RVA;
+    const auto format_store = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_STORE_RVA;
+    const auto hook_address = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_HOOK_RVA;
+    const bool exact_binary_match =
+        is_executable_process_range(init_rhi, 1) &&
+        is_executable_process_range(format_store, expected_format_store.size()) &&
+        is_executable_process_range(hook_address, expected_hook_instruction.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(format_store),
+            expected_format_store.data(),
+            expected_format_store.size()) == 0 &&
+        std::memcmp(
+            reinterpret_cast<const void*>(hook_address),
+            expected_hook_instruction.data(),
+            expected_hook_instruction.size()) == 0;
+
+    if (!exact_binary_match) {
+        SPDLOG_ERROR(
+            "[SWZeroCompany][UE5.6][RTFormat] Exact FSceneViewport::InitRHI signature mismatch; "
+            "R10 compatibility remains disabled");
+        return false;
+    }
+
+    auto hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(hook_address),
+        &sw_zero_company_ue56_scene_target_format_hook);
+    if (!hook) {
+        SPDLOG_ERROR(
+            "[SWZeroCompany][UE5.6][RTFormat] Failed to hook validated FSceneViewport::InitRHI at {:x}",
+            hook_address);
+        return false;
+    }
+
+    g_sw_zero_company_ue56_scene_target_format_hook = std::move(hook);
+    SPDLOG_INFO(
+        "[SWZeroCompany][UE5.6][RTFormat] Hooked validated FSceneViewport::InitRHI at {:x}",
+        hook_address);
+    return true;
+}
+
+bool sw_zero_company_ue56_force_current_viewport_scene_target_format(const sdk::FViewport& viewport) {
+    const auto fviewport_address = reinterpret_cast<uintptr_t>(&viewport);
+    if (fviewport_address < SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET) {
+        return false;
+    }
+
+    // Matching PDB/source analysis proves the FViewport base starts at +0x8.
+    // NeedReAllocateViewportRenderTarget is reached after InitRHI selected the
+    // format but before it allocates the separate target, so update this first
+    // transaction as well as installing the hook for later InitRHI calls.
+    const auto complete_object =
+        fviewport_address - SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET;
+    return sw_zero_company_ue56_write_scene_target_format(
+        complete_object + SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET,
+        "NeedReAllocateViewportRenderTarget");
 }
 
 bool deadzone2_is_current_game() {
@@ -6098,6 +6232,7 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
 
     uint32_t attempt{};
     bool should_probe{};
+    bool previously_validated{};
     const auto now = std::chrono::steady_clock::now();
 
     {
@@ -6113,7 +6248,11 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
             };
         }
 
-        if (state.attempts < SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS &&
+        previously_validated = state.validated;
+        if (state.validated) {
+            attempt = state.attempts;
+            should_probe = true;
+        } else if (state.attempts < SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS &&
             (state.last_attempt.time_since_epoch().count() == 0 ||
              now - state.last_attempt >= SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_RETRY))
         {
@@ -6127,8 +6266,24 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
         return false;
     }
 
+    const auto mark_probe_failed = [&]() {
+        if (!previously_validated) {
+            return;
+        }
+
+        std::scoped_lock _{g_sw_zero_company_ue56_scene_target_bootstrap_mutex};
+        auto& state = g_sw_zero_company_ue56_scene_target_bootstrap;
+        if (state.texture == reinterpret_cast<uintptr_t>(texture) &&
+            state.vtable == reinterpret_cast<uintptr_t>(vtable))
+        {
+            state.validated = false;
+            state.last_attempt = std::chrono::steady_clock::now();
+        }
+    };
+
     auto* const native_raw = call_get_native_resource_guarded(texture, get_native_resource);
     if (!is_probable_d3d_native_resource(native_raw)) {
+        mark_probe_failed();
         SPDLOG_INFO_EVERY_N_SEC(
             2,
             "[SWZeroCompany][UE5.6][RT bootstrap] Slot 5 did not return a D3D resource on attempt {}/{}",
@@ -6140,11 +6295,13 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
     auto* const native = static_cast<ID3D12Resource*>(native_raw);
     D3D12_RESOURCE_DESC desc{};
     if (!get_d3d12_resource_desc_guarded(native, desc)) {
+        mark_probe_failed();
         return false;
     }
 
     ID3D12Device4* resource_device_raw{};
     if (!get_d3d12_resource_device_guarded(native, &resource_device_raw)) {
+        mark_probe_failed();
         return false;
     }
 
@@ -6166,6 +6323,7 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
         (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
 
     if (!valid_native_desc) {
+        mark_probe_failed();
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[SWZeroCompany][UE5.6][RT bootstrap] Rejected slot-5 resource {:x}: device_match={} rhi={}x{} mips={} samples={} fmt={} native={}x{} mips={} samples={} fmt={} flags=0x{:x}",
@@ -6183,6 +6341,16 @@ bool sw_zero_company_ue56_try_bootstrap_scene_target(
             static_cast<uint32_t>(desc.Format),
             static_cast<uint32_t>(desc.Flags));
         return false;
+    }
+
+    {
+        std::scoped_lock _{g_sw_zero_company_ue56_scene_target_bootstrap_mutex};
+        auto& state = g_sw_zero_company_ue56_scene_target_bootstrap;
+        if (state.texture == reinterpret_cast<uintptr_t>(texture) &&
+            state.vtable == reinterpret_cast<uintptr_t>(vtable))
+        {
+            state.validated = true;
+        }
     }
 
     SPDLOG_INFO(
@@ -9605,6 +9773,16 @@ bool is_using_double_precision(uintptr_t addr) {
 
 FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
     g_hook = this;
+
+    if (sw_zero_company_ue56_is_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12())
+    {
+        // Install before UEVR asks FSceneViewport to reallocate. Installing
+        // from NeedReAllocate alone is too late for the first InitRHI call.
+        sw_zero_company_ue56_install_scene_target_format_hook();
+    }
+
     m_uses_ue58_rendertarget_manager =
         uevr::vr_compatibility::should_use_ue58_render_target_manager_abi(is_ue_5_8());
 
@@ -15273,7 +15451,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
     if (ue58_viewport_adoption ||
         naruto_ue416_dx11_viewport_adoption ||
-        dead_island_2_ue425_dx12_viewport_adoption)
+        dead_island_2_ue425_dx12_viewport_adoption ||
+        sw_zero_company_ue56_dx12_viewport_adoption)
     {
         // Dead Island keeps its engine-owned side-by-side target in Synced
         // Sequential. Only Naruto transitions to a single-eye source in AFR.
@@ -15284,7 +15463,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         if (native_width != expected_width || native_height != expected_height) {
             rtm->reset_ue58_scene_target_observation();
 
-            if (current_target != nullptr) {
+            if (sw_zero_company_ue56_dx12_viewport_adoption) {
+                rtm->retire_sw_zero_company_scene_target_snapshot("rejected non-VR-sized Draw target");
+            } else if (current_target != nullptr) {
                 rtm->set_render_target(nullptr);
 
                 if (naruto_ue416_dx11_viewport_adoption) {
@@ -25555,15 +25736,51 @@ struct UE55SlateDrawWindowPassOutputs {
     FRHITexture2D* output_texture_rhi;
 };
 
+struct UE55SlateExtent {
+    uint32_t width{};
+    uint32_t height{};
+};
+
+bool sw_zero_company_has_source_matched_slate_sret_abi() {
+    if (!sw_zero_company_ue56_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        g_hook == nullptr)
+    {
+        return false;
+    }
+
+    const auto target = g_hook->get_slate_hook_target_address();
+    if (target == 0 || !is_readable_process_range(target, 0x50)) {
+        return false;
+    }
+
+    const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (executable == 0 || target < executable || target - executable != 0x3A3D140) {
+        return false;
+    }
+
+    // SW Zero's developer PDB proves DrawWindow_RenderThread keeps this in
+    // RCX and returns its 24-byte outputs through RDX, with R8=FRDGBuilder and
+    // R9=inputs.
+    // SafetyHook has already replaced the prologue, so validate only the
+    // untouched argument moves. The exact RVA makes a future build fail open.
+    static constexpr std::array<uint8_t, 21> sret_argument_moves{
+        0x4D, 0x8B, 0x61, 0x18,       // mov r12, [r9+18h]
+        0x4D, 0x8B, 0xF9,             // mov r15, r9
+        0x49, 0x8B, 0x41, 0x08,       // mov rax, [r9+8]
+        0x4D, 0x8B, 0xE8,             // mov r13, r8
+        0x48, 0x89, 0x95, 0x70, 0x01, 0x00, 0x00}; // mov [rbp+170h], rdx
+    static constexpr std::array<uint8_t, 4> save_sret{
+        0x48, 0x89, 0x4D, 0x88}; // mov [rbp-78h], rcx
+
+    return std::memcmp(reinterpret_cast<const void*>(target + 0x2D), sret_argument_moves.data(), sret_argument_moves.size()) == 0 &&
+        std::memcmp(reinterpret_cast<const void*>(target + 0x44), save_sret.data(), save_sret.size()) == 0;
+}
+
 struct UE55SlateDrawWindowsArrayView {
     UE55SlateDrawWindowPassInputs* data;
     int32_t count;
     int32_t padding;
-};
-
-struct UE55SlateExtent {
-    uint32_t width{};
-    uint32_t height{};
 };
 
 bool ue56_promote_source_matched_slate_scene_output(
@@ -29253,6 +29470,21 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
     UE55SlateDrawWindowPassInputs ue55_inputs_full{};
+
+    if (sw_zero_company_ue56_is_current_game() &&
+        is_ue_5_6_dx12_backend() &&
+        sw_zero_company_has_source_matched_slate_sret_abi() &&
+        try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs))
+    {
+        // The matching developer PDB proves RCX is the renderer and RDX is the
+        // hidden output storage. Apply that source-matched interpretation
+        // before generic viewport emulation can touch this RDG transaction.
+        SPDLOG_WARN_ONCE(
+            "[SWZeroCompany][UE5.6][SlateRT] Using source-matched hidden-sret ABI; "
+            "legacy viewport emulation and command-list callbacks are bypassed");
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
     bool a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
     bool a4_has_ue_5_5_full_inputs = a4_is_ue_5_5_variant && try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full);
     bool ue55_inputs_are_from_windows_array = false;
@@ -30479,6 +30711,31 @@ bool VRRenderTargetManager_Base::publish_sw_zero_company_scene_target_snapshot(
     return true;
 }
 
+std::shared_ptr<const VRRenderTargetManager_Base::SWZeroCompanyD3D12SceneTargetSnapshot>
+VRRenderTargetManager_Base::retire_sw_zero_company_scene_target_snapshot(const char* reason) {
+    const auto previous =
+        sw_zero_company_scene_target_snapshot.exchange(nullptr, std::memory_order_acq_rel);
+
+    if (previous != nullptr &&
+        reinterpret_cast<uintptr_t>(get_render_target()) == previous->source_texture)
+    {
+        render_target = nullptr;
+    }
+
+    if (previous != nullptr) {
+        SPDLOG_INFO(
+            "[SWZeroCompany][UE5.6][SceneTargetSnapshot] retire generation={} reason={} rhi={:x} native={:x} size={}x{}",
+            previous->generation,
+            reason != nullptr ? reason : "<unknown>",
+            previous->source_texture,
+            reinterpret_cast<uintptr_t>(previous->resource.Get()),
+            previous->desc.Width,
+            previous->desc.Height);
+    }
+
+    return previous;
+}
+
 std::shared_ptr<const VRRenderTargetManager_Base::Everspace2D3D12SceneTargetSnapshot>
 VRRenderTargetManager_Base::retire_everspace2_scene_target_snapshot(const char* reason) {
     const auto previous =
@@ -30548,6 +30805,45 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         }
 
         return false;
+    }
+
+    if (!m_attempted_find_force_separate_rt && sw_zero_company_ue56_is_current_game()) {
+        m_attempted_find_force_separate_rt = true;
+
+        const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+        constexpr uintptr_t use_separate_render_target_rva = 0x4EB90C0;
+        constexpr size_t force_separate_render_target_offset = 0x1B8;
+        constexpr std::array<uint8_t, 24> expected_use_separate_render_target{
+            0x80, 0xB9, 0xB7, 0x01, 0x00, 0x00, 0x00, // cmp byte ptr [rcx+1B7h], 0
+            0x75, 0x0C,                               // jne true
+            0x80, 0xB9, 0xB8, 0x01, 0x00, 0x00, 0x00, // cmp byte ptr [rcx+1B8h], 0
+            0x75, 0x03,                               // jne true
+            0x32, 0xC0, 0xC3,                         // xor al, al; ret
+            0xB0, 0x01, 0xC3};                        // mov al, 1; ret
+
+        const auto function = executable + use_separate_render_target_rva;
+        if (executable != 0 &&
+            is_readable_process_range(function, expected_use_separate_render_target.size()) &&
+            std::memcmp(
+                reinterpret_cast<const void*>(function),
+                expected_use_separate_render_target.data(),
+                expected_use_separate_render_target.size()) == 0)
+        {
+            m_viewport_force_separate_rt_offset = force_separate_render_target_offset;
+            const auto format_hook_ready =
+                sw_zero_company_ue56_install_scene_target_format_hook();
+            const auto current_format_ready =
+                sw_zero_company_ue56_force_current_viewport_scene_target_format(Viewport);
+            SPDLOG_INFO(
+                "[SWZeroCompany][UE5.6][RT] Validated FSceneViewport force-separate-RT offset: 0x{:x}; "
+                "R10 InitRHI hook={} current_viewport={}",
+                *m_viewport_force_separate_rt_offset,
+                format_hook_ready,
+                current_format_ready);
+        } else {
+            SPDLOG_ERROR(
+                "[SWZeroCompany][UE5.6][RT] UseSeparateRenderTarget signature mismatch; refusing generic force-RT field discovery");
+        }
     }
 
     if (!m_attempted_find_force_separate_rt) try {
