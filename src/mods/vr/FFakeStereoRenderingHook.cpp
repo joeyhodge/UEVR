@@ -30754,6 +30754,27 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
         return;
     }
 
+    if (g_framework->is_dx12() &&
+        sw_zero_company_ue56_is_current_game() &&
+        is_ue_5_6_dx12_backend())
+    {
+        // The matching game PDB identifies this call as
+        // FD3D12DynamicRHI::RHICreateTexture on the engine command list. SW
+        // Zero queues its own CaptureScene transitions after viewport Draw, so
+        // replaying the allocator leaves that list invalid at RHIEndTransitions.
+        // The exact Draw viewport path already publishes the engine-owned scene
+        // target, so fail closed instead of creating a redundant RHI texture.
+        rtm->legacy_texture_replay_failed_closed.store(true, std::memory_order_release);
+        rtm->allocate_texture_called = false;
+        rtm->texture_hook_ref = nullptr;
+        rtm->shader_resource_hook_ref = nullptr;
+
+        SPDLOG_WARN_ONCE(
+            "[SWZeroCompany][UE5.6][TextureReplay] Skipping duplicate RHICreateTexture on the engine command list; "
+            "using the validated Draw viewport scene target");
+        return;
+    }
+
     if (g_framework->is_dx12() && is_ue_5_7_or_newer()) {
         if (rtm->texture_desc_prepare_func == 0 || rtm->texture_create_wrapper_func == 0 || rtm->texture_finalize_func == 0) {
             SPDLOG_WARN_ONCE("Skipping pre-texture duplication on UE 5.7+ DX12 because the real texture wrapper/finalize sequence was not resolved");
@@ -33578,6 +33599,25 @@ bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return
             this->set_up_texture_hook = true;
             SPDLOG_INFO(
                 "[Everspace2][ViewportRT] Using direct engine-owned FSceneViewport observation; generic texture replay/midhooks disabled (caller={:x})",
+                return_address);
+        }
+
+        return false;
+    }
+
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        // The matching UE5.6.1 PDB proves the resolved allocator is the engine's
+        // RHICreateTexture path. Keep its command-list transaction untouched and
+        // publish the validated FSceneViewport target after Draw instead.
+        this->texture_hook_ref = nullptr;
+        this->shader_resource_hook_ref = nullptr;
+        this->allocate_texture_called = false;
+
+        if (!this->set_up_texture_hook) {
+            this->set_up_texture_hook = true;
+            SPDLOG_INFO(
+                "[SWZeroCompany][UE5.6][ViewportRT] Using engine-owned FSceneViewport allocation; "
+                "generic texture replay/midhooks disabled (caller={:x})",
                 return_address);
         }
 
