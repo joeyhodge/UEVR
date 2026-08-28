@@ -1307,6 +1307,18 @@ PokemonEmeraldUE56SceneTargetBootstrapState g_pokemon_emerald_ue56_scene_target_
 constexpr auto POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_RETRY = std::chrono::milliseconds(250);
 constexpr uint32_t POKEMON_EMERALD_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS = 24;
 
+struct SWZeroCompanyUE56SceneTargetBootstrapState {
+    uintptr_t texture{};
+    uintptr_t vtable{};
+    std::chrono::steady_clock::time_point last_attempt{};
+    uint32_t attempts{};
+};
+
+std::mutex g_sw_zero_company_ue56_scene_target_bootstrap_mutex{};
+SWZeroCompanyUE56SceneTargetBootstrapState g_sw_zero_company_ue56_scene_target_bootstrap{};
+constexpr auto SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_RETRY = std::chrono::milliseconds(250);
+constexpr uint32_t SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS = 24;
+
 struct UE51RenderTargetChurnStats {
     uint64_t allocate_seen{};
     uint64_t ui_created{};
@@ -2022,6 +2034,26 @@ bool pokemon_emerald_is_current_game() {
         return lowered.ends_with(L"\\pokemonemerald.exe") ||
                lowered.ends_with(L"/pokemonemerald.exe") ||
                lowered == L"pokemonemerald.exe";
+    }();
+
+    return result;
+}
+
+bool sw_zero_company_ue56_is_current_game() {
+    static const bool result = []() {
+        const auto executable = utility::get_executable();
+        const auto exe_path = utility::get_module_pathw(executable);
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(executable).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_sw_zero_company_ue56_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
     }();
 
     return result;
@@ -5890,6 +5922,223 @@ bool pokemon_emerald_ue56_try_bootstrap_scene_target(
         desc.Height,
         (uint32_t)desc.Format,
         (uint32_t)desc.Flags);
+
+    if (out_native != nullptr) {
+        *out_native = native;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = desc;
+    }
+
+    return true;
+}
+
+struct SWZeroCompanyFRHITextureDescObservation {
+    int32_t width{};
+    int32_t height{};
+    uint8_t num_mips{};
+    uint8_t num_samples{};
+    uint8_t dimension{};
+    uint8_t format{};
+};
+
+bool sw_zero_company_read_texture_desc(
+    FRHITexture2D* texture,
+    SWZeroCompanyFRHITextureDescObservation& out)
+{
+    constexpr uintptr_t desc_offset = 0x20;
+    constexpr uintptr_t desc_size = 0x38;
+    const auto texture_address = reinterpret_cast<uintptr_t>(texture);
+
+    if (texture_address == 0 ||
+        texture_address + desc_offset < texture_address ||
+        IsBadReadPtr(reinterpret_cast<void*>(texture_address + desc_offset), desc_size))
+    {
+        return false;
+    }
+
+    __try {
+        out.width = *reinterpret_cast<const int32_t*>(texture_address + desc_offset + 0x24);
+        out.height = *reinterpret_cast<const int32_t*>(texture_address + desc_offset + 0x28);
+        out.num_mips = *reinterpret_cast<const uint8_t*>(texture_address + desc_offset + 0x30);
+        out.num_samples = *reinterpret_cast<const uint8_t*>(texture_address + desc_offset + 0x31);
+        out.dimension = *reinterpret_cast<const uint8_t*>(texture_address + desc_offset + 0x32);
+        out.format = *reinterpret_cast<const uint8_t*>(texture_address + desc_offset + 0x33);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        out = {};
+        return false;
+    }
+
+    return out.width > 0 && out.height > 0 &&
+        out.width <= 65536 && out.height <= 65536 &&
+        out.num_mips > 0 && out.num_mips <= 32 &&
+        (out.num_samples == 1 || out.num_samples == 2 || out.num_samples == 4 ||
+         out.num_samples == 8 || out.num_samples == 16) &&
+        out.dimension <= 8 && out.format > 0 && out.format <= 128;
+}
+
+bool sw_zero_company_ue56_try_bootstrap_scene_target(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native,
+    D3D12_RESOURCE_DESC* out_desc)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    const bool known_viewport_source =
+        source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
+
+    // SWZeroCompany's matching UE5.6.1 binary proves FD3D12Texture's
+    // FRHITextureDesc at +0x20 and GetNativeResource at vtable slot 5. Do not
+    // generalize either ABI to other games or probe another virtual function.
+    if (!sw_zero_company_ue56_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        !known_viewport_source ||
+        texture == nullptr ||
+        IsBadReadPtr(texture, sizeof(void*)))
+    {
+        return false;
+    }
+
+    void** vtable{};
+
+    try {
+        vtable = *reinterpret_cast<void***>(texture);
+    } catch (...) {
+        return false;
+    }
+
+    const auto executable = utility::get_executable();
+    if (vtable == nullptr ||
+        IsBadReadPtr(vtable, sizeof(void*) * 6) ||
+        utility::get_module_within(vtable).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    SWZeroCompanyFRHITextureDescObservation rhi_desc{};
+    if (!sw_zero_company_read_texture_desc(texture, rhi_desc)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[SWZeroCompany][UE5.6][RT bootstrap] Refusing viewport candidate without the validated FRHITextureDesc at +0x20: rhi={:x}",
+            reinterpret_cast<uintptr_t>(texture));
+        return false;
+    }
+
+    const auto get_native_resource = reinterpret_cast<uintptr_t>(vtable[5]);
+    if (get_native_resource == 0 ||
+        !is_executable_process_range(get_native_resource, 1) ||
+        utility::get_module_within(reinterpret_cast<void*>(get_native_resource)).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    uint32_t attempt{};
+    bool should_probe{};
+    const auto now = std::chrono::steady_clock::now();
+
+    {
+        std::scoped_lock _{g_sw_zero_company_ue56_scene_target_bootstrap_mutex};
+        auto& state = g_sw_zero_company_ue56_scene_target_bootstrap;
+
+        if (state.texture != reinterpret_cast<uintptr_t>(texture) ||
+            state.vtable != reinterpret_cast<uintptr_t>(vtable))
+        {
+            state = {
+                .texture = reinterpret_cast<uintptr_t>(texture),
+                .vtable = reinterpret_cast<uintptr_t>(vtable),
+            };
+        }
+
+        if (state.attempts < SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS &&
+            (state.last_attempt.time_since_epoch().count() == 0 ||
+             now - state.last_attempt >= SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_RETRY))
+        {
+            state.last_attempt = now;
+            attempt = ++state.attempts;
+            should_probe = true;
+        }
+    }
+
+    if (!should_probe) {
+        return false;
+    }
+
+    auto* const native_raw = call_get_native_resource_guarded(texture, get_native_resource);
+    if (!is_probable_d3d_native_resource(native_raw)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[SWZeroCompany][UE5.6][RT bootstrap] Slot 5 did not return a D3D resource on attempt {}/{}",
+            attempt,
+            SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS);
+        return false;
+    }
+
+    auto* const native = static_cast<ID3D12Resource*>(native_raw);
+    D3D12_RESOURCE_DESC desc{};
+    if (!get_d3d12_resource_desc_guarded(native, desc)) {
+        return false;
+    }
+
+    ID3D12Device4* resource_device_raw{};
+    if (!get_d3d12_resource_device_guarded(native, &resource_device_raw)) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    resource_device.Attach(resource_device_raw);
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+    const auto expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+    const bool valid_native_desc =
+        expected_device != nullptr &&
+        resource_device.Get() == expected_device &&
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        desc.Width == static_cast<uint64_t>(rhi_desc.width) &&
+        desc.Height == static_cast<uint32_t>(rhi_desc.height) &&
+        desc.Width <= 65536 && desc.Height <= 65536 &&
+        desc.DepthOrArraySize > 0 &&
+        desc.MipLevels == rhi_desc.num_mips &&
+        desc.SampleDesc.Count == rhi_desc.num_samples &&
+        desc.Format != DXGI_FORMAT_UNKNOWN &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+
+    if (!valid_native_desc) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SWZeroCompany][UE5.6][RT bootstrap] Rejected slot-5 resource {:x}: device_match={} rhi={}x{} mips={} samples={} fmt={} native={}x{} mips={} samples={} fmt={} flags=0x{:x}",
+            reinterpret_cast<uintptr_t>(native),
+            expected_device != nullptr && resource_device.Get() == expected_device,
+            rhi_desc.width,
+            rhi_desc.height,
+            rhi_desc.num_mips,
+            rhi_desc.num_samples,
+            rhi_desc.format,
+            desc.Width,
+            desc.Height,
+            desc.MipLevels,
+            desc.SampleDesc.Count,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[SWZeroCompany][UE5.6][RT bootstrap] Accepted exact Draw viewport scene target on attempt {}/{}: rhi={:x} native={:x} [{}x{} fmt={} flags=0x{:x}]",
+        attempt,
+        SW_ZERO_COMPANY_UE56_SCENE_TARGET_BOOTSTRAP_MAX_ATTEMPTS,
+        reinterpret_cast<uintptr_t>(texture),
+        reinterpret_cast<uintptr_t>(native),
+        desc.Width,
+        desc.Height,
+        static_cast<uint32_t>(desc.Format),
+        static_cast<uint32_t>(desc.Flags));
 
     if (out_native != nullptr) {
         *out_native = native;
@@ -14539,10 +14788,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     const bool dune_viewport_adoption = dune_awakening_is_current_game();
     const bool pokemon_emerald_ue56_dx12_viewport_adoption =
         pokemon_emerald_is_current_game() && is_ue_5_6_dx12_backend();
+    const bool sw_zero_company_ue56_dx12_viewport_adoption =
+        sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend();
     const bool allow_scene_viewport_rt_adoption =
         dune_viewport_adoption || ue58_viewport_adoption ||
         naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
-        pokemon_emerald_ue56_dx12_viewport_adoption;
+        pokemon_emerald_ue56_dx12_viewport_adoption ||
+        sw_zero_company_ue56_dx12_viewport_adoption;
     const auto log_prefix = dune_viewport_adoption
         ? "[Dune][RT]"
         : (ue58_viewport_adoption
@@ -14553,7 +14805,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                     ? "[DeadIsland2][UE4.25][RT]"
                     : (pokemon_emerald_ue56_dx12_viewport_adoption
                         ? "[PokemonEmerald][UE5.6][RT]"
-                        : "[SHf]"))));
+                        : (sw_zero_company_ue56_dx12_viewport_adoption
+                            ? "[SWZeroCompany][UE5.6][RT]"
+                            : "[SHf]")))));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
@@ -14637,6 +14891,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         pokemon_emerald_ue56_dx12_viewport_adoption &&
         source != nullptr &&
         std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
+    const bool is_sw_zero_company_viewport_refresh =
+        sw_zero_company_ue56_dx12_viewport_adoption &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
@@ -14644,7 +14902,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         !is_ue58_viewport_refresh &&
         !is_naruto_viewport_refresh &&
         !is_dead_island_2_viewport_refresh &&
-        !is_pokemon_emerald_viewport_refresh)
+        !is_pokemon_emerald_viewport_refresh &&
+        !is_sw_zero_company_viewport_refresh)
     {
         return;
     }
@@ -14714,9 +14973,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         return;
     }
 
-    // The wrapper already exposes its current native resource dynamically, so
-    // only re-run the guarded bootstrap when the engine rotates the wrapper.
-    if (pokemon_emerald_ue56_dx12_viewport_adoption && candidate == current_target) {
+    // These game-specific wrappers already have a validated native-resource
+    // route, so only re-run their guarded bootstrap when the engine rotates it.
+    if ((pokemon_emerald_ue56_dx12_viewport_adoption ||
+         sw_zero_company_ue56_dx12_viewport_adoption) &&
+        candidate == current_target)
+    {
         return;
     }
 
@@ -14797,12 +15059,17 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         const bool is_pokemon_emerald_viewport_bootstrap =
             pokemon_emerald_is_current_game() &&
             is_known_viewport_source;
+        const bool is_sw_zero_company_viewport_bootstrap =
+            sw_zero_company_ue56_is_current_game() &&
+            is_known_viewport_source;
         const bool discovered =
             is_subnautica2_viewport_bootstrap
                 ? subnautica2_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
                 : is_pokemon_emerald_viewport_bootstrap
                     ? pokemon_emerald_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
-                    : ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc);
+                    : is_sw_zero_company_viewport_bootstrap
+                        ? sw_zero_company_ue56_try_bootstrap_scene_target(candidate, source, &native_resource, &desc)
+                        : ue56_dx12_try_get_native_resource(candidate, source, &native_resource, &desc);
 
         if (!discovered) {
             SPDLOG_WARNING_EVERY_N_SEC(2, "[UE5.6][RT] Failing closed for FSceneViewport render target from {}; waiting for D3D12 texture/backbuffer hooks", source);
@@ -14988,6 +15255,27 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         rtm->set_view_family_render_target(reinterpret_cast<sdk::FRenderTarget*>(viewport));
         SPDLOG_INFO_ONCE(
             "[UE5.8][RT] Retained the twice-validated FSceneViewFamily render-target identity for Draw-less viewports");
+    }
+
+    if (sw_zero_company_ue56_dx12_viewport_adoption) {
+        if (candidate == rtm->get_dedicated_ui_target()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SWZeroCompany][UE5.6][RT] Rejected a dedicated UI texture at the Draw viewport source");
+            return;
+        }
+
+        if (!rtm->publish_sw_zero_company_scene_target_snapshot(candidate, native_resource, desc)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[SWZeroCompany][UE5.6][RT] Failed to publish the validated slot-5 scene target");
+            return;
+        }
+
+        // D3D12 consumers use the COM-owned resource snapshot and never ask
+        // UESDK to rediscover a virtual slot on this game-specific wrapper.
+        rtm->set_render_target(candidate);
+        return;
     }
 
     if (everspace2_direct_observation) {
@@ -30047,6 +30335,60 @@ bool VRRenderTargetManager_Base::publish_everspace2_scene_target_snapshot(
         desc.Height,
         (uint32_t)desc.Format,
         (uint32_t)desc.Flags);
+
+    return true;
+}
+
+bool VRRenderTargetManager_Base::publish_sw_zero_company_scene_target_snapshot(
+    FRHITexture2D* source_texture,
+    ID3D12Resource* resource,
+    const D3D12_RESOURCE_DESC& desc)
+{
+    if (source_texture == nullptr ||
+        resource == nullptr ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0 ||
+        desc.Format == DXGI_FORMAT_UNKNOWN ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
+    {
+        return false;
+    }
+
+    const auto current = sw_zero_company_scene_target_snapshot.load(std::memory_order_acquire);
+    if (current != nullptr &&
+        current->source_texture == reinterpret_cast<uintptr_t>(source_texture) &&
+        current->resource.Get() == resource &&
+        current->desc.Width == desc.Width &&
+        current->desc.Height == desc.Height &&
+        current->desc.Format == desc.Format)
+    {
+        return true;
+    }
+
+    auto next = std::make_shared<SWZeroCompanyD3D12SceneTargetSnapshot>();
+    next->resource = resource;
+    next->desc = desc;
+    next->source_texture = reinterpret_cast<uintptr_t>(source_texture);
+    next->generation = sw_zero_company_scene_target_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    if (next->resource == nullptr) {
+        return false;
+    }
+
+    const auto previous =
+        sw_zero_company_scene_target_snapshot.exchange(next, std::memory_order_acq_rel);
+
+    SPDLOG_INFO(
+        "[SWZeroCompany][UE5.6][SceneTargetSnapshot] publish generation={} rhi={:x} native={:x} previous_generation={} size={}x{} format={} flags=0x{:x}",
+        next->generation,
+        reinterpret_cast<uintptr_t>(source_texture),
+        reinterpret_cast<uintptr_t>(resource),
+        previous != nullptr ? previous->generation : 0,
+        desc.Width,
+        desc.Height,
+        static_cast<uint32_t>(desc.Format),
+        static_cast<uint32_t>(desc.Flags));
 
     return true;
 }

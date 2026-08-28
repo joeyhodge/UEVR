@@ -248,6 +248,26 @@ bool is_deadzone_rogue_current_game() {
     return result;
 }
 
+bool is_sw_zero_company_ue56_dx12_current_game() {
+    static const bool game_and_engine_match = []() {
+        const auto executable = utility::get_executable();
+        const auto exe_path = utility::get_module_pathw(executable);
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(executable).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_sw_zero_company_ue56_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
+    }();
+
+    return game_and_engine_match && g_framework != nullptr && g_framework->is_dx12();
+}
+
 bool is_dead_island_2_ue425_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -292,10 +312,15 @@ bool is_everspace2_current_game() {
 Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     VR* vr,
     const char* consumer,
-    bool* from_everspace2_snapshot = nullptr)
+    bool* from_everspace2_snapshot = nullptr,
+    bool* from_sw_zero_company_snapshot = nullptr)
 {
     if (from_everspace2_snapshot != nullptr) {
         *from_everspace2_snapshot = false;
+    }
+
+    if (from_sw_zero_company_snapshot != nullptr) {
+        *from_sw_zero_company_snapshot = false;
     }
 
     if (vr == nullptr) {
@@ -310,6 +335,37 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     const auto rtm = fake_stereo_hook->get_render_target_manager();
     if (rtm == nullptr) {
         return nullptr;
+    }
+
+    if (is_sw_zero_company_ue56_dx12_current_game()) {
+        const auto snapshot = rtm->get_sw_zero_company_scene_target_snapshot();
+        const auto current_target = rtm->get_render_target();
+        if (snapshot == nullptr ||
+            snapshot->resource == nullptr ||
+            current_target == nullptr ||
+            snapshot->source_texture != reinterpret_cast<uintptr_t>(current_target))
+        {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[SWZeroCompany][UE5.6][SceneTargetSnapshot] {} waiting for the exact Draw viewport scene target",
+                consumer != nullptr ? consumer : "<unknown>");
+            return nullptr;
+        }
+
+        if (from_sw_zero_company_snapshot != nullptr) {
+            *from_sw_zero_company_snapshot = true;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[SWZeroCompany][UE5.6][SceneTargetSnapshot] {} consuming generation={} rhi={:x} native={:x} size={}x{}",
+            consumer != nullptr ? consumer : "<unknown>",
+            snapshot->generation,
+            snapshot->source_texture,
+            reinterpret_cast<uintptr_t>(snapshot->resource.Get()),
+            snapshot->desc.Width,
+            snapshot->desc.Height);
+        return snapshot->resource;
     }
 
     if (is_everspace2_current_game() && g_framework->is_dx12()) {
@@ -2103,7 +2159,12 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // get back buffer
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
-    backbuffer = acquire_scene_target_resource(vr, "D3D12Component::on_frame");
+    bool sw_zero_company_validated_scene_target{};
+    backbuffer = acquire_scene_target_resource(
+        vr,
+        "D3D12Component::on_frame",
+        nullptr,
+        &sw_zero_company_validated_scene_target);
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
         spdlog::error("[VR] Failed to get real back buffer.");
@@ -2130,8 +2191,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             (uint32_t)desc.Flags);
     }
 
-    if (vr->is_extreme_compatibility_mode_enabled()) {
+    if (vr->is_extreme_compatibility_mode_enabled() &&
+        !sw_zero_company_validated_scene_target)
+    {
         backbuffer = real_backbuffer;
+    } else if (vr->is_extreme_compatibility_mode_enabled() &&
+               sw_zero_company_validated_scene_target)
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[SWZeroCompany][UE5.6][D3D12] Extreme Compatibility is consuming the validated scene target instead of the UI-only swapchain backbuffer");
     }
 
     if (is_deadzone_rogue_current_game() && backbuffer == nullptr && real_backbuffer != nullptr) {
@@ -5381,7 +5450,12 @@ bool D3D12Component::setup() {
     auto swapchain = hook->get_swap_chain();
 
     ComPtr<ID3D12Resource> backbuffer{};
-    backbuffer = acquire_scene_target_resource(vr.get(), "D3D12Component::setup");
+    bool sw_zero_company_validated_scene_target{};
+    backbuffer = acquire_scene_target_resource(
+        vr.get(),
+        "D3D12Component::setup",
+        nullptr,
+        &sw_zero_company_validated_scene_target);
 
     ComPtr<ID3D12Resource> real_backbuffer{};
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -5389,8 +5463,16 @@ bool D3D12Component::setup() {
         return false;
     }
 
-    if (vr->is_extreme_compatibility_mode_enabled()) {
+    if (vr->is_extreme_compatibility_mode_enabled() &&
+        !sw_zero_company_validated_scene_target)
+    {
         backbuffer = real_backbuffer;
+    } else if (vr->is_extreme_compatibility_mode_enabled() &&
+               sw_zero_company_validated_scene_target)
+    {
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[SWZeroCompany][UE5.6][D3D12] Setup retained the validated scene target under Extreme Compatibility");
     }
 
     const bool deadzone_real_backbuffer_bootstrap =
