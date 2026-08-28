@@ -5047,7 +5047,6 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
             pokemon_emerald_is_current_game() ||
-            sw_zero_company_ue56_is_current_game() ||
             is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
@@ -25928,16 +25927,13 @@ void ue55_promote_slate_outputs(
         expected_extent ? expected_extent->width : 0,
         expected_extent ? expected_extent->height : 0);
 
-    if (everspace2_is_current_game() || sw_zero_company_ue56_is_current_game()) {
-        // These titles transition through pooled render targets during
-        // cinematics or viewport setup. Keep the rooted dedicated UI target
-        // instead of retaining a transient DrawWindow output that may be
-        // recycled by FRenderTargetPool.
+    if (everspace2_is_current_game()) {
+        // ES2 transitions through pooled render targets during cinematics.
+        // Keep the rooted dedicated UI target instead of retaining a transient
+        // DrawWindow output that may be recycled by FRenderTargetPool.
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[{}][UE5.{}][SlateUI] Observed DrawWindow outputs without promoting pooled candidates",
-            sw_zero_company_ue56_is_current_game() ? "SWZeroCompany" : "Everspace2",
-            sw_zero_company_ue56_is_current_game() ? "6" : "5");
+            "[Everspace2][UE5.5][SlateUI] Observed DrawWindow outputs without promoting pooled candidates");
         return;
     }
 
@@ -32509,7 +32505,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
                 pokemon_emerald_is_current_game() ||
-                sw_zero_company_ue56_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
                 supports_the_sinking_city_2_ue58_dx12_owned_ui_target() ||
@@ -32531,10 +32526,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[PokemonEmerald][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
-                    } else if (sw_zero_company_ue56_is_current_game()) {
-                        SPDLOG_INFO_EVERY_N_SEC(
-                            2,
-                            "[SWZeroCompany][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (supports_the_sinking_city_2_ue58_dx12_owned_ui_target()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
