@@ -1040,12 +1040,12 @@ void CVarManager::CVarStandard::load_from_config(const utility::Config& cfg, boo
 void CVarManager::CVarStandard::save() {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         // CVar not found, don't save.
         return;
     }
-
-    auto cvar = *m_cvar;
 
     switch (m_type) {
     case Type::BOOL:
@@ -1071,7 +1071,9 @@ void CVarManager::CVarStandard::freeze() {
         return;
     }
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         return;
     }
 
@@ -1080,30 +1082,38 @@ void CVarManager::CVarStandard::freeze() {
         SPDLOG_INFO("[CVarManager] (Standard) First time freezing \"{}\"...", utility::narrow(m_name));
     }
 
+    const auto set_frozen_value = [&](const std::wstring& value) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto ok = cvar->Set(value.c_str());
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+        if (!ok) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            return;
+        }
+
+        if (elapsed_ms > 250) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" after slow Set took {}ms", utility::narrow(m_name), elapsed_ms);
+        }
+    };
+
     switch(m_type) {
     case Type::BOOL:
         // Limiting the amount of times Set gets called with string conversions.
-        if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetInt() != m_frozen_int_value) {
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::INT:
-        if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetInt() != m_frozen_int_value) {
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::FLOAT:
-        if ((*m_cvar)->GetFloat() != m_frozen_float_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_float_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetFloat() != m_frozen_float_value) {
+            set_frozen_value(std::to_wstring(m_frozen_float_value));
         }
         break;
     default:
@@ -1114,20 +1124,25 @@ void CVarManager::CVarStandard::freeze() {
 void CVarManager::CVarStandard::update() {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr) {
+    if (m_cvar == nullptr && m_interface_cvar == nullptr) {
         m_cvar = sdk::find_cvar_cached(m_module, m_name);
+
+        if (m_cvar == nullptr && !m_interface_fallback_attempted) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+        }
     }
 }
 
 void CVarManager::CVarStandard::draw_ui() try {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         ImGui::TextWrapped("Failed to find cvar: %s", utility::narrow(m_name).c_str());
         return;
     }
-
-    auto cvar = *m_cvar;
     const auto narrow_name = utility::narrow(m_name);
     
     switch (m_type) {
@@ -1228,7 +1243,24 @@ void CVarManager::CVarData::load_from_config(const utility::Config& cfg, bool se
 void CVarManager::CVarData::save() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
+        return;
+    }
+
+    if (m_interface_cvar != nullptr) {
+        switch (m_type) {
+        case Type::BOOL:
+        case Type::INT:
+            m_frozen_int_value = m_interface_cvar->GetInt();
+            break;
+        case Type::FLOAT:
+            m_frozen_float_value = m_interface_cvar->GetFloat();
+            break;
+        default:
+            break;
+        }
+
+        save_internal(cvars_data_txt_name.data());
         return;
     }
 
@@ -1260,17 +1292,52 @@ void CVarManager::CVarData::save() {
 void CVarManager::CVarData::freeze() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_frozen) {
+    if (!m_frozen || m_setter_unavailable) {
         return;
     }
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
         return;
     }
 
     if (!m_ever_frozen) {
         m_ever_frozen = true;
         SPDLOG_INFO("[CVarManager] (Data) First time freezing \"{}\"...", utility::narrow(m_name));
+    }
+
+    if (m_interface_cvar != nullptr) {
+        bool needs_set = false;
+        std::wstring value{};
+
+        switch (m_type) {
+        case Type::BOOL:
+        case Type::INT:
+            needs_set = m_interface_cvar->GetInt() != m_frozen_int_value;
+            value = std::to_wstring(m_frozen_int_value);
+            break;
+        case Type::FLOAT:
+            needs_set = m_interface_cvar->GetFloat() != m_frozen_float_value;
+            value = std::to_wstring(m_frozen_float_value);
+            break;
+        default:
+            break;
+        }
+
+        if (needs_set) {
+            const auto start = std::chrono::steady_clock::now();
+            const auto ok = m_interface_cvar->Set(value.c_str());
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+            if (!ok || elapsed_ms > 250) {
+                m_setter_unavailable = true;
+                SPDLOG_WARN(
+                    "[CVarManager] Disabling UE 5.5 interface freeze enforcement for {} (ok={}, elapsed={}ms)",
+                    utility::narrow(m_name), ok, elapsed_ms);
+            }
+        }
+
+        return;
     }
 
     // Points to the same thing, just different data internally.
@@ -1299,16 +1366,83 @@ void CVarManager::CVarData::freeze() {
 void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
         m_cvar_data = sdk::find_cvar_data_cached(m_module, m_name);
+
+        if (!m_cvar_data && !m_interface_fallback_attempted) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+        }
     }
 }
 
 void CVarManager::CVarData::draw_ui() try {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
         ImGui::TextWrapped("Failed to find cvar data: %s", utility::narrow(m_name).c_str());
+        return;
+    }
+
+    if (m_interface_cvar != nullptr) {
+        const auto narrow_name = utility::narrow(m_name);
+        const auto set_value = [this](std::wstring value) {
+            m_setter_unavailable = false;
+            auto* cvar = m_interface_cvar;
+
+            GameThreadWorker::get().enqueue(
+                [sft = std::static_pointer_cast<CVarData>(shared_from_this()), cvar, value = std::move(value)]() {
+                    try {
+                        if (!cvar->Set(value.c_str())) {
+                            sft->m_setter_unavailable = true;
+                            SPDLOG_WARN("UE 5.5 interface Set failed for {}", utility::narrow(sft->get_name()));
+                        }
+                    } catch (...) {
+                        sft->m_setter_unavailable = true;
+                        SPDLOG_ERROR("UE 5.5 interface Set threw for {}", utility::narrow(sft->get_name()));
+                    }
+                });
+        };
+
+        switch (m_type) {
+        case Type::BOOL: {
+            auto value = static_cast<bool>(m_interface_cvar->GetInt());
+
+            if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
+                m_frozen_int_value = static_cast<int>(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(std::to_wstring(m_frozen_int_value));
+            }
+            break;
+        }
+        case Type::INT: {
+            auto value = m_interface_cvar->GetInt();
+
+            if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, effective_max_int_value())) {
+                m_frozen_int_value = clamp_int_value(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(std::to_wstring(m_frozen_int_value));
+            }
+            break;
+        }
+        case Type::FLOAT: {
+            auto value = m_interface_cvar->GetFloat();
+
+            if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
+                m_frozen_float_value = clamp_float_value(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_float_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(std::to_wstring(m_frozen_float_value));
+            }
+            break;
+        }
+        default:
+            ImGui::TextWrapped("Unimplemented cvar type: %s", narrow_name.c_str());
+            break;
+        }
+
         return;
     }
 
