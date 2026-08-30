@@ -335,7 +335,8 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
             snapshot->desc.DepthOrArraySize != 1 ||
             snapshot->desc.MipLevels != 1 ||
             snapshot->desc.SampleDesc.Count != 1 ||
-            snapshot->desc.Format == DXGI_FORMAT_UNKNOWN ||
+            (snapshot->desc.Format != DXGI_FORMAT_R10G10B10A2_TYPELESS &&
+             snapshot->desc.Format != DXGI_FORMAT_R10G10B10A2_UNORM) ||
             (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
             (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0)
         {
@@ -2113,18 +2114,28 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         converted_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         converted_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
 
+        auto snapshot_desc = source_desc;
+        snapshot_desc.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        snapshot_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
+
         const bool source_needs_setup =
             m_sw_zero_company_scene_source_tex.texture.Get() != backbuffer.Get() ||
             !texture_context_has_views(m_sw_zero_company_scene_source_tex);
+        const bool snapshot_needs_setup =
+            m_sw_zero_company_scene_snapshot_tex.texture.Get() == nullptr ||
+            !shf_texture_desc_matches(
+                m_sw_zero_company_scene_snapshot_tex.texture->GetDesc(),
+                snapshot_desc) ||
+            !texture_context_has_views(m_sw_zero_company_scene_snapshot_tex);
         const bool output_needs_setup =
             m_game_tex.texture.Get() == nullptr ||
             !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), converted_desc) ||
             !texture_context_has_views(m_game_tex);
 
-        if (source_needs_setup || output_needs_setup) {
+        if (source_needs_setup || snapshot_needs_setup || output_needs_setup) {
             // The source descriptors are referenced by our conversion command
-            // lists, while the converted output can still be in an OpenXR copy.
-            // Drain both users before replacing either context.
+            // lists, while the owned snapshot and converted output can still be
+            // in an OpenXR copy. Drain all users before replacing any context.
             for (auto& commands : m_game_tex_commands) {
                 if (commands.ready()) {
                     commands.wait(INFINITE);
@@ -2136,6 +2147,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             m_sw_zero_company_scene_source_tex.reset();
+            m_sw_zero_company_scene_snapshot_tex.reset();
             m_game_tex.reset();
 
             if (!m_sw_zero_company_scene_source_tex.setup(
@@ -2156,6 +2168,38 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             heap_props.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
             heap_props.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
 
+            ComPtr<ID3D12Resource> scene_snapshot{};
+            if (FAILED(device->CreateCommittedResource(
+                    &heap_props,
+                    D3D12_HEAP_FLAG_NONE,
+                    &snapshot_desc,
+                    ENGINE_SRC_COLOR,
+                    nullptr,
+                    IID_PPV_ARGS(&scene_snapshot))) ||
+                scene_snapshot == nullptr)
+            {
+                SPDLOG_ERROR(
+                    "[SWZeroCompany][UE5.6][D3D12] Failed to create owned R10 scene snapshot [{}x{}]",
+                    snapshot_desc.Width,
+                    snapshot_desc.Height);
+                m_sw_zero_company_scene_source_tex.reset();
+                return vr::VRCompositorError_None;
+            }
+
+            if (!m_sw_zero_company_scene_snapshot_tex.setup(
+                    device,
+                    scene_snapshot.Get(),
+                    *source_view_format,
+                    *source_view_format,
+                    L"SWZeroCompany UE5.6 Owned R10 Scene Snapshot"))
+            {
+                SPDLOG_ERROR(
+                    "[SWZeroCompany][UE5.6][D3D12] Failed to setup owned R10 scene snapshot");
+                m_sw_zero_company_scene_source_tex.reset();
+                m_sw_zero_company_scene_snapshot_tex.reset();
+                return vr::VRCompositorError_None;
+            }
+
             ComPtr<ID3D12Resource> converted_scene{};
             if (FAILED(device->CreateCommittedResource(
                     &heap_props,
@@ -2171,6 +2215,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     converted_desc.Width,
                     converted_desc.Height);
                 m_sw_zero_company_scene_source_tex.reset();
+                m_sw_zero_company_scene_snapshot_tex.reset();
                 return vr::VRCompositorError_None;
             }
 
@@ -2184,6 +2229,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 SPDLOG_ERROR(
                     "[SWZeroCompany][UE5.6][D3D12] Failed to setup owned BGRA scene-conversion texture");
                 m_sw_zero_company_scene_source_tex.reset();
+                m_sw_zero_company_scene_snapshot_tex.reset();
                 m_game_tex.reset();
                 return vr::VRCompositorError_None;
             }
@@ -2195,7 +2241,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             SPDLOG_WARN(
-                "[SWZeroCompany][UE5.6][D3D12] Rebuilt exact R10-to-BGRA scene conversion [{}x{} src_fmt={} dst_fmt={}]",
+                "[SWZeroCompany][UE5.6][D3D12] Rebuilt owned R10 snapshot and BGRA scene conversion [{}x{} src_fmt={} dst_fmt={}]",
                 source_desc.Width,
                 source_desc.Height,
                 static_cast<uint32_t>(source_desc.Format),
@@ -2204,9 +2250,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         const auto idx = swapchain->GetCurrentBackBufferIndex() % m_game_tex_commands.size();
         auto& command_ctx = m_game_tex_commands[idx];
-        if (m_game_batch == nullptr ||
+        if (m_sw_zero_company_scene_conversion_batch == nullptr ||
             !command_ctx.ready() ||
             !texture_context_has_views(m_sw_zero_company_scene_source_tex) ||
+            !texture_context_has_views(m_sw_zero_company_scene_snapshot_tex) ||
             !texture_context_has_views(m_game_tex))
         {
             SPDLOG_ERROR_EVERY_N_SEC(
@@ -2216,18 +2263,24 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         }
 
         command_ctx.wait(INFINITE);
+        command_ctx.copy(
+            m_sw_zero_company_scene_source_tex.texture.Get(),
+            m_sw_zero_company_scene_snapshot_tex.texture.Get(),
+            ENGINE_SRC_COLOR,
+            ENGINE_SRC_COLOR);
+        const float opaque_black[4]{0.0f, 0.0f, 0.0f, 1.0f};
+        command_ctx.clear_rtv(m_game_tex, opaque_black, ENGINE_SRC_COLOR);
         d3d12::render_srv_to_rtv(
-            m_game_batch.get(),
+            m_sw_zero_company_scene_conversion_batch.get(),
             command_ctx.cmd_list.Get(),
-            m_sw_zero_company_scene_source_tex,
+            m_sw_zero_company_scene_snapshot_tex,
             m_game_tex,
             ENGINE_SRC_COLOR,
             ENGINE_SRC_COLOR);
         command_ctx.execute();
 
-        SPDLOG_INFO_EVERY_N_SEC(
-            2,
-            "[SWZeroCompany][UE5.6][D3D12] Converted R10 scene target to owned BGRA for HMD/mirror/OpenXR");
+        SPDLOG_INFO_ONCE(
+            "[SWZeroCompany][UE5.6][D3D12] Snapshotted the R10 scene target before BGRA conversion for HMD/mirror/OpenXR");
 
         m_skip_spectator_view_for_volatile_external_rt = false;
         backbuffer = m_game_tex.texture;
@@ -4866,6 +4919,7 @@ void D3D12Component::on_reset(VR* vr) {
     reset_ue58_converted_ui_textures();
     m_game_tex.reset();
     m_sw_zero_company_scene_source_tex.reset();
+    m_sw_zero_company_scene_snapshot_tex.reset();
     m_ue58_spectator_tex.reset();
     m_ue58_dedicated_ui_spectator_valid = false;
     m_scene_capture_tex.reset();
@@ -4887,6 +4941,7 @@ void D3D12Component::on_reset(VR* vr) {
     m_shf_scene_mode = ShfSceneMode::Unknown;
     m_backbuffer_batch.reset();
     m_game_batch.reset();
+    m_sw_zero_company_scene_conversion_batch.reset();
     m_ui_batch_alpha_invert.reset();
     m_graphics_memory.reset();
 
@@ -5145,6 +5200,30 @@ bool D3D12Component::setup() {
 
     m_backbuffer_batch = setup_sprite_batch_pso(real_backbuffer_desc.Format);
     m_game_batch = setup_sprite_batch_pso(backbuffer_desc.Format);
+
+    if (is_sw_zero_company_ue56_dx12_current_game()) {
+        DirectX::SpriteBatchPipelineStateDescription scene_conversion_pd{
+            DirectX::RenderTargetState{DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN}};
+        auto& scene_blend = scene_conversion_pd.blendDesc.RenderTarget[0];
+        // Copy RGB while keeping the destination alpha at the opaque value
+        // established by the per-frame clear. The engine's R10 target does not
+        // guarantee meaningful alpha, but OpenXR must receive an opaque scene.
+        scene_blend.BlendEnable = TRUE;
+        scene_blend.LogicOpEnable = FALSE;
+        scene_blend.SrcBlend = D3D12_BLEND_ONE;
+        scene_blend.DestBlend = D3D12_BLEND_ZERO;
+        scene_blend.BlendOp = D3D12_BLEND_OP_ADD;
+        scene_blend.SrcBlendAlpha = D3D12_BLEND_ZERO;
+        scene_blend.DestBlendAlpha = D3D12_BLEND_ONE;
+        scene_blend.BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        scene_blend.RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
+        m_sw_zero_company_scene_conversion_batch = setup_sprite_batch_pso(
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            {},
+            {},
+            scene_conversion_pd);
+    }
 
     // Custom blend state to flip the alpha in-place of the UI texture without an intermediate render target
     {
