@@ -27104,6 +27104,179 @@ void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhoo
     slate_output_texture_register_hook_impl(ctx, false);
 }
 
+struct Stalker2DedicatedUIResource {
+    sdk::FTextureRenderTargetResource* resource{};
+    FRHITexture2D* texture{};
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+    uint32_t utexture_resource_offset{};
+};
+
+std::optional<Stalker2DedicatedUIResource> stalker2_try_get_dedicated_ui_resource(
+    sdk::UTexture* texture_object,
+    uint32_t expected_width,
+    uint32_t expected_height)
+{
+    if (!stalker2_uses_ue55_draw_windows_array_layout() ||
+        !is_ue_5_5_dx12_backend() ||
+        texture_object == nullptr ||
+        expected_width == 0 ||
+        expected_height == 0 ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(texture_object), sizeof(void*)))
+    {
+        return std::nullopt;
+    }
+
+    int32_t object_size{};
+
+    try {
+        auto* const texture_class = texture_object->get_class();
+        if (texture_class == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(texture_class), sizeof(void*)))
+        {
+            return std::nullopt;
+        }
+
+        object_size = texture_class->get_properties_size();
+    } catch (...) {
+        return std::nullopt;
+    }
+
+    if (object_size < 0x100 || object_size > 0x1000 ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(texture_object), static_cast<size_t>(object_size)))
+    {
+        return std::nullopt;
+    }
+
+    constexpr uintptr_t render_target_base_offset = 0x50;
+    constexpr uintptr_t deferred_update_base_offset = 0x60;
+    constexpr uintptr_t owner_offset = 0x90;
+    constexpr uintptr_t target_size_x_offset = 0xbc;
+    constexpr uintptr_t target_size_y_offset = 0xc0;
+    constexpr uintptr_t render_target_texture_offset = render_target_base_offset + sizeof(void*);
+    constexpr size_t resource_validation_size = 0xd0;
+    constexpr std::array<uint8_t, 5> get_render_target_texture_prefix{
+        0x48, 0x8d, 0x41, 0x08, 0xc3}; // lea rax,[rcx+8]; ret
+
+    const auto object_address = reinterpret_cast<uintptr_t>(texture_object);
+    const auto scan_start = static_cast<uint32_t>(sdk::UObjectBase::get_class_size());
+    const auto scan_end = static_cast<uint32_t>(object_size - sizeof(void*));
+
+    for (uint32_t offset = scan_start; offset <= scan_end; offset += sizeof(void*)) {
+        uintptr_t resource_address{};
+        if (!safe_read_value(object_address + offset, resource_address) ||
+            resource_address == 0 ||
+            !is_readable_process_range(resource_address, resource_validation_size))
+        {
+            continue;
+        }
+
+        uintptr_t owner{};
+        uint32_t target_size_x{};
+        uint32_t target_size_y{};
+        uintptr_t primary_vtable{};
+        uintptr_t render_target_vtable{};
+        uintptr_t deferred_update_vtable{};
+
+        if (!safe_read_value(resource_address, primary_vtable) ||
+            !safe_read_value(resource_address + render_target_base_offset, render_target_vtable) ||
+            !safe_read_value(resource_address + deferred_update_base_offset, deferred_update_vtable) ||
+            !safe_read_value(resource_address + owner_offset, owner) ||
+            !safe_read_value(resource_address + target_size_x_offset, target_size_x) ||
+            !safe_read_value(resource_address + target_size_y_offset, target_size_y) ||
+            owner != object_address ||
+            target_size_x != expected_width ||
+            target_size_y != expected_height)
+        {
+            continue;
+        }
+
+        uintptr_t primary_virtual{};
+        uintptr_t render_target_virtual{};
+        uintptr_t deferred_update_virtual{};
+        uintptr_t get_render_target_texture{};
+
+        if (!safe_read_value(primary_vtable, primary_virtual) ||
+            !safe_read_value(render_target_vtable, render_target_virtual) ||
+            !safe_read_value(deferred_update_vtable, deferred_update_virtual) ||
+            !safe_read_value(render_target_vtable + 2 * sizeof(void*), get_render_target_texture) ||
+            !is_executable_process_range(primary_virtual, 1) ||
+            !is_executable_process_range(render_target_virtual, 1) ||
+            !is_executable_process_range(deferred_update_virtual, 1) ||
+            !is_executable_process_range(get_render_target_texture, get_render_target_texture_prefix.size()) ||
+            !utility::get_module_within(reinterpret_cast<void*>(primary_vtable)).has_value() ||
+            !utility::get_module_within(reinterpret_cast<void*>(render_target_vtable)).has_value() ||
+            !utility::get_module_within(reinterpret_cast<void*>(deferred_update_vtable)).has_value())
+        {
+            continue;
+        }
+
+        std::array<uint8_t, get_render_target_texture_prefix.size()> get_texture_bytes{};
+        memcpy(
+            get_texture_bytes.data(),
+            reinterpret_cast<const void*>(get_render_target_texture),
+            get_texture_bytes.size());
+
+        if (get_texture_bytes != get_render_target_texture_prefix) {
+            continue;
+        }
+
+        FRHITexture2D* texture{};
+        if (!safe_read_value(resource_address + render_target_texture_offset, texture) ||
+            texture == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(texture), sizeof(void*)))
+        {
+            continue;
+        }
+
+        ID3D12Resource* native{};
+        D3D12_RESOURCE_DESC desc{};
+        if (!ue55_dx12_try_get_native_resource_direct(
+                texture,
+                "Stalker2 synthetic UI render target",
+                &native,
+                &desc) ||
+            native == nullptr)
+        {
+            continue;
+        }
+
+        ID3D12Device4* resource_device_raw{};
+        if (!get_d3d12_resource_device_guarded(native, &resource_device_raw)) {
+            continue;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+        resource_device.Attach(resource_device_raw);
+        const auto& d3d12_hook = g_framework->get_d3d12_hook();
+        auto* const expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+
+        if (expected_device == nullptr ||
+            resource_device.Get() != expected_device ||
+            desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+            desc.Width != expected_width ||
+            desc.Height != expected_height ||
+            desc.DepthOrArraySize != 1 ||
+            desc.MipLevels == 0 ||
+            desc.SampleDesc.Count != 1 ||
+            desc.Format == DXGI_FORMAT_UNKNOWN ||
+            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0)
+        {
+            continue;
+        }
+
+        return Stalker2DedicatedUIResource{
+            .resource = reinterpret_cast<sdk::FTextureRenderTargetResource*>(resource_address),
+            .texture = texture,
+            .native = native,
+            .desc = desc,
+            .utexture_resource_offset = offset,
+        };
+    }
+
+    return std::nullopt;
+}
+
 void* FFakeStereoRenderingHook::sw_zero_company_ue56_register_external_texture_hook(
     void* graph_builder, void* texture, const wchar_t* name, uint8_t flags)
 {
@@ -33014,6 +33187,8 @@ void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uin
     dedicated_ui_height = height;
 
     if (extent_changed) {
+        stalker2_dedicated_ui_creation_failed.store(false, std::memory_order_release);
+
         if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr) {
             SPDLOG_INFO("[VRRenderTargetManager] Dedicated UI extent changed to [{}x{}], recreating", width, height);
             destroy_dedicated_ui_target();
@@ -33063,6 +33238,14 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
     // window caused two objects to be initialized and torn down immediately
     // before the real target was available.
     if (everspace2_is_current_game() && FRHITexture2D::get_vtable() == nullptr) {
+        return false;
+    }
+
+    if (stalker2_uses_ue55_draw_windows_array_layout() &&
+        stalker2_dedicated_ui_creation_failed.load(std::memory_order_acquire))
+    {
+        SPDLOG_INFO_ONCE(
+            "[Stalker2][UE5.5][SlateUI] Synthetic UI resource validation failed; preserving the original Slate target for this extent");
         return false;
     }
 
@@ -33255,6 +33438,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             // the persistent GameInstance instead of the retiring world.
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
+                stalker2_uses_ue55_draw_windows_array_layout() ||
                 pokemon_emerald_is_current_game() ||
                 sw_zero_company_ue56_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
@@ -33274,6 +33458,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[Everspace2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[Stalker2][UE5.5][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (pokemon_emerald_is_current_game()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
@@ -33343,8 +33531,57 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                                 }
 
                                 this->in_flight_dedicated_ui_texture = nullptr;
+                                if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                                    this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
+                                }
                                 this->destroy_dedicated_ui_target();
                             });
+                            return true;
+                        }
+
+                        if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                            const auto validated = stalker2_try_get_dedicated_ui_resource(tgt.get(), width, height);
+                            if (!validated) {
+                                return false;
+                            }
+
+                            if (!this->is_dedicated_ui_generation_current(generation)) {
+                                return true;
+                            }
+
+                            FRHITexture2D::set_vtable(*(void**)validated->texture);
+                            this->set_dedicated_ui_target(validated->texture, width, height);
+                            this->get_fallback_ui_target_ref() = nullptr;
+                            this->stalker2_dedicated_ui_creation_failed.store(false, std::memory_order_release);
+
+                            GameThreadWorker::get().enqueue([this, tgt, generation]() -> void {
+                                if (!this->is_dedicated_ui_generation_current(generation)) {
+                                    return;
+                                }
+
+                                if (!tgt.valid()) {
+                                    this->dedicated_ui_texture = nullptr;
+                                    this->in_flight_dedicated_ui_texture = nullptr;
+                                    this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
+                                    this->destroy_dedicated_ui_target();
+                                    return;
+                                }
+
+                                this->dedicated_ui_texture = tgt;
+                                this->in_flight_dedicated_ui_texture = nullptr;
+                                this->reset_dedicated_ui_creation_state();
+                            });
+
+                            SPDLOG_INFO(
+                                "[Stalker2][UE5.5][SlateUI] Dedicated UI target ready for generation {}: UObject+0x{:x} resource={:x} texture={:x} native={:x} [{}x{} fmt={}]",
+                                generation,
+                                validated->utexture_resource_offset,
+                                reinterpret_cast<uintptr_t>(validated->resource),
+                                reinterpret_cast<uintptr_t>(validated->texture),
+                                reinterpret_cast<uintptr_t>(validated->native),
+                                validated->desc.Width,
+                                validated->desc.Height,
+                                static_cast<uint32_t>(validated->desc.Format));
                             return true;
                         }
 
@@ -33432,6 +33669,9 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
                             this->in_flight_dedicated_ui_texture = nullptr;
                             this->dedicated_ui_texture = nullptr;
+                            if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                                this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
+                            }
                             this->destroy_dedicated_ui_target();
                         });
                         return true;
@@ -33450,10 +33690,15 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
                         this->in_flight_dedicated_ui_texture = nullptr;
                         this->dedicated_ui_texture = nullptr;
+                        if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                            this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
+                        }
                         this->destroy_dedicated_ui_target();
                     });
                 },
-                std::chrono::seconds(2));
+                stalker2_uses_ue55_draw_windows_array_layout()
+                    ? std::chrono::seconds(5)
+                    : std::chrono::seconds(2));
         } catch (...) {
             SPDLOG_ERROR("[VRRenderTargetManager] Exception while scheduling dedicated UI texture creation");
             this->in_flight_dedicated_ui_texture = nullptr;
@@ -33501,12 +33746,30 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
                 }
             }
         } else {
-            auto* native_resource = (ID3D12Resource*)existing_target->get_native_resource();
+            ID3D12Resource* native_resource{};
+            D3D12_RESOURCE_DESC native_desc{};
+
+            if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                if (ue55_dx12_try_get_native_resource_direct(
+                        existing_target,
+                        "Stalker2 retained dedicated UI target",
+                        &native_resource,
+                        &native_desc) &&
+                    native_resource != nullptr &&
+                    native_desc.Width == dedicated_ui_width &&
+                    native_desc.Height == dedicated_ui_height)
+                {
+                    return;
+                }
+            } else {
+                native_resource = (ID3D12Resource*)existing_target->get_native_resource();
+                if (native_resource != nullptr) {
+                    native_desc = native_resource->GetDesc();
+                }
+            }
 
             if (native_resource != nullptr) {
-                const auto desc = native_resource->GetDesc();
-
-                if (desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height) {
+                if (native_desc.Width == dedicated_ui_width && native_desc.Height == dedicated_ui_height) {
                     return;
                 }
             }
@@ -33538,6 +33801,24 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     }
 
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
+        if (stalker2_uses_ue55_draw_windows_array_layout()) {
+            const auto validated = stalker2_try_get_dedicated_ui_resource(
+                dedicated_ui_texture.get(),
+                dedicated_ui_width,
+                dedicated_ui_height);
+
+            if (validated) {
+                FRHITexture2D::set_vtable(*(void**)validated->texture);
+                set_dedicated_ui_target(validated->texture, dedicated_ui_width, dedicated_ui_height);
+                get_fallback_ui_target_ref() = nullptr;
+                stalker2_dedicated_ui_creation_failed.store(false, std::memory_order_release);
+                return;
+            }
+
+            SPDLOG_INFO_EVERY_N_SEC(
+                5,
+                "[Stalker2][UE5.5][SlateUI] Dedicated UI UObject is alive but its exact render resource is not ready");
+        } else
         if (sdk::UTexture::update_render_resource_offset_texture2d(dedicated_ui_texture)) {
             if (auto* rsrc = (sdk::FTextureRenderTargetResource*)dedicated_ui_texture->get_resource(); rsrc != nullptr) {
                 const bool updated_vtable_offset = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);

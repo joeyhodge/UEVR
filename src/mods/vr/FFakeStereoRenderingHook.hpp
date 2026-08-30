@@ -370,6 +370,7 @@ protected:
     std::chrono::steady_clock::time_point dedicated_ui_resource_pending_since{};
     bool dedicated_ui_creation_pending{false};
     bool dedicated_ui_object_created{false};
+    std::atomic_bool stalker2_dedicated_ui_creation_failed{};
     uint64_t dedicated_ui_generation{0};
     uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
