@@ -2066,20 +2066,9 @@ constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA = 0x371
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET = 0x7F;
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA = 0x307CB10;
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA = 0x2AA6885;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE = 0x390;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET = 0x30;
 constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET = 0x38;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET = 0x40;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_INLINE_CAPACITY = 2;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_SECONDARY_DATA_OFFSET =
-    SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE * SW_ZERO_COMPANY_UE56_RASTER_INLINE_CAPACITY;
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_ARRAY_NUM_OFFSET =
-    SW_ZERO_COMPANY_UE56_RASTER_SECONDARY_DATA_OFFSET + sizeof(void*);
-constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_ARRAY_MAX_OFFSET =
-    SW_ZERO_COMPANY_UE56_RASTER_ARRAY_NUM_OFFSET + sizeof(int32_t);
-static_assert(SW_ZERO_COMPANY_UE56_RASTER_SECONDARY_DATA_OFFSET == 0x720);
-static_assert(SW_ZERO_COMPANY_UE56_RASTER_ARRAY_NUM_OFFSET == 0x728);
-static_assert(SW_ZERO_COMPANY_UE56_RASTER_ARRAY_MAX_OFFSET == 0x72C);
+constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_SHADING_MASK_OFFSET = 0x60;
+constexpr size_t SW_ZERO_COMPANY_UE56_RDG_BUFFER_FLAGS_OFFSET = 0x60;
 
 safetyhook::MidHook g_sw_zero_company_ue56_copy_texture_region_hook{};
 std::atomic_bool g_sw_zero_company_ue56_copy_texture_region_hook_attempted{};
@@ -2117,93 +2106,58 @@ void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
     const auto direct_caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     const auto raster = reinterpret_cast<uintptr_t>(raster_results);
 
-    // SW Zero's custom hologram renderer creates one initialized Nanite raster
-    // result, then iterates a two-view Native family. Its second result is
-    // entirely default constructed, so DispatchBasePass dereferences a null
-    // VisibleClustersSWHW. Native Fix has its own working renderer path and must
-    // remain untouched.
-    const bool plain_native_hologram_secondary =
+    // SW Zero's custom hologram renderer can dispatch either eye before its
+    // FRasterResults entry is complete during cutscene transitions. UE5.6.1
+    // requires both resources below: VisibleClustersSWHW is dereferenced while
+    // creating its SRV, and ShadingMask is consumed by ShadeBinning. Native Fix
+    // has its own working renderer path and must remain untouched.
+    const bool plain_native_hologram_dispatch =
         vr != nullptr &&
         vr->is_hmd_active() &&
         vr->is_using_native_stereo() &&
         !vr->is_native_stereo_fix_enabled() &&
         executable != 0 &&
-        direct_caller == executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA &&
-        view_index == 1 &&
-        raster >= SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE &&
-        is_readable_process_range(
-            raster - SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE,
-            SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE + SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET + sizeof(void*));
+        direct_caller == executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA;
 
-    if (!plain_native_hologram_secondary) {
+    if (!plain_native_hologram_dispatch) {
         call_original();
         return;
     }
 
-    const auto previous_raster = raster - SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE;
+    if (!is_readable_process_range(
+            raster,
+            SW_ZERO_COMPANY_UE56_RASTER_SHADING_MASK_OFFSET + sizeof(void*)))
+    {
+        SPDLOG_WARN_ONCE(
+            "[SWZeroCompany][UE5.6][Hologram] Skipping unreadable Nanite raster results in plain Native: view={} raster={}; Native Fix is unchanged",
+            view_index,
+            raster_results);
+        return;
+    }
+
     const auto read_buffer = [](uintptr_t base, size_t offset) {
         return *reinterpret_cast<void* const*>(base + offset);
     };
 
-    const auto previous_views = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET);
-    const auto previous_visible_clusters = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET);
-    const auto previous_raster_bin_meta = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET);
-    const auto current_views = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET);
     const auto current_visible_clusters = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET);
-    const auto current_raster_bin_meta = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET);
+    const auto current_shading_mask = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_SHADING_MASK_OFFSET);
 
-    // RenderHologramCaptureInner iterates the stereo view count, but indexes a
-    // TSizedInlineAllocator<2> FRasterResults array without checking ArrayNum.
-    // During the hologram-to-world transition the array can contain one valid
-    // result while the stale second inline slot still has non-null RDG values,
-    // so pointer-only validation incorrectly lets the invalid GPU work through.
-    const auto raster_array = previous_raster;
-    const bool readable_inline_array = is_readable_process_range(
-        raster_array,
-        SW_ZERO_COMPANY_UE56_RASTER_ARRAY_MAX_OFFSET + sizeof(int32_t));
-    int32_t raster_array_num = -1;
-    int32_t raster_array_max = -1;
-    bool exact_out_of_range_inline_secondary = false;
+    const bool visible_clusters_ready =
+        current_visible_clusters != nullptr &&
+        is_readable_process_range(
+            reinterpret_cast<uintptr_t>(current_visible_clusters),
+            SW_ZERO_COMPANY_UE56_RDG_BUFFER_FLAGS_OFFSET + sizeof(uint32_t));
 
-    if (readable_inline_array) {
-        const auto secondary_data =
-            *reinterpret_cast<void* const*>(raster_array + SW_ZERO_COMPANY_UE56_RASTER_SECONDARY_DATA_OFFSET);
-        raster_array_num =
-            *reinterpret_cast<const int32_t*>(raster_array + SW_ZERO_COMPANY_UE56_RASTER_ARRAY_NUM_OFFSET);
-        raster_array_max =
-            *reinterpret_cast<const int32_t*>(raster_array + SW_ZERO_COMPANY_UE56_RASTER_ARRAY_MAX_OFFSET);
-
-        exact_out_of_range_inline_secondary =
-            secondary_data == nullptr &&
-            raster_array_num == 1 &&
-            raster_array_max == static_cast<int32_t>(SW_ZERO_COMPANY_UE56_RASTER_INLINE_CAPACITY) &&
-            previous_views != nullptr &&
-            previous_visible_clusters != nullptr &&
-            previous_raster_bin_meta != nullptr;
-    }
-
-    const bool exact_uninitialized_secondary =
-        previous_views != nullptr &&
-        previous_visible_clusters != nullptr &&
-        previous_raster_bin_meta != nullptr &&
-        current_views == nullptr &&
-        current_visible_clusters == nullptr &&
-        current_raster_bin_meta == nullptr;
-
-    if (!exact_out_of_range_inline_secondary && !exact_uninitialized_secondary) {
+    if (visible_clusters_ready && current_shading_mask != nullptr) {
         call_original();
         return;
     }
 
-    if (exact_out_of_range_inline_secondary) {
-        SPDLOG_WARN_ONCE(
-            "[SWZeroCompany][UE5.6][Hologram] Skipping out-of-range secondary Nanite base pass in plain Native: FRasterResults num={} max={}; Native Fix is unchanged",
-            raster_array_num,
-            raster_array_max);
-    } else {
-        SPDLOG_WARN_ONCE(
-            "[SWZeroCompany][UE5.6][Hologram] Skipping the uninitialized secondary-view Nanite base pass in plain Native; Native Fix is unchanged");
-    }
+    SPDLOG_WARN_ONCE(
+        "[SWZeroCompany][UE5.6][Hologram] Skipping incomplete Nanite base pass in plain Native: view={} VisibleClustersSWHW={} ShadingMask={}; Native Fix is unchanged",
+        view_index,
+        current_visible_clusters,
+        current_shading_mask);
 }
 
 void sw_zero_company_ue56_copy_texture_region_hook(safetyhook::Context& ctx) {
