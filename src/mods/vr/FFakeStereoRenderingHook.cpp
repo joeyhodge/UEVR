@@ -2020,9 +2020,100 @@ bool sw_zero_company_ue56_is_current_game() {
 
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA = 0x3711F60;
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET = 0x7F;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA = 0x307CB10;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA = 0x2AA6885;
+constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE = 0x390;
+constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET = 0x30;
+constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET = 0x38;
+constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET = 0x40;
 
 safetyhook::MidHook g_sw_zero_company_ue56_copy_texture_region_hook{};
 std::atomic_bool g_sw_zero_company_ue56_copy_texture_region_hook_attempted{};
+safetyhook::InlineHook g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook{};
+std::atomic_bool g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook_attempted{};
+
+void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
+    void* graph_builder,
+    void* shading_commands,
+    const void* scene_renderer,
+    const void* scene_textures,
+    const void* base_pass_render_targets,
+    const void* dbuffer_textures,
+    const void* scene,
+    const void* view,
+    uint32_t view_index,
+    const void* raster_results)
+{
+    const auto call_original = [&]() {
+        g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook.call<void>(
+            graph_builder,
+            shading_commands,
+            scene_renderer,
+            scene_textures,
+            base_pass_render_targets,
+            dbuffer_textures,
+            scene,
+            view,
+            view_index,
+            raster_results);
+    };
+
+    const auto vr = VR::get();
+    const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+    const auto direct_caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const auto raster = reinterpret_cast<uintptr_t>(raster_results);
+
+    // SW Zero's custom hologram renderer creates one initialized Nanite raster
+    // result, then iterates a two-view Native family. Its second result is
+    // entirely default constructed, so DispatchBasePass dereferences a null
+    // VisibleClustersSWHW. Native Fix has its own working renderer path and must
+    // remain untouched.
+    const bool plain_native_hologram_secondary =
+        vr != nullptr &&
+        vr->is_hmd_active() &&
+        vr->is_using_native_stereo() &&
+        !vr->is_native_stereo_fix_enabled() &&
+        executable != 0 &&
+        direct_caller == executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA &&
+        view_index == 1 &&
+        raster >= SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE &&
+        is_readable_process_range(
+            raster - SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE,
+            SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE + SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET + sizeof(void*));
+
+    if (!plain_native_hologram_secondary) {
+        call_original();
+        return;
+    }
+
+    const auto previous_raster = raster - SW_ZERO_COMPANY_UE56_RASTER_RESULTS_SIZE;
+    const auto read_buffer = [](uintptr_t base, size_t offset) {
+        return *reinterpret_cast<void* const*>(base + offset);
+    };
+
+    const auto previous_views = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET);
+    const auto previous_visible_clusters = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET);
+    const auto previous_raster_bin_meta = read_buffer(previous_raster, SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET);
+    const auto current_views = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_VIEWS_BUFFER_OFFSET);
+    const auto current_visible_clusters = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET);
+    const auto current_raster_bin_meta = read_buffer(raster, SW_ZERO_COMPANY_UE56_RASTER_BIN_META_OFFSET);
+
+    const bool exact_uninitialized_secondary =
+        previous_views != nullptr &&
+        previous_visible_clusters != nullptr &&
+        previous_raster_bin_meta != nullptr &&
+        current_views == nullptr &&
+        current_visible_clusters == nullptr &&
+        current_raster_bin_meta == nullptr;
+
+    if (!exact_uninitialized_secondary) {
+        call_original();
+        return;
+    }
+
+    SPDLOG_WARN_ONCE(
+        "[SWZeroCompany][UE5.6][Hologram] Skipping the uninitialized secondary-view Nanite base pass in plain Native; Native Fix is unchanged");
+}
 
 void sw_zero_company_ue56_copy_texture_region_hook(safetyhook::Context& ctx) {
     if (g_framework == nullptr ||
@@ -2199,6 +2290,81 @@ bool sw_zero_company_ue56_install_copy_texture_region_hook() {
     SPDLOG_INFO(
         "[SWZeroCompany][UE5.6][DX12Copy] Hooked validated CopyTextureRegionChecked at {:x}",
         function);
+    return true;
+}
+
+bool sw_zero_company_ue56_install_nanite_hologram_guard() {
+    if (g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook) {
+        return true;
+    }
+
+    if (g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook_attempted.exchange(
+            true,
+            std::memory_order_acq_rel))
+    {
+        return false;
+    }
+
+    const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (executable == 0) {
+        return false;
+    }
+
+    constexpr std::array<uint8_t, 18> expected_dispatch_prologue{
+        0x40, 0x55, 0x53, 0x56, 0x41, 0x54, 0x41, 0x55,
+        0x41, 0x57, 0x48, 0x8D, 0xAC, 0x24, 0xC8, 0xFA,
+        0xFF, 0xFF};
+    constexpr std::array<uint8_t, 35> expected_hologram_call_layout{
+        0x48, 0x89, 0x74, 0x24, 0x38,
+        0x49, 0x8B, 0xCE,
+        0x4C, 0x89, 0x54, 0x24, 0x30,
+        0x48, 0x89, 0x44, 0x24, 0x28,
+        0x48, 0x8D, 0x85, 0x70, 0x10, 0x00, 0x00,
+        0x48, 0x89, 0x44, 0x24, 0x20,
+        0xE8, 0x8B, 0x62, 0x5D, 0x00};
+
+    const auto target = executable + SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA;
+    const auto call_layout = executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA - expected_hologram_call_layout.size();
+    const bool exact_binary_match =
+        is_executable_process_range(target, expected_dispatch_prologue.size()) &&
+        is_executable_process_range(call_layout, expected_hologram_call_layout.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(target),
+            expected_dispatch_prologue.data(),
+            expected_dispatch_prologue.size()) == 0 &&
+        std::memcmp(
+            reinterpret_cast<const void*>(call_layout),
+            expected_hologram_call_layout.data(),
+            expected_hologram_call_layout.size()) == 0;
+
+    if (!exact_binary_match) {
+        SPDLOG_WARN(
+            "[SWZeroCompany][UE5.6][Hologram] Exact Nanite dispatch/caller signatures did not match; leaving the renderer unchanged");
+        return false;
+    }
+
+    auto hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(target),
+        &sw_zero_company_ue56_nanite_dispatch_base_pass_hook,
+        safetyhook::InlineHook::StartDisabled);
+    if (!hook) {
+        SPDLOG_ERROR(
+            "[SWZeroCompany][UE5.6][Hologram] Failed to hook validated Nanite::DispatchBasePass at {:x}",
+            target);
+        return false;
+    }
+
+    g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook = std::move(hook);
+    if (auto enable_result = g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook.enable(); !enable_result.has_value()) {
+        SPDLOG_ERROR(
+            "[SWZeroCompany][UE5.6][Hologram] Failed to enable Nanite guard hook: {}",
+            static_cast<int>(enable_result.error().type));
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[SWZeroCompany][UE5.6][Hologram] Installed exact-binary plain-Native Nanite guard at {:x}",
+        target);
     return true;
 }
 
@@ -9663,6 +9829,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
         g_framework->is_dx12())
     {
         sw_zero_company_ue56_install_copy_texture_region_hook();
+        sw_zero_company_ue56_install_nanite_hologram_guard();
     }
 
     m_uses_ue58_rendertarget_manager =
@@ -13348,6 +13515,10 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
                 cvar_values[0],
                 cvar_values[1]);
             sw_zero_company_ue56_install_copy_texture_region_hook();
+            // The constructor can run before Framework has finalized the D3D12
+            // backend. Retry the exact-binary guard here, where this title's
+            // validated DX12 render setup is known to be active.
+            sw_zero_company_ue56_install_nanite_hologram_guard();
         } else {
             cvar_values[0] = 0; // 8bit RGBA, which is what VR headsets support
             cvar_values[1] = 0;
