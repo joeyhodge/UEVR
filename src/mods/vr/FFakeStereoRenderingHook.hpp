@@ -195,6 +195,18 @@ public:
 
         return ue58_pending_scene_target_observations;
     }
+    void observe_sw_zero_company_desktop_extent(uint64_t width, uint32_t height) {
+        if (width == 0 || width > UINT32_MAX || height == 0) {
+            return;
+        }
+
+        sw_zero_company_desktop_extent.store(
+            (width << 32) | static_cast<uint64_t>(height),
+            std::memory_order_release);
+    }
+    uint64_t get_sw_zero_company_desktop_extent() const {
+        return sw_zero_company_desktop_extent.load(std::memory_order_acquire);
+    }
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
@@ -382,6 +394,7 @@ protected:
     std::atomic<uint64_t> everspace2_scene_target_generation{};
     std::atomic<std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>> sw_zero_company_scene_target_snapshot{};
     std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
+    std::atomic<uint64_t> sw_zero_company_desktop_extent{};
     std::atomic<std::shared_ptr<const SceneCaptureTargetSnapshot>> scene_capture_target_snapshot{};
     std::atomic<uint64_t> scene_capture_generation{};
 };
