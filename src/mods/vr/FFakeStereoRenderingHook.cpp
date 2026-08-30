@@ -2191,12 +2191,21 @@ void sw_zero_company_ue56_copy_texture_region_hook(safetyhook::Context& ctx) {
 
     const uint32_t desktop_width = static_cast<uint32_t>(dst_desc.Width);
     const uint32_t desktop_height = dst_desc.Height;
+    const auto* const rtm = g_hook != nullptr ? g_hook->get_render_target_manager() : nullptr;
+    const auto trusted_desktop_extent =
+        rtm != nullptr ? rtm->get_sw_zero_company_desktop_extent() : 0;
+    const uint32_t trusted_desktop_width =
+        static_cast<uint32_t>(trusted_desktop_extent >> 32);
+    const uint32_t trusted_desktop_height =
+        static_cast<uint32_t>(trusted_desktop_extent);
 
     const bool exact_invalid_present_copy =
+        trusted_desktop_width != 0 && trusted_desktop_height != 0 &&
         src_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         dst_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         src_desc.Width == packed_width && src_desc.Height == packed_height &&
-        dst_desc.Width == 1920 && dst_desc.Height == 1080 &&
+        dst_desc.Width == trusted_desktop_width &&
+        dst_desc.Height == trusted_desktop_height &&
         src_desc.Width > dst_desc.Width && src_desc.Height > dst_desc.Height &&
         src_desc.DepthOrArraySize == 1 && dst_desc.DepthOrArraySize == 1 &&
         src_desc.MipLevels == 1 && dst_desc.MipLevels == 1 &&
@@ -15576,6 +15585,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             rtm->reset_ue58_scene_target_observation();
 
             if (sw_zero_company_ue56_dx12_viewport_adoption) {
+                rtm->observe_sw_zero_company_desktop_extent(native_width, native_height);
                 rtm->retire_sw_zero_company_scene_target_snapshot("rejected non-VR-sized Draw target");
             } else if (current_target != nullptr) {
                 rtm->set_render_target(nullptr);
