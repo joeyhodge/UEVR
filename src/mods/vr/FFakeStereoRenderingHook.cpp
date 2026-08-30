@@ -24058,6 +24058,12 @@ bool FFakeStereoRenderingHook::attempt_runtime_inject_stereo() {
                     SPDLOG_ERROR("Access violation occurred when writing to r.EnableStereoEmulation, the address may be incorrect!");
                     patch_emulate_stereo_flag();
                 }
+            } else if (auto* interface_cvar = sdk::find_validated_ue55_console_variable(L"r.EnableStereoEmulation");
+                       interface_cvar != nullptr) {
+                if (!interface_cvar->Set(L"1")) {
+                    SPDLOG_WARN("Validated UE 5.5 r.EnableStereoEmulation interface rejected Set; using -emulatestereo fallback");
+                    patch_emulate_stereo_flag();
+                }
             } else {
                 //SPDLOG_ERROR("Failed to locate r.EnableStereoEmulation cvar, next call may fail.");
                 patch_emulate_stereo_flag();
