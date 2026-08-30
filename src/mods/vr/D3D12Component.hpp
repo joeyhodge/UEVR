@@ -252,9 +252,10 @@ private:
     uint64_t m_ue58_converted_ui_consumer_fence_value{};
     d3d12::TextureContext m_game_tex{};
     // SW Zero Company renders its separate viewport target as R10 HDR, while
-    // the OpenXR runtime accepts BGRA. Retain the engine source and convert it
-    // into m_game_tex instead of recording an incompatible CopyResource.
+    // the OpenXR runtime accepts BGRA. Keep descriptors for the borrowed engine
+    // source, snapshot it into an owned R10 texture, then convert to m_game_tex.
     d3d12::TextureContext m_sw_zero_company_scene_source_tex{};
+    d3d12::TextureContext m_sw_zero_company_scene_snapshot_tex{};
     d3d12::TextureContext m_ue58_spectator_tex{};
     bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};
@@ -312,6 +313,7 @@ private:
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_backbuffer_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_game_batch{};
+    std::unique_ptr<DirectX::DX12::SpriteBatch> m_sw_zero_company_scene_conversion_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_ui_batch_alpha_invert{};
 
     ID3D12Resource* m_last_checked_native{nullptr};
