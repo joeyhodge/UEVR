@@ -34226,9 +34226,12 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         auto viewport = rtm != nullptr ? rtm->get_viewport() : nullptr;
 
         if (viewport != nullptr) {
-            return viewport->get_display_gamma();
+            const auto gamma = viewport->get_display_gamma();
+            SPDLOG_INFO_ONCE("[FRenderTarget] Matching the scene capture display gamma to the viewport, currently {}", gamma);
+            return gamma;
         }
 
+        SPDLOG_WARN_ONCE("[FRenderTarget] No viewport available for display gamma; using 2.2");
         return 2.2f;
     };
 
@@ -34243,7 +34246,12 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         auto& vtable = *(void**)frt;
         memcpy(original_frender_target_vtable.data(), vtable, original_frender_target_vtable.size() * sizeof(uintptr_t));
 
-        if (auto display_gamma_index = sdk::FRenderTarget::get_display_gamma_index(); display_gamma_index != 0) {
+        if (const auto display_gamma_index = sdk::FRenderTarget::get_display_gamma_index(); display_gamma_index.has_value()) {
+            if (*display_gamma_index >= original_frender_target_vtable.size()) {
+                SPDLOG_WARN("[FRenderTarget] Gamma index {} is out of range, can't hook!", *display_gamma_index);
+                return;
+            }
+
             original_frender_target_vtable[*display_gamma_index] = (uintptr_t)gamma_increase_fn;
             vtable = original_frender_target_vtable.data();
             SPDLOG_INFO("[FRenderTarget] Hooked FRenderTarget!");
