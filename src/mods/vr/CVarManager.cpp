@@ -57,6 +57,23 @@ bool is_stalker2_current_game_for_cvars() {
     return result;
 }
 
+bool is_stalker2_ue55_current_game_for_cvars() {
+    if (!is_stalker2_current_game_for_cvars()) {
+        return false;
+    }
+
+    static const bool result = []() {
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.5" || version.starts_with("5.5.");
+        }
+
+        return sdk::get_file_version_info().dwFileVersionMS == 0x00050005;
+    }();
+
+    return result;
+}
+
 bool is_aphelion_current_game_for_cvars() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -1125,6 +1142,12 @@ void CVarManager::CVarStandard::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (m_cvar == nullptr && m_interface_cvar == nullptr) {
+        if (is_stalker2_ue55_current_game_for_cvars()) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            return;
+        }
+
         m_cvar = sdk::find_cvar_cached(m_module, m_name);
 
         if (m_cvar == nullptr && !m_interface_fallback_attempted) {
@@ -1367,6 +1390,12 @@ void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (!m_cvar_data && m_interface_cvar == nullptr) {
+        if (is_stalker2_ue55_current_game_for_cvars()) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            return;
+        }
+
         m_cvar_data = sdk::find_cvar_data_cached(m_module, m_name);
 
         if (!m_cvar_data && !m_interface_fallback_attempted) {
