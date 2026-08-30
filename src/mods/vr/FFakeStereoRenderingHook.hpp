@@ -372,6 +372,7 @@ protected:
     std::atomic<uint64_t> scene_capture_retry_after_ms{};
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
+    sdk::UTexture* stalker2_rooted_dedicated_ui_texture{nullptr};
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
     std::mutex everspace2_dedicated_ui_lifetime_mutex{};
     std::vector<FRHITexture2D*> everspace2_retained_dedicated_ui_targets{};
