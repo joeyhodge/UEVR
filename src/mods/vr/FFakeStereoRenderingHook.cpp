@@ -105,6 +105,8 @@ namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
+bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out);
+bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4** out);
 
 std::atomic<uint32_t> g_ue58_last_render_pose_frame{
     (std::numeric_limits<uint32_t>::max)()};
@@ -2060,66 +2062,132 @@ bool sw_zero_company_ue56_is_current_game() {
     return result;
 }
 
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_RVA = 0x4EC9B80;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_STORE_RVA = 0x4EC9C62;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_HOOK_RVA = 0x4EC9C95;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET = 0x1E4;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET = 0x8;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT = 0xB0;
-constexpr uint8_t SW_ZERO_COMPANY_UE56_PF_B8G8R8A8 = 2;
-constexpr uint8_t SW_ZERO_COMPANY_UE56_PF_A2B10G10R10 = 18;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA = 0x3711F60;
+constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET = 0x7F;
 
-safetyhook::MidHook g_sw_zero_company_ue56_scene_target_format_hook{};
-std::atomic_bool g_sw_zero_company_ue56_scene_target_format_hook_attempted{};
+safetyhook::MidHook g_sw_zero_company_ue56_copy_texture_region_hook{};
+std::atomic_bool g_sw_zero_company_ue56_copy_texture_region_hook_attempted{};
 
-bool sw_zero_company_ue56_write_scene_target_format(uintptr_t format_address, const char* source) {
-    if (!is_writable_process_range(format_address, sizeof(uint8_t))) {
-        return false;
-    }
-
-    auto& format = *reinterpret_cast<uint8_t*>(format_address);
-    if (format != SW_ZERO_COMPANY_UE56_PF_B8G8R8A8 &&
-        format != SW_ZERO_COMPANY_UE56_PF_A2B10G10R10)
+void sw_zero_company_ue56_copy_texture_region_hook(safetyhook::Context& ctx) {
+    if (g_framework == nullptr ||
+        !g_framework->is_dx12() ||
+        !g_framework->is_game_data_intialized() ||
+        !sw_zero_company_ue56_is_current_game())
     {
-        SPDLOG_ERROR_EVERY_N_SEC(
-            1,
-            "[SWZeroCompany][UE5.6][RTFormat] Refusing unexpected SceneTargetFormat {} from {}",
-            format,
-            source != nullptr ? source : "<unknown>");
-        return false;
-    }
-
-    if (format != SW_ZERO_COMPANY_UE56_PF_A2B10G10R10) {
-        format = SW_ZERO_COMPANY_UE56_PF_A2B10G10R10;
-        SPDLOG_WARN_ONCE(
-            "[SWZeroCompany][UE5.6][RTFormat] Selected PF_A2B10G10R10 for the separate viewport target; "
-            "OpenXR conversion remains BGRA");
-    }
-
-    return true;
-}
-
-void sw_zero_company_ue56_scene_target_format_hook(safetyhook::Context& ctx) {
-    if (ctx.rdi < SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT) {
         return;
     }
 
-    // InitRHI is invoked on FSceneViewport's FRenderResource base. In this
-    // exact binary RDI is complete-object - 0xB0, making SceneTargetFormat
-    // complete-object +0x1E4 == RDI +0x294.
-    const auto format_address =
-        static_cast<uintptr_t>(ctx.rdi) +
-        SW_ZERO_COMPANY_UE56_INIT_RHI_THIS_ADJUSTMENT +
-        SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET;
-    sw_zero_company_ue56_write_scene_target_format(format_address, "InitRHI mid-hook");
+    constexpr uintptr_t dst_z_stack_offset = 0x28;
+    constexpr uintptr_t src_location_stack_offset = 0x38;
+    constexpr uintptr_t src_box_stack_offset = 0x40;
+    constexpr size_t stack_span = src_box_stack_offset + sizeof(uintptr_t);
+
+    if (ctx.rsp + stack_span < ctx.rsp ||
+        !is_readable_process_range(ctx.rsp, stack_span) ||
+        !is_writable_process_range(ctx.rsp + src_box_stack_offset, sizeof(uintptr_t)))
+    {
+        return;
+    }
+
+    const auto* const dst_location = reinterpret_cast<const D3D12_TEXTURE_COPY_LOCATION*>(ctx.rdx);
+    const auto* const src_location =
+        *reinterpret_cast<const D3D12_TEXTURE_COPY_LOCATION* const*>(ctx.rsp + src_location_stack_offset);
+    const auto* const src_box =
+        *reinterpret_cast<const D3D12_BOX* const*>(ctx.rsp + src_box_stack_offset);
+    const auto dst_z = *reinterpret_cast<const uint32_t*>(ctx.rsp + dst_z_stack_offset);
+
+    if (dst_location == nullptr || src_location == nullptr || src_box == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(dst_location), sizeof(*dst_location)) ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(src_location), sizeof(*src_location)) ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(src_box), sizeof(*src_box)) ||
+        static_cast<uint32_t>(ctx.r8) != 0 ||
+        static_cast<uint32_t>(ctx.r9) != 0 ||
+        dst_z != 0 ||
+        dst_location->Type != D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX ||
+        src_location->Type != D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX ||
+        dst_location->SubresourceIndex != 0 ||
+        src_location->SubresourceIndex != 0 ||
+        dst_location->pResource == nullptr ||
+        src_location->pResource == nullptr ||
+        dst_location->pResource == src_location->pResource)
+    {
+        return;
+    }
+
+    const auto vr = VR::get();
+    if (vr == nullptr || !vr->is_hmd_active()) {
+        return;
+    }
+
+    const uint64_t packed_width = static_cast<uint64_t>(vr->get_hmd_width()) * 2;
+    const uint32_t packed_height = vr->get_hmd_height();
+
+    // Reject normal engine copies before touching either COM resource. The
+    // invalid transaction is uniquely a full packed-HMD box into the smaller
+    // desktop target at the origin.
+    if (packed_width == 0 || packed_height == 0 ||
+        src_box->left != 0 || src_box->top != 0 || src_box->front != 0 ||
+        src_box->right != packed_width ||
+        src_box->bottom != packed_height ||
+        src_box->back != 1)
+    {
+        return;
+    }
+
+    D3D12_RESOURCE_DESC dst_desc{};
+    D3D12_RESOURCE_DESC src_desc{};
+    if (!get_d3d12_resource_desc_guarded(dst_location->pResource, dst_desc) ||
+        !get_d3d12_resource_desc_guarded(src_location->pResource, src_desc))
+    {
+        return;
+    }
+
+    const uint32_t desktop_width = static_cast<uint32_t>(dst_desc.Width);
+    const uint32_t desktop_height = dst_desc.Height;
+
+    const bool exact_invalid_present_copy =
+        src_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        dst_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        src_desc.Width == packed_width && src_desc.Height == packed_height &&
+        dst_desc.Width == 1920 && dst_desc.Height == 1080 &&
+        src_desc.Width > dst_desc.Width && src_desc.Height > dst_desc.Height &&
+        src_desc.DepthOrArraySize == 1 && dst_desc.DepthOrArraySize == 1 &&
+        src_desc.MipLevels == 1 && dst_desc.MipLevels == 1 &&
+        src_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+        dst_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+        src_desc.SampleDesc.Count == 1 && dst_desc.SampleDesc.Count == 1 &&
+        src_desc.SampleDesc.Quality == 0 && dst_desc.SampleDesc.Quality == 0 &&
+        src_desc.Layout == D3D12_TEXTURE_LAYOUT_UNKNOWN &&
+        dst_desc.Layout == D3D12_TEXTURE_LAYOUT_UNKNOWN &&
+        src_desc.Flags == D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET &&
+        dst_desc.Flags == D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+
+    if (!exact_invalid_present_copy) {
+        return;
+    }
+
+    // RHICopyTexture cannot scale. Preserve the packed HMD source and make only
+    // the game's desktop-present copy legal by limiting it to the destination.
+    thread_local D3D12_BOX clamped_box{};
+    clamped_box = *src_box;
+    clamped_box.right = desktop_width;
+    clamped_box.bottom = desktop_height;
+    *reinterpret_cast<const D3D12_BOX**>(ctx.rsp + src_box_stack_offset) = &clamped_box;
+
+    SPDLOG_INFO_ONCE(
+        "[SWZeroCompany][UE5.6][DX12Copy] Clamped the validated packed-HMD to desktop copy from {}x{} to {}x{}",
+        src_desc.Width,
+        src_desc.Height,
+        desktop_width,
+        desktop_height);
 }
 
-bool sw_zero_company_ue56_install_scene_target_format_hook() {
-    if (g_sw_zero_company_ue56_scene_target_format_hook) {
+bool sw_zero_company_ue56_install_copy_texture_region_hook() {
+    if (g_sw_zero_company_ue56_copy_texture_region_hook) {
         return true;
     }
 
-    if (g_sw_zero_company_ue56_scene_target_format_hook_attempted.exchange(
+    if (g_sw_zero_company_ue56_copy_texture_region_hook_attempted.exchange(
             true,
             std::memory_order_acq_rel))
     {
@@ -2131,66 +2199,51 @@ bool sw_zero_company_ue56_install_scene_target_format_hook() {
         return false;
     }
 
-    constexpr std::array<uint8_t, 6> expected_format_store{
-        0x88, 0x97, 0x94, 0x02, 0x00, 0x00}; // mov byte ptr [rdi+294h], dl
-    constexpr std::array<uint8_t, 7> expected_hook_instruction{
-        0x48, 0x8D, 0x8F, 0xB0, 0x00, 0x00, 0x00}; // lea rcx, [rdi+B0h]
+    constexpr std::array<uint8_t, 16> expected_prologue{
+        0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x56, 0x41,
+        0x57, 0x48, 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00};
+    constexpr std::array<uint8_t, 39> expected_call_layout{
+        0x48, 0x89, 0x74, 0x24, 0x28, 0x48, 0x8B, 0xD7,
+        0x48, 0x8B, 0x48, 0x28, 0xFF, 0x80, 0x60, 0x01,
+        0x00, 0x00, 0x8B, 0x84, 0x24, 0x20, 0x01, 0x00,
+        0x00, 0x89, 0x44, 0x24, 0x20, 0x4C, 0x8B, 0x11,
+        0x41, 0xFF, 0x92, 0x80, 0x00, 0x00};
 
-    const auto init_rhi = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_RVA;
-    const auto format_store = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_STORE_RVA;
-    const auto hook_address = executable + SW_ZERO_COMPANY_UE56_INIT_RHI_FORMAT_HOOK_RVA;
+    const auto function = executable + SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA;
+    const auto call_layout = function + SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET;
     const bool exact_binary_match =
-        is_executable_process_range(init_rhi, 1) &&
-        is_executable_process_range(format_store, expected_format_store.size()) &&
-        is_executable_process_range(hook_address, expected_hook_instruction.size()) &&
+        is_executable_process_range(function, expected_prologue.size()) &&
+        is_executable_process_range(call_layout, expected_call_layout.size()) &&
         std::memcmp(
-            reinterpret_cast<const void*>(format_store),
-            expected_format_store.data(),
-            expected_format_store.size()) == 0 &&
+            reinterpret_cast<const void*>(function),
+            expected_prologue.data(),
+            expected_prologue.size()) == 0 &&
         std::memcmp(
-            reinterpret_cast<const void*>(hook_address),
-            expected_hook_instruction.data(),
-            expected_hook_instruction.size()) == 0;
+            reinterpret_cast<const void*>(call_layout),
+            expected_call_layout.data(),
+            expected_call_layout.size()) == 0;
 
     if (!exact_binary_match) {
-        SPDLOG_ERROR(
-            "[SWZeroCompany][UE5.6][RTFormat] Exact FSceneViewport::InitRHI signature mismatch; "
-            "R10 compatibility remains disabled");
+        SPDLOG_WARN(
+            "[SWZeroCompany][UE5.6][DX12Copy] Exact CopyTextureRegionChecked signature mismatch; leaving copies unchanged");
         return false;
     }
 
     auto hook = safetyhook::create_mid(
-        reinterpret_cast<void*>(hook_address),
-        &sw_zero_company_ue56_scene_target_format_hook);
+        reinterpret_cast<void*>(function),
+        &sw_zero_company_ue56_copy_texture_region_hook);
     if (!hook) {
         SPDLOG_ERROR(
-            "[SWZeroCompany][UE5.6][RTFormat] Failed to hook validated FSceneViewport::InitRHI at {:x}",
-            hook_address);
+            "[SWZeroCompany][UE5.6][DX12Copy] Failed to hook validated CopyTextureRegionChecked at {:x}",
+            function);
         return false;
     }
 
-    g_sw_zero_company_ue56_scene_target_format_hook = std::move(hook);
+    g_sw_zero_company_ue56_copy_texture_region_hook = std::move(hook);
     SPDLOG_INFO(
-        "[SWZeroCompany][UE5.6][RTFormat] Hooked validated FSceneViewport::InitRHI at {:x}",
-        hook_address);
+        "[SWZeroCompany][UE5.6][DX12Copy] Hooked validated CopyTextureRegionChecked at {:x}",
+        function);
     return true;
-}
-
-bool sw_zero_company_ue56_force_current_viewport_scene_target_format(const sdk::FViewport& viewport) {
-    const auto fviewport_address = reinterpret_cast<uintptr_t>(&viewport);
-    if (fviewport_address < SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET) {
-        return false;
-    }
-
-    // Matching PDB/source analysis proves the FViewport base starts at +0x8.
-    // NeedReAllocateViewportRenderTarget is reached after InitRHI selected the
-    // format but before it allocates the separate target, so update this first
-    // transaction as well as installing the hook for later InitRHI calls.
-    const auto complete_object =
-        fviewport_address - SW_ZERO_COMPANY_UE56_FVIEWPORT_BASE_OFFSET;
-    return sw_zero_company_ue56_write_scene_target_format(
-        complete_object + SW_ZERO_COMPANY_UE56_SCENE_TARGET_FORMAT_OFFSET,
-        "NeedReAllocateViewportRenderTarget");
 }
 
 bool deadzone2_is_current_game() {
@@ -5181,6 +5234,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             directive8020_is_current_game() ||
             everwind_is_current_game() ||
             pokemon_emerald_is_current_game() ||
+            sw_zero_company_ue56_is_current_game() ||
             is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
@@ -9778,9 +9832,7 @@ FFakeStereoRenderingHook::FFakeStereoRenderingHook() {
         g_framework != nullptr &&
         g_framework->is_dx12())
     {
-        // Install before UEVR asks FSceneViewport to reallocate. Installing
-        // from NeedReAllocate alone is too late for the first InitRHI call.
-        sw_zero_company_ue56_install_scene_target_format_hook();
+        sw_zero_company_ue56_install_copy_texture_region_hook();
     }
 
     m_uses_ue58_rendertarget_manager =
@@ -11381,6 +11433,56 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
 
     if (slate_output_ref_ip == 0 || register_callsite == 0) {
         SPDLOG_ERROR("[UE5.5][SlateUI] Failed to find SlateOutputTexture RegisterExternalTexture callsite in DrawWindow_RenderThread");
+        return;
+    }
+
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        constexpr uintptr_t REGISTER_EXTERNAL_TEXTURE_RVA = 0x2D4D9E0;
+        constexpr std::array<uint8_t, 20> EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE{
+            0x48, 0x89, 0x5C, 0x24, 0x08,
+            0x48, 0x89, 0x6C, 0x24, 0x10,
+            0x48, 0x89, 0x74, 0x24, 0x18,
+            0x57,
+            0x48, 0x83, 0xEC, 0x30,
+        };
+
+        const auto executable_base = reinterpret_cast<uintptr_t>(utility::get_executable());
+        const auto expected_target = executable_base + REGISTER_EXTERNAL_TEXTURE_RVA;
+        const bool target_matches =
+            executable_base != 0 &&
+            register_target == expected_target &&
+            !IsBadReadPtr(reinterpret_cast<void*>(register_target), EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.size()) &&
+            std::memcmp(
+                reinterpret_cast<void*>(register_target),
+                EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.data(),
+                EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.size()) == 0;
+
+        if (!target_matches) {
+            SPDLOG_ERROR(
+                "[SWZeroCompany][UE5.6][SlateUI] RegisterExternalTexture target/signature mismatch; refusing function-entry hook "
+                "target={:x} expected={:x}",
+                register_target,
+                expected_target);
+            return;
+        }
+
+        auto inline_hook_result = safetyhook::create_inline(
+            reinterpret_cast<void*>(register_target),
+            &FFakeStereoRenderingHook::sw_zero_company_ue56_register_external_texture_hook);
+
+        if (!inline_hook_result) {
+            SPDLOG_ERROR(
+                "[SWZeroCompany][UE5.6][SlateUI] Failed to hook validated RegisterExternalTexture function entry {:x}",
+                register_target);
+            return;
+        }
+
+        m_sw_zero_company_ue56_slate_output_texture_register_hook = std::move(inline_hook_result);
+        m_hooked_ue55_slate_output_texture_register = true;
+        SPDLOG_WARN(
+            "[SWZeroCompany][UE5.6][SlateUI] Hooked validated RegisterExternalTexture function entry {:x}; "
+            "avoiding the incompatible Slate callsite mid-hook trampoline",
+            register_target);
         return;
     }
 
@@ -13402,8 +13504,27 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     // In 4.18 this doesn't exist. Not much we can do about that.
     if (backbuffer_format_cvar) {
         SPDLOG_INFO("Backbuffer Format CVar: {:x}", (uintptr_t)*backbuffer_format_cvar);
-        *(int32_t*)(*(uintptr_t*)*backbuffer_format_cvar + 0) = 0;   // 8bit RGBA, which is what VR headsets support
-        *(int32_t*)(*(uintptr_t*)*backbuffer_format_cvar + 0x4) = 0; // 8bit RGBA, which is what VR headsets support
+        auto* const cvar_values = reinterpret_cast<int32_t*>(*(uintptr_t*)*backbuffer_format_cvar);
+        const bool preserve_sw_zero_native_format =
+            sw_zero_company_ue56_is_current_game() &&
+            g_framework != nullptr &&
+            g_framework->is_dx12();
+
+        if (preserve_sw_zero_native_format) {
+            // This title creates an R10 swapchain before UEVR reaches this code.
+            // Rewriting the CVar to BGRA makes the later separate viewport target
+            // BGRA, and the engine then records an invalid BGRA -> R10 texture copy.
+            // Preserve the engine format here and convert only in UEVR's owned
+            // compositor texture after Draw publishes the completed scene target.
+            SPDLOG_INFO(
+                "[SWZeroCompany][UE5.6][RTFormat] Preserving native backbuffer format values current={} default={}",
+                cvar_values[0],
+                cvar_values[1]);
+            sw_zero_company_ue56_install_copy_texture_region_hook();
+        } else {
+            cvar_values[0] = 0; // 8bit RGBA, which is what VR headsets support
+            cvar_values[1] = 0;
+        }
     } else {
         SPDLOG_ERROR("Failed to find backbuffer format cvar, continuing anyways...");
     }
@@ -26143,13 +26264,14 @@ void ue55_promote_slate_outputs(
         expected_extent ? expected_extent->width : 0,
         expected_extent ? expected_extent->height : 0);
 
-    if (everspace2_is_current_game()) {
-        // ES2 transitions through pooled render targets during cinematics.
-        // Keep the rooted dedicated UI target instead of retaining a transient
-        // DrawWindow output that may be recycled by FRenderTargetPool.
+    if (everspace2_is_current_game() || sw_zero_company_ue56_is_current_game()) {
+        // These titles transition through pooled DrawWindow outputs. Keep the
+        // rooted dedicated UI target instead of retaining a transient texture
+        // that may be recycled by FRenderTargetPool.
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[Everspace2][UE5.5][SlateUI] Observed DrawWindow outputs without promoting pooled candidates");
+            "[UE5.5][SlateUI] Observed DrawWindow outputs without promoting pooled candidates for {}",
+            sw_zero_company_ue56_is_current_game() ? "SWZeroCompany" : "Everspace2");
         return;
     }
 
@@ -26809,6 +26931,33 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
 
 void FFakeStereoRenderingHook::ue55_slate_output_texture_register_hook(safetyhook::Context& ctx) {
     slate_output_texture_register_hook_impl(ctx, false);
+}
+
+void* FFakeStereoRenderingHook::sw_zero_company_ue56_register_external_texture_hook(
+    void* graph_builder, void* texture, const wchar_t* name, uint8_t flags)
+{
+    auto* const hook = g_hook;
+
+    if (hook == nullptr || !hook->m_sw_zero_company_ue56_slate_output_texture_register_hook) {
+        return nullptr;
+    }
+
+    if (sw_zero_company_ue56_is_current_game() &&
+        hook->m_inside_slate_draw_window &&
+        GetCurrentThreadId() == hook->m_slate_draw_window_thread_id &&
+        name != nullptr &&
+        is_readable_process_range(reinterpret_cast<uintptr_t>(name), sizeof(wchar_t) * 19) &&
+        std::wstring_view{name, 18}.starts_with(L"SlateOutputTexture"))
+    {
+        safetyhook::Context ctx{};
+        ctx.rdx = reinterpret_cast<uintptr_t>(texture);
+        ctx.r8 = reinterpret_cast<uintptr_t>(name);
+        slate_output_texture_register_hook_impl(ctx, false);
+        texture = reinterpret_cast<void*>(ctx.rdx);
+    }
+
+    return hook->m_sw_zero_company_ue56_slate_output_texture_register_hook.call<void*>(
+        graph_builder, texture, name, flags);
 }
 
 void FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook(safetyhook::Context& ctx) {
@@ -29481,7 +29630,60 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         SPDLOG_WARN_ONCE(
             "[SWZeroCompany][UE5.6][SlateRT] Using source-matched hidden-sret ABI; "
             "legacy viewport emulation and command-list callbacks are bypassed");
-        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+
+        const auto has_full_inputs = try_read_ue55_slate_draw_inputs_full(
+            a4,
+            renderer,
+            ue55_inputs_full);
+        const auto expected_extent = has_full_inputs
+            ? ue55_get_slate_expected_extent(ue55_inputs_full)
+            : std::nullopt;
+        const auto vr = VR::get();
+        auto* const rtm = g_hook->get_render_target_manager();
+        const bool redirect_dedicated_ui =
+            supports_ue55_dedicated_ui_target_for_current_game() &&
+            vr != nullptr &&
+            vr->is_hmd_active() &&
+            !vr->is_stereo_emulation_enabled() &&
+            rtm != nullptr;
+
+        if (redirect_dedicated_ui) {
+            g_hook->note_stable_slate_draw();
+            g_hook->attempt_hook_ue55_slate_output_texture_register();
+
+            if (expected_extent) {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SWZeroCompany][UE5.6][SlateUI] trusted Slate extent [{}x{}]; preparing dedicated UI redirection",
+                    expected_extent->width,
+                    expected_extent->height);
+                rtm->get_fallback_ui_target_ref() = nullptr;
+                rtm->request_dedicated_ui_target(expected_extent->width, expected_extent->height);
+                rtm->ensure_dedicated_ui_target(reinterpret_cast<uintptr_t>(a2));
+            } else {
+                SPDLOG_INFO_EVERY_N_SEC(
+                    2,
+                    "[SWZeroCompany][UE5.6][SlateUI] No trusted Slate extent yet; dedicated UI creation is deferred");
+            }
+
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+        }
+
+        utility::ScopeGuard slate_draw_guard{[&]() {
+            if (redirect_dedicated_ui) {
+                g_hook->m_inside_slate_draw_window = false;
+            }
+        }};
+
+        const auto ret =
+            g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+
+        if (redirect_dedicated_ui) {
+            ue55_promote_slate_outputs(rtm, a2, expected_extent);
+        }
+
+        return ret;
     }
 
     bool a4_is_ue_5_5_variant = try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs);
@@ -30672,6 +30874,41 @@ bool VRRenderTargetManager_Base::publish_sw_zero_company_scene_target_snapshot(
         return false;
     }
 
+    void* source_vtable{};
+    void* deleting_destructor{};
+
+    try {
+        if (IsBadReadPtr(source_texture, sizeof(void*))) {
+            return false;
+        }
+
+        source_vtable = *reinterpret_cast<void**>(source_texture);
+        if (source_vtable == nullptr || IsBadReadPtr(source_vtable, sizeof(void*))) {
+            return false;
+        }
+
+        deleting_destructor = *reinterpret_cast<void**>(source_vtable);
+    } catch (...) {
+        return false;
+    }
+
+    if (deleting_destructor == nullptr ||
+        IsBadReadPtr(deleting_destructor, 1) ||
+        !utility::get_module_within(deleting_destructor).has_value())
+    {
+        return false;
+    }
+
+    if (FRHITexture2D::get_vtable() == nullptr) {
+        // The packed Draw target already proved both its FD3D12Texture wrapper
+        // and native ID3D12Resource. Seed that class identity before scanning
+        // the synthetic UI UTexture's PrivateResource/TextureRHI chain.
+        FRHITexture2D::set_vtable(source_vtable);
+        SPDLOG_INFO(
+            "[SWZeroCompany][UE5.6][SlateUI] Seeded FRHITexture2D vtable {:x} from the validated packed scene target",
+            reinterpret_cast<uintptr_t>(source_vtable));
+    }
+
     const auto current = sw_zero_company_scene_target_snapshot.load(std::memory_order_acquire);
     if (current != nullptr &&
         current->source_texture == reinterpret_cast<uintptr_t>(source_texture) &&
@@ -30829,16 +31066,10 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
                 expected_use_separate_render_target.size()) == 0)
         {
             m_viewport_force_separate_rt_offset = force_separate_render_target_offset;
-            const auto format_hook_ready =
-                sw_zero_company_ue56_install_scene_target_format_hook();
-            const auto current_format_ready =
-                sw_zero_company_ue56_force_current_viewport_scene_target_format(Viewport);
             SPDLOG_INFO(
                 "[SWZeroCompany][UE5.6][RT] Validated FSceneViewport force-separate-RT offset: 0x{:x}; "
-                "R10 InitRHI hook={} current_viewport={}",
-                *m_viewport_force_separate_rt_offset,
-                format_hook_ready,
-                current_format_ready);
+                "retaining the engine-selected R10 viewport format",
+                *m_viewport_force_separate_rt_offset);
         } else {
             SPDLOG_ERROR(
                 "[SWZeroCompany][UE5.6][RT] UseSeparateRenderTarget signature mismatch; refusing generic force-RT field discovery");
@@ -32664,6 +32895,39 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         return false;
     }
 
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        // SW Zero reaches Slate while FSceneViewport is still transitioning
+        // from its desktop loading target to the packed stereo target. Creating
+        // a UTextureRenderTarget2D in that interval can re-enter render-resource
+        // initialization during the active RDG transaction. Wait until Draw has
+        // published the exact packed target before scheduling any UI resource.
+        const auto snapshot = get_sw_zero_company_scene_target_snapshot();
+        const auto vr = VR::get();
+        const auto expected_width = vr != nullptr ? static_cast<uint64_t>(vr->get_hmd_width()) * 2ull : 0ull;
+        const auto expected_height = vr != nullptr ? static_cast<uint32_t>(vr->get_hmd_height()) : 0u;
+        const bool packed_target_ready =
+            snapshot != nullptr &&
+            snapshot->resource != nullptr &&
+            expected_width != 0 &&
+            expected_height != 0 &&
+            snapshot->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            snapshot->desc.Width == expected_width &&
+            snapshot->desc.Height == expected_height &&
+            snapshot->desc.DepthOrArraySize == 1 &&
+            snapshot->desc.MipLevels == 1 &&
+            snapshot->desc.SampleDesc.Count == 1 &&
+            (snapshot->desc.Format == DXGI_FORMAT_R10G10B10A2_TYPELESS ||
+             snapshot->desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM) &&
+            (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+
+        if (!packed_target_ready) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[SWZeroCompany][UE5.6][SlateUI] Deferring synthetic UI creation until Draw publishes the validated packed scene target");
+            return false;
+        }
+    }
+
     if (!g_framework->is_game_data_intialized()) {
         return false;
     }
@@ -32821,6 +33085,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             auto* world_context = (sdk::UObject*)world;
             if (everspace2_is_current_game() ||
                 pokemon_emerald_is_current_game() ||
+                sw_zero_company_ue56_is_current_game() ||
                 is_ue58_dx11_dedicated_ui_backend() ||
                 supports_bimbo_ue58_dx12_owned_ui_target() ||
                 supports_the_sinking_city_2_ue58_dx12_owned_ui_target() ||
@@ -32842,6 +33107,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[PokemonEmerald][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
+                    } else if (sw_zero_company_ue56_is_current_game()) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[SWZeroCompany][UE5.6][SlateUI] Delaying dedicated UI creation until the persistent GameInstance is ready");
                     } else if (supports_the_sinking_city_2_ue58_dx12_owned_ui_target()) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
