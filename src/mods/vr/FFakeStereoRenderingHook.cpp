@@ -32433,8 +32433,6 @@ void VRRenderTargetManager_Base::destroy_scene_capture() {
 }
 
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
-    auto* const stalker2_rooted_texture = stalker2_rooted_dedicated_ui_texture;
-
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
         auto rooted_texture = dedicated_ui_texture;
 
@@ -32445,9 +32443,7 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
         });
     }
 
-    if (in_flight_dedicated_ui_texture != nullptr &&
-        in_flight_dedicated_ui_texture != stalker2_rooted_texture)
-    {
+    if (in_flight_dedicated_ui_texture != nullptr) {
         auto* rooted_texture = in_flight_dedicated_ui_texture;
 
         GameThreadWorker::get().enqueue([rooted_texture]() {
@@ -32460,22 +32456,10 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
         });
     }
 
-    if (stalker2_rooted_texture != nullptr) {
-        GameThreadWorker::get().enqueue([stalker2_rooted_texture]() {
-            if (!IsBadReadPtr(stalker2_rooted_texture, sizeof(void*))) {
-                try {
-                    unroot_dedicated_ui_texture(stalker2_rooted_texture);
-                } catch (...) {
-                }
-            }
-        });
-    }
-
     owned_dedicated_ui_target.reset();
     dedicated_ui_target = nullptr;
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
-    stalker2_rooted_dedicated_ui_texture = nullptr;
     reset_dedicated_ui_creation_state();
 }
 
@@ -32493,7 +32477,6 @@ void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(
 
     auto rooted_texture = dedicated_ui_texture;
     auto* in_flight_texture = in_flight_dedicated_ui_texture;
-    auto* stalker2_rooted_texture = stalker2_rooted_dedicated_ui_texture;
     auto* rooted_raw = rooted_texture.get();
 
     if (rooted_texture != nullptr && rooted_texture.valid()) {
@@ -32504,10 +32487,7 @@ void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(
         });
     }
 
-    if (in_flight_texture != nullptr &&
-        in_flight_texture != rooted_raw &&
-        in_flight_texture != stalker2_rooted_texture)
-    {
+    if (in_flight_texture != nullptr && in_flight_texture != rooted_raw) {
         GameThreadWorker::get().enqueue([in_flight_texture]() {
             if (in_flight_texture != nullptr && !IsBadReadPtr(in_flight_texture, sizeof(void*))) {
                 try {
@@ -32518,20 +32498,8 @@ void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(
         });
     }
 
-    if (stalker2_rooted_texture != nullptr && stalker2_rooted_texture != rooted_raw) {
-        GameThreadWorker::get().enqueue([stalker2_rooted_texture]() {
-            if (!IsBadReadPtr(stalker2_rooted_texture, sizeof(void*))) {
-                try {
-                    unroot_dedicated_ui_texture(stalker2_rooted_texture);
-                } catch (...) {
-                }
-            }
-        });
-    }
-
     dedicated_ui_texture = nullptr;
     in_flight_dedicated_ui_texture = nullptr;
-    stalker2_rooted_dedicated_ui_texture = nullptr;
     reset_dedicated_ui_creation_state();
 
     SPDLOG_INFO(
@@ -32995,13 +32963,6 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             sdk::UObjectReference<sdk::UTexture> tgt{tgt_raw};
             this->in_flight_dedicated_ui_texture = tgt_raw;
-            if (stalker2_uses_ue55_draw_windows_array_layout()) {
-                // This exact build can expose a valid newly rooted UObject before
-                // FUObjectArray's inferred chunk layout can resolve its item.
-                // Retain the raw rooted object and validate its exact render
-                // resource instead of treating a weak-wrapper miss as deletion.
-                this->stalker2_rooted_dedicated_ui_texture = tgt_raw;
-            }
             this->dedicated_ui_object_created = true;
             this->dedicated_ui_pending_since = std::chrono::steady_clock::now();
             this->dedicated_ui_resource_pending_since = this->dedicated_ui_pending_since;
@@ -33009,21 +32970,13 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UI UObject for generation {}", generation);
 
             RenderThreadWorker::get().enqueue_conditional(
-                [this, tgt, tgt_raw, width, height, generation]() -> bool {
+                [this, tgt, width, height, generation]() -> bool {
                     try {
                         if (!this->is_dedicated_ui_generation_current(generation)) {
                             return true;
                         }
 
-                        const bool use_stalker2_rooted_texture =
-                            stalker2_uses_ue55_draw_windows_array_layout();
-                        auto* const texture_object = use_stalker2_rooted_texture ? tgt_raw : tgt.get();
-
-                        if (texture_object == nullptr ||
-                            !is_readable_process_range(reinterpret_cast<uintptr_t>(texture_object), sizeof(void*)) ||
-                            (use_stalker2_rooted_texture &&
-                             this->stalker2_rooted_dedicated_ui_texture != texture_object))
-                        {
+                        if (!tgt.valid()) {
                             SPDLOG_ERROR("[VRRenderTargetManager] dedicated UI texture was destroyed before its render resource became valid");
                             GameThreadWorker::get().enqueue([this, generation]() -> void {
                                 if (!this->is_dedicated_ui_generation_current(generation)) {
@@ -33039,8 +32992,8 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return true;
                         }
 
-                        if (use_stalker2_rooted_texture) {
-                            const auto validated = stalker2_try_get_dedicated_ui_resource(texture_object, width, height);
+                        if (stalker2_uses_ue55_draw_windows_array_layout()) {
+                            const auto validated = stalker2_try_get_dedicated_ui_resource(tgt.get(), width, height);
                             if (!validated) {
                                 return false;
                             }
@@ -33054,14 +33007,12 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             this->get_fallback_ui_target_ref() = nullptr;
                             this->stalker2_dedicated_ui_creation_failed.store(false, std::memory_order_release);
 
-                            GameThreadWorker::get().enqueue([this, texture_object, generation]() -> void {
+                            GameThreadWorker::get().enqueue([this, tgt, generation]() -> void {
                                 if (!this->is_dedicated_ui_generation_current(generation)) {
                                     return;
                                 }
 
-                                if (this->stalker2_rooted_dedicated_ui_texture != texture_object ||
-                                    !is_readable_process_range(reinterpret_cast<uintptr_t>(texture_object), sizeof(void*)))
-                                {
+                                if (!tgt.valid()) {
                                     this->dedicated_ui_texture = nullptr;
                                     this->in_flight_dedicated_ui_texture = nullptr;
                                     this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
@@ -33069,7 +33020,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                                     return;
                                 }
 
-                                this->dedicated_ui_texture = nullptr;
+                                this->dedicated_ui_texture = tgt;
                                 this->in_flight_dedicated_ui_texture = nullptr;
                                 this->reset_dedicated_ui_creation_state();
                             });
@@ -33350,24 +33301,6 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         }
 
         SPDLOG_INFO_EVERY_N_SEC(5, "[VRRenderTargetManager] dedicated UI UObject is alive but its render resource is not ready");
-    }
-
-    if (stalker2_uses_ue55_draw_windows_array_layout() &&
-        stalker2_rooted_dedicated_ui_texture != nullptr &&
-        !IsBadReadPtr(stalker2_rooted_dedicated_ui_texture, sizeof(void*)))
-    {
-        const auto validated = stalker2_try_get_dedicated_ui_resource(
-            stalker2_rooted_dedicated_ui_texture,
-            dedicated_ui_width,
-            dedicated_ui_height);
-
-        if (validated) {
-            FRHITexture2D::set_vtable(*(void**)validated->texture);
-            set_dedicated_ui_target(validated->texture, dedicated_ui_width, dedicated_ui_height);
-            get_fallback_ui_target_ref() = nullptr;
-            stalker2_dedicated_ui_creation_failed.store(false, std::memory_order_release);
-            return;
-        }
     }
 
     if (dedicated_ui_object_created &&
