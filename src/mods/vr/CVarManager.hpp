@@ -244,6 +244,8 @@ private:
     std::chrono::steady_clock::time_point m_next_console_script_command_time{};
     bool m_ue51_fsr3_runtime_cvars_done{false};
     int m_ue51_fsr3_runtime_cvar_attempts{0};
+    bool m_stalker2_deepdvc_runtime_cvars_done{false};
+    int m_stalker2_deepdvc_runtime_cvar_attempts{0};
     bool m_aphelion_framegen_runtime_cvars_done{false};
     int m_aphelion_framegen_runtime_cvar_attempts{0};
     bool m_windrose_shadow_runtime_cvars_done{false};

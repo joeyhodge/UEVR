@@ -216,6 +216,82 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
     return true;
 }
 
+bool force_stalker2_ue55_deepdvc_runtime_cvars_once(int attempt) {
+    if (g_framework == nullptr || !g_framework->is_dx12() ||
+        !is_stalker2_ue55_current_game_for_cvars()) {
+        return true;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        bool required;
+    };
+
+    // DeepDVC is independent from DLSS/DLSSG. The current Stalker 2 UE5.5
+    // transition failure ends inside nvngx_deepdvc, so disable only its load
+    // gate and runtime feature through the validated console interface.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.Streamline.Load.DeepDVC", false},
+        ForcedCVar{L"r.Streamline.DeepDVC.Enable", true},
+    };
+
+    bool required_found{};
+    bool required_disabled{};
+    bool retry{};
+
+    for (const auto& forced : forced_cvars) {
+        auto* variable = sdk::find_validated_console_variable(forced.name);
+
+        if (variable == nullptr) {
+            retry |= forced.required;
+
+            if ((attempt == 1 || attempt % 120 == 0) && forced.required) {
+                SPDLOG_INFO(
+                    "[Stalker2][UE5.5][DeepDVC] waiting for validated {}",
+                    utility::narrow(forced.name));
+            }
+
+            continue;
+        }
+
+        required_found |= forced.required;
+
+        int before{};
+        int after{};
+        bool set_ok{};
+
+        try {
+            before = variable->GetInt();
+            set_ok = before == 0 || variable->Set(L"0");
+            after = variable->GetInt();
+        } catch (...) {
+            set_ok = false;
+        }
+
+        const auto disabled = set_ok && after == 0;
+        required_disabled |= forced.required && disabled;
+        retry |= !disabled;
+
+        if (!disabled || before != 0 || attempt == 1) {
+            SPDLOG_INFO(
+                "[Stalker2][UE5.5][DeepDVC] {} before={} after={} ok={}",
+                utility::narrow(forced.name),
+                before,
+                after,
+                disabled);
+        }
+    }
+
+    if (retry || !required_found || !required_disabled) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Stalker2][UE5.5][DeepDVC] runtime feature disabled after {} attempt(s)",
+        attempt);
+    return true;
+}
+
 bool force_aphelion_framegen_runtime_cvars_once(int attempt) {
     if (g_framework == nullptr || !g_framework->is_dx12() || !is_aphelion_current_game_for_cvars()) {
         return true;
@@ -585,6 +661,8 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_should_execute_console_script = false;
         m_ue51_fsr3_runtime_cvars_done = false;
         m_ue51_fsr3_runtime_cvar_attempts = 0;
+        m_stalker2_deepdvc_runtime_cvars_done = false;
+        m_stalker2_deepdvc_runtime_cvar_attempts = 0;
         m_aphelion_framegen_runtime_cvars_done = false;
         m_aphelion_framegen_runtime_cvar_attempts = 0;
         m_windrose_shadow_runtime_cvars_done = false;
@@ -612,6 +690,19 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         } else if (m_aphelion_framegen_runtime_cvar_attempts >= 600) {
             SPDLOG_WARN("[Aphelion][DX12] frame-generation cvars were not found after {} attempts; giving up", m_aphelion_framegen_runtime_cvar_attempts);
             m_aphelion_framegen_runtime_cvars_done = true;
+        }
+    }
+
+    if (!m_stalker2_deepdvc_runtime_cvars_done) {
+        ++m_stalker2_deepdvc_runtime_cvar_attempts;
+
+        if (force_stalker2_ue55_deepdvc_runtime_cvars_once(m_stalker2_deepdvc_runtime_cvar_attempts)) {
+            m_stalker2_deepdvc_runtime_cvars_done = true;
+        } else if (m_stalker2_deepdvc_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN(
+                "[Stalker2][UE5.5][DeepDVC] validated runtime controls were not available after {} attempts; giving up",
+                m_stalker2_deepdvc_runtime_cvar_attempts);
+            m_stalker2_deepdvc_runtime_cvars_done = true;
         }
     }
 
