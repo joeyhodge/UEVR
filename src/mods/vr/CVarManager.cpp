@@ -1142,9 +1142,9 @@ void CVarManager::CVarStandard::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (m_cvar == nullptr && m_interface_cvar == nullptr) {
-        if (is_stalker2_ue55_current_game_for_cvars()) {
+        if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
             m_interface_fallback_attempted = true;
-            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
             return;
         }
 
@@ -1152,7 +1152,7 @@ void CVarManager::CVarStandard::update() {
 
         if (m_cvar == nullptr && !m_interface_fallback_attempted) {
             m_interface_fallback_attempted = true;
-            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
         }
     }
 }
@@ -1355,7 +1355,7 @@ void CVarManager::CVarData::freeze() {
             if (!ok || elapsed_ms > 250) {
                 m_setter_unavailable = true;
                 SPDLOG_WARN(
-                    "[CVarManager] Disabling UE 5.5 interface freeze enforcement for {} (ok={}, elapsed={}ms)",
+                    "[CVarManager] Disabling validated interface freeze enforcement for {} (ok={}, elapsed={}ms)",
                     utility::narrow(m_name), ok, elapsed_ms);
             }
         }
@@ -1390,9 +1390,9 @@ void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (!m_cvar_data && m_interface_cvar == nullptr) {
-        if (is_stalker2_ue55_current_game_for_cvars()) {
+        if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
             m_interface_fallback_attempted = true;
-            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
             return;
         }
 
@@ -1400,7 +1400,7 @@ void CVarManager::CVarData::update() {
 
         if (!m_cvar_data && !m_interface_fallback_attempted) {
             m_interface_fallback_attempted = true;
-            m_interface_cvar = sdk::find_validated_ue55_console_variable(m_name);
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
         }
     }
 }
@@ -1424,11 +1424,11 @@ void CVarManager::CVarData::draw_ui() try {
                     try {
                         if (!cvar->Set(value.c_str())) {
                             sft->m_setter_unavailable = true;
-                            SPDLOG_WARN("UE 5.5 interface Set failed for {}", utility::narrow(sft->get_name()));
+                            SPDLOG_WARN("Validated CVar interface Set failed for {}", utility::narrow(sft->get_name()));
                         }
                     } catch (...) {
                         sft->m_setter_unavailable = true;
-                        SPDLOG_ERROR("UE 5.5 interface Set threw for {}", utility::narrow(sft->get_name()));
+                        SPDLOG_ERROR("Validated CVar interface Set threw for {}", utility::narrow(sft->get_name()));
                     }
                 });
         };
