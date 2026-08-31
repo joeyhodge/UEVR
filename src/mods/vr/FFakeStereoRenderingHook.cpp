@@ -16308,18 +16308,6 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
             g_hook->m_synced_draw_lifecycle_generation.load(std::memory_order_acquire);
         const auto queued_viewport_vtable = g_hook->m_last_viewport_vtable;
         const auto queued_synced_method = vr->get_synced_sequential_method();
-        const bool queued_ghosting_fix_enabled = vr->is_ghosting_fix_enabled();
-        uint32_t queued_ghosting_generation{};
-        uintptr_t queued_ghosting_scene{};
-        bool queued_ghosting_owner_required{};
-
-        if (queued_ghosting_fix_enabled) {
-            std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
-            queued_ghosting_generation = g_hook->m_sceneview_data.ghosting_pair.generation;
-            queued_ghosting_scene = g_hook->m_sceneview_data.ghosting_pair.scene;
-            queued_ghosting_owner_required =
-                g_hook->m_sceneview_data.ghosting_state == GhostingFixState::Active;
-        }
 
         GameThreadWorker::get().enqueue([=]() {
             if (!g_hook->m_viewport_draw_hook ||
@@ -16334,43 +16322,17 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
             auto& current_vr = VR::get();
             if (!current_vr->is_using_synchronized_afr() ||
-                current_vr->get_synced_sequential_method() != queued_synced_method ||
-                current_vr->is_ghosting_fix_enabled() != queued_ghosting_fix_enabled)
+                current_vr->get_synced_sequential_method() != queued_synced_method)
             {
                 return;
-            }
-
-            if (!ghosting_is_live_uobject(reinterpret_cast<sdk::UObject*>(uobject_viewport_client))) {
-                return;
-            }
-
-            if (queued_ghosting_fix_enabled) {
-                std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
-                const auto& pair = g_hook->m_sceneview_data.ghosting_pair;
-                if (pair.generation != queued_ghosting_generation || pair.scene != queued_ghosting_scene) {
-                    return;
-                }
-
-                if (queued_ghosting_owner_required) {
-                    const bool pending_generation_change =
-                        pair.pending_scene != 0 ||
-                        pair.pending_eye_state[0] != nullptr ||
-                        pair.pending_eye_state[1] != nullptr;
-                    const auto minimum_stable_frames = medium_is_current_game() ? 12u : 2u;
-                    if (g_hook->m_sceneview_data.ghosting_state != GhostingFixState::Active ||
-                        pending_generation_change ||
-                        pair.owner.stable_frames < minimum_stable_frames ||
-                        !validate_ghosting_fix_owner(pair))
-                    {
-                        return;
-                    }
-                }
             }
 
             if (!ghosting_object_vtable_matches(viewport, queued_viewport_vtable)) {
                 return;
             }
 
+            // Ghost Fix validates its UObject ownership in the scene-view remap path.
+            // It must not veto the synchronized second draw and defer one eye to a later game tick.
             const auto viewport_draw = (void (*)(void*, bool))g_hook->m_viewport_draw_hook.target();
             viewport_draw(viewport, true);
 
