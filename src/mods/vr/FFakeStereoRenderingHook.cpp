@@ -1977,6 +1977,27 @@ bool subnautica2_is_current_game() {
     return result;
 }
 
+bool captain_tsubasa2_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\captaintsubasa2wf-win64-shipping.exe") ||
+               lowered.ends_with(L"/captaintsubasa2wf-win64-shipping.exe") ||
+               lowered == L"captaintsubasa2wf-win64-shipping.exe";
+    }();
+
+    return result;
+}
+
 bool pokemon_emerald_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -24120,12 +24141,21 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
 
-                if (subnautica2_is_current_game() && !g_hook->m_hooked_alternative_localplayer_scan) {
-                    // Subnautica 2 can wedge if we patch the immediate return address
-                    // during first startup projection. Use the safer GetProjectionData
-                    // pre-hook path and let the next frame provide the LocalPlayer.
+                const bool captain_tsubasa2_safe_bootstrap =
+                    captain_tsubasa2_is_current_game() &&
+                    is_ue_5_5_runtime() &&
+                    g_framework != nullptr &&
+                    g_framework->is_dx12();
+                const bool use_projection_entry_bootstrap =
+                    subnautica2_is_current_game() || captain_tsubasa2_safe_bootstrap;
+
+                if (use_projection_entry_bootstrap && !g_hook->m_hooked_alternative_localplayer_scan) {
+                    // These optimized builds can fault in the generated trampoline when
+                    // the immediate post-projection return address is patched. Capture
+                    // LocalPlayer from RCX at the containing projection function entry.
                     constexpr auto max_stack_depth = 100;
                     uintptr_t stack[max_stack_depth]{};
+                    const auto* bootstrap_label = captain_tsubasa2_safe_bootstrap ? "CaptainTsubasa2" : "Subnautica2";
 
                     const auto depth = RtlCaptureStackBackTrace(0, max_stack_depth, (void**)&stack, nullptr);
                     g_hook->m_projection_matrix_stack.clear();
@@ -24153,22 +24183,31 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
                         }
 
                         if (get_projection_data) {
-                            SPDLOG_INFO("[Subnautica2] Hooking GetProjectionData at {:x} instead of CalculateStereoProjectionMatrix return address", *get_projection_data);
+                            SPDLOG_INFO(
+                                "[{}][NativeStereoFix] Hooking projection entry at {:x} instead of the CalculateStereoProjectionMatrix return address",
+                                bootstrap_label,
+                                *get_projection_data);
                             auto hook = safetyhook::create_mid((void*)*get_projection_data, &FFakeStereoRenderingHook::pre_get_projection_data);
 
                             if (hook) {
                                 g_hook->m_get_projection_data_pre_hook = std::move(hook);
                                 g_hook->m_hooked_alternative_localplayer_scan = true;
                             } else {
-                                SPDLOG_WARN("[Subnautica2] Failed to hook GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                                SPDLOG_WARN(
+                                    "[{}][NativeStereoFix] Failed to hook projection entry; disabling LocalPlayer bootstrap for this session",
+                                    bootstrap_label);
                                 g_hook->m_fixed_localplayer_view_count = true;
                             }
                         } else {
-                            SPDLOG_WARN("[Subnautica2] Failed to locate GetProjectionData; disabling LocalPlayer bootstrap for this session");
+                            SPDLOG_WARN(
+                                "[{}][NativeStereoFix] Failed to locate projection entry; disabling LocalPlayer bootstrap for this session",
+                                bootstrap_label);
                             g_hook->m_fixed_localplayer_view_count = true;
                         }
                     } else {
-                        SPDLOG_WARN("[Subnautica2] Projection stack was too shallow for GetProjectionData hook; disabling LocalPlayer bootstrap for this session");
+                        SPDLOG_WARN(
+                            "[{}][NativeStereoFix] Projection stack was too shallow for the entry hook; disabling LocalPlayer bootstrap for this session",
+                            bootstrap_label);
                         g_hook->m_fixed_localplayer_view_count = true;
                     }
 
