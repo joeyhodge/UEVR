@@ -5013,6 +5013,10 @@ bool is_ue_5_8_or_newer() {
     return disk_version.dwFileVersionMS >= 0x50008;
 }
 
+bool is_ue_5_7_runtime() {
+    return is_ue_5_7_or_newer() && !is_ue_5_8_or_newer();
+}
+
 bool is_ue_5_8() {
     static const auto disk_version = sdk::get_file_version_info();
     static const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
@@ -16228,6 +16232,12 @@ struct SceneViewExtensionAnalyzer {
         uint32_t ue4_source_valid_a3{0};
         uint32_t ue4_source_advances_a2{0};
         uint32_t ue4_source_advances_a3{0};
+        uint32_t ue57_source_frame_a2{0};
+        uint32_t ue57_source_frame_a3{0};
+        uint32_t ue57_source_valid_a2{0};
+        uint32_t ue57_source_valid_a3{0};
+        uint32_t ue57_source_advances_a2{0};
+        uint32_t ue57_source_advances_a3{0};
         std::array<uint8_t, 0x100> a2_data{};
         std::array<uint8_t, 0x100> a3_data{};
     };
@@ -16250,6 +16260,15 @@ struct SceneViewExtensionAnalyzer {
     static constexpr uint32_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
     static constexpr uint32_t UE426_427_VIEW_MODE_OFFSET = 0x10;
     static constexpr uint32_t UE426_427_RENDER_TARGET_OFFSET = 0x18;
+
+    // UE5.7 source and Breathedge 2's matching 5.7.4 PDB agree on this
+    // ISceneViewExtension topology and FSceneViewFamily layout.
+    static constexpr uint32_t UE57_BEGIN_RENDER_VIEWFAMILY_INDEX = 4;
+    static constexpr uint32_t UE57_PRE_RENDER_VIEWFAMILY_INDEX = 6;
+    static constexpr uint32_t UE57_IS_ACTIVE_INDEX = 20;
+    static constexpr uint32_t UE57_RENDER_TARGET_OFFSET = 0x30;
+    static constexpr uint32_t UE57_SCENE_OFFSET = 0x40;
+    static constexpr uint32_t UE57_FRAME_NUMBER_OFFSET = 0xA0;
 
     // Dune is a UE5.2.1 build. These slots and family offsets are fixed by the
     // matching source and independently confirmed by both runtime logs.
@@ -16429,6 +16448,135 @@ struct SceneViewExtensionAnalyzer {
         return true;
     }
 
+    static bool read_ue57_view_family_frame(uintptr_t candidate, uint32_t& frame) {
+        if (!is_ue_5_7_runtime() ||
+            candidate == 0 || (candidate & (alignof(void*) - 1)) != 0 ||
+            !is_readable_process_range(candidate, UE57_FRAME_NUMBER_OFFSET + sizeof(frame)))
+        {
+            return false;
+        }
+
+        uintptr_t render_target{};
+        uintptr_t scene{};
+        std::memcpy(
+            &render_target,
+            reinterpret_cast<const void*>(candidate + UE57_RENDER_TARGET_OFFSET),
+            sizeof(render_target));
+        std::memcpy(
+            &scene,
+            reinterpret_cast<const void*>(candidate + UE57_SCENE_OFFSET),
+            sizeof(scene));
+        std::memcpy(
+            &frame,
+            reinterpret_cast<const void*>(candidate + UE57_FRAME_NUMBER_OFFSET),
+            sizeof(frame));
+
+        const auto validate_polymorphic_object = [](uintptr_t object) {
+            if (object == 0 || (object & (alignof(void*) - 1)) != 0 ||
+                !is_readable_process_range(object, sizeof(uintptr_t)))
+            {
+                return false;
+            }
+
+            uintptr_t vtable{};
+            std::memcpy(&vtable, reinterpret_cast<const void*>(object), sizeof(vtable));
+            if (vtable == 0 || !is_readable_process_range(vtable, sizeof(uintptr_t)) ||
+                !utility::get_module_within(reinterpret_cast<void*>(vtable)).has_value())
+            {
+                return false;
+            }
+
+            uintptr_t first_virtual{};
+            std::memcpy(&first_virtual, reinterpret_cast<const void*>(vtable), sizeof(first_virtual));
+            return is_executable_process_range(first_virtual, 1);
+        };
+
+        return validate_polymorphic_object(candidate) &&
+            validate_polymorphic_object(render_target) &&
+            validate_polymorphic_object(scene) &&
+            frame >= 10 && frame != std::numeric_limits<uint32_t>::max();
+    }
+
+    static void observe_ue57_source_frame(
+        uintptr_t candidate,
+        uint32_t& previous_frame,
+        uint32_t& valid_observations,
+        uint32_t& advancing_observations)
+    {
+        uint32_t frame{};
+        if (!read_ue57_view_family_frame(candidate, frame)) {
+            return;
+        }
+
+        ++valid_observations;
+        if (previous_frame != 0 && frame > previous_frame && frame - previous_frame <= 64) {
+            ++advancing_observations;
+        }
+
+        // Auxiliary families can report an older frame between main-family
+        // callbacks. Keep the newest validated frame instead of resetting the
+        // sequence and preventing discovery from converging.
+        previous_frame = std::max(previous_frame, frame);
+    }
+
+    static bool try_apply_ue57_source_fallback() {
+        if (!is_ue_5_7_runtime() ||
+            !has_found_is_active_this_frame_index ||
+            is_active_this_frame_index != UE57_IS_ACTIVE_INDEX ||
+            !index_0_called ||
+            has_found_begin_render_viewfamily)
+        {
+            return false;
+        }
+
+        const auto begin_it = functions.find(UE57_BEGIN_RENDER_VIEWFAMILY_INDEX);
+        const auto pre_render_it = functions.find(UE57_PRE_RENDER_VIEWFAMILY_INDEX);
+        if (begin_it == functions.end() || pre_render_it == functions.end()) {
+            return false;
+        }
+
+        const auto& begin = begin_it->second;
+        const auto& pre_render = pre_render_it->second;
+        constexpr uint32_t minimum_calls = 8;
+        constexpr uint32_t minimum_valid_observations = 6;
+        constexpr uint32_t minimum_advances = 2;
+        if (begin.call_count < minimum_calls || pre_render.call_count < minimum_calls ||
+            begin.ue57_source_valid_a2 < minimum_valid_observations ||
+            pre_render.ue57_source_valid_a3 < minimum_valid_observations ||
+            begin.ue57_source_advances_a2 < minimum_advances ||
+            pre_render.ue57_source_advances_a3 < minimum_advances ||
+            begin.ue57_source_frame_a2 == 0 || pre_render.ue57_source_frame_a3 == 0 ||
+            std::abs(
+                static_cast<int64_t>(begin.ue57_source_frame_a2) -
+                static_cast<int64_t>(pre_render.ue57_source_frame_a3)) > 64)
+        {
+            return false;
+        }
+
+        has_found_begin_render_viewfamily = true;
+        begin_render_viewfamily_index = UE57_BEGIN_RENDER_VIEWFAMILY_INDEX;
+        pre_render_viewfamily_renderthread_index = UE57_PRE_RENDER_VIEWFAMILY_INDEX;
+        frame_count_offset = UE57_FRAME_NUMBER_OFFSET;
+        sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
+
+        SPDLOG_INFO(
+            "[UE5.7][ViewExtension] Applied source-and-runtime-validated mapping "
+            "BeginRenderViewFamily={} PreRenderViewFamily_RenderThread={} IsActiveThisFrame={} "
+            "FrameNumber=0x{:x} begin_calls={} pre_render_calls={} begin_advances={} pre_render_advances={}",
+            begin_render_viewfamily_index,
+            pre_render_viewfamily_renderthread_index,
+            is_active_this_frame_index,
+            frame_count_offset,
+            begin.call_count,
+            pre_render.call_count,
+            begin.ue57_source_advances_a2,
+            pre_render.ue57_source_advances_a3);
+
+        save_cached_discovery();
+        setup_view_extension_hook();
+        return true;
+    }
+
     static bool try_apply_dune_ue52_source_layout(uint32_t observed_is_active_index) {
         if (!dune_native_fix_renderer_resolver_is_current_game() ||
             index_0_called ||
@@ -16551,7 +16699,27 @@ struct SceneViewExtensionAnalyzer {
                 func.ue4_source_advances_a3);
         }
 
+        if constexpr (N == UE57_BEGIN_RENDER_VIEWFAMILY_INDEX) {
+            auto& func = functions[N];
+            observe_ue57_source_frame(
+                a2,
+                func.ue57_source_frame_a2,
+                func.ue57_source_valid_a2,
+                func.ue57_source_advances_a2);
+        } else if constexpr (N == UE57_PRE_RENDER_VIEWFAMILY_INDEX) {
+            auto& func = functions[N];
+            observe_ue57_source_frame(
+                a3,
+                func.ue57_source_frame_a3,
+                func.ue57_source_valid_a3,
+                func.ue57_source_advances_a3);
+        }
+
         if (try_apply_ue426_427_source_fallback()) {
+            return false;
+        }
+
+        if (try_apply_ue57_source_fallback()) {
             return false;
         }
 
@@ -16990,6 +17158,18 @@ bool SceneViewExtensionAnalyzer::validate_cached_discovery(void** original_vtabl
 
     if (cached_is_active >= max_index || cached_begin >= max_index || cached_pre_render >= max_index ||
         cached_begin == cached_pre_render || cached_frame_count_offset == 0 || cached_frame_count_offset > 0x4000)
+    {
+        return false;
+    }
+
+    // UE5.7's interface and family layout are source- and PDB-validated. Do
+    // not let a cache produced by the older heuristic override that topology.
+    if (is_ue_5_7_runtime() &&
+        (!cached.value("index_0_called", false) ||
+         cached_is_active != UE57_IS_ACTIVE_INDEX ||
+         cached_begin != UE57_BEGIN_RENDER_VIEWFAMILY_INDEX ||
+         cached_pre_render != UE57_PRE_RENDER_VIEWFAMILY_INDEX ||
+         cached_frame_count_offset != UE57_FRAME_NUMBER_OFFSET))
     {
         return false;
     }
