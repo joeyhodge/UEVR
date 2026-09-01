@@ -275,6 +275,22 @@ void test_version_gates() {
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"unknown", 0x00050005),
         "updated Stalker2 must retain the UE5.5 file-version fallback");
 
+    expect(uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, true, true),
+        "Stalker2 UE5.5 DX12 Native Fix must use its validated capture layout");
+    expect(!uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, true, false),
+        "plain Native Stalker2 must not enter the Native Fix capture layout");
+    expect(!uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, false, true),
+        "Stalker2 DX11 must not inherit the validated DX12 capture layout");
+    expect(!uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0x00050001, true, true),
+        "legacy Stalker2 must not inherit the UE5.5 capture layout");
+    expect(!uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005, true, true),
+        "other UE5.5 Native Fix games must retain generic capture discovery");
+
     expect(uevr::games::stalker2_native_fix_requires_same_pass(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0),
         "legacy Stalker2 Native Fix must retain the stable same-pass handoff");
