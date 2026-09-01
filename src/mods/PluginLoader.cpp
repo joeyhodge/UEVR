@@ -361,7 +361,13 @@ UEVR_SDKFunctions g_sdk_functions {
     },
     // add_component_by_class
     [](UEVR_UObjectHandle actor, UEVR_UClassHandle klass, bool deferred) -> UEVR_UObjectHandle {
-        return (UEVR_UObjectHandle)((sdk::AActor*)actor)->add_component_by_class((sdk::UClass*)klass, deferred);
+        auto component = ((sdk::AActor*)actor)->add_component_by_class((sdk::UClass*)klass, deferred);
+
+        if (component != nullptr) {
+            UObjectHook::get()->track_plugin_created_component(component);
+        }
+
+        return (UEVR_UObjectHandle)component;
     }
 };
 
@@ -713,7 +719,7 @@ namespace uobjecthook {
         auto& instance = UObjectHook::get();
         instance->activate();
 
-        return instance->exists((sdk::UObject*)obj);
+        return instance->exists_or_track_plugin_object((sdk::UObject*)obj);
     }
 
     int get_objects_by_class(UEVR_UClassHandle klass, UEVR_UObjectHandle* out_objects, unsigned int max_objects, bool allow_default) {

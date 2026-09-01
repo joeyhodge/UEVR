@@ -1349,6 +1349,40 @@ bool UObjectHook::try_track_object(
     return tracked;
 }
 
+bool UObjectHook::exists_or_track_plugin_object(sdk::UObjectBase* object) {
+    if (object == nullptr) {
+        return false;
+    }
+
+    if (exists(object)) {
+        return true;
+    }
+
+    if (!is_stalker2_uobjecthook_guard_enabled() || !m_fully_hooked) {
+        return false;
+    }
+
+    // The Stalker 2 profile validates dynamically-created actors before it
+    // reuses them. Lazy mode deliberately skips AddObject, so safely adopt a
+    // valid FUObjectArray member here instead of making the profile respawn it.
+    return try_track_object(object, "plugin exists()", true, false);
+}
+
+void UObjectHook::track_plugin_created_component(sdk::UActorComponent* component) {
+    if (!is_stalker2_uobjecthook_guard_enabled() || component == nullptr || !m_fully_hooked) {
+        return;
+    }
+
+    // Stalker 2 skips the global AddObject path in lazy mode. Components
+    // returned directly to plugins must still be adopted so controller and
+    // attachment code can validate and update them normally.
+    if (try_track_object(component, "plugin API component", true, false)) {
+        if (const auto outer = component->get_outer(); outer != nullptr) {
+            try_track_object(outer, "plugin API component outer", true, false);
+        }
+    }
+}
+
 std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_motion_controller_state(sdk::USceneComponent* component) {
     if (component == nullptr) {
         return nullptr;
@@ -2049,10 +2083,39 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
             return m_motion_controller_attached_components;
         }
 
-        m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(
-            m_motion_controller_attached_components.size(),
-            std::memory_order_relaxed);
-        return {};
+        auto tickable = decltype(m_motion_controller_attached_components){};
+        tickable.reserve(m_motion_controller_attached_components.size());
+
+        size_t bare_scene_components = 0;
+        size_t skipped_bare_scene_components = 0;
+
+        for (const auto& [component, state] : m_motion_controller_attached_components) {
+            if (component == nullptr || state == nullptr || !exists_unsafe(component)) {
+                continue;
+            }
+
+            if (is_stalker2_bulk_scene_component(component)) {
+                if (bare_scene_components >= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
+                    ++skipped_bare_scene_components;
+                    continue;
+                }
+
+                ++bare_scene_components;
+            }
+
+            // Typed components include weapon meshes and controller
+            // components. Never suppress them just because unrelated bare
+            // SceneComponent states exceeded the lazy-mode budget.
+            tickable.emplace(component, state);
+        }
+
+        if (skipped_bare_scene_components != 0) {
+            m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(
+                skipped_bare_scene_components,
+                std::memory_order_relaxed);
+        }
+
+        return tickable;
     });
 
     const auto is_using_controllers = vr->is_using_controllers();
@@ -3807,21 +3870,22 @@ void UObjectHook::draw_main() {
             // make a copy because the user could press the detach button while iterating
             auto attached = decltype(m_motion_controller_attached_components){};
 
-            if (is_stalker2_uobjecthook_guard_enabled() &&
-                m_motion_controller_attached_components.size() > STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
-                m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(
-                    m_motion_controller_attached_components.size(),
-                    std::memory_order_relaxed);
-                ImGui::TextWrapped(
-                    "Stalker2 lazy mode suppressed %zu attached-component entries. Use Detach bulk SceneComponents in UObjectHook Health if this came from an old profile.",
-                    m_motion_controller_attached_components.size());
-            } else if (is_stalker2_uobjecthook_guard_enabled()) {
+            if (is_stalker2_uobjecthook_guard_enabled()) {
                 attached.reserve(std::min<size_t>(m_motion_controller_attached_components.size(), STALKER2_CLASS_BROWSER_OBJECT_CAP));
 
+                size_t bare_scene_components = 0;
+
                 for (const auto& [component, state] : m_motion_controller_attached_components) {
-                    if (component == nullptr || state == nullptr || is_stalker2_bulk_scene_component(component)) {
-                        m_stalker2_lazy_stats.tick_bulk_skips.fetch_add(1, std::memory_order_relaxed);
+                    if (component == nullptr || state == nullptr || !exists_unsafe(component)) {
                         continue;
+                    }
+
+                    if (is_stalker2_bulk_scene_component(component)) {
+                        if (bare_scene_components >= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
+                            continue;
+                        }
+
+                        ++bare_scene_components;
                     }
 
                     attached.emplace(component, state);
@@ -3829,6 +3893,11 @@ void UObjectHook::draw_main() {
                     if (attached.size() >= STALKER2_CLASS_BROWSER_OBJECT_CAP) {
                         break;
                     }
+                }
+
+                if (m_motion_controller_attached_components.size() > attached.size()) {
+                    ImGui::TextWrapped(
+                        "Stalker2 lazy mode is hiding excess or stale attachment rows from this list; validated typed weapon/controller attachments continue ticking.");
                 }
             } else {
                 attached = m_motion_controller_attached_components;
@@ -3998,7 +4067,7 @@ void UObjectHook::draw_main() {
             if (bulk_scene_attachments > STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
                 ImGui::TextColored(
                     ImVec4(1.0f, 0.35f, 0.1f, 1.0f),
-                    "Bulk SceneComponent attachments: %zu/%zu; ticking is suppressed",
+                    "Bulk SceneComponent attachments: %zu/%zu; only excess bare entries are skipped",
                     bulk_scene_attachments,
                     STALKER2_BULK_SCENE_ATTACHMENT_CAP);
             } else {
