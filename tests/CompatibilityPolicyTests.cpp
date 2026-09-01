@@ -470,6 +470,41 @@ void test_ue58_slate_ui_capability() {
     expect(should_create_ue58_synthetic_ui_target(capability),
         "a proven packed-scene target must request one synthetic UI texture");
 
+    UE58SyntheticUICreationInputs creation{
+        .exact_ue58 = true,
+        .synthetic_required = true,
+        .game_data_initialized = true,
+        .engine_valid = true,
+        .slate_hook_valid = true,
+        .stable_slate_draw = true,
+        .packed_scene_target_valid = true,
+    };
+    expect(should_attempt_ue58_synthetic_ui_creation(creation),
+        "a proven UE5.8 synthetic route may allocate after validating the packed scene target");
+
+    creation.packed_scene_target_valid = false;
+    expect(!should_attempt_ue58_synthetic_ui_creation(creation),
+        "an invalid packed scene target must fail synthetic UI creation closed");
+
+    creation.packed_scene_target_valid = true;
+    creation.synthetic_required = false;
+    expect(!should_attempt_ue58_synthetic_ui_creation(creation),
+        "engine-owned and unproven routes must not allocate a synthetic UI target");
+
+    creation.synthetic_required = true;
+    creation.exact_ue58 = false;
+    expect(!should_attempt_ue58_synthetic_ui_creation(creation),
+        "other engine versions must retain their existing dedicated UI prerequisites");
+
+    expect(should_use_ue58_slate_ui_resource_worker(true, true, true, false),
+        "a proven UE5.8 DX12 synthetic route without PreRender must use the Slate render-thread worker");
+    expect(!should_use_ue58_slate_ui_resource_worker(true, false, true, false),
+        "UE5.8 DX11 must retain its existing render-resource worker path");
+    expect(!should_use_ue58_slate_ui_resource_worker(true, true, true, true),
+        "a working PreRender callback must retain the standard render-resource worker path");
+    expect(!should_use_ue58_slate_ui_resource_worker(false, true, true, false),
+        "other engine versions must not use the UE5.8 Slate render-resource worker");
+
     observation.target_is_distinct_from_scene = true;
     expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Quarantined,
         "contradictory scene ownership evidence must be quarantined");
