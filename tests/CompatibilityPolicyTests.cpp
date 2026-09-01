@@ -291,6 +291,25 @@ void test_version_gates() {
                L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005, true, true),
         "other UE5.5 Native Fix games must retain generic capture discovery");
 
+    expect(uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"5.6.1", 0, 0, true, true),
+        "StormEscape UE5.6.1 DX12 Native Fix must use its validated stock capture layout");
+    expect(uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"unknown", 0x00050006, 0x00010000, true, true),
+        "StormEscape must retain the exact file-version fallback");
+    expect(!uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"5.6.0", 0x00050006, 0, true, true),
+        "other StormEscape UE5.6 patch layouts must fail closed");
+    expect(!uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"5.6.1", 0, 0, false, true),
+        "StormEscape DX11 must not inherit the validated DX12 capture layout");
+    expect(!uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"5.6.1", 0, 0, true, false),
+        "plain Native StormEscape must not enter the Native Fix capture layout");
+    expect(!uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.6.1", 0x00050006, 0x00010000, true, true),
+        "other UE5.6.1 games must retain their existing capture discovery");
+
     expect(uevr::games::stalker2_native_fix_requires_same_pass(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0),
         "legacy Stalker2 Native Fix must retain the stable same-pass handoff");
