@@ -5164,6 +5164,141 @@ bool stalker2_uses_ue55_draw_windows_array_layout() {
     return result;
 }
 
+bool stalker2_uses_validated_ue55_native_fix_capture_layout() {
+    static const bool exact_runtime = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS,
+            true,
+            true);
+    }();
+
+    const auto vr = VR::get();
+    return exact_runtime && g_framework != nullptr && g_framework->is_dx12() &&
+           vr != nullptr && vr->is_native_stereo_fix_enabled();
+}
+
+constexpr uint32_t STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET = 0x110;
+constexpr uint32_t STALKER2_UE55_FTEXTURE_RHI_OFFSET = 0x10;
+constexpr uint32_t STALKER2_UE55_FRENDER_TARGET_OFFSET = 0x50;
+
+struct Stalker2UE55NativeFixTextureChain {
+    sdk::FTextureRenderTargetResource* texture_resource{};
+    sdk::FRenderTarget* render_target{};
+    FRHITexture2D* rhi_texture{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> native_resource{};
+};
+
+bool stalker2_has_module_owned_vtable(uintptr_t object) {
+    if (!is_readable_process_range(object, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    const auto vtable = *reinterpret_cast<uintptr_t*>(object);
+    if (!is_readable_process_range(vtable, sizeof(uintptr_t))) {
+        return false;
+    }
+
+    const auto first_function = *reinterpret_cast<uintptr_t*>(vtable);
+    return first_function != 0 && utility::get_module_within(vtable).has_value() &&
+           utility::get_module_within(first_function).has_value();
+}
+
+std::optional<Stalker2UE55NativeFixTextureChain> validate_stalker2_ue55_native_fix_texture_chain(
+    sdk::UTexture* texture,
+    uint32_t expected_width,
+    uint32_t expected_height)
+{
+    if (texture == nullptr || expected_width == 0 || expected_height == 0 ||
+        !is_readable_process_range(
+            reinterpret_cast<uintptr_t>(texture),
+            STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET + sizeof(uintptr_t)))
+    {
+        return std::nullopt;
+    }
+
+    try {
+        auto* const texture_resource = *reinterpret_cast<sdk::FTextureRenderTargetResource**>(
+            reinterpret_cast<uintptr_t>(texture) + STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET);
+        if (texture_resource == nullptr ||
+            !is_readable_process_range(
+                reinterpret_cast<uintptr_t>(texture_resource),
+                STALKER2_UE55_FRENDER_TARGET_OFFSET + sizeof(uintptr_t)) ||
+            !stalker2_has_module_owned_vtable(reinterpret_cast<uintptr_t>(texture_resource)))
+        {
+            return std::nullopt;
+        }
+
+        auto* const rhi_texture = *reinterpret_cast<FRHITexture2D**>(
+            reinterpret_cast<uintptr_t>(texture_resource) + STALKER2_UE55_FTEXTURE_RHI_OFFSET);
+        const auto expected_rhi_vtable = FRHITexture2D::get_vtable();
+        if (rhi_texture == nullptr || expected_rhi_vtable == nullptr ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(rhi_texture), sizeof(uintptr_t)) ||
+            *reinterpret_cast<void**>(rhi_texture) != expected_rhi_vtable)
+        {
+            return std::nullopt;
+        }
+
+        auto* const render_target = reinterpret_cast<sdk::FRenderTarget*>(
+            reinterpret_cast<uintptr_t>(texture_resource) + STALKER2_UE55_FRENDER_TARGET_OFFSET);
+        if (!stalker2_has_module_owned_vtable(reinterpret_cast<uintptr_t>(render_target))) {
+            return std::nullopt;
+        }
+
+        auto* const native = reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource());
+        if (native == nullptr || !is_readable_process_range(reinterpret_cast<uintptr_t>(native), sizeof(uintptr_t))) {
+            return std::nullopt;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Resource> native_resource{};
+        if (FAILED(native->QueryInterface(IID_PPV_ARGS(&native_resource))) || native_resource == nullptr) {
+            return std::nullopt;
+        }
+
+        D3D12_RESOURCE_DESC desc{};
+        Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+        if (!get_d3d12_resource_desc_guarded(native_resource.Get(), desc) ||
+            !get_d3d12_resource_device_guarded(native_resource.Get(), &resource_device) ||
+            resource_device == nullptr)
+        {
+            return std::nullopt;
+        }
+
+        const auto& hook = g_framework->get_d3d12_hook();
+        const auto expected_device = hook != nullptr ? hook->get_device() : nullptr;
+        const bool bgra_compatible =
+            desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+            desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+            desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+        const bool render_target_capable =
+            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != D3D12_RESOURCE_FLAG_NONE;
+        if (expected_device == nullptr || resource_device.Get() != expected_device ||
+            desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || !bgra_compatible ||
+            !render_target_capable || desc.Width != expected_width || desc.Height != expected_height ||
+            desc.MipLevels != 1 || desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1)
+        {
+            return std::nullopt;
+        }
+
+        return Stalker2UE55NativeFixTextureChain{
+            .texture_resource = texture_resource,
+            .render_target = render_target,
+            .rhi_texture = rhi_texture,
+            .native_resource = std::move(native_resource),
+        };
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+
 bool is_ue_5_5_dx_backend() {
     if (g_framework == nullptr || (!g_framework->is_dx12() && !g_framework->is_dx11())) {
         return false;
@@ -33875,39 +34010,85 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 return true;
             }
 
-            if (!already_updated) {
-                if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
-                    SPDLOG_WARN("Waiting for scene-capture render-resource offset discovery...");
+            sdk::FTextureRenderTargetResource* rsrc{};
+            sdk::FRenderTarget* frt{};
+            FRHITexture2D* rhi_texture{};
+
+            if (stalker2_uses_validated_ue55_native_fix_capture_layout()) {
+                // This target may exist before UE5.5 has initialized its nested
+                // render resource. Validate the complete exact chain before
+                // publishing any offsets, otherwise an early auxiliary pointer
+                // can poison the process-wide UTexture/FTexture caches.
+                const auto validated = validate_stalker2_ue55_native_fix_texture_chain(
+                    reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                    static_cast<uint32_t>(VR::get()->get_hmd_width()),
+                    static_cast<uint32_t>(VR::get()->get_hmd_height()));
+                if (!validated) {
+                    SPDLOG_INFO_EVERY_N_SEC(
+                        2,
+                        "[Stalker2][UE5.5][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
                     return false;
                 }
 
-                SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
-            }
+                rsrc = validated->texture_resource;
+                frt = validated->render_target;
+                rhi_texture = validated->rhi_texture;
 
-            auto* rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(tgt->get_resource());
-            if (rsrc == nullptr) {
-                return false;
-            }
+                if (!already_updated) {
+                    const bool texture_offsets_committed =
+                        sdk::UTexture::commit_validated_render_resource_offsets_texture2d(
+                            reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                            STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET,
+                            STALKER2_UE55_FTEXTURE_RHI_OFFSET);
+                    const bool render_target_offset_committed =
+                        sdk::FTextureRenderTargetResource::commit_validated_render_target_vtable_offset(
+                            rsrc,
+                            STALKER2_UE55_FRENDER_TARGET_OFFSET);
+                    if (!texture_offsets_committed || !render_target_offset_committed) {
+                        SPDLOG_WARN(
+                            "[Stalker2][UE5.5][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
+                        return false;
+                    }
 
-            if (!already_updated && !sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc)) {
-                SPDLOG_WARN("Waiting for scene-capture FRenderTarget vtable discovery...");
-                return false;
-            }
+                    sdk::FRenderTarget::update_offsets(frt);
+                    SPDLOG_INFO(
+                        "[Stalker2][UE5.5][NativeStereoFix] Committed validated capture layout PrivateResource=0x110 TextureRHI=0x10 FRenderTarget=0x50");
+                }
+            } else {
+                if (!already_updated) {
+                    if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                        SPDLOG_WARN("Waiting for scene-capture render-resource offset discovery...");
+                        return false;
+                    }
 
-            auto* frt = rsrc->as_render_target();
-            if (frt == nullptr) {
-                return false;
-            }
+                    SPDLOG_INFO("Successfully updated render resource offset for scene capture target!");
+                }
 
-            if (!already_updated) {
-                sdk::FRenderTarget::update_offsets(frt);
-            }
+                rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(tgt->get_resource());
+                if (rsrc == nullptr) {
+                    return false;
+                }
 
-            auto* const texture_ref = frt->get_render_target_texture();
-            auto* const rhi_texture = texture_ref != nullptr ? *texture_ref : nullptr;
-            if (rhi_texture == nullptr) {
-                SPDLOG_WARN("Waiting for scene capture render target texture to be valid...");
-                return false;
+                if (!already_updated && !sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc)) {
+                    SPDLOG_WARN("Waiting for scene-capture FRenderTarget vtable discovery...");
+                    return false;
+                }
+
+                frt = rsrc->as_render_target();
+                if (frt == nullptr) {
+                    return false;
+                }
+
+                if (!already_updated) {
+                    sdk::FRenderTarget::update_offsets(frt);
+                }
+
+                auto* const texture_ref = frt->get_render_target_texture();
+                rhi_texture = texture_ref != nullptr ? *texture_ref : nullptr;
+                if (rhi_texture == nullptr) {
+                    SPDLOG_WARN("Waiting for scene capture render target texture to be valid...");
+                    return false;
+                }
             }
 
             hook_frt(frt);
