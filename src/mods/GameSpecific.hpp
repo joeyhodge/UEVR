@@ -142,6 +142,30 @@ inline bool is_sw_zero_company_ue56_runtime(
     return file_version_ms == 0x00050006;
 }
 
+inline bool is_storm_escape_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\stormescape-win64-shipping.exe") ||
+           lowered.ends_with(L"/stormescape-win64-shipping.exe") ||
+           lowered == L"stormescape-win64-shipping.exe";
+}
+
+inline bool should_use_storm_escape_ue561_native_fix_capture_layout(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12,
+    bool native_stereo_fix_active) {
+    if (!dx12 || !native_stereo_fix_active || !is_storm_escape_executable_path(path)) {
+        return false;
+    }
+
+    const bool exact_detected_version = detected_version == L"5.6.1";
+    const bool exact_file_version =
+        file_version_ms == 0x00050006 && file_version_ls == 0x00010000;
+    return exact_detected_version || exact_file_version;
+}
+
 inline bool is_controller_camera_guard_candidate_path(std::wstring_view path) {
     return is_stalker2_executable_path(path) || is_mechwarrior_clans_executable_path(path);
 }
