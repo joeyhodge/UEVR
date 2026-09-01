@@ -62,6 +62,16 @@ struct UE58SlateCallABIObservation {
     bool r9_zero_flags{};
 };
 
+struct UE58SyntheticUICreationInputs {
+    bool exact_ue58{};
+    bool synthetic_required{};
+    bool game_data_initialized{};
+    bool engine_valid{};
+    bool slate_hook_valid{};
+    bool stable_slate_draw{};
+    bool packed_scene_target_valid{};
+};
+
 constexpr bool is_validated_ue58_slate_source_version(
     uint32_t file_version_ms,
     uint32_t file_version_ls) noexcept {
@@ -81,6 +91,25 @@ constexpr bool should_enable_ue58_automatic_ui_route(
 constexpr bool should_create_ue58_synthetic_ui_target(
     UE58DedicatedUICapability capability) noexcept {
     return capability == UE58DedicatedUICapability::SyntheticRequired;
+}
+
+constexpr bool should_attempt_ue58_synthetic_ui_creation(
+    const UE58SyntheticUICreationInputs& input) noexcept {
+    return input.exact_ue58 &&
+        input.synthetic_required &&
+        input.game_data_initialized &&
+        input.engine_valid &&
+        input.slate_hook_valid &&
+        input.stable_slate_draw &&
+        input.packed_scene_target_valid;
+}
+
+constexpr bool should_use_ue58_slate_ui_resource_worker(
+    bool exact_ue58,
+    bool dx12,
+    bool synthetic_required,
+    bool prerender_viewfamily_seen) noexcept {
+    return exact_ue58 && dx12 && synthetic_required && !prerender_viewfamily_seen;
 }
 
 constexpr bool is_ue58_direct_raw_texture_transaction(

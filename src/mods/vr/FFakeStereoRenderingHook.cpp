@@ -5491,6 +5491,27 @@ bool should_create_validated_automatic_ue58_ui_target() {
         g_hook->requires_ue58_synthetic_ui_target();
 }
 
+ThreadWorker<void>& get_ue58_slate_ui_resource_worker() {
+    static ThreadWorker<void> worker{};
+    return worker;
+}
+
+bool should_use_ue58_slate_ui_resource_worker() {
+    return uevr::vr_compatibility::should_use_ue58_slate_ui_resource_worker(
+        is_validated_ue58_slate_ui_runtime(),
+        is_ue58_dx12_backend(),
+        should_create_validated_automatic_ue58_ui_target(),
+        g_hook != nullptr && g_hook->has_seen_prerender_viewfamily());
+}
+
+ThreadWorker<void>& get_dedicated_ui_resource_worker() {
+    if (should_use_ue58_slate_ui_resource_worker()) {
+        return get_ue58_slate_ui_resource_worker();
+    }
+
+    return RenderThreadWorker::get();
+}
+
 bool supports_naruto_ue416_dedicated_ui_target() {
     return naruto_is_current_game() &&
         is_ue_4_16_runtime() &&
@@ -6649,6 +6670,72 @@ std::optional<D3D12_RESOURCE_DESC> ue55_try_get_d3d12_desc(FRHITexture2D* textur
     }
 
     return desc;
+}
+
+bool ue58_dx12_validate_packed_scene_target_for_ui_creation(FRHITexture2D* texture) {
+    if (!is_ue58_dx12_backend() || texture == nullptr) {
+        return false;
+    }
+
+    ID3D12Resource* native_resource{};
+    D3D12_RESOURCE_DESC desc{};
+    if (!ue55_dx12_try_get_native_resource_direct(
+            texture,
+            "UE5.8 synthetic UI packed scene target",
+            &native_resource,
+            &desc) ||
+        native_resource == nullptr)
+    {
+        return false;
+    }
+
+    ID3D12Device4* resource_device_raw{};
+    if (!get_d3d12_resource_device_guarded(native_resource, &resource_device_raw)) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    resource_device.Attach(resource_device_raw);
+
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+    auto* const expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+    const auto vr = VR::get();
+    const auto expected_width = vr != nullptr ? static_cast<uint64_t>(vr->get_hmd_width()) * 2ull : 0ull;
+    const auto expected_height = vr != nullptr ? static_cast<uint32_t>(vr->get_hmd_height()) : 0u;
+    const bool valid =
+        expected_device != nullptr &&
+        resource_device.Get() == expected_device &&
+        expected_width != 0 &&
+        expected_height != 0 &&
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        desc.Width == expected_width &&
+        desc.Height == expected_height &&
+        desc.DepthOrArraySize == 1 &&
+        desc.MipLevels == 1 &&
+        desc.SampleDesc.Count == 1 &&
+        desc.Format != DXGI_FORMAT_UNKNOWN &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0;
+
+    if (!valid) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[UE5.8][SlateUI] Deferring synthetic UI creation: packed scene validation failed "
+            "device_match={} expected={}x{} actual={}x{} dim={} depth={} mips={} samples={} fmt={} flags=0x{:x}",
+            expected_device != nullptr && resource_device.Get() == expected_device,
+            expected_width,
+            expected_height,
+            desc.Width,
+            desc.Height,
+            static_cast<uint32_t>(desc.Dimension),
+            desc.DepthOrArraySize,
+            desc.MipLevels,
+            desc.SampleDesc.Count,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+    }
+
+    return valid;
 }
 
 struct Everspace2ViewportTextureCandidate {
@@ -29772,6 +29859,18 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
+    // Some optimized UE5.8 DX12 games never expose PreRenderViewFamily, which
+    // normally services RenderThreadWorker. DrawWindow is independently proven
+    // to run on FRenderingThread, so service only the dedicated UE5.8 UI queue
+    // here after Slate finishes. The general render-worker queue is untouched.
+    const bool pump_ue58_slate_ui_resource_worker =
+        is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend();
+    utility::ScopeGuard ue58_slate_ui_resource_worker_guard{[&]() {
+        if (pump_ue58_slate_ui_resource_worker) {
+            get_ue58_slate_ui_resource_worker().execute();
+        }
+    }};
+
     auto viewport_info = (sdk::FViewportInfo*)a3;
     sdk::ISlateViewport* slate_viewport = nullptr; // UE5.5+
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
@@ -33030,6 +33129,11 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         return false;
     }
 
+    const bool automatic_ue58_synthetic_route =
+        is_ue_5_8() &&
+        !supports_legacy_allowlisted_ue58_ui_route() &&
+        should_create_validated_automatic_ue58_ui_target();
+
     if (is_ue_5_8() &&
         !supports_legacy_allowlisted_ue58_ui_route() &&
         !should_create_validated_automatic_ue58_ui_target())
@@ -33096,19 +33200,25 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         }
     }
 
-    if (!g_framework->is_game_data_intialized()) {
+    const bool game_data_initialized = g_framework->is_game_data_intialized();
+    if (!game_data_initialized) {
         return false;
     }
 
     auto* engine = sdk::UGameEngine::get();
 
-    if (engine == nullptr) {
+    const bool engine_valid = engine != nullptr;
+    if (!engine_valid) {
         return false;
     }
 
-    if (g_hook == nullptr || !g_hook->has_slate_hook() || !g_hook->has_seen_stable_slate_draw()) {
+    const bool slate_hook_valid = g_hook != nullptr && g_hook->has_slate_hook();
+    const bool stable_slate_draw = g_hook != nullptr && g_hook->has_seen_stable_slate_draw();
+    if (!slate_hook_valid || !stable_slate_draw) {
         return false;
     }
+
+    bool packed_scene_target_valid = false;
 
     if (is_ue58_dx11_dedicated_ui_backend()) {
         D3D11_TEXTURE2D_DESC scene_desc{};
@@ -33131,6 +33241,31 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         {
             return false;
         }
+
+        packed_scene_target_valid = true;
+    } else if (automatic_ue58_synthetic_route && is_ue58_dx12_backend()) {
+        packed_scene_target_valid =
+            ue58_dx12_validate_packed_scene_target_for_ui_creation(get_render_target());
+
+        if (!packed_scene_target_valid) {
+            return false;
+        }
+    }
+
+    if (automatic_ue58_synthetic_route) {
+        // The runtime Slate classifier has already proven that DrawWindow is
+        // repeatedly receiving the packed scene target. Some optimized UE5.8
+        // games do not expose PreRenderViewFamily, so the packed native target
+        // is the relevant allocation boundary rather than those callbacks.
+        return uevr::vr_compatibility::should_attempt_ue58_synthetic_ui_creation({
+            .exact_ue58 = is_validated_ue58_slate_ui_runtime(),
+            .synthetic_required = true,
+            .game_data_initialized = game_data_initialized,
+            .engine_valid = engine_valid,
+            .slate_hook_valid = slate_hook_valid,
+            .stable_slate_draw = stable_slate_draw,
+            .packed_scene_target_valid = packed_scene_target_valid,
+        });
     }
 
     if (supports_dead_island_2_ue425_dedicated_ui_target()) {
@@ -33170,13 +33305,13 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
 }
 
 bool VRRenderTargetManager_Base::try_schedule_dedicated_ui_creation() {
-    if (!can_attempt_dedicated_ui_creation()) {
-        return false;
-    }
-
     if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr ||
         dedicated_ui_creation_pending || in_flight_dedicated_ui_generation != 0)
     {
+        return false;
+    }
+
+    if (!can_attempt_dedicated_ui_creation()) {
         return false;
     }
 
@@ -33330,7 +33465,13 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
             SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UI UObject for generation {}", generation);
 
-            RenderThreadWorker::get().enqueue_conditional(
+            auto& dedicated_ui_resource_worker = get_dedicated_ui_resource_worker();
+            if (should_use_ue58_slate_ui_resource_worker()) {
+                SPDLOG_INFO_ONCE(
+                    "[UE5.8][SlateUI] Routing synthetic UI resource validation through the proven DrawWindow render thread");
+            }
+
+            dedicated_ui_resource_worker.enqueue_conditional(
                 [this, tgt, width, height, generation]() -> bool {
                     try {
                         if (!this->is_dedicated_ui_generation_current(generation)) {
