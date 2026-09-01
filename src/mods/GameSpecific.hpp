@@ -63,6 +63,16 @@ inline bool is_stalker2_ue55_runtime(
     return file_version_ms == 0x00050005;
 }
 
+inline bool should_use_stalker2_ue55_native_fix_capture_layout(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    bool dx12,
+    bool native_stereo_fix_active) {
+    return dx12 && native_stereo_fix_active &&
+           is_stalker2_ue55_runtime(path, detected_version, file_version_ms);
+}
+
 inline bool stalker2_native_fix_requires_same_pass(
     std::wstring_view path,
     std::wstring_view detected_version,
