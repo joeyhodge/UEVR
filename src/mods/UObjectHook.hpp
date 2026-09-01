@@ -84,6 +84,9 @@ public:
         bool require_array_member = true,
         bool run_creation_jobs = true);
 
+    bool exists_or_track_plugin_object(sdk::UObjectBase* object);
+    void track_plugin_created_component(sdk::UActorComponent* component);
+
 protected:
     std::string_view get_name() const override { return "UObjectHook"; };
     bool is_advanced_mod() const override { return true; }
