@@ -208,6 +208,8 @@ public:
         return sw_zero_company_desktop_extent.load(std::memory_order_acquire);
     }
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
+    bool prepare_sw_zero_company_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height);
+    bool is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const;
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
