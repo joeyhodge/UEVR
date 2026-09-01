@@ -5186,18 +5186,63 @@ bool stalker2_uses_validated_ue55_native_fix_capture_layout() {
            vr != nullptr && vr->is_native_stereo_fix_enabled();
 }
 
+bool storm_escape_uses_validated_ue561_native_fix_capture_layout() {
+    static const bool exact_runtime = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS,
+            true,
+            true);
+    }();
+
+    const auto vr = VR::get();
+    return exact_runtime && g_framework != nullptr && g_framework->is_dx12() &&
+           vr != nullptr && vr->is_native_stereo_fix_enabled();
+}
+
 constexpr uint32_t STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET = 0x110;
 constexpr uint32_t STALKER2_UE55_FTEXTURE_RHI_OFFSET = 0x10;
 constexpr uint32_t STALKER2_UE55_FRENDER_TARGET_OFFSET = 0x50;
 
-struct Stalker2UE55NativeFixTextureChain {
+constexpr uint32_t STORM_ESCAPE_UE561_UTEXTURE_PRIVATE_RESOURCE_OFFSET = 0x120;
+constexpr uint32_t STORM_ESCAPE_UE561_FTEXTURE_RHI_OFFSET = 0x10;
+constexpr uint32_t STORM_ESCAPE_UE561_FRENDER_TARGET_OFFSET = 0x50;
+
+struct ValidatedNativeFixTextureChain {
     sdk::FTextureRenderTargetResource* texture_resource{};
     sdk::FRenderTarget* render_target{};
     FRHITexture2D* rhi_texture{};
     Microsoft::WRL::ComPtr<ID3D12Resource> native_resource{};
 };
 
-bool stalker2_has_module_owned_vtable(uintptr_t object) {
+struct NativeFixTextureLayout {
+    uint32_t private_resource_offset{};
+    uint32_t texture_rhi_offset{};
+    uint32_t render_target_offset{};
+};
+
+constexpr NativeFixTextureLayout STALKER2_UE55_NATIVE_FIX_TEXTURE_LAYOUT{
+    STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET,
+    STALKER2_UE55_FTEXTURE_RHI_OFFSET,
+    STALKER2_UE55_FRENDER_TARGET_OFFSET,
+};
+
+constexpr NativeFixTextureLayout STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT{
+    STORM_ESCAPE_UE561_UTEXTURE_PRIVATE_RESOURCE_OFFSET,
+    STORM_ESCAPE_UE561_FTEXTURE_RHI_OFFSET,
+    STORM_ESCAPE_UE561_FRENDER_TARGET_OFFSET,
+};
+
+bool native_fix_has_module_owned_vtable(uintptr_t object) {
     if (!is_readable_process_range(object, sizeof(uintptr_t))) {
         return false;
     }
@@ -5212,33 +5257,34 @@ bool stalker2_has_module_owned_vtable(uintptr_t object) {
            utility::get_module_within(first_function).has_value();
 }
 
-std::optional<Stalker2UE55NativeFixTextureChain> validate_stalker2_ue55_native_fix_texture_chain(
+std::optional<ValidatedNativeFixTextureChain> validate_native_fix_texture_chain(
     sdk::UTexture* texture,
     uint32_t expected_width,
-    uint32_t expected_height)
+    uint32_t expected_height,
+    const NativeFixTextureLayout& layout)
 {
     if (texture == nullptr || expected_width == 0 || expected_height == 0 ||
         !is_readable_process_range(
             reinterpret_cast<uintptr_t>(texture),
-            STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET + sizeof(uintptr_t)))
+            layout.private_resource_offset + sizeof(uintptr_t)))
     {
         return std::nullopt;
     }
 
     try {
         auto* const texture_resource = *reinterpret_cast<sdk::FTextureRenderTargetResource**>(
-            reinterpret_cast<uintptr_t>(texture) + STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET);
+            reinterpret_cast<uintptr_t>(texture) + layout.private_resource_offset);
         if (texture_resource == nullptr ||
             !is_readable_process_range(
                 reinterpret_cast<uintptr_t>(texture_resource),
-                STALKER2_UE55_FRENDER_TARGET_OFFSET + sizeof(uintptr_t)) ||
-            !stalker2_has_module_owned_vtable(reinterpret_cast<uintptr_t>(texture_resource)))
+                layout.render_target_offset + sizeof(uintptr_t)) ||
+            !native_fix_has_module_owned_vtable(reinterpret_cast<uintptr_t>(texture_resource)))
         {
             return std::nullopt;
         }
 
         auto* const rhi_texture = *reinterpret_cast<FRHITexture2D**>(
-            reinterpret_cast<uintptr_t>(texture_resource) + STALKER2_UE55_FTEXTURE_RHI_OFFSET);
+            reinterpret_cast<uintptr_t>(texture_resource) + layout.texture_rhi_offset);
         const auto expected_rhi_vtable = FRHITexture2D::get_vtable();
         if (rhi_texture == nullptr || expected_rhi_vtable == nullptr ||
             !is_readable_process_range(reinterpret_cast<uintptr_t>(rhi_texture), sizeof(uintptr_t)) ||
@@ -5248,8 +5294,8 @@ std::optional<Stalker2UE55NativeFixTextureChain> validate_stalker2_ue55_native_f
         }
 
         auto* const render_target = reinterpret_cast<sdk::FRenderTarget*>(
-            reinterpret_cast<uintptr_t>(texture_resource) + STALKER2_UE55_FRENDER_TARGET_OFFSET);
-        if (!stalker2_has_module_owned_vtable(reinterpret_cast<uintptr_t>(render_target))) {
+            reinterpret_cast<uintptr_t>(texture_resource) + layout.render_target_offset);
+        if (!native_fix_has_module_owned_vtable(reinterpret_cast<uintptr_t>(render_target))) {
             return std::nullopt;
         }
 
@@ -5288,7 +5334,7 @@ std::optional<Stalker2UE55NativeFixTextureChain> validate_stalker2_ue55_native_f
             return std::nullopt;
         }
 
-        return Stalker2UE55NativeFixTextureChain{
+        return ValidatedNativeFixTextureChain{
             .texture_resource = texture_resource,
             .render_target = render_target,
             .rhi_texture = rhi_texture,
@@ -34014,19 +34060,35 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             sdk::FRenderTarget* frt{};
             FRHITexture2D* rhi_texture{};
 
-            if (stalker2_uses_validated_ue55_native_fix_capture_layout()) {
-                // This target may exist before UE5.5 has initialized its nested
-                // render resource. Validate the complete exact chain before
-                // publishing any offsets, otherwise an early auxiliary pointer
-                // can poison the process-wide UTexture/FTexture caches.
-                const auto validated = validate_stalker2_ue55_native_fix_texture_chain(
+            const bool use_stalker2_capture_layout =
+                stalker2_uses_validated_ue55_native_fix_capture_layout();
+            const bool use_storm_escape_capture_layout =
+                storm_escape_uses_validated_ue561_native_fix_capture_layout();
+
+            if (use_stalker2_capture_layout || use_storm_escape_capture_layout) {
+                // These targets can exist before the engine initializes their
+                // nested render resources. Never let the broad pointer scan run
+                // while the stock chain is merely pending.
+                const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
+                const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
+                const auto& layout = use_stalker2_capture_layout
+                    ? STALKER2_UE55_NATIVE_FIX_TEXTURE_LAYOUT
+                    : STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT;
+                const auto validated = validate_native_fix_texture_chain(
                     reinterpret_cast<sdk::UTexture*>(tgt.get()),
-                    static_cast<uint32_t>(VR::get()->get_hmd_width()),
-                    static_cast<uint32_t>(VR::get()->get_hmd_height()));
+                    expected_width,
+                    expected_height,
+                    layout);
                 if (!validated) {
-                    SPDLOG_INFO_EVERY_N_SEC(
-                        2,
-                        "[Stalker2][UE5.5][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
+                    if (use_stalker2_capture_layout) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[Stalker2][UE5.5][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
+                    } else {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[StormEscape][UE5.6.1][NativeStereoFix] Waiting for initialized +0x120/+0x10 capture texture chain");
+                    }
                     return false;
                 }
 
@@ -34038,21 +34100,31 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     const bool texture_offsets_committed =
                         sdk::UTexture::commit_validated_render_resource_offsets_texture2d(
                             reinterpret_cast<sdk::UTexture*>(tgt.get()),
-                            STALKER2_UE55_UTEXTURE_PRIVATE_RESOURCE_OFFSET,
-                            STALKER2_UE55_FTEXTURE_RHI_OFFSET);
+                            layout.private_resource_offset,
+                            layout.texture_rhi_offset);
                     const bool render_target_offset_committed =
                         sdk::FTextureRenderTargetResource::commit_validated_render_target_vtable_offset(
                             rsrc,
-                            STALKER2_UE55_FRENDER_TARGET_OFFSET);
+                            layout.render_target_offset);
                     if (!texture_offsets_committed || !render_target_offset_committed) {
-                        SPDLOG_WARN(
-                            "[Stalker2][UE5.5][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
+                        if (use_stalker2_capture_layout) {
+                            SPDLOG_WARN(
+                                "[Stalker2][UE5.5][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
+                        } else {
+                            SPDLOG_WARN(
+                                "[StormEscape][UE5.6.1][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
+                        }
                         return false;
                     }
 
                     sdk::FRenderTarget::update_offsets(frt);
-                    SPDLOG_INFO(
-                        "[Stalker2][UE5.5][NativeStereoFix] Committed validated capture layout PrivateResource=0x110 TextureRHI=0x10 FRenderTarget=0x50");
+                    if (use_stalker2_capture_layout) {
+                        SPDLOG_INFO(
+                            "[Stalker2][UE5.5][NativeStereoFix] Committed validated capture layout PrivateResource=0x110 TextureRHI=0x10 FRenderTarget=0x50");
+                    } else {
+                        SPDLOG_INFO(
+                            "[StormEscape][UE5.6.1][NativeStereoFix] Committed validated capture layout PrivateResource=0x120 TextureRHI=0x10 FRenderTarget=0x50");
+                    }
                 }
             } else {
                 if (!already_updated) {
