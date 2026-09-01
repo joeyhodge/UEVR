@@ -6050,6 +6050,48 @@ bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4**
     }
 }
 
+bool make_d3d12_resource_resident_guarded(
+    ID3D12Device4* device,
+    ID3D12Resource* resource,
+    HRESULT& priority_result,
+    HRESULT& residency_result)
+{
+    priority_result = E_FAIL;
+    residency_result = E_FAIL;
+
+    if (device == nullptr || resource == nullptr) {
+        return false;
+    }
+
+    __try {
+        ID3D12Pageable* pageable = resource;
+        const D3D12_RESIDENCY_PRIORITY priority = D3D12_RESIDENCY_PRIORITY_MAXIMUM;
+        priority_result = device->SetResidencyPriority(1, &pageable, &priority);
+
+        if (FAILED(priority_result)) {
+            return false;
+        }
+
+        residency_result = device->MakeResident(1, &pageable);
+        return SUCCEEDED(residency_result);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        priority_result = E_FAIL;
+        residency_result = E_FAIL;
+        return false;
+    }
+}
+
+struct SWZeroCompanyDedicatedUITargetPin {
+    FRHITexture2D* rhi_texture{};
+    ID3D12Resource* native_resource{};
+    uint32_t width{};
+    uint32_t height{};
+};
+
+std::mutex g_sw_zero_company_dedicated_ui_lifetime_mutex{};
+std::vector<SWZeroCompanyDedicatedUITargetPin> g_sw_zero_company_retained_dedicated_ui_targets{};
+std::atomic<FRHITexture2D*> g_sw_zero_company_active_dedicated_ui_target{};
+
 std::optional<uintptr_t> ue55_find_texture_desc_offset(FRHITexture2D* texture) {
     if (texture == nullptr || IsBadReadPtr(texture, sizeof(void*))) {
         return std::nullopt;
@@ -26925,6 +26967,16 @@ void FFakeStereoRenderingHook::slate_output_texture_register_hook_impl(safetyhoo
         return;
     }
 
+    if (sw_zero_company_ue56_is_current_game() &&
+        !rtm->is_sw_zero_company_dedicated_ui_target_prepared(ui_target))
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[SWZeroCompany][UE5.6][SlateUI] Preserving the original SlateOutputTexture because the dedicated target is not retained and resident: {:x}",
+            reinterpret_cast<uintptr_t>(ui_target));
+        return;
+    }
+
     const auto desc = ue55_try_get_d3d12_desc(ui_target, "dedicated UI target at SlateOutputTexture");
     if (!desc) {
         SPDLOG_INFO_EVERY_N_SEC(1, "{} dedicated UI target is not a valid D3D12 texture yet: {:x}", tag, (uintptr_t)ui_target);
@@ -32893,6 +32945,17 @@ void VRRenderTargetManager_Base::destroy_scene_capture() {
 }
 
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        auto* expected = static_cast<FRHITexture2D*>(dedicated_ui_target);
+        if (expected != nullptr) {
+            g_sw_zero_company_active_dedicated_ui_target.compare_exchange_strong(
+                expected,
+                nullptr,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire);
+        }
+    }
+
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
         auto rooted_texture = dedicated_ui_texture;
 
@@ -33031,17 +33094,203 @@ void VRRenderTargetManager_Base::retain_everspace2_dedicated_ui_target(FRHITextu
         everspace2_retained_dedicated_ui_targets.size());
 }
 
+bool VRRenderTargetManager_Base::is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const {
+    if (!sw_zero_company_ue56_is_current_game() || !is_ue_5_6_dx12_backend()) {
+        return true;
+    }
+
+    return rt != nullptr &&
+        g_sw_zero_company_active_dedicated_ui_target.load(std::memory_order_acquire) == rt;
+}
+
+bool VRRenderTargetManager_Base::prepare_sw_zero_company_dedicated_ui_target(
+    FRHITexture2D* rt,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!sw_zero_company_ue56_is_current_game() ||
+        !is_ue_5_6_dx12_backend() ||
+        rt == nullptr ||
+        width == 0 ||
+        height == 0 ||
+        IsBadReadPtr(rt, sizeof(void*)))
+    {
+        return false;
+    }
+
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+    if (!ue55_dx12_try_get_native_resource_direct(
+            rt,
+            "SWZeroCompany synthetic dedicated UI target",
+            &native,
+            &desc) ||
+        native == nullptr)
+    {
+        return false;
+    }
+
+    ID3D12Device4* resource_device_raw{};
+    if (!get_d3d12_resource_device_guarded(native, &resource_device_raw)) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    resource_device.Attach(resource_device_raw);
+    ID3D12Device4* expected_device{};
+    if (g_framework != nullptr) {
+        const auto& d3d12_hook = g_framework->get_d3d12_hook();
+        expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+    }
+    const bool bgra_compatible =
+        desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+    const bool valid =
+        expected_device != nullptr &&
+        resource_device.Get() == expected_device &&
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        desc.Width == width &&
+        desc.Height == height &&
+        desc.DepthOrArraySize == 1 &&
+        desc.MipLevels == 1 &&
+        desc.SampleDesc.Count == 1 &&
+        desc.SampleDesc.Quality == 0 &&
+        desc.Layout == D3D12_TEXTURE_LAYOUT_UNKNOWN &&
+        bgra_compatible &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+
+    if (!valid) {
+        SPDLOG_WARN(
+            "[SWZeroCompany][UE5.6][SlateUI] Refusing dedicated UI residency pin: rhi={:x} native={:x} device_match={} dim={} size={}x{} expected={}x{} mips={} array={} samples={} format={} flags=0x{:x}",
+            reinterpret_cast<uintptr_t>(rt),
+            reinterpret_cast<uintptr_t>(native),
+            expected_device != nullptr && resource_device.Get() == expected_device,
+            static_cast<uint32_t>(desc.Dimension),
+            desc.Width,
+            desc.Height,
+            width,
+            height,
+            desc.MipLevels,
+            desc.DepthOrArraySize,
+            desc.SampleDesc.Count,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+        return false;
+    }
+
+    {
+        std::scoped_lock lock{g_sw_zero_company_dedicated_ui_lifetime_mutex};
+        for (const auto& retained : g_sw_zero_company_retained_dedicated_ui_targets) {
+            if (retained.rhi_texture == rt && retained.native_resource == native)
+            {
+                g_sw_zero_company_active_dedicated_ui_target.store(rt, std::memory_order_release);
+                return true;
+            }
+        }
+
+        constexpr size_t max_retained_targets = 8;
+        if (g_sw_zero_company_retained_dedicated_ui_targets.size() >= max_retained_targets) {
+            SPDLOG_ERROR(
+                "[SWZeroCompany][UE5.6][SlateUI] Refusing dedicated UI generation because the bounded process-lifetime residency pool is full ({})",
+                max_retained_targets);
+            return false;
+        }
+    }
+
+    HRESULT priority_result{};
+    HRESULT residency_result{};
+    if (!make_d3d12_resource_resident_guarded(
+            expected_device,
+            native,
+            priority_result,
+            residency_result))
+    {
+        SPDLOG_ERROR(
+            "[SWZeroCompany][UE5.6][SlateUI] Refusing dedicated UI target after residency preparation failed: rhi={:x} native={:x} priority_hr=0x{:08x} resident_hr=0x{:08x}",
+            reinterpret_cast<uintptr_t>(rt),
+            reinterpret_cast<uintptr_t>(native),
+            static_cast<uint32_t>(priority_result),
+            static_cast<uint32_t>(residency_result));
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> retained_native{native};
+
+    {
+        std::scoped_lock lock{g_sw_zero_company_dedicated_ui_lifetime_mutex};
+        for (const auto& retained : g_sw_zero_company_retained_dedicated_ui_targets) {
+            if (retained.rhi_texture == rt && retained.native_resource == native)
+            {
+                g_sw_zero_company_active_dedicated_ui_target.store(rt, std::memory_order_release);
+                return true;
+            }
+        }
+
+        constexpr size_t max_retained_targets = 8;
+        if (g_sw_zero_company_retained_dedicated_ui_targets.size() >= max_retained_targets) {
+            return false;
+        }
+
+        // Queued Slate and private OpenXR command lists outlive renderer and
+        // resolution generations. Deliberately retain both wrappers until
+        // process exit; the bounded pool prevents unbounded resize churn.
+        rt->add_ref();
+        g_sw_zero_company_retained_dedicated_ui_targets.emplace_back(
+            SWZeroCompanyDedicatedUITargetPin{
+                .rhi_texture = rt,
+                .native_resource = retained_native.Detach(),
+                .width = width,
+                .height = height,
+            });
+        g_sw_zero_company_active_dedicated_ui_target.store(rt, std::memory_order_release);
+
+        SPDLOG_WARN(
+            "[SWZeroCompany][UE5.6][SlateUI] Pinned and made resident dedicated UI target rhi={:x} native={:x} [{}x{} fmt={}] retained_count={}",
+            reinterpret_cast<uintptr_t>(rt),
+            reinterpret_cast<uintptr_t>(native),
+            desc.Width,
+            desc.Height,
+            static_cast<uint32_t>(desc.Format),
+            g_sw_zero_company_retained_dedicated_ui_targets.size());
+    }
+
+    return true;
+}
+
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
     if (rt != nullptr) {
         FRHITexture2D::set_vtable(*(void**)rt);
 
-        if (everspace2_is_current_game() && is_ue_5_5_dx12_backend()) {
+        if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+            if (!prepare_sw_zero_company_dedicated_ui_target(rt, width, height)) {
+                owned_dedicated_ui_target.reset();
+                dedicated_ui_target = nullptr;
+                dedicated_ui_width = width;
+                dedicated_ui_height = height;
+                dedicated_ui_creation_pending = false;
+                return;
+            }
+
+            owned_dedicated_ui_target.reset();
+        } else if (everspace2_is_current_game() && is_ue_5_5_dx12_backend()) {
             retain_everspace2_dedicated_ui_target(rt);
             owned_dedicated_ui_target.reset();
         } else {
             owned_dedicated_ui_target = std::make_unique<FTexture2DRHIRef>(*rt);
         }
     } else {
+        if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+            auto* expected = static_cast<FRHITexture2D*>(dedicated_ui_target);
+            if (expected != nullptr) {
+                g_sw_zero_company_active_dedicated_ui_target.compare_exchange_strong(
+                    expected,
+                    nullptr,
+                    std::memory_order_acq_rel,
+                    std::memory_order_acquire);
+            }
+        }
+
         owned_dedicated_ui_target.reset();
     }
 
