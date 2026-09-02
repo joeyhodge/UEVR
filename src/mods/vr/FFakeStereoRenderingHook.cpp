@@ -5238,6 +5238,124 @@ bool stalker2_uses_ue55_draw_windows_array_layout() {
     return result;
 }
 
+bool stalker2_uses_ue55_synced_scene_target(bool completed_game_viewport_draw) {
+    static const auto exe_path = utility::get_module_pathw(utility::get_executable());
+    static const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+    static const auto file_version = sdk::get_file_version_info();
+    const auto vr = VR::get();
+
+    return exe_path &&
+           uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               *exe_path,
+               detected_version,
+               file_version.dwFileVersionMS,
+               g_framework != nullptr && g_framework->is_dx12(),
+               vr != nullptr && vr->is_using_afr(),
+               completed_game_viewport_draw);
+}
+
+bool stalker2_validate_ue55_render_target_accessor(sdk::FViewport* viewport) {
+    if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
+        return false;
+    }
+
+    void** vtable{};
+    uintptr_t accessor{};
+
+    try {
+        vtable = *reinterpret_cast<void***>(viewport);
+        if (vtable == nullptr || IsBadReadPtr(vtable, sizeof(void*) * 3)) {
+            return false;
+        }
+
+        accessor = reinterpret_cast<uintptr_t>(vtable[2]);
+    } catch (...) {
+        return false;
+    }
+
+    static std::atomic<uintptr_t> validated_accessor{};
+    if (validated_accessor.load(std::memory_order_acquire) == accessor) {
+        return true;
+    }
+
+    const auto executable = utility::get_executable();
+    if (accessor == 0 ||
+        !is_executable_process_range(accessor, 1) ||
+        utility::get_module_within(reinterpret_cast<void*>(accessor)).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    std::unordered_set<uint32_t> this_aliases{NDR_RCX};
+    bool found_game_thread_ref{};
+    bool found_render_thread_ref{};
+    bool found_return{};
+    auto ip = accessor;
+    constexpr uintptr_t max_decode_bytes = 0x180;
+
+    while (ip < accessor + max_decode_bytes) {
+        const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
+        if (!decoded || decoded->Length == 0) {
+            break;
+        }
+
+        if (decoded->Instruction == ND_INS_MOV &&
+            decoded->OperandsCount >= 2 &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[1].Type == ND_OP_REG &&
+            this_aliases.contains(decoded->Operands[1].Info.Register.Reg))
+        {
+            this_aliases.insert(decoded->Operands[0].Info.Register.Reg);
+        }
+
+        if (decoded->Instruction == ND_INS_ADD &&
+            decoded->OperandsCount >= 2 &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[1].Type == ND_OP_IMM &&
+            this_aliases.contains(decoded->Operands[0].Info.Register.Reg))
+        {
+            const auto displacement = decoded->Operands[1].Info.Immediate.Imm;
+            found_game_thread_ref |= displacement == 0x8;
+            found_render_thread_ref |= displacement == 0x2d8;
+        }
+
+        if (decoded->Instruction == ND_INS_LEA &&
+            decoded->OperandsCount >= 2 &&
+            decoded->Operands[0].Type == ND_OP_REG &&
+            decoded->Operands[1].Type == ND_OP_MEM &&
+            decoded->Operands[1].Info.Memory.HasDisp &&
+            this_aliases.contains(decoded->Operands[1].Info.Memory.Base))
+        {
+            const auto displacement = decoded->Operands[1].Info.Memory.Disp;
+            found_game_thread_ref |= displacement == 0x8;
+            found_render_thread_ref |= displacement == 0x2d8;
+        }
+
+        if (decoded->Instruction == ND_INS_RETN) {
+            found_return = true;
+            break;
+        }
+
+        ip += decoded->Length;
+    }
+
+    if (!found_game_thread_ref || !found_render_thread_ref || !found_return) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Stalker2][UE5.5][SyncedRT] Refusing slot-2 accessor {:x}: game_ref={} render_ref={} return={}",
+            accessor,
+            found_game_thread_ref,
+            found_render_thread_ref,
+            found_return);
+        return false;
+    }
+
+    validated_accessor.store(accessor, std::memory_order_release);
+    SPDLOG_INFO_ONCE(
+        "[Stalker2][UE5.5][SyncedRT] Validated FRenderTarget slot 2 with +0x8 game-thread and +0x2d8 render-thread storage");
+    return true;
+}
+
 bool stalker2_uses_validated_ue55_native_fix_capture_layout() {
     static const bool exact_runtime = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -15714,7 +15832,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         pokemon_emerald_is_current_game() && is_ue_5_6_dx12_backend();
     const bool sw_zero_company_ue56_dx12_viewport_adoption =
         sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend();
-    const bool allow_scene_viewport_rt_adoption =
+    const bool stalker2_ue55_dx12_viewport_observation =
+        stalker2_uses_ue55_draw_windows_array_layout() && g_framework->is_dx12();
+    bool allow_scene_viewport_rt_adoption =
         dune_viewport_adoption || ue58_viewport_adoption ||
         naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
         pokemon_emerald_ue56_dx12_viewport_adoption ||
@@ -15731,7 +15851,9 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                         ? "[PokemonEmerald][UE5.6][RT]"
                         : (sw_zero_company_ue56_dx12_viewport_adoption
                             ? "[SWZeroCompany][UE5.6][RT]"
-                            : "[SHf]")))));
+                            : (stalker2_ue55_dx12_viewport_observation
+                                ? "[Stalker2][UE5.5][SyncedRT]"
+                                : "[SHf]"))))));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
@@ -15749,6 +15871,21 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (vr == nullptr || !vr->is_hmd_active() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
         return;
     }
+
+    const bool is_stalker2_post_draw =
+        stalker2_ue55_dx12_viewport_observation &&
+        source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw post") == 0;
+    const bool stalker2_ue55_synced_viewport_adoption =
+        stalker2_uses_ue55_synced_scene_target(is_stalker2_post_draw);
+
+    // Stalker 2's completed-Draw accessor is specific to Synced Sequential.
+    // Native and Native Fix retain their already-working render-target path.
+    if (stalker2_ue55_dx12_viewport_observation && !stalker2_ue55_synced_viewport_adoption) {
+        return;
+    }
+
+    allow_scene_viewport_rt_adoption |= stalker2_ue55_synced_viewport_adoption;
 
     auto rtm = get_render_target_manager();
 
@@ -15819,6 +15956,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         sw_zero_company_ue56_dx12_viewport_adoption &&
         source != nullptr &&
         std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
+    const bool is_stalker2_viewport_refresh = stalker2_ue55_synced_viewport_adoption;
 
     if (!everspace2_direct_observation &&
         current_target != nullptr &&
@@ -15827,7 +15965,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         !is_naruto_viewport_refresh &&
         !is_dead_island_2_viewport_refresh &&
         !is_pokemon_emerald_viewport_refresh &&
-        !is_sw_zero_company_viewport_refresh)
+        !is_sw_zero_company_viewport_refresh &&
+        !is_stalker2_viewport_refresh)
     {
         return;
     }
@@ -15838,13 +15977,26 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (everspace2_direct_observation) {
         everspace2_candidate = everspace2_get_scene_viewport_texture(viewport);
         candidate = everspace2_candidate ? everspace2_candidate->texture : nullptr;
-    } else if (ue58_viewport_adoption || naruto_ue416_dx11_viewport_adoption) {
+    } else if (ue58_viewport_adoption ||
+               naruto_ue416_dx11_viewport_adoption ||
+               stalker2_ue55_synced_viewport_adoption)
+    {
         if (!sdk::FRenderTarget::update_get_render_target_texture_index(viewport)) {
             SPDLOG_WARNING_EVERY_N_SEC(
                 2,
                 "{} Failed to resolve FRenderTarget::GetRenderTargetTexture from {}",
                 log_prefix,
                 source_name);
+            return;
+        }
+
+        if (stalker2_ue55_synced_viewport_adoption &&
+            (sdk::FRenderTarget::get_render_target_texture_index() != 2 ||
+             !stalker2_validate_ue55_render_target_accessor(viewport)))
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UE5.5][SyncedRT] Refusing an unvalidated FRenderTarget accessor after Draw");
             return;
         }
 
@@ -15980,6 +16132,52 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (everspace2_candidate) {
         native_resource = everspace2_candidate->native_resource.Get();
         desc = everspace2_candidate->desc;
+    } else if (stalker2_ue55_synced_viewport_adoption) {
+        if (!ue55_dx12_try_get_native_resource_direct(candidate, source_name, &native_resource, &desc)) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Stalker2][UE5.5][SyncedRT] Completed Draw has no validated D3D12 scene texture yet");
+            return;
+        }
+
+        ID3D12Device4* resource_device_raw{};
+        if (!get_d3d12_resource_device_guarded(native_resource, &resource_device_raw)) {
+            return;
+        }
+
+        Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+        resource_device.Attach(resource_device_raw);
+        const auto& d3d12_hook = g_framework->get_d3d12_hook();
+        const auto expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+        const bool valid_resource =
+            expected_device != nullptr &&
+            resource_device.Get() == expected_device &&
+            desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            desc.Width > 0 && desc.Width <= 65536 &&
+            desc.Height > 0 && desc.Height <= 65536 &&
+            desc.DepthOrArraySize == 1 &&
+            desc.MipLevels == 1 &&
+            desc.SampleDesc.Count == 1 &&
+            desc.Format != DXGI_FORMAT_UNKNOWN &&
+            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+            (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0;
+
+        if (!valid_resource) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UE5.5][SyncedRT] Rejected Draw target native={:x}: device_match={} dim={} size={}x{} array={} mips={} samples={} fmt={} flags=0x{:x}",
+                reinterpret_cast<uintptr_t>(native_resource),
+                expected_device != nullptr && resource_device.Get() == expected_device,
+                static_cast<uint32_t>(desc.Dimension),
+                desc.Width,
+                desc.Height,
+                desc.DepthOrArraySize,
+                desc.MipLevels,
+                desc.SampleDesc.Count,
+                static_cast<uint32_t>(desc.Format),
+                static_cast<uint32_t>(desc.Flags));
+            return;
+        }
     } else if (is_ue_5_6_dx12_backend()) {
         const bool is_known_viewport_source =
             source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
@@ -16118,15 +16316,25 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (ue58_viewport_adoption ||
         naruto_ue416_dx11_viewport_adoption ||
         dead_island_2_ue425_dx12_viewport_adoption ||
-        sw_zero_company_ue56_dx12_viewport_adoption)
+        sw_zero_company_ue56_dx12_viewport_adoption ||
+        stalker2_ue55_synced_viewport_adoption)
     {
         // Dead Island keeps its engine-owned side-by-side target in Synced
         // Sequential. Only Naruto transitions to a single-eye source in AFR.
         const auto expected_width = (uint64_t)vr->get_hmd_width() *
-            (naruto_ue416_dx11_viewport_adoption && vr->is_using_afr() ? 1ull : 2ull);
+            ((naruto_ue416_dx11_viewport_adoption && vr->is_using_afr()) ||
+             stalker2_ue55_synced_viewport_adoption
+                ? 1ull
+                : 2ull);
+        const auto alternate_expected_width = stalker2_ue55_synced_viewport_adoption
+            ? expected_width * 2ull
+            : expected_width;
         const auto expected_height = (uint64_t)vr->get_hmd_height();
+        const bool expected_extent =
+            (native_width == expected_width || native_width == alternate_expected_width) &&
+            native_height == expected_height;
 
-        if (native_width != expected_width || native_height != expected_height) {
+        if (!expected_extent) {
             rtm->reset_ue58_scene_target_observation();
 
             if (sw_zero_company_ue56_dx12_viewport_adoption) {
@@ -16145,7 +16353,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
 
             SPDLOG_INFO_EVERY_N_SEC(
                 2,
-                "{} Waiting for completed VR-sized FSceneViewport target from {}; observed {:x} native={:x} [{}x{} fmt={}], expected [{}x{}]",
+                "{} Waiting for completed VR-sized FSceneViewport target from {}; observed {:x} native={:x} [{}x{} fmt={}], expected widths {} or {} and height {}",
                 log_prefix,
                 source_name,
                 (uintptr_t)candidate,
@@ -16154,6 +16362,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 native_height,
                 native_format,
                 expected_width,
+                alternate_expected_width,
                 expected_height);
             return;
         }
@@ -16209,6 +16418,26 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         // D3D12 consumers use the COM-owned resource snapshot and never ask
         // UESDK to rediscover a virtual slot on this game-specific wrapper.
         rtm->set_render_target(candidate);
+        return;
+    }
+
+    if (stalker2_ue55_synced_viewport_adoption) {
+        if (candidate == rtm->get_dedicated_ui_target()) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UE5.5][SyncedRT] Rejected the dedicated UI texture at the scene source");
+            return;
+        }
+
+        if (!rtm->publish_stalker2_scene_target_snapshot(candidate, native_resource, desc)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UE5.5][SyncedRT] Failed to publish the validated completed-Draw scene target");
+            return;
+        }
+
+        // Synced consumes the COM-owned snapshot directly. Do not replace the
+        // normal RTM pointer used by Native and Native Fix.
         return;
     }
 
@@ -16505,7 +16734,8 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // immediately after Draw rather than retaining the allocation-time ref.
         if (everspace2_is_current_game() || is_ue_5_8() ||
             (dead_island_2_ue425_is_current_game() && g_framework->is_dx12()) ||
-            (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11())) {
+            (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11()) ||
+            stalker2_uses_ue55_draw_windows_array_layout()) {
             g_hook->try_adopt_scene_viewport_render_target(
                 viewport,
                 "UGameViewportClient::Draw post");
@@ -31877,6 +32107,64 @@ bool VRRenderTargetManager_Base::publish_sw_zero_company_scene_target_snapshot(
 
     SPDLOG_INFO(
         "[SWZeroCompany][UE5.6][SceneTargetSnapshot] publish generation={} rhi={:x} native={:x} previous_generation={} size={}x{} format={} flags=0x{:x}",
+        next->generation,
+        reinterpret_cast<uintptr_t>(source_texture),
+        reinterpret_cast<uintptr_t>(resource),
+        previous != nullptr ? previous->generation : 0,
+        desc.Width,
+        desc.Height,
+        static_cast<uint32_t>(desc.Format),
+        static_cast<uint32_t>(desc.Flags));
+
+    return true;
+}
+
+bool VRRenderTargetManager_Base::publish_stalker2_scene_target_snapshot(
+    FRHITexture2D* source_texture,
+    ID3D12Resource* resource,
+    const D3D12_RESOURCE_DESC& desc)
+{
+    if (source_texture == nullptr ||
+        resource == nullptr ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width == 0 ||
+        desc.Height == 0 ||
+        desc.DepthOrArraySize != 1 ||
+        desc.MipLevels != 1 ||
+        desc.SampleDesc.Count != 1 ||
+        desc.Format == DXGI_FORMAT_UNKNOWN ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0)
+    {
+        return false;
+    }
+
+    const auto current = stalker2_scene_target_snapshot.load(std::memory_order_acquire);
+    if (current != nullptr &&
+        current->source_texture == reinterpret_cast<uintptr_t>(source_texture) &&
+        current->resource.Get() == resource &&
+        current->desc.Width == desc.Width &&
+        current->desc.Height == desc.Height &&
+        current->desc.Format == desc.Format)
+    {
+        return true;
+    }
+
+    auto next = std::make_shared<Stalker2D3D12SceneTargetSnapshot>();
+    next->resource = resource;
+    next->desc = desc;
+    next->source_texture = reinterpret_cast<uintptr_t>(source_texture);
+    next->generation = stalker2_scene_target_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    if (next->resource == nullptr) {
+        return false;
+    }
+
+    const auto previous =
+        stalker2_scene_target_snapshot.exchange(next, std::memory_order_acq_rel);
+
+    SPDLOG_INFO(
+        "[Stalker2][UE5.5][SyncedRT] Published generation={} rhi={:x} native={:x} previous_generation={} size={}x{} format={} flags=0x{:x}",
         next->generation,
         reinterpret_cast<uintptr_t>(source_texture),
         reinterpret_cast<uintptr_t>(resource),
