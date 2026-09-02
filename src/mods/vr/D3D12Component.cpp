@@ -294,7 +294,8 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     VR* vr,
     const char* consumer,
     bool* from_everspace2_snapshot = nullptr,
-    bool* from_sw_zero_company_snapshot = nullptr)
+    bool* from_sw_zero_company_snapshot = nullptr,
+    bool* from_stalker2_snapshot = nullptr)
 {
     if (from_everspace2_snapshot != nullptr) {
         *from_everspace2_snapshot = false;
@@ -302,6 +303,10 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
 
     if (from_sw_zero_company_snapshot != nullptr) {
         *from_sw_zero_company_snapshot = false;
+    }
+
+    if (from_stalker2_snapshot != nullptr) {
+        *from_stalker2_snapshot = false;
     }
 
     if (vr == nullptr) {
@@ -316,6 +321,71 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     const auto rtm = fake_stereo_hook->get_render_target_manager();
     if (rtm == nullptr) {
         return nullptr;
+    }
+
+    static const bool stalker2_ue55_runtime = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_stalker2_ue55_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
+    }();
+
+    if (stalker2_ue55_runtime && g_framework->is_dx12() && vr->is_using_afr()) {
+        const auto snapshot = rtm->get_stalker2_scene_target_snapshot();
+        const auto eye_width = static_cast<uint64_t>(vr->get_hmd_width());
+        const auto expected_height = static_cast<uint32_t>(vr->get_hmd_height());
+        const bool valid_extent =
+            eye_width != 0 &&
+            expected_height != 0 &&
+            snapshot != nullptr &&
+            (snapshot->desc.Width == eye_width || snapshot->desc.Width == eye_width * 2ull) &&
+            snapshot->desc.Height == expected_height;
+        const bool valid_snapshot =
+            valid_extent &&
+            snapshot->resource != nullptr &&
+            snapshot->source_texture != 0 &&
+            snapshot->desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+            snapshot->desc.DepthOrArraySize == 1 &&
+            snapshot->desc.MipLevels == 1 &&
+            snapshot->desc.SampleDesc.Count == 1 &&
+            snapshot->desc.Format != DXGI_FORMAT_UNKNOWN &&
+            (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+            (snapshot->desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0;
+
+        if (!valid_snapshot) {
+            SPDLOG_INFO_EVERY_N_SEC(
+                1,
+                "[Stalker2][UE5.5][SyncedRT] {} waiting for a validated completed-Draw scene snapshot; observed={}x{} expected={} or {} x {}",
+                consumer != nullptr ? consumer : "<unknown>",
+                snapshot != nullptr ? snapshot->desc.Width : 0,
+                snapshot != nullptr ? snapshot->desc.Height : 0,
+                eye_width,
+                eye_width * 2ull,
+                expected_height);
+            return nullptr;
+        }
+
+        if (from_stalker2_snapshot != nullptr) {
+            *from_stalker2_snapshot = true;
+        }
+
+        SPDLOG_INFO_EVERY_N_SEC(
+            5,
+            "[Stalker2][UE5.5][SyncedRT] {} consuming generation={} rhi={:x} native={:x} size={}x{}",
+            consumer != nullptr ? consumer : "<unknown>",
+            snapshot->generation,
+            snapshot->source_texture,
+            reinterpret_cast<uintptr_t>(snapshot->resource.Get()),
+            snapshot->desc.Width,
+            snapshot->desc.Height);
+        return snapshot->resource;
     }
 
     if (is_sw_zero_company_ue56_dx12_current_game()) {
@@ -1702,11 +1772,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     ComPtr<ID3D12Resource> backbuffer{};
     ComPtr<ID3D12Resource> real_backbuffer{};
     bool sw_zero_company_validated_scene_target{};
+    bool stalker2_validated_synced_scene_target{};
     backbuffer = acquire_scene_target_resource(
         vr,
         "D3D12Component::on_frame",
         nullptr,
-        &sw_zero_company_validated_scene_target);
+        &sw_zero_company_validated_scene_target,
+        &stalker2_validated_synced_scene_target);
 
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
         spdlog::error("[VR] Failed to get real back buffer.");
@@ -1794,11 +1866,17 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_stalker2_ue55_synced_external_backbuffer =
+        stalker2_validated_synced_scene_target &&
+        backbuffer.Get() != nullptr &&
+        real_backbuffer.Get() != nullptr &&
+        backbuffer.Get() != real_backbuffer.Get();
     // Volatile engine-owned viewport targets must not be retained as UEVR view
     // resources. Copy them into an owned texture and restore the engine's state.
     const auto use_stable_external_backbuffer_copy =
         is_shf_external_backbuffer ||
         is_stalker2_ue51_external_backbuffer ||
+        is_stalker2_ue55_synced_external_backbuffer ||
         is_dune_external_backbuffer ||
         is_dead_island_2_ue425_external_backbuffer ||
         is_sw_zero_company_ue56_external_backbuffer;
@@ -1809,30 +1887,35 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         (is_shf_external_backbuffer ||
          is_dune_external_backbuffer ||
          is_dead_island_2_ue425_external_backbuffer ||
-         is_sw_zero_company_ue56_external_backbuffer)
+         is_sw_zero_company_ue56_external_backbuffer ||
+         is_stalker2_ue55_synced_external_backbuffer)
             ? ENGINE_SRC_COLOR
             : D3D12_RESOURCE_STATE_RENDER_TARGET;
     const char* stable_external_copy_label =
         is_dune_external_backbuffer ? "Dune" :
         is_dead_island_2_ue425_external_backbuffer ? "DeadIsland2 UE4.25" :
         is_sw_zero_company_ue56_external_backbuffer ? "SWZeroCompany UE5.6" :
+        is_stalker2_ue55_synced_external_backbuffer ? "Stalker2 UE5.5 Synced" :
         is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
     const wchar_t* stable_external_copy_name =
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy" :
         is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy" :
+        is_stalker2_ue55_synced_external_backbuffer ? L"Stalker2 UE5.5 Synced Stable Scene Copy" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
     const wchar_t* stable_external_copy_command_name =
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy Commands" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy Commands" :
         is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy Commands" :
+        is_stalker2_ue55_synced_external_backbuffer ? L"Stalker2 UE5.5 Synced Stable Scene Copy Commands" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy Commands" : L"SHf Stable Scene Copy Commands";
     const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt =
         is_shf_external_backbuffer ||
         is_dune_external_backbuffer ||
         is_dead_island_2_ue425_external_backbuffer ||
-        is_sw_zero_company_ue56_external_backbuffer;
+        is_sw_zero_company_ue56_external_backbuffer ||
+        is_stalker2_ue55_synced_external_backbuffer;
     auto scene_source_state = use_stable_external_backbuffer_copy ? ENGINE_SRC_COLOR : D3D12_RESOURCE_STATE_RENDER_TARGET;
 
     if (is_stalker2_ue51_external_backbuffer) {
@@ -2292,11 +2375,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto source_desc = backbuffer->GetDesc();
             const auto needs_copy_texture =
                 m_game_tex.texture.Get() == nullptr ||
-                !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc);
+                !shf_texture_desc_matches(m_game_tex.texture->GetDesc(), source_desc) ||
+                (is_stalker2_ue55_synced_external_backbuffer &&
+                 m_game_tex.texture.Get() == real_backbuffer.Get());
 
             if (needs_copy_texture) {
                 if ((is_dune_external_backbuffer ||
-                     is_dead_island_2_ue425_external_backbuffer) &&
+                     is_dead_island_2_ue425_external_backbuffer ||
+                     is_stalker2_ue55_synced_external_backbuffer) &&
                     m_game_tex.texture.Get() != nullptr)
                 {
                     // Startup can use a desktop-sized copy before gameplay
@@ -2339,7 +2425,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 ComPtr<ID3D12Resource> stable_copy{};
                 const auto needs_concrete_stable_view =
                     is_dune_external_backbuffer ||
-                    is_dead_island_2_ue425_external_backbuffer;
+                    is_dead_island_2_ue425_external_backbuffer ||
+                    is_stalker2_ue55_synced_external_backbuffer;
                 const auto concrete_stable_view_format = needs_concrete_stable_view
                     ? concrete_color_view_format_for_resource(copy_desc.Format)
                     : std::optional<DXGI_FORMAT>{DXGI_FORMAT_B8G8R8A8_UNORM};
@@ -2400,7 +2487,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
                         stable_external_copy_label,
                         (is_dune_external_backbuffer ||
-                         is_dead_island_2_ue425_external_backbuffer)
+                         is_dead_island_2_ue425_external_backbuffer ||
+                         is_stalker2_ue55_synced_external_backbuffer)
                             ? "/mirror/2D using SRVMask source state"
                             : "/mirror/2D");
 
@@ -2414,7 +2502,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
             if (m_game_tex.texture.Get() == nullptr) {
                 if (is_dune_external_backbuffer ||
-                    is_dead_island_2_ue425_external_backbuffer)
+                    is_dead_island_2_ue425_external_backbuffer ||
+                    is_stalker2_ue55_synced_external_backbuffer)
                 {
                     SPDLOG_ERROR_EVERY_N_SEC(
                         1,
@@ -5055,11 +5144,13 @@ bool D3D12Component::setup() {
 
     ComPtr<ID3D12Resource> backbuffer{};
     bool sw_zero_company_validated_scene_target{};
+    bool stalker2_validated_synced_scene_target{};
     backbuffer = acquire_scene_target_resource(
         vr.get(),
         "D3D12Component::setup",
         nullptr,
-        &sw_zero_company_validated_scene_target);
+        &sw_zero_company_validated_scene_target,
+        &stalker2_validated_synced_scene_target);
 
     ComPtr<ID3D12Resource> real_backbuffer{};
     if (FAILED(swapchain->GetBuffer(swapchain->GetCurrentBackBufferIndex(), IID_PPV_ARGS(&real_backbuffer)))) {
@@ -5112,6 +5203,11 @@ bool D3D12Component::setup() {
     const auto real_backbuffer_desc = real_backbuffer->GetDesc();
 
     auto backbuffer_desc = backbuffer->GetDesc();
+    const bool stalker2_single_eye_synced_source =
+        stalker2_validated_synced_scene_target &&
+        vr->is_using_afr() &&
+        backbuffer_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) &&
+        backbuffer_desc.Height == vr->get_hmd_height();
 
     spdlog::info("[VR] D3D12 Real backbuffer width: {}, height: {}, format: {}", real_backbuffer_desc.Width, real_backbuffer_desc.Height, (uint32_t)real_backbuffer_desc.Format);
 
@@ -5119,7 +5215,10 @@ bool D3D12Component::setup() {
     backbuffer_desc.Flags &= ~D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE;
     backbuffer_desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
 
-    if (!vr->is_extreme_compatibility_mode_enabled() && !real_backbuffer_bootstrap) {
+    if (!vr->is_extreme_compatibility_mode_enabled() &&
+        !real_backbuffer_bootstrap &&
+        !stalker2_single_eye_synced_source)
+    {
         backbuffer_desc.Width /= 2; // The texture we get from UE is both eyes combined. we will copy the regions later.
     }
 
