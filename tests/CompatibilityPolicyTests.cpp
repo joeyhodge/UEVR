@@ -291,6 +291,22 @@ void test_version_gates() {
                L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005, true, true),
         "other UE5.5 Native Fix games must retain generic capture discovery");
 
+    expect(uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, true, true, true),
+        "Stalker2 UE5.5 Synced DX12 must use its completed-Draw scene target");
+    expect(!uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, true, false, true),
+        "Stalker2 Native must not enter the Synced scene-target path");
+    expect(!uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, false, true, true),
+        "Stalker2 DX11 must not inherit the DX12 scene-target path");
+    expect(!uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.5.4", 0, true, true, false),
+        "Stalker2 scene-target publication must wait for completed Draw");
+    expect(!uevr::games::should_use_stalker2_ue55_synced_scene_target(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005, true, true, true),
+        "other UE5.5 Synced games must retain generic scene-target handling");
+
     expect(uevr::games::should_use_storm_escape_ue561_native_fix_capture_layout(
                L"C:\\Games\\StormEscape-Win64-Shipping.exe", L"5.6.1", 0, 0, true, true),
         "StormEscape UE5.6.1 DX12 Native Fix must use its validated stock capture layout");
