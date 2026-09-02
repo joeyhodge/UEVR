@@ -1526,6 +1526,27 @@ bool medium_is_current_game() {
     return result;
 }
 
+bool hellblade_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lowered = *exe_path;
+        std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](wchar_t ch) {
+            return static_cast<wchar_t>(std::towlower(ch));
+        });
+
+        return lowered.ends_with(L"\\hellbladegame-win64-shipping.exe") ||
+               lowered.ends_with(L"/hellbladegame-win64-shipping.exe") ||
+               lowered == L"hellbladegame-win64-shipping.exe";
+    }();
+
+    return result;
+}
+
 bool observer_system_redux_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -8277,6 +8298,7 @@ bool indirect_virtual_call_returns_to(uintptr_t return_address, uint8_t slot_off
 
 constexpr uint8_t UE425_FRAME_NUMBER_OFFSET = 0x3C;
 constexpr uint8_t UE425PLUS_FRAME_NUMBER_OFFSET = 0x44;
+constexpr uint8_t HELLBLADE_UE425_FRAME_NUMBER_OFFSET = 0x48;
 constexpr uint8_t UE426_427_FRAME_NUMBER_OFFSET = 0x5C;
 
 bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
@@ -8290,7 +8312,8 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
     constexpr size_t DEFAULT_MIN_RENDERER_SIZE = 0x200;
     const auto uses_ue425_layout =
         frame_number_offset == UE425_FRAME_NUMBER_OFFSET ||
-        frame_number_offset == UE425PLUS_FRAME_NUMBER_OFFSET;
+        frame_number_offset == UE425PLUS_FRAME_NUMBER_OFFSET ||
+        frame_number_offset == HELLBLADE_UE425_FRAME_NUMBER_OFFSET;
     const auto minimum_size = uses_ue425_layout
         ? UE425_MIN_RENDERER_SIZE
         : DEFAULT_MIN_RENDERER_SIZE;
@@ -8327,8 +8350,9 @@ bool has_source_validated_ue4_begin_rendering_viewfamily_shape(
         }
 
         // Stock/SHCO UE4.25 uses +0x3c, the Medium and Observer System Redux
-        // UE4.25Plus forks use +0x44, and UE4.26/4.27 use +0x5c. Accept any
-        // compiler-selected base/source register, but reject a REX.W qword store.
+        // UE4.25Plus forks use +0x44, Hellblade uses +0x48, and UE4.26/4.27
+        // use +0x5c. Accept any compiler-selected base/source register, but
+        // reject a REX.W qword store.
         if (opcode == 0x89 &&
             (rex & 0x08) == 0 &&
             bytes[displacement_index] == frame_number_offset)
@@ -8447,7 +8471,7 @@ std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_vie
 
         if (parent_gap_is_covered) {
             SPDLOG_INFO_ONCE(
-                "[ObserverSystemRedux][ViewFamilySelector] Accepted a fully covered "
+                "[UE4.25][ViewFamilySelector] Accepted a fully covered "
                 "non-adjacent CHAININFO parent gap begin={:x} end={:x} root={:x}",
                 parent_end,
                 combined.begin,
@@ -8502,13 +8526,18 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     const auto medium_ue425plus = source_validated_ue425 && medium_is_current_game();
     const auto observer_ue425plus =
         source_validated_ue425 && observer_system_redux_is_current_game();
-    const auto custom_ue425plus_layout = medium_ue425plus || observer_ue425plus;
+    const auto hellblade_ue425 =
+        source_validated_ue425 && hellblade_is_current_game();
     const auto source_frame_number_offset = source_validated_ue425
-        ? (custom_ue425plus_layout
+        ? (hellblade_ue425
+            ? HELLBLADE_UE425_FRAME_NUMBER_OFFSET
+            : (medium_ue425plus || observer_ue425plus)
             ? UE425PLUS_FRAME_NUMBER_OFFSET
             : UE425_FRAME_NUMBER_OFFSET)
         : UE426_427_FRAME_NUMBER_OFFSET;
-    const auto source_runtime_label = observer_ue425plus
+    const auto source_runtime_label = hellblade_ue425
+        ? "Hellblade UE4.25"
+        : observer_ue425plus
         ? "Observer System Redux UE4.25Plus"
         : (medium_ue425plus
             ? "Medium UE4.25Plus"
@@ -8525,7 +8554,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             get_source_validated_ue4_begin_rendering_viewfamily_range(
                 direct_callback_return,
                 source_frame_number_offset,
-                observer_ue425plus);
+                observer_ue425plus || hellblade_ue425);
         const auto direct_candidate_valid =
             direct_candidate.has_value() &&
             direct_candidate->image_base == game_module;
@@ -8623,7 +8652,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
                 ? get_source_validated_ue4_begin_rendering_viewfamily_range(
                     stack[i],
                     source_frame_number_offset,
-                    observer_ue425plus)
+                    observer_ue425plus || hellblade_ue425)
                 : get_canonical_runtime_function_range(stack[i]);
             if (!candidate || candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
@@ -18739,14 +18768,21 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         if (capture_generation_ready) {
             const bool is_ue55_or_newer = is_ue_5_5_runtime() || is_ue_5_6_or_newer();
             const bool force_primary_constructor_pass = subnautica2_is_current_game();
+            const bool hellblade_preserve_secondary_pass =
+                hellblade_is_current_game() &&
+                is_ue_4_25_runtime() &&
+                g_framework != nullptr &&
+                g_framework->is_dx12();
             const bool preserve_secondary_pass =
-                is_ue55_or_newer &&
-                vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
-                !vr->should_force_native_stereo_fix_same_pass() &&
-                !force_primary_constructor_pass;
+                hellblade_preserve_secondary_pass ||
+                (is_ue55_or_newer &&
+                 vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
+                 !vr->should_force_native_stereo_fix_same_pass() &&
+                 !force_primary_constructor_pass);
             const bool use_primary_constructor_pass =
-                force_primary_constructor_pass ||
-                (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass);
+                !hellblade_preserve_secondary_pass &&
+                (force_primary_constructor_pass ||
+                 (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass));
 
             if (use_primary_constructor_pass) {
                 set_effective_stereo_pass(EStereoscopicPass::eSSP_PRIMARY);
@@ -18758,6 +18794,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     SPDLOG_INFO_ONCE(
                         "[NativeStereoFix] Relabeling the secondary eye as PRIMARY using the legacy same-pass path");
                 }
+            } else if (hellblade_preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE(
+                    "[Hellblade][NativeStereoFix] Preserving SECONDARY constructor pass for the engine's paired renderer");
             } else if (preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
@@ -21777,6 +21816,12 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             daysgone_offscreen_contract.original_values[2]);
     }
 
+    const bool use_hellblade_paired_renderer_transaction =
+        hellblade_is_current_game() &&
+        is_ue_4_25_runtime() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12();
+
     const auto runtime_frame_count = runtime->internal_frame_count;
 
     // The second render must consume the same runtime pose assignment as the
@@ -21809,7 +21854,11 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     // family array so auxiliary families keep their normal behavior.
     views.data[0] = native_left_view;
     views.data[1] = native_right_view;
-    views.count = 1;
+    views.count = use_hellblade_paired_renderer_transaction ? 2 : 1;
+    if (use_hellblade_paired_renderer_transaction) {
+        SPDLOG_INFO_ONCE(
+            "[Hellblade][NativeStereoFix] Preserving the validated two-view renderer topology for both target transactions");
+    }
     call_original();
 
     uint32_t daysgone_first_frame{};
@@ -21836,8 +21885,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
     // Render only the proven secondary view into the generation-owned target.
     view_family->set_render_target(rtfrt);
-    views.data[0] = native_right_view;
-    views.count = 1;
+    if (use_hellblade_paired_renderer_transaction) {
+        views.data[0] = native_left_view;
+        views.data[1] = native_right_view;
+        views.count = 2;
+    } else {
+        views.data[0] = native_right_view;
+        views.count = 1;
+    }
 
     if (use_daysgone_same_frame_render) {
         const char* failure_reason{};
@@ -25644,11 +25699,19 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     if (vr->is_native_stereo_fix_enabled()) {
+        const bool hellblade_preserve_native_pair_while_warming =
+            hellblade_is_current_game() &&
+            is_ue_4_25_runtime() &&
+            g_framework != nullptr &&
+            g_framework->is_dx12();
+        const auto unavailable_view_count =
+            hellblade_preserve_native_pair_while_warming ? 2u : 1u;
+
         if (g_hook->m_native_stereo_localplayer_bootstrap_failed.load(std::memory_order_acquire)) {
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::FailedClosed,
                 "source-validated LocalPlayer ViewStates bootstrap failed");
-            return 1;
+            return unavailable_view_count;
         }
 
         auto rtm = g_hook->get_render_target_manager();
@@ -25678,7 +25741,11 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::WaitingForHooks,
                 "constructor or BeginRenderingViewFamily hook is unavailable");
-            return 1;
+            if (hellblade_preserve_native_pair_while_warming) {
+                SPDLOG_INFO_ONCE(
+                    "[Hellblade][NativeStereoFix] Preserving the engine's two-view transaction while renderer hooks warm up");
+            }
+            return unavailable_view_count;
         }
 
         if (!scene_capture_rt_ready) {
@@ -25687,7 +25754,7 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
                 "capture target is initializing");
             rtm->create_scene_capture();
 
-            return 1;
+            return unavailable_view_count;
         }
 
         const auto native_fix_state =
