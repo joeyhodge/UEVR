@@ -86,6 +86,13 @@ public:
         uint64_t generation{};
     };
 
+    struct Stalker2D3D12SceneTargetSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+    };
+
     bool allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource);
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
@@ -150,6 +157,15 @@ public:
     std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot> get_sw_zero_company_scene_target_snapshot() const {
         return sw_zero_company_scene_target_snapshot.load(std::memory_order_acquire);
     }
+
+    std::shared_ptr<const Stalker2D3D12SceneTargetSnapshot> get_stalker2_scene_target_snapshot() const {
+        return stalker2_scene_target_snapshot.load(std::memory_order_acquire);
+    }
+
+    bool publish_stalker2_scene_target_snapshot(
+        FRHITexture2D* source_texture,
+        ID3D12Resource* resource,
+        const D3D12_RESOURCE_DESC& desc);
 
     bool publish_sw_zero_company_scene_target_snapshot(
         FRHITexture2D* source_texture,
@@ -396,6 +412,8 @@ protected:
     std::atomic<uint64_t> everspace2_scene_target_generation{};
     std::atomic<std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>> sw_zero_company_scene_target_snapshot{};
     std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
+    std::atomic<std::shared_ptr<const Stalker2D3D12SceneTargetSnapshot>> stalker2_scene_target_snapshot{};
+    std::atomic<uint64_t> stalker2_scene_target_generation{};
     std::atomic<uint64_t> sw_zero_company_desktop_extent{};
     std::atomic<std::shared_ptr<const SceneCaptureTargetSnapshot>> scene_capture_target_snapshot{};
     std::atomic<uint64_t> scene_capture_generation{};

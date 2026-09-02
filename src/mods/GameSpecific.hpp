@@ -73,6 +73,17 @@ inline bool should_use_stalker2_ue55_native_fix_capture_layout(
            is_stalker2_ue55_runtime(path, detected_version, file_version_ms);
 }
 
+inline bool should_use_stalker2_ue55_synced_scene_target(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    bool dx12,
+    bool synchronized_sequential,
+    bool completed_game_viewport_draw) {
+    return dx12 && synchronized_sequential && completed_game_viewport_draw &&
+           is_stalker2_ue55_runtime(path, detected_version, file_version_ms);
+}
+
 inline bool stalker2_native_fix_requires_same_pass(
     std::wstring_view path,
     std::wstring_view detected_version,
