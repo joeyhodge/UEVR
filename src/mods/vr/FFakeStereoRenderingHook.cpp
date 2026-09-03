@@ -5233,17 +5233,38 @@ bool stalker2_validate_ue55_render_target_accessor(sdk::FViewport* viewport) {
         return false;
     }
 
+    const auto function_start = utility::find_function_start_unwind(accessor);
+    const auto function_entry = utility::find_function_entry(accessor);
+    const auto module_base = reinterpret_cast<uintptr_t>(executable);
+    if (!function_start || !function_entry ||
+        *function_start != accessor ||
+        module_base + function_entry->BeginAddress != accessor)
+    {
+        return false;
+    }
+
+    const auto function_size = static_cast<size_t>(function_entry->EndAddress - function_entry->BeginAddress);
+    constexpr size_t min_accessor_size = 0x20;
+    constexpr size_t max_accessor_size = 0x180;
+    if (function_size < min_accessor_size || function_size > max_accessor_size ||
+        !is_executable_process_range(accessor, function_size))
+    {
+        return false;
+    }
+
     std::unordered_set<uint32_t> this_aliases{NDR_RCX};
     bool found_game_thread_ref{};
     bool found_render_thread_ref{};
     bool found_return{};
     auto ip = accessor;
-    constexpr uintptr_t max_decode_bytes = 0x180;
+    const auto decode_end = accessor + function_size;
 
-    while (ip < accessor + max_decode_bytes) {
+    // This accessor has multiple return blocks. Decode its complete unwind extent
+    // so a valid branch that follows the first RET is not rejected.
+    while (ip < decode_end) {
         const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
-        if (!decoded || decoded->Length == 0) {
-            break;
+        if (!decoded || decoded->Length == 0 || ip + decoded->Length > decode_end) {
+            return false;
         }
 
         if (decoded->Instruction == ND_INS_MOV &&
@@ -5280,7 +5301,6 @@ bool stalker2_validate_ue55_render_target_accessor(sdk::FViewport* viewport) {
 
         if (decoded->Instruction == ND_INS_RETN) {
             found_return = true;
-            break;
         }
 
         ip += decoded->Length;
