@@ -60,6 +60,8 @@ constexpr size_t STALKER2_PERSISTENT_PROPERTY_RESOLVE_BUDGET = 4;
 constexpr size_t STALKER2_CLASS_BROWSER_CLASS_CAP = 256;
 constexpr size_t STALKER2_CLASS_BROWSER_OBJECT_CAP = 128;
 
+bool is_uobject_array_member(sdk::UObjectBase* object);
+
 bool is_ue_5_1_uobjecthook_guard_enabled() {
     static const bool is_ue_5_1 = []() {
         const auto disk_version = sdk::get_file_version_info();
@@ -218,6 +220,10 @@ bool should_use_everwind_lazy_uobjecthook_startup() {
 
 bool is_stalker2_bulk_scene_component(sdk::USceneComponent* component) {
     if (!is_stalker2_uobjecthook_guard_enabled() || component == nullptr) {
+        return false;
+    }
+
+    if (!is_uobject_array_member(component)) {
         return false;
     }
 
@@ -398,7 +404,72 @@ std::optional<std::pair<int32_t, int32_t>> get_uobject_index_serial(sdk::UObject
         return std::nullopt;
     }
 
-    return std::pair{(int32_t)internal_index, item->get_serial_number()};
+    uint32_t serial_number{};
+
+    if (!safe_read_u32((uintptr_t)item + sdk::FUObjectArray::get_item_serial_number_offset(), serial_number)) {
+        return std::nullopt;
+    }
+
+    return std::pair{(int32_t)internal_index, (int32_t)serial_number};
+}
+
+bool is_current_uobject_identity(sdk::UObjectBase* object, int32_t internal_index, int32_t serial_number) {
+    if (object == nullptr || internal_index < 0) {
+        return false;
+    }
+
+    auto object_array = sdk::FUObjectArray::get();
+
+    if (object_array == nullptr) {
+        return false;
+    }
+
+    const auto object_count = object_array->get_object_count();
+
+    if (object_count <= 0 || internal_index >= object_count) {
+        return false;
+    }
+
+    auto item = object_array->get_object(internal_index);
+
+    if (item == nullptr || !is_readable_process_range((uintptr_t)item, sizeof(sdk::FUObjectItem))) {
+        return false;
+    }
+
+    uintptr_t item_object{};
+    uint32_t current_serial{};
+    uint32_t current_flags{};
+
+    if (sdk::FUObjectArray::uses_flags_and_refcount_layout()) {
+        uintptr_t flags_and_refcount{};
+
+        if (!safe_read_uintptr((uintptr_t)item + sdk::FUObjectArray::get_item_flags_offset(), flags_and_refcount)) {
+            return false;
+        }
+
+        current_flags = (uint32_t)(flags_and_refcount >> 32);
+    } else if (!safe_read_u32((uintptr_t)item + sdk::FUObjectArray::get_item_flags_offset(), current_flags)) {
+        return false;
+    }
+
+    return safe_read_uintptr((uintptr_t)item + sdk::FUObjectArray::get_item_object_offset(), item_object) &&
+        safe_read_u32((uintptr_t)item + sdk::FUObjectArray::get_item_serial_number_offset(), current_serial) &&
+        item_object == (uintptr_t)object &&
+        (int32_t)current_serial == serial_number &&
+        (current_flags & (1u << 29)) == 0;
+}
+
+bool is_live_uobject_array_member(sdk::UObjectBase* object) {
+    const auto identity = get_uobject_index_serial(object);
+    return identity.has_value() && is_current_uobject_identity(object, identity->first, identity->second);
+}
+
+bool is_current_stalker2_attachment(
+    sdk::USceneComponent* component,
+    const UObjectHook::MotionControllerState& state) {
+    return !is_stalker2_uobjecthook_guard_enabled() ||
+        (state.component_identity_valid &&
+         is_current_uobject_identity(component, state.component_internal_index, state.component_serial_number));
 }
 
 bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_address = nullptr) {
@@ -622,7 +693,8 @@ UObjectHook::MotionControllerState::~MotionControllerState() {
         GameThreadWorker::get().enqueue([vis = this->adjustment_visualizer]() {
             SPDLOG_INFO("[UObjectHook::MotionControllerState] Destroying adjustment visualizer for component {:x}", (uintptr_t)vis);
 
-            if (!UObjectHook::get()->exists(vis)) {
+            if (!UObjectHook::get()->exists(vis) ||
+                (is_stalker2_uobjecthook_guard_enabled() && !is_live_uobject_array_member(vis))) {
                 return;
             }
 
@@ -1360,16 +1432,38 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
         return nullptr;
     }
 
+    const auto stalker2_guard = is_stalker2_uobjecthook_guard_enabled();
+    std::optional<std::pair<int32_t, int32_t>> component_identity{};
+
+    if (stalker2_guard) {
+        component_identity = get_uobject_index_serial(component);
+
+        if (!component_identity.has_value() ||
+            !is_current_uobject_identity(component, component_identity->first, component_identity->second)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UObjectHook] Refusing motion-controller attachment without a current FUObjectArray identity: {:x}",
+                (uintptr_t)component);
+            return nullptr;
+        }
+    }
+
     {
         std::shared_lock _{m_mutex};
 
         if (const auto it = m_motion_controller_attached_components.find(component);
             it != m_motion_controller_attached_components.end()) {
-            return it->second;
+            if (!stalker2_guard ||
+                (it->second != nullptr &&
+                 it->second->component_identity_valid &&
+                 it->second->component_internal_index == component_identity->first &&
+                 it->second->component_serial_number == component_identity->second)) {
+                return it->second;
+            }
         }
     }
 
-    if (is_stalker2_uobjecthook_guard_enabled()) {
+    if (stalker2_guard) {
         // Stalker2 lazy mode skips the global AddObject hot path. Adopt objects
         // explicitly handed to the plugin API so profiles can rediscover their
         // dynamically-created controller components without a full array scan.
@@ -1384,10 +1478,26 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
 
     if (const auto it = m_motion_controller_attached_components.find(component);
         it != m_motion_controller_attached_components.end()) {
-        return it->second;
+        if (!stalker2_guard ||
+            (it->second != nullptr &&
+             it->second->component_identity_valid &&
+             it->second->component_internal_index == component_identity->first &&
+             it->second->component_serial_number == component_identity->second)) {
+            return it->second;
+        }
+
+        m_motion_controller_attached_components.erase(it);
+        m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(1, std::memory_order_relaxed);
     }
 
     auto result = std::make_shared<MotionControllerState>();
+
+    if (stalker2_guard) {
+        result->component_internal_index = component_identity->first;
+        result->component_serial_number = component_identity->second;
+        result->component_identity_valid = true;
+    }
+
     m_motion_controller_attached_components.emplace(component, result);
     return result;
 }
@@ -1915,6 +2025,16 @@ void UObjectHook::on_pre_calculate_stereo_view_offset(void* stereo_device, const
         m_last_camera_location = *view_location;
     }
 
+    if (m_camera_attach.object != nullptr &&
+        is_stalker2_uobjecthook_guard_enabled() &&
+        !is_live_uobject_array_member(m_camera_attach.object)) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[Stalker2][UObjectHook] Dropping stale camera attachment during world transition: {:x}",
+            (uintptr_t)m_camera_attach.object);
+        m_camera_attach.object = nullptr;
+    }
+
     if (m_camera_attach.object != nullptr) {
         if (m_camera_attach.object->is_a(sdk::AActor::static_class())) {
             const auto actor = (sdk::AActor*)m_camera_attach.object;
@@ -2036,36 +2156,35 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
         final_position = *view_location - offset1;
     }
 
-    auto with_mutex = [this](auto fn) {
+    auto comps = decltype(m_motion_controller_attached_components){};
+
+    if (!is_stalker2_uobjecthook_guard_enabled()) {
         std::shared_lock _{m_mutex};
-        auto result = fn();
-
-        return result;
-    };
-
-    auto comps = with_mutex([this]() -> decltype(m_motion_controller_attached_components) {
-        if (!is_stalker2_uobjecthook_guard_enabled()) {
-            return m_motion_controller_attached_components;
-        }
-
-        if (m_motion_controller_attached_components.size() <= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
-            return m_motion_controller_attached_components;
-        }
-
-        auto tickable = decltype(m_motion_controller_attached_components){};
-        tickable.reserve(m_motion_controller_attached_components.size());
+        comps = m_motion_controller_attached_components;
+    } else {
+        std::unique_lock _{m_mutex};
+        comps.reserve(m_motion_controller_attached_components.size());
 
         size_t bare_scene_components = 0;
         size_t skipped_bare_scene_components = 0;
+        size_t stale_attachment_prunes = 0;
 
-        for (const auto& [component, state] : m_motion_controller_attached_components) {
-            if (component == nullptr || state == nullptr || !exists_unsafe(component)) {
+        for (auto it = m_motion_controller_attached_components.begin();
+             it != m_motion_controller_attached_components.end();) {
+            const auto component = it->first;
+            const auto& state = it->second;
+
+            if (component == nullptr || state == nullptr || !exists_unsafe(component) ||
+                !is_current_stalker2_attachment(component, *state)) {
+                it = m_motion_controller_attached_components.erase(it);
+                ++stale_attachment_prunes;
                 continue;
             }
 
             if (is_stalker2_bulk_scene_component(component)) {
                 if (bare_scene_components >= STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
                     ++skipped_bare_scene_components;
+                    ++it;
                     continue;
                 }
 
@@ -2075,7 +2194,8 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
             // Typed components include weapon meshes and controller
             // components. Never suppress them just because unrelated bare
             // SceneComponent states exceeded the lazy-mode budget.
-            tickable.emplace(component, state);
+            comps.emplace(component, state);
+            ++it;
         }
 
         if (skipped_bare_scene_components != 0) {
@@ -2084,8 +2204,16 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
                 std::memory_order_relaxed);
         }
 
-        return tickable;
-    });
+        if (stale_attachment_prunes != 0) {
+            m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(
+                stale_attachment_prunes,
+                std::memory_order_relaxed);
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Stalker2][UObjectHook] Pruned {} stale motion-controller attachment identities during world transition",
+                stale_attachment_prunes);
+        }
+    }
 
     const auto is_using_controllers = vr->is_using_controllers();
     const auto has_any_head_components = std::any_of(comps.begin(), comps.end(), [](auto& it) { return it.second->hand == 2; });
@@ -2162,11 +2290,17 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
         left_hand_position, left_hand_euler, 
         right_hand_position, right_hand_euler);
 
+    const auto is_live_tracked_object = [this](sdk::UObjectBase* object) {
+        return object != nullptr &&
+            this->exists(object) &&
+            (!is_stalker2_uobjecthook_guard_enabled() || is_live_uobject_array_member(object));
+    };
+
     sdk::TArray<sdk::UPrimitiveComponent*> overlapped_components{};
     sdk::TArray<sdk::UPrimitiveComponent*> overlapped_components_left{};
 
     // Update overlapped components and overlap actor transform
-    if (m_overlap_detection_actor != nullptr && this->exists(m_overlap_detection_actor)) {
+    if (is_live_tracked_object(m_overlap_detection_actor)) {
         m_overlap_detection_actor->set_actor_location(right_hand_position, false, false);
         m_overlap_detection_actor->set_actor_rotation(right_hand_euler, false);
 
@@ -2176,7 +2310,7 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
     }
 
     // Update overlapped components and overlap actor transform (left)
-    if (m_overlap_detection_actor_left != nullptr && this->exists(m_overlap_detection_actor_left)) {
+    if (is_live_tracked_object(m_overlap_detection_actor_left)) {
         m_overlap_detection_actor_left->set_actor_location(left_hand_position, false, false);
         m_overlap_detection_actor_left->set_actor_rotation(left_hand_euler, false);
 
@@ -2282,16 +2416,28 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
     }
 
     for (auto& it : comps) {
-        if (!is_using_controllers && it.second->hand != 2) {
+        if (it.second == nullptr || (!is_using_controllers && it.second->hand != 2)) {
             continue;
         }
 
         auto comp = it.first;
-        if (!this->exists(comp) || it.second == nullptr) {
+        if (!this->exists(comp) || !is_current_stalker2_attachment(comp, *it.second)) {
+            if (is_stalker2_uobjecthook_guard_enabled()) {
+                remove_motion_controller_state(comp);
+                m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(1, std::memory_order_relaxed);
+            }
             continue;
         }
         
         auto& state = *it.second;
+
+        if (state.adjustment_visualizer != nullptr &&
+            is_stalker2_uobjecthook_guard_enabled() &&
+            !is_live_uobject_array_member(state.adjustment_visualizer)) {
+            std::unique_lock _{m_mutex};
+            state.adjustment_visualizer = nullptr;
+        }
+
         const auto orig_position = comp->get_world_location();
         const auto orig_rotation = comp->get_world_rotation();
 
@@ -2443,8 +2589,25 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
         }
 
         if (!state.permanent) {
-            GameThreadWorker::get().enqueue([this, comp, orig_position, orig_rotation]() {
-                if (!this->exists(comp)) {
+            const auto component_internal_index = state.component_internal_index;
+            const auto component_serial_number = state.component_serial_number;
+            const auto component_identity_valid = state.component_identity_valid;
+
+            GameThreadWorker::get().enqueue([
+                this,
+                comp,
+                orig_position,
+                orig_rotation,
+                component_internal_index,
+                component_serial_number,
+                component_identity_valid]() {
+                if (!this->exists(comp) ||
+                    (is_stalker2_uobjecthook_guard_enabled() &&
+                     (!component_identity_valid ||
+                      !is_current_uobject_identity(comp, component_internal_index, component_serial_number)))) {
+                    if (is_stalker2_uobjecthook_guard_enabled()) {
+                        remove_motion_controller_state(comp);
+                    }
                     return;
                 }
 
@@ -3152,17 +3315,39 @@ void UObjectHook::update_motion_controller_components(
         return;
     }
 
+    const auto stalker2_guard = is_stalker2_uobjecthook_guard_enabled();
+    const auto motion_controller_cdo = mc_c->get_class_default_object();
+
     for (auto obj : motion_controllers) {
         auto mc = (sdk::UMotionControllerComponent*)obj;
         if (!this->exists(mc)) {
             continue;
         }
 
-        if (mc == mc_c->get_class_default_object()) {
+        // Stalker 2 lazy mode can miss the destructor callback during a world
+        // transition. Validate FUObjectArray membership before touching any
+        // field on a pointer retained by the class index.
+        if (stalker2_guard) {
+            if (!is_live_uobject_array_member(mc) || !is_safe_uobject_candidate(*this, mc, true)) {
+                continue;
+            }
+
+            const auto current_class = mc->get_class();
+
+            if (current_class == nullptr || !current_class->is_a(mc_c)) {
+                continue;
+            }
+        }
+
+        if (mc == motion_controller_cdo) {
             continue;
         }
 
-        if (mc->get_outer() == nullptr || !this->exists(mc->get_outer())) {
+        const auto outer = mc->get_outer();
+
+        if (outer == nullptr ||
+            (stalker2_guard && !is_live_uobject_array_member(outer)) ||
+            !this->exists(outer)) {
             continue;
         }
 
@@ -3845,7 +4030,8 @@ void UObjectHook::draw_main() {
                 size_t bare_scene_components = 0;
 
                 for (const auto& [component, state] : m_motion_controller_attached_components) {
-                    if (component == nullptr || state == nullptr || !exists_unsafe(component)) {
+                    if (component == nullptr || state == nullptr || !exists_unsafe(component) ||
+                        !is_current_stalker2_attachment(component, *state)) {
                         continue;
                     }
 
@@ -3873,7 +4059,8 @@ void UObjectHook::draw_main() {
             }
 
             for (auto& it : attached) {
-                if (!this->exists_unsafe(it.first) || it.second == nullptr) {
+                if (!this->exists_unsafe(it.first) || it.second == nullptr ||
+                    !is_current_stalker2_attachment(it.first, *it.second)) {
                     continue;
                 }
 
@@ -3948,7 +4135,7 @@ void UObjectHook::draw_main() {
 
                 if (attach_all){ 
                     if (!m_motion_controller_attached_components.contains(comp)) {
-                        m_motion_controller_attached_components[comp] = std::make_shared<MotionControllerState>();
+                        get_or_add_motion_controller_state(comp);
                     }
                 }
 
@@ -4004,6 +4191,7 @@ void UObjectHook::draw_main() {
             const auto persistent_path_skips = m_stalker2_lazy_stats.persistent_path_skips.load(std::memory_order_relaxed);
             const auto persistent_budget_skips = m_stalker2_lazy_stats.persistent_budget_skips.load(std::memory_order_relaxed);
             const auto class_browser_suppressed = m_stalker2_lazy_stats.class_browser_suppressed.load(std::memory_order_relaxed);
+            const auto stale_attachment_prunes = m_stalker2_lazy_stats.stale_attachment_prunes.load(std::memory_order_relaxed);
             const bool full_scan_requested = m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed);
 
             ImGui::Separator();
@@ -4012,13 +4200,14 @@ void UObjectHook::draw_main() {
                 full_scan_requested ? " (full scan requested)" : "",
                 m_stalker2_class_browser_enabled ? "on" : "off");
             ImGui::Text(
-                "Stalker2 lazy skips: addobject=%llu persistent_bulk=%llu tick_bulk=%llu path=%llu budget=%llu class_ui=%llu",
+                "Stalker2 lazy skips: addobject=%llu persistent_bulk=%llu tick_bulk=%llu path=%llu budget=%llu class_ui=%llu stale_prunes=%llu",
                 addobject_skips,
                 persistent_bulk_skips,
                 tick_bulk_skips,
                 persistent_path_skips,
                 persistent_budget_skips,
-                class_browser_suppressed);
+                class_browser_suppressed,
+                stale_attachment_prunes);
 
             if (bulk_scene_attachments > STALKER2_BULK_SCENE_ATTACHMENT_CAP) {
                 ImGui::TextColored(
@@ -4637,22 +4826,25 @@ void UObjectHook::ui_handle_scene_component(sdk::USceneComponent* comp) {
     } else {
         if (m_camera_attach.object != comp) {
             if (ImGui::Button("Attach left")) {
-                m_motion_controller_attached_components[comp] = std::make_shared<MotionControllerState>();
-                m_motion_controller_attached_components[comp]->hand = 0;
+                if (const auto state = get_or_add_motion_controller_state(comp); state != nullptr) {
+                    state->hand = 0;
+                }
             }
 
             ImGui::SameLine();
 
             if (ImGui::Button("Attach right")) {
-                m_motion_controller_attached_components[comp] = std::make_shared<MotionControllerState>();
-                m_motion_controller_attached_components[comp]->hand = 1;
+                if (const auto state = get_or_add_motion_controller_state(comp); state != nullptr) {
+                    state->hand = 1;
+                }
             }
 
             ImGui::SameLine();
 
             if (ImGui::Button("Attach HMD")) {
-                m_motion_controller_attached_components[comp] = std::make_shared<MotionControllerState>();
-                m_motion_controller_attached_components[comp]->hand = 2;
+                if (const auto state = get_or_add_motion_controller_state(comp); state != nullptr) {
+                    state->hand = 2;
+                }
             }
 
             if (ImGui::Button("Attach Camera to")) {

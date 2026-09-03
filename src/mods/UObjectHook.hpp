@@ -158,6 +158,13 @@ public:
         // In-memory state
         sdk::AActor* adjustment_visualizer{nullptr};
         bool adjusting{false};
+
+        // Stalker 2 can miss UObject destruction notifications in lazy mode.
+        // Preserve the FUObjectArray identity so a recycled pointer is never
+        // treated as the component that was originally attached.
+        int32_t component_internal_index{-1};
+        int32_t component_serial_number{-1};
+        bool component_identity_valid{false};
     };
 
     std::shared_ptr<MotionControllerState> get_or_add_motion_controller_state(sdk::USceneComponent* component);
@@ -327,6 +334,7 @@ private:
         std::atomic<uint64_t> persistent_path_skips{};
         std::atomic<uint64_t> persistent_budget_skips{};
         std::atomic<uint64_t> class_browser_suppressed{};
+        std::atomic<uint64_t> stale_attachment_prunes{};
     } m_stalker2_lazy_stats{};
 
     std::unordered_map<sdk::UObjectBase*, DestroyedObjectTombstone> m_destroyed_object_tombstones{};
