@@ -354,6 +354,22 @@ void test_version_gates() {
     expect(!uevr::games::is_sw_zero_company_ue56_runtime(
                L"C:\\Games\\Other.exe", L"5.6.1", 0x00050006),
         "other UE5.6 games must not inherit the SWZeroCompany texture ABI");
+
+    expect(uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+               L"C:\\Games\\Bodycam-Win64-Shipping.exe", L"5.5.4", 0, 0, true),
+        "Bodycam UE5.5.4 DX12 must enter its validated scene-viewport texture layout");
+    expect(uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+               L"C:/Games/Bodycam-Win64-Shipping.exe", L"unknown", 0x00050005, 0x00040000, true),
+        "Bodycam must retain the exact 5.5.4 file-version fallback");
+    expect(!uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+               L"C:\\Games\\Bodycam-Win64-Shipping.exe", L"5.5.3", 0x00050005, 0x00040000, true),
+        "another Bodycam patch must fail the validated 5.5.4 layout closed");
+    expect(!uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+               L"C:\\Games\\Bodycam-Win64-Shipping.exe", L"5.5.4", 0, 0, false),
+        "Bodycam DX11 must retain the existing texture path");
+    expect(!uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+               L"C:\\Games\\Other-Win64-Shipping.exe", L"5.5.4", 0x00050005, 0x00040000, true),
+        "other UE5.5.4 games must not inherit the Bodycam viewport ABI");
 }
 
 void test_ue58_render_pose_fallback() {
