@@ -2104,6 +2104,156 @@ bool sw_zero_company_ue56_is_current_game() {
     return result;
 }
 
+bool bodycam_ue554_is_current_game() {
+    static const bool result = []() {
+        const auto executable = utility::get_executable();
+        const auto exe_path = utility::get_module_pathw(executable);
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(executable).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_bodycam_ue554_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS);
+    }();
+
+    return result;
+}
+
+std::optional<uintptr_t> resolve_bodycam_ue554_game_viewport_draw() {
+    if (!bodycam_ue554_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12())
+    {
+        return std::nullopt;
+    }
+
+    // Bodycam overrides UGameViewportClient::Draw without calling the stock
+    // implementation. The generic CanvasObject scan therefore finds both
+    // bodies and selects the unobserved base implementation. Prove the derived
+    // body by its exact prologue and its unique slot in the reflected viewport
+    // vtable before installing the hook.
+    constexpr std::string_view draw_signature{
+        "48 89 5C 24 20 55 56 57 41 54 41 55 41 56 41 57 "
+        "48 8D AC 24 40 F9 FF FF 48 81 EC C0 07 00 00 "
+        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 10 06 00 00 "
+        "48 8B F9 48 89 4D F0 48 81 C1 A8 02 00 00 "
+        "4C 89 44 24 78 49 8B F0 48 89 55 80 48 8B DA "
+        "C7 44 24 74 00 00 00 00"};
+    constexpr size_t draw_slot = 132;
+    constexpr size_t first_neighbor_slot = 126;
+    constexpr size_t last_neighbor_slot = 136;
+    constexpr size_t minimum_function_extent = 0x300;
+
+    const auto executable = utility::get_executable();
+    const auto module_size = utility::get_module_size(executable).value_or(0);
+    if (executable == nullptr || module_size < minimum_function_extent) {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][Draw] Executable range is unavailable");
+        return std::nullopt;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(executable);
+    if (module_size > std::numeric_limits<uintptr_t>::max() - module_base) {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][Draw] Executable range overflowed");
+        return std::nullopt;
+    }
+
+    const auto module_end = module_base + module_size;
+    const auto target = utility::scan(module_base, module_size, std::string{draw_signature});
+    if (!target ||
+        *target < module_base ||
+        *target > module_end - minimum_function_extent ||
+        !is_executable_process_range(*target, minimum_function_extent))
+    {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][Draw] Exact derived Draw signature was not found");
+        return std::nullopt;
+    }
+
+    const auto next_target = *target + 1;
+    if (next_target < module_end &&
+        utility::scan(next_target, module_end - next_target, std::string{draw_signature}).has_value())
+    {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][Draw] Exact derived Draw signature was not unique");
+        return std::nullopt;
+    }
+
+    const auto function_start = utility::find_function_start_unwind(*target);
+    if (!function_start || *function_start != *target) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][Draw] Signature {:x} is not an unwind-proven function start",
+            *target);
+        return std::nullopt;
+    }
+
+    const auto target_reference = utility::scan_ptr(executable, *target);
+    if (!target_reference ||
+        *target_reference < module_base + draw_slot * sizeof(uintptr_t) ||
+        *target_reference >= module_end)
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][Draw] Derived Draw {:x} has no valid module vtable reference",
+            *target);
+        return std::nullopt;
+    }
+
+    const auto next_reference = *target_reference + sizeof(uintptr_t);
+    if (next_reference < module_end &&
+        utility::scan_ptr(next_reference, module_end - next_reference, *target).has_value())
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][Draw] Derived Draw {:x} has ambiguous module references",
+            *target);
+        return std::nullopt;
+    }
+
+    const auto vtable_address = *target_reference - draw_slot * sizeof(uintptr_t);
+    const auto neighbor_address = vtable_address + first_neighbor_slot * sizeof(uintptr_t);
+    const auto neighbor_size =
+        (last_neighbor_slot - first_neighbor_slot + 1) * sizeof(uintptr_t);
+    if (utility::get_module_within(vtable_address).value_or(nullptr) != executable ||
+        !is_readable_process_range(neighbor_address, neighbor_size))
+    {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][Draw] Reconstructed viewport vtable is invalid");
+        return std::nullopt;
+    }
+
+    const auto* const vtable = reinterpret_cast<const uintptr_t*>(vtable_address);
+    for (size_t slot = first_neighbor_slot; slot <= last_neighbor_slot; ++slot) {
+        const auto entry = vtable[slot];
+        if (entry == 0 ||
+            utility::get_module_within(entry).value_or(nullptr) != executable ||
+            !is_executable_process_range(entry, 1))
+        {
+            SPDLOG_ERROR(
+                "[Bodycam][UE5.5.4][Draw] Rejected viewport vtable slot {} target {:x}",
+                slot,
+                entry);
+            return std::nullopt;
+        }
+    }
+
+    if (vtable[draw_slot] != *target) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][Draw] Vtable slot {} target {:x} does not match derived Draw {:x}",
+            draw_slot,
+            vtable[draw_slot],
+            *target);
+        return std::nullopt;
+    }
+
+    SPDLOG_INFO(
+        "[Bodycam][UE5.5.4][Draw] Resolved unique derived viewport Draw RVA 0x{:x} from vtable RVA 0x{:x} slot {}",
+        *target - module_base,
+        vtable_address - module_base,
+        draw_slot);
+    return target;
+}
+
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA = 0x3711F60;
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET = 0x7F;
 constexpr uintptr_t SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA = 0x307CB10;
@@ -5398,6 +5548,13 @@ bool stalker2_uses_validated_ue55_native_fix_capture_layout() {
            vr != nullptr && vr->is_native_stereo_fix_enabled();
 }
 
+bool bodycam_uses_validated_ue554_native_fix_capture_layout() {
+    const auto vr = VR::get();
+    return bodycam_ue554_is_current_game() &&
+           g_framework != nullptr && g_framework->is_dx12() &&
+           vr != nullptr && vr->is_native_stereo_fix_enabled();
+}
+
 bool storm_escape_uses_validated_ue561_native_fix_capture_layout() {
     static const bool exact_runtime = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -5797,6 +5954,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             everwind_is_current_game() ||
             pokemon_emerald_is_current_game() ||
             sw_zero_company_ue56_is_current_game() ||
+            bodycam_ue554_is_current_game() ||
             is_deadzone_ue56_executable()) &&
         g_framework != nullptr &&
         g_framework->is_dx12() &&
@@ -6470,6 +6628,213 @@ bool ue55_dx12_try_get_native_resource_direct(
     }
 
     return false;
+}
+
+constexpr std::string_view BODYCAM_UE554_SCENE_VIEWPORT_SOURCE =
+    "Bodycam FSceneViewport::InitRHI post";
+
+bool is_bodycam_ue554_scene_viewport_source(const char* source) {
+    return source != nullptr && std::string_view{source} == BODYCAM_UE554_SCENE_VIEWPORT_SOURCE;
+}
+
+FRHITexture2D* bodycam_ue554_get_scene_viewport_texture(
+    sdk::FViewport* viewport,
+    const char* source)
+{
+    // Bodycam UE5.5.4 uses the stock FViewport base layout. The FRenderTarget
+    // subobject starts at FViewport+0 and its TRefCountPtr texture is at +0x08.
+    constexpr uintptr_t render_target_texture_offset = 0x08;
+
+    if (!bodycam_ue554_is_current_game() ||
+        !is_ue_5_5_dx12_backend() ||
+        !is_bodycam_ue554_scene_viewport_source(source) ||
+        viewport == nullptr)
+    {
+        return nullptr;
+    }
+
+    const auto viewport_address = reinterpret_cast<uintptr_t>(viewport);
+    if (viewport_address + render_target_texture_offset < viewport_address ||
+        !is_readable_process_range(
+            viewport_address + render_target_texture_offset,
+            sizeof(FRHITexture2D*)))
+    {
+        return nullptr;
+    }
+
+    FRHITexture2D* texture{};
+    std::memcpy(
+        &texture,
+        reinterpret_cast<const void*>(viewport_address + render_target_texture_offset),
+        sizeof(texture));
+    return texture;
+}
+
+bool bodycam_ue554_dx12_validate_scene_texture(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native,
+    D3D12_RESOURCE_DESC* out_desc)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+
+    if (!bodycam_ue554_is_current_game() ||
+        !is_ue_5_5_dx12_backend() ||
+        !is_bodycam_ue554_scene_viewport_source(source) ||
+        texture == nullptr)
+    {
+        return false;
+    }
+
+    constexpr uintptr_t texture_desc_offset = 0x20;
+    constexpr uintptr_t texture_desc_size = 0x34;
+    constexpr size_t get_native_resource_slot = 4;
+    constexpr std::string_view get_native_resource_pattern{
+        "48 89 5C 24 08 57 48 83 EC 20 48 8B 81 B8 00 00 00 33 DB 48 8B F9 "
+        "48 85 C0 74 ? 48 8B 58 20 48 85 DB 75 ?"};
+
+    const auto texture_address = reinterpret_cast<uintptr_t>(texture);
+    if (texture_address + texture_desc_offset < texture_address ||
+        !is_readable_process_range(texture_address, sizeof(void*)) ||
+        !is_readable_process_range(
+            texture_address + texture_desc_offset,
+            texture_desc_size))
+    {
+        return false;
+    }
+
+    void** vtable{};
+    std::memcpy(&vtable, texture, sizeof(vtable));
+    if (vtable == nullptr ||
+        !is_readable_process_range(
+            reinterpret_cast<uintptr_t>(vtable),
+            sizeof(void*) * (get_native_resource_slot + 1)))
+    {
+        return false;
+    }
+
+    uintptr_t get_native_resource{};
+    std::memcpy(
+        &get_native_resource,
+        vtable + get_native_resource_slot,
+        sizeof(get_native_resource));
+
+    const auto executable = utility::get_executable();
+    if (get_native_resource == 0 ||
+        !is_executable_process_range(get_native_resource, 0x28) ||
+        utility::get_module_within(get_native_resource).value_or(nullptr) != executable)
+    {
+        return false;
+    }
+
+    try {
+        if (utility::scan(
+                get_native_resource,
+                0x40,
+                std::string{get_native_resource_pattern}).value_or(0) != get_native_resource)
+        {
+            return false;
+        }
+    } catch (...) {
+        return false;
+    }
+
+    const auto desc_address = texture_address + texture_desc_offset;
+    int32_t wrapper_width{};
+    int32_t wrapper_height{};
+    uint8_t wrapper_mips{};
+    uint8_t wrapper_samples{};
+    uint8_t wrapper_dimension{};
+    uint8_t wrapper_format{};
+    std::memcpy(&wrapper_width, reinterpret_cast<const void*>(desc_address + 0x24), sizeof(wrapper_width));
+    std::memcpy(&wrapper_height, reinterpret_cast<const void*>(desc_address + 0x28), sizeof(wrapper_height));
+    std::memcpy(&wrapper_mips, reinterpret_cast<const void*>(desc_address + 0x30), sizeof(wrapper_mips));
+    std::memcpy(&wrapper_samples, reinterpret_cast<const void*>(desc_address + 0x31), sizeof(wrapper_samples));
+    std::memcpy(&wrapper_dimension, reinterpret_cast<const void*>(desc_address + 0x32), sizeof(wrapper_dimension));
+    std::memcpy(&wrapper_format, reinterpret_cast<const void*>(desc_address + 0x33), sizeof(wrapper_format));
+
+    if (wrapper_width <= 0 || wrapper_height <= 0 ||
+        wrapper_width > 65536 || wrapper_height > 65536 ||
+        wrapper_mips == 0 || wrapper_mips > 32 ||
+        wrapper_samples == 0 || wrapper_samples > 16 ||
+        wrapper_dimension > 8 || wrapper_format == 0 || wrapper_format > 128)
+    {
+        return false;
+    }
+
+    auto* const native_raw = call_get_native_resource_guarded(texture, get_native_resource);
+    if (!is_probable_d3d_native_resource(native_raw)) {
+        return false;
+    }
+
+    auto* const native_resource = static_cast<ID3D12Resource*>(native_raw);
+    D3D12_RESOURCE_DESC desc{};
+    if (!get_d3d12_resource_desc_guarded(native_resource, desc)) {
+        return false;
+    }
+
+    ID3D12Device4* resource_device_raw{};
+    if (!get_d3d12_resource_device_guarded(native_resource, &resource_device_raw)) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Device4> resource_device{};
+    resource_device.Attach(resource_device_raw);
+    const auto& d3d12_hook = g_framework->get_d3d12_hook();
+    const auto expected_device = d3d12_hook != nullptr ? d3d12_hook->get_device() : nullptr;
+    const bool valid_resource =
+        expected_device != nullptr &&
+        resource_device.Get() == expected_device &&
+        desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        desc.Width == static_cast<uint64_t>(wrapper_width) &&
+        desc.Height == static_cast<uint32_t>(wrapper_height) &&
+        desc.DepthOrArraySize == 1 &&
+        desc.MipLevels == wrapper_mips &&
+        desc.SampleDesc.Count == wrapper_samples &&
+        desc.SampleDesc.Count == 1 &&
+        desc.Format != DXGI_FORMAT_UNKNOWN &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0 &&
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) == 0;
+
+    if (!valid_resource) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Bodycam][UE5.5.4][RT] Rejected exact scene texture {:x}: device_match={} wrapper={}x{} mips={} samples={} dim={} fmt={} native={}x{} array={} mips={} samples={} fmt={} flags=0x{:x}",
+            texture_address,
+            expected_device != nullptr && resource_device.Get() == expected_device,
+            wrapper_width,
+            wrapper_height,
+            wrapper_mips,
+            wrapper_samples,
+            wrapper_dimension,
+            wrapper_format,
+            desc.Width,
+            desc.Height,
+            desc.DepthOrArraySize,
+            desc.MipLevels,
+            desc.SampleDesc.Count,
+            static_cast<uint32_t>(desc.Format),
+            static_cast<uint32_t>(desc.Flags));
+        return false;
+    }
+
+    FRHITexture2D::set_vtable(vtable);
+
+    if (out_native != nullptr) {
+        *out_native = native_resource;
+    }
+
+    if (out_desc != nullptr) {
+        *out_desc = desc;
+    }
+
+    return true;
 }
 
 bool subnautica2_ue56_try_bootstrap_scene_target(
@@ -15007,16 +15372,121 @@ bool FFakeStereoRenderingHook::nonstandard_create_stereo_device_hook_4_18() {
     return true;
 }
 
+void FFakeStereoRenderingHook::attempt_hook_bodycam_scene_viewport_init_rhi() {
+    if (m_attempted_hook_bodycam_scene_viewport_init_rhi ||
+        !bodycam_ue554_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12())
+    {
+        return;
+    }
+
+    m_attempted_hook_bodycam_scene_viewport_init_rhi = true;
+
+    constexpr std::string_view prologue_pattern{
+        "40 55 53 56 57 41 57 48 8D AC 24 60 FF FF FF 48 81 EC A0 01 00 00 "
+        "48 8B 05 ? ? ? ? 48 33 C4 48 89 85 80 00 00 00 F6 81 A0 00 00 00 "
+        "01 48 8B F9 48 89 4D A0 74 16 44 8B 87 94 00 00 00 48 83 C1 28 "
+        "8B 97 90 00 00 00"};
+    constexpr uintptr_t allocate_call_anchor_offset = 0x1F0;
+    constexpr std::string_view allocate_call_anchor{
+        "44 89 74 24 20 41 FF D2 88 44 24 60 84 C0"};
+    constexpr uintptr_t final_publish_anchor_offset = 0x974;
+    constexpr std::string_view final_publish_anchor{
+        "33 C0 89 87 D8 02 00 00 B8 01 00 00 00 99 F7 F9 89 97 DC 02 00 00 "
+        "48 8B 87 B8 02 00 00 48 8B 57 F8 48 8B 08"};
+    constexpr uintptr_t minimum_function_extent = 0x9A0;
+
+    const auto executable = utility::get_executable();
+    const auto module_size = utility::get_module_size(executable).value_or(0);
+    if (executable == nullptr || module_size == 0) {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][RT] Executable range is unavailable; target hook remains disabled");
+        return;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(executable);
+    if (module_size > std::numeric_limits<uintptr_t>::max() - module_base) {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][RT] Executable range overflowed; InitRHI hook remains disabled");
+        return;
+    }
+
+    const auto module_end = module_base + module_size;
+    const auto target = utility::scan(executable, std::string{prologue_pattern});
+    if (!target ||
+        module_size < minimum_function_extent ||
+        *target < module_base ||
+        *target > module_end - minimum_function_extent ||
+        !is_executable_process_range(*target, minimum_function_extent))
+    {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][RT] Exact FSceneViewport::InitRHI signature was not found");
+        return;
+    }
+
+    const auto next_address = *target + 1;
+    if (next_address < module_end &&
+        utility::scan(next_address, module_end - next_address, std::string{prologue_pattern}).has_value())
+    {
+        SPDLOG_ERROR("[Bodycam][UE5.5.4][RT] FSceneViewport::InitRHI signature was not unique");
+        return;
+    }
+
+    const auto allocate_anchor_address = *target + allocate_call_anchor_offset;
+    const auto publish_anchor_address = *target + final_publish_anchor_offset;
+    if (utility::scan(
+            allocate_anchor_address,
+            0x20,
+            std::string{allocate_call_anchor}).value_or(0) != allocate_anchor_address ||
+        utility::scan(
+            publish_anchor_address,
+            0x40,
+            std::string{final_publish_anchor}).value_or(0) != publish_anchor_address)
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][RT] InitRHI allocation/publication anchors did not validate; hook remains disabled");
+        return;
+    }
+
+    m_bodycam_scene_viewport_init_rhi_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*target),
+        &bodycam_scene_viewport_init_rhi_hook,
+        safetyhook::InlineHook::StartDisabled);
+    if (!m_bodycam_scene_viewport_init_rhi_hook) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][RT] Failed to hook FSceneViewport::InitRHI at {:x}",
+            *target);
+        return;
+    }
+
+    if (const auto enabled = m_bodycam_scene_viewport_init_rhi_hook.enable();
+        !enabled.has_value())
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][RT] Failed to enable FSceneViewport::InitRHI hook at {:x}",
+            *target);
+        m_bodycam_scene_viewport_init_rhi_hook.reset();
+        return;
+    }
+
+    SPDLOG_INFO(
+        "[Bodycam][UE5.5.4][RT] Hooked exact FSceneViewport::InitRHI at {:x}",
+        *target);
+}
+
 bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
     SPDLOG_INFO("Attempting to hook UGameViewportClient::Draw...");
     m_game_viewport_client_draw_observed.store(false, std::memory_order_release);
+    attempt_hook_bodycam_scene_viewport_init_rhi();
 
     // We need to cache the canvas index before we hook the draw function or else this doesn't work.
     sdk::FViewport::get_debug_canvas_index();
-    auto game_viewport_client_draw = sdk::UGameViewportClient::get_draw_function();
+    auto game_viewport_client_draw = bodycam_ue554_is_current_game()
+        ? resolve_bodycam_ue554_game_viewport_draw()
+        : sdk::UGameViewportClient::get_draw_function();
 
     if (!game_viewport_client_draw) {
-        SPDLOG_ERROR("Failed to find UGameViewportClient::Draw!");
+        SPDLOG_ERROR(
+            "Failed to find {}UGameViewportClient::Draw!",
+            bodycam_ue554_is_current_game() ? "validated Bodycam override of " : "");
         m_has_game_viewport_client_draw_hook = false;
         return false;
     }
@@ -15059,6 +15529,79 @@ bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
 } catch(...) {
     SPDLOG_ERROR("Failed to hook UGameViewportClient!");
     return false;
+}
+
+void FFakeStereoRenderingHook::bodycam_scene_viewport_init_rhi_hook(
+    void* render_resource,
+    void* rhi_command_list)
+{
+    auto* const hook = g_hook;
+    if (hook == nullptr) {
+        return;
+    }
+
+    hook->m_bodycam_scene_viewport_init_rhi_hook.call<void>(
+        render_resource,
+        rhi_command_list);
+
+    if (!bodycam_ue554_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12() ||
+        render_resource == nullptr)
+    {
+        return;
+    }
+
+    // FSceneViewport = FViewportFrame (+0), FViewport (+0x08), whose
+    // FRenderResource base begins at FViewport+0x10. InitRHI receives that
+    // FRenderResource subobject, so recover the FViewport base by subtracting 0x10.
+    constexpr uintptr_t render_resource_offset_in_fviewport = 0x10;
+    const auto render_resource_address = reinterpret_cast<uintptr_t>(render_resource);
+    if (render_resource_address < render_resource_offset_in_fviewport) {
+        return;
+    }
+
+    const auto viewport_address = render_resource_address - render_resource_offset_in_fviewport;
+    if (!is_readable_process_range(viewport_address, 0x18)) {
+        return;
+    }
+
+    void** viewport_vtable{};
+    std::memcpy(&viewport_vtable, reinterpret_cast<const void*>(viewport_address), sizeof(viewport_vtable));
+    if (viewport_vtable == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(viewport_vtable), sizeof(void*)))
+    {
+        return;
+    }
+
+    uintptr_t first_virtual{};
+    std::memcpy(&first_virtual, viewport_vtable, sizeof(first_virtual));
+    if (first_virtual == 0 ||
+        !is_executable_process_range(first_virtual, 1) ||
+        utility::get_module_within(first_virtual).value_or(nullptr) != utility::get_executable())
+    {
+        return;
+    }
+
+    try {
+        auto* const viewport = reinterpret_cast<sdk::FViewport*>(viewport_address);
+        if (auto* const rtm = hook->get_render_target_manager(); rtm != nullptr) {
+            rtm->set_viewport(viewport);
+        }
+
+        hook->try_adopt_scene_viewport_render_target(
+            viewport,
+            BODYCAM_UE554_SCENE_VIEWPORT_SOURCE.data());
+    } catch (const std::exception& e) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Bodycam][UE5.5.4][RT] Scene-target observation failed closed: {}",
+            e.what());
+    } catch (...) {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Bodycam][UE5.5.4][RT] Scene-target observation failed closed");
+    }
 }
 
 void* FFakeStereoRenderingHook::viewport_destructor_hook(void* viewport, void* a2, void* a3, void* a4) {
@@ -15851,16 +16394,21 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         pokemon_emerald_is_current_game() && is_ue_5_6_dx12_backend();
     const bool sw_zero_company_ue56_dx12_viewport_adoption =
         sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend();
+    const bool bodycam_ue554_dx12_viewport_adoption =
+        bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend();
     const bool stalker2_ue55_dx12_viewport_observation =
         stalker2_uses_ue55_draw_windows_array_layout() && g_framework->is_dx12();
     bool allow_scene_viewport_rt_adoption =
         dune_viewport_adoption || ue58_viewport_adoption ||
         naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
         pokemon_emerald_ue56_dx12_viewport_adoption ||
-        sw_zero_company_ue56_dx12_viewport_adoption;
-    const auto log_prefix = dune_viewport_adoption
-        ? "[Dune][RT]"
-        : (ue58_viewport_adoption
+        sw_zero_company_ue56_dx12_viewport_adoption ||
+        bodycam_ue554_dx12_viewport_adoption;
+    const auto log_prefix = bodycam_ue554_dx12_viewport_adoption
+        ? "[Bodycam][UE5.5.4][RT]"
+        : (dune_viewport_adoption
+            ? "[Dune][RT]"
+            : (ue58_viewport_adoption
             ? "[UE5.8][RT]"
             : (naruto_ue416_dx11_viewport_adoption
                 ? "[Naruto][UE4.16][RT]"
@@ -15872,10 +16420,16 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                             ? "[SWZeroCompany][UE5.6][RT]"
                             : (stalker2_ue55_dx12_viewport_observation
                                 ? "[Stalker2][UE5.5][SyncedRT]"
-                                : "[SHf]"))))));
+                                : "[SHf]")))))));
     const auto source_name = source != nullptr ? source : "<unknown>";
     const bool everspace2_direct_observation =
         everspace2_is_current_game() && is_ue_5_5_dx12_backend();
+
+    if (bodycam_ue554_dx12_viewport_adoption &&
+        !is_bodycam_ue554_scene_viewport_source(source))
+    {
+        return;
+    }
 
     if (dune_viewport_adoption && dune_should_preserve_native_viewport_target()) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -15975,6 +16529,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         sw_zero_company_ue56_dx12_viewport_adoption &&
         source != nullptr &&
         std::strcmp(source, "UGameViewportClient::Draw viewport") == 0;
+    const bool is_bodycam_viewport_refresh = bodycam_ue554_dx12_viewport_adoption;
     const bool is_stalker2_viewport_refresh = stalker2_ue55_synced_viewport_adoption;
 
     if (!everspace2_direct_observation &&
@@ -15985,6 +16540,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         !is_dead_island_2_viewport_refresh &&
         !is_pokemon_emerald_viewport_refresh &&
         !is_sw_zero_company_viewport_refresh &&
+        !is_bodycam_viewport_refresh &&
         !is_stalker2_viewport_refresh)
     {
         return;
@@ -16056,6 +16612,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
 
         candidate = sw_zero_company_ue56_get_draw_viewport_scene_target(viewport);
+    } else if (bodycam_ue554_dx12_viewport_adoption) {
+        candidate = bodycam_ue554_get_scene_viewport_texture(viewport, source);
     } else {
         candidate = viewport->get_scene_viewport_render_target_texture_direct();
     }
@@ -16197,6 +16755,18 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
                 static_cast<uint32_t>(desc.Flags));
             return;
         }
+    } else if (bodycam_ue554_dx12_viewport_adoption) {
+        if (!bodycam_ue554_dx12_validate_scene_texture(
+                candidate,
+                source,
+                &native_resource,
+                &desc))
+        {
+            SPDLOG_INFO_EVERY_N_SEC(
+                2,
+                "[Bodycam][UE5.5.4][RT] Exact FSceneViewport target has not produced a validated D3D12 scene resource yet");
+            return;
+        }
     } else if (is_ue_5_6_dx12_backend()) {
         const bool is_known_viewport_source =
             source != nullptr && std::string_view{source} == "UGameViewportClient::Draw viewport";
@@ -16336,18 +16906,22 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption ||
         dead_island_2_ue425_dx12_viewport_adoption ||
         sw_zero_company_ue56_dx12_viewport_adoption ||
+        bodycam_ue554_dx12_viewport_adoption ||
         stalker2_ue55_synced_viewport_adoption)
     {
         // Dead Island keeps its engine-owned side-by-side target in Synced
         // Sequential. Only Naruto transitions to a single-eye source in AFR.
-        const auto expected_width = (uint64_t)vr->get_hmd_width() *
-            ((naruto_ue416_dx11_viewport_adoption && vr->is_using_afr()) ||
-             stalker2_ue55_synced_viewport_adoption
-                ? 1ull
-                : 2ull);
-        const auto alternate_expected_width = stalker2_ue55_synced_viewport_adoption
-            ? expected_width * 2ull
-            : expected_width;
+        const auto expected_width = bodycam_ue554_dx12_viewport_adoption
+            ? static_cast<uint64_t>(vr->get_hmd_width())
+            : static_cast<uint64_t>(vr->get_hmd_width()) *
+                (((naruto_ue416_dx11_viewport_adoption && vr->is_using_afr()) ||
+                  stalker2_ue55_synced_viewport_adoption)
+                    ? 1ull
+                    : 2ull);
+        const auto alternate_expected_width =
+            bodycam_ue554_dx12_viewport_adoption || stalker2_ue55_synced_viewport_adoption
+                ? expected_width * 2ull
+                : expected_width;
         const auto expected_height = (uint64_t)vr->get_hmd_height();
         const bool expected_extent =
             (native_width == expected_width || native_width == alternate_expected_width) &&
@@ -16359,7 +16933,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             if (sw_zero_company_ue56_dx12_viewport_adoption) {
                 rtm->observe_sw_zero_company_desktop_extent(native_width, native_height);
                 rtm->retire_sw_zero_company_scene_target_snapshot("rejected non-VR-sized Draw target");
-            } else if (current_target != nullptr) {
+            } else if (current_target != nullptr && !bodycam_ue554_dx12_viewport_adoption) {
                 rtm->set_render_target(nullptr);
 
                 if (naruto_ue416_dx11_viewport_adoption) {
@@ -16386,30 +16960,37 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             return;
         }
 
-        const auto stable_observations =
-            rtm->observe_ue58_scene_target(candidate, native_resource_identity);
+        // Bodycam reaches this path only after its exact FSceneViewport::InitRHI
+        // has completed allocation and published RenderTargetTextureRHI.
+        // Requiring a second completed base Draw would deadlock adoption because
+        // its derived viewport bypasses that function. The post-InitRHI boundary
+        // plus complete texture/resource validation is the stability proof.
+        if (!bodycam_ue554_dx12_viewport_adoption) {
+            const auto stable_observations =
+                rtm->observe_ue58_scene_target(candidate, native_resource_identity);
 
-        if (stable_observations == 1) {
-            SPDLOG_INFO(
-                "{} Observed new completed VR-sized target from {} at {:x} native={:x} [{}x{} fmt={}]; waiting for one more completed draw",
-                log_prefix,
-                source_name,
-                (uintptr_t)candidate,
-                (uintptr_t)native_resource_identity,
-                native_width,
-                native_height,
-                native_format);
-            return;
-        }
+            if (stable_observations == 1) {
+                SPDLOG_INFO(
+                    "{} Observed new completed VR-sized target from {} at {:x} native={:x} [{}x{} fmt={}]; waiting for one more completed draw",
+                    log_prefix,
+                    source_name,
+                    (uintptr_t)candidate,
+                    (uintptr_t)native_resource_identity,
+                    native_width,
+                    native_height,
+                    native_format);
+                return;
+            }
 
-        if (stable_observations == 2 && current_target != candidate) {
-            SPDLOG_INFO(
-                "{} Confirmed stable VR-sized target from {} at {:x} native={:x} after {} completed draws",
-                log_prefix,
-                source_name,
-                (uintptr_t)candidate,
-                (uintptr_t)native_resource_identity,
-                stable_observations);
+            if (stable_observations == 2 && current_target != candidate) {
+                SPDLOG_INFO(
+                    "{} Confirmed stable VR-sized target from {} at {:x} native={:x} after {} completed draws",
+                    log_prefix,
+                    source_name,
+                    (uintptr_t)candidate,
+                    (uintptr_t)native_resource_identity,
+                    stable_observations);
+            }
         }
     }
 
@@ -16542,6 +17123,15 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         }
     }
 
+    if (bodycam_ue554_dx12_viewport_adoption &&
+        candidate == rtm->get_dedicated_ui_target())
+    {
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[Bodycam][UE5.5.4][RT] Rejected dedicated UI texture at the exact scene-viewport source");
+        return;
+    }
+
     if (candidate == current_target) {
         SPDLOG_INFO_EVERY_N_SEC(
             5,
@@ -16565,6 +17155,22 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     }
 
     rtm->set_render_target(candidate);
+
+    if (bodycam_ue554_dx12_viewport_adoption &&
+        !m_bodycam_scene_target_rebuild_requested.exchange(true, std::memory_order_acq_rel))
+    {
+        // D3D12 may already have initialized against Bodycam's desktop Slate
+        // wrapper. Rebuild exactly once after the real VR-sized scene texture
+        // passes the post-InitRHI, vtable, descriptor, device, and extent checks.
+        set_should_recreate_textures(true);
+        vr->reinitialize_renderer();
+        SPDLOG_INFO(
+            "[Bodycam][UE5.5.4][RT] Scheduled one-time D3D12 rebuild from validated scene target native={:x} [{}x{} fmt={}]",
+            reinterpret_cast<uintptr_t>(native_resource_identity),
+            native_width,
+            native_height,
+            native_format);
+    }
 
     if (naruto_ue416_dx11_viewport_adoption) {
         // D3D11 may already have initialized while Naruto still exposed its
@@ -24936,10 +25542,24 @@ bool FFakeStereoRenderingHook::is_stereo_enabled(FFakeStereoRendering* stereo) {
     // while also allowing the desktop view to initially display
     // if the HMD is not on at the start. It only allows
     // stereo to be enabled if it starts from the first call to IsStereoEnabled inside UGameViewportClient::Draw.
+    const bool game_viewport_draw_observed =
+        hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire);
+    // Bodycam's derived viewport installs the stock Draw dispatch hook but never
+    // reaches it. Treating installation alone as proof leaves stereo disabled,
+    // so InitRHI cannot retrieve our render-target manager.
+    const bool draw_observation_required =
+        is_ue_5_8() || bodycam_ue554_is_current_game();
     const bool has_usable_game_viewport_draw =
         hook->m_has_game_viewport_client_draw_hook &&
-        (!is_ue_5_8() ||
-         hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire));
+        (!draw_observation_required || game_viewport_draw_observed);
+
+    if (bodycam_ue554_is_current_game() &&
+        hook->m_has_game_viewport_client_draw_hook &&
+        !game_viewport_draw_observed)
+    {
+        SPDLOG_INFO_ONCE(
+            "[Bodycam][UE5.5.4][Stereo] Ignoring installed-but-unobserved UGameViewportClient::Draw hook; using HMD-state fallback");
+    }
 
     if (has_usable_game_viewport_draw) {
         if (GameThreadWorker::get().is_same_thread()) {
@@ -35243,6 +35863,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         daysgone_is_current_game() &&
         g_framework != nullptr &&
         g_framework->is_dx11();
+    const auto use_bodycam_passive_capture_holder =
+        bodycam_ue554_is_current_game() &&
+        g_framework != nullptr &&
+        g_framework->is_dx12();
     if (use_daysgone_legacy_component) {
         // UE4.11 UGameplayStatics::SpawnObject rejects UActorComponent classes.
         // Construct and register this transient component through validated
@@ -35255,7 +35879,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         // Deadzone2's AddComponentByClass completes and registers immediately
         // when bDeferredFinish is false. This path assigns the texture before
         // finishing, so defer it and invoke FinishAddComponent exactly once.
-        const auto defer_component_finish = deadzone2_is_current_game();
+        const auto defer_component_finish =
+            deadzone2_is_current_game() || use_bodycam_passive_capture_holder;
         this->scene_capture_component = static_cast<sdk::USceneCaptureComponent2D*>(
             this->scene_capture_actor->add_component_by_class(scene_capture_c, defer_component_finish));
     }
@@ -35293,17 +35918,34 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     sdk::UObjectReference tgt{tgt_raw};
 
     SPDLOG_INFO("[VRRenderTargetManager] Created texture target: {:x}", (uintptr_t)tgt.get());
-    if (!use_daysgone_legacy_component) {
+    if (!use_daysgone_legacy_component && !use_bodycam_passive_capture_holder) {
         this->scene_capture_actor->finish_add_component(this->scene_capture_component);
     }
 
-    this->scene_capture_component->set_texture_target(tgt);
+    if (use_bodycam_passive_capture_holder) {
+        // Bodycam processes registered scene captures at the start of
+        // BeginRenderingViewFamilies. Keep this component unregistered: it is
+        // only an actor-owned UObject reference that pins the texture, never a
+        // renderer-visible capture request.
+        if (auto capture_every_frame = scene_capture_c->find_property(L"bCaptureEveryFrame"); capture_every_frame != nullptr) {
+            *capture_every_frame->get_data<bool>(this->scene_capture_component) = false;
+        }
+        if (auto capture_on_movement = scene_capture_c->find_property(L"bCaptureOnMovement"); capture_on_movement != nullptr) {
+            *capture_on_movement->get_data<bool>(this->scene_capture_component) = false;
+        }
+        this->scene_capture_component->set_texture_target(tgt);
+        this->scene_capture_component->set_visibility(false);
+        SPDLOG_INFO_ONCE(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Using an unregistered passive scene-capture holder");
+    } else {
+        this->scene_capture_component->set_texture_target(tgt);
 
-    // We don't actually want this to tick.
-    // We are just using the property as a convenient way to keep the texture alive without crashing.
-    this->scene_capture_component->set_visibility(false);
-    if (auto capture_every_frame = scene_capture_c->find_property(L"bCaptureEveryFrame"); capture_every_frame != nullptr) {
-        *capture_every_frame->get_data<bool>(this->scene_capture_component) = false;
+        // We don't actually want this to tick.
+        // We are just using the property as a convenient way to keep the texture alive without crashing.
+        this->scene_capture_component->set_visibility(false);
+        if (auto capture_every_frame = scene_capture_c->find_property(L"bCaptureEveryFrame"); capture_every_frame != nullptr) {
+            *capture_every_frame->get_data<bool>(this->scene_capture_component) = false;
+        }
     }
 
     static bool already_updated{false};
@@ -35392,16 +36034,18 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
 
             const bool use_stalker2_capture_layout =
                 stalker2_uses_validated_ue55_native_fix_capture_layout();
+            const bool use_bodycam_capture_layout =
+                bodycam_uses_validated_ue554_native_fix_capture_layout();
             const bool use_storm_escape_capture_layout =
                 storm_escape_uses_validated_ue561_native_fix_capture_layout();
 
-            if (use_stalker2_capture_layout || use_storm_escape_capture_layout) {
+            if (use_stalker2_capture_layout || use_bodycam_capture_layout || use_storm_escape_capture_layout) {
                 // These targets can exist before the engine initializes their
                 // nested render resources. Never let the broad pointer scan run
                 // while the stock chain is merely pending.
                 const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
                 const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
-                const auto& layout = use_stalker2_capture_layout
+                const auto& layout = (use_stalker2_capture_layout || use_bodycam_capture_layout)
                     ? STALKER2_UE55_NATIVE_FIX_TEXTURE_LAYOUT
                     : STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT;
                 const auto validated = validate_native_fix_texture_chain(
@@ -35414,6 +36058,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
                             "[Stalker2][UE5.5][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
+                    } else if (use_bodycam_capture_layout) {
+                        SPDLOG_INFO_EVERY_N_SEC(
+                            2,
+                            "[Bodycam][UE5.5.4][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
                     } else {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
@@ -35440,6 +36088,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                         if (use_stalker2_capture_layout) {
                             SPDLOG_WARN(
                                 "[Stalker2][UE5.5][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
+                        } else if (use_bodycam_capture_layout) {
+                            SPDLOG_WARN(
+                                "[Bodycam][UE5.5.4][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
                         } else {
                             SPDLOG_WARN(
                                 "[StormEscape][UE5.6.1][NativeStereoFix] Exact capture chain changed before offset publication; retrying fail closed");
@@ -35451,6 +36102,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     if (use_stalker2_capture_layout) {
                         SPDLOG_INFO(
                             "[Stalker2][UE5.5][NativeStereoFix] Committed validated capture layout PrivateResource=0x110 TextureRHI=0x10 FRenderTarget=0x50");
+                    } else if (use_bodycam_capture_layout) {
+                        SPDLOG_INFO(
+                            "[Bodycam][UE5.5.4][NativeStereoFix] Committed validated capture layout PrivateResource=0x110 TextureRHI=0x10 FRenderTarget=0x50");
                     } else {
                         SPDLOG_INFO(
                             "[StormEscape][UE5.6.1][NativeStereoFix] Committed validated capture layout PrivateResource=0x120 TextureRHI=0x10 FRenderTarget=0x50");
