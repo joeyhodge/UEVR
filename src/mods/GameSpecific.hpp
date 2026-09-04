@@ -138,6 +138,42 @@ inline bool is_sw_zero_company_executable_path(std::wstring_view path) {
            lowered == L"swzerocompany.exe";
 }
 
+inline bool is_bodycam_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\bodycam-win64-shipping.exe") ||
+           lowered.ends_with(L"/bodycam-win64-shipping.exe") ||
+           lowered == L"bodycam-win64-shipping.exe";
+}
+
+inline bool is_bodycam_ue554_runtime(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls) {
+    if (!is_bodycam_executable_path(path)) {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"0.00" && detected_version != L"unknown") {
+        return detected_version == L"5.5.4";
+    }
+
+    return file_version_ms == 0x00050005 && file_version_ls == 0x00040000;
+}
+
+inline bool should_use_bodycam_ue554_dx12_texture_layout(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12) {
+    return dx12 && is_bodycam_ue554_runtime(
+        path,
+        detected_version,
+        file_version_ms,
+        file_version_ls);
+}
+
 inline bool is_sw_zero_company_ue56_runtime(
     std::wstring_view path,
     std::wstring_view detected_version,
