@@ -13706,6 +13706,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dune_ffx_frame_resources();
     attempt_hook_dead_island_ue425_compute_light_grid();
     attempt_hook_dead_island_ue425_hair_light_indices();
+    attempt_hook_bodycam_update_pre_exposure();
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
@@ -15299,6 +15300,141 @@ void FFakeStereoRenderingHook::attempt_hook_bodycam_scene_viewport_init_rhi() {
         *target);
 }
 
+void FFakeStereoRenderingHook::attempt_hook_bodycam_update_pre_exposure() {
+    if (m_attempted_hook_bodycam_update_pre_exposure ||
+        !bodycam_ue554_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12())
+    {
+        return;
+    }
+
+    m_attempted_hook_bodycam_update_pre_exposure = true;
+
+    constexpr std::string_view prologue_pattern{
+        "48 8B C4 48 89 58 20 41 56 48 81 EC 00 01 00 00 "
+        "0F 29 70 E8 48 8B D9 0F 29 78 D8 44 0F 29 50 B8 "
+        "48 89 68 08 48 89 70 10 48 8B 71 08 48 89 78 18 "
+        "8B 7E 48 83 E7 01 83 B9 A8 26 00 00 03"};
+    constexpr uintptr_t initial_pre_exposure_write_offset = 0x139;
+    constexpr std::string_view initial_pre_exposure_write{
+        "C7 83 84 DC 00 00 00 00 80 3F"};
+    constexpr uintptr_t final_pre_exposure_write_offset = 0x1F4;
+    constexpr std::string_view final_pre_exposure_write{
+        "F3 0F 11 B3 84 DC 00 00 48 85 C0 74 32"};
+    constexpr uintptr_t state_pre_exposure_write_offset = 0x201;
+    constexpr std::string_view state_pre_exposure_write{
+        "F3 0F 11 B0 60 06 00 00 48 8B 83 F0 26 00 00"};
+    constexpr std::string_view stereo_pass_accessor_pattern{
+        "83 B9 E0 15 00 00 01 0F 96 C0 C3 CC CC CC CC CC "
+        "83 B9 E0 15 00 00 02 0F 94 C0 C3"};
+    constexpr uintptr_t minimum_function_extent = 0x25D;
+
+    const auto executable = utility::get_executable();
+    const auto module_size = utility::get_module_size(executable).value_or(0);
+    if (executable == nullptr || module_size < minimum_function_extent) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Executable range is unavailable; pre-exposure hook remains disabled");
+        return;
+    }
+
+    const auto module_base = reinterpret_cast<uintptr_t>(executable);
+    if (module_size > std::numeric_limits<uintptr_t>::max() - module_base) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Executable range overflowed; pre-exposure hook remains disabled");
+        return;
+    }
+
+    const auto module_end = module_base + module_size;
+    const auto target = utility::scan(executable, std::string{prologue_pattern});
+    if (!target ||
+        *target < module_base ||
+        *target > module_end - minimum_function_extent ||
+        !is_executable_process_range(*target, minimum_function_extent))
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Exact FViewInfo::UpdatePreExposure signature was not found");
+        return;
+    }
+
+    const auto next_target = *target + 1;
+    if (next_target < module_end &&
+        utility::scan(next_target, module_end - next_target, std::string{prologue_pattern}).has_value())
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] FViewInfo::UpdatePreExposure signature was not unique");
+        return;
+    }
+
+    const auto function_start = utility::find_function_start_unwind(*target);
+    if (!function_start || *function_start != *target) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] UpdatePreExposure {:x} is not an unwind-proven function start",
+            *target);
+        return;
+    }
+
+    const auto initial_write = *target + initial_pre_exposure_write_offset;
+    const auto final_write = *target + final_pre_exposure_write_offset;
+    const auto state_write = *target + state_pre_exposure_write_offset;
+    if (utility::scan(initial_write, 0x10, std::string{initial_pre_exposure_write}).value_or(0) != initial_write ||
+        utility::scan(final_write, 0x10, std::string{final_pre_exposure_write}).value_or(0) != final_write ||
+        utility::scan(state_write, 0x18, std::string{state_pre_exposure_write}).value_or(0) != state_write)
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] UpdatePreExposure output anchors did not validate; hook remains disabled");
+        return;
+    }
+
+    const auto pass_accessor = utility::scan(executable, std::string{stereo_pass_accessor_pattern});
+    if (!pass_accessor ||
+        *pass_accessor < module_base ||
+        *pass_accessor >= module_end ||
+        !is_executable_process_range(*pass_accessor, 0x1B))
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] FSceneView stereo-pass accessor did not validate; pre-exposure hook remains disabled");
+        return;
+    }
+
+    const auto next_pass_accessor = *pass_accessor + 1;
+    if (next_pass_accessor < module_end &&
+        utility::scan(
+            next_pass_accessor,
+            module_end - next_pass_accessor,
+            std::string{stereo_pass_accessor_pattern}).has_value())
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] FSceneView stereo-pass accessor was ambiguous; pre-exposure hook remains disabled");
+        return;
+    }
+
+    m_bodycam_update_pre_exposure_hook = safetyhook::create_inline(
+        reinterpret_cast<void*>(*target),
+        &bodycam_update_pre_exposure_hook,
+        safetyhook::InlineHook::StartDisabled);
+    if (!m_bodycam_update_pre_exposure_hook) {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Failed to hook FViewInfo::UpdatePreExposure at {:x}",
+            *target);
+        return;
+    }
+
+    if (const auto enabled = m_bodycam_update_pre_exposure_hook.enable();
+        !enabled.has_value())
+    {
+        SPDLOG_ERROR(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Failed to enable UpdatePreExposure hook at {:x}",
+            *target);
+        m_bodycam_update_pre_exposure_hook.reset();
+        return;
+    }
+
+    SPDLOG_INFO(
+        "[Bodycam][UE5.5.4][NativeStereoFix] Hooked validated FViewInfo::UpdatePreExposure at {:x}",
+        *target);
+}
+
 bool FFakeStereoRenderingHook::hook_game_viewport_client() try {
     SPDLOG_INFO("Attempting to hook UGameViewportClient::Draw...");
     m_game_viewport_client_draw_observed.store(false, std::memory_order_release);
@@ -15428,6 +15564,206 @@ void FFakeStereoRenderingHook::bodycam_scene_viewport_init_rhi_hook(
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[Bodycam][UE5.5.4][RT] Scene-target observation failed closed");
+    }
+}
+
+void FFakeStereoRenderingHook::bodycam_update_pre_exposure_hook(void* view) {
+    auto* const hook = g_hook;
+    if (hook == nullptr) {
+        return;
+    }
+
+    hook->m_bodycam_update_pre_exposure_hook.call<void>(view);
+
+    struct PrimaryExposureLatch {
+        uevr::vr_compatibility::BodycamPreExposureSample sample{};
+        float pre_exposure{};
+        bool armed{};
+    };
+
+    static thread_local uint64_t observation{};
+    static thread_local PrimaryExposureLatch primary{};
+    const auto current_observation = ++observation;
+
+    auto& vr = VR::get();
+    if (!bodycam_ue554_is_current_game() ||
+        g_framework == nullptr ||
+        !g_framework->is_dx12() ||
+        vr == nullptr ||
+        !vr->is_using_native_stereo() ||
+        !vr->is_native_stereo_fix_enabled() ||
+        !hook->is_native_stereo_fix_operational())
+    {
+        primary = {};
+        return;
+    }
+
+    constexpr uintptr_t state_offset = 0x10;
+    constexpr uintptr_t stereo_pass_offset = 0x15E0;
+    constexpr uintptr_t adaptation_state_offset = 0x26C8;
+    constexpr uintptr_t render_state_offset = 0x26F0;
+    constexpr uintptr_t state_pre_exposure_offset = 0x660;
+    constexpr uintptr_t state_pre_exposure_valid_offset = 0x664;
+    constexpr uintptr_t state_last_pre_exposure_offset = 0xF70;
+    constexpr uintptr_t skip_last_pre_exposure_flag_offset = 0xCF08;
+    constexpr uintptr_t view_pre_exposure_offset = 0xDC84;
+    const auto view_address = reinterpret_cast<uintptr_t>(view);
+    if (view_address == 0 ||
+        view_address > std::numeric_limits<uintptr_t>::max() - view_pre_exposure_offset - sizeof(float) ||
+        !is_readable_process_range(
+            view_address + state_offset,
+            view_pre_exposure_offset + sizeof(float) - state_offset))
+    {
+        primary = {};
+        return;
+    }
+
+    uintptr_t state{};
+    uintptr_t adaptation_state{};
+    uintptr_t render_state{};
+    uint32_t stereo_pass{};
+    uint8_t skip_last_pre_exposure{};
+    float view_pre_exposure{};
+    std::memcpy(&state, reinterpret_cast<const void*>(view_address + state_offset), sizeof(state));
+    std::memcpy(
+        &adaptation_state,
+        reinterpret_cast<const void*>(view_address + adaptation_state_offset),
+        sizeof(adaptation_state));
+    std::memcpy(
+        &render_state,
+        reinterpret_cast<const void*>(view_address + render_state_offset),
+        sizeof(render_state));
+    std::memcpy(
+        &stereo_pass,
+        reinterpret_cast<const void*>(view_address + stereo_pass_offset),
+        sizeof(stereo_pass));
+    std::memcpy(
+        &skip_last_pre_exposure,
+        reinterpret_cast<const void*>(view_address + skip_last_pre_exposure_flag_offset),
+        sizeof(skip_last_pre_exposure));
+    std::memcpy(
+        &view_pre_exposure,
+        reinterpret_cast<const void*>(view_address + view_pre_exposure_offset),
+        sizeof(view_pre_exposure));
+
+    if (state == 0 ||
+        adaptation_state == 0 ||
+        render_state == 0 ||
+        render_state > std::numeric_limits<uintptr_t>::max() - state_last_pre_exposure_offset - sizeof(float))
+    {
+        primary = {};
+        return;
+    }
+
+    uintptr_t state_vtable{};
+    uintptr_t state_first_virtual{};
+    float state_pre_exposure{};
+    uint8_t state_pre_exposure_valid{};
+    if (!safe_read_value(state, state_vtable) ||
+        state_vtable == 0 ||
+        !safe_read_value(state_vtable, state_first_virtual) ||
+        state_first_virtual == 0 ||
+        !is_executable_process_range(state_first_virtual, 1) ||
+        utility::get_module_within(state_first_virtual).value_or(nullptr) != utility::get_executable() ||
+        !safe_read_value(render_state + state_pre_exposure_offset, state_pre_exposure) ||
+        !safe_read_value(render_state + state_pre_exposure_valid_offset, state_pre_exposure_valid))
+    {
+        primary = {};
+        return;
+    }
+
+    const auto valid_pre_exposure = [](float value) {
+        constexpr float maximum_sane_pre_exposure = 65536.0f;
+        return std::isfinite(value) && value > 0.0f && value <= maximum_sane_pre_exposure;
+    };
+    if (state_pre_exposure_valid != 1 ||
+        !valid_pre_exposure(view_pre_exposure) ||
+        !valid_pre_exposure(state_pre_exposure) ||
+        std::bit_cast<uint32_t>(view_pre_exposure) != std::bit_cast<uint32_t>(state_pre_exposure))
+    {
+        primary = {};
+        return;
+    }
+
+    const uevr::vr_compatibility::BodycamPreExposureSample sample{
+        .stereo_pass = stereo_pass,
+        .state = state,
+        .adaptation_state = adaptation_state,
+        .render_state = render_state,
+        .state_vtable = state_vtable,
+        .observation = current_observation,
+    };
+
+    if (stereo_pass == EStereoscopicPass::eSSP_PRIMARY) {
+        primary = {};
+        if (uevr::vr_compatibility::is_bodycam_primary_pre_exposure_sample(sample)) {
+            primary = {
+                .sample = sample,
+                .pre_exposure = view_pre_exposure,
+                .armed = true,
+            };
+        }
+        return;
+    }
+
+    if (stereo_pass != EStereoscopicPass::eSSP_SECONDARY) {
+        primary = {};
+        return;
+    }
+
+    const auto latched_primary = primary;
+    primary = {};
+    if (!latched_primary.armed ||
+        !uevr::vr_compatibility::should_reuse_bodycam_primary_pre_exposure(
+            latched_primary.sample,
+            sample))
+    {
+        return;
+    }
+
+    const bool update_last_pre_exposure = (skip_last_pre_exposure & 1) == 0;
+    float state_last_pre_exposure{};
+    if (update_last_pre_exposure &&
+        (!safe_read_value(
+             render_state + state_last_pre_exposure_offset,
+             state_last_pre_exposure) ||
+         std::bit_cast<uint32_t>(state_last_pre_exposure) !=
+             std::bit_cast<uint32_t>(view_pre_exposure)))
+    {
+        return;
+    }
+
+    const auto view_pre_exposure_address = view_address + view_pre_exposure_offset;
+    const auto state_pre_exposure_address = render_state + state_pre_exposure_offset;
+    const auto state_last_pre_exposure_address = render_state + state_last_pre_exposure_offset;
+    if (!is_writable_process_range(view_pre_exposure_address, sizeof(float)) ||
+        !is_writable_process_range(state_pre_exposure_address, sizeof(float)) ||
+        (update_last_pre_exposure &&
+         !is_writable_process_range(state_last_pre_exposure_address, sizeof(float))))
+    {
+        return;
+    }
+
+    std::memcpy(
+        reinterpret_cast<void*>(view_pre_exposure_address),
+        &latched_primary.pre_exposure,
+        sizeof(latched_primary.pre_exposure));
+    std::memcpy(
+        reinterpret_cast<void*>(state_pre_exposure_address),
+        &latched_primary.pre_exposure,
+        sizeof(latched_primary.pre_exposure));
+    if (update_last_pre_exposure) {
+        std::memcpy(
+            reinterpret_cast<void*>(state_last_pre_exposure_address),
+            &latched_primary.pre_exposure,
+            sizeof(latched_primary.pre_exposure));
+    }
+
+    if (std::bit_cast<uint32_t>(view_pre_exposure) !=
+        std::bit_cast<uint32_t>(latched_primary.pre_exposure))
+    {
+        SPDLOG_INFO_ONCE(
+            "[Bodycam][UE5.5.4][NativeStereoFix] Reusing the adjacent PRIMARY pre-exposure for the SECONDARY view");
     }
 }
 
