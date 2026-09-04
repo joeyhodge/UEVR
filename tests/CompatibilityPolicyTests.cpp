@@ -413,6 +413,48 @@ void test_ue58_render_pose_fallback() {
         "an unready OpenXR runtime must fail the pre-view pose fallback closed");
 }
 
+void test_bodycam_native_fix_pre_exposure_pairing() {
+    using uevr::vr_compatibility::BodycamPreExposureSample;
+    using uevr::vr_compatibility::is_bodycam_primary_pre_exposure_sample;
+    using uevr::vr_compatibility::should_reuse_bodycam_primary_pre_exposure;
+
+    constexpr BodycamPreExposureSample primary{
+        .stereo_pass = 1,
+        .state = 0x1000,
+        .adaptation_state = 0x1000,
+        .render_state = 0x1000,
+        .state_vtable = 0x5000,
+        .observation = 20,
+    };
+    BodycamPreExposureSample secondary{
+        .stereo_pass = 2,
+        .state = 0x2000,
+        .adaptation_state = 0x1000,
+        .render_state = 0x2000,
+        .state_vtable = 0x5000,
+        .observation = 21,
+    };
+
+    expect(is_bodycam_primary_pre_exposure_sample(primary),
+        "Bodycam primary exposure samples must use one self-owned state");
+    expect(should_reuse_bodycam_primary_pre_exposure(primary, secondary),
+        "Bodycam's adjacent secondary view may reuse its validated primary exposure");
+
+    secondary.observation = 22;
+    expect(!should_reuse_bodycam_primary_pre_exposure(primary, secondary),
+        "non-adjacent Bodycam views must not share a latched exposure");
+
+    secondary.observation = 21;
+    secondary.adaptation_state = secondary.state;
+    expect(!should_reuse_bodycam_primary_pre_exposure(primary, secondary),
+        "a self-owned secondary adaptation state must preserve the engine result");
+
+    secondary.adaptation_state = primary.state;
+    secondary.state_vtable = 0x6000;
+    expect(!should_reuse_bodycam_primary_pre_exposure(primary, secondary),
+        "mismatched Bodycam view-state types must fail exposure pairing closed");
+}
+
 void test_ue58_slate_ui_capability() {
     using namespace uevr::vr_compatibility;
 
@@ -565,6 +607,7 @@ int main() {
     test_rendering_mode_matrix();
     test_version_gates();
     test_ue58_render_pose_fallback();
+    test_bodycam_native_fix_pre_exposure_pairing();
     test_ue58_slate_ui_capability();
 
     if (failures != 0) {
