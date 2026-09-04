@@ -1004,6 +1004,7 @@ private:
     bool nonstandard_create_stereo_device_hook_4_18();
     
     bool hook_game_viewport_client();
+    void attempt_hook_bodycam_scene_viewport_init_rhi();
     bool setup_view_extensions();
 
     static std::optional<uintptr_t> locate_fake_stereo_rendering_constructor();
@@ -1125,6 +1126,9 @@ private:
 
     // FSceneViewport
     static void update_viewport_rhi_hook(void* viewport, size_t destroyed, size_t new_size_x, size_t new_size_y, size_t new_window_mode, size_t preferred_pixel_format);
+    static void bodycam_scene_viewport_init_rhi_hook(
+        void* render_resource,
+        void* rhi_command_list);
 
     std::unique_ptr<ThreadWorker<FRHICommandListImmediate*>> m_slate_thread_worker{std::make_unique<ThreadWorker<FRHICommandListImmediate*>>()};
 
@@ -1386,6 +1390,7 @@ private:
     safetyhook::InlineHook m_windrose_layout_template_enter_hook{};
     safetyhook::InlineHook m_windrose_layout_template_exit_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
+    safetyhook::InlineHook m_bodycam_scene_viewport_init_rhi_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
     std::atomic<bool> m_render_module_begin_render_viewfamily_observed{};
@@ -1580,6 +1585,8 @@ private:
     bool m_has_view_extension_hook{false};
     bool m_has_game_viewport_client_draw_hook{false};
     std::atomic_bool m_game_viewport_client_draw_observed{false};
+    std::atomic_bool m_bodycam_scene_target_rebuild_requested{false};
+    bool m_attempted_hook_bodycam_scene_viewport_init_rhi{false};
     std::atomic_bool m_dead_island_2_viewport_allocation_requested{false};
     bool m_skip_next_adjust_view_rect{true};
     bool m_inside_slate_draw_window{false};
