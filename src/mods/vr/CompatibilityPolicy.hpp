@@ -361,6 +361,38 @@ constexpr bool should_use_ue56_post_init_slot(
     return exact_ue56 && (dx11 || dx12);
 }
 
+struct BodycamPreExposureSample {
+    uint32_t stereo_pass{};
+    uintptr_t state{};
+    uintptr_t adaptation_state{};
+    uintptr_t render_state{};
+    uintptr_t state_vtable{};
+    uint64_t observation{};
+};
+
+constexpr bool is_bodycam_primary_pre_exposure_sample(
+    const BodycamPreExposureSample& sample) noexcept {
+    return sample.stereo_pass == 1 &&
+        sample.state != 0 &&
+        sample.state == sample.adaptation_state &&
+        sample.state == sample.render_state &&
+        sample.state_vtable != 0;
+}
+
+constexpr bool should_reuse_bodycam_primary_pre_exposure(
+    const BodycamPreExposureSample& primary,
+    const BodycamPreExposureSample& secondary) noexcept {
+    return is_bodycam_primary_pre_exposure_sample(primary) &&
+        secondary.stereo_pass == 2 &&
+        secondary.state != 0 &&
+        secondary.state == secondary.render_state &&
+        secondary.state != secondary.adaptation_state &&
+        secondary.adaptation_state == primary.state &&
+        secondary.state_vtable == primary.state_vtable &&
+        secondary.observation != 0 &&
+        primary.observation == secondary.observation - 1;
+}
+
 struct UE58RenderPoseFallbackInputs {
     bool exact_ue58{};
     bool d3d12{};
