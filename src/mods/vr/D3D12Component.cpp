@@ -249,6 +249,58 @@ bool is_sw_zero_company_ue56_dx12_current_game() {
     return game_and_engine_match && g_framework != nullptr && g_framework->is_dx12();
 }
 
+bool is_bodycam_ue554_dx12_current_game() {
+    static const bool game_and_engine_match = []() {
+        const auto executable = utility::get_executable();
+        const auto exe_path = utility::get_module_pathw(executable);
+
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(executable).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::should_use_bodycam_ue554_dx12_texture_layout(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS,
+            true);
+    }();
+
+    return game_and_engine_match && g_framework != nullptr && g_framework->is_dx12();
+}
+
+std::unique_lock<std::recursive_mutex> acquire_bodycam_openxr_reconfigure_guard(
+    VR* vr,
+    uint32_t reasons)
+{
+    constexpr uint32_t serialized_reasons =
+        SWAPCHAIN_RECREATE_AFR_STATE |
+        SWAPCHAIN_RECREATE_DEPTH_EXTENT |
+        SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS;
+
+    if (!is_bodycam_ue554_dx12_current_game() ||
+        vr == nullptr ||
+        vr->get_runtime() == nullptr ||
+        !vr->get_runtime()->is_openxr() ||
+        (reasons & serialized_reasons) == 0)
+    {
+        return {};
+    }
+
+    const auto openxr = vr->get_openxr_runtime();
+    if (openxr == nullptr) {
+        return {};
+    }
+
+    std::unique_lock<std::recursive_mutex> guard{openxr->sync_mtx};
+    SPDLOG_INFO(
+        "[Bodycam][UE5.5.4][OpenXR] Serializing frame loop across D3D12 swapchain recreate reasons={}",
+        format_swapchain_recreate_reasons(reasons));
+    return guard;
+}
+
 bool is_dead_island_2_ue425_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -3708,6 +3760,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         reasons |= SWAPCHAIN_RECREATE_DEPTH_NULL_DEFAULTS;
                     }
                     log_openxr_swapchain_recreate(vr, reasons, (uint32_t)desc.Width, (uint32_t)desc.Height);
+                    auto bodycam_frame_loop_guard = acquire_bodycam_openxr_reconfigure_guard(vr, reasons);
                     prepare_openxr_swapchain_recreate(vr, reasons);
                     m_openxr.create_swapchains(); // recreate swapchains to match the new depth size
                 }
@@ -5103,6 +5156,7 @@ void D3D12Component::on_reset(VR* vr) {
             }
 
             log_openxr_swapchain_recreate(vr, reasons, new_depth_width, new_depth_height);
+            auto bodycam_frame_loop_guard = acquire_bodycam_openxr_reconfigure_guard(vr, reasons);
             prepare_openxr_swapchain_recreate(vr, reasons);
             const auto swapchain_error = m_openxr.create_swapchains();
             if ((reasons & SWAPCHAIN_RECREATE_SCENE_TARGET_READY) != 0) {
@@ -5674,12 +5728,17 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             depth_desc.Height = vr->get_hmd_height();
         }
 
+        const bool defer_bodycam_afr_depth =
+            create_afr_depth &&
+            is_bodycam_ue554_dx12_current_game() &&
+            this->made_depth_with_null_defaults;
+
         if (!create_afr_depth) {
             spdlog::info("[VR] Creating double wide depth swapchain");
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::DEPTH, depth_swapchain_create_info, depth_desc)) {
                 return err;
             }
-        } else if (!skip_dead_island_2_afr_depth) {
+        } else if (!skip_dead_island_2_afr_depth && !defer_bodycam_afr_depth) {
             spdlog::info("[VR] Creating AFR depth swapchain");
             spdlog::info("[VR] Creating AFR left eye depth swapchain");
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_LEFT_EYE, depth_swapchain_create_info, depth_desc)) {
@@ -5690,8 +5749,11 @@ std::optional<std::string> D3D12Component::OpenXR::create_swapchains() {
             if (auto err = create_swapchain((uint32_t)runtimes::OpenXR::SwapchainIndex::AFR_DEPTH_RIGHT_EYE, depth_swapchain_create_info, depth_desc)) {
                 return err;
             }
-        } else {
+        } else if (skip_dead_island_2_afr_depth) {
             SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Skipping invalid AFR depth swapchain creation");
+        } else {
+            SPDLOG_INFO(
+                "[Bodycam][UE5.5.4][OpenXR] Deferring AFR depth swapchains until SceneDepthZ has a validated live descriptor");
         }
     }
 
