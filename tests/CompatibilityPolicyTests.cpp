@@ -6,6 +6,7 @@
 #include <sdk/FSceneViewLayoutPolicy.hpp>
 
 #include "mods/GameSpecific.hpp"
+#include "mods/vr/BodycamTextureLayout.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 
 namespace {
@@ -413,6 +414,62 @@ void test_ue58_render_pose_fallback() {
         "an unready OpenXR runtime must fail the pre-view pose fallback closed");
 }
 
+void test_bodycam_owned_texture_layout() {
+    namespace layout = uevr::bodycam_texture;
+    constexpr uintptr_t owner = 0x10000;
+    constexpr uintptr_t rhi = 0x20000;
+    constexpr layout::ResourceIdentity valid{owner, rhi, rhi, 1920, 1080};
+
+    expect(layout::private_resource_offset == 0x110 &&
+               layout::texture_rhi_offset == 0x10 &&
+               layout::render_target_offset == 0x50 &&
+               layout::render_target_texture_offset == layout::render_target_offset + sizeof(void*),
+        "Bodycam must use the binary-validated resource and render-target subobject layout");
+    expect(layout::is_initialized_resource(valid, owner, 1920, 1080),
+        "a complete owned UI target must be accepted independently of generic cached offsets");
+    expect(!layout::is_initialized_resource(valid, owner + 8, 1920, 1080),
+        "an unrelated UObject pointing to a valid texture must not be adopted");
+    expect(!layout::is_initialized_resource(valid, owner, 2472, 2416),
+        "the UI resource must not be published as a Native Fix eye target");
+    expect(!layout::is_initialized_resource({}, 0, 0, 0),
+        "empty ownership and pending resource state must fail closed");
+
+    auto pending = valid;
+    pending.texture_rhi = 0;
+    expect(!layout::is_initialized_resource(pending, owner, 1920, 1080),
+        "an uninitialized TextureRHI must remain retryable");
+    pending = valid;
+    pending.render_target_texture = 0;
+    expect(!layout::is_initialized_resource(pending, owner, 1920, 1080),
+        "an uninitialized FRenderTarget must not publish a partial chain");
+    pending.render_target_texture = rhi + 8;
+    expect(!layout::is_initialized_resource(pending, owner, 1920, 1080),
+        "separated or mid-resize texture references must not be confused with the owned target");
+    pending.render_target_texture = rhi;
+    expect(layout::is_initialized_resource(pending, owner, 1920, 1080),
+        "a previously pending resource must succeed after InitRHI without a latched failure");
+    pending.width = 2472;
+    pending.height = 2416;
+    expect(layout::is_initialized_resource(pending, owner, 2472, 2416),
+        "the same validated layout must accept the separate Native Fix eye extent");
+    pending.width = 65537;
+    expect(!layout::is_initialized_resource(pending, owner, 65537, 2416),
+        "implausible render target dimensions must fail closed");
+
+    expect(layout::is_render_target_accessor(layout::render_target_accessor),
+        "the exact lea rax,[rcx+8]; ret accessor must validate without executing it");
+    auto wrong_accessor = layout::render_target_accessor;
+    wrong_accessor[1] = 0x8b;
+    expect(!layout::is_render_target_accessor(wrong_accessor),
+        "a pointer-loading accessor is not the reference-returning FRenderTarget accessor");
+    wrong_accessor = layout::render_target_accessor;
+    wrong_accessor[3] = 0x10;
+    expect(!layout::is_render_target_accessor(wrong_accessor),
+        "another member offset must not match the Bodycam FRenderTarget layout");
+    expect(!layout::is_render_target_accessor(std::span<const uint8_t>{wrong_accessor}.first(4)),
+        "a truncated function must never pass accessor validation");
+}
+
 void test_bodycam_native_fix_pre_exposure_pairing() {
     using uevr::vr_compatibility::BodycamPreExposureSample;
     using uevr::vr_compatibility::is_bodycam_primary_pre_exposure_sample;
@@ -607,6 +664,7 @@ int main() {
     test_rendering_mode_matrix();
     test_version_gates();
     test_ue58_render_pose_fallback();
+    test_bodycam_owned_texture_layout();
     test_bodycam_native_fix_pre_exposure_pairing();
     test_ue58_slate_ui_capability();
 
