@@ -82,6 +82,7 @@
 
 #include "FFakeStereoRenderingHook.hpp"
 #include "CompatibilityPolicy.hpp"
+#include "BodycamTextureLayout.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -5558,6 +5559,12 @@ constexpr NativeFixTextureLayout STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT{
     STORM_ESCAPE_UE561_FRENDER_TARGET_OFFSET,
 };
 
+constexpr NativeFixTextureLayout BODYCAM_UE554_TEXTURE_LAYOUT{
+    uevr::bodycam_texture::private_resource_offset,
+    uevr::bodycam_texture::texture_rhi_offset,
+    uevr::bodycam_texture::render_target_offset,
+};
+
 bool native_fix_has_module_owned_vtable(uintptr_t object) {
     if (!is_readable_process_range(object, sizeof(uintptr_t))) {
         return false;
@@ -6617,11 +6624,11 @@ FRHITexture2D* bodycam_ue554_get_scene_viewport_texture(
     return texture;
 }
 
-bool bodycam_ue554_dx12_validate_scene_texture(
+bool bodycam_ue554_dx12_validate_texture(
     FRHITexture2D* texture,
-    const char* source,
     ID3D12Resource** out_native,
-    D3D12_RESOURCE_DESC* out_desc)
+    D3D12_RESOURCE_DESC* out_desc,
+    ID3D12Resource* initialized_native = nullptr)
 {
     if (out_native != nullptr) {
         *out_native = nullptr;
@@ -6633,7 +6640,6 @@ bool bodycam_ue554_dx12_validate_scene_texture(
 
     if (!bodycam_ue554_is_current_game() ||
         !is_ue_5_5_dx12_backend() ||
-        !is_bodycam_ue554_scene_viewport_source(source) ||
         texture == nullptr)
     {
         return false;
@@ -6715,7 +6721,8 @@ bool bodycam_ue554_dx12_validate_scene_texture(
         return false;
     }
 
-    auto* const native_raw = call_get_native_resource_guarded(texture, get_native_resource);
+    auto* const native_raw = initialized_native != nullptr
+        ? initialized_native : call_get_native_resource_guarded(texture, get_native_resource);
     if (!is_probable_d3d_native_resource(native_raw)) {
         return false;
     }
@@ -6752,7 +6759,7 @@ bool bodycam_ue554_dx12_validate_scene_texture(
     if (!valid_resource) {
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
-            "[Bodycam][UE5.5.4][RT] Rejected exact scene texture {:x}: device_match={} wrapper={}x{} mips={} samples={} dim={} fmt={} native={}x{} array={} mips={} samples={} fmt={} flags=0x{:x}",
+            "[Bodycam][UE5.5.4][RT] Rejected exact texture {:x}: device_match={} wrapper={}x{} mips={} samples={} dim={} fmt={} native={}x{} array={} mips={} samples={} fmt={} flags=0x{:x}",
             texture_address,
             expected_device != nullptr && resource_device.Get() == expected_device,
             wrapper_width,
@@ -6771,8 +6778,6 @@ bool bodycam_ue554_dx12_validate_scene_texture(
         return false;
     }
 
-    FRHITexture2D::set_vtable(vtable);
-
     if (out_native != nullptr) {
         *out_native = native_resource;
     }
@@ -6782,6 +6787,149 @@ bool bodycam_ue554_dx12_validate_scene_texture(
     }
 
     return true;
+}
+
+bool bodycam_ue554_dx12_validate_scene_texture(
+    FRHITexture2D* texture,
+    const char* source,
+    ID3D12Resource** out_native,
+    D3D12_RESOURCE_DESC* out_desc)
+{
+    if (out_native != nullptr) {
+        *out_native = nullptr;
+    }
+    if (out_desc != nullptr) {
+        *out_desc = {};
+    }
+    if (!is_bodycam_ue554_scene_viewport_source(source) ||
+        !bodycam_ue554_dx12_validate_texture(texture, out_native, out_desc))
+    {
+        return false;
+    }
+
+    FRHITexture2D::set_vtable(*reinterpret_cast<void**>(texture));
+    return true;
+}
+
+template <typename T>
+bool safe_read_value(uintptr_t address, T& out);
+
+std::optional<ValidatedNativeFixTextureChain> bodycam_ue554_validate_owned_texture_chain(
+    sdk::UTexture* texture,
+    uint32_t expected_width,
+    uint32_t expected_height,
+    const char*& reason)
+try {
+    namespace layout = uevr::bodycam_texture;
+    reason = "unsupported runtime or invalid owner";
+    if (!bodycam_ue554_is_current_game() || !is_ue_5_5_dx12_backend() || texture == nullptr) {
+        return std::nullopt;
+    }
+
+    // Do not use the mutable FRHITexture2D vtable or broad UTexture/FTexture
+    // scans here: an unrelated UObject member can match the same RHI texture.
+    const auto owner = reinterpret_cast<uintptr_t>(texture);
+    uintptr_t resource{};
+    reason = "PrivateResource is not initialized";
+    if (!safe_read_value(owner + layout::private_resource_offset, resource) || resource == 0 ||
+        !native_fix_has_module_owned_vtable(resource))
+    {
+        return std::nullopt;
+    }
+
+    const auto read_identity = [&]() -> std::optional<layout::ResourceIdentity> {
+        layout::ResourceIdentity identity{};
+        if (!safe_read_value(resource + layout::owner_offset, identity.owner) ||
+            !safe_read_value(resource + layout::texture_rhi_offset, identity.texture_rhi) ||
+            !safe_read_value(resource + layout::render_target_texture_offset, identity.render_target_texture) ||
+            !safe_read_value(resource + layout::width_offset, identity.width) ||
+            !safe_read_value(resource + layout::height_offset, identity.height))
+        {
+            return std::nullopt;
+        }
+        return identity;
+    };
+
+    reason = "render resource owner, extent or texture references are not ready";
+    const auto identity = read_identity();
+    if (!identity || !layout::is_initialized_resource(*identity, owner, expected_width, expected_height)) {
+        return std::nullopt;
+    }
+
+    reason = "FRenderTarget accessor validation failed";
+    const auto render_target = resource + layout::render_target_offset;
+    uintptr_t render_target_vtable{};
+    uintptr_t accessor{};
+    std::array<uint8_t, layout::render_target_accessor.size()> accessor_code{};
+    if (!native_fix_has_module_owned_vtable(render_target) ||
+        !safe_read_value(render_target, render_target_vtable) ||
+        !safe_read_value(render_target_vtable + 2 * sizeof(void*), accessor) ||
+        utility::get_module_within(accessor).value_or(nullptr) != utility::get_executable() ||
+        !is_executable_process_range(accessor, accessor_code.size()) ||
+        !safe_read_value(accessor, accessor_code) ||
+        !layout::is_render_target_accessor(accessor_code))
+    {
+        return std::nullopt;
+    }
+
+    // The validated slot-4 accessor has a linked-texture fallback. Read its
+    // initialized direct resource without executing that fallback during InitRHI.
+    reason = "direct D3D12 resource is not initialized";
+    uintptr_t d3d_resource{};
+    uintptr_t native_address{};
+    if (!safe_read_value(identity->texture_rhi + 0xb8, d3d_resource) || d3d_resource == 0 ||
+        !safe_read_value(d3d_resource + 0x20, native_address) || native_address == 0)
+    {
+        return std::nullopt;
+    }
+
+    auto* const rhi_texture = reinterpret_cast<FRHITexture2D*>(identity->texture_rhi);
+    ID3D12Resource* native{};
+    D3D12_RESOURCE_DESC desc{};
+    reason = "native texture signature, device or descriptor validation failed";
+    if (!bodycam_ue554_dx12_validate_texture(
+            rhi_texture, &native, &desc, reinterpret_cast<ID3D12Resource*>(native_address)) ||
+        reinterpret_cast<uintptr_t>(native) != native_address ||
+        (desc.Format != DXGI_FORMAT_B8G8R8A8_TYPELESS &&
+         desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+         desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) ||
+        desc.Width != expected_width || desc.Height != expected_height ||
+        desc.MipLevels != 1 || desc.DepthOrArraySize != 1 || desc.SampleDesc.Count != 1)
+    {
+        return std::nullopt;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> retained_native{};
+    if (FAILED(native->QueryInterface(IID_PPV_ARGS(&retained_native))) || retained_native == nullptr) {
+        return std::nullopt;
+    }
+
+    reason = "render resource changed during validation";
+    uintptr_t current_resource{};
+    uintptr_t current_d3d_resource{};
+    uintptr_t current_native{};
+    const auto current_identity = read_identity();
+    if (!safe_read_value(owner + layout::private_resource_offset, current_resource) ||
+        current_resource != resource || !current_identity ||
+        !layout::is_initialized_resource(*current_identity, owner, expected_width, expected_height) ||
+        current_identity->texture_rhi != identity->texture_rhi ||
+        !safe_read_value(identity->texture_rhi + 0xb8, current_d3d_resource) ||
+        current_d3d_resource != d3d_resource ||
+        !safe_read_value(d3d_resource + 0x20, current_native) || current_native != native_address)
+    {
+        return std::nullopt;
+    }
+
+    reason = "ready";
+    return ValidatedNativeFixTextureChain{
+        .texture_resource = reinterpret_cast<sdk::FTextureRenderTargetResource*>(resource),
+        .render_target = reinterpret_cast<sdk::FRenderTarget*>(render_target),
+        .rhi_texture = rhi_texture,
+        .native_resource = std::move(retained_native),
+    };
+} catch (...) {
+    reason = "render resource became unreadable during validation";
+    return std::nullopt;
 }
 
 bool pokemon_emerald_ue56_try_bootstrap_scene_target(
@@ -35120,39 +35268,53 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return true;
                         }
 
-                        if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
-                            return false;
-                        }
+                        FRHITexture2D* ready_texture{};
+                        if (bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend()) {
+                            const char* reason{};
+                            const auto validated = bodycam_ue554_validate_owned_texture_chain(
+                                tgt.get(), width, height, reason);
+                            if (!validated) {
+                                SPDLOG_INFO_EVERY_N_SEC(5,
+                                    "[Bodycam][UE5.5.4][SlateUI] Waiting for owned UI resource: {}", reason);
+                                return false;
+                            }
+                            ready_texture = validated->rhi_texture;
+                        } else {
+                            if (!sdk::UTexture::update_render_resource_offset_texture2d(tgt)) {
+                                return false;
+                            }
 
-                        auto* rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource();
-                        if (rsrc == nullptr) {
-                            return false;
-                        }
+                            auto* rsrc = (sdk::FTextureRenderTargetResource*)tgt->get_resource();
+                            if (rsrc == nullptr) {
+                                return false;
+                            }
 
-                        const bool updated_vtable_offset = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
-                        auto* frt = updated_vtable_offset ? rsrc->as_render_target() : nullptr;
+                            const bool updated_vtable_offset = sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(rsrc);
+                            auto* frt = updated_vtable_offset ? rsrc->as_render_target() : nullptr;
 
-                        if (frt == nullptr) {
-                            return false;
-                        }
+                            if (frt == nullptr) {
+                                return false;
+                            }
 
-                        sdk::FRenderTarget::update_offsets(frt);
-                        auto** frt_texture = frt->get_render_target_texture();
+                            sdk::FRenderTarget::update_offsets(frt);
+                            auto** frt_texture = frt->get_render_target_texture();
 
-                        if (frt_texture == nullptr || *frt_texture == nullptr || IsBadReadPtr(*frt_texture, sizeof(void*))) {
-                            return false;
+                            if (frt_texture == nullptr || *frt_texture == nullptr || IsBadReadPtr(*frt_texture, sizeof(void*))) {
+                                return false;
+                            }
+                            ready_texture = *frt_texture;
                         }
 
                         if (!this->is_dedicated_ui_generation_current(generation)) {
                             return true;
                         }
 
-                        FRHITexture2D::set_vtable(*(void**)*frt_texture);
+                        FRHITexture2D::set_vtable(*(void**)ready_texture);
 
                         if (is_ue58_dx11_dedicated_ui_backend() &&
                             !ue58_dx11_validate_dedicated_ui_target(
                                 this,
-                                *frt_texture,
+                                ready_texture,
                                 width,
                                 height))
                         {
@@ -35173,7 +35335,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return true;
                         }
 
-                        this->set_dedicated_ui_target(*frt_texture, width, height);
+                        this->set_dedicated_ui_target(ready_texture, width, height);
                         this->get_fallback_ui_target_ref() = nullptr;
 
                         GameThreadWorker::get().enqueue([this, tgt, generation]() -> void {
@@ -35336,7 +35498,19 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     }
 
     if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
-        if (stalker2_uses_ue55_draw_windows_array_layout()) {
+        if (bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend()) {
+            const char* reason{};
+            const auto validated = bodycam_ue554_validate_owned_texture_chain(
+                dedicated_ui_texture.get(), dedicated_ui_width, dedicated_ui_height, reason);
+            if (validated) {
+                FRHITexture2D::set_vtable(*(void**)validated->rhi_texture);
+                set_dedicated_ui_target(validated->rhi_texture, dedicated_ui_width, dedicated_ui_height);
+                get_fallback_ui_target_ref() = nullptr;
+                return;
+            }
+            SPDLOG_INFO_EVERY_N_SEC(5,
+                "[Bodycam][UE5.5.4][SlateUI] Retained UI resource is not ready: {}", reason);
+        } else if (stalker2_uses_ue55_draw_windows_array_layout()) {
             const auto validated = stalker2_try_get_dedicated_ui_resource(
                 dedicated_ui_texture.get(),
                 dedicated_ui_width,
@@ -35816,14 +35990,19 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 // while the stock chain is merely pending.
                 const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
                 const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
-                const auto& layout = (use_stalker2_capture_layout || use_bodycam_capture_layout)
-                    ? STALKER2_UE55_NATIVE_FIX_TEXTURE_LAYOUT
-                    : STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT;
-                const auto validated = validate_native_fix_texture_chain(
-                    reinterpret_cast<sdk::UTexture*>(tgt.get()),
-                    expected_width,
-                    expected_height,
-                    layout);
+                const auto& layout = use_bodycam_capture_layout
+                    ? BODYCAM_UE554_TEXTURE_LAYOUT
+                    : use_stalker2_capture_layout ? STALKER2_UE55_NATIVE_FIX_TEXTURE_LAYOUT : STORM_ESCAPE_UE561_NATIVE_FIX_TEXTURE_LAYOUT;
+                const char* bodycam_reason{};
+                const auto validated = use_bodycam_capture_layout
+                    ? bodycam_ue554_validate_owned_texture_chain(
+                        reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                        expected_width, expected_height, bodycam_reason)
+                    : validate_native_fix_texture_chain(
+                        reinterpret_cast<sdk::UTexture*>(tgt.get()),
+                        expected_width,
+                        expected_height,
+                        layout);
                 if (!validated) {
                     if (use_stalker2_capture_layout) {
                         SPDLOG_INFO_EVERY_N_SEC(
@@ -35832,7 +36011,7 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                     } else if (use_bodycam_capture_layout) {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
-                            "[Bodycam][UE5.5.4][NativeStereoFix] Waiting for initialized +0x110/+0x10 capture texture chain");
+                            "[Bodycam][UE5.5.4][NativeStereoFix] Waiting for owned capture resource: {}", bodycam_reason);
                     } else {
                         SPDLOG_INFO_EVERY_N_SEC(
                             2,
@@ -35846,6 +36025,11 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 rhi_texture = validated->rhi_texture;
 
                 if (!already_updated) {
+                    if (use_bodycam_capture_layout) {
+                        // Seed discovery only from the complete, independently
+                        // validated chain, never from a speculative UI candidate.
+                        FRHITexture2D::set_vtable(*(void**)rhi_texture);
+                    }
                     const bool texture_offsets_committed =
                         sdk::UTexture::commit_validated_render_resource_offsets_texture2d(
                             reinterpret_cast<sdk::UTexture*>(tgt.get()),
