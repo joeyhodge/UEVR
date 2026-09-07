@@ -1,12 +1,15 @@
 #include <cstddef>
+#include <cstring>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 #include <sdk/FSceneView.hpp>
 #include <sdk/FSceneViewLayoutPolicy.hpp>
 
 #include "mods/GameSpecific.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
+#include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 
 namespace {
@@ -512,6 +515,196 @@ void test_bodycam_native_fix_pre_exposure_pairing() {
         "mismatched Bodycam view-state types must fail exposure pairing closed");
 }
 
+void test_ue58_pooled_slate_fallback() {
+    using namespace uevr::vr_compatibility;
+    using enum UE58SlateArgumentSetup;
+
+    constexpr std::array<UE58SlateArgumentSetup, 3> wrapper{NameR8, HiddenReturnRcx, RawTextureRdx};
+    constexpr std::array<UE58SlateArgumentSetup, 3> registration{WrapperReturnRdx, ZeroFlagsR8, BuilderRcx};
+    constexpr std::array<std::array<size_t, 3>, 6> orders{{
+        {0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0},
+    }};
+    for (const auto& order : orders) {
+        expect(is_ue58_strict_pooled_wrapper_setup({wrapper[order[0]], wrapper[order[1]], wrapper[order[2]]}),
+            "independently scheduled wrapper argument writes must validate in every order");
+        expect(is_ue58_strict_pooled_register_setup({registration[order[0]], registration[order[1]], registration[order[2]]}),
+            "independently scheduled pooled registration writes must validate in every order");
+    }
+    for (size_t i = 0; i < 3; ++i) {
+        auto invalid_wrapper = wrapper;
+        invalid_wrapper[i] = Other;
+        expect(!is_ue58_strict_pooled_wrapper_setup(invalid_wrapper),
+            "missing or clobbered wrapper arguments must fail closed");
+        auto invalid_registration = registration;
+        invalid_registration[i] = Other;
+        expect(!is_ue58_strict_pooled_register_setup(invalid_registration),
+            "missing or clobbered pooled registration arguments must fail closed");
+    }
+    expect(!is_ue58_strict_pooled_wrapper_setup({NameR8, NameR8, RawTextureRdx}),
+        "duplicate argument evidence must not substitute for a hidden return pointer");
+    expect(!is_ue58_strict_pooled_register_setup(wrapper),
+        "the raw wrapper and pooled registration ABIs must not be interchanged");
+
+    UE58SlatePooledFallbackInputs input{
+        .exact_ue58 = true,
+        .dx12 = true,
+        .cross_anchor_candidates = 4,
+        .pooled_wrapper_transactions = 1,
+        .shared_strict_pooled_transactions = 1,
+    };
+    for (uint32_t patch = 0; patch <= 3; ++patch) {
+        input.exact_ue58 = is_validated_ue58_slate_source_version(0x00050008, patch << 16);
+        expect(should_use_ue58_pooled_slate_fallback(input) == (patch <= 2),
+            "pooled fallback must be restricted to validated UE5.8.0-5.8.2 source versions");
+    }
+    input.exact_ue58 = false;
+    expect(!should_use_ue58_pooled_slate_fallback(input),
+        "other engine versions must preserve their existing Slate route");
+    input.exact_ue58 = true;
+    input.dx12 = false;
+    expect(!should_use_ue58_pooled_slate_fallback(input),
+        "the new pooled rescue and owned resource layout must leave existing DX11 routes untouched");
+    input.dx12 = true;
+    for (uint32_t candidates = 0; candidates <= 3; ++candidates) {
+        input.cross_anchor_candidates = candidates;
+        expect(!should_use_ue58_pooled_slate_fallback(input),
+            "accepted legacy call sets and empty scans must remain untouched");
+    }
+    for (uint32_t candidates = 4; candidates <= 8; ++candidates) {
+        input.cross_anchor_candidates = candidates;
+        expect(should_use_ue58_pooled_slate_fallback(input),
+            "unrelated shared helpers must not hide one fully validated pooled transaction");
+    }
+    input.direct_raw_transactions = 1;
+    expect(!should_use_ue58_pooled_slate_fallback(input),
+        "mixed raw and pooled evidence must not activate the fallback");
+    input.direct_raw_transactions = 0;
+    for (const auto count : {0u, 2u}) {
+        input.pooled_wrapper_transactions = count;
+        expect(!should_use_ue58_pooled_slate_fallback(input),
+            "missing or duplicate pooled transactions must fail closed");
+        input.pooled_wrapper_transactions = 1;
+        input.shared_strict_pooled_transactions = count;
+        expect(!should_use_ue58_pooled_slate_fallback(input),
+            "the same unique strict wrapper/register pair must exist at both anchors");
+        input.shared_strict_pooled_transactions = 1;
+    }
+}
+
+void test_ue58_owned_ui_resource() {
+    namespace layout = uevr::ue58_owned_ui;
+    constexpr uintptr_t base = 0x1000;
+    constexpr uintptr_t owner = 0x1100;
+    constexpr uintptr_t resource = 0x2000;
+    constexpr uintptr_t wrong_reference = 0x2400;
+    constexpr uintptr_t rhi = 0x3000;
+    constexpr size_t owner_size = 0x178;
+    std::vector<uint8_t> memory(0x4000);
+    auto put = [&](uintptr_t address, const auto& value) {
+        std::memcpy(memory.data() + address - base, &value, sizeof(value));
+    };
+    bool escaped_owner_bounds = false;
+    auto read = [&](uintptr_t address, auto& out) {
+        if (address >= owner && address < owner + 0x300 && address + sizeof(out) > owner + owner_size) {
+            escaped_owner_bounds = true;
+            return false;
+        }
+        if (address < base || address - base > memory.size() || sizeof(out) > memory.size() - (address - base)) {
+            return false;
+        }
+        std::memcpy(&out, memory.data() + address - base, sizeof(out));
+        return true;
+    };
+    bool accessor_valid = true;
+    auto validate = [&](uintptr_t candidate, uintptr_t texture) {
+        return accessor_valid && (candidate == resource || candidate == wrong_reference) && texture == rhi;
+    };
+    auto find = [&] { return layout::find_resource(owner, owner_size, 1920, 1080, read, validate); };
+    auto initialize_resource = [&](uintptr_t candidate) {
+        put(candidate + layout::owner_offset, owner);
+        put(candidate + layout::texture_rhi_offset, rhi);
+        put(candidate + layout::render_target_texture_offset, rhi);
+        put(candidate + layout::width_offset, uint32_t{1920});
+        put(candidate + layout::height_offset, uint32_t{1080});
+    };
+
+    expect(!find(), "uninitialized resources must not publish offsets");
+    put(owner + 0x128, resource);
+    initialize_resource(resource);
+    expect(!find(), "game-thread resource alone must wait for the render-thread mirror");
+    put(owner + 0x130, resource);
+    auto valid = find();
+    expect(valid == layout::Resource{0x128, resource, rhi}, "fully initialized GT/RT resource pair must resolve");
+
+    // Reproduce the false-positive shape: TextureReference has a coincidental
+    // RHI pointer at +0xc8 and a cleanup table at +0xe0, not an owned render resource.
+    put(owner + 0x138, wrong_reference);
+    put(wrong_reference + 0xc8, rhi);
+    put(wrong_reference + 0xe0, uintptr_t{0x4000});
+    expect(find() == valid, "TextureReference and out-of-object cleanup tables must be ignored");
+    put(owner + 0x128, uintptr_t{});
+    put(owner + 0x130, uintptr_t{});
+    expect(!find(), "a matching RHI inside TextureReference is not a render resource");
+    put(owner + 0x128, resource);
+    put(owner + 0x130, resource);
+
+    put(resource + layout::owner_offset, owner + 8);
+    expect(!find(), "resource must point back to the exact rooted UI UObject");
+    put(resource + layout::owner_offset, owner);
+    put(resource + layout::render_target_texture_offset, rhi + 8);
+    expect(!find(), "incomplete, multisample or separated RHI references must not be adopted");
+    put(resource + layout::render_target_texture_offset, rhi);
+    put(resource + layout::width_offset, uint32_t{4944});
+    expect(!find(), "scene-sized resources must not be adopted as UI");
+    put(resource + layout::width_offset, uint32_t{1920});
+    accessor_valid = false;
+    expect(!find(), "ownership alone must not bypass instruction validation");
+    accessor_valid = true;
+
+    initialize_resource(wrong_reference);
+    put(owner + 0x140, wrong_reference);
+    expect(!find(), "multiple structurally valid owner pairs are ambiguous and must fail closed");
+    put(owner + 0x140, uintptr_t{});
+    expect(find() == valid, "a failed observation must not poison later discovery");
+    put(owner + 0x128, uintptr_t{});
+    put(owner + 0x130, uintptr_t{});
+    put(owner + 0x118, resource);
+    put(owner + 0x120, resource);
+    expect(find() == layout::Resource{0x118, resource, rhi},
+        "owner discovery must validate the pair, not hardcode FarFarWest's +0x128 field");
+    put(owner + 0x118, uintptr_t{});
+    put(owner + 0x120, uintptr_t{});
+    put(owner + 0x128, resource);
+    put(owner + 0x130, resource);
+    expect(!escaped_owner_bounds, "discovery must stay inside the reflected UObject size");
+    expect(!layout::find_resource(owner, 0x301, 1920, 1080, read, validate), "unexpected object layouts must fail closed");
+    expect(!layout::find_resource(UINTPTR_MAX - 8, owner_size, 1920, 1080, read, validate), "owner bounds overflow must fail closed");
+
+    expect(layout::matches_accessor(layout::render_target_accessor, layout::render_target_accessor), "raw accessor must match");
+    auto cleanup = layout::render_target_accessor;
+    cleanup[0] = 0xe8;
+    expect(!layout::matches_accessor(cleanup, layout::render_target_accessor), "cleanup calls must never be treated as accessors");
+    auto native = layout::native_resource_accessor;
+    expect(layout::matches_accessor(native, layout::native_resource_accessor), "validated direct native chain must match");
+    for (size_t i = 0; i < native.size(); ++i) {
+        native[i] ^= 1;
+        expect(!layout::matches_accessor(native, layout::native_resource_accessor), "changed native accessor code must fail closed");
+        native[i] ^= 1;
+    }
+
+    layout::StableResource stability{};
+    layout::Observation observation{1, *valid, 0x5000};
+    expect(!stability.observe(observation), "first complete chain must wait for a stable observation");
+    expect(stability.observe(observation), "identical complete chain may publish");
+    observation.generation = 2;
+    expect(!stability.observe(observation), "a new generation must revalidate stability");
+    observation.native += 8;
+    expect(!stability.observe(observation), "a changed native resource must reset stability");
+    expect(!stability.observe(std::nullopt), "a failed validation must clear prior evidence");
+    expect(!stability.observe(observation), "recovery must not reuse evidence from before validation failed");
+    expect(stability.observe(observation), "a later stable resource must remain retryable");
+}
+
 void test_ue58_slate_ui_capability() {
     using namespace uevr::vr_compatibility;
 
@@ -666,6 +859,8 @@ int main() {
     test_ue58_render_pose_fallback();
     test_bodycam_owned_texture_layout();
     test_bodycam_native_fix_pre_exposure_pairing();
+    test_ue58_pooled_slate_fallback();
+    test_ue58_owned_ui_resource();
     test_ue58_slate_ui_capability();
 
     if (failures != 0) {
