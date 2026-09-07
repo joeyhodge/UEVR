@@ -79,6 +79,7 @@
 #include <sdk/threading/RHIThreadWorker.hpp>
 #include "../VR.hpp"
 #include "../../utility/Logging.hpp"
+#include "../../utility/BuildIdentity.hpp"
 
 #include "FFakeStereoRenderingHook.hpp"
 #include "CompatibilityPolicy.hpp"
@@ -11366,10 +11367,12 @@ void FFakeStereoRenderingHook::on_frame() {
 std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
     try {
         nlohmann::json result{
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"diagnostic_only", true},
             {"snapshot_note", "best-effort snapshot; refresh after hook installation stabilizes"},
         };
+
+        result["build"] = utility::support::current_build_identity();
 
         const auto executable = utility::get_executable();
         const auto executable_path = utility::get_module_pathw(executable);
@@ -11474,6 +11477,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         }
 
         if (const auto vr = VR::get(); vr != nullptr) {
+            result["support_diagnostics"] = vr->get_support_diagnostics();
             result["rendering_mode"] = {
                 {"hmd_active", vr->is_hmd_active()},
                 {"using_afr", vr->is_using_afr()},
@@ -11572,7 +11576,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         return result.dump(2);
     } catch (const std::exception& e) {
         return nlohmann::json{
-            {"schema_version", 1},
+            {"schema_version", 2},
             {"diagnostic_only", true},
             {"error", e.what()},
         }.dump(2);
@@ -11592,12 +11596,23 @@ void FFakeStereoRenderingHook::draw_hook_provenance_diagnostics() {
         return;
     }
 
+    const auto cvars = VR::get()->m_cvar_manager.get();
+    ImGui::TextWrapped("Includes build IDs, CVar readback and pacing. Refresh requests a read-only sample on the next game tick; unresolved values are not scanned.");
+
     if (!was_enabled || m_hook_provenance_json.empty()) {
+        cvars->request_diagnostic_snapshot();
+        m_hook_provenance_cvar_revision = cvars->diagnostic_snapshot_revision();
         m_hook_provenance_json = build_hook_provenance_json();
         m_hook_provenance_export_status.clear();
     }
 
+    if (const auto revision = cvars->diagnostic_snapshot_revision(); revision != m_hook_provenance_cvar_revision) {
+        m_hook_provenance_json = build_hook_provenance_json();
+        m_hook_provenance_cvar_revision = revision;
+    }
+
     if (ImGui::Button("Refresh Hook Provenance")) {
+        cvars->request_diagnostic_snapshot();
         m_hook_provenance_json = build_hook_provenance_json();
         m_hook_provenance_export_status.clear();
     }

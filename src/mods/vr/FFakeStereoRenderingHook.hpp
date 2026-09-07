@@ -1668,6 +1668,7 @@ private:
     std::atomic_bool m_hook_provenance_diagnostics{false};
     std::string m_hook_provenance_json{};
     std::string m_hook_provenance_export_status{};
+    uint64_t m_hook_provenance_cvar_revision{};
     const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_force_player_camera{ ModToggle::create("VR_DaysGoneBendUI_ForcePlayerCamera", true, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_override_widget_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideWidgetTransform", true, true) };
