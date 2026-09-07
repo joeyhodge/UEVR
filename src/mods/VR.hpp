@@ -39,6 +39,7 @@
 
 class VR : public Mod {
 public:
+    nlohmann::json get_support_diagnostics();
     ~VR() override;
 
     enum RenderingMethod {

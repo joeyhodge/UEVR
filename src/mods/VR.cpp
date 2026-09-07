@@ -42,6 +42,7 @@
 #include <sdk/Utility.hpp>
 
 #include <tracy/Tracy.hpp>
+#include "utility/SupportDiagnostics.hpp"
 
 #include "Framework.hpp"
 #include "frameworkConfig.hpp"
@@ -5674,6 +5675,65 @@ void VR::record_ui_layer_pose_sample(
             snapshot.max_hmd_angular_velocity_deg_s);
         m_ui_layer_pose_last_log = now;
     }
+}
+
+nlohmann::json VR::get_support_diagnostics() {
+    auto cvars = m_cvar_manager->get_diagnostic_snapshot();
+    const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    cvars["snapshot_age_ms"] = cvars.contains("sample_steady_ms")
+        ? nlohmann::json(std::max<int64_t>(0, now_ms - cvars["sample_steady_ms"].get<int64_t>())) : nlohmann::json(nullptr);
+    std::optional<double> cap;
+    if (cvars.contains("values") && cvars["values"].contains("t.MaxFPS") && cvars["values"]["t.MaxFPS"].is_number()) {
+        cap = cvars["values"]["t.MaxFPS"].get<double>();
+    }
+
+    int64_t display_period{};
+    nlohmann::json xr{{"sampled", false}};
+    {
+        // Export must neither race runtime replacement nor wait for render callbacks.
+        std::unique_lock lifetime{m_openvr_mtx, std::try_to_lock};
+        if (!lifetime.owns_lock()) {
+            xr["unavailable_reason"] = "Runtime busy; refresh later";
+        } else if (m_runtime == nullptr || !m_runtime->is_openxr() || m_openxr == nullptr) {
+            xr["unavailable_reason"] = "OpenXR is not the active runtime";
+        } else {
+            const auto& runtime = m_openxr;
+            std::unique_lock events{runtime->event_mtx, std::try_to_lock};
+            std::unique_lock assignment{runtime->sync_assignment_mtx, std::try_to_lock};
+            if (events.owns_lock() && assignment.owns_lock()) {
+                display_period = runtime->frame_state.predictedDisplayPeriod;
+                xr = {{"sampled", true}, {"internal_frame", runtime->internal_frame_count},
+                    {"internal_render_frame", runtime->internal_render_frame_count},
+                    {"pose_age_ms", runtime->get_pose_update_age_ms()},
+                    {"session_state", static_cast<int>(runtime->session_state)}};
+            } else {
+                xr["unavailable_reason"] = "XR state busy; refresh later";
+            }
+        }
+    }
+    const auto ui = get_ui_layer_pose_telemetry_snapshot();
+    nlohmann::json result{
+        {"read_only", true}, {"cvars", std::move(cvars)}, {"openxr", std::move(xr)},
+        {"pacing", utility::support::pacing(display_period, cap)},
+        {"ui_pose_telemetry", {{"sample_count", ui.sample_count},
+            {"last_pose_age_ms", ui.last_pose_age_ms}, {"last_image_age_frames", ui.last_ui_image_age_frames},
+            {"note", "Ages belong to the last telemetry sample, not necessarily this export; zero samples means unavailable."}}},
+        {"native_fix_same_pass", is_native_stereo_fix_same_pass_enabled()},
+        {"native_fix_preserve_secondary_pass", is_native_stereo_fix_preserve_secondary_pass_enabled()},
+    };
+    if (m_fake_stereo_hook != nullptr) {
+        if (const auto rtm = m_fake_stereo_hook->get_render_target_manager(); rtm != nullptr) {
+            const auto capture = rtm->get_scene_capture_target_snapshot();
+            result["native_capture"] = {{"published", capture != nullptr}, {"current_generation", rtm->get_scene_capture_generation()}};
+            if (capture) {
+                result["native_capture"]["published_generation"] = capture->generation;
+                result["native_capture"]["width"] = capture->width;
+                result["native_capture"]["height"] = capture->height;
+            }
+        }
+    }
+    return result;
 }
 
 void VR::record_hitch_snapshot_sample(std::chrono::steady_clock::time_point now) {

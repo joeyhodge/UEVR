@@ -20,6 +20,8 @@
 #include "Framework.hpp"
 
 #include "CVarManager.hpp"
+#include "utility/ImGui.hpp"
+#include "utility/Logging.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -28,6 +30,35 @@ constexpr std::string_view cvars_data_txt_name = "cvars_data.txt";
 constexpr std::string_view user_script_txt_name = "user_script.txt";
 
 namespace {
+int64_t diagnostic_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+template <typename T>
+std::optional<double> read_raw_cvar_for_diagnostics(sdk::ConsoleVariableDataWrapper* wrapper) {
+    __try {
+        const auto data = wrapper != nullptr ? wrapper->get<T>() : nullptr;
+        if (data == nullptr || IsBadReadPtr(data, sizeof(*data))) {
+            return std::nullopt;
+        }
+        return static_cast<double>(data->get());
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+}
+
+std::optional<double> read_interface_for_diagnostics(sdk::IConsoleVariable* variable, bool floating) {
+    if (variable == nullptr) {
+        return std::nullopt;
+    }
+    if (floating) {
+        const auto value = variable->TryGetFloat();
+        return value && std::isfinite(*value) ? std::optional<double>{*value} : std::nullopt;
+    }
+    return variable->TryGetInt();
+}
+
 bool is_ue_5_1_dx12_backend_for_cvars() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -506,6 +537,135 @@ CVarManager::ChangeSnapshot CVarManager::get_change_snapshot() const {
     return s_change_snapshot;
 }
 
+uint64_t CVarManager::CVar::begin_ui_write(double requested) {
+    std::scoped_lock lock{m_write_observation_mutex};
+    return m_write_observation.begin(requested, m_type == Type::FLOAT);
+}
+
+void CVarManager::CVar::finish_ui_write(uint64_t request_id, bool callable) {
+    std::scoped_lock lock{m_write_observation_mutex};
+    if (m_write_observation.dispatched(request_id, callable, diagnostic_now_ms())) {
+        s_pending_ui_readbacks.store(true, std::memory_order_release);
+    }
+}
+
+uevr::cvar_diagnostics::WriteObservation CVarManager::CVar::get_write_observation() const {
+    std::scoped_lock lock{m_write_observation_mutex};
+    return m_write_observation;
+}
+
+void CVarManager::CVar::poll_write_observation(int64_t now_ms) {
+    const auto before = get_write_observation();
+    if (!before.due(now_ms)) {
+        return;
+    }
+    std::optional<double> actual;
+    try { actual = read_diagnostic_value(); } catch (...) {}
+    std::scoped_lock lock{m_write_observation_mutex};
+    if (m_write_observation.observe(before.request_id, actual, now_ms) && !m_write_observation.pending) {
+        SPDLOG_INFO("[CVarReadback] {} requested={} actual={} status={} (observation only; no priority/retry changes)",
+            utility::narrow(m_name), m_write_observation.requested,
+            m_write_observation.actual ? fmt::format("{}", *m_write_observation.actual) : "unavailable",
+            uevr::cvar_diagnostics::name(m_write_observation.state));
+    }
+}
+
+void CVarManager::CVar::draw_write_observation() const {
+    const auto observation = get_write_observation();
+    if (observation.request_id == 0) {
+        return;
+    }
+    ImGui::TextDisabled("  Requested: %.6g | Actual: %s | %s%s", observation.requested,
+        observation.actual ? fmt::format("{:.6g}", *observation.actual).c_str() : "unavailable",
+        uevr::cvar_diagnostics::name(observation.state), observation.pending ? " (sampling)" : "");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Readback samples the game-thread value four times. A mismatch may mean rejection, clamping, or a later game override.\nIt does not identify the cause or alter priorities, saved values, or freeze enforcement.");
+    }
+}
+
+std::optional<double> CVarManager::CVarStandard::read_diagnostic_value() try {
+    auto* variable = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+    return read_interface_for_diagnostics(variable, m_type == Type::FLOAT);
+} catch (...) { return std::nullopt; }
+
+std::optional<double> CVarManager::CVarData::read_diagnostic_value() try {
+    if (m_interface_cvar != nullptr) {
+        return read_interface_for_diagnostics(m_interface_cvar, m_type == Type::FLOAT);
+    }
+    auto* wrapper = m_cvar_data ? &*m_cvar_data : nullptr;
+    return m_type == Type::FLOAT ? read_raw_cvar_for_diagnostics<float>(wrapper)
+        : read_raw_cvar_for_diagnostics<int32_t>(wrapper);
+} catch (...) { return std::nullopt; }
+
+nlohmann::json CVarManager::get_diagnostic_snapshot() const {
+    std::scoped_lock lock{m_diagnostic_snapshot_mutex};
+    auto result = m_diagnostic_snapshot;
+    result["refresh_requested"] = m_diagnostic_snapshot_requested.load(std::memory_order_acquire);
+    return result;
+}
+
+void CVarManager::process_diagnostics() try {
+    if (!s_pending_ui_readbacks.load(std::memory_order_acquire) &&
+        !m_diagnostic_snapshot_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+    const bool readbacks = s_pending_ui_readbacks.exchange(false, std::memory_order_acq_rel);
+    const bool report = m_diagnostic_snapshot_requested.exchange(false, std::memory_order_acq_rel);
+    if (!readbacks && !report) {
+        return;
+    }
+    const auto now_ms = diagnostic_now_ms();
+    if (readbacks) {
+        size_t budget = 4;
+        for (auto& cvar : m_all_cvars) {
+            if (budget != 0 && cvar->get_write_observation().due(now_ms)) {
+                cvar->poll_write_observation(now_ms);
+                --budget;
+            }
+            if (cvar->get_write_observation().pending) {
+                s_pending_ui_readbacks.store(true, std::memory_order_release);
+            }
+        }
+    }
+    if (!report) {
+        return;
+    }
+
+    // Only already-resolved getters are sampled; support export never starts a CVar scan.
+    nlohmann::json snapshot{{"sampled", true}, {"sample_steady_ms", now_ms},
+        {"read_only", true}, {"ui_edits", nlohmann::json::array()}, {"values", nlohmann::json::object()},
+        {"note", "UI edits are session-local. Missing values mean not previously resolved/readable, not absent from the game. Owner priority is not sampled."}};
+    for (auto& cvar : m_all_cvars) {
+        const auto observation = cvar->get_write_observation();
+        if (observation.request_id != 0) {
+            auto edit = uevr::cvar_diagnostics::to_json(observation);
+            edit["name"] = utility::narrow(cvar->get_name());
+            snapshot["ui_edits"].push_back(std::move(edit));
+        }
+    }
+    for (const auto name : {L"r.OneFrameThreadLag", L"r.VSync", L"t.MaxFPS", L"r.ScreenPercentage"}) {
+        std::optional<double> value;
+        const auto found = std::find_if(m_all_cvars.begin(), m_all_cvars.end(),
+            [name](const auto& cvar) { return cvar->get_name() == name; });
+        if (found != m_all_cvars.end()) {
+            value = (*found)->read_diagnostic_value();
+        }
+        if (!value) {
+            value = read_interface_for_diagnostics(sdk::find_validated_cvar_cached_only(name),
+                std::wstring_view{name} == L"t.MaxFPS" || std::wstring_view{name} == L"r.ScreenPercentage");
+        }
+        snapshot["values"][utility::narrow(name)] = value && std::isfinite(*value)
+            ? nlohmann::json(*value) : nlohmann::json(nullptr);
+    }
+    {
+        std::scoped_lock lock{m_diagnostic_snapshot_mutex};
+        m_diagnostic_snapshot = std::move(snapshot);
+        m_diagnostic_snapshot_revision.fetch_add(1, std::memory_order_release);
+    }
+} catch (...) {
+    SPDLOG_WARN_ONCE("[CVarReadback] Diagnostic sample unavailable; engine/CVar behavior is unchanged");
+}
+
 void CVarManager::record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source) {
     std::scoped_lock _{s_change_mutex};
     ++s_change_snapshot.counter;
@@ -634,6 +794,8 @@ void CVarManager::spawn_console() {
 
 void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
+
+    process_diagnostics();
 
     const bool opened_cvar_ui = m_cvar_ui_open_this_frame && !m_cvar_ui_open_last_tick;
     if (m_needs_full_refresh || opened_cvar_ui) {
@@ -784,6 +946,7 @@ void CVarManager::on_draw_ui() {
         
         for (auto& cvar : m_displayed_cvars) {
             cvar->draw_ui();
+            cvar->draw_write_observation();
         }
 
         refresh_frozen_cvar_state();
@@ -1071,7 +1234,7 @@ void CVarManager::display_console() {
                     ImGui::TextUnformatted(command.current_value.c_str());
 
                     ImGui::TableSetColumnIndex(2);
-                    ImGui::TextWrapped(command.description.c_str());
+                    imgui::text_wrapped_unformatted(command.description);
                 }
 
                 ImGui::EndTable();
@@ -1343,15 +1506,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(static_cast<int>(value));
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring((int)value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring((int)value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch (...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1368,15 +1535,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(value);
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring(value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch(...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1393,15 +1564,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(value);
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring(value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch(...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1580,18 +1755,22 @@ void CVarManager::CVarData::draw_ui() try {
 
     if (m_interface_cvar != nullptr) {
         const auto narrow_name = utility::narrow(m_name);
-        const auto set_value = [this](std::wstring value) {
+        const auto set_value = [this](double requested, std::wstring value) {
             m_setter_unavailable = false;
             auto* cvar = m_interface_cvar;
+            const auto request = begin_ui_write(requested);
 
             GameThreadWorker::get().enqueue(
-                [sft = std::static_pointer_cast<CVarData>(shared_from_this()), cvar, value = std::move(value)]() {
+                [sft = std::static_pointer_cast<CVarData>(shared_from_this()), cvar, value = std::move(value), request]() {
                     try {
-                        if (!cvar->Set(value.c_str())) {
+                        const auto callable = cvar->Set(value.c_str());
+                        sft->finish_ui_write(request, callable);
+                        if (!callable) {
                             sft->m_setter_unavailable = true;
                             SPDLOG_WARN("Validated CVar interface Set failed for {}", utility::narrow(sft->get_name()));
                         }
                     } catch (...) {
+                        sft->finish_ui_write(request, false);
                         sft->m_setter_unavailable = true;
                         SPDLOG_ERROR("Validated CVar interface Set threw for {}", utility::narrow(sft->get_name()));
                     }
@@ -1606,7 +1785,7 @@ void CVarManager::CVarData::draw_ui() try {
                 m_frozen_int_value = static_cast<int>(value);
                 CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
                 save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_int_value));
+                set_value(m_frozen_int_value, std::to_wstring(m_frozen_int_value));
             }
             break;
         }
@@ -1617,7 +1796,7 @@ void CVarManager::CVarData::draw_ui() try {
                 m_frozen_int_value = clamp_int_value(value);
                 CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
                 save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_int_value));
+                set_value(m_frozen_int_value, std::to_wstring(m_frozen_int_value));
             }
             break;
         }
@@ -1628,7 +1807,7 @@ void CVarManager::CVarData::draw_ui() try {
                 m_frozen_float_value = clamp_float_value(value);
                 CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_float_value), "data_ue55_interface_ui");
                 save_internal(cvars_data_txt_name.data());
-                set_value(std::to_wstring(m_frozen_float_value));
+                set_value(m_frozen_float_value, std::to_wstring(m_frozen_float_value));
             }
             break;
         }
@@ -1656,7 +1835,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = (bool)cvar_int->get();
 
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
-            cvar_int->set((int)value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(static_cast<int>(value));
+            const auto callable = cvar_int->set((int)value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring((int)value), "data_ui");
             this->save();
         }
@@ -1666,7 +1847,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = cvar_int->get();
 
         if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
-            cvar_int->set(value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(value);
+            const auto callable = cvar_int->set(value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
@@ -1676,7 +1859,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = cvar_float->get();
 
         if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
-            cvar_float->set(value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(value);
+            const auto callable = cvar_float->set(value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
