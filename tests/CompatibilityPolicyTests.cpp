@@ -850,6 +850,47 @@ void test_ue58_slate_ui_capability() {
         "UE5.7 and earlier must remain outside the UE5.8 diagnostic policy");
 }
 
+void test_farfarwest_view_extension_discovery() {
+    using uevr::games::should_use_farfarwest_ue581_view_extension_layout;
+    using uevr::vr_compatibility::is_valid_farfarwest_view_extension_mapping;
+
+    constexpr auto exe = L"D:\\Games\\FarFarWest-Win64-Shipping.exe";
+    expect(should_use_farfarwest_ue581_view_extension_layout(exe, 0x50008, 0x10000, true),
+        "FarFarWest UE5.8.1 DX12 uses validated callback discovery in every rendering mode");
+    expect(should_use_farfarwest_ue581_view_extension_layout(
+        L"d:/games/FARFARWEST-WIN64-SHIPPING.EXE", 0x50008, 0x10000, true),
+        "FarFarWest gate is case-insensitive and independent of install directory");
+    for (const auto path : {L"Other.exe", L"FarFarWest-Win64-Shipping.exe.bak",
+            L"D:\\FarFarWest-Win64-Shipping.exe\\Other.exe"}) {
+        expect(!should_use_farfarwest_ue581_view_extension_layout(path, 0x50008, 0x10000, true),
+            "other executables must not inherit FarFarWest discovery");
+    }
+    expect(!should_use_farfarwest_ue581_view_extension_layout(exe, 0x50008, 0x10000, false),
+        "FarFarWest DX11 remains unchanged");
+    for (const auto version : {0x50005u, 0x50006u, 0x50007u, 0x50009u}) {
+        expect(!should_use_farfarwest_ue581_view_extension_layout(exe, version, 0x10000, true),
+            "other engine minors remain unchanged");
+    }
+    for (const auto patch : {0u, 0x20000u, 0x30000u}) {
+        expect(!should_use_farfarwest_ue581_view_extension_layout(exe, 0x50008, patch, true),
+            "unvalidated FarFarWest engine patches fail closed");
+    }
+    expect(is_valid_farfarwest_view_extension_mapping(true, 20, 4, 6, 0xA0),
+        "accept the source-validated completed-family callback mapping");
+    expect(!is_valid_farfarwest_view_extension_mapping(true, 20, 0, 6, 0x70),
+        "reject the observed SetupViewFamily/counter false positive from the live run");
+    expect(!is_valid_farfarwest_view_extension_mapping(true, 20, 4, 6, 0x70),
+        "correct slots must not validate the unrelated incrementing field");
+    expect(!is_valid_farfarwest_view_extension_mapping(true, 20, 0, 6, 0xA0),
+        "correct frame offset must not validate SetupViewFamily as Begin");
+    expect(!is_valid_farfarwest_view_extension_mapping(true, 20, 4, 7, 0xA0),
+        "per-view render callbacks must not be treated as per-family callbacks");
+    expect(!is_valid_farfarwest_view_extension_mapping(false, 20, 4, 6, 0xA0),
+        "unobserved source interface must not be accepted from cache");
+    expect(!is_valid_farfarwest_view_extension_mapping(true, 19, 4, 6, 0xA0),
+        "priority callback must not be treated as IsActiveThisFrame");
+}
+
 } // namespace
 
 int main() {
@@ -862,6 +903,7 @@ int main() {
     test_ue58_pooled_slate_fallback();
     test_ue58_owned_ui_resource();
     test_ue58_slate_ui_capability();
+    test_farfarwest_view_extension_discovery();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
