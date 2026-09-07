@@ -22,6 +22,20 @@ inline std::wstring lowercase_path(std::wstring_view path) {
     return lowered;
 }
 
+inline bool should_use_farfarwest_ue581_view_extension_layout(
+    std::wstring_view path,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    return dx12 && file_version_ms == 0x00050008 &&
+        file_version_ls == 0x00010000 &&
+        filename == L"farfarwest-win64-shipping.exe";
+}
+
 inline bool is_avowed_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.find(L"avowed-win64-shipping") != std::wstring::npos ||
