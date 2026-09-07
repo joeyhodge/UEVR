@@ -187,6 +187,17 @@ cmake-after = """
 add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
 """
 
+[target.diagnostic-safety-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp"]
+include-directories = ["src/", "dependencies/submodules/UESDK/src"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
+cmake-after = """
+add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
