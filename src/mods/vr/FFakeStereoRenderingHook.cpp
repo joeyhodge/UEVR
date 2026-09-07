@@ -83,6 +83,7 @@
 #include "FFakeStereoRenderingHook.hpp"
 #include "CompatibilityPolicy.hpp"
 #include "BodycamTextureLayout.hpp"
+#include "UE58OwnedUITexture.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -5835,6 +5836,13 @@ bool is_validated_ue58_slate_ui_runtime() {
             file_version.dwFileVersionLS);
 }
 
+std::atomic<bool> g_ue58_pooled_ui_owned_resource_path{false};
+
+bool uses_ue58_pooled_ui_owned_resource_path() {
+    return is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend() &&
+        g_ue58_pooled_ui_owned_resource_path.load(std::memory_order_acquire);
+}
+
 bool supports_the_sinking_city_2_ue58_dx12_owned_ui_target() {
     static const bool is_the_sinking_city_2 = []() {
         const auto executable_path = utility::get_module_pathw(utility::get_executable());
@@ -6866,6 +6874,151 @@ bool bodycam_ue554_dx12_validate_scene_texture(
 
 template <typename T>
 bool safe_read_value(uintptr_t address, T& out);
+
+template <size_t N>
+bool ue58_ui_validate_accessor(uintptr_t object, size_t slot, const std::array<uint8_t, N>& expected) {
+    uintptr_t vtable{}, function{};
+    std::array<uint8_t, N> code{};
+    const auto executable = utility::get_executable();
+    return safe_read_value(object, vtable) &&
+        utility::get_module_within(vtable).value_or(nullptr) == executable &&
+        safe_read_value(vtable + slot * sizeof(uintptr_t), function) &&
+        utility::get_module_within(function).value_or(nullptr) == executable &&
+        is_executable_process_range(function, code.size()) &&
+        safe_read_value(function, code) &&
+        uevr::ue58_owned_ui::matches_accessor(code, expected);
+}
+
+std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> ue58_pooled_ui_validate_native_texture(
+    FRHITexture2D* texture, FRHITexture2D* scene, uint32_t width, uint32_t height)
+try {
+    namespace layout = uevr::ue58_owned_ui;
+    const auto rhi = reinterpret_cast<uintptr_t>(texture);
+    const auto scene_rhi = reinterpret_cast<uintptr_t>(scene);
+    uintptr_t vtable{}, scene_vtable{};
+    if (!uses_ue58_pooled_ui_owned_resource_path() || rhi == 0 || scene_rhi == 0 || rhi == scene_rhi ||
+        !safe_read_value(rhi, vtable) || !safe_read_value(scene_rhi, scene_vtable) || vtable != scene_vtable)
+    {
+        return std::nullopt;
+    }
+
+    // Only cache immutable code proof. No UESDK offset/vtable is learned from a
+    // partially initialized object, and no engine virtual function is invoked.
+    static std::atomic<uintptr_t> proven_native_vtable{};
+    if (proven_native_vtable.load(std::memory_order_acquire) != vtable) {
+        if (!ue58_ui_validate_accessor(rhi, 5, layout::native_resource_accessor)) {
+            return std::nullopt;
+        }
+        proven_native_vtable.store(vtable, std::memory_order_release);
+    }
+
+    uintptr_t d3d_resource{}, native_address{}, scene_resource{}, scene_native{};
+    if (!safe_read_value(rhi + layout::d3d_resource_offset, d3d_resource) || d3d_resource == 0 ||
+        !safe_read_value(d3d_resource + layout::native_resource_offset, native_address) || native_address == 0 ||
+        !safe_read_value(scene_rhi + layout::d3d_resource_offset, scene_resource) || scene_resource == 0 ||
+        !safe_read_value(scene_resource + layout::native_resource_offset, scene_native) || scene_native == 0 ||
+        native_address == scene_native || !is_probable_d3d_native_resource(reinterpret_cast<void*>(native_address)))
+    {
+        return std::nullopt;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D12Resource> native{};
+    if (FAILED(reinterpret_cast<ID3D12Resource*>(native_address)->QueryInterface(IID_PPV_ARGS(&native))) || !native) {
+        return std::nullopt;
+    }
+    D3D12_RESOURCE_DESC desc{};
+    if (!get_d3d12_resource_desc_guarded(native.Get(), desc) ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D ||
+        desc.Width != width || desc.Height != height || width == 0 || height == 0 ||
+        desc.DepthOrArraySize != 1 || desc.MipLevels != 1 || desc.SampleDesc.Count != 1 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE) != 0 ||
+        (desc.Format != DXGI_FORMAT_B8G8R8A8_TYPELESS && desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM &&
+         desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM_SRGB))
+    {
+        return std::nullopt;
+    }
+
+    ID3D12Device4* device_raw{};
+    if (!get_d3d12_resource_device_guarded(native.Get(), &device_raw)) {
+        return std::nullopt;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device4> device{};
+    device.Attach(device_raw);
+    const auto& hook = g_framework->get_d3d12_hook();
+    if (hook == nullptr || device == nullptr || device.Get() != hook->get_device()) {
+        return std::nullopt;
+    }
+
+    uintptr_t current_resource{}, current_native{}, current_vtable{};
+    if (!safe_read_value(rhi, current_vtable) || current_vtable != vtable ||
+        !safe_read_value(rhi + layout::d3d_resource_offset, current_resource) || current_resource != d3d_resource ||
+        !safe_read_value(d3d_resource + layout::native_resource_offset, current_native) || current_native != native_address)
+    {
+        return std::nullopt;
+    }
+    return native;
+} catch (...) {
+    return std::nullopt;
+}
+
+struct UE58OwnedUIResource {
+    uevr::ue58_owned_ui::Resource identity{};
+    Microsoft::WRL::ComPtr<ID3D12Resource> native{};
+};
+
+std::optional<UE58OwnedUIResource> ue58_pooled_ui_validate_owned_resource(
+    sdk::UTexture* texture, FRHITexture2D* scene, uint32_t width, uint32_t height, const char*& reason)
+try {
+    namespace layout = uevr::ue58_owned_ui;
+    reason = "owner or scene is unavailable";
+    if (!uses_ue58_pooled_ui_owned_resource_path() || texture == nullptr || scene == nullptr) {
+        return std::nullopt;
+    }
+    const auto owner = reinterpret_cast<uintptr_t>(texture);
+    const auto owner_class = texture->get_class();
+    if (owner_class == nullptr) {
+        return std::nullopt;
+    }
+    const auto size = owner_class->get_properties_size();
+    if (size <= 0 || static_cast<uint32_t>(size) > layout::max_owner_size ||
+        !is_readable_process_range(owner, static_cast<size_t>(size)))
+    {
+        return std::nullopt;
+    }
+    const auto read = [](uintptr_t address, auto& out) { return safe_read_value(address, out); };
+    const auto validate = [&](uintptr_t resource, uintptr_t rhi) {
+        uintptr_t rhi_vtable{}, scene_vtable{};
+        return is_readable_process_range(resource, layout::resource_size) &&
+            ue58_ui_validate_accessor(resource, 6, layout::size_x_accessor) &&
+            ue58_ui_validate_accessor(resource + layout::render_target_offset, 2, layout::render_target_accessor) &&
+            safe_read_value(rhi, rhi_vtable) &&
+            safe_read_value(reinterpret_cast<uintptr_t>(scene), scene_vtable) && rhi_vtable == scene_vtable;
+    };
+
+    reason = "GT/RT resources, owner, extent or accessor proof is not ready";
+    const auto identity = layout::find_resource(owner, size, width, height, read, validate);
+    if (!identity) {
+        return std::nullopt;
+    }
+    reason = "native UI texture, format or device is not ready";
+    auto native = ue58_pooled_ui_validate_native_texture(
+        reinterpret_cast<FRHITexture2D*>(identity->rhi_texture), scene, width, height);
+    if (!native) {
+        return std::nullopt;
+    }
+
+    reason = "owned resource changed during validation";
+    if (layout::find_resource(owner, size, width, height, read, validate) != identity) {
+        return std::nullopt;
+    }
+    reason = "ready";
+    return UE58OwnedUIResource{*identity, std::move(*native)};
+} catch (...) {
+    reason = "owned resource became unreadable during validation";
+    return std::nullopt;
+}
 
 std::optional<ValidatedNativeFixTextureChain> bodycam_ue554_validate_owned_texture_chain(
     sdk::UTexture* texture,
@@ -12865,14 +13018,18 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         uintptr_t previous_internal_callsite{};
         uintptr_t previous_internal_target{};
         bool previous_call_matches_pooled_wrapper_input_abi{};
+        bool matches_strict_pooled_register_abi{};
+        bool previous_call_matches_strict_pooled_wrapper_abi{};
     };
 
     const auto collect_internal_calls_after_ref = [&](uintptr_t ref, uintptr_t max_bytes) {
         std::vector<RegisterCallsite> calls{};
         std::array<std::optional<INSTRUX>, 5> previous{};
+        std::array<uintptr_t, 5> previous_addresses{};
         uintptr_t previous_internal_callsite{};
         uintptr_t previous_internal_target{};
         bool previous_call_matches_pooled_wrapper_input_abi{};
+        bool previous_call_matches_strict_pooled_wrapper_abi{};
 
         std::optional<uint32_t> anchor_name_register{};
         if (const auto anchor = utility::decode_one(reinterpret_cast<uint8_t*>(ref));
@@ -12883,6 +13040,12 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
         {
             anchor_name_register = anchor->Operands[0].Info.Register.Reg;
         }
+
+        bool anchor_name_live = anchor_name_register.has_value();
+        const auto is_nonvolatile_register = [](uint32_t reg) {
+            return reg == NDR_RBX || reg == NDR_RBP || reg == NDR_RSI || reg == NDR_RDI ||
+                (reg >= NDR_R12 && reg <= NDR_R15);
+        };
 
         const auto is_register_move = [](const INSTRUX& ix, uint32_t destination, std::optional<uint32_t> source = std::nullopt) {
             if (ix.Instruction != ND_INS_MOV || ix.OperandsCount < 2 ||
@@ -12968,6 +13131,59 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                             .r9_zero_flags = has_zero_r9,
                         };
 
+                        // The fallback requires exactly three straight-line argument writes,
+                        // not the legacy window's union of possibly stale register assignments.
+                        using Setup = uevr::vr_compatibility::UE58SlateArgumentSetup;
+                        std::array<Setup, 3> wrapper_setup{};
+                        std::array<Setup, 3> register_setup{};
+                        for (size_t i = 0; i < wrapper_setup.size(); ++i) {
+                            const auto index = previous.size() - wrapper_setup.size() + i;
+                            if (!previous[index]) {
+                                continue;
+                            }
+
+                            const auto& prior = *previous[index];
+                            const auto pointer_destination = prior.OperandsCount >= 2 &&
+                                prior.Operands[0].Size == sizeof(uintptr_t);
+                            const auto pointer_move = pointer_destination &&
+                                prior.Operands[1].Size == sizeof(uintptr_t);
+                            if (pointer_destination && loads_register_address(prior, NDR_RCX) &&
+                                prior.Operands[1].Info.Memory.HasBase &&
+                                !prior.Operands[1].Info.Memory.HasIndex &&
+                                (prior.Operands[1].Info.Memory.Base == NDR_RSP ||
+                                 prior.Operands[1].Info.Memory.Base == NDR_RBP))
+                            {
+                                wrapper_setup[i] = Setup::HiddenReturnRcx;
+                            } else if (pointer_move && loads_register_value(prior, NDR_RDX)) {
+                                wrapper_setup[i] = Setup::RawTextureRdx;
+                            } else if (anchor_name_live && anchor_name_register && pointer_destination &&
+                                ((pointer_move && is_register_move(prior, NDR_R8, *anchor_name_register)) ||
+                                 (*anchor_name_register == NDR_R8 && previous_addresses[index] == ref &&
+                                  loads_register_address(prior, NDR_R8))))
+                            {
+                                wrapper_setup[i] = Setup::NameR8;
+                            }
+
+                            if (pointer_move && is_register_move(prior, NDR_RCX) &&
+                                is_nonvolatile_register(prior.Operands[1].Info.Register.Reg))
+                            {
+                                register_setup[i] = Setup::BuilderRcx;
+                            } else if (pointer_move && is_register_move(prior, NDR_RDX, NDR_RAX)) {
+                                register_setup[i] = Setup::WrapperReturnRdx;
+                            } else if (zeroes_register(prior, NDR_R8) &&
+                                (prior.Operands[0].Size == 4 || prior.Operands[0].Size == 8))
+                            {
+                                register_setup[i] = Setup::ZeroFlagsR8;
+                            }
+                        }
+
+                        const auto direct_executable_call = ip[0] == 0xe8 && decoded->Length == 5 &&
+                            is_executable_process_range(*target, 1);
+                        const auto strict_wrapper = direct_executable_call &&
+                            uevr::vr_compatibility::is_ue58_strict_pooled_wrapper_setup(wrapper_setup);
+                        const auto strict_register = direct_executable_call &&
+                            uevr::vr_compatibility::is_ue58_strict_pooled_register_setup(register_setup);
+
                         calls.push_back({
                             (uintptr_t)ip,
                             *target,
@@ -12975,12 +13191,15 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                             uevr::vr_compatibility::is_ue58_direct_raw_texture_transaction(abi),
                             previous_internal_callsite,
                             previous_internal_target,
-                            previous_call_matches_pooled_wrapper_input_abi});
+                            previous_call_matches_pooled_wrapper_input_abi,
+                            strict_register,
+                            previous_call_matches_strict_pooled_wrapper_abi});
 
                         previous_internal_callsite = (uintptr_t)ip;
                         previous_internal_target = *target;
                         previous_call_matches_pooled_wrapper_input_abi =
                             uevr::vr_compatibility::is_ue58_pooled_wrapper_input_transaction(abi);
+                        previous_call_matches_strict_pooled_wrapper_abi = strict_wrapper;
                     }
                 }
             }
@@ -12989,8 +13208,24 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 break;
             }
 
+            if (anchor_name_live && reinterpret_cast<uintptr_t>(ip) != ref) {
+                if (mnemonic.starts_with("CALL") && !is_nonvolatile_register(*anchor_name_register)) {
+                    anchor_name_live = false;
+                }
+                for (size_t i = 0; i < decoded->OperandsCount; ++i) {
+                    const auto& operand = decoded->Operands[i];
+                    if (operand.Type == ND_OP_REG && operand.Info.Register.Type == ND_REG_GPR &&
+                        operand.Info.Register.Reg == *anchor_name_register && operand.Access.Write)
+                    {
+                        anchor_name_live = false;
+                    }
+                }
+            }
+
             std::rotate(previous.begin(), previous.begin() + 1, previous.end());
             previous.back() = *decoded;
+            std::rotate(previous_addresses.begin(), previous_addresses.begin() + 1, previous_addresses.end());
+            previous_addresses.back() = reinterpret_cast<uintptr_t>(ip);
             ip += decoded->Length;
         }
 
@@ -13094,6 +13329,48 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
             pooled_wrapper_transactions),
         std::memory_order_release);
 
+    std::unordered_set<uintptr_t> shared_strict_pooled_callsites{};
+    const auto is_strict_pooled_transaction = [&](const RegisterCallsite& candidate) {
+        return candidate.matches_strict_pooled_register_abi &&
+            candidate.previous_call_matches_strict_pooled_wrapper_abi &&
+            candidate.previous_internal_callsite != 0 &&
+            candidate.previous_internal_callsite < candidate.callsite &&
+            candidate.callsite - candidate.previous_internal_callsite <= 0x20;
+    };
+
+    // Some UE5.8 builds inline the raw overload and also share allocation/free
+    // helpers across both anchors. Prove the complete wrapper + registration
+    // pair at BOTH anchors before rescuing the otherwise-rejected call set.
+    if (!is_the_sinking_city_2 && is_validated_ue58_slate_ui_runtime() &&
+        proven_candidates.size() > 3 && direct_raw_transactions == 0 && pooled_wrapper_transactions == 1)
+    {
+        for (const auto spectator_ref : spectator_refs) {
+            for (const auto& spectator_call : collect_internal_calls_after_ref(spectator_ref, MAX_BYTES_AFTER_NAME_REF)) {
+                if (!is_strict_pooled_transaction(spectator_call)) {
+                    continue;
+                }
+                for (const auto& candidate : proven_candidates) {
+                    if (is_strict_pooled_transaction(candidate) &&
+                        candidate.target == spectator_call.target &&
+                        candidate.previous_internal_target == spectator_call.previous_internal_target)
+                    {
+                        shared_strict_pooled_callsites.insert(candidate.callsite);
+                    }
+                }
+            }
+        }
+    }
+
+    const bool use_automatic_pooled_fallback =
+        uevr::vr_compatibility::should_use_ue58_pooled_slate_fallback({
+            .exact_ue58 = is_validated_ue58_slate_ui_runtime(),
+            .dx12 = is_ue58_dx12_backend(),
+            .cross_anchor_candidates = static_cast<uint32_t>(proven_candidates.size()),
+            .direct_raw_transactions = direct_raw_transactions,
+            .pooled_wrapper_transactions = pooled_wrapper_transactions,
+            .shared_strict_pooled_transactions = static_cast<uint32_t>(shared_strict_pooled_callsites.size()),
+        });
+
     if (is_the_sinking_city_2) {
         const auto original_count = proven_candidates.size();
         std::erase_if(proven_candidates, [&](const RegisterCallsite& candidate) {
@@ -13105,6 +13382,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
                 "[UE5.8][SlateUI] Narrowed The Sinking City 2 updated Slate topology from {} cross-anchor calls to one validated pooled-wrapper transaction",
                 original_count);
         }
+    } else if (use_automatic_pooled_fallback) {
+        const auto original_count = proven_candidates.size();
+        std::erase_if(proven_candidates, [&](const RegisterCallsite& candidate) {
+            return !shared_strict_pooled_callsites.contains(candidate.callsite);
+        });
+        SPDLOG_INFO(
+            "[UE5.8][SlateUI] Resolved {} cross-anchor helpers to one ABI-validated pooled-wrapper transaction shared by Slate and spectator",
+            original_count);
     }
 
     if (proven_candidates.empty() || proven_candidates.size() > 3) {
@@ -13122,17 +13407,21 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
 
     size_t hooked_count = 0;
 
+    // Arm the safe resource initializer before the new callsite can execute.
+    g_ue58_pooled_ui_owned_resource_path.store(use_automatic_pooled_fallback, std::memory_order_release);
+
     for (const auto& candidate : proven_candidates) {
-        // The updated Sinking City 2 path wraps a raw FRHITexture before it
-        // calls the pooled RegisterExternalTexture overload. Hook the proven
+        // Pooled paths wrap a raw FRHITexture before they call the pooled
+        // RegisterExternalTexture overload. Hook the proven
         // wrapper input while RDX is still the raw texture and R8 still holds
         // the Slate name, then let the engine build the pooled wrapper.
-        const auto use_sinking_pooled_wrapper =
-            is_the_sinking_city_2 && uses_validated_pooled_wrapper_transaction(candidate);
-        const auto hook_callsite = use_sinking_pooled_wrapper
+        const auto use_pooled_wrapper = use_automatic_pooled_fallback
+            ? is_strict_pooled_transaction(candidate)
+            : is_the_sinking_city_2 && uses_validated_pooled_wrapper_transaction(candidate);
+        const auto hook_callsite = use_pooled_wrapper
             ? candidate.previous_internal_callsite
             : candidate.callsite;
-        const auto hook_target = use_sinking_pooled_wrapper
+        const auto hook_target = use_pooled_wrapper
             ? candidate.previous_internal_target
             : candidate.target;
 
@@ -13155,13 +13444,14 @@ void FFakeStereoRenderingHook::attempt_hook_ue58_slate_output_texture_register()
 
         SPDLOG_WARN(
             "[UE5.8][SlateUI] Hooked proven SlateOutputTexture {} callsite {:x} -> {:x} in DrawWindow {:x}",
-            use_sinking_pooled_wrapper ? "pooled-wrapper input" : "RegisterExternalTexture",
+            use_pooled_wrapper ? "pooled-wrapper input" : "RegisterExternalTexture",
             hook_callsite,
             hook_target,
             function_start);
     }
 
     if (hooked_count == 0) {
+        g_ue58_pooled_ui_owned_resource_path.store(false, std::memory_order_release);
         capability.scanner_state.store(
             uevr::vr_compatibility::UE58SlateScannerState::HookFailed,
             std::memory_order_release);
@@ -35766,7 +36056,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             }
 
             dedicated_ui_resource_worker.enqueue_conditional(
-                [this, tgt, width, height, generation]() -> bool {
+                [this, tgt, width, height, generation, stability = uevr::ue58_owned_ui::StableResource{}]() mutable -> bool {
                     try {
                         if (!this->is_dedicated_ui_generation_current(generation)) {
                             return true;
@@ -35835,7 +36125,28 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         }
 
                         FRHITexture2D* ready_texture{};
-                        if (bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend()) {
+                        if (uses_ue58_pooled_ui_owned_resource_path()) {
+                            const char* reason{};
+                            const auto validated = ue58_pooled_ui_validate_owned_resource(
+                                tgt.get(), this->get_render_target(), width, height, reason);
+                            if (!validated) {
+                                stability.observe(std::nullopt);
+                                SPDLOG_INFO_EVERY_N_SEC(5,
+                                    "[UE5.8][SlateUI] Waiting for validated owned UI resource: {}", reason);
+                                return false;
+                            }
+                            if (!stability.observe(uevr::ue58_owned_ui::Observation{
+                                    generation, validated->identity, reinterpret_cast<uintptr_t>(validated->native.Get())}))
+                            {
+                                return false;
+                            }
+                            ready_texture = reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture);
+                            SPDLOG_INFO(
+                                "[UE5.8][SlateUI] Validated owned UI resource for generation {}: owner+0x{:x} "
+                                "resource={:x} RHI={:x} native={:x} [{}x{}]; no discovery calls or global offset updates",
+                                generation, validated->identity.private_resource_offset, validated->identity.resource,
+                                validated->identity.rhi_texture, reinterpret_cast<uintptr_t>(validated->native.Get()), width, height);
+                        } else if (bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend()) {
                             const char* reason{};
                             const auto validated = bodycam_ue554_validate_owned_texture_chain(
                                 tgt.get(), width, height, reason);
@@ -35930,8 +36241,12 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                                 return;
                             }
 
-                            this->in_flight_dedicated_ui_texture = nullptr;
-                            this->dedicated_ui_texture = nullptr;
+                            // Keep the owner until destroy_dedicated_ui_target
+                            // queues its unroot; a failed proof must not leak it.
+                            if (!uses_ue58_pooled_ui_owned_resource_path()) {
+                                this->in_flight_dedicated_ui_texture = nullptr;
+                                this->dedicated_ui_texture = nullptr;
+                            }
                             if (stalker2_uses_ue55_draw_windows_array_layout()) {
                                 this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
                             }
@@ -35951,8 +36266,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             return;
                         }
 
-                        this->in_flight_dedicated_ui_texture = nullptr;
-                        this->dedicated_ui_texture = nullptr;
+                        if (!uses_ue58_pooled_ui_owned_resource_path()) {
+                            this->in_flight_dedicated_ui_texture = nullptr;
+                            this->dedicated_ui_texture = nullptr;
+                        }
                         if (stalker2_uses_ue55_draw_windows_array_layout()) {
                             this->stalker2_dedicated_ui_creation_failed.store(true, std::memory_order_release);
                         }
@@ -35984,6 +36301,38 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     }
 
     auto existing_target = get_dedicated_ui_target();
+
+    // This fallback must never enter the legacy UTexture/FRenderTarget scanners,
+    // including recovery after resize. Only an owned, fully validated chain can
+    // republish the UI target; a miss preserves the original Slate input.
+    if (uses_ue58_pooled_ui_owned_resource_path()) {
+        if (existing_target != nullptr) {
+            if (ue58_pooled_ui_validate_native_texture(
+                    existing_target, get_render_target(), dedicated_ui_width, dedicated_ui_height))
+            {
+                return;
+            }
+            destroy_dedicated_ui_target();
+            return;
+        }
+        if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
+            const char* reason{};
+            const auto validated = ue58_pooled_ui_validate_owned_resource(
+                dedicated_ui_texture.get(), get_render_target(), dedicated_ui_width, dedicated_ui_height, reason);
+            if (validated) {
+                set_dedicated_ui_target(reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture),
+                    dedicated_ui_width, dedicated_ui_height);
+                get_fallback_ui_target_ref() = nullptr;
+                return;
+            }
+            destroy_dedicated_ui_target();
+            return;
+        }
+        if (!is_dedicated_ui_target_pending()) {
+            try_schedule_dedicated_ui_creation();
+        }
+        return;
+    }
 
     if (existing_target != nullptr && !IsBadReadPtr(existing_target, sizeof(void*))) {
         if (g_framework->is_dx11()) {
