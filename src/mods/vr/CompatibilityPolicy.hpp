@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace uevr::vr_compatibility {
@@ -61,6 +62,56 @@ struct UE58SlateCallABIObservation {
     bool r8_anchor_name{};
     bool r9_zero_flags{};
 };
+
+enum class UE58SlateArgumentSetup : uint8_t {
+    Other,
+    BuilderRcx,
+    HiddenReturnRcx,
+    RawTextureRdx,
+    WrapperReturnRdx,
+    NameR8,
+    ZeroFlagsR8,
+};
+
+constexpr bool has_ue58_slate_argument_triple(
+    const std::array<UE58SlateArgumentSetup, 3>& setup,
+    UE58SlateArgumentSetup a,
+    UE58SlateArgumentSetup b,
+    UE58SlateArgumentSetup c) noexcept {
+    const auto contains = [&](UE58SlateArgumentSetup value) {
+        return setup[0] == value || setup[1] == value || setup[2] == value;
+    };
+    return contains(a) && contains(b) && contains(c);
+}
+
+constexpr bool is_ue58_strict_pooled_wrapper_setup(
+    const std::array<UE58SlateArgumentSetup, 3>& setup) noexcept {
+    using enum UE58SlateArgumentSetup;
+    return has_ue58_slate_argument_triple(setup, HiddenReturnRcx, RawTextureRdx, NameR8);
+}
+
+constexpr bool is_ue58_strict_pooled_register_setup(
+    const std::array<UE58SlateArgumentSetup, 3>& setup) noexcept {
+    using enum UE58SlateArgumentSetup;
+    return has_ue58_slate_argument_triple(setup, BuilderRcx, WrapperReturnRdx, ZeroFlagsR8);
+}
+
+struct UE58SlatePooledFallbackInputs {
+    bool exact_ue58{};
+    bool dx12{};
+    uint32_t cross_anchor_candidates{};
+    uint32_t direct_raw_transactions{};
+    uint32_t pooled_wrapper_transactions{};
+    uint32_t shared_strict_pooled_transactions{};
+};
+
+constexpr bool should_use_ue58_pooled_slate_fallback(
+    const UE58SlatePooledFallbackInputs& input) noexcept {
+    // Only rescue the legacy rejected set; working direct and pooled routes stay unchanged.
+    return input.exact_ue58 && input.dx12 && input.cross_anchor_candidates > 3 &&
+        input.direct_raw_transactions == 0 && input.pooled_wrapper_transactions == 1 &&
+        input.shared_strict_pooled_transactions == 1;
+}
 
 struct UE58SyntheticUICreationInputs {
     bool exact_ue58{};
