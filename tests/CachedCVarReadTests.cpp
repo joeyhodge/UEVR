@@ -1,7 +1,9 @@
 #define NOMINMAX
 #include <array>
+#include <cstring>
 #include <iostream>
 #include <sdk/CVar.hpp>
+#include <utility/Scan.hpp>
 
 namespace {
 struct CacheAccess : sdk::IConsoleVariable {
@@ -47,5 +49,15 @@ int test_cached_cvar_reads() {
     expect(!variable->TryGetFloat() && calls == 2, "cleared cache is not rediscovered by diagnostics");
     expect(sdk::find_validated_cvar_cached_only(L"uevr_diagnostic_nonexistent") == nullptr,
         "cache-only lookup never creates or discovers a missing CVar");
+
+    // The standalone SDK dependency only has the one-argument decoder API.
+    std::array<uint8_t, 32> lea{0x48, 0x8D, 0x15};
+    const auto instruction = reinterpret_cast<uintptr_t>(lea.data());
+    for (const int32_t displacement : {-64, 0, 64}) {
+        std::memcpy(lea.data() + 3, &displacement, sizeof(displacement));
+        const auto resolved = utility::resolve_displacement(instruction);
+        const auto expected = static_cast<uintptr_t>(static_cast<intptr_t>(instruction) + 7 + displacement);
+        expect(resolved && *resolved == expected, "portable CVar LEA decoding preserves signed RIP-relative targets");
+    }
     return failures;
 }
