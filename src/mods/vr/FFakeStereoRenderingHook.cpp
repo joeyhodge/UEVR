@@ -5255,6 +5255,16 @@ bool is_ue_5_8() {
     return disk_version.dwFileVersionMS == 0x50008;
 }
 
+bool farfarwest_ue581_view_extension_layout_is_current_game() {
+    static const bool matching_binary = []() {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        const auto version = sdk::get_file_version_info();
+        return path && uevr::games::should_use_farfarwest_ue581_view_extension_layout(
+            *path, version.dwFileVersionMS, version.dwFileVersionLS, true);
+    }();
+    return matching_binary && g_framework != nullptr && g_framework->is_dx12();
+}
+
 
 bool is_ue_5_6_or_newer() {
     static const auto disk_version = sdk::get_file_version_info();
@@ -9310,7 +9320,8 @@ bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wr
 }
 
 std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
-    uintptr_t direct_callback_return = 0)
+    uintptr_t direct_callback_return = 0,
+    uintptr_t excluded_viewport_draw = 0)
 {
     constexpr uint32_t max_stack_depth = 32;
     // The renderer entry is close to the view-extension callback. Launch-loop
@@ -9397,6 +9408,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         const auto caller = get_canonical_runtime_function_range(stack[i + 1]);
 
         if (!callee || !caller || callee->begin == caller->begin ||
+            callee->begin == excluded_viewport_draw ||
             callee->image_base != game_module || caller->image_base != game_module ||
             caller->size() > 0x180 || callee->size() < 0x200 ||
             !direct_call_returns_to(stack[i + 1], callee->begin))
@@ -9459,7 +9471,8 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
                     source_frame_number_offset,
                     observer_ue425plus || hellblade_ue425)
                 : get_canonical_runtime_function_range(stack[i]);
-            if (!candidate || candidate->image_base != game_module ||
+            if (!candidate || candidate->begin == excluded_viewport_draw ||
+                candidate->image_base != game_module ||
                 candidate->size() < min_renderer_size ||
                 candidate->size() > max_renderer_size)
             {
@@ -18612,7 +18625,8 @@ struct SceneViewExtensionAnalyzer {
     }
 
     static bool read_ue57_view_family_frame(uintptr_t candidate, uint32_t& frame) {
-        if (!is_ue_5_7_runtime() ||
+        const bool farfarwest_source_layout = farfarwest_ue581_view_extension_layout_is_current_game();
+        if ((!is_ue_5_7_runtime() && !farfarwest_source_layout) ||
             candidate == 0 || (candidate & (alignof(void*) - 1)) != 0 ||
             !is_readable_process_range(candidate, UE57_FRAME_NUMBER_OFFSET + sizeof(frame)))
         {
@@ -18633,6 +18647,18 @@ struct SceneViewExtensionAnalyzer {
             &frame,
             reinterpret_cast<const void*>(candidate + UE57_FRAME_NUMBER_OFFSET),
             sizeof(frame));
+
+        if (farfarwest_source_layout) {
+            // The executable and live trace agree on this source layout.
+            // SetupViewFamily still has empty Views and UINT_MAX at +0xA0;
+            // its incrementing +0x70 field is not the render-frame identity.
+            auto* const family = reinterpret_cast<sdk::FSceneViewFamily*>(candidate);
+            if (!sdk::FSceneViewFamily::validate_views(
+                    family, reinterpret_cast<const void*>(candidate + 0x08)))
+            {
+                return false;
+            }
+        }
 
         const auto validate_polymorphic_object = [](uintptr_t object) {
             if (object == 0 || (object & (alignof(void*) - 1)) != 0 ||
@@ -18683,7 +18709,8 @@ struct SceneViewExtensionAnalyzer {
     }
 
     static bool try_apply_ue57_source_fallback() {
-        if (!is_ue_5_7_runtime() ||
+        const bool farfarwest_source_layout = farfarwest_ue581_view_extension_layout_is_current_game();
+        if ((!is_ue_5_7_runtime() && !farfarwest_source_layout) ||
             !has_found_is_active_this_frame_index ||
             is_active_this_frame_index != UE57_IS_ACTIVE_INDEX ||
             !index_0_called ||
@@ -18723,9 +18750,10 @@ struct SceneViewExtensionAnalyzer {
         sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
 
         SPDLOG_INFO(
-            "[UE5.7][ViewExtension] Applied source-and-runtime-validated mapping "
+            "[{}][ViewExtension] Applied source-and-runtime-validated mapping "
             "BeginRenderViewFamily={} PreRenderViewFamily_RenderThread={} IsActiveThisFrame={} "
             "FrameNumber=0x{:x} begin_calls={} pre_render_calls={} begin_advances={} pre_render_advances={}",
+            farfarwest_source_layout ? "FarFarWest UE5.8.1" : "UE5.7",
             begin_render_viewfamily_index,
             pre_render_viewfamily_renderthread_index,
             is_active_this_frame_index,
@@ -18883,6 +18911,14 @@ struct SceneViewExtensionAnalyzer {
         }
 
         if (try_apply_ue57_source_fallback()) {
+            return false;
+        }
+
+        if (farfarwest_ue581_view_extension_layout_is_current_game()) {
+            // Count only the observed source callbacks until the complete
+            // family/frame validation succeeds. Never fall through to the
+            // counter heuristic that misidentified SetupViewFamily as Begin.
+            ++functions[N].call_count;
             return false;
         }
 
@@ -19333,6 +19369,14 @@ bool SceneViewExtensionAnalyzer::validate_cached_discovery(void** original_vtabl
          cached_begin != UE57_BEGIN_RENDER_VIEWFAMILY_INDEX ||
          cached_pre_render != UE57_PRE_RENDER_VIEWFAMILY_INDEX ||
          cached_frame_count_offset != UE57_FRAME_NUMBER_OFFSET))
+    {
+        return false;
+    }
+
+    if (farfarwest_ue581_view_extension_layout_is_current_game() &&
+        !uevr::vr_compatibility::is_valid_farfarwest_view_extension_mapping(
+            cached.value("index_0_called", false), cached_is_active,
+            cached_begin, cached_pre_render, cached_frame_count_offset))
     {
         return false;
     }
@@ -24015,7 +24059,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                 : pokemon_emerald_is_current_game()
                     ? resolve_pokemon_emerald_begin_rendering_viewfamilies()
                     : resolve_begin_rendering_viewfamilies_from_stack(
-                        reinterpret_cast<uintptr_t>(_ReturnAddress()));
+                        reinterpret_cast<uintptr_t>(_ReturnAddress()),
+                        farfarwest_ue581_view_extension_layout_is_current_game()
+                            ? g_hook->m_gameviewportclient_draw_hook.target_address()
+                            : 0);
             if (!candidate) {
                 SPDLOG_WARN(
                     "[ViewFamilySelector] Failed to resolve BeginRenderingViewFamilies on attempt {}; "

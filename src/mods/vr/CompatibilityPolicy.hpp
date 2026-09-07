@@ -13,6 +13,18 @@ enum class RenderingMethod : int32_t {
     SyntheticDibrSingleView = 4,
 };
 
+constexpr bool is_valid_farfarwest_view_extension_mapping(
+    bool index_zero_called,
+    uint32_t active_index,
+    uint32_t begin_index,
+    uint32_t pre_render_index,
+    uint32_t frame_offset) noexcept {
+    // Slot 0 is SetupViewFamily. Its +0x70 value also advances, but it is
+    // not the renderer's FrameNumber and must not identify BeginRender.
+    return index_zero_called && active_index == 20 && begin_index == 4 &&
+        pre_render_index == 6 && frame_offset == 0xA0;
+}
+
 // UE5.8 keeps the same high-level Slate source contract across 5.8.0-5.8.2,
 // but optimized games expose either the raw-texture helper or its pooled
 // RegisterExternalTexture transaction.
