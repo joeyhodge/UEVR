@@ -38,17 +38,17 @@ inline bool should_log_every_n_seconds(
 
 #define SPDLOG_INFO_ONCE(...) do { \
     static std::atomic_flag once = ATOMIC_FLAG_INIT; \
-    if (!once.test_and_set(std::memory_order_relaxed)) { SPDLOG_INFO(__VA_ARGS__); } \
+    if (!once.test(std::memory_order_relaxed) && !once.test_and_set(std::memory_order_relaxed)) { SPDLOG_INFO(__VA_ARGS__); } \
 } while (false)
 
 #define SPDLOG_WARN_ONCE(...) do { \
     static std::atomic_flag once = ATOMIC_FLAG_INIT; \
-    if (!once.test_and_set(std::memory_order_relaxed)) { SPDLOG_WARN(__VA_ARGS__); } \
+    if (!once.test(std::memory_order_relaxed) && !once.test_and_set(std::memory_order_relaxed)) { SPDLOG_WARN(__VA_ARGS__); } \
 } while (false)
 
 #define SPDLOG_ERROR_ONCE(...) do { \
     static std::atomic_flag once = ATOMIC_FLAG_INIT; \
-    if (!once.test_and_set(std::memory_order_relaxed)) { SPDLOG_ERROR(__VA_ARGS__); } \
+    if (!once.test(std::memory_order_relaxed) && !once.test_and_set(std::memory_order_relaxed)) { SPDLOG_ERROR(__VA_ARGS__); } \
 } while (false)
 
 #define SPDLOG_INFO_EVERY_N_SEC(n, ...) do { \
