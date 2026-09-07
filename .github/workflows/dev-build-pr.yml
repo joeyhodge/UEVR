@@ -18,7 +18,13 @@ jobs:
           submodules: recursive
 
       - name: Configure CMake
-        run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}}
+        run: cmake -S ${{github.workspace}} -B ${{github.workspace}}/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_BUILD_TYPE=${{env.BUILD_TYPE}} -DUEVR_BUILD_COMPATIBILITY_TESTS=ON
+
+      - name: Build offline tests
+        run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target compatibility-policy-tests diagnostic-safety-tests
+
+      - name: Run offline tests
+        run: ctest --test-dir ${{github.workspace}}/build -C ${{env.BUILD_TYPE}} --output-on-failure --no-tests=error
 
       - name: Build
         run: cmake --build ${{github.workspace}}/build --config ${{env.BUILD_TYPE}} --target ${{matrix.target}}
