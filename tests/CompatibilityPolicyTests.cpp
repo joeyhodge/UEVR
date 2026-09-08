@@ -5,6 +5,7 @@
 #include <vector>
 
 #include <sdk/FSceneView.hpp>
+#include <sdk/FSceneViewFamily.hpp>
 #include <sdk/FSceneViewLayoutPolicy.hpp>
 #include <sdk/MafiaDiscovery.hpp>
 
@@ -28,6 +29,37 @@ void expect(bool condition, std::string_view message) {
 
 constexpr size_t offset_delta(size_t member, size_t base) {
     return member - base;
+}
+
+void test_family_snapshot_accessors() {
+    static_assert(std::is_empty_v<sdk::FSceneViewFamily> && std::is_empty_v<sdk::FSceneViewInitOptionsBase>,
+        "publication storage must not add bytes to engine overlays");
+    for (const auto offsets : {std::array<uint32_t, 3>{0, 0x18, 0x20}, {8, 0x20, 0x28},
+                              {8, 0x30, 0x38}, {8, 0x30, 0x40}}) {
+        alignas(16) std::array<uint8_t, 0x100> storage{};
+        auto* family = new (storage.data()) sdk::FSceneViewFamily;
+        auto* target = reinterpret_cast<sdk::FRenderTarget*>(uintptr_t{0x12340000});
+        auto* scene = reinterpret_cast<sdk::FSceneInterface*>(uintptr_t{0x56780000});
+        const uint32_t frame{45};
+        std::memcpy(storage.data() + offsets[1], &target, sizeof(target));
+        std::memcpy(storage.data() + offsets[2], &scene, sizeof(scene));
+        std::memcpy(storage.data() + 0x80, &frame, sizeof(frame));
+        sdk::FSceneViewFamily::set_offsets(offsets[0], offsets[1], offsets[2]);
+        sdk::FSceneViewFamily::set_frame_count_offset(0x80);
+        const auto snapshot = sdk::FSceneViewFamily::get_layout_snapshot();
+        expect(family->get_render_target() == target && family->get_scene_interface() == scene &&
+               family->get_frame_count() == frame &&
+               reinterpret_cast<uint8_t*>(family->get_views()) == storage.data() + offsets[0],
+            "production getters preserve legacy, Medium, UE5.4 and UE5.5+ offsets including zero");
+        auto expected = storage;
+        auto* replacement = reinterpret_cast<sdk::FRenderTarget*>(uintptr_t{0x98760000});
+        std::memcpy(expected.data() + offsets[1], &replacement, sizeof(replacement));
+        family->set_render_target(replacement);
+        expect(storage == expected, "target write changes exactly the previously validated slot");
+        sdk::FSceneViewFamily::set_frame_count_offset(0x84);
+        expect(snapshot->frame_count == 0x80u && sdk::FSceneViewFamily::get_layout_snapshot()->frame_count == 0x84u,
+            "separate frame metadata publication leaves old readers intact");
+    }
 }
 
 void test_scene_view_layouts() {
@@ -983,6 +1015,7 @@ int main() {
     test_ue58_slate_ui_capability();
     test_farfarwest_view_extension_discovery();
     test_mafia_discovery();
+    test_family_snapshot_accessors();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
