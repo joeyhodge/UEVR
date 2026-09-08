@@ -39,6 +39,7 @@
 #include <sdk/UEngine.hpp>
 #include <sdk/UGameEngine.hpp>
 #include <sdk/CVar.hpp>
+#include <sdk/MafiaDiscovery.hpp>
 #include <sdk/Slate.hpp>
 #include <sdk/DynamicRHI.hpp>
 #include <sdk/FViewportInfo.hpp>
@@ -19178,11 +19179,19 @@ struct SceneViewExtensionAnalyzer {
     static void hook_new_rhi_command(sdk::FRHICommandBase_New* last_command, uint32_t frame_count) {
         std::scoped_lock __{vtable_mutex};
 
-        auto runtime = VR::get()->get_runtime();
-        runtime->on_pre_render_render_thread(frame_count);
+        auto& vr = VR::get();
+        auto runtime = vr->get_runtime();
+        const bool preserve_pending_identity = uevr::vr_compatibility::should_preserve_mafia_pending_rhi_identity(
+            sdk::mafia::uses_ue544_discovery(), vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled());
+        if (!preserve_pending_identity) {
+            runtime->on_pre_render_render_thread(frame_count);
+        }
 
         const char* rejection_reason = nullptr;
         if (!is_probable_new_rhi_command(last_command, rejection_reason)) {
+            if (preserve_pending_identity) {
+                runtime->on_pre_render_render_thread(frame_count);
+            }
             SPDLOG_WARN_ONCE(
                 "[ISceneViewExtension] Rejected unsafe new RHI-command candidate before hijack ({}); "
                 "falling back to render-thread poses",
@@ -19201,6 +19210,28 @@ struct SceneViewExtensionAnalyzer {
             (uintptr_t)&hooked_command_fn<5>,
             (uintptr_t)&hooked_command_fn<6>
         };
+
+        if (preserve_pending_identity &&
+            (original_vtables.contains(last_command) || *(void**)last_command == new_vtable.data())) {
+            const auto pending = cmd_frame_counts.find(last_command);
+            if (pending != cmd_frame_counts.end() && pending->second == frame_count && original_vtables.contains(last_command)) {
+                SPDLOG_INFO_ONCE("[Mafia][NativeFix][RHI] Reused pending same-frame command; retaining its original vtable/frame and pose enqueue");
+            } else {
+                static auto last_warning = std::chrono::steady_clock::time_point{};
+                const auto now = std::chrono::steady_clock::now();
+                if (last_warning.time_since_epoch().count() == 0 || now - last_warning >= std::chrono::seconds(30)) {
+                    SPDLOG_WARN("[Mafia][NativeFix][RHI] Pending command identity conflict; preserving original owner: command={:x} recorded={} incoming={}",
+                        reinterpret_cast<uintptr_t>(last_command), pending != cmd_frame_counts.end() ? pending->second : 0, frame_count);
+                    last_warning = now;
+                }
+            }
+            // The replayed family has not created another command. In particular,
+            // do not relabel an already queued command or enqueue its poses twice.
+            return;
+        }
+        if (preserve_pending_identity) {
+            runtime->on_pre_render_render_thread(frame_count);
+        }
 
         cmd_frame_counts[last_command] = frame_count;
 
