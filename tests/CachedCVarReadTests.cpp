@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <sdk/CVar.hpp>
+#include <sdk/MafiaDiscovery.hpp>
 #include <utility/Scan.hpp>
 
 namespace {
@@ -59,5 +60,47 @@ int test_cached_cvar_reads() {
         const auto expected = static_cast<uintptr_t>(static_cast<intptr_t>(instruction) + 7 + displacement);
         expect(resolved && *resolved == expected, "portable CVar LEA decoding preserves signed RIP-relative targets");
     }
+
+    // Manager recovery must validate memory without invoking any candidate vfunc.
+    static std::array<void*, 8> manager_vtable;
+    static std::array<void*, 3> variable_vtable;
+    manager_vtable.fill(reinterpret_cast<void*>(&destructor_stub));
+    variable_vtable.fill(reinterpret_cast<void*>(&destructor_stub));
+    struct Variable { void** vtable; } variables[3]{{variable_vtable.data()}, {variable_vtable.data()}, {variable_vtable.data()}};
+    std::array<sdk::ConsoleObjectElement, 3> elements{};
+    constexpr std::array<std::wstring_view, 3> names{L"r.DumpingMovie", L"r.DetailMode", L"r.OneFrameThreadLag"};
+    for (size_t i = 0; i < names.size(); ++i) {
+        elements[i].key = const_cast<wchar_t*>(names[i].data());
+        elements[i].unk[0] = elements[i].unk[1] = static_cast<int32_t>(names[i].size() + 1);
+        elements[i].value = reinterpret_cast<sdk::IConsoleObject*>(&variables[i]);
+    }
+    struct Manager { void** vtable; sdk::ConsoleObjectArray array; } manager{manager_vtable.data(), {elements.data(), 3, 3}};
+    static_assert(offsetof(Manager, array) == sizeof(void*));
+    const auto valid_manager = [&] {
+        return sdk::mafia::detail::has_valid_console_manager_map(reinterpret_cast<sdk::FConsoleManager*>(&manager));
+    };
+    expect(valid_manager(), "initialized stock console map requires three independently validated CVar anchors");
+    expect(!sdk::mafia::detail::has_valid_console_manager_map(nullptr), "null manager is rejected without a call");
+    expect(!sdk::mafia::detail::has_valid_console_manager_map(reinterpret_cast<sdk::FConsoleManager*>(0x10000)),
+        "unreadable manager fails closed without an access violation");
+    manager.array.capacity = 2;
+    expect(!valid_manager(), "invalid console map capacity is rejected");
+    manager.array.capacity = 3;
+    manager.array.elements = reinterpret_cast<sdk::ConsoleObjectElement*>(0x10000);
+    expect(!valid_manager(), "unreadable console elements fail closed");
+    manager.array.elements = elements.data();
+    elements[2].value = elements[1].value;
+    expect(!valid_manager(), "aliased anchor objects cannot validate a manager");
+    elements[2].value = reinterpret_cast<sdk::IConsoleObject*>(&variables[2]);
+    elements[2].key = reinterpret_cast<wchar_t*>(0x10000);
+    expect(!valid_manager(), "unreadable anchor names are rejected without a call");
+    elements[2].key = const_cast<wchar_t*>(names[2].data());
+    elements[2].unk[0] = 0x7fffffff;
+    expect(!valid_manager(), "unbounded string lengths cannot be read during discovery");
+    elements[2].unk[0] = elements[2].unk[1];
+    variable_vtable[1] = reinterpret_cast<void*>(0x10000);
+    expect(!valid_manager(), "non-executable console virtual functions prevent publication");
+    variable_vtable[1] = reinterpret_cast<void*>(&destructor_stub);
+    expect(valid_manager(), "a later valid snapshot is accepted after earlier incomplete snapshots");
     return failures;
 }

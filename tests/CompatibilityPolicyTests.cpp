@@ -6,6 +6,7 @@
 
 #include <sdk/FSceneView.hpp>
 #include <sdk/FSceneViewLayoutPolicy.hpp>
+#include <sdk/MafiaDiscovery.hpp>
 
 #include "mods/GameSpecific.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
@@ -891,6 +892,83 @@ void test_farfarwest_view_extension_discovery() {
         "priority callback must not be treated as IsActiveThisFrame");
 }
 
+void test_mafia_discovery() {
+    using namespace sdk::mafia;
+    expect(is_ue544_runtime(L"D:/anywhere/MAFIATHEOLDCOUNTRY.EXE", 0x50004, 0x40000),
+        "Mafia scope uses the exact basename and validated UE5.4.4 version");
+    for (const auto path : {L"Other.exe", L"MafiaTheOldCountry.exe.bak", L"D:/MafiaTheOldCountry.exe/Other.exe"}) {
+        expect(!is_ue544_runtime(path, 0x50004, 0x40000), "other titles never inherit Mafia discovery");
+    }
+    for (const auto version : {0x40019u, 0x50003u, 0x50005u, 0x50006u, 0x50008u}) {
+        expect(!is_ue544_runtime(L"MafiaTheOldCountry.exe", version, 0x40000), "other engine layouts remain unchanged");
+    }
+    expect(!is_ue544_runtime(L"MafiaTheOldCountry.exe", 0x50004, 0x30000), "unvalidated patch versions fail closed");
+    expect(supports_interface_fallback(L"r.AllowOcclusionQueries"), "missing occlusion data can use the validated variable interface");
+    expect(!supports_interface_fallback(L"r.OneFrameThreadLag"), "already working raw controls retain their existing path");
+
+    // Actual registration bytes from the matching Mafia executable; all runtime
+    // addresses are decoded from relocations, never compiled into the scanner.
+    const std::array<uint8_t, 59> registration{
+        0x48,0x83,0xEC,0x28,0x48,0x8B,0x0D,0x85,0x75,0xC3,0x06,0x48,0x85,0xC9,0x74,0x32,
+        0x48,0x8B,0x01,0xC7,0x44,0x24,0x20,0x01,0x00,0x00,0x00,0x48,0x8D,0x15,0x3A,0xD9,0xAC,0x04,
+        0x4C,0x8D,0x05,0xDF,0x0C,0xC6,0x06,0x4C,0x8D,0x0D,0xE4,0xD7,0xAC,0x04,0xFF,0x50,0x38,
+        0x48,0x83,0x3D,0x55,0x75,0xC3,0x06,0x00};
+    for (const uintptr_t slide : {uintptr_t{0}, uintptr_t{0x10000000}, uintptr_t{0x7ff000000000}}) {
+        expect(console_registration_storage(registration, 0x1442dd0c0 + slide, 0x148daaa1c + slide) == 0x14af14650 + slide,
+            "tail-call registration resolves the same storage under ASLR");
+    }
+    for (size_t length = 0; length < registration.size(); ++length) {
+        expect(!console_registration_storage(std::span{registration}.first(length), 0x1442dd0c0, 0x148daaa1c),
+            "truncated registration never publishes a global");
+    }
+    expect(!console_registration_storage(registration, 0x1442dd0c0, 0x148daaa1d), "unrelated string reference is rejected");
+    for (const size_t offset : {4u, 6u, 16u, 18u, 23u, 27u, 29u, 48u, 50u, 53u, 54u}) {
+        auto bad = registration;
+        bad[offset] ^= 1;
+        expect(!console_registration_storage(bad, 0x1442dd0c0, 0x148daaa1c), "incorrect register, call, or storage agreement fails closed");
+    }
+    auto negative = registration;
+    const int32_t load_displacement = -75; // address - 64, relative to address + 11
+    const int32_t check_displacement = -123; // same storage, relative to address + 59
+    std::memcpy(negative.data() + 7, &load_displacement, sizeof(load_displacement));
+    std::memcpy(negative.data() + 54, &check_displacement, sizeof(check_displacement));
+    expect(console_registration_storage(negative, 0x1442dd0c0, 0x148daaa1c) == 0x1442dd080,
+        "negative RIP-relative manager displacement is sign-extended");
+
+    std::array<uint8_t, 0x180> draw{};
+    draw.fill(0x90);
+    const std::array<uint8_t, 8> spill{0x48,0x89,0x94,0x24,0x88,0,0,0};
+    const std::array<uint8_t, 23> debug{0x48,0x8B,0xB4,0x24,0x88,0,0,0,0x48,0x8B,0x06,
+        0x48,0x89,0xF1,0xFF,0x90,0x60,0x01,0,0,0x48,0x89,0xC7};
+    const std::array<uint8_t, 17> size{0x48,0x8B,0x06,0x48,0x8D,0x94,0x24,0x48,0x02,0,0,0x48,0x89,0xF1,0xFF,0x50,0x28};
+    std::copy(spill.begin(), spill.end(), draw.begin() + 0x20);
+    const std::array<uint8_t, 6> earlier_stereo_call{0xFF,0x90,0xD8,0x01,0,0};
+    std::copy(earlier_stereo_call.begin(), earlier_stereo_call.end(), draw.begin() + 0x40);
+    std::copy(debug.begin(), debug.end(), draw.begin() + 0x60);
+    std::copy(size.begin(), size.end(), draw.begin() + 0xC0);
+    const auto indices = viewport_helper_indices(draw);
+    expect(indices && indices->debug_canvas == 44 && indices->size_xy == 5,
+        "argument-proven helpers ignore the preceding IsStereoRenderingAllowed call");
+    for (const size_t offset : {0x22u,0x24u,0x64u,0x70u,0xC2u,0xD0u}) {
+        auto bad = draw;
+        bad[offset] ^= 1;
+        expect(!viewport_helper_indices(bad), "wrong viewport identity or helper slot is rejected");
+    }
+    auto ambiguous = draw;
+    std::copy(size.begin(), size.end(), ambiguous.begin() + 0xE0);
+    expect(!viewport_helper_indices(ambiguous), "ambiguous helper transactions must not publish indices");
+    expect(!viewport_helper_indices(std::span{draw}.first(0xD0)), "both complete calls are required");
+
+    for (const bool mafia : {false, true}) {
+        for (const bool native : {false, true}) {
+            for (const bool fix : {false, true}) {
+                expect(uevr::vr_compatibility::should_preserve_mafia_pending_rhi_identity(mafia, native, fix) == (mafia && native && fix),
+                    "pending-command ownership change is restricted to Mafia Native Fix, not ordinary Native, AFR or other games");
+            }
+        }
+    }
+}
+
 } // namespace
 
 int main() {
@@ -904,6 +982,7 @@ int main() {
     test_ue58_owned_ui_resource();
     test_ue58_slate_ui_capability();
     test_farfarwest_view_extension_discovery();
+    test_mafia_discovery();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
