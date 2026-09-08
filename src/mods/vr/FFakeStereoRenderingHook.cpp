@@ -73,6 +73,7 @@
 #include "Mods.hpp"
 #include "mods/UObjectHook.hpp"
 #include "mods/GameSpecific.hpp"
+#include "StellarBladeRendererEntry.hpp"
 
 #include <bdshemu.h>
 #include <bddisasm.h>
@@ -9157,6 +9158,47 @@ std::optional<RuntimeFunctionRange> get_source_validated_ue4_begin_rendering_vie
     return std::nullopt;
 }
 
+std::optional<RuntimeFunctionRange> get_stellar_blade_callable_renderer_range(uintptr_t callback_return) {
+    if (!indirect_virtual_call_returns_to(callback_return, 0x28)) {
+        return std::nullopt;
+    }
+
+    // A large chained child can independently match the body signature. Follow
+    // its unwind chain BEFORE testing that signature, never hook the child.
+    const auto candidate = get_canonical_runtime_function_range(callback_return);
+    if (!candidate || candidate->image_base != reinterpret_cast<uintptr_t>(utility::get_executable()) ||
+        !is_executable_process_range(candidate->begin, candidate->size()))
+    {
+        return std::nullopt;
+    }
+
+    DWORD64 root_image_base{};
+    const auto root = RtlLookupFunctionEntry(candidate->begin, &root_image_base, nullptr);
+    if (root == nullptr || root_image_base != candidate->image_base || root->UnwindData == 0 ||
+        root_image_base + root->BeginAddress != candidate->begin ||
+        root->EndAddress <= root->BeginAddress ||
+        root->EndAddress - root->BeginAddress < uevr::stellar_blade::renderer_entry_prefix.size())
+    {
+        return std::nullopt;
+    }
+
+    const auto unwind_address = candidate->image_base + root->UnwindData;
+    constexpr auto prefix_size = uevr::stellar_blade::renderer_entry_prefix.size();
+    constexpr auto unwind_size = uevr::stellar_blade::renderer_root_unwind.size();
+    if (unwind_address < candidate->image_base ||
+        !is_readable_process_range(candidate->begin, prefix_size) ||
+        !is_readable_process_range(unwind_address, unwind_size) ||
+        !uevr::stellar_blade::has_callable_renderer_entry(
+            {reinterpret_cast<const uint8_t*>(candidate->begin), prefix_size},
+            {reinterpret_cast<const uint8_t*>(unwind_address), unwind_size}) ||
+        !has_source_validated_ue4_begin_rendering_viewfamily_shape(*candidate, UE426_427_FRAME_NUMBER_OFFSET))
+    {
+        return std::nullopt;
+    }
+
+    return candidate;
+}
+
 bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
     // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
     // this as corroborating evidence rather than the sole resolver condition.
@@ -9201,6 +9243,13 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         source_validated_ue425 && observer_system_redux_is_current_game();
     const auto hellblade_ue425 =
         source_validated_ue425 && hellblade_is_current_game();
+    static const auto executable_path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
+    const auto vr = VR::get();
+    const auto stellar_blade_native_fix = uevr::games::should_use_stellar_blade_callable_renderer_entry(
+        executable_path,
+        is_ue_4_26_runtime(),
+        g_framework != nullptr && g_framework->is_dx12(),
+        vr != nullptr && vr->is_native_stereo_fix_enabled());
     const auto source_frame_number_offset = source_validated_ue425
         ? (hellblade_ue425
             ? HELLBLADE_UE425_FRAME_NUMBER_OFFSET
@@ -9208,7 +9257,9 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             ? UE425PLUS_FRAME_NUMBER_OFFSET
             : UE425_FRAME_NUMBER_OFFSET)
         : UE426_427_FRAME_NUMBER_OFFSET;
-    const auto source_runtime_label = hellblade_ue425
+    const auto source_runtime_label = stellar_blade_native_fix
+        ? "Stellar Blade UE4.26 callable root"
+        : hellblade_ue425
         ? "Hellblade UE4.25"
         : observer_ue425plus
         ? "Observer System Redux UE4.25Plus"
@@ -9217,17 +9268,21 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
             : (source_validated_ue425 ? "UE4.25" : "UE4.26/4.27"));
     std::optional<uintptr_t> best_candidate{};
     int best_score = std::numeric_limits<int>::min();
+    const auto resolve_ue4_callback = [&](uintptr_t callback_return) {
+        if (stellar_blade_native_fix) {
+            // No legacy fallback on a rejected Stellar Blade root.
+            return get_stellar_blade_callable_renderer_range(callback_return);
+        }
+        return get_source_validated_ue4_begin_rendering_viewfamily_range(
+            callback_return, source_frame_number_offset, observer_ue425plus || hellblade_ue425);
+    };
 
     // UE4.25-4.27 call slot 5 directly from FRendererModule::
     // BeginRenderingViewFamily. The callback's own return address is stronger
     // evidence than reconstructing that frame through RtlCaptureStackBackTrace.
     if (source_validated_ue4 && direct_callback_return != 0) {
         const auto direct_segment = get_runtime_function_range(direct_callback_return);
-        const auto direct_candidate =
-            get_source_validated_ue4_begin_rendering_viewfamily_range(
-                direct_callback_return,
-                source_frame_number_offset,
-                observer_ue425plus || hellblade_ue425);
+        const auto direct_candidate = resolve_ue4_callback(direct_callback_return);
         const auto direct_candidate_valid =
             direct_candidate.has_value() &&
             direct_candidate->image_base == game_module;
@@ -9323,10 +9378,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
                 ? std::optional<RuntimeFunctionRange>{}
                 : get_runtime_function_range(stack[i]);
             const auto candidate = source_validated_ue4
-                ? get_source_validated_ue4_begin_rendering_viewfamily_range(
-                    stack[i],
-                    source_frame_number_offset,
-                    observer_ue425plus || hellblade_ue425)
+                ? resolve_ue4_callback(stack[i])
                 : get_canonical_runtime_function_range(stack[i]);
             if (!candidate || candidate->begin == excluded_viewport_draw ||
                 candidate->image_base != game_module ||
