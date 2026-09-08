@@ -514,10 +514,12 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND diagnostic-safety-tests_SOURCES
 		"tests/DiagnosticSafetyTests.cpp"
+		"tests/CadenceReplayTests.cpp"
 		"tests/LoggingDisabledTests.cpp"
 		"tests/CachedCVarReadTests.cpp"
 		"tests/ConsoleTextTests.cpp"
 		"dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp"
+		"dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"
 	)
 
 	list(APPEND diagnostic-safety-tests_SOURCES
