@@ -13,6 +13,11 @@ enum class RenderingMethod : int32_t {
     SyntheticDibrSingleView = 4,
 };
 
+constexpr bool should_preserve_mafia_pending_rhi_identity(
+    bool exact_mafia_ue544, bool native_stereo, bool native_fix_enabled) noexcept {
+    return exact_mafia_ue544 && native_stereo && native_fix_enabled;
+}
+
 constexpr bool is_valid_farfarwest_view_extension_mapping(
     bool index_zero_called,
     uint32_t active_index,
