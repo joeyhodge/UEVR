@@ -352,6 +352,28 @@ constexpr bool should_enable_ghosting_remap(
         !sceneview_compatibility;
 }
 
+constexpr bool should_avoid_stalker2_synced_post_init(
+    bool exact_ue554_dx12_runtime,
+    bool strict_synchronized,
+    bool native_stereo_fix_active,
+    bool splitscreen_compatibility,
+    bool sceneview_compatibility) noexcept {
+    // Also protect callbacks installed in an earlier mode after Ghost is disabled.
+    // This selects an allocator path; it does not enable Ghost or Bootstrap.
+    return exact_ue554_dx12_runtime && strict_synchronized &&
+        !native_stereo_fix_active && !splitscreen_compatibility && !sceneview_compatibility;
+}
+
+constexpr bool is_ghosting_bootstrap_allocator_ready(
+    bool localplayer_post_init_complete,
+    bool use_lazy_viewstates,
+    bool inside_main_draw,
+    bool view_count_hook_ready) noexcept {
+    return use_lazy_viewstates
+        ? inside_main_draw && view_count_hook_ready
+        : localplayer_post_init_complete;
+}
+
 constexpr bool is_dibr_selected(RenderingMethod method) noexcept {
     return method == RenderingMethod::SyntheticDibr ||
         method == RenderingMethod::SyntheticDibrSingleView;

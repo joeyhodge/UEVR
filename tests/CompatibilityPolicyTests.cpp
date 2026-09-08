@@ -409,6 +409,70 @@ void test_version_gates() {
         "other UE5.5.4 games must not inherit the Bodycam viewport ABI");
 }
 
+void test_stalker2_lazy_ghost_bootstrap() {
+    using namespace uevr::vr_compatibility;
+    const auto supported = [](std::wstring_view path, std::wstring_view version,
+                              uint32_t ms = 0x00050005, uint32_t ls = 0x00040000) {
+        return uevr::games::is_stalker2_ue554_lazy_viewstate_runtime(path, version, ms, ls);
+    };
+    constexpr auto stalker = L"D:\\Games\\Stalker2-Win64-Shipping.exe";
+    expect(supported(stalker, L"5.5.4") &&
+           supported(L"Stalker2-Win64-Shipping.exe", L"5.5.4.0") &&
+           supported(L"D:/Games/STALKER2-WIN64-SHIPPING.EXE", L"5.5.4"),
+        "lazy ViewStates capability must accept the validated title independent of install path or case");
+    for (const auto version : {L"", L"unknown", L"0.00", L"5.5"}) {
+        expect(supported(stalker, version), "partial engine evidence needs the exact 5.5.4 file version");
+        expect(!supported(stalker, version, 0x00050005, 0x00030000) &&
+               !supported(stalker, version, 0x00050006, 0x00040000) &&
+               !supported(stalker, version, 0, 0),
+            "unknown or mismatched patch evidence must retain the existing bootstrap path");
+    }
+    for (const auto version : {L"5.1.1", L"5.4.4", L"5.5.3", L"5.5.40", L"5.6.1", L"5.7.4", L"5.8.1"}) {
+        expect(!supported(stalker, version),
+            "a known different engine version must override a coincidental 5.5.4 file version");
+    }
+    for (const auto path : {L"Other.exe", L"Medium-Win64-Shipping.exe", L"SHCO.exe",
+                           L"DuneSandbox-Win64-Shipping.exe", L"DaysGone.exe",
+                           L"Stalker2-Win64-Shipping.exe.backup", L"NotStalker2-Win64-Shipping.exe",
+                           L"C:/Stalker2-Win64-Shipping.exe/Other.exe"}) {
+        expect(!supported(path, L"5.5.4"), "the new bootstrap must require the exact executable basename");
+    }
+
+    for (unsigned mask = 0; mask < 32; ++mask) {
+        const bool runtime = mask & 1;
+        const bool sync = mask & 2;
+        const bool native_fix = mask & 4;
+        const bool split = mask & 8;
+        const bool scene_compat = mask & 16;
+        expect(should_avoid_stalker2_synced_post_init(runtime, sync, native_fix, split, scene_compat) == (mask == 3),
+            "PostInit bypass must exclude DX11, other versions/titles, Native, Native Fix, alternate modes and compatibility paths");
+    }
+
+    for (const auto method : {RenderingMethod::NativeStereo, RenderingMethod::Synchronized,
+                             RenderingMethod::Alternating, RenderingMethod::SyntheticDibr,
+                             RenderingMethod::SyntheticDibrSingleView}) {
+        expect(should_avoid_stalker2_synced_post_init(true, method == RenderingMethod::Synchronized, false, false, false) ==
+               (method == RenderingMethod::Synchronized),
+            "only explicit Synced may select lazy bootstrap, never Native under Extreme Compatibility");
+    }
+
+    for (unsigned mask = 0; mask < 16; ++mask) {
+        const bool initialized = mask & 1;
+        const bool lazy = mask & 2;
+        const bool main_draw = mask & 4;
+        const bool hook_ready = mask & 8;
+        const bool expected = lazy ? main_draw && hook_ready : initialized;
+        expect(is_ghosting_bootstrap_allocator_ready(initialized, lazy, main_draw, hook_ready) == expected,
+            "lazy allocation must require the real Draw/hook path; every legacy PostInit prerequisite stays unchanged");
+    }
+    expect(is_ghosting_bootstrap_allocator_ready(false, true, true, true),
+        "Stalker2 may use its natural allocation without falsely publishing PostInit completion");
+    expect(!is_ghosting_bootstrap_allocator_ready(true, true, false, true),
+        "a prior Native bootstrap must not allow a Synced pulse on an auxiliary view");
+    expect(!is_ghosting_bootstrap_allocator_ready(false, false, true, true),
+        "leaving Synced must restore the legacy prerequisite, not leak the lazy capability into Native");
+}
+
 void test_ue58_render_pose_fallback() {
     using namespace uevr::vr_compatibility;
 
@@ -1007,6 +1071,7 @@ int main() {
     test_scene_view_layouts();
     test_rendering_mode_matrix();
     test_version_gates();
+    test_stalker2_lazy_ghost_bootstrap();
     test_ue58_render_pose_fallback();
     test_bodycam_owned_texture_layout();
     test_bodycam_native_fix_pre_exposure_pairing();
