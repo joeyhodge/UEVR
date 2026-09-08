@@ -11387,6 +11387,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         };
 
         result["build"] = utility::support::current_build_identity();
+        result["console_abi_discovery"] = sdk::IConsoleObject::get_discovery_diagnostics();
 
         const auto executable = utility::get_executable();
         const auto executable_path = utility::get_module_pathw(executable);
