@@ -98,6 +98,27 @@ inline bool should_use_stalker2_ue55_synced_scene_target(
            is_stalker2_ue55_runtime(path, detected_version, file_version_ms);
 }
 
+inline bool is_stalker2_ue554_lazy_viewstate_runtime(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    if (filename != L"stalker2-win64-shipping.exe") {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"0.00" &&
+        detected_version != L"unknown" && detected_version != L"5.5") {
+        return detected_version == L"5.5.4" || detected_version.starts_with(L"5.5.4.");
+    }
+
+    return file_version_ms == 0x00050005 && file_version_ls == 0x00040000;
+}
+
 inline bool stalker2_native_fix_requires_same_pass(
     std::wstring_view path,
     std::wstring_view detected_version,
