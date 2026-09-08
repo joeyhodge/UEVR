@@ -14682,6 +14682,10 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
     const auto adjust_view_rect_func = ((uintptr_t*)vtable)[adjust_view_rect_index];
     const auto calculate_stereo_projection_matrix_func = ((uintptr_t*)vtable)[calculate_stereo_projection_matrix_index];
     const auto init_canvas_func_ptr = &((uintptr_t*)vtable)[init_canvas_index];
+    // Embedded UE4 layouts continue scanning original entries after installing
+    // hooks. Preserve only their bounded, individually checked pointer prefix.
+    const auto original_embedded_entries = m_rendertarget_manager_embedded_in_stereo_device
+        ? sdk::discovery::snapshot_slots<100>(memory, vtable) : std::array<uintptr_t,100>{};
     // const auto render_texture_render_thread_func = ((uintptr_t*)*vtable)[*stereo_view_offset_index + 3];
     
 
@@ -14721,7 +14725,8 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
 
     if (!m_calculate_stereo_view_offset_hook_inline) {
         SPDLOG_ERROR("Failed to create CalculateStereoViewOffset hook, falling back to pointer hook");
-        m_calculate_stereo_view_offset_hook_ptr = std::make_unique<PointerHook>((void**)&stereo_view_offset_func, (void*)calculate_stereo_view_offset);
+        m_calculate_stereo_view_offset_hook_ptr = std::make_unique<PointerHook>(
+            (void**)(vtable + *stereo_view_offset_index * sizeof(uintptr_t)), (void*)calculate_stereo_view_offset);
     }
 
     if (!m_calculate_stereo_projection_matrix_hook) {
@@ -14755,7 +14760,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         bool prev_function_returned_false = false;
 
         for (auto i = rendertexture_fn_vtable_index + 1; i < 100; ++i) {
-            const auto func = ((uintptr_t*)og_vtable.data())[i];
+            const auto func = original_embedded_entries[i];
 
             if (func == 0 || IsBadReadPtr((void*)func, 3)) {
                 SPDLOG_ERROR("Failed to find real RenderTexture_RenderThread");
@@ -14784,7 +14789,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         int32_t calculate_render_target_size_index = 0;
 
         for (auto i = rendertexture_fn_vtable_index - 1; i > 0; --i) {
-            const auto func = ((uintptr_t*)og_vtable.data())[i];
+            const auto func = original_embedded_entries[i];
 
             if (func == 0 || IsBadReadPtr((void*)func, 3)) {
                 SPDLOG_ERROR("Failed to find calculate render target size index, falling back to hardcoded index");
@@ -14832,7 +14837,7 @@ bool FFakeStereoRenderingHook::standard_fake_stereo_hook(uintptr_t vtable) {
         int32_t allocate_render_target_index = 0;
 
         for (auto i = rendertexture_fn_vtable_index + 1; i < 100; ++i) {
-            const auto func = ((uintptr_t*)og_vtable.data())[i];
+            const auto func = original_embedded_entries[i];
 
             if (func == 0 || IsBadReadPtr((void*)func, 3)) {
                 SPDLOG_ERROR("Failed to find allocate render target index, falling back to hardcoded index");
