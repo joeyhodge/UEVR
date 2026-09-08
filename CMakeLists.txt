@@ -517,6 +517,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		"tests/LoggingDisabledTests.cpp"
 		"tests/CachedCVarReadTests.cpp"
 		"tests/ConsoleTextTests.cpp"
+		"dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp"
 	)
 
 	list(APPEND diagnostic-safety-tests_SOURCES
