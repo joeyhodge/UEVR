@@ -22,6 +22,19 @@ inline std::wstring lowercase_path(std::wstring_view path) {
     return lowered;
 }
 
+inline bool should_use_stellar_blade_callable_renderer_entry(
+    std::wstring_view path,
+    bool ue426,
+    bool dx12,
+    bool native_stereo_fix_enabled) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    return ue426 && dx12 && native_stereo_fix_enabled &&
+        filename == L"sb-win64-shipping.exe";
+}
+
 inline bool should_use_farfarwest_ue581_view_extension_layout(
     std::wstring_view path,
     uint32_t file_version_ms,
