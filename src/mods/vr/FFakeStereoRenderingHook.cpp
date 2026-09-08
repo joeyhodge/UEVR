@@ -5421,6 +5421,29 @@ bool stalker2_uses_ue55_synced_scene_target(bool completed_game_viewport_draw) {
                completed_game_viewport_draw);
 }
 
+bool stalker2_uses_lazy_synced_viewstates() {
+    static const bool exact_runtime = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        const auto file_version = sdk::get_file_version_info();
+        return exe_path && uevr::games::is_stalker2_ue554_lazy_viewstate_runtime(
+            *exe_path,
+            sdk::search_for_version(utility::get_executable()).value_or(L"0.00"),
+            file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS);
+    }();
+    if (!exact_runtime || g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    const auto vr = VR::get();
+    return vr != nullptr && uevr::vr_compatibility::should_avoid_stalker2_synced_post_init(
+        true,
+        vr->is_using_strict_synchronized_afr(),
+        vr->is_native_stereo_fix_enabled(),
+        vr->is_splitscreen_compatibility_enabled(),
+        vr->is_sceneview_compatibility_enabled());
+}
+
 bool stalker2_validate_ue55_render_target_accessor(sdk::FViewport* viewport) {
     if (viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
         return false;
@@ -21544,6 +21567,15 @@ void FFakeStereoRenderingHook::setup_viewpoint(ISceneViewExtension* extension, v
         return;
     }
 
+    if (stalker2_uses_lazy_synced_viewstates()) {
+        // GSCLocalPlayer::PostInitProperties registers game delegates and resets
+        // flags, not ViewStates. CalcSceneViewInitOptions allocates those lazily.
+        SPDLOG_INFO_ONCE(
+            "[Stalker2][GhostingFix] Preserving LocalPlayer initialization in Synced; "
+            "only opt-in bounded view-count pulses may allocate missing eye histories");
+        return;
+    }
+
     // Using this as a way to get to the localplayer
     static bool attempted_hook{false};
 
@@ -21855,7 +21887,7 @@ void FFakeStereoRenderingHook::localplayer_setup_viewpoint(void* localplayer, vo
     ZoneScopedN("LocalPlayerSetupViewPoint");
     SPDLOG_INFO_ONCE("Called LocalPlayerSetupViewPoint for the first time");
 
-    if (!g_hook->m_fixed_localplayer_view_count) {
+    if (!g_hook->m_fixed_localplayer_view_count && !stalker2_uses_lazy_synced_viewstates()) {
         static bool attempted = false;
 
         if (!attempted) {
@@ -27001,7 +27033,8 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         vr->is_sceneview_compatibility_enabled() ||
         !g_hook->m_get_desired_number_of_views_hook;
 
-    if (!vr->should_skip_post_init_properties() && wants_localplayer_bootstrap) {
+    if (!vr->should_skip_post_init_properties() && wants_localplayer_bootstrap &&
+        !stalker2_uses_lazy_synced_viewstates()) {
         if (!g_hook->m_fixed_localplayer_view_count) {
             if (!g_hook->m_calculate_stereo_projection_matrix_post_hook) {
                 const auto return_address = (uintptr_t)_ReturnAddress();
@@ -27379,7 +27412,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         constexpr uint8_t BOOTSTRAP_MAX_ATTEMPTS = 3;
         bool use_bounded_ghosting_bootstrap = false;
 
-        // Remap-only is the default safe Ghosting Fix path. The old
+        // Remap-only remains the default; Bootstrap still requires stable scene
+        // observations, a bounded pulse, and validated ownership before remapping.
         {
             std::scoped_lock lock{g_hook->m_sceneview_data.mtx};
             const auto& ghosting_pair = g_hook->m_sceneview_data.ghosting_pair;
@@ -27403,7 +27437,12 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
                 !vr->is_splitscreen_compatibility_enabled() &&
                 g_hook->m_sceneview_data.ghosting_state != GhostingFixState::FailedClosed &&
                 ghosting_needs_second_state &&
-                g_hook->m_fixed_localplayer_view_count &&
+                uevr::vr_compatibility::is_ghosting_bootstrap_allocator_ready(
+                    g_hook->m_fixed_localplayer_view_count,
+                    stalker2_uses_lazy_synced_viewstates(),
+                    g_hook->is_in_viewport_client_draw(),
+                    !!g_hook->m_get_desired_number_of_views_hook &&
+                        !g_hook->m_analyzing_view_extensions) &&
                 !!g_hook->m_sceneview_data.constructor_hook &&
                 g_hook->m_has_view_extensions_installed;
 
@@ -27627,7 +27666,8 @@ void FFakeStereoRenderingHook::post_calculate_stereo_projection_matrix(safetyhoo
     SPDLOG_INFO_ONCE("post calculate stereo projection matrix called!");
 #endif
 
-    if (g_hook->m_fixed_localplayer_view_count || g_hook->m_hooked_alternative_localplayer_scan) {
+    if (g_hook->m_fixed_localplayer_view_count || g_hook->m_hooked_alternative_localplayer_scan ||
+        stalker2_uses_lazy_synced_viewstates()) {
         return;
     }
 
@@ -27829,7 +27869,7 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
     SPDLOG_INFO_ONCE("pre get projection data called!");
 #endif
 
-    if (g_hook->m_fixed_localplayer_view_count) {
+    if (g_hook->m_fixed_localplayer_view_count || stalker2_uses_lazy_synced_viewstates()) {
         return;
     }
 
@@ -27855,6 +27895,13 @@ void FFakeStereoRenderingHook::pre_get_projection_data(safetyhook::Context& ctx)
 }
 
 void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
+    if (stalker2_uses_lazy_synced_viewstates()) {
+        // Defense for bootstrap hooks left installed after a rendering-mode change.
+        // Do not mark PostInit complete: Native/Native Fix retain their own bootstrap.
+        SPDLOG_INFO_ONCE("[Stalker2][GhostingFix] Skipping LocalPlayer PostInitProperties replay in Synced");
+        return;
+    }
+
     SPDLOG_INFO("Searching for PostInitProperties virtual function...");
 
     if (localplayer == 0 || IsBadReadPtr(reinterpret_cast<void*>(localplayer), sizeof(void*))) {
