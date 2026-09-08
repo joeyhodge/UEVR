@@ -17,6 +17,7 @@
 int disabled_log_argument_evaluations();
 int test_cached_cvar_reads();
 int test_console_text();
+int test_discovery_validation();
 
 namespace {
 int failures{};
@@ -143,6 +144,7 @@ int main() {
     test_support_report();
     failures += test_cached_cvar_reads();
     failures += test_console_text();
+    failures += test_discovery_validation();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;
