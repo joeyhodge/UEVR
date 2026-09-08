@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <nlohmann/json.hpp>
 
 #include <utility/Config.hpp>
@@ -12,6 +13,7 @@
 #include <utility/String.hpp>
 
 #include <sdk/CVar.hpp>
+#include <sdk/MafiaDiscovery.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/ConsoleManager.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -647,7 +649,10 @@ void CVarManager::process_diagnostics() try {
             snapshot["ui_edits"].push_back(std::move(edit));
         }
     }
-    for (const auto name : {L"r.OneFrameThreadLag", L"r.VSync", L"t.MaxFPS", L"r.ScreenPercentage"}) {
+    constexpr std::array watched_names{L"r.OneFrameThreadLag", L"r.VSync", L"t.MaxFPS", L"r.ScreenPercentage",
+        L"r.AllowOcclusionQueries", L"r.TranslucentLightingVolume", L"r.LightCulling.Quality", L"r.PostProcessing.PropagateAlpha"};
+    const auto watched_count = sdk::mafia::uses_ue544_discovery() ? watched_names.size() : size_t{4};
+    for (const auto name : std::span{watched_names}.first(watched_count)) {
         std::optional<double> value;
         const auto found = std::find_if(m_all_cvars.begin(), m_all_cvars.end(),
             [name](const auto& cvar) { return cvar->get_name() == name; });
@@ -1404,7 +1409,8 @@ void CVarManager::CVarStandard::update() {
 
         m_cvar = sdk::find_cvar_cached(m_module, m_name);
 
-        if (m_cvar == nullptr && !m_interface_fallback_attempted) {
+        if (m_cvar == nullptr && (!m_interface_fallback_attempted ||
+            (sdk::mafia::uses_ue544_discovery() && sdk::mafia::supports_interface_fallback(m_name)))) {
             m_interface_fallback_attempted = true;
             m_interface_cvar = sdk::find_validated_console_variable(m_name);
         }
@@ -1664,7 +1670,8 @@ void CVarManager::CVarData::update() {
 
         m_cvar_data = sdk::find_cvar_data_cached(m_module, m_name);
 
-        if (!m_cvar_data && !m_interface_fallback_attempted) {
+        if (!m_cvar_data && (!m_interface_fallback_attempted ||
+            (sdk::mafia::uses_ue544_discovery() && sdk::mafia::supports_interface_fallback(m_name)))) {
             m_interface_fallback_attempted = true;
             m_interface_cvar = sdk::find_validated_console_variable(m_name);
         }
