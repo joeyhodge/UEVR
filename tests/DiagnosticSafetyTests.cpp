@@ -18,6 +18,7 @@ int disabled_log_argument_evaluations();
 int test_cached_cvar_reads();
 int test_console_text();
 int test_discovery_validation();
+int test_cadence_replay();
 
 namespace {
 int failures{};
@@ -145,6 +146,7 @@ int main() {
     failures += test_cached_cvar_reads();
     failures += test_console_text();
     failures += test_discovery_validation();
+    failures += test_cadence_replay();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;
