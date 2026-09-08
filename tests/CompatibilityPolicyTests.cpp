@@ -13,6 +13,7 @@
 #include "mods/vr/BodycamTextureLayout.hpp"
 #include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
+#include "mods/vr/StellarBladeRendererEntry.hpp"
 
 namespace {
 
@@ -1065,6 +1066,69 @@ void test_mafia_discovery() {
     }
 }
 
+void test_stellar_blade_callable_renderer_entry() {
+    using uevr::games::should_use_stellar_blade_callable_renderer_entry;
+    using uevr::stellar_blade::has_callable_renderer_entry;
+
+    for (const auto path : {L"SB-Win64-Shipping.exe", L"D:/Games/SB-Win64-Shipping.exe",
+                           L"C:\\Games\\sb-WIN64-shipping.EXE"}) {
+        for (const bool ue426 : {false, true}) {
+            for (const bool dx12 : {false, true}) {
+                for (const bool native_fix : {false, true}) {
+                    expect(should_use_stellar_blade_callable_renderer_entry(path, ue426, dx12, native_fix) ==
+                           (ue426 && dx12 && native_fix),
+                        "Stellar Blade entry repair is limited to UE4.26 DX12 Native Fix");
+                }
+            }
+        }
+    }
+    for (const auto path : {L"", L"SB-Win64-Shipping.exe.bak", L"Other-SB-Win64-Shipping.exe",
+                           L"D:/SB-Win64-Shipping.exe/Other.exe", L"Medium-Win64-Shipping.exe",
+                           L"SHCO.exe", L"ObserverSystemRedux.exe", L"HellbladeGame-Win64-Shipping.exe",
+                           L"Sycamore-Win64-Shipping.exe", L"Stalker2-Win64-Shipping.exe"}) {
+        expect(!should_use_stellar_blade_callable_renderer_entry(path, true, true, true),
+            "other titles and filename substrings must retain their existing renderer resolver");
+    }
+
+    // Exact EXE bytes: the 0x14-byte root is smaller than the old 0x200 body
+    // threshold; its 0x20f-byte child alone contains both old body signatures.
+    const std::array<uint8_t, 20> root{
+        0x40,0x56,0x57,0x41,0x54,0x41,0x56,0x41,0x57,0x48,
+        0x83,0xEC,0x60,0x49,0x8B,0x48,0x20,0x45,0x33,0xE4};
+    const std::array<uint8_t, 16> unwind{
+        0x01,0x0D,0x06,0x00,0x0D,0xB2,0x09,0xF0,
+        0x07,0xE0,0x05,0xC0,0x03,0x70,0x02,0x60};
+    expect(has_callable_renderer_entry(root, unwind), "validated short callable root is accepted");
+    std::array<uint8_t, 0x223> combined{};
+    std::copy(root.begin(), root.end(), combined.begin());
+    const std::array<uint8_t, 8> child_prefix{0x48,0x89,0xAC,0x24,0x98,0x00,0x00,0x00};
+    std::copy(child_prefix.begin(), child_prefix.end(), combined.begin() + root.size());
+    combined[0x1D5] = 0x89; combined[0x1D6] = 0x47; combined[0x1D7] = 0x5C;
+    combined[0x201] = 0xFF; combined[0x202] = 0x50; combined[0x203] = 0x28;
+    auto child_unwind = unwind;
+    child_unwind[0] = 0x21; // Version 1, CHAININFO; not a callable prologue.
+    expect(has_callable_renderer_entry(combined, unwind), "root plus callback-containing child is accepted");
+    expect(!has_callable_renderer_entry(std::span{combined}.subspan(root.size()), child_unwind),
+        "large matching continuation must never become a callable hook entry");
+    expect(!has_callable_renderer_entry(root, child_unwind), "CHAININFO root is rejected even with matching code");
+    for (size_t length = 0; length < root.size(); ++length) {
+        expect(!has_callable_renderer_entry(std::span{root}.first(length), unwind), "unreadable or truncated code fails closed");
+    }
+    for (size_t length = 0; length < unwind.size(); ++length) {
+        expect(!has_callable_renderer_entry(root, std::span{unwind}.first(length)), "missing or truncated unwind fails closed");
+    }
+    for (size_t offset = 0; offset < root.size(); ++offset) {
+        auto bad = root;
+        bad[offset] ^= 1;
+        expect(!has_callable_renderer_entry(bad, unwind), "unvalidated ABI prologue changes fail closed");
+    }
+    for (size_t offset = 0; offset < unwind.size(); ++offset) {
+        auto bad = unwind;
+        bad[offset] ^= 1;
+        expect(!has_callable_renderer_entry(root, bad), "unvalidated unwind versions, flags and operations fail closed");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1081,6 +1145,7 @@ int main() {
     test_farfarwest_view_extension_discovery();
     test_mafia_discovery();
     test_family_snapshot_accessors();
+    test_stellar_blade_callable_renderer_entry();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
