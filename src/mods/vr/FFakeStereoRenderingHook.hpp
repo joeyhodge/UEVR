@@ -1651,6 +1651,16 @@ private:
     std::string m_hook_provenance_json{};
     std::string m_hook_provenance_export_status{};
     uint64_t m_hook_provenance_cvar_revision{};
+    struct RtmDiscoveryDiagnostic {
+        bool attempted{};
+        bool accepted{};
+        size_t index{};
+        size_t examined{};
+        const char* accessor{"not_observed"};
+        const char* reason{"not_observed"};
+    };
+    std::mutex m_rtm_discovery_mutex{};
+    RtmDiscoveryDiagnostic m_rtm_discovery{};
     const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_force_player_camera{ ModToggle::create("VR_DaysGoneBendUI_ForcePlayerCamera", true, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_override_widget_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideWidgetTransform", true, true) };
