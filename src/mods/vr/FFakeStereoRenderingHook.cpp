@@ -41,6 +41,7 @@
 #include <sdk/CVar.hpp>
 #include <sdk/MafiaDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
+#include <sdk/ObjectLivenessPolicy.hpp>
 #include <sdk/RtmDiscovery.hpp>
 #include <sdk/Slate.hpp>
 #include <sdk/DynamicRHI.hpp>
@@ -11391,6 +11392,45 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         result["build"] = utility::support::current_build_identity();
         result["console_abi_discovery"] = sdk::IConsoleObject::get_discovery_diagnostics();
         {
+            const auto init = sdk::FSceneViewInitOptionsBase::get_layout_snapshot();
+            const auto family = sdk::FSceneViewFamily::get_layout_snapshot();
+            const auto offset = [](const std::optional<uint32_t>& value) -> nlohmann::json {
+                return value ? nlohmann::json(*value) : nlohmann::json(nullptr);
+            };
+            result["scene_layout_publication"] = {
+                {"immutable_snapshots", true}, {"diagnostic_only", true},
+                {"init_options", {
+                    {"family", offset(init->view_family)}, {"state", offset(init->scene_state)},
+                    {"player_index", offset(init->player_index)}, {"stereo_pass", offset(init->stereo_pass)},
+                    {"world_to_meters", offset(init->world_to_meters)},
+                    {"failed_attempts", sdk::FSceneViewInitOptionsBase::get_failed_attempt_count()},
+                    {"retry_requires_validated_primary_target", true},
+                }},
+                {"family", {
+                    {"views", offset(family->views)}, {"render_target", offset(family->render_target)},
+                    {"scene", offset(family->scene_interface)}, {"frame_count", offset(family->frame_count)},
+                    {"attempted", family->attempted}, {"attempted_with_target", family->attempted_with_rt},
+                }},
+            };
+            // Observation only: exporting diagnostics never initiates version
+            // discovery or changes the liveness policy used by normal calls.
+            const auto liveness = sdk::object_liveness::observed_policy();
+            result["uobject_liveness"] = {
+                {"observed", liveness.has_value()},
+                {"reject_mask", liveness ? nlohmann::json(sdk::object_liveness::reject_mask(*liveness)) : nlohmann::json(nullptr)},
+                {"diagnostic_only", true}, {"guarantees_gc_ownership", false},
+            };
+            // Producer identity only. Do not add diagnostic reads of the
+            // unsynchronized live counters or pretend they form one snapshot.
+            if (const auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire)) {
+                result["native_capture_producer_identity"] = {
+                    {"serial", packet->serial}, {"generation", packet->capture_generation},
+                    {"engine_frame", packet->engine_frame}, {"render_frame", packet->render_frame},
+                    {"consumer_identity_observed", false}, {"changes_submit_policy", false},
+                };
+            }
+        }
+        {
             std::scoped_lock lock{m_rtm_discovery_mutex};
             result["rtm_accessor_discovery"] = {
                 {"attempted", m_rtm_discovery.attempted}, {"accepted", m_rtm_discovery.accepted},
@@ -19880,6 +19920,15 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     auto& vr = VR::get();
 
+    const auto update_init_offsets = [&] {
+        sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+        if (sdk::FSceneViewInitOptionsBase::is_retry_due()) {
+            const auto rtm = g_hook->get_render_target_manager();
+            sdk::FSceneViewInitOptionsBase::update_offsets(init_options,
+                rtm != nullptr ? rtm->get_view_family_render_target() : nullptr);
+        }
+    };
+
     if (dune_awakening_is_current_game() && g_hook->is_dune_character_creation_active()) {
         return g_hook->m_sceneview_data.constructor_hook.unsafe_call<sdk::FSceneView*>(view, init_options, a3, a4);
     }
@@ -19898,7 +19947,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         if (init_options != nullptr &&
             is_readable_process_range(reinterpret_cast<uintptr_t>(init_options), 0x200))
         {
-            sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+            update_init_offsets();
 
             auto* const resolved_family = init_options->get_view_family();
             auto* const resolved_state = init_options->get_scene_state();
@@ -20039,7 +20088,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     // families during UGameViewportClient::Draw. Those views must retain the
     // game's own projection, frame state, and cached render-target lifetime.
     if (dune_awakening_is_current_game()) {
-        sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+        update_init_offsets();
 
         if (auto* view_family = init_options->get_view_family(); view_family != nullptr) {
             if (sdk::FSceneViewFamily::update_offsets(
@@ -20056,7 +20105,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
     }
 
     if (dimension_shift_is_current_game()) {
-        sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+        update_init_offsets();
 
         if (auto* view_family = init_options->get_view_family(); view_family != nullptr) {
             if (sdk::FSceneViewFamily::update_offsets(
@@ -20085,7 +20134,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         SPDLOG_INFO("FSceneView constructor called from {:x}", retaddr);
     }
 
-    sdk::FSceneViewInitOptionsBase::update_offsets(init_options);
+    update_init_offsets();
 
     // Days Gone reports a non-engine file version, so the generic UESDK
     // version fallback selects the UE4.20+ tail for this customized UE4.11
