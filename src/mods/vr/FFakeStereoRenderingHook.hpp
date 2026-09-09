@@ -31,6 +31,7 @@
 
 #include "IXRTrackingSystemHook.hpp"
 #include "CompatibilityPolicy.hpp"
+#include "NativeFrameDiagnostics.hpp"
 #include "UE57SlateSymbols.hpp"
 
 #include "Mod.hpp"
@@ -727,11 +728,22 @@ public:
         int32_t player_index{-1};
         uint32_t left_pass{};
         uint32_t right_pass{};
+        // Observation only; never used to accept a packet or retime a frame.
+        uevr::native_frame::ClockStamp diagnostic_clock{};
     };
 
-    std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(int32_t render_frame) const;
+    std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(
+        int32_t render_frame, uevr::native_frame::Backend backend = uevr::native_frame::Backend::unknown,
+        uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
     void note_native_stereo_frame_packet_consumed(uint64_t serial);
     void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
+    void observe_native_frame_engine(uint32_t frame);
+    void observe_native_frame_present(int32_t frame);
+    void record_native_frame_stage(const NativeStereoFramePacket& packet,
+        uevr::native_frame::Ticket ticket, uevr::native_frame::Backend backend,
+        uevr::native_frame::Runtime runtime, uevr::native_frame::Stage stage,
+        int32_t api_result = 0, uint8_t submit_eye = 2, uint8_t submit_call = 0,
+        const void* copy_source = nullptr, const void* copy_destination = nullptr) const;
 
     std::optional<DuneTrueStereoFrameSnapshot> get_dune_true_stereo_frame_snapshot() const {
         const auto packed = m_dune_true_stereo_frame.load(std::memory_order_acquire);
@@ -1323,6 +1335,7 @@ private:
     std::atomic<uint64_t> m_native_stereo_packet_serial{};
     std::atomic<uint64_t> m_native_stereo_consumed_serial{};
     std::atomic<uint64_t> m_native_stereo_rejected_capture_generation{};
+    mutable uevr::native_frame::Recorder<> m_native_frame_diagnostics{};
     std::atomic<uint64_t> m_native_stereo_ue57_capability_failure_generation{};
     std::atomic_bool m_native_stereo_localplayer_bootstrap_failed{};
 
@@ -1650,6 +1663,7 @@ private:
     std::atomic_bool m_hook_provenance_diagnostics{false};
     std::string m_hook_provenance_json{};
     std::string m_hook_provenance_export_status{};
+    std::string m_native_frame_export_status{};
     uint64_t m_hook_provenance_cvar_revision{};
     struct RtmDiscoveryDiagnostic {
         bool attempted{};
