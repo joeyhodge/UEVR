@@ -636,9 +636,17 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
+    namespace frame_diag = uevr::native_frame;
+    frame_diag::Ticket native_frame_ticket{};
     auto native_stereo_packet = ffsr != nullptr
-        ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count)
+        ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count, frame_diag::Backend::d3d11, &native_frame_ticket)
         : nullptr;
+    const auto record_native_submit = [&](frame_diag::Runtime api, frame_diag::Stage stage, int32_t result = 0, uint8_t eye = 2) {
+        if (native_frame_ticket && native_stereo_packet != nullptr && ffsr != nullptr) {
+            ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                frame_diag::Backend::d3d11, api, stage, result, eye);
+        }
+    };
     D3D11_TEXTURE2D_DESC scene_capture_desc{};
     bool scene_capture_packet_ready = false;
     bool daysgone_snapshot_deferred = false;
@@ -1207,7 +1215,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             };
             const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
                                                            runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 0);
             const auto e = vr::VRCompositor()->Submit(vr::Eye_Left, &left_eye, &left_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 0);
 
             if (e != vr::VRCompositorError_None) {
                 spdlog::error("[VR] VRCompositor failed to submit left eye: {}", (int)e);
@@ -1282,6 +1292,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), nullptr);
                 } else {
+                    // copy invokes this callback synchronously; the local packet
+                    // and ticket remain owned by this submit invocation.
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, nullptr, [&](ID3D11Texture2D* render_target) {
                         D3D11_BOX left_src_box{
                             .left = 0,
@@ -1311,6 +1323,11 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                             0,
                             &right_src_box);
                         if (native_stereo_packet != nullptr) {
+                            if (native_frame_ticket) {
+                                ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                                    frame_diag::Backend::d3d11, frame_diag::Runtime::openxr, frame_diag::Stage::copy_recorded,
+                                    0, 2, 0, m_scene_capture_tex_ref.tex.Get(), render_target);
+                            }
                             ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
                         }
                     });
@@ -1355,7 +1372,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             }
             
+            record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt);
             auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr);
+            record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
 
             vr->m_openxr->needs_pose_update = true;
             vr->m_submitted = result == XR_SUCCESS;
@@ -1396,7 +1415,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 };
                 const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
                                                                runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
+                record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 0);
                 e = vr::VRCompositor()->Submit(vr::Eye_Left, &left_eye, &left_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+                record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 0);
 
                 if (e != vr::VRCompositorError_None) {
                     spdlog::error("[VR] VRCompositor failed to submit left eye: {}", (int)e);
@@ -1446,6 +1467,11 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
                 context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &right_src_box);
                 if (native_stereo_packet != nullptr) {
+                    if (native_frame_ticket) {
+                        ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                            frame_diag::Backend::d3d11, frame_diag::Runtime::openvr, frame_diag::Stage::copy_recorded,
+                            0, 1, 0, m_scene_capture_tex_ref.tex.Get(), m_right_eye_tex.Get());
+                    }
                     ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
                 }
             }
@@ -1463,7 +1489,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             };
             const auto right_bounds = vr::VRTextureBounds_t{runtime->view_bounds[1][0], runtime->view_bounds[1][2],
                                                             runtime->view_bounds[1][1], runtime->view_bounds[1][3]};
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 1);
             e = vr::VRCompositor()->Submit(vr::Eye_Right, &right_eye, &right_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 1);
             runtime->frame_synced = false;
 
             bool submitted = true;

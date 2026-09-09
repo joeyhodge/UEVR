@@ -14302,7 +14302,11 @@ void VR::on_post_present() {
 
     const auto is_same_frame = m_render_frame_count > 0 && m_render_frame_count == m_frame_count;
 
-    m_render_frame_count = m_frame_count;
+    const auto completed_present_frame = m_frame_count;
+    m_render_frame_count = completed_present_frame;
+    if (m_fake_stereo_hook != nullptr) {
+        m_fake_stereo_hook->observe_native_frame_present(completed_present_frame);
+    }
 
     auto runtime = get_runtime();
 
