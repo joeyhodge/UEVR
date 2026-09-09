@@ -26,6 +26,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include "NativeFrameDiagnosticsJson.hpp"
 #include <spdlog/spdlog.h>
 #include <utility/Memory.hpp>
 #include <utility/Module.hpp>
@@ -11502,6 +11503,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
                     {"serial", packet->serial}, {"generation", packet->capture_generation},
                     {"engine_frame", packet->engine_frame}, {"render_frame", packet->render_frame},
                     {"consumer_identity_observed", false}, {"changes_submit_policy", false},
+                    {"scope", "producer snapshot only; consumer observations are in native_frame_diagnostics"},
                 };
             }
         }
@@ -11515,6 +11517,8 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
                 {"instruction_limit", 32},
             };
         }
+
+        result["native_frame_diagnostics"] = uevr::native_frame::export_json(m_native_frame_diagnostics);
 
         const auto executable = utility::get_executable();
         const auto executable_path = utility::get_module_pathw(executable);
@@ -11733,6 +11737,36 @@ void FFakeStereoRenderingHook::draw_hook_provenance_diagnostics() {
     }
     ImGui::SameLine();
     ImGui::TextDisabled("(read-only, default-off)");
+
+    bool frame_diagnostics = m_native_frame_diagnostics.enabled();
+    if (ImGui::Checkbox("Native Fix Frame Diagnostics", &frame_diagnostics)) {
+        m_native_frame_diagnostics.set_enabled(frame_diagnostics);
+        m_native_frame_export_status.clear();
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("(observation only, session-only)");
+    ImGui::TextWrapped("Records a bounded Native Fix handoff trace. No timing or acceptance changes. Stop to retain the trace; re-enable to start a new trace.");
+    if (ImGui::Button("Export Native Frame Trace")) {
+        try {
+            const auto trace = uevr::native_frame::export_json(m_native_frame_diagnostics);
+            if (trace.value("snapshot_busy", false)) {
+                m_native_frame_export_status = "Recorder busy; stop recording and retry export.";
+            } else {
+                const auto text = trace.dump(2);
+                const auto path = Framework::get_persistent_dir("native_frame_diagnostics.json");
+                std::ofstream output{path, std::ios::binary | std::ios::trunc};
+                output.write(text.data(), static_cast<std::streamsize>(text.size()));
+                output.flush();
+                m_native_frame_export_status = output.good() ? fmt::format(
+                    "Exported {} events; selected serial {}, copied serial {}. {}", trace["retained"].get<size_t>(),
+                    trace["newest_selected_serial"].get<uint64_t>(), trace["newest_copy_recorded_serial"].get<uint64_t>(), path.string())
+                    : "Frame trace export failed.";
+            }
+        } catch (const std::exception& e) {
+            m_native_frame_export_status = fmt::format("Frame trace export failed: {}", e.what());
+        }
+    }
+    if (!m_native_frame_export_status.empty()) { ImGui::TextWrapped("%s", m_native_frame_export_status.c_str()); }
 
     if (!enabled) {
         return;
@@ -18338,7 +18372,9 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     if (run_anyways || in_engine_tick) {
         if (g_hook->m_has_view_extension_hook) {
-            g_frame_count = vr->get_runtime()->internal_frame_count;
+            const auto observed_engine_frame = vr->get_runtime()->internal_frame_count;
+            g_frame_count = observed_engine_frame;
+            g_hook->observe_native_frame_engine(observed_engine_frame);
             vr->update_hmd_state(true, vr->get_runtime()->internal_frame_count + 1);
         } else {
             vr->update_hmd_state(false);
@@ -23276,6 +23312,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         packet->player_index = native_left_metadata.player_index;
         packet->left_pass = native_left_metadata.original_stereo_pass;
         packet->right_pass = native_right_metadata.original_stereo_pass;
+        if (const auto token = g_hook->m_native_frame_diagnostics.control()) {
+            packet->diagnostic_clock = g_hook->m_native_frame_diagnostics.clock(token);
+        }
         g_hook->publish_native_stereo_frame_packet(std::move(packet));
         if (daysgone_snapshot_transaction != 0) {
             daysgone_snapshot_packet_published = true;
@@ -24306,12 +24345,79 @@ void FFakeStereoRenderingHook::set_native_stereo_fix_state(
     }
 }
 
+namespace {
+void fill_native_frame_packet_event(uevr::native_frame::Event& event,
+    const FFakeStereoRenderingHook::NativeStereoFramePacket& packet)
+{
+    event.packet_serial = packet.serial;
+    event.generation = packet.capture_generation;
+    event.transaction = packet.d3d11_snapshot_transaction;
+    event.family = reinterpret_cast<uintptr_t>(packet.family);
+    event.producer_engine = packet.engine_frame;
+    event.producer_render = packet.render_frame;
+    event.producer_clock = packet.diagnostic_clock;
+    if (packet.capture != nullptr) {
+        // Opaque identities from the owned snapshot, not new resource queries.
+        event.rhi = reinterpret_cast<uintptr_t>(packet.capture->rhi_texture);
+        event.resource = reinterpret_cast<uintptr_t>(packet.capture->native_resource.Get());
+    }
+}
+}
+
+void FFakeStereoRenderingHook::observe_native_frame_engine(uint32_t frame) {
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        m_native_frame_diagnostics.observe_engine(token, frame, GetCurrentThreadId());
+    }
+}
+
+void FFakeStereoRenderingHook::observe_native_frame_present(int32_t frame) {
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        m_native_frame_diagnostics.observe_present(token, frame, GetCurrentThreadId());
+    }
+}
+
+void FFakeStereoRenderingHook::record_native_frame_stage(const NativeStereoFramePacket& packet,
+    uevr::native_frame::Ticket ticket, uevr::native_frame::Backend backend,
+    uevr::native_frame::Runtime runtime, uevr::native_frame::Stage stage,
+    int32_t api_result, uint8_t submit_eye, uint8_t submit_call,
+    const void* copy_source, const void* copy_destination) const
+{
+    if (!ticket || ticket.control != m_native_frame_diagnostics.control() || ticket.packet_serial != packet.serial) {
+        return;
+    }
+    if (stage == uevr::native_frame::Stage::copy_recorded && (copy_source == nullptr || copy_destination == nullptr)) {
+        return; // A null-input copy helper can return without recording a copy.
+    }
+    uevr::native_frame::Event event{};
+    fill_native_frame_packet_event(event, packet);
+    event.attempt = ticket.attempt;
+    event.backend = backend;
+    event.runtime = runtime;
+    event.stage = stage;
+    event.api_result = api_result;
+    event.submit_eye = submit_eye;
+    event.submit_call = submit_call;
+    event.submit_render = ticket.submit_render;
+    event.consumer_clock = ticket.consumer_clock;
+    event.copy_source = reinterpret_cast<uintptr_t>(copy_source);
+    event.copy_destination = reinterpret_cast<uintptr_t>(copy_destination);
+    event.thread = GetCurrentThreadId();
+    m_native_frame_diagnostics.record(ticket.control, event);
+}
+
 void FFakeStereoRenderingHook::invalidate_native_stereo_frame_packet(
     NativeStereoFixState state,
     const char* detail)
 {
     m_native_stereo_frame_packet.store(nullptr, std::memory_order_release);
     set_native_stereo_fix_state(state, detail);
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        uevr::native_frame::Event event{};
+        event.stage = uevr::native_frame::Stage::invalidation;
+        event.invalidation_state = static_cast<int32_t>(state);
+        event.thread = GetCurrentThreadId();
+        m_native_frame_diagnostics.record(token, event);
+    }
 }
 
 void FFakeStereoRenderingHook::publish_native_stereo_frame_packet(
@@ -24327,7 +24433,18 @@ void FFakeStereoRenderingHook::publish_native_stereo_frame_packet(
         return;
     }
 
+    const auto diagnostic_token = m_native_frame_diagnostics.control();
+    std::optional<uevr::native_frame::Event> observation{};
+    if (diagnostic_token != 0) {
+        observation.emplace();
+        fill_native_frame_packet_event(*observation, *packet);
+        observation->stage = uevr::native_frame::Stage::producer;
+        observation->thread = GetCurrentThreadId();
+    }
     m_native_stereo_frame_packet.store(std::move(packet), std::memory_order_release);
+    if (observation) {
+        m_native_frame_diagnostics.record(diagnostic_token, *observation);
+    }
 
     // PairReady is useful while proving the first compositor handoff. Once a
     // packet has been consumed, keep the externally visible state latched at
@@ -24340,15 +24457,48 @@ void FFakeStereoRenderingHook::publish_native_stereo_frame_packet(
 }
 
 std::shared_ptr<const FFakeStereoRenderingHook::NativeStereoFramePacket>
-FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t render_frame) const {
+FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t render_frame,
+    uevr::native_frame::Backend backend, uevr::native_frame::Ticket* diagnostic_ticket) const
+{
+    namespace frame_diag = uevr::native_frame;
+    const auto token = m_native_frame_diagnostics.control();
+    auto ticket = token != 0 ? m_native_frame_diagnostics.ticket(token, 0) : frame_diag::Ticket{};
+    ticket.submit_render = render_frame;
+    if (diagnostic_ticket != nullptr) { *diagnostic_ticket = ticket; }
+    std::optional<frame_diag::Event> observation{};
+    if (ticket) {
+        observation.emplace();
+        observation->stage = frame_diag::Stage::selection;
+        observation->attempt = ticket.attempt;
+        observation->backend = backend;
+        observation->submit_render = render_frame;
+        observation->thread = GetCurrentThreadId();
+    }
+    const auto record_outcome = [&](frame_diag::Reason reason, bool accepted = false) {
+        if (observation) {
+            observation->reason = reason;
+            observation->packet_accepted = accepted;
+            m_native_frame_diagnostics.record(token, *observation);
+        }
+    };
     const auto vr = VR::get();
     if (vr == nullptr || !vr->is_native_stereo_fix_enabled()) {
+        record_outcome(frame_diag::Reason::feature_off);
         return nullptr;
     }
 
     const auto packet = m_native_stereo_frame_packet.load(std::memory_order_acquire);
     if (packet == nullptr || packet->capture == nullptr) {
+        record_outcome(frame_diag::Reason::no_packet);
         return nullptr;
+    }
+
+    if (observation) {
+        fill_native_frame_packet_event(*observation, *packet);
+        observation->consumer_clock = m_native_frame_diagnostics.clock(token);
+        ticket.consumer_clock = observation->consumer_clock;
+        ticket.packet_serial = packet->serial;
+        if (diagnostic_ticket != nullptr) { *diagnostic_ticket = ticket; }
     }
 
     const auto render_frame_delta =
@@ -24360,6 +24510,12 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
         packet->engine_frame == g_frame_count;
     const bool next_engine_frame_handoff =
         render_frame_delta == 1 && engine_frame_delta == 1;
+    if (observation) {
+        observation->window_observed = true;
+        observation->render_delta = render_frame_delta;
+        observation->engine_delta = engine_frame_delta;
+        observation->legacy_same_engine = same_engine_frame_present_grace;
+    }
 
     // A game can issue several Presents without another engine draw while the
     // OpenXR frame counter continues to advance. The packet remains current for
@@ -24369,7 +24525,8 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
     // The present thread can also observe the next engine frame immediately
     // after the render thread publishes a completed packet. Permit exactly
     // that one-frame pipeline handoff; wider cross-frame reuse remains closed.
-    if (!exact_render_frame && !same_engine_frame_present_grace && !next_engine_frame_handoff) {
+    if (!frame_diag::frame_window(render_frame_delta, engine_frame_delta, same_engine_frame_present_grace).accepted()) {
+        record_outcome(frame_diag::Reason::stale_frames);
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[NativeStereoFix] Refusing stale submit packet packet_render_frame={} submit_render_frame={} "
@@ -24399,20 +24556,36 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
     }
 
     if (packet->capture_generation == m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire)) {
+        record_outcome(frame_diag::Reason::rejected_generation);
         return nullptr;
     }
 
     const auto rtm = const_cast<FFakeStereoRenderingHook*>(this)->get_render_target_manager();
     const auto current_capture = rtm != nullptr ? rtm->get_scene_capture_target_snapshot() : nullptr;
+    if (observation) {
+        observation->resource_checks_ran = true;
+        if (current_capture != nullptr) {
+            observation->current_generation = current_capture->generation;
+            observation->current_rhi = reinterpret_cast<uintptr_t>(current_capture->rhi_texture);
+            observation->current_resource = reinterpret_cast<uintptr_t>(current_capture->native_resource.Get());
+        }
+    }
     if (current_capture == nullptr ||
         current_capture->generation != packet->capture_generation ||
         current_capture->generation != packet->capture->generation ||
         current_capture->rhi_texture != packet->capture->rhi_texture ||
         current_capture->native_resource.Get() != packet->capture->native_resource.Get())
     {
+        if (observation) {
+            record_outcome(current_capture == nullptr ? frame_diag::Reason::no_capture :
+                current_capture->generation != packet->capture_generation || current_capture->generation != packet->capture->generation
+                    ? frame_diag::Reason::changed_generation : frame_diag::Reason::changed_resource);
+        }
         return nullptr;
     }
 
+    record_outcome(exact_render_frame ? frame_diag::Reason::exact_frame :
+        same_engine_frame_present_grace ? frame_diag::Reason::same_engine_frame : frame_diag::Reason::one_frame_handoff, true);
     return packet;
 }
 
@@ -24448,6 +24621,15 @@ void FFakeStereoRenderingHook::reject_native_stereo_frame_packet(uint64_t serial
 
     m_native_stereo_rejected_capture_generation.store(rejected_generation, std::memory_order_release);
     set_native_stereo_fix_state(NativeStereoFixState::FailedClosed, detail);
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        uevr::native_frame::Event event{};
+        fill_native_frame_packet_event(event, *packet);
+        event.stage = uevr::native_frame::Stage::invalidation;
+        event.reason = uevr::native_frame::Reason::rejected_generation;
+        event.invalidation_state = static_cast<int32_t>(NativeStereoFixState::FailedClosed);
+        event.thread = GetCurrentThreadId();
+        m_native_frame_diagnostics.record(token, event);
+    }
 
     // A newer producer packet may have won the race immediately after the
     // compare-exchange. Do not leave its status hidden behind an older failure.
