@@ -75,6 +75,7 @@
 #include "mods/UObjectHook.hpp"
 #include "mods/GameSpecific.hpp"
 #include "StellarBladeRendererEntry.hpp"
+#include "SWZeroCompanyBinary.hpp"
 
 #include <bdshemu.h>
 #include <bddisasm.h>
@@ -2263,10 +2264,26 @@ std::optional<uintptr_t> resolve_bodycam_ue554_game_viewport_draw() {
     return target;
 }
 
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA = 0x3711F60;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET = 0x7F;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA = 0x307CB10;
-constexpr uintptr_t SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA = 0x2AA6885;
+const uevr::sw_zero_company::BinaryLayout* sw_zero_company_ue56_binary_layout() {
+    static const auto* const result = []() {
+        const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+        const auto* const layout = uevr::sw_zero_company::select_unique_layout([&](const auto& candidate) {
+            const auto target = executable + candidate.slate_rva;
+            return executable != 0 && target >= executable &&
+                is_executable_process_range(target, 0x50) &&
+                uevr::sw_zero_company::matches_slate_arguments(
+                    candidate, {reinterpret_cast<const uint8_t*>(target), 0x50});
+        });
+        if (layout != nullptr) {
+            SPDLOG_INFO("[SWZeroCompany][UE5.6][Binary] Validated compatibility revision {}", layout->revision);
+        } else {
+            SPDLOG_WARN("[SWZeroCompany][UE5.6][Binary] No unique validated revision; exact-binary hooks remain disabled");
+        }
+        return layout;
+    }();
+    return result;
+}
+
 constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_VISIBLE_CLUSTERS_OFFSET = 0x38;
 constexpr size_t SW_ZERO_COMPANY_UE56_RASTER_SHADING_MASK_OFFSET = 0x60;
 constexpr size_t SW_ZERO_COMPANY_UE56_RDG_BUFFER_FLAGS_OFFSET = 0x60;
@@ -2275,6 +2292,7 @@ safetyhook::MidHook g_sw_zero_company_ue56_copy_texture_region_hook{};
 std::atomic_bool g_sw_zero_company_ue56_copy_texture_region_hook_attempted{};
 safetyhook::InlineHook g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook{};
 std::atomic_bool g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook_attempted{};
+std::atomic_uintptr_t g_sw_zero_company_ue56_hologram_dispatch_return{};
 
 void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
     void* graph_builder,
@@ -2318,7 +2336,7 @@ void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
         vr->is_using_native_stereo() &&
         !vr->is_native_stereo_fix_enabled() &&
         executable != 0 &&
-        direct_caller == executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA;
+        direct_caller == g_sw_zero_company_ue56_hologram_dispatch_return.load(std::memory_order_acquire);
 
     if (!plain_native_hologram_dispatch) {
         call_original();
@@ -2501,18 +2519,14 @@ bool sw_zero_company_ue56_install_copy_texture_region_hook() {
         return false;
     }
 
-    constexpr std::array<uint8_t, 16> expected_prologue{
-        0x40, 0x53, 0x55, 0x56, 0x57, 0x41, 0x56, 0x41,
-        0x57, 0x48, 0x81, 0xEC, 0xC8, 0x00, 0x00, 0x00};
-    constexpr std::array<uint8_t, 39> expected_call_layout{
-        0x48, 0x89, 0x74, 0x24, 0x28, 0x48, 0x8B, 0xD7,
-        0x48, 0x8B, 0x48, 0x28, 0xFF, 0x80, 0x60, 0x01,
-        0x00, 0x00, 0x8B, 0x84, 0x24, 0x20, 0x01, 0x00,
-        0x00, 0x89, 0x44, 0x24, 0x20, 0x4C, 0x8B, 0x11,
-        0x41, 0xFF, 0x92, 0x80, 0x00, 0x00};
-
-    const auto function = executable + SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CHECKED_RVA;
-    const auto call_layout = function + SW_ZERO_COMPANY_UE56_COPY_TEXTURE_REGION_CALL_LAYOUT_OFFSET;
+    const auto* const layout = sw_zero_company_ue56_binary_layout();
+    if (layout == nullptr) {
+        return false;
+    }
+    const auto& expected_prologue = uevr::sw_zero_company::copy_prologue;
+    const auto& expected_call_layout = uevr::sw_zero_company::copy_call_layout;
+    const auto function = executable + layout->copy_rva;
+    const auto call_layout = function + uevr::sw_zero_company::copy_call_offset;
     const bool exact_binary_match =
         is_executable_process_range(function, expected_prologue.size()) &&
         is_executable_process_range(call_layout, expected_call_layout.size()) &&
@@ -2565,21 +2579,14 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
         return false;
     }
 
-    constexpr std::array<uint8_t, 18> expected_dispatch_prologue{
-        0x40, 0x55, 0x53, 0x56, 0x41, 0x54, 0x41, 0x55,
-        0x41, 0x57, 0x48, 0x8D, 0xAC, 0x24, 0xC8, 0xFA,
-        0xFF, 0xFF};
-    constexpr std::array<uint8_t, 35> expected_hologram_call_layout{
-        0x48, 0x89, 0x74, 0x24, 0x38,
-        0x49, 0x8B, 0xCE,
-        0x4C, 0x89, 0x54, 0x24, 0x30,
-        0x48, 0x89, 0x44, 0x24, 0x28,
-        0x48, 0x8D, 0x85, 0x70, 0x10, 0x00, 0x00,
-        0x48, 0x89, 0x44, 0x24, 0x20,
-        0xE8, 0x8B, 0x62, 0x5D, 0x00};
-
-    const auto target = executable + SW_ZERO_COMPANY_UE56_NANITE_DISPATCH_BASE_PASS_RVA;
-    const auto call_layout = executable + SW_ZERO_COMPANY_UE56_HOLOGRAM_DISPATCH_RETURN_RVA - expected_hologram_call_layout.size();
+    const auto* const layout = sw_zero_company_ue56_binary_layout();
+    if (layout == nullptr) {
+        return false;
+    }
+    const auto expected_dispatch_prologue = layout->nanite_prologue;
+    const auto expected_hologram_call_layout = layout->hologram_call;
+    const auto target = executable + layout->nanite_rva;
+    const auto call_layout = executable + layout->hologram_return_rva - expected_hologram_call_layout.size();
     const bool exact_binary_match =
         is_executable_process_range(target, expected_dispatch_prologue.size()) &&
         is_executable_process_range(call_layout, expected_hologram_call_layout.size()) &&
@@ -2610,6 +2617,9 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
     }
 
     g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook = std::move(hook);
+    // Publish the matching caller before any thread can enter the enabled hook.
+    g_sw_zero_company_ue56_hologram_dispatch_return.store(
+        executable + layout->hologram_return_rva, std::memory_order_release);
     if (auto enable_result = g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook.enable(); !enable_result.has_value()) {
         SPDLOG_ERROR(
             "[SWZeroCompany][UE5.6][Hologram] Failed to enable Nanite guard hook: {}",
@@ -12974,25 +12984,22 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
     }
 
     if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
-        constexpr uintptr_t REGISTER_EXTERNAL_TEXTURE_RVA = 0x2D4D9E0;
-        constexpr std::array<uint8_t, 20> EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE{
-            0x48, 0x89, 0x5C, 0x24, 0x08,
-            0x48, 0x89, 0x6C, 0x24, 0x10,
-            0x48, 0x89, 0x74, 0x24, 0x18,
-            0x57,
-            0x48, 0x83, 0xEC, 0x30,
-        };
+        const auto* const layout = sw_zero_company_ue56_binary_layout();
+        if (layout == nullptr) {
+            return;
+        }
+        const auto expected_prologue = layout->register_prologue;
 
         const auto executable_base = reinterpret_cast<uintptr_t>(utility::get_executable());
-        const auto expected_target = executable_base + REGISTER_EXTERNAL_TEXTURE_RVA;
+        const auto expected_target = executable_base + layout->register_texture_rva;
         const bool target_matches =
             executable_base != 0 &&
             register_target == expected_target &&
-            !IsBadReadPtr(reinterpret_cast<void*>(register_target), EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.size()) &&
+            is_executable_process_range(register_target, expected_prologue.size()) &&
             std::memcmp(
                 reinterpret_cast<void*>(register_target),
-                EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.data(),
-                EXPECTED_REGISTER_EXTERNAL_TEXTURE_PROLOGUE.size()) == 0;
+                expected_prologue.data(),
+                expected_prologue.size()) == 0;
 
         if (!target_matches) {
             SPDLOG_ERROR(
@@ -14515,6 +14522,10 @@ bool FFakeStereoRenderingHook::hook() {
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
     // So we need to manually create the stereo device.
     if (!vtable) {
+        if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+            SPDLOG_ERROR("[SWZeroCompany][UE5.6][Stereo] No validated stereo vtable; refusing incompatible legacy synthetic device");
+            return false;
+        }
         SPDLOG_ERROR("Failed to locate Fake Stereo Rendering VTable, attempting to perform nonstandard hook");
 
         auto check_file_version = [](uint32_t ms, uint32_t ls) {
@@ -26275,6 +26286,46 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
         return cached_result;
     }
 
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        namespace binary = uevr::sw_zero_company;
+        const auto* const layout = sw_zero_company_ue56_binary_layout();
+        if (layout != nullptr && layout->revision == binary::inlined_stereo_revision) {
+            const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            const auto memory = sdk::discovery::process_memory();
+            const auto matches_code = [&](uint32_t rva, std::span<const uint8_t> expected) {
+                const auto address = base + rva;
+                return address >= base && is_executable_process_range(address, expected.size()) &&
+                    binary::matches_bytes({reinterpret_cast<const uint8_t*>(address), expected.size()}, expected);
+            };
+            const auto matches_table = [&](uint32_t rva, const auto& entries) {
+                for (const auto& entry : entries) {
+                    uintptr_t target{};
+                    if (!sdk::discovery::read_slot(memory, base + rva, entry.slot, target) ||
+                        target != base + entry.rva || !is_executable_process_range(target, 1)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            if (!matches_code(binary::initialize_hmd_rva, binary::initialize_hmd_prologue) ||
+                !matches_code(binary::stereo_assignment_rva, binary::stereo_assignment) ||
+                !matches_table(binary::stereo_primary_rva, binary::stereo_entries) ||
+                !matches_table(binary::stereo_secondary_rva, binary::stereo_rtm_entries) ||
+                !matches_code(binary::stereo_entries[1].rva, binary::stereo_enabled_code) ||
+                !matches_code(binary::stereo_entries.back().rva, binary::stereo_rtm_accessor)) {
+                SPDLOG_ERROR("[SWZeroCompany][UE5.6][Stereo] Inlined constructor or stereo interfaces did not validate");
+                return std::nullopt;
+            }
+
+            // Only discover the tables. InitializeHMDDevice remains responsible
+            // for construction; this interior block is never called or hooked.
+            cached_result = base + binary::stereo_primary_rva;
+            SPDLOG_INFO("[SWZeroCompany][UE5.6][Stereo] Validated inlined constructor vtables primary={:x} secondary={:x}",
+                *cached_result, base + binary::stereo_secondary_rva);
+            return cached_result;
+        }
+    }
+
     const auto fake_stereo_rendering_constructor = locate_fake_stereo_rendering_constructor();
 
     if (!fake_stereo_rendering_constructor) {
@@ -28658,26 +28709,13 @@ bool sw_zero_company_has_source_matched_slate_sret_abi() {
     }
 
     const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
-    if (executable == 0 || target < executable || target - executable != 0x3A3D140) {
+    const auto* const layout = sw_zero_company_ue56_binary_layout();
+    if (layout == nullptr || executable == 0 || target < executable || target - executable != layout->slate_rva) {
         return false;
     }
 
-    // SW Zero's developer PDB proves DrawWindow_RenderThread keeps this in
-    // RCX and returns its 24-byte outputs through RDX, with R8=FRDGBuilder and
-    // R9=inputs.
-    // SafetyHook has already replaced the prologue, so validate only the
-    // untouched argument moves. The exact RVA makes a future build fail open.
-    static constexpr std::array<uint8_t, 21> sret_argument_moves{
-        0x4D, 0x8B, 0x61, 0x18,       // mov r12, [r9+18h]
-        0x4D, 0x8B, 0xF9,             // mov r15, r9
-        0x49, 0x8B, 0x41, 0x08,       // mov rax, [r9+8]
-        0x4D, 0x8B, 0xE8,             // mov r13, r8
-        0x48, 0x89, 0x95, 0x70, 0x01, 0x00, 0x00}; // mov [rbp+170h], rdx
-    static constexpr std::array<uint8_t, 4> save_sret{
-        0x48, 0x89, 0x4D, 0x88}; // mov [rbp-78h], rcx
-
-    return std::memcmp(reinterpret_cast<const void*>(target + 0x2D), sret_argument_moves.data(), sret_argument_moves.size()) == 0 &&
-        std::memcmp(reinterpret_cast<const void*>(target + 0x44), save_sret.data(), save_sret.size()) == 0;
+    return uevr::sw_zero_company::matches_slate_arguments(
+        *layout, {reinterpret_cast<const uint8_t*>(target), 0x50});
 }
 
 struct UE55SlateDrawWindowsArrayView {
@@ -32602,8 +32640,8 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         sw_zero_company_has_source_matched_slate_sret_abi() &&
         try_read_ue55_slate_draw_inputs(a4, renderer, ue55_inputs))
     {
-        // The matching developer PDB proves RCX is the renderer and RDX is the
-        // hidden output storage. Apply that source-matched interpretation
+        // The original developer PDB and validated update disassembly prove
+        // RCX is the renderer and RDX is hidden output storage. Apply that ABI
         // before generic viewport emulation can touch this RDG transaction.
         SPDLOG_WARN_ONCE(
             "[SWZeroCompany][UE5.6][SlateRT] Using source-matched hidden-sret ABI; "
@@ -34083,18 +34121,12 @@ bool VRRenderTargetManager_Base::need_reallocate_view_target(const sdk::FViewpor
         m_attempted_find_force_separate_rt = true;
 
         const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
-        constexpr uintptr_t use_separate_render_target_rva = 0x4EB90C0;
+        const auto* const layout = sw_zero_company_ue56_binary_layout();
         constexpr size_t force_separate_render_target_offset = 0x1B8;
-        constexpr std::array<uint8_t, 24> expected_use_separate_render_target{
-            0x80, 0xB9, 0xB7, 0x01, 0x00, 0x00, 0x00, // cmp byte ptr [rcx+1B7h], 0
-            0x75, 0x0C,                               // jne true
-            0x80, 0xB9, 0xB8, 0x01, 0x00, 0x00, 0x00, // cmp byte ptr [rcx+1B8h], 0
-            0x75, 0x03,                               // jne true
-            0x32, 0xC0, 0xC3,                         // xor al, al; ret
-            0xB0, 0x01, 0xC3};                        // mov al, 1; ret
+        const auto& expected_use_separate_render_target = uevr::sw_zero_company::separate_target_code;
 
-        const auto function = executable + use_separate_render_target_rva;
-        if (executable != 0 &&
+        const auto function = layout != nullptr ? executable + layout->separate_target_rva : 0;
+        if (layout != nullptr && executable != 0 &&
             is_readable_process_range(function, expected_use_separate_render_target.size()) &&
             std::memcmp(
                 reinterpret_cast<const void*>(function),
