@@ -14,6 +14,7 @@
 #include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 #include "mods/vr/StellarBladeRendererEntry.hpp"
+#include "mods/vr/SWZeroCompanyBinary.hpp"
 
 namespace {
 
@@ -1129,6 +1130,82 @@ void test_stellar_blade_callable_renderer_entry() {
     }
 }
 
+void test_sw_zero_company_binary_revisions() {
+    using namespace uevr::sw_zero_company;
+    expect(binary_layouts[0].revision == 196320 && binary_layouts[1].revision == 196985,
+        "SWZC retains the original revision alongside the validated update");
+    expect(select_unique_layout([](const auto&) { return false; }) == nullptr,
+        "SWZC unknown binary fails closed");
+    expect(select_unique_layout([](const auto&) { return true; }) == nullptr,
+        "SWZC ambiguous binary cannot mix compatibility revisions");
+
+    for (const auto& layout : binary_layouts) {
+        expect(select_unique_layout([&](const auto& candidate) { return candidate.revision == layout.revision; }) == &layout,
+            "SWZC selection preserves one immutable revision");
+        std::array<uint8_t, 0x50> slate{};
+        std::copy(layout.slate_arguments.begin(), layout.slate_arguments.end(), slate.begin() + 0x2D);
+        std::copy(layout.slate_renderer.begin(), layout.slate_renderer.end(), slate.begin() + layout.slate_renderer_offset);
+        expect(matches_slate_arguments(layout, slate), "SWZC validated hidden-sret Slate arguments are accepted");
+        // Discovery can run after the DrawWindow entry has already been hooked.
+        std::fill(slate.begin(), slate.begin() + 0x20, 0xCC);
+        expect(matches_slate_arguments(layout, slate), "SWZC Slate identity does not depend on a patched entry");
+        for (size_t size = 0; size < layout.slate_renderer_offset + layout.slate_renderer.size(); ++size) {
+            expect(!matches_slate_arguments(layout, std::span{slate}.first(size)),
+                "SWZC truncated Slate evidence fails closed");
+        }
+        for (const auto& other : binary_layouts) {
+            if (other.revision != layout.revision) {
+                expect(!matches_slate_arguments(other, slate), "SWZC Slate revisions cannot cross-match");
+            }
+        }
+        for (const auto offset : {0x2Du, 0x35u, 0x41u, layout.slate_renderer_offset, layout.slate_renderer_offset + 3}) {
+            auto bad = slate;
+            bad[offset] ^= 1;
+            expect(!matches_slate_arguments(layout, bad), "SWZC changed Slate ABI evidence is rejected");
+        }
+        int32_t displacement{};
+        std::memcpy(&displacement, layout.hologram_call.data() + layout.hologram_call.size() - 4, sizeof(displacement));
+        expect(layout.hologram_call[layout.hologram_call.size() - 5] == 0xE8 &&
+               static_cast<int64_t>(layout.hologram_return_rva) + displacement == layout.nanite_rva,
+            "SWZC hologram caller must reach the dispatch in the same revision");
+    }
+
+    const auto check_exact_code = [](std::span<const uint8_t> code) {
+        expect(matches_bytes(code, code), "SWZC complete validated code is accepted");
+        expect(!matches_bytes(code, {}), "SWZC empty signature cannot validate a target");
+        for (size_t size = 0; size < code.size(); ++size) {
+            expect(!matches_bytes(code.first(size), code), "SWZC truncated hook evidence is rejected");
+        }
+        for (size_t offset = 0; offset < code.size(); ++offset) {
+            std::vector<uint8_t> bad{code.begin(), code.end()};
+            bad[offset] ^= 1;
+            expect(!matches_bytes(bad, code), "SWZC changed hook evidence is rejected");
+        }
+    };
+    for (const auto& layout : binary_layouts) {
+        check_exact_code(layout.register_prologue);
+        check_exact_code(layout.nanite_prologue);
+        check_exact_code(layout.hologram_call);
+    }
+    check_exact_code(copy_prologue);
+    check_exact_code(copy_call_layout);
+    check_exact_code(separate_target_code);
+    check_exact_code(initialize_hmd_prologue);
+    check_exact_code(stereo_assignment);
+    check_exact_code(stereo_enabled_code);
+    check_exact_code(stereo_rtm_accessor);
+
+    int32_t primary_disp{}, secondary_disp{};
+    std::memcpy(&primary_disp, stereo_assignment.data() + 3, sizeof(primary_disp));
+    std::memcpy(&secondary_disp, stereo_assignment.data() + 13, sizeof(secondary_disp));
+    expect(static_cast<int64_t>(stereo_assignment_rva) + 7 + primary_disp == stereo_primary_rva &&
+           static_cast<int64_t>(stereo_assignment_rva) + 17 + secondary_disp == stereo_secondary_rva,
+        "SWZC inlined constructor assignments must address the exact two interfaces");
+    expect(inlined_stereo_revision == binary_layouts[1].revision &&
+           stereo_entries[1].slot == 1 && stereo_entries.back().slot == 16,
+        "SWZC inlined constructor applies only to the new revision and retains the original stereo slot ABI");
+}
+
 } // namespace
 
 int main() {
@@ -1146,6 +1223,7 @@ int main() {
     test_mafia_discovery();
     test_family_snapshot_accessors();
     test_stellar_blade_callable_renderer_entry();
+    test_sw_zero_company_binary_revisions();
 
     if (failures != 0) {
         std::cerr << failures << " compatibility policy test(s) failed\n";
