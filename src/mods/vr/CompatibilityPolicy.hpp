@@ -180,6 +180,11 @@ constexpr bool should_use_ue58_slate_ui_resource_worker(
     return exact_ue58 && dx12 && synthetic_required && !prerender_viewfamily_seen;
 }
 
+constexpr bool should_harden_ue58_synthetic_ui_initialization(
+    bool exact_ue58, bool dx12, bool synthetic_required, bool legacy_allowlisted) noexcept {
+    return exact_ue58 && dx12 && synthetic_required && !legacy_allowlisted;
+}
+
 constexpr bool is_ue58_direct_raw_texture_transaction(
     const UE58SlateCallABIObservation& input) noexcept {
     return input.rcx_builder &&
