@@ -928,6 +928,17 @@ void test_ue58_slate_ui_capability() {
     expect(!should_use_ue58_slate_ui_resource_worker(false, true, true, false),
         "other engine versions must not use the UE5.8 Slate render-resource worker");
 
+    expect(should_harden_ue58_synthetic_ui_initialization(true, true, true, false),
+        "only validated automatic UE5.8 DX12 synthetic UI requests use the new lifecycle");
+    expect(!should_harden_ue58_synthetic_ui_initialization(true, false, true, false),
+        "AVENA-style DX11 initialization remains unchanged");
+    expect(!should_harden_ue58_synthetic_ui_initialization(false, true, true, false),
+        "earlier and unvalidated future engines remain outside the new lifecycle");
+    expect(!should_harden_ue58_synthetic_ui_initialization(true, true, false, false),
+        "engine-owned, observing and quarantined UI routes do not start synthetic requests");
+    expect(!should_harden_ue58_synthetic_ui_initialization(true, true, true, true),
+        "legacy allowlisted title-specific UI ownership remains unchanged");
+
     observation.target_is_distinct_from_scene = true;
     expect(evaluate_ue58_dedicated_ui_capability(observation) == UE58DedicatedUICapability::Quarantined,
         "contradictory scene ownership evidence must be quarantined");

@@ -190,7 +190,7 @@ add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/DiagnosticSafetyTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
 include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]

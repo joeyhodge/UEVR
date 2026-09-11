@@ -5872,6 +5872,12 @@ bool should_create_validated_automatic_ue58_ui_target() {
         g_hook->requires_ue58_synthetic_ui_target();
 }
 
+bool should_harden_ue58_ui_initialization() {
+    return uevr::vr_compatibility::should_harden_ue58_synthetic_ui_initialization(
+        is_validated_ue58_slate_ui_runtime(), is_ue58_dx12_backend(),
+        should_create_validated_automatic_ue58_ui_target(), supports_legacy_allowlisted_ue58_ui_route());
+}
+
 ThreadWorker<void>& get_ue58_slate_ui_resource_worker() {
     static ThreadWorker<void> worker{};
     return worker;
@@ -11459,6 +11465,22 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
                     uevr::vr_compatibility::should_create_ue58_synthetic_ui_target(capability)},
             };
 
+            const auto initialization = get_render_target_manager()->get_ue58_ui_initialization_snapshot();
+            const auto now = uevr::ue58_ui::now_ms();
+            ue58_slate_ui["initialization"] = {
+                {"engaged", initialization.engaged},
+                {"generation", initialization.generation},
+                {"stage", uevr::ue58_ui::to_string(initialization.stage)},
+                {"queued_source", uevr::ue58_ui::to_string(initialization.queued_source)},
+                {"active_source", uevr::ue58_ui::to_string(initialization.active_source)},
+                {"last_source", uevr::ue58_ui::to_string(initialization.last_source)},
+                {"width", initialization.width}, {"height", initialization.height},
+                {"attempts", initialization.attempts}, {"recoveries", initialization.recoveries},
+                {"timeouts", initialization.timeouts}, {"reason", initialization.reason},
+                {"progress_age_ms", initialization.engaged && now >= initialization.progress_ms
+                    ? now - initialization.progress_ms : 0},
+                {"retry_in_ms", initialization.retry_after_ms > now ? initialization.retry_after_ms - now : 0},
+            };
             result["ue58_slate_ui_capability"] = std::move(ue58_slate_ui);
         }
 
@@ -12397,6 +12419,9 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
 
     // Best place to run game thread jobs.
     GameThreadWorker::get().execute();
+    if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+        hook->get_render_target_manager()->service_ue58_ui_game_thread();
+    }
 
     if (hook->m_ignore_next_engine_tick) {
         hook->m_ignored_engine_delta = delta;
@@ -24222,6 +24247,11 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
     // slot-7 callback always services the queue exactly once.
     utility::ScopeGuard render_thread_worker_guard{[]() {
         RenderThreadWorker::get().execute();
+        if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend() &&
+            g_framework->is_game_data_intialized() && g_hook->has_seen_prerender_viewfamily())
+        {
+            g_hook->get_render_target_manager()->service_ue58_ui_initialization(uevr::ue58_ui::Source::PreRender);
+        }
     }};
 
     if (dune_native_fix_renderer_resolver_is_current_game() &&
@@ -32061,6 +32091,7 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     utility::ScopeGuard ue58_slate_ui_resource_worker_guard{[&]() {
         if (pump_ue58_slate_ui_resource_worker) {
             get_ue58_slate_ui_resource_worker().execute();
+            g_hook->get_render_target_manager()->service_ue58_ui_initialization(uevr::ue58_ui::Source::Slate);
         }
     }};
 
@@ -35137,7 +35168,228 @@ void VRRenderTargetManager_Base::destroy_scene_capture() {
     }
 }
 
+struct VRRenderTargetManager_Base::UE58UITextureOwner {
+    inline static std::atomic_bool servicing_enabled{};
+    sdk::UObjectReference<sdk::UTexture> texture{nullptr};
+    uevr::ue58_owned_ui::StableResource stability{};
+    bool rooted{};
+    UE58UITextureOwner* next_retired{};
+
+    struct RetireQueue {
+        std::mutex mutex{};
+        UE58UITextureOwner* head{};
+    };
+    static RetireQueue& retire_queue() {
+        // Requests can retire during module teardown; do not depend on static
+        // destruction order or acquire the engine's game-thread worker lock.
+        static auto* queue = new RetireQueue{};
+        return *queue;
+    }
+    static void retire(UE58UITextureOwner* owner) noexcept {
+        try {
+            auto& queue = retire_queue();
+            std::scoped_lock lock{queue.mutex};
+            owner->next_retired = queue.head;
+            queue.head = owner;
+        } catch (...) {
+            // Keep the root rather than run UObject cleanup on a render thread.
+        }
+    }
+    static void drain_retired() {
+        auto& queue = retire_queue();
+        UE58UITextureOwner* head{};
+        {
+            std::scoped_lock lock{queue.mutex};
+            head = std::exchange(queue.head, nullptr);
+        }
+        while (head != nullptr) {
+            std::unique_ptr<UE58UITextureOwner> owner{head};
+            head = owner->next_retired;
+            try {
+                if (owner->rooted && owner->texture.valid()) {
+                    unroot_dedicated_ui_texture(owner->texture.get());
+                }
+            } catch (...) {
+                SPDLOG_WARNING_EVERY_N_SEC(5, "[UE5.8][SlateUI][Init] Could not retire a UI UObject safely");
+            }
+        }
+    }
+};
+
+bool VRRenderTargetManager_Base::create_ue58_ui_texture() {
+    if (!should_harden_ue58_ui_initialization() || get_dedicated_ui_target() != nullptr ||
+        dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr || dedicated_ui_creation_pending)
+    {
+        return false;
+    }
+
+    UE58UITextureOwner::servicing_enabled.store(true, std::memory_order_release);
+    ue58_ui_initialization_enabled.store(true, std::memory_order_release);
+    const auto source = g_hook->has_seen_prerender_viewfamily()
+        ? uevr::ue58_ui::Source::PreRender : uevr::ue58_ui::Source::Slate;
+    const auto width = dedicated_ui_width;
+    const auto height = dedicated_ui_height;
+    const auto ticket = ue58_ui_initialization.begin_if(width, height, source, uevr::ue58_ui::now_ms(), [&] {
+        return get_dedicated_ui_target() == nullptr && dedicated_ui_width == width && dedicated_ui_height == height;
+    });
+    if (!ticket) {
+        return false;
+    }
+
+    SPDLOG_INFO("[UE5.8][SlateUI][Init] Queued generation {} [{}x{}], resource callback={}",
+        ticket->generation, ticket->width, ticket->height, uevr::ue58_ui::to_string(source));
+    return true;
+}
+
+void VRRenderTargetManager_Base::service_ue58_ui_game_thread() {
+    if (!UE58UITextureOwner::servicing_enabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    UE58UITextureOwner::drain_retired();
+    if (!ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto now = uevr::ue58_ui::now_ms();
+    if (ue58_ui_initialization.watchdog(now)) {
+        SPDLOG_WARNING_EVERY_N_SEC(5,
+            "[UE5.8][SlateUI][Init] Resource callback made no progress; retaining owner during bounded retry cooldown");
+    }
+    if (!should_harden_ue58_ui_initialization()) {
+        return;
+    }
+    const auto ticket = ue58_ui_initialization.acquire_creation(now);
+    if (!ticket) {
+        return;
+    }
+    const auto fail = [&](const char* reason) {
+        ue58_ui_initialization.creation_failed(ticket, reason, uevr::ue58_ui::now_ms());
+        SPDLOG_INFO_EVERY_N_SEC(5, "[UE5.8][SlateUI][Init] UI creation deferred: {}", reason);
+    };
+
+    try {
+        auto* engine = sdk::UGameEngine::get();
+        auto* world = engine != nullptr ? engine->get_world() : nullptr;
+        if (world == nullptr) {
+            fail("world is not ready");
+            return;
+        }
+        auto* kismet = sdk::UKismetRenderingLibrary::get();
+        if (kismet == nullptr) {
+            fail("KismetRenderingLibrary is not ready");
+            return;
+        }
+        auto owner = std::shared_ptr<UE58UITextureOwner>{new UE58UITextureOwner{}, &UE58UITextureOwner::retire};
+        const float clear_color[4]{};
+        // Preserve the existing automatic DX12 path's Outer, format and flags.
+        // This engine call can flush rendering, so no lifecycle/worker lock is held.
+        auto* texture = kismet->create_render_target_2d(world, ticket->width, ticket->height, 2, clear_color, false);
+        if (texture == nullptr) {
+            fail("CreateRenderTarget2D returned no texture");
+            return;
+        }
+        root_dedicated_ui_texture(texture);
+        owner->rooted = true;
+        owner->texture = texture;
+        if (ue58_ui_initialization.created(ticket, std::move(owner), uevr::ue58_ui::now_ms())) {
+            SPDLOG_INFO("[UE5.8][SlateUI][Init] Created UI UObject for generation {}", ticket->generation);
+        }
+    } catch (...) {
+        fail("UI creation raised an exception");
+    }
+}
+
+void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::Source source) {
+    if (!ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    const auto ticket = ue58_ui_initialization.acquire(source, uevr::ue58_ui::now_ms());
+    if (!ticket) {
+        return;
+    }
+    const auto retry = [&](const char* reason) {
+        ue58_ui_initialization.retry(ticket, reason, uevr::ue58_ui::now_ms());
+        SPDLOG_INFO_EVERY_N_SEC(5, "[UE5.8][SlateUI][Init] Waiting for UI resource: {}", reason);
+    };
+    try {
+        if (!should_harden_ue58_ui_initialization()) {
+            retry("synthetic UI route is no longer validated");
+            return;
+        }
+        auto& owner = *ticket->owner;
+        if (!owner.texture.valid()) {
+            ue58_ui_initialization.owner_lost(ticket, uevr::ue58_ui::now_ms());
+            return;
+        }
+        FRHITexture2D* ready_texture{};
+        std::optional<UE58OwnedUIResource> validated{};
+        if (uses_ue58_pooled_ui_owned_resource_path()) {
+            const char* reason{};
+            validated = ue58_pooled_ui_validate_owned_resource(
+                owner.texture.get(), get_render_target(), ticket->width, ticket->height, reason);
+            if (!validated) {
+                owner.stability.observe(std::nullopt);
+                retry(reason);
+                return;
+            }
+            if (!owner.stability.observe(uevr::ue58_owned_ui::Observation{
+                    ticket->generation, validated->identity, reinterpret_cast<uintptr_t>(validated->native.Get())}))
+            {
+                retry("waiting for stable owned resource");
+                return;
+            }
+            ready_texture = reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture);
+        } else {
+            // Retain the cache-aware discovery path used by existing working
+            // UE5.8 DX12 sessions; this patch changes scheduling, not layouts.
+            if (!sdk::UTexture::update_render_resource_offset_texture2d(owner.texture)) {
+                retry("UTexture resource offset is not ready");
+                return;
+            }
+            auto* resource = (sdk::FTextureRenderTargetResource*)owner.texture->get_resource();
+            if (resource == nullptr || !sdk::FTextureRenderTargetResource::update_render_target_vtable_offset(resource)) {
+                retry("render resource is not ready");
+                return;
+            }
+            auto* render_target = resource->as_render_target();
+            if (render_target == nullptr) {
+                retry("FRenderTarget is not ready");
+                return;
+            }
+            sdk::FRenderTarget::update_offsets(render_target);
+            auto** texture = render_target->get_render_target_texture();
+            if (texture == nullptr || *texture == nullptr || IsBadReadPtr(*texture, sizeof(void*))) {
+                retry("RHI texture is not ready");
+                return;
+            }
+            ready_texture = *texture;
+        }
+        if (ue58_ui_initialization.publish(ticket, uevr::ue58_ui::now_ms(), [&] {
+                if (dedicated_ui_width != ticket->width || dedicated_ui_height != ticket->height ||
+                    !should_harden_ue58_ui_initialization())
+                {
+                    return false;
+                }
+                set_dedicated_ui_target_unlocked(ready_texture, ticket->width, ticket->height);
+                get_fallback_ui_target_ref() = nullptr;
+                return true;
+            }))
+        {
+            SPDLOG_INFO("[UE5.8][SlateUI][Init] Published UI generation {} [{}x{}] via {}",
+                ticket->generation, ticket->width, ticket->height, uevr::ue58_ui::to_string(source));
+        }
+    } catch (...) {
+        retry("UI resource validation raised an exception");
+    }
+}
+
 void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        ue58_ui_initialization.cancel("target retired or resized", [&]() {
+            owned_dedicated_ui_target.reset();
+            dedicated_ui_target = nullptr;
+        });
+        return;
+    }
     if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
         auto* expected = static_cast<FRHITexture2D*>(dedicated_ui_target);
         if (expected != nullptr) {
@@ -35180,6 +35432,10 @@ void VRRenderTargetManager_Base::destroy_dedicated_ui_target() {
 }
 
 void VRRenderTargetManager_Base::cancel_dedicated_ui_creation_preserving_target(const char* reason) {
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        ue58_ui_initialization.cancel("engine-owned target promoted", []() {});
+        return;
+    }
     const bool had_pending_creation =
         dedicated_ui_creation_pending ||
         dedicated_ui_object_created ||
@@ -35233,6 +35489,15 @@ void VRRenderTargetManager_Base::invalidate_resolution_dependent_targets() {
     wants_depth_reallocate = true;
 
     ui_target = nullptr;
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        ue58_ui_initialization.cancel("resolution invalidated", [&]() {
+            owned_dedicated_ui_target.reset();
+            dedicated_ui_target = nullptr;
+            dedicated_ui_width = 0;
+            dedicated_ui_height = 0;
+        });
+        return;
+    }
     destroy_dedicated_ui_target();
 
     dedicated_ui_width = 0;
@@ -35452,6 +35717,16 @@ bool VRRenderTargetManager_Base::prepare_sw_zero_company_dedicated_ui_target(
 }
 
 void VRRenderTargetManager_Base::set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height) {
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        ue58_ui_initialization.cancel("external target published", [&]() {
+            set_dedicated_ui_target_unlocked(rt, width, height);
+        });
+        return;
+    }
+    set_dedicated_ui_target_unlocked(rt, width, height);
+}
+
+void VRRenderTargetManager_Base::set_dedicated_ui_target_unlocked(FRHITexture2D* rt, uint32_t width, uint32_t height) {
     if (rt != nullptr) {
         FRHITexture2D::set_vtable(*(void**)rt);
 
@@ -35521,6 +35796,9 @@ void VRRenderTargetManager_Base::inherit_dedicated_ui_state_from(
     }
 
     if (width != 0 && height != 0) {
+        if (source.ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+            source.cancel_dedicated_ui_creation_preserving_target("render-target-manager transition");
+        }
         request_dedicated_ui_target(width, height);
 
         SPDLOG_INFO(
@@ -35533,6 +35811,19 @@ void VRRenderTargetManager_Base::inherit_dedicated_ui_state_from(
 
 void VRRenderTargetManager_Base::request_dedicated_ui_target(uint32_t width, uint32_t height) {
     if (!supports_dedicated_ui_target_for_current_game() || width == 0 || height == 0) {
+        return;
+    }
+
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        ue58_ui_initialization.cancel_if(
+            [&] { return dedicated_ui_width != width || dedicated_ui_height != height; },
+            "UI extent changed", [&] {
+                owned_dedicated_ui_target.reset();
+                dedicated_ui_target = nullptr;
+                dedicated_ui_width = width;
+                dedicated_ui_height = height;
+            });
+        try_schedule_dedicated_ui_creation();
         return;
     }
 
@@ -35747,6 +36038,14 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
 }
 
 bool VRRenderTargetManager_Base::try_schedule_dedicated_ui_creation() {
+    if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+        if (get_dedicated_ui_target() != nullptr || is_dedicated_ui_target_pending() ||
+            !can_attempt_dedicated_ui_creation())
+        {
+            return false;
+        }
+        return create_ue58_ui_texture();
+    }
     if (get_dedicated_ui_target() != nullptr || dedicated_ui_texture != nullptr || in_flight_dedicated_ui_texture != nullptr ||
         dedicated_ui_creation_pending || in_flight_dedicated_ui_generation != 0)
     {
@@ -35774,6 +36073,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
 
     if (dedicated_ui_width == 0 || dedicated_ui_height == 0) {
         return false;
+    }
+
+    if (should_harden_ue58_ui_initialization()) {
+        return create_ue58_ui_texture();
     }
 
     const auto width = dedicated_ui_width;
