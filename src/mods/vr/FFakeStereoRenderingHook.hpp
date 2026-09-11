@@ -31,6 +31,7 @@
 
 #include "IXRTrackingSystemHook.hpp"
 #include "CompatibilityPolicy.hpp"
+#include "UE58UIInitialization.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "UE57SlateSymbols.hpp"
 
@@ -236,11 +237,19 @@ public:
     bool create_dedicated_ui_texture();
     bool try_schedule_dedicated_ui_creation();
     bool can_attempt_dedicated_ui_creation();
+    void service_ue58_ui_initialization(uevr::ue58_ui::Source source);
+    void service_ue58_ui_game_thread();
+    uevr::ue58_ui::Snapshot get_ue58_ui_initialization_snapshot() const {
+        return ue58_ui_initialization.snapshot();
+    }
     void reset_dedicated_ui_creation_state();
     bool is_dedicated_ui_generation_current(uint64_t generation) const {
         return in_flight_dedicated_ui_generation == generation;
     }
     bool is_dedicated_ui_target_pending() const {
+        if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+            return ue58_ui_initialization.pending();
+        }
         return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr || in_flight_dedicated_ui_generation != 0;
     }
 
@@ -281,6 +290,12 @@ public:
     }
 
 protected:
+    struct UE58UITextureOwner;
+    bool create_ue58_ui_texture();
+    void set_dedicated_ui_target_unlocked(FRHITexture2D* rt, uint32_t width, uint32_t height);
+    uevr::ue58_ui::Initialization<UE58UITextureOwner> ue58_ui_initialization{};
+    std::atomic_bool ue58_ui_initialization_enabled{};
+
     uint64_t invalidate_scene_capture_generation(const char* reason);
     bool publish_scene_capture_target_snapshot(
         sdk::UTexture* owner_texture,
