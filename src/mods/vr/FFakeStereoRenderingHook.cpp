@@ -93,6 +93,7 @@
 #include "FFakeStereoRenderingHook.hpp"
 #include "CompatibilityPolicy.hpp"
 #include "BodycamTextureLayout.hpp"
+#include "Borderlands4Slate.hpp"
 #include "UE58OwnedUITexture.hpp"
 
 #include <tracy/Tracy.hpp>
@@ -29040,6 +29041,23 @@ bool looks_like_vtable_object(void* object) {
     return safe_read_value((uintptr_t)object, vtable) && looks_like_virtual_function_table(vtable);
 }
 
+bool borderlands4_slate_vtable_object(uintptr_t object) {
+    uintptr_t table{};
+    std::array<uintptr_t, 12> entries{};
+    if (!sdk::discovery::read_process(nullptr, object, &table, sizeof(table)) ||
+        !sdk::discovery::read_process(nullptr, table, entries.data(), sizeof(entries))) {
+        return false;
+    }
+
+    size_t executable_entries{};
+    for (const auto entry : entries) {
+        if (entry != 0 && is_executable_process_range(entry, 1) && ++executable_entries == 6) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool try_call_slate_viewport_bool_slot(sdk::ISlateViewport* viewport, size_t slot, bool& out) {
     out = false;
 
@@ -32824,6 +32842,64 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
             ue55_promote_slate_outputs(rtm, a2, expected_extent);
         }
 
+        return ret;
+    }
+
+    if (supports_borderlands4_ue554_dedicated_ui_target()) {
+        const auto previous_inside = g_hook->m_inside_slate_draw_window;
+        const auto previous_thread = g_hook->m_slate_draw_window_thread_id;
+        g_hook->m_inside_slate_draw_window = false;
+        utility::ScopeGuard slate_draw_guard{[&]() {
+            g_hook->m_inside_slate_draw_window = previous_inside;
+            g_hook->m_slate_draw_window_thread_id = previous_thread;
+        }};
+
+        // The failed legacy provider probe stalls this title's render thread on
+        // every retry. Accept only a complete stock Slate input shape instead;
+        // never emulate a viewport or expose unvalidated command-list arguments.
+        const auto match = uevr::borderlands4_slate::probe(
+            reinterpret_cast<uintptr_t>(renderer), reinterpret_cast<uintptr_t>(a2),
+            reinterpret_cast<uintptr_t>(a3), reinterpret_cast<uintptr_t>(a4),
+            [](uintptr_t address, void* output, size_t size) {
+                return sdk::discovery::read_process(nullptr, address, output, size);
+            }, borderlands4_slate_vtable_object);
+        if (!match) {
+            SPDLOG_INFO_EVERY_N_SEC(10,
+                "[Borderlands4][UE5.5][SlateUI] No unique validated Slate input yet; "
+                "preserving the original draw without legacy provider emulation "
+                "rcx={:x} rdx={:x} r8={:x} r9={:x}",
+                reinterpret_cast<uintptr_t>(renderer), reinterpret_cast<uintptr_t>(a2),
+                reinterpret_cast<uintptr_t>(a3), reinterpret_cast<uintptr_t>(a4));
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
+
+        SPDLOG_INFO_ONCE(
+            "[Borderlands4][UE5.5][SlateUI] Validated Slate input ABI={} (0=renderer-first, "
+            "1=outputs-first, 2=single-window array); legacy provider emulation bypassed",
+            static_cast<int>(match->abi));
+        const auto vr = VR::get();
+        auto* const rtm = g_hook->get_render_target_manager();
+        const bool redirect_ui = vr != nullptr && vr->is_hmd_active() &&
+            !vr->is_stereo_emulation_enabled() && rtm != nullptr;
+        const UE55SlateExtent extent{match->width, match->height};
+
+        if (redirect_ui) {
+            g_hook->note_stable_slate_draw();
+            g_hook->attempt_hook_ue55_slate_output_texture_register();
+            rtm->get_fallback_ui_target_ref() = nullptr;
+            rtm->request_dedicated_ui_target(extent.width, extent.height);
+            rtm->ensure_dedicated_ui_target(0);
+        }
+
+        if (redirect_ui) {
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+        }
+
+        const auto ret = g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        if (redirect_ui && match->outputs != 0) {
+            ue55_promote_slate_outputs(rtm, reinterpret_cast<void*>(match->outputs), extent);
+        }
         return ret;
     }
 
