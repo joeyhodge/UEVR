@@ -959,6 +959,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
+	"src/mods/vr/HiFiRushRendererEntry.hpp"
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"

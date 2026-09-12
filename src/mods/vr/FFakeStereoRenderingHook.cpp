@@ -75,6 +75,7 @@
 #include "mods/UObjectHook.hpp"
 #include "mods/GameSpecific.hpp"
 #include "StellarBladeRendererEntry.hpp"
+#include "HiFiRushRendererEntry.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
 
@@ -9387,6 +9388,57 @@ std::optional<RuntimeFunctionRange> get_stellar_blade_callable_renderer_range(ui
     return candidate;
 }
 
+bool hifi_rush_native_fix_renderer_is_current_game() {
+    static const auto path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
+    static const bool hbk_ue427 = uevr::hifi::matches_game(path, true) &&
+        uevr::hifi::find_version_marker(reinterpret_cast<uintptr_t>(utility::get_executable())).has_value();
+    if (!hbk_ue427) {
+        return false;
+    }
+    const auto vr = VR::get();
+    return uevr::hifi::should_use_native_fix_renderer(
+        path, hbk_ue427, g_framework != nullptr && g_framework->is_dx12(),
+        vr != nullptr && vr->is_native_stereo_fix_enabled());
+}
+
+std::optional<RuntimeFunctionRange> get_hifi_rush_callable_renderer_range(
+    uintptr_t callback_return, uintptr_t excluded_viewport_draw) {
+    if (!indirect_virtual_call_returns_to(callback_return, 0x28)) {
+        return std::nullopt;
+    }
+
+    // Normalize the callback's short CHAININFO child before validating the ABI.
+    // Do not use the generic size-based stack fallback: it selected Draw here.
+    const auto candidate = get_canonical_runtime_function_range(callback_return);
+    if (!candidate || candidate->image_base != reinterpret_cast<uintptr_t>(utility::get_executable()) ||
+        !uevr::hifi::is_distinct_renderer_entry(candidate->begin, excluded_viewport_draw) ||
+        !is_readable_process_range(candidate->begin, candidate->size()) ||
+        !is_executable_process_range(candidate->begin, candidate->size())) {
+        return std::nullopt;
+    }
+
+    DWORD64 root_image_base{};
+    const auto root = RtlLookupFunctionEntry(candidate->begin, &root_image_base, nullptr);
+    if (root == nullptr || root_image_base != candidate->image_base || root->UnwindData == 0 ||
+        root_image_base + root->BeginAddress != candidate->begin ||
+        root->EndAddress <= root->BeginAddress ||
+        root->EndAddress - root->BeginAddress < uevr::hifi::renderer_entry_prefix.size()) {
+        return std::nullopt;
+    }
+
+    const auto unwind = candidate->image_base + root->UnwindData;
+    constexpr auto unwind_size = uevr::hifi::renderer_root_unwind.size();
+    if (unwind < candidate->image_base || !is_readable_process_range(unwind, unwind_size) ||
+        !uevr::hifi::has_callable_renderer_entry(
+            {reinterpret_cast<const uint8_t*>(candidate->begin), candidate->size()},
+            {reinterpret_cast<const uint8_t*>(unwind), unwind_size},
+            callback_return - candidate->begin)) {
+        return std::nullopt;
+    }
+
+    return candidate;
+}
+
 bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
     // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
     // this as corroborating evidence rather than the sole resolver condition.
@@ -9410,6 +9462,19 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     uintptr_t direct_callback_return = 0,
     uintptr_t excluded_viewport_draw = 0)
 {
+    if (hifi_rush_native_fix_renderer_is_current_game()) {
+        const auto candidate = get_hifi_rush_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
+        if (!candidate) {
+            SPDLOG_WARN_ONCE("[HiFiRush][NativeStereoFix] Rejected renderer callback {:x}; "
+                             "leaving the original renderer unchanged", direct_callback_return);
+            return std::nullopt;
+        }
+        SPDLOG_INFO("[HiFiRush][NativeStereoFix] Validated callable UE4.27 renderer entry {:x} "
+                    "from callback {:x}; excluded Draw {:x}",
+                    candidate->begin, direct_callback_return, excluded_viewport_draw);
+        return candidate->begin;
+    }
+
     constexpr uint32_t max_stack_depth = 32;
     // The renderer entry is close to the view-extension callback. Launch-loop
     // frames farther up the stack can have the same small-wrapper/direct-call
@@ -24272,7 +24337,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                     ? resolve_pokemon_emerald_begin_rendering_viewfamilies()
                     : resolve_begin_rendering_viewfamilies_from_stack(
                         reinterpret_cast<uintptr_t>(_ReturnAddress()),
-                        farfarwest_ue581_view_extension_layout_is_current_game()
+                        (farfarwest_ue581_view_extension_layout_is_current_game() ||
+                         hifi_rush_native_fix_renderer_is_current_game())
                             ? g_hook->m_gameviewportclient_draw_hook.target_address()
                             : 0);
             if (!candidate) {
