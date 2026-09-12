@@ -280,6 +280,8 @@ private:
         std::make_unique<CVarStandard>(L"Renderer", L"r.TemporalAA.Algorithm", CVar::Type::INT, 0, 1),
         std::make_unique<CVarStandard>(L"Renderer", L"r.TemporalAA.Upsampling", CVar::Type::INT, 0, 1),
         std::make_unique<CVarStandard>(L"Renderer", L"r.PostProcessing.PropagateAlpha", CVar::Type::INT, 0, 2),
+        // Registered in Core; preserve the engine/game default until configured.
+        std::make_unique<CVarStandard>(L"Core", L"r.MaxAnisotropy", CVar::Type::INT, 1, 16),
         std::make_unique<CVarStandard>(L"Renderer", L"r.Upscale.Quality", CVar::Type::INT, 0, 5),
         std::make_unique<CVarStandard>(L"Renderer", L"r.LightCulling.Quality", CVar::Type::INT, 0, 2),
         std::make_unique<CVarStandard>(L"Renderer", L"r.SubsurfaceScattering", CVar::Type::INT, 0, 2),
