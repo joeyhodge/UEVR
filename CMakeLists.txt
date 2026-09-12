@@ -502,6 +502,9 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	)
 
 	add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
+	add_test(NAME build-metadata-tests COMMAND powershell -NoProfile -NonInteractive
+	    -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildMetadataTests.ps1")
+	set_tests_properties(build-metadata-tests PROPERTIES TIMEOUT 120)
 
 	unset(CMKR_TARGET)
 	unset(CMKR_SOURCES)
