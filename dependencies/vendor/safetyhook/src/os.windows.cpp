@@ -1,6 +1,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <atomic>
+#include <optional>
 
 #include "safetyhook/common.hpp"
 #include "safetyhook/utility.hpp"
@@ -19,6 +21,18 @@
 #include "safetyhook/os.hpp"
 
 namespace safetyhook {
+namespace {
+std::atomic<ProtectionOverride> g_protection_override{nullptr};
+}
+
+void set_protection_override(ProtectionOverride callback) {
+    g_protection_override.store(callback, std::memory_order_release);
+}
+
+bool has_protection_override() {
+    return g_protection_override.load(std::memory_order_acquire) != nullptr;
+}
+
 std::expected<uint8_t*, OsError> vm_allocate(uint8_t* address, size_t size, VmAccess access) {
     DWORD protect = 0;
 
@@ -67,6 +81,14 @@ std::expected<uint32_t, OsError> vm_protect(uint8_t* address, size_t size, VmAcc
 
 std::expected<uint32_t, OsError> vm_protect(uint8_t* address, size_t size, uint32_t protect) {
     DWORD old_protect = 0;
+
+    if (auto callback = g_protection_override.load(std::memory_order_acquire)) {
+        uint32_t previous{};
+        if (!callback(address, size, protect, &previous)) {
+            return std::unexpected{OsError::FAILED_TO_PROTECT};
+        }
+        return previous;
+    }
 
     if (VirtualProtect(address, size, protect, &old_protect) == FALSE) {
         return std::unexpected{OsError::FAILED_TO_PROTECT};
@@ -177,6 +199,8 @@ public:
         is_destructed = true;
     }
 
+    bool valid() const { return m_trap_veh != nullptr; }
+
     TrapInfo* find_trap(uint8_t* address) {
         auto search = std::find_if(m_traps.begin(), m_traps.end(), [address](auto& trap) {
             return address >= trap.second.from && address < trap.second.from + trap.second.len;
@@ -219,6 +243,19 @@ public:
                                            .len = len});
     }
 
+    std::optional<TrapInfo> saved_trap(uint8_t* from) {
+        const auto entry = m_traps.find(from);
+        return entry == m_traps.end() ? std::nullopt : std::optional{entry->second};
+    }
+
+    void restore_trap(uint8_t* from, const std::optional<TrapInfo>& saved) {
+        if (saved) {
+            m_traps.insert_or_assign(from, *saved);
+        } else {
+            m_traps.erase(from);
+        }
+    }
+
 private:
     std::map<uint8_t*, TrapInfo> m_traps;
     PVOID m_trap_veh{};
@@ -227,6 +264,12 @@ private:
         auto exception_code = exp->ExceptionRecord->ExceptionCode;
 
         if (exception_code != EXCEPTION_ACCESS_VIOLATION) {
+            return EXCEPTION_CONTINUE_SEARCH;
+        }
+
+        // A failed hook write is not an instruction-fetch trap. Retrying it hangs forever.
+        if (has_protection_override() && (exp->ExceptionRecord->NumberParameters < 2 ||
+                exp->ExceptionRecord->ExceptionInformation[0] != 8)) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
 
@@ -284,6 +327,8 @@ void trap_threads(uint8_t* from, uint8_t* to, size_t len, const std::function<vo
         new_protect = PAGE_EXECUTE_READWRITE;
     }
 
+    const auto protection_override = g_protection_override.load(std::memory_order_acquire);
+    std::optional<TrapInfo> saved_trap;
     if (!TrapManager::is_destructed) {
         std::scoped_lock lock{TrapManager::mutex};
 
@@ -291,7 +336,43 @@ void trap_threads(uint8_t* from, uint8_t* to, size_t len, const std::function<vo
             TrapManager::instance = std::make_unique<TrapManager>();
         }
 
+        if (protection_override) {
+            if (!TrapManager::instance->valid()) {
+                return;
+            }
+            saved_trap = TrapManager::instance->saved_trap(from);
+        }
         TrapManager::instance->add_trap(from, to, len);
+    }
+
+    if (protection_override) {
+        if (TrapManager::is_destructed) {
+            return;
+        }
+        uint32_t from_protect{}, to_protect{};
+        const auto restore_registration = [&] {
+            std::scoped_lock lock{TrapManager::mutex};
+            if (!TrapManager::is_destructed && TrapManager::instance) {
+                TrapManager::instance->restore_trap(from, saved_trap);
+            }
+        };
+        if (!protection_override(from, len, new_protect, &from_protect)) {
+            restore_registration();
+            return;
+        }
+        if (!protection_override(to, len, new_protect, &to_protect)) {
+            uint32_t ignored{};
+            protection_override(from, len, from_protect, &ignored);
+            restore_registration();
+            return;
+        }
+        if (run_fn) {
+            run_fn();
+        }
+        uint32_t ignored{};
+        protection_override(to, len, to_protect, &ignored);
+        protection_override(from, len, from_protect, &ignored);
+        return;
     }
 
     DWORD from_protect;
