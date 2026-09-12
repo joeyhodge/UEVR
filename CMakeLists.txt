@@ -564,6 +564,55 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target hifi-hook-memory-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET hifi-hook-memory-tests)
+	set(hifi-hook-memory-tests_SOURCES "")
+
+	list(APPEND hifi-hook-memory-tests_SOURCES
+		"tests/HiFiRushHookMemoryTests.cpp"
+		"src/utility/HiFiRushHookMemory.cpp"
+	)
+
+	list(APPEND hifi-hook-memory-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${hifi-hook-memory-tests_SOURCES})
+	add_executable(hifi-hook-memory-tests)
+
+	if(hifi-hook-memory-tests_SOURCES)
+		target_sources(hifi-hook-memory-tests PRIVATE ${hifi-hook-memory-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT hifi-hook-memory-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${hifi-hook-memory-tests_SOURCES})
+
+	target_compile_features(hifi-hook-memory-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(hifi-hook-memory-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(hifi-hook-memory-tests PRIVATE
+		safetyhook
+		spdlog
+		kananlib
+	)
+
+	add_test(NAME hifi-hook-memory-tests COMMAND hifi-hook-memory-tests)
+	set_tests_properties(hifi-hook-memory-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -872,6 +921,7 @@ list(APPEND uevr_SOURCES
 	"src/uevr-imgui/imgui_impl_dx12.cpp"
 	"src/uevr-imgui/imgui_impl_win32.cpp"
 	"src/utility/BuildIdentity.cpp"
+	"src/utility/HiFiRushHookMemory.cpp"
 	"src/utility/ImGui.cpp"
 	"src/ExceptionHandler.hpp"
 	"src/Framework.hpp"
@@ -935,8 +985,10 @@ list(APPEND uevr_SOURCES
 	"src/uevr-imgui/font_robotomedium.hpp"
 	"src/uevr-imgui/uevr_imconfig.hpp"
 	"src/utility/BuildIdentity.hpp"
+	"src/utility/HiFiRushHookMemory.hpp"
 	"src/utility/ImGui.hpp"
 	"src/utility/Logging.hpp"
+	"src/utility/ProtectedHookTrampoline.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
 	"src/uevr-imgui/imgui_impl_dx12.h"
