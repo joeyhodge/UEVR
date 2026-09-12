@@ -76,6 +76,7 @@
 #include "mods/GameSpecific.hpp"
 #include "StellarBladeRendererEntry.hpp"
 #include "SWZeroCompanyBinary.hpp"
+#include "utility/HiFiRushHookMemory.hpp"
 
 #include <bdshemu.h>
 #include <bddisasm.h>
@@ -12272,6 +12273,10 @@ void FFakeStereoRenderingHook::attempt_hook_game_engine_tick(uintptr_t return_ad
     SPDLOG_INFO("Attempting to hook UGameEngine::Tick!");
 
     m_attempted_hook_game_engine_tick = true;
+
+    if (!uevr::hifi::initialize_hook_memory(is_ue_4_27_runtime)) {
+        return;
+    }
 
     auto func = sdk::UGameEngine::get_tick_address();
 
