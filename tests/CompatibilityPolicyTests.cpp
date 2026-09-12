@@ -1,6 +1,7 @@
 #include <cstddef>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string_view>
 #include <vector>
 
@@ -11,6 +12,7 @@
 
 #include "mods/GameSpecific.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
+#include "mods/vr/Borderlands4Slate.hpp"
 #include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 #include "mods/vr/StellarBladeRendererEntry.hpp"
@@ -423,9 +425,11 @@ void test_borderlands4_dedicated_ui_gate() {
     }
 
     for (const auto version : {L"", L"unknown", L"0.00", L"5.5"}) {
-        expect(should_use_borderlands4_ue554_dedicated_ui_target(
-                   L"Borderlands4.exe", version, 0x00050005, 0x00040000, true),
-            "missing or minor-only Borderlands4 version requires exact UE5.5.4 file evidence");
+        for (const auto revision : {0u, 1u, 0xffffu}) {
+            expect(should_use_borderlands4_ue554_dedicated_ui_target(
+                       L"Borderlands4.exe", version, 0x00050005, 0x00040000 | revision, true),
+                "Borderlands4 UE5.5.4 file evidence includes the observed 5.5.4.1 build revision");
+        }
         expect(!should_use_borderlands4_ue554_dedicated_ui_target(
                    L"Borderlands4.exe", version, 0x00050005, 0x00030000, true) &&
                !should_use_borderlands4_ue554_dedicated_ui_target(
@@ -434,7 +438,7 @@ void test_borderlands4_dedicated_ui_gate() {
         expect(!should_use_borderlands4_ue554_dedicated_ui_target(
                    L"Borderlands4.exe", version, 0x00050006, 0x00040000, true) &&
                !should_use_borderlands4_ue554_dedicated_ui_target(
-                   L"Borderlands4.exe", version, 0x00050005, 0x00040001, true) &&
+                   L"Borderlands4.exe", version, 0x00050005, 0x00050001, true) &&
                !should_use_borderlands4_ue554_dedicated_ui_target(
                    L"Borderlands4.exe", version, 0x00050005, 0x00040000, false),
             "Borderlands4 file fallback must retain exact version and DX12 boundaries");
@@ -458,6 +462,112 @@ void test_borderlands4_dedicated_ui_gate() {
                    path, L"5.5", 0x00050005, 0x00040000, true),
             "other games, directory names and partial filenames must not enter the Borderlands4 UI gate");
     }
+}
+
+void test_borderlands4_slate_inputs() {
+    using namespace uevr::borderlands4_slate;
+    constexpr uintptr_t base = 0x10000;
+    constexpr uintptr_t renderer = base + 0x100, outputs = base + 0x200;
+    constexpr uintptr_t element_list = base + 0x300, window = base + 0x400;
+    constexpr uintptr_t viewport = base + 0x500, input_address = base + 0x600, array_address = base + 0x700;
+    std::array<uint8_t, 0x800> memory{};
+    size_t readable_size = memory.size(), reads{}, object_checks{};
+    uintptr_t invalid_object{};
+    const auto write = [&](uintptr_t address, const auto& value) {
+        std::memcpy(memory.data() + address - base, &value, sizeof(value));
+    };
+    const auto read = [&](uintptr_t address, void* output, size_t size) {
+        ++reads;
+        if (address < base || address - base > readable_size || size > readable_size - (address - base)) {
+            return false;
+        }
+        std::memcpy(output, memory.data() + address - base, size);
+        return true;
+    };
+    const auto is_object = [&](uintptr_t address) {
+        ++object_checks;
+        return address != invalid_object && (address == renderer || address == window || address == viewport);
+    };
+    Inputs inputs{};
+    inputs.renderer = renderer;
+    inputs.window_element_list = element_list;
+    inputs.window = window;
+    inputs.viewport_info = viewport;
+    inputs.scene_view_rect = {{0, 0}, {2560, 1440}};
+    inputs.viewport_scale_ui = -1.0f;
+    const Inputs valid = inputs;
+    write(input_address, inputs);
+    write(array_address, ArrayView{input_address, 1, 0xffffffffu});
+    const auto before = memory;
+    auto match = probe(renderer, outputs, 0, input_address, read, is_object);
+    expect(match && match->abi == Abi::RendererFirst && match->outputs == outputs &&
+           match->width == 2560 && match->height == 1440,
+        "Borderlands4 accepts complete renderer-first Slate inputs with source-valid negative scale sentinel");
+    expect(memory == before && reads <= 4 && object_checks == 3,
+        "Borderlands4 probe only makes bounded observations and never modifies input memory");
+    match = probe(outputs, renderer, 0, input_address, read, is_object);
+    expect(match && match->abi == Abi::OutputsFirst && match->outputs == outputs,
+        "Borderlands4 recognizes hidden output storage without treating it as a renderer or command list");
+    match = probe(renderer, outputs, array_address, 0, read, is_object);
+    expect(match && match->abi == Abi::SingleWindowArray && match->outputs == 0,
+        "Borderlands4 single-window array has no output-storage promotion and ignores count padding");
+    expect(!probe(renderer, outputs, array_address, input_address, read, is_object),
+        "ambiguous direct and array matches must pass through without selecting an ABI");
+
+    for (const auto extent : {Point{1280, 720}, {1920, 1080}, {3840, 2160}, {10240, 4320}}) {
+        inputs.scene_view_rect = {{-20, 30}, {extent.x - 20, extent.y + 30}};
+        inputs.viewport_scale_ui = 0.0f;
+        write(input_address, inputs);
+        match = probe(renderer, outputs, 0, input_address, read, is_object);
+        expect(match && match->width == extent.x && match->height == extent.y,
+            "Borderlands4 uses validated Slate dimensions, never a hardcoded monitor resolution");
+    }
+    for (const auto rect : {Rect{{0, 0}, {0, 1080}}, {{0, 0}, {1920, -1}},
+                           {{0, 0}, {16385, 1080}},
+                           {{std::numeric_limits<int32_t>::min(), 0}, {std::numeric_limits<int32_t>::max(), 1080}}}) {
+        inputs = valid;
+        inputs.scene_view_rect = rect;
+        write(input_address, inputs);
+        expect(!probe(renderer, outputs, 0, input_address, read, is_object),
+            "empty, oversized and overflowing Slate extents must not initiate UI routing");
+    }
+    for (const auto scale : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity()}) {
+        inputs = valid;
+        inputs.viewport_scale_ui = scale;
+        write(input_address, inputs);
+        expect(!probe(renderer, outputs, 0, input_address, read, is_object),
+            "non-finite Slate scale must fail validation");
+    }
+    inputs = valid;
+    inputs.renderer = window;
+    write(input_address, inputs);
+    expect(!probe(renderer, outputs, 0, input_address, read, is_object),
+        "Borderlands4 rejects an input owned by a different renderer");
+    write(input_address, valid);
+    for (const auto object : {renderer, window, viewport}) {
+        invalid_object = object;
+        expect(!probe(renderer, outputs, 0, input_address, read, is_object),
+            "each live renderer, window and viewport must pass object validation");
+    }
+    invalid_object = 0;
+    for (const auto count : {-1, 0, 2, std::numeric_limits<int32_t>::max()}) {
+        write(array_address, ArrayView{input_address, count, 0});
+        reads = 0;
+        expect(!probe(renderer, outputs, array_address, 0, read, is_object) && reads == 1,
+            "invalid and multi-window arrays are bounded passthroughs without walking guessed strides");
+    }
+    write(array_address, ArrayView{std::numeric_limits<uintptr_t>::max(), 1, 0});
+    expect(!probe(renderer, outputs, array_address, 0, read, is_object),
+        "unreadable array data must not be dereferenced");
+    expect(!probe(renderer, input_address, 0, input_address, read, is_object) &&
+           !probe(renderer, base - 1, 0, input_address, read, is_object),
+        "aliased or unreadable output storage cannot be promoted as a texture result");
+    readable_size = input_address - base + sizeof(Inputs) - 1;
+    expect(!probe(renderer, outputs, 0, input_address, read, is_object),
+        "a truncated input prefix must not use partially validated state");
+    readable_size = memory.size();
+    expect(probe(renderer, outputs, 0, input_address, read, is_object).has_value(),
+        "a failed or incomplete early draw must not poison a later complete input");
 }
 
 void test_stalker2_lazy_ghost_bootstrap() {
@@ -1330,6 +1440,7 @@ int main() {
     test_rendering_mode_matrix();
     test_version_gates();
     test_borderlands4_dedicated_ui_gate();
+    test_borderlands4_slate_inputs();
     test_stalker2_lazy_ghost_bootstrap();
     test_ue58_render_pose_fallback();
     test_bodycam_owned_texture_layout();
