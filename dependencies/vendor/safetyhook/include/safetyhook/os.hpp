@@ -64,6 +64,11 @@ struct SystemInfo {
 
 SystemInfo system_info();
 
+// Opt-in only: callers supply a validated protection backend for one process.
+using ProtectionOverride = bool (*)(uint8_t*, size_t, uint32_t, uint32_t*);
+void set_protection_override(ProtectionOverride callback);
+bool has_protection_override();
+
 using ThreadContext = void*;
 
 void trap_threads(uint8_t* from, uint8_t* to, size_t len, const std::function<void()>& run_fn);

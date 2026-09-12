@@ -198,6 +198,18 @@ cmake-after = """
 add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
 """
 
+[target.hifi-hook-memory-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/HiFiRushHookMemoryTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook", "spdlog", "kananlib"]
+cmake-after = """
+add_test(NAME hifi-hook-memory-tests COMMAND hifi-hook-memory-tests)
+set_tests_properties(hifi-hook-memory-tests PROPERTIES TIMEOUT 60)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]

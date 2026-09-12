@@ -12,6 +12,8 @@
 #include "safetyhook/os.hpp"
 
 namespace safetyhook {
+void set_protection_override(ProtectionOverride) {}
+bool has_protection_override() { return false; }
 std::expected<uint8_t*, OsError> vm_allocate(uint8_t* address, size_t size, VmAccess access) {
     int prot = 0;
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;

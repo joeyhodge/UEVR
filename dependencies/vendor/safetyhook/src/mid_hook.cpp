@@ -3,6 +3,7 @@
 
 #include "safetyhook/allocator.hpp"
 #include "safetyhook/inline_hook.hpp"
+#include "safetyhook/os.hpp"
 #include "safetyhook/utility.hpp"
 
 #include "safetyhook/mid_hook.hpp"
@@ -96,6 +97,7 @@ MidHook::MidHook(MidHook&& other) noexcept {
 
 MidHook& MidHook::operator=(MidHook&& other) noexcept {
     if (this != &other) {
+        retain_on_failed_removal();
         m_hook = std::move(other.m_hook);
         m_target = other.m_target;
         m_stub = std::move(other.m_stub);
@@ -106,6 +108,23 @@ MidHook& MidHook::operator=(MidHook&& other) noexcept {
     }
 
     return *this;
+}
+
+MidHook::~MidHook() {
+    retain_on_failed_removal();
+}
+
+void MidHook::retain_on_failed_removal() {
+    if (has_protection_override() && !m_hook.disable()) {
+        // The destination stub is also reachable until the original hook can be removed.
+        [[maybe_unused]] auto* retained = new MidHook{};
+        retained->m_hook = std::move(m_hook);
+        retained->m_stub = std::move(m_stub);
+        retained->m_target = m_target;
+        retained->m_destination = m_destination;
+        m_target = nullptr;
+        m_destination = nullptr;
+    }
 }
 
 void MidHook::reset() {
