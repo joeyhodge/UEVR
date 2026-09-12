@@ -118,6 +118,19 @@ void test_readbacks() {
     expect(!latest.dispatched(current, true, 100), "duplicate completion cannot restart sampling");
     expect(latest.requested == 2 && latest.actual == 2, "latest request retains its own readback");
 
+    for (const auto requested : {1, 2, 4, 8, 16}) {
+        WriteObservation anisotropy;
+        id = anisotropy.begin(requested, false);
+        anisotropy.dispatched(id, true, 0);
+        const auto previous = requested == 8 ? 4 : 8;
+        anisotropy.observe(id, previous, 100);
+        expect(anisotropy.state != WriteState::observed && anisotropy.actual == previous,
+            "anisotropy readback must not equate different nonzero integer values");
+        for (int i = 2; i <= 4; ++i) { anisotropy.observe(id, requested, i * 100); }
+        expect(anisotropy.state == WriteState::observed && anisotropy.actual == requested && !anisotropy.pending,
+            "anisotropy presets report the applied integer value and stop bounded readback polling");
+    }
+
     WriteObservation floating;
     id = floating.begin(0.3, true);
     floating.dispatched(id, true, 0);
