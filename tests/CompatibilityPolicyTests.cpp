@@ -412,6 +412,54 @@ void test_version_gates() {
         "other UE5.5.4 games must not inherit the Bodycam viewport ABI");
 }
 
+void test_borderlands4_dedicated_ui_gate() {
+    using uevr::games::should_use_borderlands4_ue554_dedicated_ui_target;
+    for (const auto path : {L"Borderlands4.exe", L"C:\\Games\\Borderlands4.exe",
+                            L"D:/Games/Borderlands4/Borderlands4.exe", L"C:\\Games\\BORDERLANDS4.EXE"}) {
+        expect(should_use_borderlands4_ue554_dedicated_ui_target(path, L"5.5.4", 0, 0, true),
+            "exact Borderlands4 UE5.5.4 DX12 executable must enter dedicated UI routing");
+        expect(!should_use_borderlands4_ue554_dedicated_ui_target(path, L"5.5.4", 0, 0, false),
+            "Borderlands4 DX11 must retain its existing UI routing");
+    }
+
+    for (const auto version : {L"", L"unknown", L"0.00", L"5.5"}) {
+        expect(should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050005, 0x00040000, true),
+            "missing or minor-only Borderlands4 version requires exact UE5.5.4 file evidence");
+        expect(!should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050005, 0x00030000, true) &&
+               !should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0, 0, true),
+            "another or unknown file patch must not enable Borderlands4 dedicated UI");
+        expect(!should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050006, 0x00040000, true) &&
+               !should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050005, 0x00040001, true) &&
+               !should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050005, 0x00040000, false),
+            "Borderlands4 file fallback must retain exact version and DX12 boundaries");
+    }
+
+    for (const auto version : {L"4.25", L"4.27.2", L"5.2.1", L"5.4.4", L"5.5.0", L"5.5.3",
+                               L"5.5.5", L"5.5.40", L"5.6.1", L"5.7.4", L"5.8.1", L"6.0"}) {
+        expect(!should_use_borderlands4_ue554_dedicated_ui_target(
+                   L"Borderlands4.exe", version, 0x00050005, 0x00040000, true),
+            "conflicting embedded UE versions must not inherit Borderlands4 UE5.5.4 UI routing");
+    }
+
+    for (const auto path : {L"", L"Borderlands3.exe", L"NotBorderlands4.exe", L"Borderlands4.exe.bak",
+                            L"C:\\Borderlands4.exe\\Other.exe", L"C:/Borderlands4/Other.exe",
+                            L"MechWarrior-Win64-Shipping.exe", L"Stalker2-Win64-Shipping.exe",
+                            L"Bodycam-Win64-Shipping.exe", L"SWZeroCompany.exe", L"ES2-Win64-Shipping.exe",
+                            L"DaysGone.exe", L"SHCO.exe", L"ObserverSystemRedux.exe",
+                            L"AVENAGame-Win64-Shipping.exe", L"Voyage-Win64-Shipping.exe"}) {
+        expect(!should_use_borderlands4_ue554_dedicated_ui_target(path, L"5.5.4", 0, 0, true) &&
+               !should_use_borderlands4_ue554_dedicated_ui_target(
+                   path, L"5.5", 0x00050005, 0x00040000, true),
+            "other games, directory names and partial filenames must not enter the Borderlands4 UI gate");
+    }
+}
+
 void test_stalker2_lazy_ghost_bootstrap() {
     using namespace uevr::vr_compatibility;
     const auto supported = [](std::wstring_view path, std::wstring_view version,
@@ -1281,6 +1329,7 @@ int main() {
     test_scene_view_layouts();
     test_rendering_mode_matrix();
     test_version_gates();
+    test_borderlands4_dedicated_ui_gate();
     test_stalker2_lazy_ghost_bootstrap();
     test_ue58_render_pose_fallback();
     test_bodycam_owned_texture_layout();
