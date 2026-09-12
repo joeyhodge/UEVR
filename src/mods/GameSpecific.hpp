@@ -158,6 +158,37 @@ inline bool is_mechwarrior_clans_executable_path(std::wstring_view path) {
            lowered.find(L"mw5clans") != std::wstring::npos;
 }
 
+inline bool is_borderlands4_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    return lowered.ends_with(L"\\borderlands4.exe") ||
+           lowered.ends_with(L"/borderlands4.exe") ||
+           lowered == L"borderlands4.exe";
+}
+
+inline bool should_use_borderlands4_ue554_dedicated_ui_target(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12) {
+    if (!dx12 || !is_borderlands4_executable_path(path)) {
+        return false;
+    }
+
+    if (detected_version == L"5.5.4") {
+        return true;
+    }
+
+    // The embedded branch scanner can report only the minor version. Require
+    // the exact file-version patch in that case, never a conflicting UE version.
+    if (!detected_version.empty() && detected_version != L"0.00" &&
+        detected_version != L"unknown" && detected_version != L"5.5") {
+        return false;
+    }
+
+    return file_version_ms == 0x00050005 && file_version_ls == 0x00040000;
+}
+
 inline bool is_daysgone_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.ends_with(L"\\daysgone.exe") ||
