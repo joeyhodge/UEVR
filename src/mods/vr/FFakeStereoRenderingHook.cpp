@@ -5960,6 +5960,28 @@ bool supports_ue57_dedicated_ui_target() {
     return g_framework->is_dx12() || g_framework->is_dx11();
 }
 
+bool supports_borderlands4_ue554_dedicated_ui_target() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) {
+        return false;
+    }
+
+    static const bool result = []() {
+        const auto executable = utility::get_executable();
+        const auto exe_path = utility::get_module_pathw(executable);
+        if (!exe_path || !uevr::games::is_borderlands4_executable_path(*exe_path)) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(executable).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::should_use_borderlands4_ue554_dedicated_ui_target(
+            *exe_path, detected_version, file_version.dwFileVersionMS,
+            file_version.dwFileVersionLS, g_framework->is_dx12());
+    }();
+
+    return result;
+}
+
 bool supports_ue55_dedicated_ui_target_for_current_game() {
     // These UE5.5/5.6 titles expose a valid Slate UI texture but route Slate to
     // the wrong target, leaving the HUD clipped in the upper-left/left-eye path.
@@ -5967,6 +5989,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     return (aphelion_is_current_game() ||
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
+            supports_borderlands4_ue554_dedicated_ui_target() ||
             stalker2_uses_ue55_draw_windows_array_layout() ||
             redemption_sin_eternal_is_current_game() ||
             everspace2_is_current_game() ||
@@ -5995,6 +6018,7 @@ bool should_preserve_promoted_ue55_slate_target() {
     // D3D12 still reference the first target.
     return aphelion_is_current_game() ||
         mechwarrior_clans_is_current_game() ||
+        supports_borderlands4_ue554_dedicated_ui_target() ||
         everwind_is_current_game() ||
         pokemon_emerald_is_current_game() ||
         is_deadzone_ue56_executable();
