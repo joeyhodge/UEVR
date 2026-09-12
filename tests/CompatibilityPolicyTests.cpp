@@ -14,6 +14,7 @@
 #include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
 #include "mods/vr/StellarBladeRendererEntry.hpp"
+#include "mods/vr/HiFiRushRendererEntry.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 
 namespace {
@@ -1078,6 +1079,63 @@ void test_mafia_discovery() {
     }
 }
 
+void test_hifi_rush_callable_renderer_entry() {
+    using namespace uevr::hifi;
+    for (const auto path : {L"C:\\Games\\Hi-Fi-RUSH.exe", L"hi-fi-rush.exe", L"Hi-Fi-RUSH.exe.bak",
+                           L"SHCO.exe", L"TheMedium-Win64-Shipping.exe", L"prospi-Win64-Shipping.exe",
+                           L"HellbladeGame-Win64-Shipping.exe", L"SB-Win64-Shipping.exe", L"Other.exe"}) {
+        for (const bool version : {false, true}) {
+            for (const bool dx12 : {false, true}) {
+                for (const bool native_fix : {false, true}) {
+                    const bool exact_game = std::wstring_view{path} == L"C:\\Games\\Hi-Fi-RUSH.exe" ||
+                        std::wstring_view{path} == L"hi-fi-rush.exe";
+                    expect(should_use_native_fix_renderer(path, version, dx12, native_fix) ==
+                        (exact_game && version && dx12 && native_fix), "Hi-Fi renderer stays inside its mode/version/game gate");
+                }
+            }
+        }
+    }
+    expect(!is_distinct_renderer_entry(0, 0x2000), "missing renderer fails closed");
+    expect(!is_distinct_renderer_entry(0x1000, 0), "missing Draw identity fails closed");
+    expect(!is_distinct_renderer_entry(0x2000, 0x2000), "Draw cannot be installed as the renderer");
+    expect(is_distinct_renderer_entry(0x1000, 0x2000), "distinct renderer remains eligible for validation");
+
+    // Captured HBK .pdata: root [0,+0x19b), callback child [+0x19b,+0x1da).
+    std::array<uint8_t, 0x1DA> combined{};
+    std::copy(renderer_entry_prefix.begin(), renderer_entry_prefix.end(), combined.begin());
+    std::copy(renderer_family_loop.begin(), renderer_family_loop.end(), combined.begin() + 0x190);
+    constexpr size_t callback = 0x1C4;
+    expect(has_callable_renderer_entry(combined, renderer_root_unwind, callback),
+        "validated short root plus callback child is accepted without lowering generic thresholds");
+    expect(!has_callable_renderer_entry(std::span{combined}.subspan(0x19B), renderer_root_unwind, callback - 0x19B),
+        "callback child is not a callable entry");
+    for (size_t i = 0; i < combined.size(); ++i) {
+        expect(!has_callable_renderer_entry(std::span{combined}.first(i), renderer_root_unwind, callback),
+            "truncated root or callback loop is rejected");
+    }
+    for (size_t i = 0; i < renderer_root_unwind.size(); ++i) {
+        auto bad = renderer_root_unwind;
+        bad[i] ^= 1;
+        expect(!has_callable_renderer_entry(combined, bad, callback), "unvalidated unwind is rejected");
+        expect(!has_callable_renderer_entry(combined, std::span{renderer_root_unwind}.first(i), callback),
+            "truncated unwind is rejected");
+    }
+    for (size_t i = 0; i < combined.size(); ++i) {
+        if (i >= renderer_entry_prefix.size() && i < 0x190) { continue; }
+        auto bad = combined;
+        bad[i] ^= 1;
+        expect(!has_callable_renderer_entry(bad, renderer_root_unwind, callback),
+            "changed entry ABI, family offset, callback argument or slot fails closed");
+    }
+    for (const auto offset : {size_t{0}, size_t{51}, callback - 1, callback + 1, combined.size(), SIZE_MAX}) {
+        expect(!has_callable_renderer_entry(combined, renderer_root_unwind, offset),
+            "unrelated or out-of-bounds return address cannot validate a renderer");
+    }
+    auto child_unwind = renderer_root_unwind;
+    child_unwind[0] = 0x21;
+    expect(!has_callable_renderer_entry(combined, child_unwind, callback), "CHAININFO is never accepted as the root");
+}
+
 void test_stellar_blade_callable_renderer_entry() {
     using uevr::games::should_use_stellar_blade_callable_renderer_entry;
     using uevr::stellar_blade::has_callable_renderer_entry;
@@ -1234,6 +1292,7 @@ int main() {
     test_mafia_discovery();
     test_family_snapshot_accessors();
     test_stellar_blade_callable_renderer_entry();
+    test_hifi_rush_callable_renderer_entry();
     test_sw_zero_company_binary_revisions();
 
     if (failures != 0) {
