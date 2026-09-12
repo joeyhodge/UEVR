@@ -186,7 +186,8 @@ inline bool should_use_borderlands4_ue554_dedicated_ui_target(
         return false;
     }
 
-    return file_version_ms == 0x00050005 && file_version_ls == 0x00040000;
+    // The low word is the build revision: 5.5.4.1 still uses the 5.5.4 gate.
+    return file_version_ms == 0x00050005 && (file_version_ls >> 16) == 4;
 }
 
 inline bool is_daysgone_executable_path(std::wstring_view path) {
