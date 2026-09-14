@@ -17,6 +17,8 @@
 #include "mods/vr/CompatibilityPolicy.hpp"
 #include "mods/vr/StellarBladeRendererEntry.hpp"
 #include "mods/vr/HiFiRushRendererEntry.hpp"
+#include "mods/vr/SifuRendererEntry.hpp"
+#include "mods/vr/SifuMeshCommands.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 
 namespace {
@@ -1237,6 +1239,109 @@ void test_mafia_discovery() {
     }
 }
 
+void test_sifu_callable_renderer_entry() {
+    using namespace uevr::sifu;
+    for (const auto path : {L"Sifu-Win64-Shipping.exe", L"C:\\Games\\sifu-WIN64-shipping.EXE",
+                           L"D:/Games/Sifu-Win64-Shipping.exe"}) {
+        for (const uint32_t ms : {0u, 0x00040019u, 0x0004001Au, 0x0004001Bu, 0x00050008u}) {
+            for (const uint32_t ls : {0u, 0x00010000u, 0x00020000u, 0x00020001u, 0x00030000u}) {
+                for (const bool dx11 : {false, true}) {
+                    for (const bool native_fix : {false, true}) {
+                        expect(should_use_native_fix_renderer(path, ms, ls, dx11, native_fix) ==
+                               (ms == 0x0004001A && ls == 0x00020000 && dx11 && native_fix),
+                            "Sifu renderer is restricted to exact UE4.26.2, DX11 and effective Native Fix");
+                    }
+                }
+            }
+        }
+    }
+    for (const auto path : {L"", L"Sifu.exe", L"Sifu-Win64-Shipping.exe.bak", L"OtherSifu-Win64-Shipping.exe",
+                           L"D:/Sifu-Win64-Shipping.exe/Other.exe", L"SHCO.exe", L"TheMedium-Win64-Shipping.exe",
+                           L"Hi-Fi-RUSH.exe", L"SB-Win64-Shipping.exe", L"ObserverSystemRedux.exe",
+                           L"HellbladeGame-Win64-Shipping.exe", L"prospi-Win64-Shipping.exe"}) {
+        expect(!should_use_native_fix_renderer(path, 0x0004001A, 0x00020000, true, true),
+            "other games and filename substrings retain their original renderer resolver");
+    }
+    expect(!is_distinct_renderer_entry(0, 0x2000), "Sifu missing renderer fails closed");
+    expect(!is_distinct_renderer_entry(0x1000, 0), "Sifu missing Draw identity fails closed");
+    expect(!is_distinct_renderer_entry(0x2000, 0x2000), "Sifu cannot hook Draw as the renderer");
+    expect(is_distinct_renderer_entry(0x1000, 0x2000), "Sifu distinct renderer can be validated");
+
+    sdk::detail::FamilyLayout layout{};
+    expect(!matches_family_layout(layout), "Sifu cannot substitute undiscovered family offsets");
+    layout.has_vtable = false;
+    layout.views = 0;
+    layout.render_target = 0x18;
+    layout.scene_interface = 0x20;
+    layout.frame_count = 0xBC;
+    const auto original = layout;
+    expect(matches_family_layout(layout) && layout == original, "Sifu layout corroboration is read-only");
+    for (const auto field : {&sdk::detail::FamilyLayout::views, &sdk::detail::FamilyLayout::render_target,
+                            &sdk::detail::FamilyLayout::scene_interface, &sdk::detail::FamilyLayout::frame_count}) {
+        auto bad = layout;
+        (bad.*field).reset();
+        expect(!matches_family_layout(bad), "incomplete Sifu discovery remains retryable without publishing offsets");
+        bad.*field = *(layout.*field) + 8;
+        expect(!matches_family_layout(bad), "Sifu rejects a different learned family layout");
+    }
+    auto bad_layout = layout;
+    bad_layout.has_vtable.reset();
+    expect(!matches_family_layout(bad_layout), "unproven Sifu family polymorphism fails closed");
+    bad_layout.has_vtable = true;
+    expect(!matches_family_layout(bad_layout), "polymorphic families cannot inherit Sifu's layout");
+    bad_layout = layout;
+    bad_layout.frame_count = 0x5C;
+    expect(!matches_family_layout(bad_layout), "stock UE4 frame offset cannot be reused for Sifu");
+
+    // Independent EXE fixture, matching dev PDB: callable root [0,0x1ac),
+    // CHAININFO callback child [0x1ac,0x1ea); its parent remains the ABI entry.
+    const std::array<uint8_t, 34> prefix{
+        0x40,0x53,0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x57,0x48,0x81,0xEC,0xC0,0x00,
+        0x00,0x00,0x49,0x8B,0x48,0x20,0x45,0x33,0xE4,0x49,0x8B,0xF8,0x4C,0x8B,0xEA,0x41,0x8B,0xEC};
+    const std::array<uint8_t, 24> unwind{
+        0x01,0x12,0x09,0x00,0x12,0x01,0x18,0x00,0x0B,0xF0,0x09,0xD0,
+        0x07,0xC0,0x05,0x70,0x04,0x60,0x03,0x50,0x02,0x30,0x00,0x00};
+    const std::array<uint8_t, 76> loop{
+        0x89,0x87,0xBC,0x00,0x00,0x00,0x39,0x9F,0xE8,0x00,0x00,0x00,0x7E,0x3E,0x4C,0x89,
+        0xB4,0x24,0x00,0x01,0x00,0x00,0x4D,0x8B,0xF4,0x66,0x0F,0x1F,0x84,0x00,0x00,0x00,
+        0x00,0x00,0x48,0x8B,0x87,0xE0,0x00,0x00,0x00,0x48,0x8B,0xD7,0x49,0x8B,0x0C,0x06,
+        0x48,0x8B,0x01,0xFF,0x50,0x28,0xFF,0xC3,0x4D,0x8D,0x76,0x10,0x3B,0x9F,0xE8,0x00,
+        0x00,0x00,0x7C,0xDE,0x4C,0x8B,0xB4,0x24,0x00,0x01,0x00,0x00};
+    std::array<uint8_t, 0x1EA> combined{};
+    std::copy(prefix.begin(), prefix.end(), combined.begin());
+    std::copy(loop.begin(), loop.end(), combined.begin() + 0x19E);
+    constexpr size_t callback = 0x1D4;
+    expect(has_callable_renderer_entry(combined, unwind, callback),
+        "Sifu disp32 frame store and short chained callback validate without relaxing stock thresholds");
+    expect(!has_callable_renderer_entry(std::span{combined}.subspan(0x1AC), unwind, callback - 0x1AC),
+        "Sifu callback continuation must never become a callable hook entry");
+    for (size_t i = 0; i < combined.size(); ++i) {
+        expect(!has_callable_renderer_entry(std::span{combined}.first(i), unwind, callback),
+            "truncated Sifu entry or callback loop fails closed");
+        if (i >= prefix.size() && i < 0x19E) { continue; }
+        auto bad = combined;
+        bad[i] ^= 1;
+        expect(!has_callable_renderer_entry(bad, unwind, callback),
+            "changed Sifu ABI, disp32 offsets, callback argument, loop or virtual slot fails closed");
+    }
+    for (size_t i = 0; i < unwind.size(); ++i) {
+        expect(!has_callable_renderer_entry(combined, std::span{unwind}.first(i), callback),
+            "truncated Sifu root unwind fails closed");
+        auto bad = unwind;
+        bad[i] ^= 1;
+        expect(!has_callable_renderer_entry(combined, bad, callback), "changed Sifu root unwind fails closed");
+    }
+    auto child_unwind = unwind;
+    child_unwind[0] = 0x21;
+    expect(!has_callable_renderer_entry(combined, child_unwind, callback), "Sifu CHAININFO cannot be treated as a root");
+    for (const auto offset : {size_t{0}, size_t{53}, callback - 1, callback + 1, combined.size(), SIZE_MAX}) {
+        expect(!has_callable_renderer_entry(combined, unwind, offset), "Sifu unrelated callback or invalid bounds fail closed");
+    }
+    std::vector<uint8_t> oversized(0x4001);
+    std::copy(combined.begin(), combined.end(), oversized.begin());
+    expect(!has_callable_renderer_entry(oversized, unwind, callback), "Sifu validation work stays bounded");
+}
+
 void test_hifi_rush_callable_renderer_entry() {
     using namespace uevr::hifi;
     for (const auto path : {L"C:\\Games\\Hi-Fi-RUSH.exe", L"hi-fi-rush.exe", L"Hi-Fi-RUSH.exe.bak",
@@ -1435,6 +1540,80 @@ void test_sw_zero_company_binary_revisions() {
 
 } // namespace
 
+void test_sifu_native_mesh_commands() {
+    using namespace uevr::sifu;
+    expect(is_supported_runtime(L"D:\\Games\\Sifu-Win64-Shipping.exe", 0x4001A, 0x20000, true),
+        "Sifu DX11 4.26.2 cache guard accepts the validated runtime");
+    for (const auto path : {L"Medium-Win64-Shipping.exe", L"HellbladeGame-Win64-Shipping.exe",
+                           L"Other-Win64-Shipping.exe", L"Sifu-Win64-Shipping.exe.bak"}) {
+        expect(!is_supported_runtime(path, 0x4001A, 0x20000, true),
+            "Sifu cache guard excludes other executables");
+    }
+    expect(!is_supported_runtime(L"Sifu-Win64-Shipping.exe", 0x4001A, 0x20000, false),
+        "Sifu cache guard does not change DX12");
+    expect(!is_supported_runtime(L"Sifu-Win64-Shipping.exe", 0x4001A, 0x10000, true) &&
+           !is_supported_runtime(L"Sifu-Win64-Shipping.exe", 0x4001B, 0x20000, true),
+        "Sifu cache guard does not infer other engine versions");
+
+    const auto validate = [](auto render, auto any, auto call) {
+        return validate_mesh_command_code(mesh_command_timestamp, mesh_command_image_size, render, any, call);
+    };
+    expect(validate(cached_render_thread_code, cached_any_thread_code, cached_relevance_call_code),
+        "Sifu complete getter and relevance caller evidence validates");
+    expect(!validate_mesh_command_code(mesh_command_timestamp + 1, mesh_command_image_size,
+               cached_render_thread_code, cached_any_thread_code, cached_relevance_call_code) &&
+           !validate_mesh_command_code(mesh_command_timestamp, mesh_command_image_size + 1,
+               cached_render_thread_code, cached_any_thread_code, cached_relevance_call_code),
+        "Sifu cache guard rejects unknown binary revisions");
+    const std::array<std::span<const uint8_t>, 3> signatures{
+        cached_render_thread_code, cached_any_thread_code, cached_relevance_call_code};
+    for (size_t index = 0; index < signatures.size(); ++index) {
+        for (size_t length = 0; length < signatures[index].size(); ++length) {
+            auto evidence = signatures;
+            evidence[index] = evidence[index].first(length);
+            expect(!validate(evidence[0], evidence[1], evidence[2]),
+                "Sifu cache guard rejects every truncated signature");
+        }
+        for (size_t offset = 0; offset < signatures[index].size(); ++offset) {
+            auto evidence = signatures;
+            std::vector<uint8_t> changed{evidence[index].begin(), evidence[index].end()};
+            changed[offset] ^= 1;
+            evidence[index] = changed;
+            expect(!validate(evidence[0], evidence[1], evidence[2]),
+                "Sifu cache guard rejects changed getter and caller instructions");
+        }
+    }
+    const auto relative = [](uint32_t rva, std::span<const uint8_t> bytes, size_t disp_offset, size_t length) {
+        int32_t displacement{};
+        std::memcpy(&displacement, bytes.data() + disp_offset, sizeof(displacement));
+        return static_cast<int64_t>(rva) + length + displacement;
+    };
+    expect(relative(cached_relevance_call_rva, cached_relevance_call_code, 1, 5) == cached_render_thread_rva,
+        "Sifu relevance constructor calls the validated render-thread decision");
+    expect(relative(cached_render_thread_rva, cached_render_thread_code, 3, 7) ==
+           relative(cached_any_thread_rva, cached_any_thread_code, 16, 20),
+        "Sifu render-thread and any-thread decisions read the same console variable");
+
+    for (const bool ready : {false, true}) {
+        for (const bool stereo : {false, true}) {
+            for (const bool native : {false, true}) {
+                const bool rebuild = rebuild_native_mesh_commands(ready, stereo, native);
+                expect(rebuild == (ready && stereo && native),
+                    "Sifu uncached commands require complete hooks and active Native stereo");
+                for (const bool original_value : {false, true}) {
+                    int calls = 0;
+                    const bool result = select_cached_mesh_commands(rebuild, [&]() {
+                        ++calls;
+                        return original_value;
+                    });
+                    expect(result == (!rebuild && original_value) && calls == (rebuild ? 0 : 1),
+                        "Sifu Native rebuilds; other modes preserve either original cache decision exactly");
+                }
+            }
+        }
+    }
+}
+
 int main() {
     test_scene_view_layouts();
     test_rendering_mode_matrix();
@@ -1453,6 +1632,8 @@ int main() {
     test_family_snapshot_accessors();
     test_stellar_blade_callable_renderer_entry();
     test_hifi_rush_callable_renderer_entry();
+    test_sifu_callable_renderer_entry();
+    test_sifu_native_mesh_commands();
     test_sw_zero_company_binary_revisions();
 
     if (failures != 0) {
