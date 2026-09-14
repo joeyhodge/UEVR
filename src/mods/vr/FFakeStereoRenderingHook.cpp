@@ -76,6 +76,8 @@
 #include "mods/GameSpecific.hpp"
 #include "StellarBladeRendererEntry.hpp"
 #include "HiFiRushRendererEntry.hpp"
+#include "SifuRendererEntry.hpp"
+#include "SifuMeshCommands.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
 
@@ -9464,6 +9466,157 @@ std::optional<RuntimeFunctionRange> get_hifi_rush_callable_renderer_range(
     return candidate;
 }
 
+bool sifu_is_supported_dx11_runtime() {
+    static const bool exact_game_version = []() {
+        const auto path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
+        const auto version = sdk::get_file_version_info();
+        return uevr::sifu::is_supported_runtime(
+            path, version.dwFileVersionMS, version.dwFileVersionLS, true);
+    }();
+    if (!exact_game_version) {
+        return false;
+    }
+    return g_framework != nullptr && g_framework->is_dx11();
+}
+
+bool sifu_native_fix_renderer_is_current_game() {
+    const auto vr = VR::get();
+    return sifu_is_supported_dx11_runtime() && vr != nullptr && vr->is_native_stereo_fix_enabled();
+}
+
+safetyhook::InlineHook g_sifu_cached_render_thread_hook{};
+safetyhook::InlineHook g_sifu_cached_any_thread_hook{};
+std::atomic<bool> g_sifu_mesh_command_hooks_ready{false};
+std::atomic<bool> g_sifu_rebuild_native_mesh_commands{false};
+
+bool sifu_cached_render_thread_hook() {
+    return uevr::sifu::select_cached_mesh_commands(
+        g_sifu_rebuild_native_mesh_commands.load(std::memory_order_acquire),
+        []() { return g_sifu_cached_render_thread_hook.call<bool>(); });
+}
+
+bool sifu_cached_any_thread_hook() {
+    return uevr::sifu::select_cached_mesh_commands(
+        g_sifu_rebuild_native_mesh_commands.load(std::memory_order_acquire),
+        []() { return g_sifu_cached_any_thread_hook.call<bool>(); });
+}
+
+void attempt_hook_sifu_native_mesh_commands() {
+    if (!sifu_is_supported_dx11_runtime()) {
+        return;
+    }
+    static bool attempted = false;
+    if (std::exchange(attempted, true)) {
+        return;
+    }
+
+    using namespace uevr::sifu;
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!is_readable_process_range(base, sizeof(IMAGE_DOS_HEADER))) {
+        return;
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(IMAGE_DOS_HEADER) ||
+        dos->e_lfanew > 0x1000 ||
+        !is_readable_process_range(base + dos->e_lfanew, sizeof(IMAGE_NT_HEADERS64))) {
+        return;
+    }
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    const auto render_thread = base + cached_render_thread_rva;
+    const auto any_thread = base + cached_any_thread_rva;
+    const auto caller = base + cached_relevance_call_rva;
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        !is_readable_process_range(render_thread, cached_render_thread_code.size()) ||
+        !is_executable_process_range(render_thread, cached_render_thread_code.size()) ||
+        !is_readable_process_range(any_thread, cached_any_thread_code.size()) ||
+        !is_executable_process_range(any_thread, cached_any_thread_code.size()) ||
+        !is_readable_process_range(caller, cached_relevance_call_code.size()) ||
+        !is_executable_process_range(caller, cached_relevance_call_code.size()) ||
+        !validate_mesh_command_code(nt->FileHeader.TimeDateStamp, nt->OptionalHeader.SizeOfImage,
+            {reinterpret_cast<const uint8_t*>(render_thread), cached_render_thread_code.size()},
+            {reinterpret_cast<const uint8_t*>(any_thread), cached_any_thread_code.size()},
+            {reinterpret_cast<const uint8_t*>(caller), cached_relevance_call_code.size()})) {
+        SPDLOG_WARN("[Sifu][NativeMeshCommands] Exact getter/caller signatures or build identity did not match; leaving caching unchanged");
+        return;
+    }
+
+    auto render_hook = safetyhook::create_inline(reinterpret_cast<void*>(render_thread),
+        &sifu_cached_render_thread_hook, safetyhook::InlineHook::StartDisabled);
+    auto any_hook = safetyhook::create_inline(reinterpret_cast<void*>(any_thread),
+        &sifu_cached_any_thread_hook, safetyhook::InlineHook::StartDisabled);
+    if (!render_hook || !any_hook) {
+        SPDLOG_WARN("[Sifu][NativeMeshCommands] Could not prepare both cache-decision hooks; leaving caching unchanged");
+        return;
+    }
+    g_sifu_cached_render_thread_hook = std::move(render_hook);
+    g_sifu_cached_any_thread_hook = std::move(any_hook);
+    if (!g_sifu_cached_render_thread_hook.enable().has_value() ||
+        !g_sifu_cached_any_thread_hook.enable().has_value()) {
+        // Any enabled hook remains a passthrough; never activate a partial pair.
+        SPDLOG_WARN("[Sifu][NativeMeshCommands] Could not enable both cache-decision hooks; retaining original decisions");
+        return;
+    }
+    g_sifu_mesh_command_hooks_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[Sifu][NativeMeshCommands] Validated UE4.26.2 cache decisions at {:x}/{:x}; ready for Native-only uncached bindings",
+        render_thread, any_thread);
+}
+
+void update_sifu_native_mesh_command_mode(bool stereo_enabled, bool native_stereo) {
+    if (!g_sifu_mesh_command_hooks_ready.load(std::memory_order_acquire)) {
+        return;
+    }
+    const bool rebuild = uevr::sifu::rebuild_native_mesh_commands(true, stereo_enabled, native_stereo);
+    const bool previous = g_sifu_rebuild_native_mesh_commands.exchange(rebuild, std::memory_order_acq_rel);
+    if (previous != rebuild) {
+        // The trace reached released (Size=0) cached bindings in Native. Use UE's
+        // existing rebuild path, not replacement buffers, skipped draws, or CVar writes.
+        SPDLOG_INFO("[Sifu][NativeMeshCommands] {}", rebuild
+            ? "Using engine uncached mesh commands for Native; additional CPU work is possible"
+            : "Restored original cached mesh command decisions outside Native");
+    }
+}
+
+std::optional<RuntimeFunctionRange> get_sifu_callable_renderer_range(
+    uintptr_t callback_return, uintptr_t excluded_viewport_draw) {
+    if (!uevr::sifu::matches_family_layout(*sdk::FSceneViewFamily::get_layout_snapshot()) ||
+        !indirect_virtual_call_returns_to(callback_return, 0x28)) {
+        return std::nullopt;
+    }
+
+    // The callback is in a CHAININFO continuation. Only the validated root is
+    // callable; neither that child nor an unrelated Draw stack frame is safe.
+    const auto candidate = get_canonical_runtime_function_range(callback_return);
+    if (!candidate || candidate->image_base != reinterpret_cast<uintptr_t>(utility::get_executable()) ||
+        candidate->size() > 0x4000 || callback_return < candidate->begin || callback_return >= candidate->end ||
+        !uevr::sifu::is_distinct_renderer_entry(candidate->begin, excluded_viewport_draw) ||
+        !is_readable_process_range(candidate->begin, candidate->size()) ||
+        !is_executable_process_range(candidate->begin, candidate->size())) {
+        return std::nullopt;
+    }
+
+    DWORD64 root_image_base{};
+    const auto root = RtlLookupFunctionEntry(candidate->begin, &root_image_base, nullptr);
+    if (root == nullptr || root_image_base != candidate->image_base || root->UnwindData == 0 ||
+        root_image_base + root->BeginAddress != candidate->begin ||
+        root->EndAddress <= root->BeginAddress ||
+        root->EndAddress - root->BeginAddress < uevr::sifu::renderer_entry_prefix.size()) {
+        return std::nullopt;
+    }
+
+    const auto unwind = candidate->image_base + root->UnwindData;
+    constexpr auto unwind_size = uevr::sifu::renderer_root_unwind.size();
+    if (unwind < candidate->image_base || !is_readable_process_range(unwind, unwind_size) ||
+        !uevr::sifu::has_callable_renderer_entry(
+            {reinterpret_cast<const uint8_t*>(candidate->begin), candidate->size()},
+            {reinterpret_cast<const uint8_t*>(unwind), unwind_size},
+            callback_return - candidate->begin)) {
+        return std::nullopt;
+    }
+
+    return candidate;
+}
+
 bool has_begin_rendering_viewfamily_wrapper_shape(const RuntimeFunctionRange& wrapper) {
     // UE5's singular wrapper builds a one-element TArrayView on the stack. Keep
     // this as corroborating evidence rather than the sole resolver condition.
@@ -9487,6 +9640,19 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     uintptr_t direct_callback_return = 0,
     uintptr_t excluded_viewport_draw = 0)
 {
+    if (sifu_native_fix_renderer_is_current_game()) {
+        const auto candidate = get_sifu_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
+        if (!candidate) {
+            SPDLOG_WARN_ONCE("[Sifu][NativeStereoFix] Renderer entry/layout not validated; "
+                             "preserving the original renderer and retrying without a generic fallback");
+            return std::nullopt;
+        }
+        SPDLOG_INFO("[Sifu][NativeStereoFix] Validated callable UE4.26.2 renderer entry {:x} "
+                    "from callback {:x}; FrameNumber +0xBC, excluded Draw {:x}",
+                    candidate->begin, direct_callback_return, excluded_viewport_draw);
+        return candidate->begin;
+    }
+
     if (hifi_rush_native_fix_renderer_is_current_game()) {
         const auto candidate = get_hifi_rush_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
         if (!candidate) {
@@ -14636,6 +14802,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dead_island_ue425_compute_light_grid();
     attempt_hook_dead_island_ue425_hair_light_indices();
     attempt_hook_bodycam_update_pre_exposure();
+    attempt_hook_sifu_native_mesh_commands();
     const auto vtable = locate_fake_stereo_rendering_vtable();
 
     // This happens if games have intentionally removed the stereo initialization functions and stereo emulation classes.
@@ -24363,7 +24530,8 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
                     : resolve_begin_rendering_viewfamilies_from_stack(
                         reinterpret_cast<uintptr_t>(_ReturnAddress()),
                         (farfarwest_ue581_view_extension_layout_is_current_game() ||
-                         hifi_rush_native_fix_renderer_is_current_game())
+                         hifi_rush_native_fix_renderer_is_current_game() ||
+                         sifu_native_fix_renderer_is_current_game())
                             ? g_hook->m_gameviewportclient_draw_hook.target_address()
                             : 0);
             if (!candidate) {
@@ -27816,6 +27984,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     if (g_hook->m_sceneview_data.inside_post_init_properties) {
         return 2;
     }
+
+    update_sifu_native_mesh_command_mode(is_stereo_enabled, vr->is_using_native_stereo());
 
     if (!is_stereo_enabled || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
         constexpr uint32_t BOOTSTRAP_PULSE_ENGINE_FRAMES = 2;
