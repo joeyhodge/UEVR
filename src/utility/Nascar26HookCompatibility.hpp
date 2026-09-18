@@ -160,6 +160,34 @@ constexpr uintptr_t native_owner_set_flags_rva = 0x150e680;
 bool native_owned_object_valid(const NativeOwnedObject& owner, uintptr_t item, bool require_root = true);
 bool validate_native_rooting();
 
+inline bool native_display_gamma_valid(float gamma) {
+    return std::isfinite(gamma) && gamma > 0.0f && std::isfinite(2.2f / gamma);
+}
+inline std::optional<float> select_native_display_gamma(float engine_gamma, float viewport_gamma, uint8_t override_enabled) {
+    if (override_enabled > 1) { return {}; }
+    const auto gamma = override_enabled ? viewport_gamma : engine_gamma;
+    return native_display_gamma_valid(gamma) ? std::optional{gamma} : std::nullopt;
+}
+
+// Keep the last validated value during viewport retirement, including render
+// work queued before a mode switch. Never publish a pointer to the old viewport.
+class NativeDisplayGamma {
+public:
+    bool observe(std::optional<float> gamma) {
+        if (!gamma || !native_display_gamma_valid(*gamma)) { return false; }
+        m_value.store(*gamma, std::memory_order_release);
+        return true;
+    }
+    float value_or(float fallback) const {
+        const auto value = m_value.load(std::memory_order_acquire);
+        return native_display_gamma_valid(value) ? value : fallback;
+    }
+private:
+    std::atomic<float> m_value{};
+};
+bool validate_native_display_gamma();
+std::optional<float> read_native_display_gamma();
+
 using NativeRect = std::array<int32_t, 4>;
 struct NativeView {
     uintptr_t view{}, family{}, state{};
@@ -386,6 +414,9 @@ constexpr uintptr_t tick_rva = 0x3b34970;
 constexpr uintptr_t draw_rva = 0x3b58020;
 constexpr uintptr_t viewport_draw_rva = 0x41ba530;
 constexpr uintptr_t viewport_vtable_rva = 0x86d9958;
+constexpr uintptr_t viewport_display_gamma_rva = 0x40c3140, engine_display_gamma_rva = 0x41c8d30;
+constexpr uintptr_t native_capture_frt_vtable_rva = 0x8711370, native_capture_display_gamma_rva = 0x418e810;
+constexpr size_t native_capture_frt_slots = 16, native_display_gamma_slot = 6;
 constexpr uintptr_t localplayer_vtable_rva = 0x85c7bd0;
 constexpr size_t localplayer_slots = 116;
 constexpr uintptr_t init_options_rva = 0x3cc9130, calc_scene_view_rva = 0x3cc88a0, projection_data_rva = 0x3cd1f20;
