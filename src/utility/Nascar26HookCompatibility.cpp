@@ -226,7 +226,7 @@ bool writable_object_pointer(uintptr_t address) {
 ObjectVTable::~ObjectVTable() {
     reset();
     // Retain one immutable page per adapter until process exit: a dispatched call
-    // can still hold the table after reset. Production creates at most six adapters.
+    // can still hold the table after reset. Production creates at most seven adapters.
 }
 
 bool ObjectVTable::prepare(uintptr_t table, size_t count, std::span<const SlotPatch> patches, uintptr_t image) {
@@ -338,8 +338,47 @@ bool ObjectVTable::image_unchanged() const {
         std::equal(m_original.begin(), m_original.begin() + m_count, current.begin());
 }
 
+bool validate_native_display_gamma() {
+    if (!is_validated_build()) { return false; }
+    const auto code = [](uintptr_t rva, std::initializer_list<uint8_t> bytes) {
+        return matches_code(g_image + rva, {bytes.begin(), bytes.size()});
+    };
+    return find_virtual_slot(g_image + viewport_vtable_rva, g_image + viewport_display_gamma_rva, native_capture_frt_slots) ==
+            g_image + viewport_vtable_rva + native_display_gamma_slot * sizeof(uintptr_t) &&
+        find_virtual_slot(g_image + native_capture_frt_vtable_rva, g_image + native_capture_display_gamma_rva, native_capture_frt_slots) ==
+            g_image + native_capture_frt_vtable_rva + native_display_gamma_slot * sizeof(uintptr_t) &&
+        code(viewport_display_gamma_rva, {0x80,0xb9,0x00,0x03,0x00,0x00,0x00,0x74,0x09,
+            0xf3,0x0f,0x10,0x81,0xfc,0x02,0x00,0x00,0xc3,0xe9,0xd9,0x5b,0x10,0x00}) &&
+        code(engine_display_gamma_rva, {0x48,0x8b,0x05,0x89,0x88,0x0b,0x06,0x48,0x85,0xc0,0x75,0x09,
+            0xf3,0x0f,0x10,0x05,0x5c,0x49,0x9f,0x03,0xc3,0xf3,0x0f,0x10,0x88,0x14,0x0e,0x00,0x00,
+            0x0f,0x57,0xc0,0x0f,0x54,0x0d,0xb9,0x4a,0x9f,0x03,0x0f,0x2f,0xc8,0x77,0x11,
+            0xc7,0x80,0x14,0x0e,0x00,0x00,0xcd,0xcc,0x0c,0x40,0x48,0x8b,0x05,0x53,0x88,0x0b,0x06,
+            0xf3,0x0f,0x10,0x80,0x14,0x0e,0x00,0x00,0xc3}) &&
+        code(native_capture_display_gamma_rva, {0x48,0x8b,0x49,0x40,0x48,0x8b,0x01,0x48,0xff,0xa0,0xe0,0x03,0x00,0x00});
+}
+
+std::optional<float> read_native_display_gamma() {
+    if (!is_validated_build()) { return {}; }
+    uintptr_t engine{}, client{}, viewport{}, table{}, current_engine{}, current_client{}, current_viewport{};
+    float engine_gamma{}, viewport_gamma{};
+    uint8_t override_enabled{};
+    // Re-resolve the live main viewport; no call through a possibly retired
+    // object, and no invocation of GetEngineDisplayGamma's initializing write.
+    if (!read_memory(g_image + engine_global_rva, &engine, sizeof(engine)) || !engine ||
+        !read_memory(engine + 0xc88, &client, sizeof(client)) || !client ||
+        !read_memory(client + 0xf8, &viewport, sizeof(viewport)) || !viewport ||
+        !read_memory(viewport, &table, sizeof(table)) || table != g_image + viewport_vtable_rva ||
+        !read_memory(viewport + 0x300, &override_enabled, sizeof(override_enabled)) ||
+        !read_memory(viewport + 0x2fc, &viewport_gamma, sizeof(viewport_gamma)) ||
+        (!override_enabled && !read_memory(engine + 0xe14, &engine_gamma, sizeof(engine_gamma))) ||
+        !read_memory(g_image + engine_global_rva, &current_engine, sizeof(current_engine)) || current_engine != engine ||
+        !read_memory(engine + 0xc88, &current_client, sizeof(current_client)) || current_client != client ||
+        !read_memory(client + 0xf8, &current_viewport, sizeof(current_viewport)) || current_viewport != viewport) { return {}; }
+    return select_native_display_gamma(engine_gamma, viewport_gamma, override_enabled);
+}
+
 bool validate_native_renderer() {
-    if (!validate_ghost_view_setup() || !validate_native_rooting()) { return false; }
+    if (!validate_ghost_view_setup() || !validate_native_rooting() || !validate_native_display_gamma()) { return false; }
     const auto code = [](uintptr_t rva, std::initializer_list<uint8_t> bytes) {
         return matches_code(g_image + rva, {bytes.begin(), bytes.size()});
     };
