@@ -7468,14 +7468,20 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
             const auto last_frame = (frame_count - 1) % runtimes::OpenXR::QUEUE_SIZE;
             const auto now_frame = frame_count % runtimes::OpenXR::QUEUE_SIZE;
             m_openxr->pipeline_states[now_frame] = m_openxr->pipeline_states[last_frame];
-            if (is_dead_island_2_ue425_executable_cached() && is_using_synchronized_afr()) {
+            const bool nascar_synced = uevr::nascar26::is_validated_build() &&
+                is_nascar_code_preserving_mode() && is_using_strict_synchronized_afr();
+            if ((is_dead_island_2_ue425_executable_cached() && is_using_synchronized_afr()) || nascar_synced) {
                 // Synced Sequential consumes the full frame token, not the
                 // circular queue index. Advance it even when this eye reuses
                 // the previous pose or every later eye decision stays stale.
                 m_openxr->pipeline_states[now_frame].frame_count = frame_count;
                 m_openxr->internal_frame_count = frame_count;
-                SPDLOG_INFO_ONCE(
-                    "[DeadIsland2][UE4.25][Synced] Advancing the cloned OpenXR pose with its full frame token");
+                if (nascar_synced) {
+                    SPDLOG_INFO_ONCE("[NASCAR26][Synced] Advancing the cloned OpenXR pose with its full frame token");
+                } else {
+                    SPDLOG_INFO_ONCE(
+                        "[DeadIsland2][UE4.25][Synced] Advancing the cloned OpenXR pose with its full frame token");
+                }
             } else {
                 m_openxr->pipeline_states[now_frame].frame_count = now_frame;
             }
@@ -8711,8 +8717,18 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
     }
 
     if (selected_page == PAGE_UNREAL) {
-        m_rendering_method->draw("Rendering Method");
-        m_synced_afr_method->draw("Synced Sequential Method");
+        if (uevr::nascar26::is_target()) {
+            ImGui::TextWrapped("NASCAR26: Native or Synced (Skip Tick) + UI. Ghost Fix uses engine-owned histories in Synced. Native Fix uses validated linked families without image hooks. Reinject after changing HMD resolution while testing Native Fix.");
+            int method = is_nascar_code_preserving_mode() ? m_rendering_method->value() : -1;
+            const char* methods[]{"Native Stereo", "Synced Sequential (Skip Tick)"};
+            if (ImGui::Combo("Rendering Method", &method, methods, 2)) {
+                m_rendering_method->value() = method;
+                m_extreme_compat_mode->value() = false;
+            }
+        } else {
+            m_rendering_method->draw("Rendering Method");
+            m_synced_afr_method->draw("Synced Sequential Method");
+        }
 
         m_world_scale->draw("World Scale");
         m_depth_scale->draw("Depth Scale");
@@ -8755,8 +8771,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             ImGui::TextWrapped(
                 "Default is remap-only for safety. Enable bootstrap only if Ghosting Fix stays inactive/"
                 "learning and the game needs UEVR to force Unreal to create a second scene history.");
-            ImGui::TextWrapped(
-                "Risky/legacy path: enable before injection or a scene load when possible; avoid live toggle spam.");
+            if (uevr::nascar26::is_target()) {
+                ImGui::TextWrapped("NASCAR26: bounded lazy allocation during normal view setup. No PostInitProperties replay, extra rendered views, or protected-image hooks. Native is unchanged.");
+            } else {
+                ImGui::TextWrapped(
+                    "Risky/legacy path: enable before injection or a scene load when possible; avoid live toggle spam.");
+            }
             ImGui::Unindent();
         }
 
@@ -8769,7 +8789,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 draw_status_badge("Native Fix status:", "skipped: Native Stereo rendering required", skipped_color);
             } else if (m_fake_stereo_hook == nullptr) {
                 draw_status_badge("Native Fix status:", "unavailable: stereo hook not installed", blocked_color);
-            } else if (is_native_stereo_fix_enabled()) {
+            } else if (is_native_stereo_fix_enabled() || is_nascar_native_stereo_fix_requested()) {
                 const auto* status = m_fake_stereo_hook->get_native_stereo_fix_status_text();
                 const auto color = m_fake_stereo_hook->is_native_stereo_fix_operational()
                     ? active_color
@@ -8781,6 +8801,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 draw_status_badge("Native Fix status:", "skipped: title/runtime guard", blocked_color);
             }
 
+            if (uevr::nascar26::is_target()) { ImGui::BeginDisabled(); }
             if (should_force_native_stereo_fix_same_pass()) {
                 m_native_stereo_fix_same_pass->value() = true;
                 ImGui::BeginDisabled();
@@ -8791,6 +8812,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
             }
             m_native_stereo_fix_preserve_secondary_pass->draw("Preserve Secondary Pass on UE5.5+");
+            if (uevr::nascar26::is_target()) {
+                ImGui::EndDisabled();
+                ImGui::TextWrapped("NASCAR26 keeps the original eye indices/history and temporarily gives the right singleton a primary pass only while creating its renderer. These generic pass options are not used.");
+            }
             ImGui::TextWrapped(
                 "Recommended for UE5.5 and newer. Keeps the real secondary-eye pass identity for per-eye water, "
                 "post-process, and renderer paths while retaining the Native Fix constructor safety guard. "

@@ -34,6 +34,7 @@
 #include "UE58UIInitialization.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "UE57SlateSymbols.hpp"
+#include "utility/Nascar26HookCompatibility.hpp"
 
 #include "Mod.hpp"
 
@@ -95,6 +96,38 @@ public:
         uint64_t generation{};
     };
 
+    struct NascarTextureSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uintptr_t viewport{};
+        mutable std::atomic_uint64_t last_seen_ms{};
+    };
+
+    std::shared_ptr<const NascarTextureSnapshot> get_nascar_scene_target_snapshot() const {
+        auto snapshot = nascar_scene_target_snapshot.load(std::memory_order_acquire);
+        if (!snapshot) { return nullptr; }
+        const auto observed = snapshot->last_seen_ms.load(std::memory_order_acquire);
+        return uevr::nascar26::scene_observation_fresh(GetTickCount64(), observed) ? snapshot : nullptr;
+    }
+    std::shared_ptr<const NascarTextureSnapshot> get_nascar_ui_target_snapshot() const {
+        return nascar_ui_target_snapshot.load(std::memory_order_acquire);
+    }
+    bool observe_nascar_scene_target(uintptr_t viewport);
+    void invalidate_nascar_scene_target();
+
+    struct NascarNativeTarget {
+        std::shared_ptr<const SceneCaptureTargetSnapshot> capture{};
+        uintptr_t resource{}, render_target{}, instance{};
+        uevr::nascar26::NativeOwnedObject owner{};
+    };
+    void prepare_nascar_native_target(uintptr_t instance, uint32_t width, uint32_t height);
+    bool nascar_native_target_owner_valid(const NascarNativeTarget& target) const;
+    void retire_nascar_native_target();
+    std::shared_ptr<const NascarNativeTarget> get_nascar_native_target() const {
+        return nascar_native_target.load(std::memory_order_acquire);
+    }
+
     bool allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource);
 
     uint32_t get_number_of_buffered_frames() const { return 1; }
@@ -109,6 +142,10 @@ public:
 
 public:
     FRHITexture2D* get_ui_target() {
+        if (uevr::nascar26::is_target()) {
+            const auto snapshot = get_nascar_ui_target_snapshot();
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         auto& dedicated = static_cast<FRHITexture2D*&>(dedicated_ui_target);
 
         if (dedicated != nullptr) {
@@ -133,6 +170,7 @@ public:
     }
 
     FRHITexture2D* get_dedicated_ui_target() {
+        if (uevr::nascar26::is_target()) { return get_ui_target(); }
         return static_cast<FRHITexture2D*&>(dedicated_ui_target);
     }
 
@@ -149,6 +187,11 @@ public:
     }
 
     FRHITexture2D* get_render_target() {
+        if (uevr::nascar26::is_target()) {
+            const auto snapshot = get_nascar_scene_target_snapshot();
+            // Identity only. D3D12 consumers retain the COM-owned snapshot.
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         return render_target; 
     }
 
@@ -394,6 +437,11 @@ protected:
     bool m_attempted_find_force_separate_rt{false};
 
     sdk::UObjectReference<sdk::AActor> scene_capture_actor{nullptr};
+    // One persistent, rooted target per injection. Never release its Unreal
+    // wrapper while queued linked renderers or GPU copies can still borrow it.
+    sdk::UObjectReference<sdk::UTexture> nascar_native_texture{nullptr};
+    bool nascar_native_creation_started{};
+    std::atomic<std::shared_ptr<const NascarNativeTarget>> nascar_native_target{};
     sdk::UObjectReference<sdk::USceneCaptureComponent2D> scene_capture_component{nullptr};
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
@@ -430,6 +478,9 @@ protected:
     std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
     std::atomic<std::shared_ptr<const Stalker2D3D12SceneTargetSnapshot>> stalker2_scene_target_snapshot{};
     std::atomic<uint64_t> stalker2_scene_target_generation{};
+    std::atomic<std::shared_ptr<const NascarTextureSnapshot>> nascar_scene_target_snapshot{};
+    std::atomic<std::shared_ptr<const NascarTextureSnapshot>> nascar_ui_target_snapshot{};
+    uevr::nascar26::SceneStability nascar_scene_stability{};
     std::atomic<uint64_t> sw_zero_company_desktop_extent{};
     std::atomic<std::shared_ptr<const SceneCaptureTargetSnapshot>> scene_capture_target_snapshot{};
     std::atomic<uint64_t> scene_capture_generation{};
@@ -747,6 +798,8 @@ public:
         uevr::native_frame::ClockStamp diagnostic_clock{};
     };
 
+    bool is_nascar_native_ready() const { return m_nascar_native_ready.load(std::memory_order_acquire); }
+
     std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(
         int32_t render_frame, uevr::native_frame::Backend backend = uevr::native_frame::Backend::unknown,
         uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
@@ -928,7 +981,7 @@ public:
     }
 
     bool has_slate_hook() {
-        return (bool)m_slate_thread_hook;
+        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active();
     }
 
     uintptr_t get_slate_hook_target_address() const {
@@ -1356,6 +1409,48 @@ private:
 
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
     safetyhook::InlineHook m_tick_hook{};
+    uevr::nascar26::ObjectVTable m_nascar_tick{}, m_nascar_draw{}, m_nascar_slate_getter{}, m_nascar_stereo{};
+    std::atomic_uintptr_t m_nascar_viewport{};
+    std::atomic_bool m_nascar_ready{};
+    std::atomic_uint64_t m_nascar_ui_routes{};
+    std::atomic_bool m_nascar_synced_redraw_validated{};
+    std::atomic_uint64_t m_nascar_synced_redraws{}, m_nascar_synced_redraw_rejections{};
+    uevr::nascar26::SyncedRedraw m_nascar_pending_redraw{};
+    uint64_t m_nascar_draw_serial{};
+    bool m_nascar_redrawing{};
+    uevr::nascar26::ObjectVTable m_nascar_localplayer{};
+    uevr::nascar26::ObjectVTable m_nascar_renderer{};
+    uevr::nascar26::GhostOwnerGate m_nascar_native_owner{};
+    uevr::nascar26::NativePairGate m_nascar_native_pair{};
+    std::array<uevr::nascar26::NativeView, 2> m_nascar_native_views{};
+    std::array<uint32_t, 2> m_nascar_native_view_counts{};
+    std::atomic_bool m_nascar_native_ready{};
+    bool m_nascar_native_attempted{}, m_nascar_native_validated{}, m_nascar_native_requested{}, m_nascar_native_failed{};
+    bool install_nascar_localplayer(uintptr_t player);
+    void prepare_nascar_native_view();
+    void record_nascar_native_view(const uevr::nascar26::NativeCall& call, sdk::FSceneView* view);
+    static void nascar_begin_render_family(void* renderer, sdk::FCanvas* canvas, sdk::FSceneViewFamily* family);
+    uevr::nascar26::GhostOwnerGate m_nascar_ghost_owner{};
+    bool m_nascar_ghost_validated{}, m_nascar_ghost_validation_attempted{}, m_nascar_ghost_failed{};
+    std::atomic<uevr::nascar26::GhostStatus> m_nascar_ghost_status{uevr::nascar26::GhostStatus::Off};
+    std::atomic_uint64_t m_nascar_ghost_last_consumer_ms{}, m_nascar_ghost_consumers{};
+    uint64_t m_nascar_ghost_left_frame{UINT64_MAX};
+    uint32_t m_nascar_ghost_pairs{};
+    uintptr_t m_nascar_ghost_right_state{};
+    std::optional<uevr::nascar26::GhostOwner> nascar_ghost_owner() const;
+    bool nascar_ghost_states(uintptr_t player, uintptr_t& left, uintptr_t& right) const;
+    void prepare_nascar_ghost_view();
+    static sdk::FSceneView* nascar_calc_scene_view(void* player, sdk::FSceneViewFamily* family,
+        void* location, void* rotation, sdk::FViewport* viewport, void* drawer, int32_t index);
+    static bool nascar_init_options(void* player, void* options, sdk::FViewport* viewport, void* drawer, int32_t index);
+    static bool nascar_projection_data(void* player, sdk::FViewport* viewport, void* data, int32_t index);
+    std::optional<uevr::nascar26::RedrawIdentity> nascar_redraw_identity() const;
+    void queue_nascar_synced_redraw();
+    void service_nascar_synced_redraw(sdk::UGameEngine* engine);
+    static sdk::FSlateResource* nascar_slate_texture_getter(sdk::ISlateViewport* viewport);
+    static void nascar_render_texture(FFakeStereoRendering* stereo, FRDGBuilder* graph,
+        FRDGTexture* backbuffer, FRDGTexture* source, uevr::nascar26::WindowSize window_size);
+    void call_game_viewport_draw_original(sdk::UGameViewportClient* self, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4);
     safetyhook::InlineHook m_adjust_view_rect_hook{};
     safetyhook::InlineHook m_calculate_stereo_view_offset_hook_inline{};
     std::unique_ptr<PointerHook> m_calculate_stereo_view_offset_hook_ptr{}; // some games have a short jmp which isnt supported by safetyhook right now so we use pointerhook
