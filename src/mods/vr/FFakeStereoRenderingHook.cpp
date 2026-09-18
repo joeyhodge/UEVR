@@ -33429,7 +33429,7 @@ void FFakeStereoRenderingHook::prepare_nascar_native_view() {
     if (!m_nascar_native_attempted) {
         m_nascar_native_attempted = true;
         m_nascar_native_validated = validate_native_renderer();
-        SPDLOG_INFO("[NASCAR26][NativeFix] Exact linked-family/copy/destructor/GC-root validation={}; no image hooks", m_nascar_native_validated);
+        SPDLOG_INFO("[NASCAR26][NativeFix] Exact linked-family/copy/destructor/GC-root/gamma validation={}; no image hooks", m_nascar_native_validated);
     }
     const auto hold = [&](NativeStereoFixState state, const char* reason) {
         m_nascar_native_ready.store(false, std::memory_order_release);
@@ -33529,7 +33529,7 @@ void FFakeStereoRenderingHook::nascar_begin_render_family(void* renderer, sdk::F
     const auto owner = g_hook->nascar_ghost_owner();
     const auto address = reinterpret_cast<uintptr_t>(family);
     NascarViewArray views{}, all{};
-    uintptr_t table{}, world_scene{}, left{}, right{}, resource{}, render_table{}, rhi{}, shader_rhi{}, backing{}, native{};
+    uintptr_t table{}, world_scene{}, left{}, right{}, resource{}, rhi{}, shader_rhi{}, backing{}, native{};
     const auto family_targets = read_native_family_targets(address);
     const auto main_target = family_targets ? family_targets->color : 0;
     const auto scene = family_targets ? family_targets->scene : 0;
@@ -33569,7 +33569,7 @@ void FFakeStereoRenderingHook::nascar_begin_render_family(void* renderer, sdk::F
         is_writable_process_range(pair[1].view + 8, sizeof(uintptr_t)) &&
         is_writable_process_range(pair[1].view + 0xdd0, 12) &&
         read_memory(target->capture->owner_texture + 0x138, &resource, sizeof(resource)) && resource == target->resource &&
-        read_memory(resource + 0x50, &render_table, sizeof(render_table)) && render_table == image_base() + 0x8711370 &&
+        rtm->nascar_native_gamma_owns(resource + 0x50) &&
         target->render_target == resource + 0x50 &&
         read_memory(resource + 0x58, &rhi, sizeof(rhi)) && rhi == reinterpret_cast<uintptr_t>(target->capture->rhi_texture) &&
         read_memory(resource + 0x10, &shader_rhi, sizeof(shader_rhi)) && shader_rhi == rhi &&
@@ -38826,6 +38826,15 @@ void VRRenderTargetManager_Base::retire_nascar_native_target() {
     }
 }
 
+float VRRenderTargetManager_Base::nascar_native_capture_display_gamma(const sdk::FRenderTarget* target) {
+    auto* rtm = g_hook != nullptr ? g_hook->get_render_target_manager() : nullptr;
+    if (rtm && reinterpret_cast<uintptr_t>(target) == rtm->nascar_native_gamma_hook.slot_address()) {
+        rtm->nascar_native_gamma.observe(uevr::nascar26::read_native_display_gamma());
+        return rtm->nascar_native_gamma.value_or(1.0f);
+    }
+    return 1.0f; // Original linear capture contract, never an unvalidated call.
+}
+
 void VRRenderTargetManager_Base::prepare_nascar_native_target(uintptr_t instance, uint32_t width, uint32_t height) {
     using namespace uevr::nascar26;
     if (!GameThreadWorker::get().is_same_thread() || !VR::get()->is_nascar_native_stereo_fix_requested() ||
@@ -38878,6 +38887,17 @@ void VRRenderTargetManager_Base::prepare_nascar_native_target(uintptr_t instance
                 const std::array<uintptr_t, 3> resource_identity{resource, reinterpret_cast<uintptr_t>(rhi),
                     reinterpret_cast<uintptr_t>(native.Get())};
                 if (previous != resource_identity) { previous = resource_identity; return false; }
+                if (!nascar_native_gamma.observe(read_native_display_gamma())) { return false; }
+                const auto base = image_base();
+                const std::array<SlotPatch, 1> gamma_patch{{{native_display_gamma_slot, base + native_capture_display_gamma_rva,
+                    reinterpret_cast<uintptr_t>(&nascar_native_capture_display_gamma)}}};
+                // Only this rooted capture's FRenderTarget subobject changes.
+                // All texture getters, image vtables and gamma CVars stay intact.
+                if (!nascar_native_gamma_hook.prepare(base + native_capture_frt_vtable_rva, native_capture_frt_slots, gamma_patch, base) ||
+                    !nascar_native_gamma_hook.install(resource + 0x50)) {
+                    SPDLOG_ERROR("[NASCAR26][NativeFix] Owned capture gamma adapter failed validation; no publication");
+                    return true;
+                }
                 auto capture = std::make_shared<SceneCaptureTargetSnapshot>();
                 capture->native_resource = native;
                 capture->rhi_texture = rhi;
@@ -38895,6 +38915,8 @@ void VRRenderTargetManager_Base::prepare_nascar_native_target(uintptr_t instance
                 nascar_native_target.store(std::move(target), std::memory_order_release);
                 SPDLOG_INFO("[NASCAR26][NativeFix] Validated owned capture generation={} {}x{} RHI={:x} FRenderTarget={:x}; no global offset publication",
                     capture->generation, width, height, reinterpret_cast<uintptr_t>(rhi), resource + 0x50);
+                SPDLOG_INFO("[NASCAR26][NativeFix] Owned right capture matches viewport display gamma={}; read-only viewport tracking",
+                    nascar_native_gamma.value_or(1.0f));
                 return true;
             }, [] { SPDLOG_ERROR("[NASCAR26][NativeFix] Owned capture did not initialize; no redirect, reinject to retry"); },
             std::chrono::seconds(30));

@@ -122,6 +122,10 @@ public:
         uevr::nascar26::NativeOwnedObject owner{};
     };
     void prepare_nascar_native_target(uintptr_t instance, uint32_t width, uint32_t height);
+    static float nascar_native_capture_display_gamma(const sdk::FRenderTarget* target);
+    bool nascar_native_gamma_owns(uintptr_t render_target) const {
+        return nascar_native_gamma_hook.owns(render_target);
+    }
     bool nascar_native_target_owner_valid(const NascarNativeTarget& target) const;
     void retire_nascar_native_target();
     std::shared_ptr<const NascarNativeTarget> get_nascar_native_target() const {
@@ -441,6 +445,8 @@ protected:
     // wrapper while queued linked renderers or GPU copies can still borrow it.
     sdk::UObjectReference<sdk::UTexture> nascar_native_texture{nullptr};
     bool nascar_native_creation_started{};
+    uevr::nascar26::ObjectVTable nascar_native_gamma_hook{};
+    uevr::nascar26::NativeDisplayGamma nascar_native_gamma{};
     std::atomic<std::shared_ptr<const NascarNativeTarget>> nascar_native_target{};
     sdk::UObjectReference<sdk::USceneCaptureComponent2D> scene_capture_component{nullptr};
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
