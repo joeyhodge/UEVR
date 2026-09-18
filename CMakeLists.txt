@@ -616,6 +616,57 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target nascar-hook-compatibility-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET nascar-hook-compatibility-tests)
+	set(nascar-hook-compatibility-tests_SOURCES "")
+
+	list(APPEND nascar-hook-compatibility-tests_SOURCES
+		"tests/Nascar26HookCompatibilityTests.cpp"
+		"src/utility/Nascar26HookCompatibility.cpp"
+	)
+
+	list(APPEND nascar-hook-compatibility-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${nascar-hook-compatibility-tests_SOURCES})
+	add_executable(nascar-hook-compatibility-tests)
+
+	if(nascar-hook-compatibility-tests_SOURCES)
+		target_sources(nascar-hook-compatibility-tests PRIVATE ${nascar-hook-compatibility-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT nascar-hook-compatibility-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${nascar-hook-compatibility-tests_SOURCES})
+
+	target_compile_features(nascar-hook-compatibility-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(nascar-hook-compatibility-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(nascar-hook-compatibility-tests PRIVATE
+		safetyhook
+		spdlog
+		kananlib
+		bcrypt
+		Version
+	)
+
+	add_test(NAME nascar-hook-compatibility-tests COMMAND nascar-hook-compatibility-tests)
+	set_tests_properties(nascar-hook-compatibility-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -927,6 +978,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/BuildIdentity.cpp"
 	"src/utility/HiFiRushHookMemory.cpp"
 	"src/utility/ImGui.cpp"
+	"src/utility/Nascar26HookCompatibility.cpp"
 	"src/ExceptionHandler.hpp"
 	"src/Framework.hpp"
 	"src/LicenseStrings.hpp"
@@ -956,6 +1008,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/pluginloader/UScriptStructFunctions.hpp"
 	"src/mods/uobjecthook/SDKDumper.hpp"
 	"src/mods/vr/BodycamTextureLayout.hpp"
+	"src/mods/vr/Borderlands4Slate.hpp"
 	"src/mods/vr/CVarDiagnostics.hpp"
 	"src/mods/vr/CVarManager.hpp"
 	"src/mods/vr/CompatibilityPolicy.hpp"
@@ -969,6 +1022,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/RenderTargetPoolHook.hpp"
 	"src/mods/vr/SWZeroCompanyBinary.hpp"
+	"src/mods/vr/SifuMeshCommands.hpp"
+	"src/mods/vr/SifuRendererEntry.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"
@@ -994,6 +1049,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/HiFiRushHookMemory.hpp"
 	"src/utility/ImGui.hpp"
 	"src/utility/Logging.hpp"
+	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
@@ -1044,6 +1100,7 @@ target_link_libraries(uevr PUBLIC
 	openxr_loader
 	nlohmann_json
 	Version
+	bcrypt
 	TracyClient
 	DirectXTK
 	DirectXTK12
