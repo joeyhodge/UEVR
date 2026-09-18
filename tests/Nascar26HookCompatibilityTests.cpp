@@ -30,6 +30,14 @@ struct ImageTable { uintptr_t prefix; Fn functions[3]; };
 const ImageTable source_table{0x12345678, {original, unrelated, original}};
 struct Object { uintptr_t vtable; uintptr_t canary; };
 const Object image_object{reinterpret_cast<uintptr_t>(source_table.functions), 0xabcdef};
+NativeDisplayGamma gamma_value;
+__declspec(noinline) float original_gamma(uintptr_t) { return 1.0f; }
+__declspec(noinline) float matched_gamma(uintptr_t) { return gamma_value.value_or(1.0f); }
+using GammaFn = float (*)(uintptr_t);
+struct GammaTable { uintptr_t prefix; std::array<GammaFn, native_capture_frt_slots> functions; };
+const GammaTable gamma_table{0x12345678, {original_gamma, original_gamma, original_gamma, original_gamma,
+    original_gamma, original_gamma, original_gamma, original_gamma, original_gamma, original_gamma,
+    original_gamma, original_gamma, original_gamma, original_gamma, original_gamma, original_gamma}};
 
 uintptr_t read_slot(uintptr_t address) {
     uintptr_t value{};
@@ -66,6 +74,44 @@ int main() {
     expect(!validate_ghost_view_setup(), "Ghost view-setup validation cannot opt in an unrelated process");
     expect(!validate_native_renderer(), "Native linked-renderer validation cannot opt in an unrelated process");
     expect(!validate_native_rooting(), "Native GC rooting callable cannot opt in an unrelated process");
+    expect(!validate_native_display_gamma() && !read_native_display_gamma(),
+        "NASCAR gamma layout and reads cannot opt in an unrelated process");
+    expect(native_capture_frt_slots == 16 && native_display_gamma_slot == 6,
+        "source-validated FRenderTarget extent and gamma slot stay bounded");
+    const auto nan = std::numeric_limits<float>::quiet_NaN();
+    expect(select_native_display_gamma(2.2f, 1.0f, 0) == 2.2f,
+        "viewport without override matches engine gamma, not linear capture gamma");
+    expect(select_native_display_gamma(2.2f, 1.8f, 1) == 1.8f &&
+        select_native_display_gamma(nan, 2.6f, 1) == 2.6f && select_native_display_gamma(2.2f, nan, 0) == 2.2f,
+        "enabled viewport override takes precedence and inactive values are ignored");
+    expect(!select_native_display_gamma(2.2f, 1.8f, 2) && !select_native_display_gamma(2.2f, 1.8f, 255),
+        "malformed override flags fail closed");
+    NativeDisplayGamma gamma;
+    expect(gamma.value_or(1.0f) == 1.0f && !gamma.observe(std::nullopt), "no invented viewport value before validation");
+    expect(gamma.observe(2.2f) && gamma.value_or(1.0f) == 2.2f, "validated display gamma is published");
+    for (float invalid : {0.0f, -1.0f, nan, std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity(), std::numeric_limits<float>::denorm_min()}) {
+        expect(!select_native_display_gamma(invalid, 2.2f, 0) && !select_native_display_gamma(2.2f, invalid, 1),
+            "invalid active gamma never reaches tonemapping");
+        expect(!gamma.observe(invalid) && gamma.value_or(1.0f) == 2.2f,
+            "failed/retired viewport observation preserves the last validated gamma");
+    }
+    expect(!gamma.observe(std::nullopt) && gamma.value_or(1.0f) == 2.2f,
+        "mode switch or missing viewport cannot reset queued right-eye gamma to linear");
+    for (float valid : {1.0f, 1.8f, 2.2f, 2.6f, 4.0f}) {
+        expect(gamma.observe(valid) && gamma.value_or(1.0f) == valid, "gamma follows valid values without clamping to 2.2");
+    }
+    gamma.observe(2.2f);
+    std::atomic_bool gamma_bad{};
+    std::thread gamma_reader{[&] {
+        for (int i = 0; i < 10000; ++i) {
+            const float value = gamma.value_or(1.0f);
+            if (value != 1.8f && value != 2.2f) { gamma_bad.store(true); }
+        }
+    }};
+    for (int i = 0; i < 10000; ++i) { gamma.observe(i & 1 ? 1.8f : 2.2f); }
+    gamma_reader.join();
+    expect(!gamma_bad.load(), "concurrent gamma readers see one complete validated value");
     struct OwnedHeader { uintptr_t vtable; uint32_t flags; int32_t index; } owned_header{0x1234, 0, 17};
     const NativeOwnedObject owned{reinterpret_cast<uintptr_t>(&owned_header), owned_header.vtable, owned_header.index};
     struct OwnedItem { uint64_t flags_and_refcount; uintptr_t object; } owned_item{0, owned.object};
@@ -560,6 +606,32 @@ int main() {
         multiple.original_address(1) == second && multiple.original_address(2) == first,
         "multi-slot adapter retains the exact original table");
     expect(multiple.reset() && read_slot(object) == source, "multi-slot removal restores only the object pointer");
+
+    ObjectVTable gamma_hook;
+    const auto gamma_source = reinterpret_cast<uintptr_t>(gamma_table.functions.data());
+    const auto gamma_before = gamma_table;
+    const std::array<SlotPatch, 1> gamma_patch{{{native_display_gamma_slot,
+        reinterpret_cast<uintptr_t>(&original_gamma), reinterpret_cast<uintptr_t>(&matched_gamma)}}};
+    objects[0].vtable = gamma_source;
+    gamma_value.observe(2.2f);
+    expect(gamma_hook.prepare(gamma_source, native_capture_frt_slots, gamma_patch, image) && gamma_hook.install(object),
+        "owned render-target gamma adapter publishes only after exact slot validation");
+    const auto gamma_shadow = read_slot(object);
+    for (size_t i = 0; i < native_capture_frt_slots; ++i) {
+        expect(read_slot(gamma_shadow + i * sizeof(uintptr_t)) == reinterpret_cast<uintptr_t>(
+            i == native_display_gamma_slot ? &matched_gamma : gamma_table.functions[i]),
+            "every texture, size, readback and non-gamma virtual remains unchanged");
+    }
+    const auto gamma_dispatch = reinterpret_cast<GammaFn>(read_slot(gamma_shadow + native_display_gamma_slot * sizeof(uintptr_t)));
+    expect(gamma_dispatch(object) == 2.2f, "gamma-only adapter preserves the floating-point return ABI");
+    gamma_value.observe(1.8f);
+    expect(gamma_dispatch(object) == 1.8f, "same immutable adapter follows a later viewport gamma change");
+    gamma_value.observe(std::nullopt);
+    expect(gamma_dispatch(object) == 1.8f, "in-flight getter retains gamma when the viewport retires");
+    expect(objects[1].vtable == source && objects[0].canary == 0xabcdef && gamma_hook.image_unchanged() &&
+        std::memcmp(&gamma_before, &gamma_table, sizeof(gamma_table)) == 0,
+        "gamma matching preserves unrelated objects, target fields and original image vtables");
+    expect(gamma_hook.reset() && read_slot(object) == gamma_source, "gamma adapter restores only its owned object pointer");
     VirtualFree(objects, 0, MEM_RELEASE);
 
     uint32_t previous = 0x1234;
