@@ -191,6 +191,8 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
         return {requested_width, rtm->get_dedicated_ui_height()};
     }
 
+    if (uevr::nascar26::is_target()) { return fallback; }
+
     const auto ui_target = rtm->get_ui_target();
 
     if (ui_target == nullptr || !g_framework->is_dx12()) {
@@ -374,6 +376,17 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
     const auto rtm = fake_stereo_hook->get_render_target_manager();
     if (rtm == nullptr) {
         return nullptr;
+    }
+
+    if (uevr::nascar26::is_target()) {
+        const auto snapshot = rtm->get_nascar_scene_target_snapshot();
+        if (!uevr::nascar26::is_validated_build() || !g_framework->is_dx12() ||
+            !vr->is_nascar_code_preserving_mode() || !snapshot || !snapshot->resource ||
+            !uevr::nascar26::valid_texture_desc(snapshot->desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false)) {
+            SPDLOG_INFO_EVERY_N_SEC(5, "[NASCAR26][CodePreserving][Scene] {} waiting for the validated main Slate viewport source", consumer);
+            return nullptr;
+        }
+        return snapshot->resource;
     }
 
     static const bool stalker2_ue55_runtime = []() {
@@ -1924,9 +1937,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer.Get() != nullptr &&
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
+    const auto is_nascar_external_backbuffer =
+        uevr::nascar26::is_validated_build() && vr->is_nascar_code_preserving_mode() &&
+        backbuffer.Get() != nullptr && backbuffer.Get() != real_backbuffer.Get();
     // Volatile engine-owned viewport targets must not be retained as UEVR view
     // resources. Copy them into an owned texture and restore the engine's state.
     const auto use_stable_external_backbuffer_copy =
+        is_nascar_external_backbuffer ||
         is_shf_external_backbuffer ||
         is_stalker2_ue51_external_backbuffer ||
         is_stalker2_ue55_synced_external_backbuffer ||
@@ -1937,7 +1954,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     // SRVMask before Present. Declaring these validated sources as RENDER_TARGET
     // creates an invalid barrier and can poison the engine's next transition.
     const auto volatile_external_source_state =
-        (is_shf_external_backbuffer ||
+        (is_nascar_external_backbuffer || is_shf_external_backbuffer ||
          is_dune_external_backbuffer ||
          is_dead_island_2_ue425_external_backbuffer ||
          is_sw_zero_company_ue56_external_backbuffer ||
@@ -1945,18 +1962,21 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             ? ENGINE_SRC_COLOR
             : D3D12_RESOURCE_STATE_RENDER_TARGET;
     const char* stable_external_copy_label =
+        is_nascar_external_backbuffer ? "NASCAR26" :
         is_dune_external_backbuffer ? "Dune" :
         is_dead_island_2_ue425_external_backbuffer ? "DeadIsland2 UE4.25" :
         is_sw_zero_company_ue56_external_backbuffer ? "SWZeroCompany UE5.6" :
         is_stalker2_ue55_synced_external_backbuffer ? "Stalker2 UE5.5 Synced" :
         is_stalker2_ue51_external_backbuffer ? "Stalker2 UE5.1" : "SHf";
     const wchar_t* stable_external_copy_name =
+        is_nascar_external_backbuffer ? L"NASCAR26 Stable Scene Copy" :
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy" :
         is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy" :
         is_stalker2_ue55_synced_external_backbuffer ? L"Stalker2 UE5.5 Synced Stable Scene Copy" :
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy" : L"SHf Stable Scene Copy";
     const wchar_t* stable_external_copy_command_name =
+        is_nascar_external_backbuffer ? L"NASCAR26 Stable Scene Copy Commands" :
         is_dune_external_backbuffer ? L"Dune Stable Scene Copy Commands" :
         is_dead_island_2_ue425_external_backbuffer ? L"DeadIsland2 UE4.25 Stable Scene Copy Commands" :
         is_sw_zero_company_ue56_external_backbuffer ? L"SWZeroCompany UE5.6 Stable Scene Copy Commands" :
@@ -1964,6 +1984,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         is_stalker2_ue51_external_backbuffer ? L"Stalker2 UE5.1 Stable Scene Copy Commands" : L"SHf Stable Scene Copy Commands";
     const auto skip_in_place_ui_invert = false;
     m_skip_spectator_view_for_volatile_external_rt =
+        is_nascar_external_backbuffer ||
         is_shf_external_backbuffer ||
         is_dune_external_backbuffer ||
         is_dead_island_2_ue425_external_backbuffer ||
@@ -2031,6 +2052,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         scene_source_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         scene_source_desc.Width == static_cast<uint64_t>(vr->get_hmd_width()) * 2ull &&
         scene_source_desc.Height == vr->get_hmd_height();
+    const bool nascar_synced_current_eye_source =
+        is_nascar_external_backbuffer && vr->is_using_strict_synchronized_afr() &&
+        uevr::nascar26::valid_texture_desc(scene_source_desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false);
     const bool dead_island_2_afr_depth_disabled =
         should_disable_dead_island_2_afr_depth(vr);
 
@@ -2134,7 +2158,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
-    const auto ui_target = ffsr->get_render_target_manager()->get_ui_target();
+    const auto nascar_ui_snapshot = uevr::nascar26::is_target()
+        ? ffsr->get_render_target_manager()->get_nascar_ui_target_snapshot() : nullptr;
+    const auto ui_target = uevr::nascar26::is_target()
+        ? (nascar_ui_snapshot ? reinterpret_cast<FRHITexture2D*>(nascar_ui_snapshot->source_texture) : nullptr)
+        : ffsr->get_render_target_manager()->get_ui_target();
+    const auto native_ui_resource = [&]() -> ID3D12Resource* {
+        if (uevr::nascar26::is_target()) { return nascar_ui_snapshot ? nascar_ui_snapshot->resource.Get() : nullptr; }
+        return ui_target ? static_cast<ID3D12Resource*>(ui_target->get_native_resource()) : nullptr;
+    };
 
     const auto frame_count = vr->m_render_frame_count;
     namespace frame_diag = uevr::native_frame;
@@ -2442,7 +2474,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                  m_game_tex.texture.Get() == real_backbuffer.Get());
 
             if (needs_copy_texture) {
-                if ((is_dune_external_backbuffer ||
+                if ((is_nascar_external_backbuffer || is_dune_external_backbuffer ||
                      is_dead_island_2_ue425_external_backbuffer ||
                      is_stalker2_ue55_synced_external_backbuffer) &&
                     m_game_tex.texture.Get() != nullptr)
@@ -2486,6 +2518,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
                 ComPtr<ID3D12Resource> stable_copy{};
                 const auto needs_concrete_stable_view =
+                    is_nascar_external_backbuffer ||
                     is_dune_external_backbuffer ||
                     is_dead_island_2_ue425_external_backbuffer ||
                     is_stalker2_ue55_synced_external_backbuffer;
@@ -2541,14 +2574,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 }
 
                 if (command_ctx.ready()) {
-                    command_ctx.wait(INFINITE);
+                    const bool retired = command_ctx.wait(INFINITE);
+                    if (is_nascar_external_backbuffer) {
+                        if (!retired) { return vr::VRCompositorError_None; }
+                        // The RHI owner may retire on resize after recording our
+                        // copy. Keep its native resource until this slot's fence.
+                        m_nascar_scene_copy_sources[idx] = backbuffer;
+                    }
                     command_ctx.copy(backbuffer.Get(), m_game_tex.texture.Get(), volatile_external_source_state, ENGINE_SRC_COLOR);
                     command_ctx.execute();
 
                     SPDLOG_INFO_EVERY_N_SEC(2,
                         "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
                         stable_external_copy_label,
-                        (is_dune_external_backbuffer ||
+                        (is_nascar_external_backbuffer || is_dune_external_backbuffer ||
                          is_dead_island_2_ue425_external_backbuffer ||
                          is_stalker2_ue55_synced_external_backbuffer)
                             ? "/mirror/2D using SRVMask source state"
@@ -2563,7 +2602,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             }
 
             if (m_game_tex.texture.Get() == nullptr) {
-                if (is_dune_external_backbuffer ||
+                if (is_nascar_external_backbuffer || is_dune_external_backbuffer ||
                     is_dead_island_2_ue425_external_backbuffer ||
                     is_stalker2_ue55_synced_external_backbuffer)
                 {
@@ -2907,7 +2946,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     uint32_t ue58_ui_submit_slot = UE58_CONVERTED_UI_SLOT_COUNT;
 
     if (ui_target != nullptr) {
-        const auto native_ui = (ID3D12Resource*)ui_target->get_native_resource();
+        const auto native_ui = native_ui_resource();
 
         if (native_ui != nullptr && is_ue58_runtime_cached()) {
             const auto native_desc = native_ui->GetDesc();
@@ -2998,7 +3037,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
         // Recreate UI texture if needed
         if (!vr->is_extreme_compatibility_mode_enabled()) {
-            const auto native = (ID3D12Resource*)ui_target->get_native_resource();
+            const auto native = native_ui_resource();
             const auto is_same_native = native == m_last_checked_native;
             m_last_checked_native = native;
 
@@ -3597,7 +3636,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             if (use_2d_screen) {
                 m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             } else if (ui_target != nullptr) {
-                m_openvr.ui_tex.commands.copy((ID3D12Resource*)ui_target->get_native_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
+                m_openvr.ui_tex.commands.copy(native_ui_resource(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
             }
         } else if (use_2d_screen) {
             m_openvr.ui_tex.commands.copy(m_2d_screen_tex[0].texture.Get(), m_openvr.ui_tex.texture.Get(), ENGINE_SRC_COLOR);
@@ -3630,7 +3669,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     bool ue58_converted_ui_copied = false;
                     auto* ui_submit_texture = ue58_ui_uses_shader_conversion
                         ? (ue58_ui_submit_context != nullptr ? ue58_ui_submit_context->texture.Get() : nullptr)
-                        : (ID3D12Resource*)ui_target->get_native_resource();
+                        : native_ui_resource();
 
                     if (ui_submit_texture == nullptr) {
                         SPDLOG_INFO_EVERY_N_SEC(
@@ -3945,14 +3984,14 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     src_box.front = 0;
                     src_box.back = 1;
                 } else if (!vr->is_extreme_compatibility_mode_enabled()) {
-                    if (!is_afr && !dead_island_2_synced_current_eye_source) {
+                    if (!is_afr && !dead_island_2_synced_current_eye_source && !nascar_synced_current_eye_source) {
                         src_box.left = m_backbuffer_size[0] / 2;
                         src_box.right = m_backbuffer_size[0];
                         src_box.top = 0;
                         src_box.bottom = m_backbuffer_size[1];
                         src_box.front = 0;
                         src_box.back = 1;
-                    } else { // DI2 keeps each Synced eye in UEVR's current-eye region, including the repeated submit.
+                    } else { // Validated sequential sources keep each eye in the current-eye region, even on a repeated submit.
                         src_box.left = 0;
                         src_box.right = m_backbuffer_size[0] / 2;
                         src_box.top = 0;

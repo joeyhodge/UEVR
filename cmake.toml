@@ -213,6 +213,18 @@ add_test(NAME hifi-hook-memory-tests COMMAND hifi-hook-memory-tests)
 set_tests_properties(hifi-hook-memory-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.nascar-hook-compatibility-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Nascar26HookCompatibilityTests.cpp", "src/utility/Nascar26HookCompatibility.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook", "spdlog", "kananlib", "bcrypt", "Version"]
+cmake-after = """
+add_test(NAME nascar-hook-compatibility-tests COMMAND nascar-hook-compatibility-tests)
+set_tests_properties(nascar-hook-compatibility-tests PROPERTIES TIMEOUT 60)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
@@ -299,6 +311,7 @@ link-libraries = [
     "openxr_loader",
     "nlohmann_json",
     "Version",
+    "bcrypt",
     "TracyClient",
     "DirectXTK",
     "DirectXTK12",
