@@ -12,6 +12,7 @@
 // Some backend translation units still include Windows headers without NOMINMAX.
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
+#include "utility/BoundedTextureDiagnostics.hpp"
 #undef max
 
 int disabled_log_argument_evaluations();
@@ -151,12 +152,101 @@ void test_support_report() {
     expect(pacing(11111111, std::nullopt)["frame_cap_fps"].is_null(), "unknown cap is not guessed");
     expect(pacing(11111111, std::numeric_limits<double>::infinity())["frame_cap_fps"].is_null(), "invalid cap is unavailable");
 }
+
+void test_bounded_texture_diagnostics() {
+    using namespace utility::diagnostics;
+    BoundedTextureObservations<> observations;
+    std::atomic_bool enabled{false};
+    int queries = 0;
+    const auto key_provider = [&]() { ++queries; return uintptr_t{0x1000}; };
+    for (int i = 0; i < 1000; ++i) {
+        expect(!observations.observe(enabled.load(std::memory_order_acquire), key_provider),
+            "disabled texture diagnostics produce no observations");
+    }
+    expect(queries == 0, "disabled diagnostics never query native resources");
+
+    enabled.store(true, std::memory_order_release);
+    const auto first = observations.observe(enabled.load(std::memory_order_acquire), key_provider);
+    expect(queries == 1 && first && first->first_seen && first->seen == 1 && first->tracked_keys == 1,
+        "opt-in diagnostics start with an untouched budget");
+    const auto duplicate = observations.observe(true, key_provider);
+    expect(duplicate && !duplicate->first_seen && duplicate->duplicate_suppressed == 1,
+        "repeated resources are not logged as new allocations");
+
+    TextureObservation last{};
+    size_t detailed = 1;
+    for (uintptr_t key = 0x1001; key < 0x1001 + 10000; ++key) {
+        last = *observations.observe(true, [key]() { return key; });
+        detailed += last.first_seen ? 1 : 0;
+    }
+    expect(detailed == 64 && last.tracked_keys == 64 && last.overflow_suppressed == 10000 - 63,
+        "texture identity churn has fixed storage and at most 64 detailed entries");
+    expect(last.seen == last.tracked_keys + last.duplicate_suppressed + last.overflow_suppressed,
+        "overflow counts observations without claiming exact uniqueness");
+    enabled.store(false, std::memory_order_release);
+    expect(!observations.observe(enabled.load(std::memory_order_acquire), key_provider) && queries == 2,
+        "disabling a running recorder stops native queries immediately on subsequent calls");
+    const auto resumed = observations.observe(true, key_provider);
+    expect(resumed && !resumed->first_seen && resumed->seen == last.seen + 1 && resumed->tracked_keys == 64,
+        "toggle does not reset the per-injection tracking bound");
+
+    BoundedTextureObservations<> reentrant;
+    const auto outer = reentrant.observe(true, [&]() {
+        reentrant.observe(true, []() { return uintptr_t{1}; });
+        return uintptr_t{2};
+    });
+    expect(outer && outer->seen == 2, "resource providers execute outside the diagnostic mutex");
+
+    BoundedTextureObservations<> concurrent;
+    std::atomic<int> first_seen{0};
+    std::vector<std::thread> workers;
+    for (int worker = 0; worker < 8; ++worker) {
+        workers.emplace_back([&]() {
+            for (int i = 0; i < 1000; ++i) {
+                const auto sample = concurrent.observe(true, [i]() { return uintptr_t(i % 128); });
+                if (sample->first_seen) { ++first_seen; }
+            }
+        });
+    }
+    for (auto& worker : workers) { worker.join(); }
+    const auto total = concurrent.observe(true, []() { return uintptr_t{0}; });
+    expect(total && first_seen == 64 && total->tracked_keys == 64 && total->seen == 8001,
+        "concurrent texture observations publish coherent bounded counters");
+    expect(total && total->seen == total->tracked_keys + total->duplicate_suppressed + total->overflow_suppressed,
+        "concurrent observation accounting loses no samples");
+
+    using namespace std::chrono_literals;
+    TextureProbeBudget<3> probes;
+    const auto start = TextureProbeBudget<3>::Clock::time_point{};
+    expect(!probes.try_acquire(false, start), "disabled viewport probing consumes no budget");
+    expect(probes.try_acquire(true, start), "first enabled viewport probe is admitted");
+    expect(!probes.try_acquire(true, start - 1s) && !probes.try_acquire(true, start + 1999ms),
+        "viewport probes neither run backwards in time nor exceed their rate limit");
+    expect(!probes.try_acquire(false, start + 2s) && probes.try_acquire(true, start + 2s),
+        "disabled probe attempts do not advance cadence or consume a sample");
+    expect(probes.try_acquire(true, start + 4s) && !probes.try_acquire(true, start + 100s),
+        "viewport probe budget remains bounded for the injection session");
+
+    TextureProbeBudget<> concurrent_probes;
+    std::atomic<int> admitted{0};
+    workers.clear();
+    std::barrier ready{8};
+    for (int worker = 0; worker < 8; ++worker) {
+        workers.emplace_back([&]() {
+            ready.arrive_and_wait();
+            if (concurrent_probes.try_acquire(true, start)) { ++admitted; }
+        });
+    }
+    for (auto& worker : workers) { worker.join(); }
+    expect(admitted == 1, "concurrent viewport callbacks share one probe cadence");
+}
 }
 
 int main() {
     test_logging();
     test_readbacks();
     test_support_report();
+    test_bounded_texture_diagnostics();
     failures += test_cached_cvar_reads();
     failures += test_console_text();
     failures += test_discovery_validation();
