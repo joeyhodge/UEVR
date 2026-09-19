@@ -19977,6 +19977,14 @@ struct SceneViewExtensionAnalyzer {
             runtime->on_pre_render_render_thread(frame_count);
         }
 
+        if (shf_is_current_game() && shf_texture_diagnostics_enabled() &&
+            (original_vtables.contains(last_command) || *(void**)last_command == new_vtable.data())) {
+            const auto pending = cmd_frame_counts.find(last_command);
+            SPDLOG_INFO_EVERY_N_SEC(2,
+                "[SHf][RHI][diagnostic] Duplicate command before existing frame assignment: command={:x} recorded_valid={} recorded={} incoming={} native_fix={}",
+                reinterpret_cast<uintptr_t>(last_command), pending != cmd_frame_counts.end(),
+                pending != cmd_frame_counts.end() ? pending->second : 0, frame_count, vr->is_native_stereo_fix_enabled());
+        }
         cmd_frame_counts[last_command] = frame_count;
 
         if (original_vtables.contains(last_command) || *(void**)last_command == new_vtable.data()) {
