@@ -15,6 +15,7 @@
 #include <unordered_set>
 
 #include "Framework.hpp"
+#include "utility/BoundedTextureDiagnostics.hpp"
 #include "render/D3D12Diagnostics.hpp"
 #include "../GameSpecific.hpp"
 #include "../VR.hpp"
@@ -221,6 +222,12 @@ bool is_shf_current_game() {
     }();
 
     return result;
+}
+
+bool shf_texture_diagnostics_enabled() {
+    const auto vr = VR::get();
+    return vr != nullptr && vr->get_fake_stereo_hook() != nullptr &&
+        vr->get_fake_stereo_hook()->is_hook_provenance_diagnostics_enabled();
 }
 
 bool is_deadzone_rogue_current_game() {
@@ -719,7 +726,7 @@ bool texture_context_has_views(const d3d12::TextureContext& context) {
         context.srv_heap->Heap() != nullptr;
 }
 
-void log_shf_texture_reference_rebuild(
+void log_shf_texture_source_observation(
     ID3D12Resource* backbuffer,
     ID3D12Resource* real_backbuffer,
     ID3D12Resource* current_game_texture,
@@ -729,56 +736,32 @@ void log_shf_texture_reference_rebuild(
         return;
     }
 
-    const auto backbuffer_desc = backbuffer->GetDesc();
-    const auto real_desc = real_backbuffer != nullptr ? std::optional<D3D12_RESOURCE_DESC>{real_backbuffer->GetDesc()} : std::nullopt;
-    static std::mutex log_mutex{};
-    static std::unordered_set<uintptr_t> logged_backbuffers{};
-    static uint64_t rebuild_count{};
-    static uint64_t duplicate_suppressed{};
-
-    bool log_unique = false;
-    uint64_t seen = 0;
-    uint64_t unique = 0;
-    uint64_t suppressed = 0;
-
-    {
-        std::scoped_lock _{log_mutex};
-        ++rebuild_count;
-        seen = rebuild_count;
-
-        const auto key = (uintptr_t)backbuffer;
-
-        if (!logged_backbuffers.contains(key)) {
-            logged_backbuffers.insert(key);
-            log_unique = logged_backbuffers.size() <= 64;
-        } else {
-            ++duplicate_suppressed;
-        }
-
-        unique = logged_backbuffers.size();
-        suppressed = duplicate_suppressed;
+    static utility::diagnostics::BoundedTextureObservations<> observations{};
+    const auto observation = observations.observe(shf_texture_diagnostics_enabled(), [backbuffer]() {
+        return (uintptr_t)backbuffer;
+    });
+    if (!observation) {
+        return;
     }
 
-    if (log_unique && real_desc) {
-        SPDLOG_WARN("[SHf][D3D12] Game Texture reference rebuild #{} frame={} unique_backbuffers={} backbuffer={:x} real_backbuffer={:x} current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}]",
-            seen, frame_count, unique, (uintptr_t)backbuffer, (uintptr_t)real_backbuffer, (uintptr_t)current_game_texture,
-            backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags,
-            real_desc->Width, real_desc->Height, (uint32_t)real_desc->Format, (uint32_t)real_desc->Flags);
-    } else if (log_unique) {
-        SPDLOG_WARN("[SHf][D3D12] Game Texture reference rebuild #{} frame={} unique_backbuffers={} backbuffer={:x} real_backbuffer=<null> current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}]",
-            seen, frame_count, unique, (uintptr_t)backbuffer, (uintptr_t)current_game_texture,
-            backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags);
-    } else if (real_desc) {
-        SPDLOG_INFO_EVERY_N_SEC(2,
-            "[SHf][D3D12] Game Texture reference rebuild summary seen={} unique_backbuffers={} duplicate_suppressed={} frame={} backbuffer={:x} real_backbuffer={:x} current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}]",
-            seen, unique, suppressed, frame_count, (uintptr_t)backbuffer, (uintptr_t)real_backbuffer, (uintptr_t)current_game_texture,
-            backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags,
-            real_desc->Width, real_desc->Height, (uint32_t)real_desc->Format, (uint32_t)real_desc->Flags);
+    if (observation->first_seen) {
+        const auto backbuffer_desc = backbuffer->GetDesc();
+        const auto real_desc = real_backbuffer != nullptr ? std::optional<D3D12_RESOURCE_DESC>{real_backbuffer->GetDesc()} : std::nullopt;
+        if (real_desc) {
+            SPDLOG_INFO("[SHf][D3D12] Scene source observation #{} frame={} tracked_keys={} backbuffer={:x} real_backbuffer={:x} current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}]",
+                observation->seen, frame_count, observation->tracked_keys, (uintptr_t)backbuffer, (uintptr_t)real_backbuffer, (uintptr_t)current_game_texture,
+                backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags,
+                real_desc->Width, real_desc->Height, (uint32_t)real_desc->Format, (uint32_t)real_desc->Flags);
+        } else {
+            SPDLOG_INFO("[SHf][D3D12] Scene source observation #{} frame={} tracked_keys={} backbuffer={:x} real_backbuffer=<null> current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}]",
+                observation->seen, frame_count, observation->tracked_keys, (uintptr_t)backbuffer, (uintptr_t)current_game_texture,
+                backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags);
+        }
     } else {
         SPDLOG_INFO_EVERY_N_SEC(2,
-            "[SHf][D3D12] Game Texture reference rebuild summary seen={} unique_backbuffers={} duplicate_suppressed={} frame={} backbuffer={:x} real_backbuffer=<null> current_game_texture={:x} bb=[{}x{} fmt={} flags=0x{:x}]",
-            seen, unique, suppressed, frame_count, (uintptr_t)backbuffer, (uintptr_t)current_game_texture,
-            backbuffer_desc.Width, backbuffer_desc.Height, (uint32_t)backbuffer_desc.Format, (uint32_t)backbuffer_desc.Flags);
+            "[SHf][D3D12] Scene source observation summary seen={} tracked_keys={} duplicate_suppressed={} overflow_observations={} frame={} backbuffer={:x} real_backbuffer={:x} current_game_texture={:x}",
+            observation->seen, observation->tracked_keys, observation->duplicate_suppressed, observation->overflow_suppressed,
+            frame_count, (uintptr_t)backbuffer, (uintptr_t)real_backbuffer, (uintptr_t)current_game_texture);
     }
 }
 
@@ -1370,6 +1353,10 @@ void D3D12Component::log_shf_scene_mode_if_needed(
         return;
     }
 
+    if (!shf_texture_diagnostics_enabled()) {
+        return;
+    }
+
     SPDLOG_INFO_EVERY_N_SEC(
         5,
         "[SHf][D3D12] Scene mode summary mode={} frame={} src=[{}x{} fmt={} flags=0x{:x}] real=[{}x{} fmt={} flags=0x{:x}] normal_dw={}x{} mono_expanded={}",
@@ -1559,13 +1546,15 @@ d3d12::TextureContext* D3D12Component::render_shf_mono_scene_texture(ID3D12Devic
 
     command_ctx.execute();
 
-    SPDLOG_INFO_EVERY_N_SEC(
-        2,
-        "[SHf][D3D12] Expanded low-res cutscene source [{}x{}] into stereo-safe double-wide [{}x{}]",
-        source_desc.Width,
-        source_desc.Height,
-        m_backbuffer_size[0],
-        m_backbuffer_size[1]);
+    if (shf_texture_diagnostics_enabled()) {
+        SPDLOG_INFO_EVERY_N_SEC(
+            2,
+            "[SHf][D3D12] Expanded low-res cutscene source [{}x{}] into stereo-safe double-wide [{}x{}]",
+            source_desc.Width,
+            source_desc.Height,
+            m_backbuffer_size[0],
+            m_backbuffer_size[1]);
+    }
 
     return &m_shf_mono_scene_tex;
 }
@@ -2463,7 +2452,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         backbuffer = m_game_tex.texture;
         scene_source_state = ENGINE_SRC_COLOR;
     } else if (backbuffer.Get() != real_backbuffer.Get() && (use_stable_external_backbuffer_copy || m_game_tex.texture.Get() != backbuffer.Get() || !texture_context_has_views(m_game_tex))) {
-        log_shf_texture_reference_rebuild(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
+        log_shf_texture_source_observation(backbuffer.Get(), real_backbuffer.Get(), m_game_tex.texture.Get(), frame_count);
 
         if (use_stable_external_backbuffer_copy) {
             const auto source_desc = backbuffer->GetDesc();
@@ -2584,14 +2573,16 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                     command_ctx.copy(backbuffer.Get(), m_game_tex.texture.Get(), volatile_external_source_state, ENGINE_SRC_COLOR);
                     command_ctx.execute();
 
-                    SPDLOG_INFO_EVERY_N_SEC(2,
-                        "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
-                        stable_external_copy_label,
-                        (is_nascar_external_backbuffer || is_dune_external_backbuffer ||
-                         is_dead_island_2_ue425_external_backbuffer ||
-                         is_stalker2_ue55_synced_external_backbuffer)
-                            ? "/mirror/2D using SRVMask source state"
-                            : "/mirror/2D");
+                    if (!is_shf_external_backbuffer || shf_texture_diagnostics_enabled()) {
+                        SPDLOG_INFO_EVERY_N_SEC(2,
+                            "[{}][D3D12] Copied volatile external RT into owned stable scene texture for HMD{}",
+                            stable_external_copy_label,
+                            (is_nascar_external_backbuffer || is_dune_external_backbuffer ||
+                             is_dead_island_2_ue425_external_backbuffer ||
+                             is_stalker2_ue55_synced_external_backbuffer)
+                                ? "/mirror/2D using SRVMask source state"
+                                : "/mirror/2D");
+                    }
 
                     // Spectator and HMD consumers read the owned texture, never the
                     // engine's volatile viewport target.
@@ -3258,7 +3249,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         !use_2d_screen;
     bool spectator_mirror_drawn = false;
 
-    if (shf_auto_2d_screen) {
+    if (shf_auto_2d_screen && shf_texture_diagnostics_enabled()) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
             "[SHf][D3D12] Auto 2D screen active for detected Mono2D cinematic segment");
@@ -3830,7 +3821,9 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     if (shf_using_mono_expansion && scene_depth_tex != nullptr) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Suppressing depth submit while mono cutscene expansion is active");
+        if (shf_texture_diagnostics_enabled()) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Suppressing depth submit while mono cutscene expansion is active");
+        }
         scene_depth_tex.Reset();
     }
 
@@ -4271,7 +4264,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             const auto* ui_pose_basis_ptr = ui_pose_diagnostics_enabled ? &ui_pose_basis : nullptr;
 
             if (!suppress_ui_copy && use_2d_screen) {
-                if (shf_auto_2d_screen) {
+                if (shf_auto_2d_screen && shf_texture_diagnostics_enabled()) {
                     SPDLOG_INFO_EVERY_N_SEC(
                         2,
                         "[SHf][D3D12] Submitting auto 2D screen as eye-specific OpenXR slate layers");
@@ -4650,7 +4643,9 @@ void D3D12Component::draw_spectator_view(
     }
 
     if (m_skip_spectator_view_for_volatile_external_rt) {
-        SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Skipping desktop mirror for volatile external RT");
+        if (!is_shf_current_game() || shf_texture_diagnostics_enabled()) {
+            SPDLOG_INFO_EVERY_N_SEC(2, "[SHf][D3D12] Skipping desktop mirror for volatile external RT");
+        }
         return;
     }
 
