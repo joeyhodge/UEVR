@@ -623,7 +623,9 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND nascar-hook-compatibility-tests_SOURCES
 		"tests/Nascar26HookCompatibilityTests.cpp"
+		"tests/Nascar25HookCompatibilityTests.cpp"
 		"src/utility/Nascar26HookCompatibility.cpp"
+		"src/utility/Nascar25HookCompatibility.cpp"
 	)
 
 	list(APPEND nascar-hook-compatibility-tests_SOURCES
@@ -1024,6 +1026,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/BuildIdentity.cpp"
 	"src/utility/HiFiRushHookMemory.cpp"
 	"src/utility/ImGui.cpp"
+	"src/utility/Nascar25HookCompatibility.cpp"
 	"src/utility/Nascar26HookCompatibility.cpp"
 	"src/ExceptionHandler.hpp"
 	"src/Framework.hpp"
@@ -1097,6 +1100,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/InputHookInstallation.hpp"
 	"src/utility/Logging.hpp"
 	"src/utility/Nascar26HookCompatibility.hpp"
+	"src/utility/NascarHookCompatibility.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
