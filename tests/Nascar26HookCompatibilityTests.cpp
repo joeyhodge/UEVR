@@ -53,6 +53,8 @@ bool protect(uint8_t* address, size_t bytes, uint32_t flags, uint32_t* old) {
 }
 }
 
+int run_nascar25_tests();
+
 int main() {
     using namespace uevr::nascar26;
     initialize();
@@ -654,6 +656,7 @@ int main() {
         "external allocations retain normal protection behavior");
     expect(protection(reinterpret_cast<uintptr_t>(page)) == PAGE_READONLY, "external protection applied");
     VirtualFree(page, 0, MEM_RELEASE);
+    failures += run_nascar25_tests();
     std::cout << "NASCAR compatibility failures: " << failures << '\n';
     return failures ? 1 : 0;
 }

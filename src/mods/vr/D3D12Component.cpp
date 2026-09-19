@@ -191,7 +191,7 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
         return {requested_width, rtm->get_dedicated_ui_height()};
     }
 
-    if (uevr::nascar26::is_target()) { return fallback; }
+    if (uevr::nascar::is_target()) { return fallback; }
 
     const auto ui_target = rtm->get_ui_target();
 
@@ -378,12 +378,12 @@ Microsoft::WRL::ComPtr<ID3D12Resource> acquire_scene_target_resource(
         return nullptr;
     }
 
-    if (uevr::nascar26::is_target()) {
+    if (uevr::nascar::is_target()) {
         const auto snapshot = rtm->get_nascar_scene_target_snapshot();
-        if (!uevr::nascar26::is_validated_build() || !g_framework->is_dx12() ||
+        if (!uevr::nascar::is_validated_build() || !g_framework->is_dx12() ||
             !vr->is_nascar_code_preserving_mode() || !snapshot || !snapshot->resource ||
-            !uevr::nascar26::valid_texture_desc(snapshot->desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false)) {
-            SPDLOG_INFO_EVERY_N_SEC(5, "[NASCAR26][CodePreserving][Scene] {} waiting for the validated main Slate viewport source", consumer);
+            !uevr::nascar::valid_texture_desc(snapshot->desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false)) {
+            SPDLOG_INFO_EVERY_N_SEC(5, "[NASCAR][CodePreserving][Scene] {} waiting for the validated main Slate viewport source", consumer);
             return nullptr;
         }
         return snapshot->resource;
@@ -1938,7 +1938,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         real_backbuffer.Get() != nullptr &&
         backbuffer.Get() != real_backbuffer.Get();
     const auto is_nascar_external_backbuffer =
-        uevr::nascar26::is_validated_build() && vr->is_nascar_code_preserving_mode() &&
+        uevr::nascar::is_validated_build() && vr->is_nascar_code_preserving_mode() &&
         backbuffer.Get() != nullptr && backbuffer.Get() != real_backbuffer.Get();
     // Volatile engine-owned viewport targets must not be retained as UEVR view
     // resources. Copy them into an owned texture and restore the engine's state.
@@ -2054,7 +2054,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         scene_source_desc.Height == vr->get_hmd_height();
     const bool nascar_synced_current_eye_source =
         is_nascar_external_backbuffer && vr->is_using_strict_synchronized_afr() &&
-        uevr::nascar26::valid_texture_desc(scene_source_desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false);
+        uevr::nascar::valid_texture_desc(scene_source_desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false);
     const bool dead_island_2_afr_depth_disabled =
         should_disable_dead_island_2_afr_depth(vr);
 
@@ -2158,13 +2158,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
-    const auto nascar_ui_snapshot = uevr::nascar26::is_target()
+    const auto nascar_ui_snapshot = uevr::nascar::is_target()
         ? ffsr->get_render_target_manager()->get_nascar_ui_target_snapshot() : nullptr;
-    const auto ui_target = uevr::nascar26::is_target()
+    const auto ui_target = uevr::nascar::is_target()
         ? (nascar_ui_snapshot ? reinterpret_cast<FRHITexture2D*>(nascar_ui_snapshot->source_texture) : nullptr)
         : ffsr->get_render_target_manager()->get_ui_target();
     const auto native_ui_resource = [&]() -> ID3D12Resource* {
-        if (uevr::nascar26::is_target()) { return nascar_ui_snapshot ? nascar_ui_snapshot->resource.Get() : nullptr; }
+        if (uevr::nascar::is_target()) { return nascar_ui_snapshot ? nascar_ui_snapshot->resource.Get() : nullptr; }
         return ui_target ? static_cast<ID3D12Resource*>(ui_target->get_native_resource()) : nullptr;
     };
 
