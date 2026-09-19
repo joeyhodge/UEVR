@@ -139,6 +139,7 @@ private:
         uint64_t frame_count,
         bool using_mono_expansion);
     bool ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    bool shf_scene_consumers_retired(bool include_stable_copy_producers);
     d3d12::TextureContext* render_shf_mono_scene_texture(ID3D12Device* device);
     bool ensure_dune_hmd_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
     d3d12::TextureContext* render_dune_hmd_mono_scene_texture(
@@ -227,6 +228,7 @@ private:
     std::array<ComPtr<ID3D12Resource>, 3> m_nascar_scene_copy_sources{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
+    bool m_shf_scene_retirement_deferred{};
     d3d12::CommandContext m_dune_hmd_mono_scene_commands{};
     uint64_t m_shf_mono_scene_width{};
     uint32_t m_shf_mono_scene_height{};

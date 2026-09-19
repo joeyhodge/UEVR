@@ -23,6 +23,8 @@ struct CommandContext {
     // Reclaims an already-completed command allocator without blocking the
     // caller. Consumers that need a hard synchronization still use wait().
     bool try_wait();
+    // Nonblocking and non-mutating; an unused context has no GPU references.
+    bool references_retired();
     void copy(ID3D12Resource* src, ID3D12Resource* dst, 
         D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
         D3D12_RESOURCE_STATES dst_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
