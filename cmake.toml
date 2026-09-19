@@ -225,6 +225,18 @@ add_test(NAME nascar-hook-compatibility-tests COMMAND nascar-hook-compatibility-
 set_tests_properties(nascar-hook-compatibility-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.input-hook-installation-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/InputHookInstallationTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook"]
+cmake-after = """
+add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-tests)
+set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
