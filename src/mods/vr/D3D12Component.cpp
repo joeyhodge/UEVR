@@ -1390,9 +1390,6 @@ bool D3D12Component::shf_scene_consumers_retired(bool include_stable_copy_produc
     for (auto& commands : m_generic_commands) {
         if (!commands.references_retired()) { return false; }
     }
-    for (auto& slot : m_dibr_slots) {
-        if (!slot.commands.references_retired()) { return false; }
-    }
     for (auto& texture : m_2d_screen_tex) {
         if (!texture.commands.references_retired()) { return false; }
     }
