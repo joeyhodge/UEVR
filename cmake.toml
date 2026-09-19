@@ -216,7 +216,7 @@ set_tests_properties(hifi-hook-memory-tests PROPERTIES TIMEOUT 60)
 [target.nascar-hook-compatibility-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/Nascar26HookCompatibilityTests.cpp", "src/utility/Nascar26HookCompatibility.cpp"]
+sources = ["tests/Nascar26HookCompatibilityTests.cpp", "tests/Nascar25HookCompatibilityTests.cpp", "src/utility/Nascar26HookCompatibility.cpp", "src/utility/Nascar25HookCompatibility.cpp"]
 include-directories = ["src/"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["safetyhook", "spdlog", "kananlib", "bcrypt", "Version"]

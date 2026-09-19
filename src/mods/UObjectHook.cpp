@@ -1,4 +1,4 @@
-#include "utility/Nascar26HookCompatibility.hpp"
+#include "utility/NascarHookCompatibility.hpp"
 #include <atomic>
 #include <algorithm>
 #include <cstdio>
@@ -748,8 +748,8 @@ void UObjectHook::activate() {
 }
 
 void UObjectHook::hook() {
-    if (uevr::nascar26::is_target()) {
-        SPDLOG_WARN_ONCE("[NASCAR26][CodePreserving] UObject inline hooks are unavailable in this Native/UI test");
+    if (uevr::nascar::is_target()) {
+        SPDLOG_WARN_ONCE("[NASCAR][CodePreserving] UObject inline hooks are unavailable in this Native/UI test");
         return;
     }
     if (m_hooked) {
@@ -880,8 +880,8 @@ void UObjectHook::hook() {
 }
 
 void UObjectHook::hook_process_event() {
-    if (uevr::nascar26::is_target()) {
-        SPDLOG_WARN_ONCE("[NASCAR26][CodePreserving] UObject inline hooks are unavailable in this Native/UI test");
+    if (uevr::nascar::is_target()) {
+        SPDLOG_WARN_ONCE("[NASCAR][CodePreserving] UObject inline hooks are unavailable in this Native/UI test");
         return;
     }
     if (m_attempted_hook_process_event) {
