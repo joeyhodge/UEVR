@@ -1,4 +1,4 @@
-#include "utility/Nascar26HookCompatibility.hpp"
+#include "utility/NascarHookCompatibility.hpp"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -2593,7 +2593,7 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
 }
 
 bool IXRTrackingSystemHook::analyze_head_tracking_allowed(uintptr_t return_address) {
-    if (uevr::nascar26::is_target()) { return true; }
+    if (uevr::nascar::is_target()) { return true; }
     ++detail::total_times_funcs_called;
 
     std::scoped_lock _{detail::return_address_to_functions_mutex};
@@ -3549,7 +3549,7 @@ bool IXRTrackingSystemHook::update_player_camera(sdk::IXRCamera*, Quat<float>* r
         }
     }
 
-    if (!uevr::nascar26::is_target() && !g_hook->m_relative_transform_corrected) {
+    if (!uevr::nascar::is_target() && !g_hook->m_relative_transform_corrected) {
         g_hook->m_relative_transform_corrected = true;
 
         const auto return_address = (uintptr_t)_ReturnAddress();
