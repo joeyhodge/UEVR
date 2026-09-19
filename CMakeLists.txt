@@ -667,6 +667,52 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target input-hook-installation-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET input-hook-installation-tests)
+	set(input-hook-installation-tests_SOURCES "")
+
+	list(APPEND input-hook-installation-tests_SOURCES
+		"tests/InputHookInstallationTests.cpp"
+	)
+
+	list(APPEND input-hook-installation-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${input-hook-installation-tests_SOURCES})
+	add_executable(input-hook-installation-tests)
+
+	if(input-hook-installation-tests_SOURCES)
+		target_sources(input-hook-installation-tests PRIVATE ${input-hook-installation-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT input-hook-installation-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${input-hook-installation-tests_SOURCES})
+
+	target_compile_features(input-hook-installation-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(input-hook-installation-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(input-hook-installation-tests PRIVATE
+		safetyhook
+	)
+
+	add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-tests)
+	set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -1048,6 +1094,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/BuildIdentity.hpp"
 	"src/utility/HiFiRushHookMemory.hpp"
 	"src/utility/ImGui.hpp"
+	"src/utility/InputHookInstallation.hpp"
 	"src/utility/Logging.hpp"
 	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
