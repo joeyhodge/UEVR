@@ -1038,6 +1038,9 @@ public:
     const char* get_ghosting_fix_status_text();
     const char* get_native_stereo_fix_status_text() const;
     bool is_native_stereo_fix_operational() const;
+    bool is_hook_provenance_diagnostics_enabled() const noexcept {
+        return m_hook_provenance_diagnostics.load(std::memory_order_acquire);
+    }
     uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
         return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);
     }
