@@ -13,6 +13,7 @@
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
 #include "utility/BoundedTextureDiagnostics.hpp"
+#include "utility/GpuRetirement.hpp"
 #undef max
 
 int disabled_log_argument_evaluations();
@@ -153,6 +154,44 @@ void test_support_report() {
     expect(pacing(11111111, std::numeric_limits<double>::infinity())["frame_cap_fps"].is_null(), "invalid cap is unavailable");
 }
 
+void test_gpu_retirement() {
+    using utility::gpu::references_retired;
+    unsigned reads{};
+    uint64_t completed{};
+    const auto read_completed = [&] { ++reads; return completed; };
+    expect(references_retired(false,false,false,false,0,read_completed), "unused command context has no GPU references");
+    expect(references_retired(false,false,false,true,4,read_completed), "already reclaimed commands need no GPU query");
+    expect(!references_retired(true,false,false,true,4,read_completed), "unsubmitted recorded commands retain resources");
+    expect(!references_retired(false,true,true,true,4,read_completed), "poisoned submission cannot prove retirement");
+    expect(!references_retired(false,true,false,false,4,read_completed), "missing fence retains old resources");
+    expect(!references_retired(false,true,false,true,0,read_completed), "unproven signal value retains old resources");
+    expect(reads == 0, "unsubmitted or invalid contexts never query a GPU fence");
+    completed=3;
+    expect(!references_retired(false,true,false,true,4,read_completed), "in-flight copy retains resource and descriptors");
+    completed=4;
+    expect(references_retired(false,true,false,true,4,read_completed), "matching completion permits replacement");
+    completed=5;
+    expect(references_retired(false,true,false,true,4,read_completed), "later completion also retires the old reference");
+    expect(!references_retired(false,true,false,true,6,read_completed), "a new submission requires its own completed fence");
+    completed=(std::numeric_limits<uint64_t>::max)();
+    expect(!references_retired(false,true,false,true,4,read_completed), "device removal is not successful GPU retirement");
+
+    struct Consumer { bool recorded{},submitted{},poisoned{}; uint64_t signal{},completed{}; };
+    std::array<Consumer,4> consumers{{{}, {false,true,false,2,2}, {false,true,false,3,2}, {}}};
+    const auto all_retired = [&] {
+        for (auto& c : consumers) {
+            if (!references_retired(c.recorded,c.submitted,c.poisoned,c.submitted,c.signal,[&] { return c.completed; })) { return false; }
+        }
+        return true;
+    };
+    expect(!all_retired(), "one busy consumer prevents replacement even after another completes");
+    consumers[2].completed=3;
+    expect(all_retired(), "retry accepts completion without changing any submission state");
+    expect(consumers[1].submitted && consumers[2].submitted, "retirement observation does not reset command contexts");
+    consumers[3].recorded=true;
+    expect(!all_retired(), "recorded but unsubmitted consumer also blocks replacement");
+}
+
 void test_bounded_texture_diagnostics() {
     using namespace utility::diagnostics;
     BoundedTextureObservations<> observations;
@@ -246,6 +285,7 @@ int main() {
     test_logging();
     test_readbacks();
     test_support_report();
+    test_gpu_retirement();
     test_bounded_texture_diagnostics();
     failures += test_cached_cvar_reads();
     failures += test_console_text();

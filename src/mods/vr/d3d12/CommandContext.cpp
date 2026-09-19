@@ -9,6 +9,7 @@
 
 #include "TextureContext.hpp"
 #include "CommandContext.hpp"
+#include "utility/GpuRetirement.hpp"
 
 namespace {
 constexpr auto FENCE_PROFILER_LOG_INTERVAL = std::chrono::seconds(5);
@@ -651,6 +652,13 @@ void CommandContext::clear_rtv(d3d12::TextureContext& tex, const float* color, D
     }
 
     this->clear_rtv(tex.texture.Get(), tex.get_rtv(), color, dst_state);
+}
+
+bool CommandContext::references_retired() {
+    std::scoped_lock _{this->mtx};
+    return utility::gpu::references_retired(this->has_commands, this->waiting_for_fence,
+        this->poisoned, this->fence != nullptr, this->fence_value,
+        [&] { return this->fence->GetCompletedValue(); });
 }
 
 void CommandContext::execute() {
