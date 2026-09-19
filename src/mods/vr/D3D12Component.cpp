@@ -1375,6 +1375,43 @@ void D3D12Component::log_shf_scene_mode_if_needed(
         using_mono_expansion);
 }
 
+bool D3D12Component::shf_scene_consumers_retired(bool include_stable_copy_producers) {
+    // on_frame owns scene submissions. Inspect prior submissions before recording
+    // any new consumer; unlike wait_for_all_copies(), do not release XR images or
+    // reset command lists. Keep the old resource AND its heaps on any failure.
+    if (include_stable_copy_producers) {
+        for (auto& commands : m_game_tex_commands) {
+            if (!commands.references_retired()) { return false; }
+        }
+    }
+    for (auto* commands : {&m_shf_mono_scene_commands, &m_game_tex.commands,
+             &m_shf_mono_scene_tex.commands, &m_game_ui_tex.commands, &m_openvr.ui_tex.commands}) {
+        if (!commands->references_retired()) { return false; }
+    }
+    for (auto& commands : m_generic_commands) {
+        if (!commands.references_retired()) { return false; }
+    }
+    for (auto& slot : m_dibr_slots) {
+        if (!slot.commands.references_retired()) { return false; }
+    }
+    for (auto& texture : m_2d_screen_tex) {
+        if (!texture.commands.references_retired()) { return false; }
+    }
+    for (auto& texture : m_openvr.left_eye_tex) {
+        if (!texture.commands.references_retired()) { return false; }
+    }
+    for (auto& texture : m_openvr.right_eye_tex) {
+        if (!texture.commands.references_retired()) { return false; }
+    }
+    std::scoped_lock _{m_openxr.mtx};
+    for (auto& [index, context] : m_openxr.contexts) {
+        for (auto& texture : context.texture_contexts) {
+            if (texture != nullptr && !texture->commands.references_retired()) { return false; }
+        }
+    }
+    return true;
+}
+
 bool D3D12Component::ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc) {
     if (device == nullptr || m_backbuffer_size[0] == 0 || m_backbuffer_size[1] == 0) {
         return false;
@@ -1402,6 +1439,14 @@ bool D3D12Component::ensure_shf_mono_scene_texture(ID3D12Device* device, const D
 
     if (!needs_create) {
         return m_shf_mono_scene_tex.srv_heap != nullptr && m_shf_mono_scene_tex.rtv_heap != nullptr;
+    }
+
+    // The current frame's stable-copy producer does not reference the old mono
+    // expansion. Including it here would defer forever while copying each frame.
+    if (m_shf_mono_scene_tex.texture != nullptr && !shf_scene_consumers_retired(false)) {
+        m_shf_scene_retirement_deferred = true;
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf][D3D12] Deferring mono scene replacement until prior GPU consumers retire");
+        return false;
     }
 
     D3D12_HEAP_PROPERTIES heap_props{};
@@ -1762,6 +1807,7 @@ d3d12::TextureContext* D3D12Component::render_dune_hmd_mono_scene_texture(
 }
 
 vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
+    m_shf_scene_retirement_deferred = false;
     const bool collect_frame_timing = vr != nullptr && vr->is_hitch_diagnostics_enabled();
     d3d12::set_fence_profiler_enabled(collect_frame_timing);
 
@@ -2463,6 +2509,13 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                  m_game_tex.texture.Get() == real_backbuffer.Get());
 
             if (needs_copy_texture) {
+                if (is_shf_external_backbuffer && m_game_tex.texture != nullptr && !shf_scene_consumers_retired(true)) {
+                    SPDLOG_WARNING_EVERY_N_SEC(2, "[SHf][D3D12] Deferring stable scene replacement until prior GPU consumers retire");
+                    if (runtime->is_openxr() && vr->m_openxr != nullptr) {
+                        vr->m_openxr->close_synced_frame_without_layers("shf_scene_retirement_pending");
+                    }
+                    return vr::VRCompositorError_None;
+                }
                 if ((is_nascar_external_backbuffer || is_dune_external_backbuffer ||
                      is_dead_island_2_ue425_external_backbuffer ||
                      is_stalker2_ue55_synced_external_backbuffer) &&
@@ -2918,6 +2971,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 backbuffer = mono_scene->texture;
                 scene_source_state = ENGINE_SRC_COLOR;
                 shf_using_mono_expansion = true;
+            } else if (m_shf_scene_retirement_deferred) {
+                if (runtime->is_openxr() && vr->m_openxr != nullptr) {
+                    vr->m_openxr->close_synced_frame_without_layers("shf_mono_retirement_pending");
+                }
+                return vr::VRCompositorError_None;
             } else {
                 SPDLOG_ERROR_EVERY_N_SEC(
                     1,
