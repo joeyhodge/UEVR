@@ -60,6 +60,24 @@ struct NativeCopyRecorder {
     }
 };
 
+void test_native_startup() {
+    namespace policy = uevr::nascar::title25;
+    for (unsigned mask = 0; mask < 32; ++mask) {
+        expect(policy::defer_native_capture_until_pose((mask & 1) != 0, (mask & 2) != 0,
+                   (mask & 4) != 0, (mask & 8) != 0, (mask & 16) != 0) == (mask == 15),
+            "startup hold is only exact NASCAR25 DX12 Native Fix before a render-command pose");
+    }
+    for (const auto name : {L"NASCAR26_Steam-Win64-Shipping.exe", L"Agefield.exe", L"SWZeroCompany.exe",
+                           L"Other-Win64-Shipping.exe", L"NASCAR25.runtime-analysis.exe"}) {
+        expect(!policy::defer_native_capture_until_pose(policy::matches_name(name), true, true, true, false),
+            "startup hold cannot affect other titles or analysis executables");
+    }
+    for (bool requested : {true, false, true, true, false, true}) {
+        expect(!policy::defer_native_capture_until_pose(true, true, true, requested, true),
+            "a completed startup handoff is retained across travel and mode toggles");
+    }
+}
+
 void test_native_copy_states() {
     namespace policy = uevr::nascar::title25;
     constexpr auto rtv = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -122,6 +140,7 @@ int run_nascar25_tests() {
     namespace n = uevr::nascar;
     namespace old = uevr::nascar26;
     test_native_copy_states();
+    test_native_startup();
     n::initialize();
     expect(!n::is_target() && !n::is_validated_build() && !n::is_title25() && !safetyhook::has_protection_override(),
         "unrelated executable cannot enable either adapter or protection override");
