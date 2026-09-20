@@ -3315,6 +3315,15 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         native_stereo_packet.reset();
     }
 
+    const auto nascar25_native_copy_states = uevr::nascar::title25::native_copy_source_states(
+        uevr::nascar::is_title25(), uevr::nascar::title25::is_validated_build(), g_framework->is_dx12(),
+        native_stereo_packet != nullptr && vr->is_nascar_native_stereo_fix_requested(),
+        is_nascar_external_backbuffer && m_game_tex.texture.Get() != nullptr &&
+            backbuffer.Get() == m_game_tex.texture.Get() && scene_source_state == ENGINE_SRC_COLOR);
+    if (nascar25_native_copy_states) {
+        SPDLOG_INFO_ONCE("[NASCAR25][NativeFix][D3D12] Copying with independent source states: left=SRVMask, right=RENDER_TARGET; restoring both");
+    }
+
     // We need to render the scene capture texture to the right side of the double wide texture
     auto pre_render = [
         left_source = m_game_tex.texture,
@@ -3323,6 +3332,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         left_height = m_backbuffer_size[1],
         right_width = m_scene_capture_width,
         right_height = m_scene_capture_height,
+        nascar25_native_copy_states,
         native_stereo_packet,
         native_frame_ticket,
         native_stereo_hook](d3d12::CommandContext& commands, ID3D12Resource* render_target) {
@@ -3347,13 +3357,20 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
             .back = 1
         };
 
-        commands.copy_region_stereo(
-            left_source.Get(), right_source.Get(), render_target,
-            &left_src_box, &right_src_box,
-            0, 0, 0, left_width, 0, 0,
-            D3D12_RESOURCE_STATE_RENDER_TARGET,
-            D3D12_RESOURCE_STATE_RENDER_TARGET
-        );
+        if (nascar25_native_copy_states) {
+            uevr::nascar::title25::copy_native_eye_pair(commands,
+                left_source.Get(), right_source.Get(), render_target,
+                left_src_box, right_src_box, left_width, *nascar25_native_copy_states,
+                uevr::nascar::title25::NativeCopyLayout::double_wide);
+        } else {
+            commands.copy_region_stereo(
+                left_source.Get(), right_source.Get(), render_target,
+                &left_src_box, &right_src_box,
+                0, 0, 0, left_width, 0, 0,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_RENDER_TARGET
+            );
+        }
 
         if (native_stereo_hook != nullptr) {
             if (native_frame_ticket) {
@@ -4754,24 +4771,31 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         m_openxr.copy(
                             native_stereo_array_swapchain,
                             nullptr,
-                            [left_source, right_source, left_src_box, right_src_box, left_source_state, right_source_state,
+                            [left_source, right_source, left_src_box, right_src_box, left_source_state, right_source_state, nascar25_native_copy_states,
                                 using_native_scene_capture, native_stereo_packet, native_stereo_hook, native_frame_ticket](
                                 d3d12::CommandContext& commands,
                                 ID3D12Resource* dst) mutable {
-                                commands.copy_region_to_subresource(
-                                    left_source.Get(),
-                                    dst,
-                                    &left_src_box,
-                                    0,
-                                    left_source_state,
-                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
-                                commands.copy_region_to_subresource(
-                                    right_source.Get(),
-                                    dst,
-                                    &right_src_box,
-                                    1,
-                                    right_source_state,
-                                    D3D12_RESOURCE_STATE_RENDER_TARGET);
+                                if (using_native_scene_capture && nascar25_native_copy_states) {
+                                    uevr::nascar::title25::copy_native_eye_pair(commands,
+                                        left_source.Get(), right_source.Get(), dst,
+                                        left_src_box, right_src_box, 0, *nascar25_native_copy_states,
+                                        uevr::nascar::title25::NativeCopyLayout::texture_array);
+                                } else {
+                                    commands.copy_region_to_subresource(
+                                        left_source.Get(),
+                                        dst,
+                                        &left_src_box,
+                                        0,
+                                        left_source_state,
+                                        D3D12_RESOURCE_STATE_RENDER_TARGET);
+                                    commands.copy_region_to_subresource(
+                                        right_source.Get(),
+                                        dst,
+                                        &right_src_box,
+                                        1,
+                                        right_source_state,
+                                        D3D12_RESOURCE_STATE_RENDER_TARGET);
+                                }
 
                                 if (using_native_scene_capture && native_stereo_packet != nullptr && native_stereo_hook != nullptr) {
                                     if (native_frame_ticket) {
