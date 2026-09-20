@@ -20008,6 +20008,7 @@ struct SceneViewExtensionAnalyzer {
 
             if (N == correct_execute_index) {
                 runtime->enqueue_render_poses(frame_count);
+                if (g_hook != nullptr) { g_hook->note_nascar25_render_pose_handoff(frame_count); }
             }
 
             return result;
@@ -33222,6 +33223,16 @@ bool FFakeStereoRenderingHook::install_nascar_localplayer(uintptr_t player) {
          m_nascar_localplayer.install(player))) && m_nascar_localplayer.owns(player);
 }
 
+void FFakeStereoRenderingHook::note_nascar25_render_pose_handoff(uint32_t frame_count) {
+    if (frame_count <= 1 || frame_count == UINT32_MAX || !uevr::nascar::is_title25() ||
+        !uevr::nascar::title25::is_validated_build() || !g_framework || !g_framework->is_dx12()) { return; }
+    if (m_nascar25_first_render_pose_frame.load(std::memory_order_relaxed) != 0) { return; }
+    uint32_t expected{};
+    if (m_nascar25_first_render_pose_frame.compare_exchange_strong(expected, frame_count, std::memory_order_release)) {
+        SPDLOG_INFO("[NASCAR25][NativeFix] Render-command pose handoff ready before activation frame={}", frame_count);
+    }
+}
+
 void FFakeStereoRenderingHook::prepare_nascar_native_view() {
     using namespace uevr::nascar;
     const auto vr = VR::get();
@@ -33251,6 +33262,15 @@ void FFakeStereoRenderingHook::prepare_nascar_native_view() {
     };
     if (!m_nascar_native_validated || m_nascar_native_failed) {
         hold(NativeStereoFixState::FailedClosed, "NASCAR exact Native layout is unavailable");
+        return;
+    }
+    // The linked-family path can prevent the ordinary callback learner from
+    // converging at injection. Let that proven path deliver a real RHI pose first;
+    // retain the request, rather than changing modes or inventing a Present pose.
+    if (title25::defer_native_capture_until_pose(is_title25(), title25::is_validated_build(),
+            g_framework->is_dx12(), vr->is_nascar_native_stereo_fix_requested(),
+            m_nascar25_first_render_pose_frame.load(std::memory_order_acquire) != 0)) {
+        hold(NativeStereoFixState::WaitingForHooks, "NASCAR25 initial render-command pose handoff is not ready");
         return;
     }
     const auto owner = nascar_ghost_owner();
