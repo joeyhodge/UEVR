@@ -141,6 +141,42 @@ constexpr bool can_initialize_dedicated_ui(const DedicatedUIReadiness& evidence)
         evidence.packed_scene_target_valid;
 }
 
+struct NativeCopySourceStates {
+    D3D12_RESOURCE_STATES left;
+    D3D12_RESOURCE_STATES right;
+};
+
+constexpr std::optional<NativeCopySourceStates> native_copy_source_states(
+    bool exact_title, bool validated_build, bool dx12, bool native_fix, bool owned_shader_read_copy) {
+    if (!exact_title || !validated_build || !dx12 || !native_fix || !owned_shader_read_copy) { return {}; }
+    return NativeCopySourceStates{
+        static_cast<D3D12_RESOURCE_STATES>(D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+        D3D12_RESOURCE_STATE_RENDER_TARGET,
+    };
+}
+
+enum class NativeCopyLayout { double_wide, texture_array };
+
+template<class Commands>
+void copy_native_eye_pair(Commands& commands,
+    ID3D12Resource* left, ID3D12Resource* right, ID3D12Resource* destination,
+    D3D12_BOX left_box, D3D12_BOX right_box, UINT right_x,
+    const NativeCopySourceStates& states, NativeCopyLayout layout) {
+    // The owned left copy is shader-readable; the engine leaves the right capture in RTV.
+    // Existing per-source helpers restore each state without changing the shared stereo helper.
+    if (layout == NativeCopyLayout::texture_array) {
+        commands.copy_region_to_subresource(left, destination, &left_box, 0,
+            states.left, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commands.copy_region_to_subresource(right, destination, &right_box, 1,
+            states.right, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    } else {
+        commands.copy_region(left, destination, &left_box, 0, 0, 0,
+            states.left, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        commands.copy_region(right, destination, &right_box, right_x, 0, 0,
+            states.right, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }
+}
+
 constexpr bool uses_validated_rhi_root(bool target, bool build, bool dx12, bool contract) {
     return target && build && dx12 && contract;
 }
