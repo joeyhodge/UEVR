@@ -121,6 +121,11 @@ namespace title25 {
 inline constexpr uintptr_t clear_root_flags_rva = 0x140ae50;
 inline constexpr size_t rhi_command_root_offset = 0x28;
 
+constexpr bool defer_native_capture_until_pose(
+    bool exact_title, bool validated_build, bool dx12, bool requested, bool render_pose_ready) {
+    return exact_title && validated_build && dx12 && requested && !render_pose_ready;
+}
+
 struct DedicatedUIReadiness {
     bool exact_title{};
     bool validated_build{};
