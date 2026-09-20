@@ -758,6 +758,10 @@ public:
         return m_has_seen_prerender_viewfamily;
     }
 
+    bool has_seen_nascar25_ui_render_callback() const {
+        return m_nascar25_ui_render_callback_seen.load(std::memory_order_acquire);
+    }
+
     bool has_scene_view_family_offsets_ready() const {
         return m_has_scene_view_family_offsets_ready;
     }
@@ -1590,6 +1594,7 @@ private:
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
     bool m_has_seen_prerender_viewfamily{false};
+    std::atomic<bool> m_nascar25_ui_render_callback_seen{false};
     bool m_has_scene_view_family_offsets_ready{false};
     bool m_has_successful_command_list_hijack{false};
     std::chrono::steady_clock::time_point m_first_stable_slate_draw_at{};
