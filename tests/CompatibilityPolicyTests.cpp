@@ -12,6 +12,7 @@
 
 #include "mods/GameSpecific.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
+#include "mods/vr/BreathedgeInventoryPolicy.hpp"
 #include "mods/vr/Borderlands4Slate.hpp"
 #include "mods/vr/UE58OwnedUITexture.hpp"
 #include "mods/vr/CompatibilityPolicy.hpp"
@@ -1614,7 +1615,129 @@ void test_sifu_native_mesh_commands() {
     }
 }
 
+void test_breathedge_inventory_world_guard() {
+    using namespace uevr::breathedge;
+    using uevr::games::is_breathedge2_inventory_runtime;
+    for (const auto path : {L"Breathedge2-Win64-Shipping.exe", L"D:\\Games\\Breathedge2-Win64-Shipping.exe",
+                           L"D:/Steam/BREATHEDGE2-WIN64-SHIPPING.EXE"}) {
+        expect(is_breathedge2_inventory_runtime(path, 0x00050007, 0x00040000, true),
+            "Breathedge exact executable leaf accepts case and either path separator");
+        expect(!is_breathedge2_inventory_runtime(path, 0x00050007, 0x00040000, false),
+            "Breathedge inventory guard does not assume the DX11 path");
+        for (const auto version : {std::pair{0x00050007u, 0x00030000u}, {0x00050007u, 0x00050000u},
+                                   {0x00050008u, 0x00040000u}, {0x00050007u, 0x00040001u}}) {
+            expect(!is_breathedge2_inventory_runtime(path, version.first, version.second, true),
+                "Breathedge inventory guard rejects other engine patches and revisions");
+        }
+    }
+    for (const auto path : {L"Other-Win64-Shipping.exe", L"Breathedge2-Win64-Shipping.exe.bak",
+                           L"NotBreathedge2-Win64-Shipping.exe", L"D:/Breathedge2-Win64-Shipping.exe/Other.exe"}) {
+        expect(!is_breathedge2_inventory_runtime(path, 0x00050007, 0x00040000, true),
+            "Breathedge inventory guard cannot match substrings or parent directories");
+    }
+    expect(validated_binary(0xd18f68c7, 0x0a5b0000) &&
+        !validated_binary(0xd18f68c6, 0x0a5b0000) && !validated_binary(0xd18f68c7, 0x0a5b1000),
+        "unreflected viewport/world bits require the matching PDB binary fingerprint");
+    // Captured Draw uses the secondary FCommonViewportClient base, while the
+    // engine's reflected GameViewport points to the complete UObject.
+    constexpr uintptr_t main_viewport = 0x23490fb89e0;
+    constexpr uintptr_t draw_dispatch = 0x23490fb8a08;
+    expect(viewport_candidate_from_draw(draw_dispatch) == main_viewport,
+        "live Draw subobject must resolve to the actual viewport UObject before inspecting flags");
+    expect(viewport_candidate_from_draw(draw_dispatch) + viewport_flags_offset == draw_dispatch + 0x44,
+        "viewport flag access matches the game's Draw instructions and PDB");
+    for (const auto wrong : {main_viewport, main_viewport + 0x38, draw_dispatch + 0x28, draw_dispatch - 0x28}) {
+        expect(viewport_candidate_from_draw(wrong) != main_viewport,
+            "primary, FExec and already-adjusted inputs cannot pass the main viewport identity check");
+    }
+    for (uintptr_t bad = 0; bad <= draw_viewport_subobject_offset; ++bad) {
+        expect(viewport_candidate_from_draw(bad) == 0, "null and underflowing Draw arguments fail closed");
+    }
+    expect(viewport_candidate_from_draw(draw_dispatch + 1) == 0,
+        "misaligned Draw arguments cannot become viewport UObject candidates");
+    for (unsigned bits = 0; bits < 16; ++bits) {
+        const bool native = (bits & 1) != 0, sync = (bits & 2) != 0;
+        const bool extreme = (bits & 4) != 0, screen_2d = (bits & 8) != 0;
+        expect(supported_mode(native, sync, extreme, screen_2d) == ((native || sync) && !extreme && !screen_2d),
+            "Native including Native Fix and Synced are supported; 2D, Extreme and other modes are unchanged");
+    }
+
+    const InventoryObservation inventory{true, true, false, false, false, false, 4, 1.0f, 1, 0};
+    expect(should_enable_inventory_world(inventory), "live inventory parent is eligible independently of its selected tab");
+    for (const auto member : {&InventoryObservation::game_initialized, &InventoryObservation::inventory_root}) {
+        auto invalid = inventory;
+        invalid.*member = false;
+        expect(!should_enable_inventory_world(invalid), "missing initialization or inventory root fails closed");
+    }
+    for (const auto member : {&InventoryObservation::pause_root, &InventoryObservation::auto_pause,
+                             &InventoryObservation::cutscene, &InventoryObservation::death_screen}) {
+        auto invalid = inventory;
+        invalid.*member = true;
+        expect(!should_enable_inventory_world(invalid), "pause, auto-pause, cinematics and death screens never enable the guard");
+    }
+    for (unsigned value = 0; value <= 255; ++value) {
+        auto observed = inventory;
+        observed.visibility = static_cast<uint8_t>(value);
+        expect(should_enable_inventory_world(observed) == (value == 0 || value == 3 || value == 4),
+            "hidden, collapsed and unknown visibility values are excluded");
+        observed = inventory;
+        observed.world_flags = static_cast<uint8_t>(value);
+        expect(should_enable_inventory_world(observed) == ((value & 0x21) == 1),
+            "world must have begun play and must not be tearing down");
+    }
+    for (float opacity : {0.0f, -1.0f, 1.1f, std::numeric_limits<float>::infinity(),
+                           std::numeric_limits<float>::quiet_NaN()}) {
+        auto invalid = inventory;
+        invalid.opacity = opacity;
+        expect(!should_enable_inventory_world(invalid), "invisible and invalid inventory opacity fails closed");
+    }
+    for (int32_t length : {-1, 1, 20, std::numeric_limits<int32_t>::max()}) {
+        auto invalid = inventory;
+        invalid.next_url_length = length;
+        expect(!should_enable_inventory_world(invalid), "pending travel or malformed travel state leaves world rendering untouched");
+    }
+
+    InventorySession before{{0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80}, {1, 2, 3, 4, 5, 6, 7, 8}, 0x100};
+    expect(should_restore_inventory_world(before, before, true) && !should_restore_inventory_world(before, before, false),
+        "restoration requires a still-active validated inventory session");
+    for (size_t i = 0; i < before.objects.size(); ++i) {
+        auto changed = before;
+        ++changed.objects[i];
+        expect(!should_restore_inventory_world(before, changed, true), "owner replacement or world travel must not restore a stale bit");
+        changed = before;
+        ++changed.serials[i];
+        expect(!should_restore_inventory_world(before, changed, true), "object address reuse must not restore a stale bit");
+    }
+    auto changed = before;
+    ++changed.native_viewport;
+    expect(!should_restore_inventory_world(before, changed, true), "native viewport replacement invalidates restoration");
+    expect(!should_restore_inventory_world({}, {}, true), "empty sessions never restore flags");
+    for (unsigned original = 0; original <= 255; ++original) {
+        for (unsigned current = 0; current <= 255; ++current) {
+            const auto enabled = enable_world_rendering(static_cast<uint8_t>(original));
+            const auto restored = restore_world_rendering_bit(static_cast<uint8_t>(current), static_cast<uint8_t>(original));
+            expect(enabled == (original & ~2u) && restored == ((current & ~2u) | (original & 2u)),
+                "only bDisableWorldRendering is changed and unrelated engine writes survive restoration");
+        }
+    }
+    for (unsigned opening = 0; opening < 10; ++opening) {
+        auto session = before;
+        session.objects[6] += opening * 0x100;
+        session.serials[6] += opening;
+        uint8_t flags = 0x82;
+        flags = enable_world_rendering(flags);
+        expect(flags == 0x80, "each inventory opening enables the world only for the draw");
+        expect(should_restore_inventory_world(session, session, true), "new inventory roots are accepted without a one-shot latch");
+        flags = restore_world_rendering_bit(flags, 0x82);
+        expect(flags == 0x82, "each draw restores the game's inventory rendering intent");
+        auto closed = inventory;
+        closed.inventory_root = false;
+        expect(!should_enable_inventory_world(closed), "after inventory closes the guard is inactive");
+    }
+}
+
 int main() {
+    test_breathedge_inventory_world_guard();
     test_scene_view_layouts();
     test_rendering_mode_matrix();
     test_version_gates();
