@@ -762,6 +762,8 @@ public:
         return m_nascar25_ui_render_callback_seen.load(std::memory_order_acquire);
     }
 
+    void note_nascar25_render_pose_handoff(uint32_t frame_count);
+
     bool has_scene_view_family_offsets_ready() const {
         return m_has_scene_view_family_offsets_ready;
     }
@@ -1438,6 +1440,7 @@ private:
     std::array<uevr::nascar::NativeView, 2> m_nascar_native_views{};
     std::array<uint32_t, 2> m_nascar_native_view_counts{};
     std::atomic_bool m_nascar_native_ready{};
+    std::atomic_uint32_t m_nascar25_first_render_pose_frame{};
     bool m_nascar_native_attempted{}, m_nascar_native_validated{}, m_nascar_native_requested{}, m_nascar_native_failed{};
     bool install_nascar_localplayer(uintptr_t player);
     void prepare_nascar_native_view();
