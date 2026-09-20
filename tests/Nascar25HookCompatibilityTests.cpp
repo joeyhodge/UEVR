@@ -40,6 +40,35 @@ int run_nascar25_tests() {
         }
     }
     expect(!n::uses_legacy_dedicated_ui(true), "other games cannot enter the NASCAR25 UI route at runtime");
+    {
+        using Evidence = n::title25::DedicatedUIReadiness;
+        constexpr std::array guards{
+            &Evidence::exact_title, &Evidence::validated_build, &Evidence::dx12,
+            &Evidence::code_preserving_mode, &Evidence::game_data_initialized, &Evidence::engine_valid,
+            &Evidence::slate_hook_valid, &Evidence::stable_slate_draw, &Evidence::render_callback_seen,
+            &Evidence::packed_scene_target_valid,
+        };
+        constexpr auto combinations = 1u << guards.size();
+        for (unsigned mask = 0; mask < combinations; ++mask) {
+            Evidence evidence{};
+            for (size_t i = 0; i < guards.size(); ++i) { evidence.*guards[i] = (mask & (1u << i)) != 0; }
+            expect(n::title25::can_initialize_dedicated_ui(evidence) == (mask == combinations - 1),
+                "UI startup requires all exact-build, mode, Slate, callback and packed-target evidence");
+        }
+
+        Evidence startup{true, true, true, true, true, true, true, true, false, true};
+        expect(!n::title25::can_initialize_dedicated_ui(startup),
+            "packed scene alone cannot allocate UI before a validated render callback");
+        startup.render_callback_seen = true;
+        expect(n::title25::can_initialize_dedicated_ui(startup),
+            "Native Fix startup UI can initialize without generic PreRender discovery");
+        startup.packed_scene_target_valid = false;
+        expect(!n::title25::can_initialize_dedicated_ui(startup),
+            "old callback evidence cannot authorize UI creation with a missing or resized scene target");
+        startup.packed_scene_target_valid = true;
+        expect(n::title25::can_initialize_dedicated_ui(startup),
+            "revalidated packed target permits UI retry without toggling Native Fix");
+    }
     for (bool target : {false, true}) {
         for (bool build : {false, true}) {
             for (bool dx12 : {false, true}) {

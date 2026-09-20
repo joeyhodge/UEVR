@@ -5970,7 +5970,22 @@ bool should_use_ue58_slate_ui_resource_worker() {
         g_hook != nullptr && g_hook->has_seen_prerender_viewfamily());
 }
 
+bool should_use_nascar25_ui_resource_worker() {
+    return uevr::nascar::uses_legacy_dedicated_ui(g_framework != nullptr && g_framework->is_dx12());
+}
+
+ThreadWorker<void>& get_nascar25_ui_resource_worker() {
+    static ThreadWorker<void> worker{};
+    return worker;
+}
+
 ThreadWorker<void>& get_dedicated_ui_resource_worker() {
+    // Keep this queue independent of Native Fix and generic PreRender discovery,
+    // so toggling modes cannot strand an in-flight UI resource validation job.
+    if (should_use_nascar25_ui_resource_worker()) {
+        return get_nascar25_ui_resource_worker();
+    }
+
     if (should_use_ue58_slate_ui_resource_worker()) {
         return get_ue58_slate_ui_resource_worker();
     }
@@ -34070,6 +34085,11 @@ void FFakeStereoRenderingHook::nascar25_render_texture(FFakeStereoRendering* ste
     // The getter routes Slate into the owned UI; Present composes the desktop.
     // Do not replay the game's array-texture fake-stereo draw on a packed 2D target.
     g_hook->get_slate_thread_worker()->execute(immediate);
+    if (should_use_nascar25_ui_resource_worker()) {
+        g_hook->m_nascar25_ui_render_callback_seen.store(true, std::memory_order_release);
+        // Service UI completion only; do not pump unrelated RenderThreadWorker jobs.
+        get_nascar25_ui_resource_worker().execute();
+    }
 }
 
 void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, void* a2, void* a3,
@@ -38103,6 +38123,21 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         // Slate getter, and exact packed scene resource are the allocation boundary.
         const auto vr = VR::get();
         const auto snapshot = get_nascar_scene_target_snapshot();
+        if (uevr::nascar::is_title25()) {
+            return uevr::nascar::title25::can_initialize_dedicated_ui({
+                .exact_title = true,
+                .validated_build = uevr::nascar::is_validated_build(),
+                .dx12 = g_framework->is_dx12(),
+                .code_preserving_mode = vr && vr->is_nascar_code_preserving_mode(),
+                .game_data_initialized = game_data_initialized,
+                .engine_valid = engine_valid,
+                .slate_hook_valid = slate_hook_valid,
+                .stable_slate_draw = stable_slate_draw,
+                .render_callback_seen = g_hook->has_seen_nascar25_ui_render_callback(),
+                .packed_scene_target_valid = vr && snapshot && uevr::nascar::valid_texture_desc(
+                    snapshot->desc, vr->get_hmd_width() * 2, vr->get_hmd_height(), false),
+            });
+        }
         return vr && vr->is_nascar_code_preserving_mode() && g_hook->has_seen_prerender_viewfamily() &&
             snapshot && uevr::nascar::valid_texture_desc(snapshot->desc,
                 vr->get_hmd_width() * 2, vr->get_hmd_height(), false);
@@ -38378,7 +38413,10 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
             SPDLOG_INFO("[VRRenderTargetManager] Created dedicated UI UObject for generation {}", generation);
 
             auto& dedicated_ui_resource_worker = get_dedicated_ui_resource_worker();
-            if (should_use_ue58_slate_ui_resource_worker()) {
+            if (should_use_nascar25_ui_resource_worker()) {
+                SPDLOG_INFO_ONCE(
+                    "[NASCAR25][CodePreserving][UI] Validating owned UI resources on the proven Slate render callback; no generic PreRender prerequisite");
+            } else if (should_use_ue58_slate_ui_resource_worker()) {
                 SPDLOG_INFO_ONCE(
                     "[UE5.8][SlateUI] Routing synthetic UI resource validation through the proven DrawWindow render thread");
             }
