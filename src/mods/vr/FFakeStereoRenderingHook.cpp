@@ -96,6 +96,7 @@
 #include "FFakeStereoRenderingHook.hpp"
 #include "CompatibilityPolicy.hpp"
 #include "BodycamTextureLayout.hpp"
+#include "BreathedgeInventoryPolicy.hpp"
 #include "Borderlands4Slate.hpp"
 #include "UE58OwnedUITexture.hpp"
 
@@ -10763,6 +10764,291 @@ bool ghosting_read_object_property(
     }
 }
 
+namespace breathedge_inventory {
+struct Object {
+    sdk::UObject* pointer{};
+    GhostingUObjectIdentity identity{};
+};
+
+bool observe(sdk::UObject* pointer, Object& out) {
+    uint32_t flags{};
+    if (!ghosting_is_live_uobject(pointer, GhostingUObjectValidationMode::ObjectArray,
+            nullptr, &out.identity) ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(pointer) + sdk::UObjectBase::get_object_flags_offset(), flags) ||
+        (flags & (0x10u | 0x20u | 0x200u | 0x8000u | 0x10000u)) != 0 ||
+        pointer->is_pending_kill_or_unreachable()) {
+        return false;
+    }
+    out.pointer = pointer;
+    return true;
+}
+
+struct Field {
+    std::wstring_view name;
+    std::wstring_view type;
+    uint32_t size;
+    int32_t expected_offset{-1};
+    uint32_t offset{};
+    uint8_t mask{};
+};
+
+// Only the game thread uses these bounded, per-class caches. Reflected fields
+// are validated once per class identity; no UObject enumeration or ProcessEvent.
+class Schema {
+public:
+    Schema(std::wstring_view name, std::initializer_list<Field> fields, int32_t size = 0)
+        : m_name{name}, m_fields{fields}, m_expected_size{size} {}
+
+    bool accept(sdk::UObject* pointer, Object& object) {
+        if (!observe(pointer, object)) { return false; }
+        Object type{};
+        auto* klass = reinterpret_cast<sdk::UClass*>(object.identity.object_class);
+        if (!observe(klass, type)) { return false; }
+        const bool same_class = type.pointer == m_type.pointer &&
+            type.identity.serial == m_type.identity.serial && type.identity.vtable == m_type.identity.vtable;
+        if (same_class && m_ready) { return true; }
+        const auto now = std::chrono::steady_clock::now();
+        if (now < m_retry_after) { return false; }
+        m_ready = false;
+        m_retry_after = now + std::chrono::seconds{1};
+        if (klass->get_full_name() != m_name) { return false; }
+        const auto size = klass->get_properties_size();
+        if (size <= 0 || size > 0x10000 || (m_expected_size != 0 && size != m_expected_size)) { return false; }
+        for (auto& field : m_fields) {
+            const auto prop = klass->find_property(field.name);
+            if (prop == nullptr || !is_readable_process_range(reinterpret_cast<uintptr_t>(prop), 0x90)) { return false; }
+            const auto type = prop->get_class();
+            if (type == nullptr || !is_readable_process_range(reinterpret_cast<uintptr_t>(type), 0x20) ||
+                type->get_name().to_string() != field.type) { return false; }
+            const auto offset = prop->get_offset();
+            if (offset < 0x28 || offset > size || field.size > static_cast<uint32_t>(size - offset) ||
+                (field.expected_offset >= 0 && offset != field.expected_offset)) { return false; }
+            field.offset = static_cast<uint32_t>(offset);
+            if (field.type == L"BoolProperty") {
+                const auto boolean = static_cast<sdk::FBoolProperty*>(prop);
+                const auto mask = boolean->get_byte_mask();
+                if (boolean->get_field_size() != 1 || boolean->get_byte_offset() != 0 ||
+                    (mask != 0xff && (mask == 0 || (mask & (mask - 1)) != 0))) { return false; }
+                field.mask = mask;
+            }
+        }
+        m_type = type;
+        m_ready = true;
+        return true;
+    }
+
+    template <typename T> bool read(const Object& object, size_t field, T& value) const {
+        return field < m_fields.size() && m_fields[field].size == sizeof(T) &&
+            safe_read_value(reinterpret_cast<uintptr_t>(object.pointer) + m_fields[field].offset, value);
+    }
+
+    bool boolean(const Object& object, size_t field, bool& value) const {
+        uint8_t byte{};
+        if (!read(object, field, byte) || m_fields[field].mask == 0) { return false; }
+        value = (byte & m_fields[field].mask) != 0;
+        return true;
+    }
+
+private:
+    std::wstring_view m_name;
+    std::vector<Field> m_fields;
+    int32_t m_expected_size{};
+    Object m_type{};
+    bool m_ready{};
+    std::chrono::steady_clock::time_point m_retry_after{};
+};
+
+bool runtime_matches() try {
+    static const bool binary = []() {
+        const auto module = reinterpret_cast<uintptr_t>(utility::get_executable());
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        if (!path || !uevr::games::is_breathedge2_inventory_runtime(*path, 0x00050007, 0x00040000, true)) { return false; }
+        const auto version = sdk::get_file_version_info();
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
+        return uevr::games::is_breathedge2_inventory_runtime(*path, version.dwFileVersionMS, version.dwFileVersionLS, true) &&
+            safe_read_value(module, dos) && dos.e_magic == IMAGE_DOS_SIGNATURE &&
+            dos.e_lfanew > 0 && dos.e_lfanew < 0x100000 && safe_read_value(module + dos.e_lfanew, nt) &&
+            nt.Signature == IMAGE_NT_SIGNATURE && nt.OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+            uevr::breathedge::validated_binary(nt.FileHeader.TimeDateStamp, nt.OptionalHeader.SizeOfImage);
+    }();
+    return binary && g_framework != nullptr && g_framework->is_dx12();
+} catch (...) { return false; }
+
+bool owner_is(const Object& object, sdk::UObject* owner) {
+    sdk::UObject* observed{};
+    return safe_read_value(reinterpret_cast<uintptr_t>(object.pointer) + sdk::UObjectBase::get_outer_private_offset(), observed) &&
+        observed == owner;
+}
+
+enum class SnapshotStage : uint8_t { Runtime, MainViewport, ViewportLayout, GameInstance, Player, Inventory, World, Write, Complete };
+
+void report_rejection(SnapshotStage stage, const void* dispatch, const void* client) try {
+    if (g_hook == nullptr || !g_hook->is_hook_provenance_diagnostics_enabled()) { return; }
+    // Game-thread only, default-off, and at most one line per failed stage.
+    static uint32_t reported{};
+    const auto bit = 1u << static_cast<uint8_t>(stage);
+    if ((reported & bit) != 0) { return; }
+    reported |= bit;
+    static constexpr std::array names{"runtime/thread", "engine/main viewport", "viewport layout/ownership",
+        "game instance", "player/controller/UI ownership", "inventory/pause exclusions", "world/travel", "flag write", "complete"};
+    SPDLOG_INFO("[Breathedge2][Inventory] Guard inactive at {} (dispatch={:x}, UObject={:x})",
+        names[static_cast<size_t>(stage)], reinterpret_cast<uintptr_t>(dispatch), reinterpret_cast<uintptr_t>(client));
+} catch (...) {}
+
+bool snapshot(sdk::UObject* viewport_client, sdk::FViewport* viewport,
+    uevr::breathedge::InventorySession& session, SnapshotStage& stage) try {
+    using namespace uevr::breathedge;
+    stage = SnapshotStage::Runtime;
+    if (!runtime_matches() || !GameThreadWorker::get().is_same_thread() ||
+        !g_framework->is_game_data_intialized() || viewport == nullptr) { return false; }
+
+    static Schema engine_schema{L"Class /Script/Engine.GameEngine", {
+        {L"GameViewport", L"ObjectProperty", 8}, {L"GameInstance", L"ObjectProperty", 8}}};
+    static Schema viewport_schema{L"Class /Script/Engine.GameViewportClient", {
+        {L"World", L"ObjectProperty", 8, 0x78}, {L"GameInstance", L"ObjectProperty", 8, 0x80},
+        {L"MaxSplitscreenPlayers", L"IntProperty", 4, 0x68}}, 0x3c0};
+    static Schema instance_schema{L"BlueprintGeneratedClass /Game/Base/BP_Breathedge2GameInstance.BP_Breathedge2GameInstance_C", {
+        {L"LocalPlayers", L"ArrayProperty", 16}, {L"IsGameInitialized", L"BoolProperty", 1},
+        {L"AutoPauseScreen", L"ObjectProperty", 8}}};
+    static Schema player_schema{L"Class /Script/Engine.LocalPlayer", {
+        {L"ViewportClient", L"ObjectProperty", 8}, {L"PlayerController", L"ObjectProperty", 8}}};
+    static Schema controller_schema{L"BlueprintGeneratedClass /Game/Characters/Man/Blueprints/BP_Breathedge2Controller.BP_Breathedge2Controller_C", {
+        {L"BPC_UI", L"ObjectProperty", 8}, {L"AcknowledgedPawn", L"ObjectProperty", 8}, {L"Player", L"ObjectProperty", 8}}};
+    static Schema ui_schema{L"BlueprintGeneratedClass /Game/Characters/Man/Components/BPC_UI.BPC_UI_C", {
+        {L"GameMenuUI", L"ObjectProperty", 8}, {L"IngameMenuUI", L"ObjectProperty", 8},
+        {L"IsCutActive", L"BoolProperty", 1}, {L"IsDeathScreenLock", L"BoolProperty", 1}}};
+    static Schema root_schema{L"WidgetBlueprintGeneratedClass /Game/UI/GameMenu/Widgets/W_GameMenu.W_GameMenu_C", {
+        {L"Visibility", L"EnumProperty", 1}, {L"RenderOpacity", L"FloatProperty", 4}}};
+    static Schema world_schema{L"Class /Script/Engine.World", {
+        {L"PersistentLevel", L"ObjectProperty", 8, 0x30}, {L"OwningGameInstance", L"ObjectProperty", 8, 0x228}}, 0xa98};
+
+    std::array<Object, 8> objects{};
+    auto& [engine, client, instance, player, controller, ui, root, world] = objects;
+    sdk::UObject *p{}, *instance_ptr{}, *world_ptr{}, *level_ptr{}, *pause_ptr{}, *auto_pause_ptr{};
+    sdk::FViewport* native_viewport{};
+    stage = SnapshotStage::MainViewport;
+    if (!engine_schema.accept(sdk::UEngine::get(), engine) ||
+        !engine_schema.read(engine, 0, p) || p != viewport_client) { return false; }
+    stage = SnapshotStage::ViewportLayout;
+    if (!viewport_schema.accept(p, client) ||
+        !owner_is(client, engine.pointer) ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(client.pointer) + 0xf8, native_viewport) || native_viewport != viewport ||
+        !viewport_schema.read(client, 0, world_ptr) || !viewport_schema.read(client, 1, instance_ptr) ||
+        !engine_schema.read(engine, 1, p) || p != instance_ptr) { return false; }
+    stage = SnapshotStage::GameInstance;
+    if (!instance_schema.accept(instance_ptr, instance)) { return false; }
+    bool initialized{};
+    GhostingRawArrayHeader players{};
+    if (!instance_schema.boolean(instance, 1, initialized) || !initialized ||
+        !instance_schema.read(instance, 2, auto_pause_ptr) || auto_pause_ptr != nullptr ||
+        !instance_schema.read(instance, 0, players) || players.count != 1 || players.capacity < 1 || players.capacity > 4) { return false; }
+    stage = SnapshotStage::Player;
+    if (!safe_read_value(players.data, p) || !player_schema.accept(p, player) ||
+        !player_schema.read(player, 0, p) || p != client.pointer ||
+        !player_schema.read(player, 1, p) || !controller_schema.accept(p, controller) ||
+        !controller_schema.read(controller, 2, p) || p != player.pointer ||
+        !controller_schema.read(controller, 0, p) || !ui_schema.accept(p, ui) || !owner_is(ui, controller.pointer)) { return false; }
+
+    bool cut{}, death{};
+    uint8_t visibility{}, world_flags{};
+    float opacity{};
+    int32_t next_url_length{};
+    Object pawn{}, level{};
+    stage = SnapshotStage::Inventory;
+    if (!ui_schema.read(ui, 1, pause_ptr) || pause_ptr != nullptr ||
+        !ui_schema.boolean(ui, 2, cut) || !ui_schema.boolean(ui, 3, death) || cut || death ||
+        !ui_schema.read(ui, 0, p) || !root_schema.accept(p, root) || !owner_is(root, instance.pointer) ||
+        !root_schema.read(root, 0, visibility) || !root_schema.read(root, 1, opacity) ||
+        !visible_inventory_root(visibility, opacity)) { return false; }
+    stage = SnapshotStage::World;
+    if (!world_schema.accept(world_ptr, world) || !world_schema.read(world, 1, p) || p != instance.pointer ||
+        !world_schema.read(world, 0, level_ptr) || !observe(level_ptr, level) || !owner_is(controller, level_ptr) ||
+        !controller_schema.read(controller, 1, p) || !observe(p, pawn) ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(world.pointer) + 0x18d, world_flags) ||
+        !safe_read_value(reinterpret_cast<uintptr_t>(world.pointer) + 0x8c8, next_url_length) ||
+        !playable_world(world_flags, next_url_length)) { return false; }
+
+    const InventoryObservation state{initialized, root.pointer != nullptr, pause_ptr != nullptr,
+        auto_pause_ptr != nullptr, cut, death, visibility, opacity, world_flags, next_url_length};
+    if (!should_enable_inventory_world(state)) { return false; }
+    for (size_t i = 0; i < objects.size(); ++i) {
+        session.objects[i] = reinterpret_cast<uintptr_t>(objects[i].pointer);
+        session.serials[i] = objects[i].identity.serial;
+    }
+    session.native_viewport = reinterpret_cast<uintptr_t>(viewport);
+    stage = SnapshotStage::Complete;
+    return true;
+} catch (...) { return false; }
+
+bool update_world_bit(sdk::UObject* client, bool restore, uint8_t original = 0) {
+    const auto address = reinterpret_cast<uintptr_t>(client) + uevr::breathedge::viewport_flags_offset;
+    if (!is_writable_process_range(address, 1)) { return false; }
+    __try {
+        auto* byte = reinterpret_cast<uint8_t*>(address);
+        *byte = restore ? uevr::breathedge::restore_world_rendering_bit(*byte, original) :
+            uevr::breathedge::enable_world_rendering(*byte);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+class DrawScope {
+public:
+    DrawScope(void* dispatch, sdk::FViewport* viewport) : m_viewport{viewport} {
+        if (!runtime_matches() || !GameThreadWorker::get().is_same_thread()) { return; }
+        // The matching PDB and live Draw arguments prove the +0x28 secondary
+        // base. Normalize only this guard; leave shared SDK discovery untouched.
+        m_client = reinterpret_cast<sdk::UObject*>(uevr::breathedge::viewport_candidate_from_draw(
+            reinterpret_cast<uintptr_t>(dispatch)));
+        if (m_client == nullptr ||
+            !safe_read_value(reinterpret_cast<uintptr_t>(m_client) + uevr::breathedge::viewport_flags_offset, m_original) ||
+            (m_original & uevr::breathedge::disable_world_rendering_mask) == 0) { return; }
+        auto* vr = VR::get().get();
+        if (vr == nullptr || !vr->is_hmd_active() ||
+            !uevr::breathedge::supported_mode(vr->is_using_native_stereo(), vr->is_using_strict_synchronized_afr(),
+                vr->is_extreme_compatibility_mode_enabled(), vr->is_using_2d_screen())) { return; }
+        SnapshotStage stage{};
+        if (!snapshot(m_client, viewport, m_session, stage)) {
+            report_rejection(stage, dispatch, m_client);
+            return;
+        }
+        m_active = update_world_bit(m_client, false);
+        if (!m_active) { report_rejection(SnapshotStage::Write, dispatch, m_client); }
+        if (m_active) {
+            try {
+                SPDLOG_INFO_ONCE("[Breathedge2][Inventory] Keeping world rendering active during the inventory viewport draw; pause and travel excluded (dispatch={:x}, UObject={:x})",
+                    reinterpret_cast<uintptr_t>(dispatch), reinterpret_cast<uintptr_t>(m_client));
+            } catch (...) {
+                // Logging cannot prevent restoration of an already armed scope.
+            }
+        }
+    }
+
+    ~DrawScope() {
+        if (!m_active) { return; }
+        uevr::breathedge::InventorySession after{};
+        SnapshotStage stage{};
+        const bool valid = snapshot(m_client, m_viewport, after, stage);
+        // Never resurrect a stale disable flag if Draw closed/replaced the menu,
+        // changed world, or invalidated any owner. A mode/HMD change alone does
+        // not cancel restoration. Preserve unrelated flag bits.
+        if (uevr::breathedge::should_restore_inventory_world(m_session, after, valid)) {
+            update_world_bit(m_client, true, m_original);
+        }
+    }
+
+    DrawScope(const DrawScope&) = delete;
+    DrawScope& operator=(const DrawScope&) = delete;
+
+private:
+    sdk::UObject* m_client{};
+    sdk::FViewport* m_viewport{};
+    uevr::breathedge::InventorySession m_session{};
+    uint8_t m_original{};
+    bool m_active{};
+};
+} // namespace breathedge_inventory
+
 bool ghosting_resolve_view_state_slots(
     uintptr_t header_address,
     sdk::FSceneViewStateInterface* left_state,
@@ -18904,7 +19190,10 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
 
     auto call_orig = [=]() {
         ZoneScopedN("UGameViewportClient::Draw");
-        g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
+        {
+            breathedge_inventory::DrawScope inventory_world{draw_dispatch_this, viewport};
+            g_hook->call_game_viewport_draw_original(draw_dispatch_this, viewport, canvas, a4);
+        }
 
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
