@@ -16,11 +16,112 @@ template<class T> void put(std::vector<uint8_t>& bytes, size_t offset, T value) 
 template<class T> T get(const std::vector<uint8_t>& bytes, size_t offset) {
     T value{}; std::memcpy(&value, bytes.data() + offset, sizeof(value)); return value;
 }
+
+struct NativeCopyRecorder {
+    struct Copy {
+        ID3D12Resource* source;
+        D3D12_BOX box;
+        UINT x, y, z, subresource;
+        D3D12_RESOURCE_STATES source_state, destination_state;
+        bool array;
+    };
+    static constexpr auto shader_read = static_cast<D3D12_RESOURCE_STATES>(
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    ID3D12Resource* left = reinterpret_cast<ID3D12Resource*>(uintptr_t{0x1000});
+    ID3D12Resource* right = reinterpret_cast<ID3D12Resource*>(uintptr_t{0x2000});
+    ID3D12Resource* destination = reinterpret_cast<ID3D12Resource*>(uintptr_t{0x3000});
+    D3D12_RESOURCE_STATES left_state = shader_read;
+    D3D12_RESOURCE_STATES right_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    D3D12_RESOURCE_STATES destination_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    bool valid = true;
+    std::vector<Copy> copies;
+
+    void record(ID3D12Resource* source, ID3D12Resource* dst, D3D12_BOX* box,
+        UINT x, UINT y, UINT z, UINT subresource,
+        D3D12_RESOURCE_STATES source_before, D3D12_RESOURCE_STATES destination_before, bool array) {
+        auto* actual = source == left ? &left_state : source == right ? &right_state : nullptr;
+        valid &= actual != nullptr && dst == destination && box != nullptr;
+        if (!actual || dst != destination || !box) { return; }
+        valid &= *actual == source_before && destination_state == destination_before;
+        // Model CommandContext's before -> COPY -> restore contract without a GPU or game process.
+        *actual = D3D12_RESOURCE_STATE_COPY_SOURCE;
+        destination_state = D3D12_RESOURCE_STATE_COPY_DEST;
+        copies.push_back({source, *box, x, y, z, subresource, source_before, destination_before, array});
+        *actual = source_before;
+        destination_state = destination_before;
+    }
+    void copy_region(ID3D12Resource* source, ID3D12Resource* dst, D3D12_BOX* box,
+        UINT x, UINT y, UINT z, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        record(source, dst, box, x, y, z, 0, before, after, false);
+    }
+    void copy_region_to_subresource(ID3D12Resource* source, ID3D12Resource* dst, D3D12_BOX* box,
+        UINT subresource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after) {
+        record(source, dst, box, 0, 0, 0, subresource, before, after, true);
+    }
+};
+
+void test_native_copy_states() {
+    namespace policy = uevr::nascar::title25;
+    constexpr auto rtv = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    for (unsigned mask = 0; mask < 32; ++mask) {
+        const auto states = policy::native_copy_source_states(
+            (mask & 1) != 0, (mask & 2) != 0, (mask & 4) != 0, (mask & 8) != 0, (mask & 16) != 0);
+        expect(states.has_value() == (mask == 31),
+            "independent copy states require exact title/build, DX12, Native Fix and owned shader-read source");
+        if (states) {
+            expect(states->left == NativeCopyRecorder::shader_read && states->right == rtv,
+                "left stable copy and right engine capture keep different source states");
+        }
+    }
+    for (const auto name : {L"NASCAR26_Steam-Win64-Shipping.exe", L"Project_HighSchool-Win64-Shipping.exe",
+                           L"SWZeroCompany.exe", L"Other-Win64-Shipping.exe"}) {
+        expect(!policy::native_copy_source_states(policy::matches_name(name), true, true, true, true),
+            "other titles retain their existing Native Fix path");
+    }
+    for (const auto layout : {policy::NativeCopyLayout::double_wide, policy::NativeCopyLayout::texture_array}) {
+        for (const auto extent : {std::pair{2472u, 2416u}, std::pair{1731u, 1829u}, std::pair{1920u, 1080u}}) {
+            NativeCopyRecorder commands;
+            const D3D12_BOX left{0, 0, 0, extent.first, extent.second, 1};
+            const D3D12_BOX right{4, 3, 0, extent.first - 4, extent.second - 3, 1};
+            // Consecutive frames, Native Fix release, and re-entry after a loading hold.
+            for (const bool active : {false, true, true, false, true, false, true}) {
+                expect(commands.left_state == NativeCopyRecorder::shader_read,
+                    "next stable-copy producer sees the shader-read state it expects");
+                const auto states = policy::native_copy_source_states(true, true, true, active, true);
+                commands.copies.clear();
+                if (!states) { continue; }
+                policy::copy_native_eye_pair(commands, commands.left, commands.right, commands.destination,
+                    left, right, extent.first, *states, layout);
+                expect(commands.valid && commands.copies.size() == 2,
+                    "both eyes are copied with matching before-states");
+                expect(commands.left_state == NativeCopyRecorder::shader_read && commands.right_state == rtv &&
+                    commands.destination_state == rtv, "each source and destination state is restored exactly");
+                if (commands.copies.size() != 2) { continue; }
+                const auto& l = commands.copies[0]; const auto& r = commands.copies[1];
+                expect(l.source == commands.left && r.source == commands.right &&
+                    std::memcmp(&l.box, &left, sizeof(left)) == 0 && std::memcmp(&r.box, &right, sizeof(right)) == 0,
+                    "per-eye resource identity and source rectangles are preserved");
+                expect(l.source_state == states->left && r.source_state == states->right &&
+                    l.destination_state == rtv && r.destination_state == rtv, "recorded states use the exact policy");
+                const bool array = layout == policy::NativeCopyLayout::texture_array;
+                expect(l.array == array && r.array == array && l.subresource == 0 && r.subresource == (array ? 1u : 0u) &&
+                    l.x == 0 && r.x == (array ? 0u : extent.first) && !l.y && !r.y && !l.z && !r.z,
+                    "packed output placement and array slices are unchanged at arbitrary extents");
+            }
+        }
+    }
+    NativeCopyRecorder broken;
+    D3D12_BOX box{0, 0, 0, 16, 16, 1};
+    broken.copy_region(broken.left, broken.destination, &box, 0, 0, 0, rtv, rtv);
+    expect(!broken.valid && broken.left_state != NativeCopyRecorder::shader_read,
+        "fixture detects the old shared RTV before-state and wrong restore state");
+}
 }
 
 int run_nascar25_tests() {
     namespace n = uevr::nascar;
     namespace old = uevr::nascar26;
+    test_native_copy_states();
     n::initialize();
     expect(!n::is_target() && !n::is_validated_build() && !n::is_title25() && !safetyhook::has_protection_override(),
         "unrelated executable cannot enable either adapter or protection override");
