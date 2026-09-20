@@ -121,6 +121,26 @@ namespace title25 {
 inline constexpr uintptr_t clear_root_flags_rva = 0x140ae50;
 inline constexpr size_t rhi_command_root_offset = 0x28;
 
+struct DedicatedUIReadiness {
+    bool exact_title{};
+    bool validated_build{};
+    bool dx12{};
+    bool code_preserving_mode{};
+    bool game_data_initialized{};
+    bool engine_valid{};
+    bool slate_hook_valid{};
+    bool stable_slate_draw{};
+    bool render_callback_seen{};
+    bool packed_scene_target_valid{};
+};
+
+constexpr bool can_initialize_dedicated_ui(const DedicatedUIReadiness& evidence) {
+    return evidence.exact_title && evidence.validated_build && evidence.dx12 &&
+        evidence.code_preserving_mode && evidence.game_data_initialized && evidence.engine_valid &&
+        evidence.slate_hook_valid && evidence.stable_slate_draw && evidence.render_callback_seen &&
+        evidence.packed_scene_target_valid;
+}
+
 constexpr bool uses_validated_rhi_root(bool target, bool build, bool dx12, bool contract) {
     return target && build && dx12 && contract;
 }
