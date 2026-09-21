@@ -42,6 +42,7 @@
 #include <sdk/CVar.hpp>
 #include <sdk/MafiaDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
+#include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
 #include <sdk/RtmDiscovery.hpp>
 #include <sdk/Slate.hpp>
@@ -78,6 +79,7 @@
 #include "HiFiRushRendererEntry.hpp"
 #include "SifuRendererEntry.hpp"
 #include "SifuMeshCommands.hpp"
+#include "KtjLFogResources.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
 #include "utility/BoundedTextureDiagnostics.hpp"
@@ -8664,6 +8666,12 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
 }
 
 std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_t localplayer) {
+    // KTJL has a separate in-place append path. Never fall back to the stock
+    // slot or the generic exception-skipping PostInit replay for this fork.
+    if (const auto path = utility::get_module_pathw(utility::get_executable());
+        path && sdk::ktjl::matches_executable(*path)) {
+        return std::nullopt;
+    }
     auto* object_class = sdk::UObject::static_class();
 
     if (object_class == nullptr) {
@@ -9600,6 +9608,78 @@ bool sifu_is_supported_dx11_runtime() {
         return false;
     }
     return g_framework != nullptr && g_framework->is_dx11();
+}
+
+// Installed before KTJL can request two views. Single-view families retain the
+// original path, including in-flight frames when the rendering mode changes.
+safetyhook::InlineHook g_ktjl_compute_fog_hook{};
+std::atomic_bool g_ktjl_fog_ready{};
+uintptr_t g_ktjl_fog_base{};
+
+void ktjl_compute_fog_hook(uintptr_t renderer, uintptr_t rhi, uintptr_t shadow_scattering) {
+    namespace f = uevr::ktjl::fog;
+    const auto original = [&] { g_ktjl_compute_fog_hook.call<void>(renderer, rhi, shadow_scattering); };
+    if (!g_ktjl_fog_ready.load(std::memory_order_acquire)) { original(); return; }
+    const auto memory = sdk::discovery::process_memory();
+    f::Header views{};
+    if (!memory.load(renderer + f::views_offset, views) || views.count != 2) { original(); return; }
+
+    // Same side-effect-free predicate used at the original entry. Do not allocate
+    // resources for a disabled fog pass, a mono family, or a scene capture.
+    const auto enabled = reinterpret_cast<bool(*)(uintptr_t)>(g_ktjl_fog_base + f::predicate_entry_rva)(renderer);
+    const auto result = f::ensure(memory, g_ktjl_fog_base, renderer, enabled, [&](const f::Plan& plan) {
+        uintptr_t current{};
+        f::Header again{};
+        if (!is_readable_process_range(rhi, 0xD8) ||
+            !is_writable_process_range(plan.right_slot, sizeof(uintptr_t)) ||
+            !memory.load(plan.right_slot, current) || current != 0 ||
+            !memory.load(renderer + f::views_offset, again) || again != plan.views) { return false; }
+        using FindFreeElement = bool(*)(uintptr_t, uintptr_t, const void*, uintptr_t,
+                                       const wchar_t*, bool, bool, bool);
+        // Return value indicates reuse, not allocation success. Validate the
+        // resulting owned ref instead; the game performs allocation and cleanup.
+        reinterpret_cast<FindFreeElement>(g_ktjl_fog_base + f::pool_entry_rva)(
+            g_ktjl_fog_base + f::pool_rva, rhi, plan.left.descriptor.bytes.data(), plan.right_slot,
+            L"IntegratedLightScattering", true, true, false);
+        return true;
+    });
+    if (result == f::Outcome::rejected) {
+        // Fail only this fog dispatch before any RDG work is queued. Never call
+        // RegisterExternalTexture with a null ref, or suppress a raised exception.
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoFog] Skipping this two-view fog pass: resource validation/allocation failed");
+        return;
+    }
+    if (result == f::Outcome::allocated) {
+        SPDLOG_INFO_ONCE("[KTJL][StereoFog] Allocated separate engine-owned right-eye fog volume before dispatch; left resource preserved");
+    }
+    original();
+}
+
+void attempt_hook_ktjl_stereo_fog() {
+    namespace f = uevr::ktjl::fog;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !f::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!f::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoFog] Fog producer/consumer, allocator or cleanup contract did not match; two-view bootstrap stays disabled");
+        return;
+    }
+    auto hook = safetyhook::create_inline(reinterpret_cast<void*>(base + f::compute_entry_rva),
+        &ktjl_compute_fog_hook, safetyhook::InlineHook::StartDisabled);
+    if (!hook) {
+        SPDLOG_WARN("[KTJL][StereoFog] Cannot prepare dispatch hook; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_fog_base = base;
+    g_ktjl_compute_fog_hook = std::move(hook);
+    if (!g_ktjl_compute_fog_hook.enable().has_value()) {
+        SPDLOG_WARN("[KTJL][StereoFog] Cannot enable dispatch hook; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_fog_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoFog] Validated fog dispatch/engine pool/cleanup; two-view resource repair ready");
 }
 
 bool sifu_native_fix_renderer_is_current_game() {
@@ -15317,6 +15397,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dead_island_ue425_hair_light_indices();
     attempt_hook_bodycam_update_pre_exposure();
     attempt_hook_sifu_native_mesh_commands();
+    attempt_hook_ktjl_stereo_fog();
     const auto vtable = locate_fake_stereo_rendering_vtable();
     if (uevr::nascar::is_target() && vtable != uevr::nascar::image_base() + uevr::nascar::layout().stereo_vtable_rva) {
         SPDLOG_ERROR("[NASCAR][CodePreserving] Unexpected stereo vtable; refusing synthetic fallback");
@@ -28691,6 +28772,17 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         return 2;
     }
 
+    static const bool ktjl = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && sdk::ktjl::matches_executable(*path);
+    }();
+    if (ktjl && (!g_hook->m_ktjl_view_states_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_fog_ready.load(std::memory_order_acquire))) {
+        // GetProjectionData indexes ViewStates without a bounds check. Keep
+        // the first (bootstrap) frame mono until the actual pair is validated.
+        return 1;
+    }
+
     update_sifu_native_mesh_command_mode(is_stereo_enabled, vr->is_using_native_stereo());
 
     if (!is_stereo_enabled || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
@@ -29195,6 +29287,85 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
     if (localplayer == 0 || IsBadReadPtr(reinterpret_cast<void*>(localplayer), sizeof(void*))) {
         SPDLOG_WARN("[PostInitProperties] Refusing unreadable LocalPlayer candidate {:x}", localplayer);
         g_hook->m_fixed_localplayer_view_count = true;
+        return;
+    }
+
+    const auto executable_path = utility::get_module_pathw(utility::get_executable());
+    if (executable_path && sdk::ktjl::matches_executable(*executable_path)) {
+        namespace k = sdk::ktjl::stereo;
+        const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+        const auto memory = sdk::discovery::process_memory();
+        const auto reject = [&](const char* reason) {
+            SPDLOG_WARN("[KTJL][ViewStates] Bootstrap refused: {}", reason);
+            m_ktjl_view_states_ready.store(false, std::memory_order_release);
+            m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
+            m_fixed_localplayer_view_count = true;
+        };
+        if (!GameThreadWorker::get().is_same_thread()) {
+            reject("not on the game thread");
+            return;
+        }
+        if (!g_ktjl_fog_ready.load(std::memory_order_acquire)) {
+            reject("two-view fog resource repair is not ready");
+            return;
+        }
+        const char* reason{};
+        const auto plan = k::prepare(memory, base, localplayer, *executable_path, reason);
+        if (!plan) {
+            reject(reason);
+            return;
+        }
+        if (plan->append) {
+            if (!is_writable_process_range(plan->header_address, sizeof(k::Header)) ||
+                !is_writable_process_range(plan->header.data, 2 * sizeof(k::Reference)) ||
+                !is_writable_process_range(base + k::list_head_rva, sizeof(uintptr_t)) ||
+                !is_writable_process_range(plan->head + 8, sizeof(uintptr_t))) {
+                reject("view-state storage/list is not writable");
+                return;
+            }
+
+            // Num=1, Max>=2: the validated game helper constructs only element 1,
+            // without reallocating, freeing or re-registering the linked left eye.
+            reinterpret_cast<void(*)(uintptr_t, int32_t)>(base + k::set_num_rva)(plan->header_address, 2);
+            k::Header grown{};
+            k::Reference left{}, right{};
+            if (!memory.load(plan->header_address, grown) || grown.data != plan->header.data ||
+                grown.count != 2 || grown.capacity != plan->header.capacity ||
+                !memory.load(grown.data, left) || left != plan->left ||
+                !memory.load(grown.data + sizeof(k::Reference), right) ||
+                right.vtable != base + k::reference_vtable_rva || right.state != 0 ||
+                right.next != 0 || right.previous != 0) {
+                reject("in-place growth postcondition failed");
+                return;
+            }
+            reinterpret_cast<void(*)(uintptr_t)>(base + k::allocate_rva)(grown.data + sizeof(k::Reference));
+        }
+
+        const auto completed = k::prepare(memory, base, localplayer, *executable_path, reason);
+        if (!completed || completed->append || completed->header.data != plan->header.data ||
+            completed->left.state != plan->left.state) {
+            reject(completed ? "right-eye allocation did not preserve the left eye" : reason);
+            return;
+        }
+        {
+            std::scoped_lock lock{m_sceneview_data.mtx};
+            auto& pair = m_sceneview_data.native_stereo_state_pair;
+            auto* left = reinterpret_cast<sdk::FSceneViewStateInterface*>(completed->left.state);
+            auto* right = reinterpret_cast<sdk::FSceneViewStateInterface*>(completed->right.state);
+            if (pair.eye_state[0] != left || pair.eye_state[1] != right) {
+                const auto generation = pair.generation + 1;
+                pair = {};
+                pair.eye_state[0] = left;
+                pair.eye_state[1] = right;
+                pair.generation = generation;
+            }
+            m_sceneview_data.known_scene_states.clear();
+        }
+        m_native_stereo_localplayer_bootstrap_failed.store(false, std::memory_order_release);
+        m_fixed_localplayer_view_count = true;
+        m_ktjl_view_states_ready.store(true, std::memory_order_release);
+        SPDLOG_INFO("[KTJL][ViewStates] {} validated eye pair in place: left={:x} right={:x} capacity={}; no PostInit replay",
+            plan->append ? "Allocated" : "Reused", completed->left.state, completed->right.state, completed->header.capacity);
         return;
     }
 

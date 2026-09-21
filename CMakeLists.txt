@@ -499,6 +499,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	target_link_libraries(compatibility-policy-tests PRIVATE
 		nlohmann_json
+		bddisasm
 	)
 
 	add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
@@ -1058,6 +1059,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/uobjecthook/SDKDumper.hpp"
 	"src/mods/vr/BodycamTextureLayout.hpp"
 	"src/mods/vr/Borderlands4Slate.hpp"
+	"src/mods/vr/BreathedgeInventoryPolicy.hpp"
 	"src/mods/vr/CVarDiagnostics.hpp"
 	"src/mods/vr/CVarManager.hpp"
 	"src/mods/vr/CompatibilityPolicy.hpp"
@@ -1066,6 +1068,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
+	"src/mods/vr/KtjLFogResources.hpp"
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
@@ -1094,7 +1097,9 @@ list(APPEND uevr_SOURCES
 	"src/render/ShaderOverrideRegistry.hpp"
 	"src/uevr-imgui/font_robotomedium.hpp"
 	"src/uevr-imgui/uevr_imconfig.hpp"
+	"src/utility/BoundedTextureDiagnostics.hpp"
 	"src/utility/BuildIdentity.hpp"
+	"src/utility/GpuRetirement.hpp"
 	"src/utility/HiFiRushHookMemory.hpp"
 	"src/utility/ImGui.hpp"
 	"src/utility/InputHookInstallation.hpp"
