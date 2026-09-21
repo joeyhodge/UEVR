@@ -40,6 +40,44 @@ inline constexpr std::array<uint8_t, 64> texture_callsite{
     0x89,0x44,0x24,0x40,0x48,0x8D,0x45,0xD0,0x48,0x89,0x44,0x24,0x38,0xC6,0x44,0x24,
     0x30,0x00,0x89,0x5C,0x24,0x28,0x83,0x64,0x24,0x20,0x00,0xE8,0x99,0x7C,0xD0,0x00};
 
+inline constexpr uintptr_t texture_vtable_rva = 0x6985110;
+inline constexpr uintptr_t native_resource_rva = 0x55A0BC4;
+inline constexpr std::array<uint8_t, 19> native_resource_code{
+    0x48,0x8B,0x91,0xC0,0x00,0x00,0x00,0x33,0xC0,0x48,0x85,0xD2,0x74,0x04,0x48,0x8B,0x42,0x20,0xC3};
+// D3D12RHI initializes PF_B8G8R8A8.PlatformFormat to TYPELESS (90),
+// not the typed RTV/SRV format (87). This agrees with UE4.25-Plus source.
+inline constexpr uintptr_t bgra_format_rva = 0x55526E1;
+inline constexpr std::array<uint8_t, 10> bgra_format_code{0xC7,0x05,0x69,0xFC,0x87,0x03,0x5A,0x00,0x00,0x00};
+
+inline bool validates_native_texture(const sdk::discovery::Memory& memory, uintptr_t base) {
+    uintptr_t accessor{};
+    return sdk::ktjl::matches_code(memory, base + native_resource_rva, native_resource_code) &&
+        sdk::ktjl::matches_code(memory, base + bgra_format_rva, bgra_format_code) &&
+        memory.load(base + texture_vtable_rva + 8 * sizeof(uintptr_t), accessor) && accessor == base + native_resource_rva;
+}
+
+inline std::optional<uintptr_t> read_native_texture(const sdk::discovery::Memory& memory, uintptr_t base, uintptr_t texture) {
+    uintptr_t table{}, wrapper{}, resource{};
+    if (!sdk::ktjl::pointer(texture) || !memory.load(texture, table) || table != base + texture_vtable_rva ||
+        !memory.load(texture + 0xC0, wrapper) || !sdk::ktjl::pointer(wrapper) ||
+        !memory.load(wrapper + 0x20, resource) || !sdk::ktjl::pointer(resource)) { return std::nullopt; }
+    return resource;
+}
+
+struct TextureDescription {
+    uint32_t dimension{}, format{}, flags{}, height{};
+    uint64_t width{};
+    uint16_t array_size{}, mips{};
+    uint32_t samples{}, quality{};
+};
+
+inline bool valid_texture_description(const TextureDescription& d, uint32_t width, uint32_t height) {
+    return width > 0 && width <= 16384 && height > 0 && height <= 16384 &&
+        d.dimension == 3 && d.width == width && d.height == height &&
+        d.array_size == 1 && d.mips == 1 && d.samples == 1 && d.quality == 0 &&
+        (d.format == 87 || d.format == 90) && (d.flags & 1) != 0 && (d.flags & (2 | 8)) == 0;
+}
+
 inline bool validates_texture(const sdk::discovery::Memory& memory, uintptr_t base) {
     return sdk::ktjl::validated_image(memory, base) &&
         sdk::ktjl::matches_code(memory, base + texture_create_rva, texture_entry) &&
