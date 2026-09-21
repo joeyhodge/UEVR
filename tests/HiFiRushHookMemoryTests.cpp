@@ -10,6 +10,12 @@
 #include "utility/HiFiRushHookMemory.hpp"
 #include "utility/ProtectedHookTrampoline.hpp"
 
+int test_ktjl_cloud_hook_installation();
+int test_ktjl_shadow_gather(const wchar_t* image_path);
+int test_ktjl_cloud_outputs(const wchar_t* image_path);
+int test_ktjl_lighting_thread(const wchar_t* image_path);
+int test_ktjl_mesh_resources(const wchar_t* image_path);
+
 namespace {
 int failures{};
 void* blocked{};
@@ -242,6 +248,11 @@ int wmain(int argc, wchar_t** argv) {
     }
     safetyhook::set_protection_override(nullptr);
     test_ktjl_cloud_consumer_boundary();
+    failures += test_ktjl_cloud_hook_installation();
+    failures += test_ktjl_shadow_gather(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
+    failures += test_ktjl_cloud_outputs(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
+    failures += test_ktjl_lighting_thread(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
+    failures += test_ktjl_mesh_resources(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
     VirtualFree(page, 0, MEM_RELEASE);
     VirtualFree(second, 0, MEM_RELEASE);
     std::cout << "Hi-Fi hook-memory tests: " << failures << " failures\n";

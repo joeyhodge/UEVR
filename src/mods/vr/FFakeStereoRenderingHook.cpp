@@ -81,6 +81,11 @@
 #include "SifuMeshCommands.hpp"
 #include "KtjLFogResources.hpp"
 #include "KtjLCloudResources.hpp"
+#include "KtjLCloudHook.hpp"
+#include "KtjLCloudOutputHook.hpp"
+#include "KtjLShadowGatherHook.hpp"
+#include "KtjLLightingThread.hpp"
+#include "KtjLMeshResourceHook.hpp"
 #include "KtjLHookContracts.hpp"
 #include "KtjLRendererEntry.hpp"
 #include "SWZeroCompanyBinary.hpp"
@@ -9621,11 +9626,229 @@ uintptr_t g_ktjl_fog_base{};
 std::atomic_bool g_ktjl_cloud_ready{};
 safetyhook::MidHook g_ktjl_cloud_hook{};
 uintptr_t g_ktjl_cloud_base{};
+uevr::ktjl::cloud::Boundary g_ktjl_cloud_boundary{};
+uevr::ktjl::shadow::Hooks g_ktjl_shadow_hooks{};
+std::atomic_bool g_ktjl_shadow_ready{};
+uintptr_t g_ktjl_shadow_base{};
+uevr::ktjl::cloud_output::Hooks g_ktjl_cloud_output_hooks{};
+std::atomic_bool g_ktjl_cloud_output_ready{};
+uintptr_t g_ktjl_cloud_output_base{};
+std::atomic_bool g_ktjl_lighting_ready{};
+safetyhook::MidHook g_ktjl_lighting_hook{};
+uintptr_t g_ktjl_lighting_base{};
+uevr::ktjl::mesh::Hooks g_ktjl_mesh_hooks{};
+std::atomic_bool g_ktjl_mesh_ready{};
+uintptr_t g_ktjl_mesh_base{};
+thread_local uevr::ktjl::mesh::GatherScope<> g_ktjl_mesh_scope{};
+
+void ktjl_mesh_begin_hook(safetyhook::Context& ctx) {
+    namespace m = uevr::ktjl::mesh;
+    if (!g_ktjl_mesh_ready.load(std::memory_order_acquire)) { return; }
+    const auto memory = sdk::discovery::process_memory();
+    if (!m::is_gather_call(memory, g_ktjl_mesh_base, ctx)) { return; }
+    const auto repair = m::select_serial(memory, g_ktjl_mesh_base, ctx);
+    g_ktjl_mesh_scope.begin(ctx.rsp + 8, repair ? ctx.r12 : 0);
+    if (repair) {
+        m::use_serial(ctx);
+        SPDLOG_INFO_ONCE("[KTJL][StereoMesh] Selected engine serial mesh gather for the validated two-view collector; frame resources will not use the per-view scratch arena");
+    }
+}
+
+template<size_t Path>
+void ktjl_mesh_allocate_hook(safetyhook::Context& ctx) {
+    if (!g_ktjl_mesh_ready.load(std::memory_order_acquire)) { return; }
+    if (uevr::ktjl::mesh::redirect_allocation<Path>(sdk::discovery::process_memory(), g_ktjl_mesh_base, g_ktjl_mesh_scope, ctx)) {
+        SPDLOG_INFO_ONCE("[KTJL][StereoMesh] Resource path {} uses its engine frame-lifetime allocator and original destructor instead of the relocating per-view arena", Path);
+    }
+}
+
+void ktjl_mesh_end_hook(safetyhook::Context& ctx) {
+    if (g_ktjl_mesh_ready.load(std::memory_order_acquire)) { g_ktjl_mesh_scope.end(ctx.rsp); }
+}
+
+void attempt_hook_ktjl_mesh_resources() {
+    namespace m = uevr::ktjl::mesh;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !uevr::ktjl::fog::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!m::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoMesh] Gather/allocation/destruction contracts differ; two-view bootstrap stays disabled");
+        return;
+    }
+    const auto allocator = m::make_hook_allocator();
+    auto prepared = m::prepare_hooks(base, {ktjl_mesh_begin_hook,
+        ktjl_mesh_allocate_hook<0>, ktjl_mesh_allocate_hook<1>, ktjl_mesh_allocate_hook<2>, ktjl_mesh_allocate_hook<3>, ktjl_mesh_end_hook},
+        [&](void* target, safetyhook::MidHookFn callback, safetyhook::MidHook::Flags flags) {
+            return safetyhook::MidHook::create(allocator, target, callback, flags);
+        });
+    if (prepared.error) {
+        SPDLOG_WARN("[KTJL][StereoMesh] Cannot prepare all lifetime boundaries; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_mesh_base = base;
+    g_ktjl_mesh_hooks = std::move(prepared);
+    if (m::enable_hooks(g_ktjl_mesh_hooks.hooks) != m::Activation::ready) {
+        SPDLOG_WARN("[KTJL][StereoMesh] Cannot activate all lifetime boundaries; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_mesh_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoMesh] Validated serial gather, all four frame-allocation paths and original resource destruction; two-view lifetime guard ready (private trampolines, no image padding)");
+}
+
+void ktjl_lighting_thread_hook(safetyhook::Context& ctx) {
+    namespace l = uevr::ktjl::lighting;
+    if (!g_ktjl_lighting_ready.load(std::memory_order_acquire)) { return; }
+    if (l::select_serial(sdk::discovery::process_memory(), g_ktjl_lighting_base, ctx)) {
+        l::use_serial(ctx);
+        SPDLOG_INFO_ONCE("[KTJL][StereoLighting] Selected engine serial lighting before task launch for the validated two-view family; immediate RHI updates stay on the render thread");
+    }
+}
+
+void attempt_hook_ktjl_lighting_thread() {
+    namespace l = uevr::ktjl::lighting;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !uevr::ktjl::fog::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!l::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoLighting] Scheduler/serial-work contracts differ; two-view bootstrap stays disabled");
+        return;
+    }
+    auto prepared = l::prepare_hook(base, &ktjl_lighting_thread_hook,
+        [](void* target, safetyhook::MidHookFn callback, safetyhook::MidHook::Flags flags) {
+            return safetyhook::MidHook::create(target, callback, flags);
+        });
+    if (!prepared) {
+        SPDLOG_WARN("[KTJL][StereoLighting] Cannot prepare scheduling boundary; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_lighting_base = base;
+    g_ktjl_lighting_hook = std::move(*prepared);
+    if (!g_ktjl_lighting_hook.enable()) {
+        SPDLOG_WARN("[KTJL][StereoLighting] Cannot activate scheduling boundary; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_lighting_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoLighting] Validated pre-launch scheduler and matching serial lighting path; two-view thread guard ready");
+}
+
+void ktjl_cloud_output_producer_hook(safetyhook::Context& ctx) {
+    namespace c = uevr::ktjl::cloud_output;
+    if (!g_ktjl_cloud_output_ready.load(std::memory_order_acquire)) { return; }
+    const auto result = c::prepare_secondary(sdk::discovery::process_memory(), g_ktjl_cloud_output_base,
+        ctx.rcx, ctx.rdx, ctx.r12, ctx.r13, ctx.rdi, ctx.rsp, [](uintptr_t rhi, uintptr_t view) {
+            using Prepare = void(*)(uintptr_t, uintptr_t);
+            reinterpret_cast<Prepare>(g_ktjl_cloud_output_base + c::producer_rva)(rhi, view);
+            return true;
+        });
+    if (result == c::Outcome::prepared) {
+        SPDLOG_INFO_ONCE("[KTJL][StereoCloudOutput] Prepared independent right-eye cloud output/depth through the engine producer; primary allocation unchanged");
+    } else if (result == c::Outcome::rejected) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoCloudOutput] Secondary preparation did not validate; unsafe cloud consumers remain blocked");
+    }
+}
+
+void ktjl_cloud_output_consumer_hook(safetyhook::Context& ctx) {
+    namespace c = uevr::ktjl::cloud_output;
+    if (!g_ktjl_cloud_output_ready.load(std::memory_order_acquire)) { return; }
+    if (c::reject_consumer(sdk::discovery::process_memory(), g_ktjl_cloud_output_base, ctx.rdx, ctx.rsp)) {
+        c::skip_unprepared_secondary(ctx, g_ktjl_cloud_output_base);
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoCloudOutput] Skipped unprepared secondary cloud dispatch/composition; no null resource refs acquired");
+    }
+}
+
+void attempt_hook_ktjl_cloud_output() {
+    namespace c = uevr::ktjl::cloud_output;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !uevr::ktjl::fog::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!c::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoCloudOutput] Producer/consumer/cleanup contracts differ; two-view bootstrap stays disabled");
+        return;
+    }
+    auto prepared = c::prepare_hooks(base, &ktjl_cloud_output_producer_hook, &ktjl_cloud_output_consumer_hook,
+        [](void* target, safetyhook::MidHookFn callback, safetyhook::MidHook::Flags flags) {
+            return safetyhook::MidHook::create(target, callback, flags);
+        });
+    if (!prepared.producer || !prepared.consumer) {
+        SPDLOG_WARN("[KTJL][StereoCloudOutput] Cannot prepare both resource boundaries; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_cloud_output_base = base;
+    g_ktjl_cloud_output_hooks = std::move(prepared);
+    if (!c::enable_pair(g_ktjl_cloud_output_hooks.producer, g_ktjl_cloud_output_hooks.consumer)) {
+        SPDLOG_WARN("[KTJL][StereoCloudOutput] Resource boundary activation failed; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_cloud_output_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoCloudOutput] Validated primary-only producer and both per-view consumers; engine-owned secondary preparation ready");
+}
+
+uevr::ktjl::shadow::CollectionScope<>& ktjl_shadow_scope() {
+    thread_local uevr::ktjl::shadow::CollectionScope<> scope{};
+    return scope;
+}
+
+void ktjl_shadow_collection_hook(safetyhook::Context& ctx) {
+    if (!g_ktjl_shadow_ready.load(std::memory_order_acquire)) { return; }
+    ktjl_shadow_scope().begin(uevr::ktjl::shadow::read_collection(
+        sdk::discovery::process_memory(), g_ktjl_shadow_base, ctx.rcx, ctx.rsp));
+}
+
+void ktjl_shadow_gather_hook(safetyhook::Context& ctx) {
+    namespace s = uevr::ktjl::shadow;
+    if (!g_ktjl_shadow_ready.load(std::memory_order_acquire)) { return; }
+    const auto result = ktjl_shadow_scope().observe(sdk::discovery::process_memory(), g_ktjl_shadow_base,
+        ctx.rdx, ctx.rcx, ctx.rsp, ctx.rbp, ctx.r9);
+    if (result == s::Decision::duplicate) {
+        s::skip_duplicate(ctx, g_ktjl_shadow_base);
+        SPDLOG_INFO_ONCE("[KTJL][StereoShadows] Suppressed duplicate shadow gather within one two-view collection; original mesh task retained");
+    } else if (result == s::Decision::capacity) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoShadows] Collection identity limit reached; untracked shadows retain original gather");
+    }
+}
+
+void attempt_hook_ktjl_stereo_shadows() {
+    namespace s = uevr::ktjl::shadow;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !uevr::ktjl::fog::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!s::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoShadows] Collection/gather/caller contracts differ; two-view bootstrap stays disabled");
+        return;
+    }
+    auto prepared = s::prepare_hooks(base, &ktjl_shadow_collection_hook, &ktjl_shadow_gather_hook,
+        [](void* target, safetyhook::MidHookFn callback, safetyhook::MidHook::Flags flags) {
+            return safetyhook::MidHook::create(target, callback, flags);
+        });
+    if (!prepared.collection || !prepared.gather) {
+        SPDLOG_WARN("[KTJL][StereoShadows] Cannot prepare both entry guards; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_shadow_base = base;
+    g_ktjl_shadow_hooks = std::move(prepared);
+    const auto activated = s::enable_pair(g_ktjl_shadow_hooks.collection, g_ktjl_shadow_hooks.gather);
+    if (activated != s::Activation::ready) {
+        SPDLOG_WARN("[KTJL][StereoShadows] Entry guard activation failed ({}); two-view bootstrap stays disabled",
+            static_cast<unsigned>(activated));
+        return;
+    }
+    g_ktjl_shadow_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoShadows] Validated collection/void gather callers; bounded per-collection duplicate guard ready");
+}
 
 void ktjl_cloud_resource_hook(safetyhook::Context& ctx) {
     namespace c = uevr::ktjl::cloud;
     namespace f = uevr::ktjl::fog;
-    if ((ctx.rax & 0xFF) == 0 || !g_ktjl_cloud_ready.load(std::memory_order_acquire)) { return; }
+    if (!g_ktjl_cloud_ready.load(std::memory_order_acquire) ||
+        !c::consumer_enabled(ctx, g_ktjl_cloud_boundary)) { return; }
     const auto memory = sdk::discovery::process_memory();
     const auto result = c::ensure(memory, g_ktjl_cloud_base, ctx.rdi, ctx.r14, true, [&](const c::Plan& plan) {
         uintptr_t rhi{}, saved_rhi{}, current{};
@@ -9644,9 +9867,9 @@ void ktjl_cloud_resource_hook(safetyhook::Context& ctx) {
         return true;
     });
     if (result == f::Outcome::rejected) {
-        // Resume at the original test/jump with AL=false. No invalid RDG import
-        // is queued, and other cloud/shadow work and the primary state survive.
-        ctx.rax &= ~uintptr_t{0xFF};
+        // No invalid RDG import is queued; retain the primary state and the
+        // original loop-index restoration at either validated boundary.
+        c::skip_unsafe_import(ctx, g_ktjl_cloud_boundary, g_ktjl_cloud_base);
         SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoCloud] Skipping unsafe sky-AO import: eye state/resource validation failed");
     } else if (result == f::Outcome::allocated) {
         SPDLOG_INFO_ONCE("[KTJL][StereoCloud] Initialized separate engine-owned right-eye CloudSkyAOTexture before per-view RDG import");
@@ -9666,20 +9889,38 @@ void attempt_hook_ktjl_stereo_cloud() {
     }
     // Hook only the consumer boundary, not the shared leaf predicate: preserve
     // all registers across compiler-internal calls with nonstandard clobbers.
-    auto hook = safetyhook::create_mid(reinterpret_cast<void*>(base + c::hook_rva),
-        &ktjl_cloud_resource_hook, safetyhook::MidHook::StartDisabled);
-    if (!hook) {
+    auto prepared = c::prepare_consumer_hook(base, &ktjl_cloud_resource_hook,
+        [](void* target, safetyhook::MidHookFn callback, safetyhook::MidHook::Flags flags) {
+            return safetyhook::MidHook::create(target, callback, flags);
+        });
+    const auto log_error = [](const char* stage, const safetyhook::MidHook::Error& error) {
+        if (error.type == safetyhook::MidHook::Error::BAD_INLINE_HOOK) {
+            const auto& inner = error.inline_hook_error;
+            SPDLOG_WARN("[KTJL][StereoCloud] {}: inline error={} detail={:x}", stage,
+                static_cast<unsigned>(inner.type), inner.type == safetyhook::InlineHook::Error::BAD_ALLOCATION
+                    ? static_cast<uintptr_t>(inner.allocator_error) : reinterpret_cast<uintptr_t>(inner.ip));
+        } else {
+            SPDLOG_WARN("[KTJL][StereoCloud] {}: stub allocation error={}", stage,
+                static_cast<unsigned>(error.allocator_error));
+        }
+    };
+    if (prepared.primary_error) { log_error("Primary boundary preparation", *prepared.primary_error); }
+    if (!prepared.hook) {
+        if (prepared.error) { log_error("Consumer guard preparation failed", *prepared.error); }
         SPDLOG_WARN("[KTJL][StereoCloud] Cannot prepare consumer guard; two-view bootstrap stays disabled");
         return;
     }
     g_ktjl_cloud_base = base;
-    g_ktjl_cloud_hook = std::move(hook);
-    if (!g_ktjl_cloud_hook.enable().has_value()) {
+    g_ktjl_cloud_boundary = prepared.boundary;
+    g_ktjl_cloud_hook = std::move(prepared.hook);
+    if (const auto enabled = g_ktjl_cloud_hook.enable(); !enabled) {
+        log_error("Consumer guard enable failed", enabled.error());
         SPDLOG_WARN("[KTJL][StereoCloud] Cannot enable consumer guard; two-view bootstrap stays disabled");
         return;
     }
     g_ktjl_cloud_ready.store(true, std::memory_order_release);
-    SPDLOG_INFO("[KTJL][StereoCloud] Validated sky-AO consumer and view-state ownership; two-view repair ready");
+    SPDLOG_INFO("[KTJL][StereoCloud] Validated sky-AO consumer and view-state ownership; two-view repair ready ({} boundary)",
+        g_ktjl_cloud_boundary == c::Boundary::predicate ? "predicate" : "resource-import fallback");
 }
 
 void ktjl_compute_fog_hook(uintptr_t renderer, uintptr_t rhi, uintptr_t shadow_scattering) {
@@ -15490,8 +15731,12 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dead_island_ue425_hair_light_indices();
     attempt_hook_bodycam_update_pre_exposure();
     attempt_hook_sifu_native_mesh_commands();
+    attempt_hook_ktjl_cloud_output();
     attempt_hook_ktjl_stereo_cloud();
     attempt_hook_ktjl_stereo_fog();
+    attempt_hook_ktjl_stereo_shadows();
+    attempt_hook_ktjl_lighting_thread();
+    attempt_hook_ktjl_mesh_resources();
     const auto vtable = locate_fake_stereo_rendering_vtable();
     if (uevr::nascar::is_target() && vtable != uevr::nascar::image_base() + uevr::nascar::layout().stereo_vtable_rva) {
         SPDLOG_ERROR("[NASCAR][CodePreserving] Unexpected stereo vtable; refusing synthetic fallback");
@@ -28872,9 +29117,19 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }();
     if (ktjl && (!g_hook->m_ktjl_view_states_ready.load(std::memory_order_acquire) ||
                  !g_ktjl_fog_ready.load(std::memory_order_acquire) ||
-                 !g_ktjl_cloud_ready.load(std::memory_order_acquire))) {
+                 !g_ktjl_cloud_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_cloud_output_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_shadow_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_lighting_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_mesh_ready.load(std::memory_order_acquire))) {
         // GetProjectionData indexes ViewStates without a bounds check. Keep
         // the first (bootstrap) frame mono until the actual pair is validated.
+        return 1;
+    }
+
+    if (uevr::ktjl::mesh::keep_native_fallback(ktjl, vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled())) {
+        // Keep the confirmed non-crashing Native fallback. Only requested Native
+        // Fix or the bounded Ghost bootstrap enters the repaired two-view path.
         return 1;
     }
 
@@ -29400,8 +29655,12 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
             reject("not on the game thread");
             return;
         }
-        if (!g_ktjl_fog_ready.load(std::memory_order_acquire) || !g_ktjl_cloud_ready.load(std::memory_order_acquire)) {
-            reject("two-view fog/cloud resource repairs are not ready");
+        if (!g_ktjl_fog_ready.load(std::memory_order_acquire) || !g_ktjl_cloud_ready.load(std::memory_order_acquire) ||
+            !g_ktjl_cloud_output_ready.load(std::memory_order_acquire) ||
+            !g_ktjl_shadow_ready.load(std::memory_order_acquire) ||
+            !g_ktjl_lighting_ready.load(std::memory_order_acquire) ||
+            !g_ktjl_mesh_ready.load(std::memory_order_acquire)) {
+            reject("two-view fog/cloud output/shadow/lighting/mesh lifetime repairs are not ready");
             return;
         }
         const char* reason{};

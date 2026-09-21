@@ -204,8 +204,8 @@ add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
 [target.hifi-hook-memory-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/HiFiRushHookMemoryTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
-include-directories = ["src/"]
+sources = ["tests/HiFiRushHookMemoryTests.cpp", "tests/KtjLCloudHookTests.cpp", "tests/KtjLShadowGatherTests.cpp", "tests/KtjLCloudOutputTests.cpp", "tests/KtjLLightingThreadTests.cpp", "tests/KtjLMeshResourceTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
+include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["safetyhook", "spdlog", "kananlib"]
 cmake-after = """
