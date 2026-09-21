@@ -577,6 +577,11 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND hifi-hook-memory-tests_SOURCES
 		"tests/HiFiRushHookMemoryTests.cpp"
+		"tests/KtjLCloudHookTests.cpp"
+		"tests/KtjLShadowGatherTests.cpp"
+		"tests/KtjLCloudOutputTests.cpp"
+		"tests/KtjLLightingThreadTests.cpp"
+		"tests/KtjLMeshResourceTests.cpp"
 		"src/utility/HiFiRushHookMemory.cpp"
 	)
 
@@ -604,6 +609,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	target_include_directories(hifi-hook-memory-tests PRIVATE
 		"src/"
+		"dependencies/submodules/UESDK/src"
 	)
 
 	target_link_libraries(hifi-hook-memory-tests PRIVATE
@@ -1071,11 +1077,21 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
+	"src/mods/vr/KtjLCloudHook.hpp"
+	"src/mods/vr/KtjLCloudOutput.hpp"
+	"src/mods/vr/KtjLCloudOutputContracts.hpp"
+	"src/mods/vr/KtjLCloudOutputHook.hpp"
 	"src/mods/vr/KtjLCloudResources.hpp"
 	"src/mods/vr/KtjLFogResources.hpp"
 	"src/mods/vr/KtjLHookContracts.hpp"
+	"src/mods/vr/KtjLLightingThread.hpp"
+	"src/mods/vr/KtjLMeshResourceContracts.hpp"
+	"src/mods/vr/KtjLMeshResourceHook.hpp"
+	"src/mods/vr/KtjLMeshResources.hpp"
 	"src/mods/vr/KtjLOpenXRFactory.hpp"
 	"src/mods/vr/KtjLRendererEntry.hpp"
+	"src/mods/vr/KtjLShadowGather.hpp"
+	"src/mods/vr/KtjLShadowGatherHook.hpp"
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
 	"src/mods/vr/OverlayComponent.hpp"

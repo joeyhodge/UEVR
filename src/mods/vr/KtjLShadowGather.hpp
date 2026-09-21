@@ -1,0 +1,160 @@
+#pragma once
+
+#include <type_traits>
+#include "KtjLFogResources.hpp"
+
+namespace uevr::ktjl::shadow {
+
+// KTJL 67A09671 queues a shadow's mesh task before visiting the next sorted
+// shadow. Repeated pointers must not append/swap that task's borrowed arrays.
+inline constexpr uintptr_t collect_rva = 0x7A2DCC;
+inline constexpr uintptr_t gather_rva = 0x7A42F8;
+inline constexpr uintptr_t gather_ret_rva = 0x7A43EE;
+inline constexpr uintptr_t frame_offset = 0x50;
+inline constexpr uintptr_t depth_view_offset = 0x10;
+inline constexpr uintptr_t collect_saved_register_bytes = 0x38;
+inline constexpr uintptr_t collect_stack_bytes = 0x80;
+inline constexpr uintptr_t reused_views_frame_offset = 0x40;
+
+inline constexpr std::array<uint8_t, 36> collect_code{
+    0x48,0x89,0x5C,0x24,0x20,0x4C,0x89,0x44,0x24,0x18,0x48,0x89,0x54,0x24,0x10,
+    0x55,0x56,0x57,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48,0x8B,0xEC,
+    0x48,0x81,0xEC,0x80,0x00,0x00,0x00};
+inline constexpr std::array<uint8_t, 47> gather_code{
+    0x40,0x53,0x55,0x56,0x57,0x41,0x56,0x48,0x81,0xEC,0x60,0x0D,0x00,0x00,
+    0x48,0x8B,0x05,0x73,0x62,0x46,0x08,0x48,0x33,0xC4,0x48,0x89,0x84,0x24,0x50,0x0D,0x00,0x00,
+    0x33,0xED,0x4D,0x8B,0xD1,0x48,0x8B,0xF2,0x48,0x8B,0xF9,0x44,0x8D,0x75,0x01};
+inline constexpr std::array<uint8_t, 19> gather_epilogue{
+    0xE8,0x4F,0xDD,0xDB,0x01,0x48,0x81,0xC4,0x60,0x0D,0x00,0x00,0x41,0x5E,0x5F,0x5E,0x5D,0x5B,0xC3};
+inline constexpr std::array<uint8_t, 54> atlas_call{
+    0x4A,0x8B,0x4C,0x37,0x38,0x4C,0x8D,0x4D,0xC0,0x48,0x8B,0x45,0x48,0x48,0x8B,0xD3,
+    0x4C,0x89,0x6C,0x24,0x30,0x48,0x89,0x74,0x24,0x28,0x49,0x8B,0x0C,0x0F,0x48,0x89,0x44,0x24,0x20,
+    0xE8,0x89,0x13,0x00,0x00,0x41,0xFF,0xC4,0x4D,0x8D,0x7F,0x08,0x46,0x3B,0x64,0x37,0x40,0x7C,0xCA};
+inline constexpr std::array<uint8_t, 89> rsm_call{
+    0x4A,0x8B,0x44,0x37,0x38,0x4C,0x8D,0x4D,0xC0,0x4C,0x89,0x6C,0x24,0x30,0x48,0x8B,0xD3,
+    0x48,0x89,0x74,0x24,0x28,0x49,0x8B,0x0C,0x07,0x33,0xC0,0x48,0x89,0x45,0xD0,0x48,0x89,0x45,0xD8,
+    0x48,0x89,0x45,0xE0,0x48,0x89,0x45,0xE8,0x48,0x89,0x45,0xF0,0x48,0x89,0x45,0xF8,
+    0x48,0x8B,0x45,0x48,0x48,0x89,0x44,0x24,0x20,0xE8,0x24,0xCE,0xB4,0xFD,
+    0x48,0x8D,0x4D,0xD0,0xE8,0x17,0xAA,0xC1,0xFF,0x41,0xFF,0xC4,0x4D,0x8D,0x7F,0x08,
+    0x46,0x3B,0x64,0x37,0x40,0x7C,0xA7};
+inline constexpr std::array<uint8_t, 54> cubemap_call{
+    0x4A,0x8B,0x4C,0x37,0x38,0x4C,0x8D,0x4D,0xC0,0x48,0x8B,0x45,0x48,0x48,0x8B,0xD3,
+    0x4C,0x89,0x6C,0x24,0x30,0x48,0x89,0x74,0x24,0x28,0x4A,0x8B,0x0C,0x39,0x48,0x89,0x44,0x24,0x20,
+    0xE8,0xAD,0xCD,0xB4,0xFD,0x41,0xFF,0xC4,0x4D,0x8D,0x7F,0x08,0x46,0x3B,0x64,0x37,0x40,0x7C,0xCA};
+inline constexpr std::array<uint8_t, 60> preshadow_call{
+    0x48,0x8B,0x8B,0xC0,0x07,0x00,0x00,0x4C,0x8D,0x4D,0xC0,0x48,0x8B,0x45,0x50,0x48,0x8B,0xD3,
+    0x4C,0x89,0x6C,0x24,0x30,0x48,0x89,0x44,0x24,0x28,0x48,0x8B,0x45,0x48,0x48,0x8B,0x0C,0x39,
+    0x48,0x89,0x44,0x24,0x20,0xE8,0x52,0xCD,0xB4,0xFD,0xFF,0xC6,0x48,0x8D,0x7F,0x08,
+    0x3B,0xB3,0xC8,0x07,0x00,0x00,0x7C,0xC4};
+inline constexpr std::array<uint8_t, 54> translucency_call{
+    0x4A,0x8B,0x4C,0x37,0x38,0x4C,0x8D,0x4D,0xC0,0x48,0x8B,0x45,0x48,0x48,0x8B,0xD3,
+    0x4C,0x89,0x6C,0x24,0x30,0x48,0x89,0x74,0x24,0x28,0x4A,0x8B,0x0C,0x39,0x48,0x89,0x44,0x24,0x20,
+    0xE8,0xFF,0xCC,0xB4,0xFD,0x41,0xFF,0xC4,0x4D,0x8D,0x7F,0x08,0x46,0x3B,0x64,0x37,0x40,0x7C,0xCA};
+
+inline constexpr std::array<fog::CodeEvidence, 8> code_evidence{{
+    {collect_rva, collect_code}, {gather_rva, gather_code}, {0x7A43DC, gather_epilogue},
+    {0x7A2F47, atlas_call}, {0x2C57492, rsm_call}, {0x2C57523, cubemap_call},
+    {0x2C57578, preshadow_call}, {0x2C575D1, translucency_call}}};
+inline constexpr std::array<uintptr_t, 5> caller_returns{
+    0x7A2F6F, 0x2C574D4, 0x2C5754B, 0x2C575A6, 0x2C575F9};
+
+inline bool validate_code(const sdk::discovery::Memory& memory, uintptr_t base) {
+    if (!sdk::ktjl::validated_image(memory, base)) { return false; }
+    std::array<uint8_t, 128> bytes{};
+    for (const auto& evidence : code_evidence) {
+        if (!memory.executable || !memory.read || evidence.bytes.size() > bytes.size() ||
+            !memory.executable(memory.context, base + evidence.rva, evidence.bytes.size()) ||
+            !memory.read(memory.context, base + evidence.rva, bytes.data(), evidence.bytes.size()) ||
+            std::memcmp(bytes.data(), evidence.bytes.data(), evidence.bytes.size()) != 0) { return false; }
+    }
+    return true;
+}
+
+struct Collection {
+    uintptr_t renderer{}, frame_pointer{};
+    uint32_t frame{};
+    fog::Header views{};
+    std::array<uintptr_t, 2> states{};
+};
+
+inline std::optional<Collection> read_collection(const sdk::discovery::Memory& memory,
+                                               uintptr_t base, uintptr_t renderer, uintptr_t stack) {
+    Collection c{};
+    if (!sdk::ktjl::pointer(renderer) || !sdk::ktjl::pointer(stack) ||
+        stack < 0x10000 + collect_saved_register_bytes + collect_stack_bytes + 8 ||
+        !memory.load(renderer + frame_offset, c.frame) ||
+        !memory.load(renderer + fog::views_offset, c.views) || c.views.count != 2 ||
+        c.views.capacity < 2 || c.views.capacity > 16 || !sdk::ktjl::pointer(c.views.data)) { return std::nullopt; }
+    for (size_t i = 0; i < 2; ++i) {
+        fog::ViewPrefix v{};
+        uintptr_t table{};
+        if (!memory.load(c.views.data + i * fog::view_stride, v) ||
+            v.vtable != base + fog::view_vtable_rva || v.family != renderer + 0x10 ||
+            !sdk::ktjl::pointer(v.state) || !memory.load(v.state, table) ||
+            table != base + sdk::ktjl::stereo::state_vtable_rva) { return std::nullopt; }
+        c.states[i] = v.state;
+    }
+    fog::Header again{};
+    uint32_t frame{};
+    if (c.states[0] == c.states[1] || !memory.load(renderer + frame_offset, frame) || frame != c.frame ||
+        !memory.load(renderer + fog::views_offset, again) || again != c.views) { return std::nullopt; }
+    c.renderer = renderer;
+    c.frame_pointer = stack - collect_saved_register_bytes;
+    return c;
+}
+
+enum class Decision { original, duplicate, capacity };
+
+template<size_t Capacity = 1024, class Epoch = uint32_t>
+class CollectionScope {
+    static_assert(Capacity > 0 && (Capacity & (Capacity - 1)) == 0);
+    static_assert(std::is_unsigned_v<Epoch>);
+    struct Entry { uintptr_t shadow{}, view{}; Epoch epoch{}; };
+    std::array<Entry, Capacity> m_seen{};
+    std::optional<Collection> m_collection{};
+    Epoch m_epoch{};
+
+public:
+    void begin(std::optional<Collection> collection) {
+        m_collection = collection;
+        if (++m_epoch == 0) {
+            m_seen.fill({});
+            ++m_epoch;
+        }
+    }
+
+    Decision observe(const sdk::discovery::Memory& memory, uintptr_t base,
+                     uintptr_t renderer, uintptr_t shadow, uintptr_t stack,
+                     uintptr_t frame_pointer, uintptr_t reused_views) {
+        if (!m_collection || renderer != m_collection->renderer || frame_pointer != m_collection->frame_pointer ||
+            stack != frame_pointer - collect_stack_bytes - 8 || reused_views != frame_pointer - reused_views_frame_offset ||
+            !sdk::ktjl::pointer(shadow)) { return Decision::original; }
+        uintptr_t caller{};
+        if (!memory.load(stack, caller)) { return Decision::original; }
+        bool owned_caller{};
+        for (const auto rva : caller_returns) { owned_caller |= caller == base + rva; }
+        if (!owned_caller) { return Decision::original; }
+        fog::Header views{};
+        uint32_t frame{};
+        uintptr_t depth_view{};
+        fog::ViewPrefix v{};
+        if (!memory.load(renderer + frame_offset, frame) || frame != m_collection->frame ||
+            !memory.load(renderer + fog::views_offset, views) || views != m_collection->views ||
+            !memory.load(shadow + depth_view_offset, depth_view) || !sdk::ktjl::pointer(depth_view) ||
+            !memory.load(depth_view, v) || v.vtable != base + fog::view_vtable_rva || v.family != renderer + 0x10 ||
+            (v.state != m_collection->states[0] && v.state != m_collection->states[1])) { return Decision::original; }
+
+        auto index = ((shadow >> 4) ^ (shadow >> 16)) & (Capacity - 1);
+        for (size_t n = 0; n < Capacity; ++n, index = (index + 1) & (Capacity - 1)) {
+            auto& entry = m_seen[index];
+            if (entry.epoch != m_epoch) {
+                entry = {shadow, depth_view, m_epoch};
+                return Decision::original;
+            }
+            if (entry.shadow == shadow && entry.view == depth_view) { return Decision::duplicate; }
+        }
+        // Never evict an in-flight identity or suppress an unproven duplicate.
+        return Decision::capacity;
+    }
+};
+}
