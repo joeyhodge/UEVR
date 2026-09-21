@@ -82,6 +82,7 @@
 #include "KtjLFogResources.hpp"
 #include "KtjLCloudResources.hpp"
 #include "KtjLHookContracts.hpp"
+#include "KtjLRendererEntry.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
 #include "utility/BoundedTextureDiagnostics.hpp"
@@ -9908,6 +9909,32 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
     uintptr_t direct_callback_return = 0,
     uintptr_t excluded_viewport_draw = 0)
 {
+    {
+        namespace k = uevr::ktjl::renderer;
+        static const auto path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
+        const auto vr = VR::get();
+        if (k::should_use_native_fix(path, is_ue_4_25_runtime(),
+                g_framework != nullptr && g_framework->is_dx12(), vr != nullptr && vr->is_native_stereo_fix_enabled())) {
+            const auto memory = sdk::discovery::process_memory();
+            const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+            DWORD64 image_base{};
+            const auto function = RtlLookupFunctionEntry(direct_callback_return, &image_base, nullptr);
+            RUNTIME_FUNCTION entry{};
+            const auto candidate = function != nullptr && memory.load(reinterpret_cast<uintptr_t>(function), entry)
+                ? k::resolve(memory, base, direct_callback_return,
+                    {image_base, entry.BeginAddress, entry.EndAddress, entry.UnwindData},
+                    *sdk::FSceneViewFamily::get_layout_snapshot())
+                : std::nullopt;
+            if (!candidate || *candidate == excluded_viewport_draw) {
+                SPDLOG_WARN_ONCE("[KTJL][NativeStereoFix] Renderer entry/layout not validated; preserving the original renderer and retrying without a generic fallback");
+                return std::nullopt;
+            }
+            SPDLOG_INFO("[KTJL][NativeStereoFix] Validated callable renderer {:x} from callback {:x}; family FrameNumber +0x40, SDK layout unchanged",
+                *candidate, direct_callback_return);
+            return candidate;
+        }
+    }
+
     if (sifu_native_fix_renderer_is_current_game()) {
         const auto candidate = get_sifu_callable_renderer_range(direct_callback_return, excluded_viewport_draw);
         if (!candidate) {
