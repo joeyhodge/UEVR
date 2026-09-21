@@ -305,4 +305,3 @@ Outcome ensure(const sdk::discovery::Memory& memory, uintptr_t base, uintptr_t r
     return Outcome::rejected;
 }
 }
-
