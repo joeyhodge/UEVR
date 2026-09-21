@@ -80,6 +80,7 @@
 #include "SifuRendererEntry.hpp"
 #include "SifuMeshCommands.hpp"
 #include "KtjLFogResources.hpp"
+#include "KtjLHookContracts.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
 #include "utility/BoundedTextureDiagnostics.hpp"
@@ -39743,7 +39744,119 @@ void FFakeStereoRenderingHook::attempt_hook_update_viewport_rhi(uintptr_t return
     }
 }
 
+namespace {
+thread_local VRRenderTargetManager_Base* ktjl_pending_texture_manager{};
+
+bool ktjl_is_current_game() {
+    static const bool target = sdk::ktjl::matches_executable(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    return target;
+}
+
+bool ktjl_valid_texture(FRHITexture2D* texture, uint32_t width, uint32_t height) {
+    const auto memory = sdk::discovery::process_memory();
+    uintptr_t vtable{}, function{};
+    if (!memory.load(reinterpret_cast<uintptr_t>(texture), vtable) ||
+        !memory.load(vtable, function) || !memory.executable(memory.context, function, 1)) { return false; }
+    auto* resource = static_cast<ID3D12Resource*>(texture->get_native_resource());
+    if (!is_probable_d3d_native_resource(resource)) { return false; }
+    ID3D12Device4* device_raw{};
+    if (!get_d3d12_resource_device_guarded(resource, &device_raw)) { return false; }
+    Microsoft::WRL::ComPtr<ID3D12Device4> device;
+    device.Attach(device_raw);
+    const auto& hook = g_framework->get_d3d12_hook();
+    D3D12_RESOURCE_DESC desc{};
+    if (!hook || device.Get() != hook->get_device() || !get_d3d12_resource_desc_guarded(resource, desc)) { return false; }
+    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width == width && desc.Height == height &&
+        desc.DepthOrArraySize == 1 && desc.MipLevels == 1 && desc.SampleDesc.Count == 1 &&
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+}
+}
+
+bool VRRenderTargetManager_Base::prepare_ktjl_texture_hook(uintptr_t return_address) {
+    namespace k = uevr::ktjl::hooks;
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (return_address != base + k::allocate_return_rva) { return false; }
+    std::call_once(ktjl_texture_install_once, [&] {
+        if (!k::validates_texture(sdk::discovery::process_memory(), base)) {
+            SPDLOG_ERROR("[KTJL][Texture] Allocator/caller contract mismatch; refusing texture replay");
+            return;
+        }
+        auto hook = safetyhook::create_inline(reinterpret_cast<void*>(base + k::texture_create_rva),
+            &ktjl_create_texture_hook, safetyhook::InlineHook::StartDisabled);
+        if (!hook) {
+            SPDLOG_ERROR("[KTJL][Texture] Cannot prepare typed allocator hook; no partial pre/post hooks installed");
+            return;
+        }
+        ktjl_texture_base = base;
+        ktjl_texture_hook = std::move(hook);
+        if (!ktjl_texture_hook.enable()) {
+            SPDLOG_ERROR("[KTJL][Texture] Cannot enable typed allocator hook; leaving engine allocation unchanged");
+            return;
+        }
+        ktjl_texture_ready.store(true, std::memory_order_release);
+        set_up_texture_hook = true;
+        g_hook->attempt_hook_update_viewport_rhi(return_address);
+        SPDLOG_INFO("[KTJL][Texture] Validated typed UI/scene allocator hook installed; adjacent pre/post replay disabled");
+    });
+    return ktjl_texture_ready.load(std::memory_order_acquire);
+}
+
+void VRRenderTargetManager_Base::ktjl_create_texture_hook(uint32_t width, uint32_t height, uint8_t format, uint32_t mips,
+    uint32_t flags, uint32_t target_flags, bool separate, void* create_info,
+    FTexture2DRHIRef* out_rt, FTexture2DRHIRef* out_srv, uint32_t samples) {
+    auto* rtm = g_hook->get_render_target_manager();
+    const auto caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const auto call = [&](uint32_t w, uint32_t h, uint8_t pf, FTexture2DRHIRef* rt, FTexture2DRHIRef* srv) {
+        // Installed for the session. Do not serialize engine/RHI allocations on
+        // SafetyHook's mutex: the engine can wait for another allocation thread.
+        rtm->ktjl_texture_hook.unsafe_call<void>(w, h, pf, mips, flags, target_flags, separate, create_info, rt, srv, samples);
+    };
+    const auto expected_caller = caller == rtm->ktjl_texture_base + uevr::ktjl::hooks::texture_return_rva;
+    const auto pending = ktjl_pending_texture_manager == rtm;
+    if (expected_caller) { ktjl_pending_texture_manager = nullptr; }
+    if (!rtm->ktjl_texture_ready.load(std::memory_order_acquire) ||
+        !uevr::ktjl::hooks::owns_texture_call(rtm->ktjl_texture_base, caller, pending,
+            width, height, mips, flags, target_flags, separate)) {
+        call(width, height, format, out_rt, out_srv);
+        return;
+    }
+    const auto size = g_framework->get_d3d12_rt_size();
+    if (size.x <= 0 || size.y <= 0 || size.x > 16384 || size.y > 16384 ||
+        out_rt == nullptr || out_srv == nullptr || create_info == nullptr) {
+        call(width, height, format, out_rt, out_srv);
+        return;
+    }
+
+    // Same two allocations as the working pre/post path, now with an exact ABI
+    // and one hook. The engine's original scene output refs are never replaced.
+    call(size.x, size.y, 2, reinterpret_cast<FTexture2DRHIRef*>(&rtm->ktjl_ui_output),
+        reinterpret_cast<FTexture2DRHIRef*>(&rtm->ktjl_ui_shader_output));
+    call(width, height, 2, out_rt, out_srv);
+    if (!ktjl_valid_texture(rtm->ktjl_ui_output, size.x, size.y) ||
+        !ktjl_valid_texture(out_rt->texture, width, height) || rtm->ktjl_ui_output == out_rt->texture) {
+        rtm->ui_target = nullptr;
+        rtm->render_target = nullptr;
+        SPDLOG_ERROR("[KTJL][Texture] Completed allocation did not validate; refusing UI/scene publication");
+        return;
+    }
+    FRHITexture2D::set_vtable(*reinterpret_cast<void**>(out_rt->texture));
+    rtm->ui_target = rtm->ktjl_ui_output;
+    rtm->render_target = out_rt->texture;
+    ++rtm->last_texture_index;
+    VR::get()->reinitialize_renderer();
+    SPDLOG_INFO("[KTJL][Texture] Published validated UI {}x{} and scene {}x{} from one allocator transaction",
+        size.x, size.y, width, height);
+}
+
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
+    if (ktjl_is_current_game() && g_framework != nullptr && g_framework->is_dx12()) {
+        texture_hook_ref = nullptr;
+        shader_resource_hook_ref = nullptr;
+        allocate_texture_called = false;
+        ktjl_pending_texture_manager = prepare_ktjl_texture_hook(return_address) ? this : nullptr;
+        return false;
+    }
     if (uevr::nascar::is_target()) {
         // The engine allocates this target. Observe it at the validated virtual
         // Slate viewport callback instead of attempting image midhooks or replay.

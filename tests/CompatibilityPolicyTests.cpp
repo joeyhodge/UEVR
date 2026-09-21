@@ -21,6 +21,7 @@
 #include "mods/vr/SifuRendererEntry.hpp"
 #include "mods/vr/SifuMeshCommands.hpp"
 #include "mods/vr/KtjLFogResources.hpp"
+#include "mods/vr/KtjLHookContracts.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 
 namespace {
@@ -1895,7 +1896,94 @@ void test_ktjl_fog_resources() {
     expect(!f::allocation_completed(x.memory(), base, p), "changed renderer generation cannot publish a stale fog ref");
 }
 
+void test_ktjl_hook_contracts() {
+    namespace h = uevr::ktjl::hooks;
+    namespace k = sdk::ktjl;
+    constexpr uintptr_t base = 0x140000000;
+    struct Fixture {
+        struct Block { uintptr_t address; std::vector<uint8_t> bytes; bool code; };
+        std::vector<Block> blocks;
+        void add(uintptr_t a, std::span<const uint8_t> bytes, bool code) {
+            blocks.push_back({a, {bytes.begin(), bytes.end()}, code});
+        }
+        sdk::discovery::Memory memory() {
+            return {this, [](void* c, uintptr_t a, void* p, size_t n) {
+                for (const auto& b : static_cast<Fixture*>(c)->blocks) {
+                    if (a >= b.address && a - b.address <= b.bytes.size() && n <= b.bytes.size() - (a - b.address)) {
+                        std::memcpy(p, b.bytes.data() + a - b.address, n); return true;
+                    }
+                }
+                return false;
+            }, [](void* c, uintptr_t a, size_t n) {
+                for (const auto& b : static_cast<Fixture*>(c)->blocks) {
+                    if (b.code && a >= b.address && a - b.address <= b.bytes.size() && n <= b.bytes.size() - (a - b.address)) {
+                        return true;
+                    }
+                }
+                return false;
+            }};
+        }
+    };
+    Fixture original;
+    std::array<uint8_t, 512> pe{};
+    const auto put = [&](size_t offset, auto value) { std::memcpy(pe.data() + offset, &value, sizeof(value)); };
+    put(0, uint16_t{0x5A4D}); put(0x3C, uint32_t{0x80}); put(0x80, uint32_t{0x4550});
+    put(0x84, uint16_t{0x8664}); put(0x88, k::image_timestamp); put(0x98, uint16_t{0x20B}); put(0xD0, k::image_size);
+    original.add(base, pe, false);
+    original.add(base + 0xAFFF76, k::class_name_access, true);
+    original.add(base + 0xA1DC2F, k::object_iteration, true);
+    original.add(base + 0x58DC4E, k::name_entry_access, true);
+    original.add(base + h::add_object_rva, h::add_object_entry, true);
+    original.add(base + 0x6368D9, h::add_object_store, true);
+    original.add(base + h::texture_create_rva, h::texture_entry, true);
+    original.add(base + h::allocate_return_rva, h::texture_callsite, true);
+    const auto add_ok = [&](Fixture& f) { return h::validates_add_object(f.memory(), base, base + h::add_object_rva); };
+    const auto texture_ok = [&](Fixture& f) { return h::validates_texture(f.memory(), base); };
+    expect(add_ok(original) && texture_ok(original), "KTJL exact allocator and texture call contracts validate");
+    expect(!h::validates_add_object(original.memory(), base, base + h::add_object_rva + 1),
+        "KTJL never assigns the RDX ABI to a different discovered function");
+    for (size_t block = 1; block < original.blocks.size(); ++block) {
+        const auto check = [&](Fixture& f) { return block < 4 ? add_ok(f) || texture_ok(f) :
+            block < 6 ? add_ok(f) : texture_ok(f); };
+        for (size_t i = 0; i < original.blocks[block].bytes.size(); ++i) {
+            auto changed = original; changed.blocks[block].bytes[i] ^= 1;
+            expect(!check(changed), "KTJL changed ABI instructions reject hook installation");
+        }
+        auto changed = original; changed.blocks[block].bytes.pop_back();
+        expect(!check(changed), "KTJL truncated code rejects hook installation");
+        changed = original; changed.blocks[block].code = false;
+        expect(!check(changed), "KTJL non-executable candidate rejects hook installation");
+    }
+    for (const auto offset : {0, 0x80, 0x84, 0x88, 0x98, 0xD0}) {
+        auto changed = original; changed.blocks[0].bytes[offset] ^= 1;
+        expect(!add_ok(changed) && !texture_ok(changed), "KTJL wrong executable image rejects both repairs");
+    }
+    const auto caller = base + h::texture_return_rva;
+    expect(h::owns_texture_call(base, caller, true, 6008, 2936, 1, 0, 1, false), "KTJL exact viewport transaction is owned");
+    for (const auto size : {0U, 16385U}) {
+        expect(!h::owns_texture_call(base, caller, true, size, 2936, 1, 0, 1, false), "KTJL bad width rejected");
+        expect(!h::owns_texture_call(base, caller, true, 6008, size, 1, 0, 1, false), "KTJL bad height rejected");
+    }
+    expect(!h::owns_texture_call(base, caller + 1, true, 6008, 2936, 1, 0, 1, false), "unrelated texture caller passes through");
+    expect(!h::owns_texture_call(base, caller, false, 6008, 2936, 1, 0, 1, false), "unarmed/other-thread texture call passes through");
+    expect(!h::owns_texture_call(base, caller, true, 6008, 2936, 2, 0, 1, false), "changed mip contract passes through");
+    expect(!h::owns_texture_call(base, caller, true, 6008, 2936, 1, 8, 1, false), "changed creation flags pass through");
+    expect(!h::owns_texture_call(base, caller, true, 6008, 2936, 1, 0, 2, false), "changed target flags pass through");
+    expect(!h::owns_texture_call(base, caller, true, 6008, 2936, 1, 0, 1, true), "separate resolve textures pass through");
+    auto next = [](uintptr_t p, uintptr_t& out) { out = p == 0x20000 ? 0x30000 : 0; return true; };
+    const auto chain = h::collect_class_chain(0x20000, next);
+    expect(chain && chain->count == 2 && chain->classes[0] == 0x20000 && chain->classes[1] == 0x30000,
+        "complete class chain is snapshotted in order");
+    expect(!h::collect_class_chain(0, next) && !h::collect_class_chain(0xFFFFFF01, next), "null/unaligned class is rejected");
+    expect(!h::collect_class_chain(0x20000, [](uintptr_t, uintptr_t&) { return false; }), "unreadable class cannot publish a partial chain");
+    expect(!h::collect_class_chain(0x20000, [](uintptr_t p, uintptr_t& out) { out = p; return true; }), "self-cycle rejected");
+    expect(!h::collect_class_chain(0x20000, [](uintptr_t p, uintptr_t& out) { out = p == 0x20000 ? 0x30000 : 0x20000; return true; }),
+        "multi-node cycle rejected");
+    expect(!h::collect_class_chain(0x20000, [](uintptr_t p, uintptr_t& out) { out = p + 8; return true; }), "class traversal is bounded");
+}
+
 int main() {
+    test_ktjl_hook_contracts();
     test_ktjl_fog_resources();
     test_breathedge_inventory_world_guard();
     test_scene_view_layouts();
