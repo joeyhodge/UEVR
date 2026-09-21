@@ -99,12 +99,20 @@ inline constexpr uintptr_t state_copy_rva = 0x8DECD3;
 inline constexpr std::array<uint8_t, 11> state_copy_code{0x48,0x8B,0x47,0x18,0x48,0x89,0x87,0x48,0x37,0x00,0x00};
 
 inline constexpr uintptr_t hook_rva = 0x577C4DE;
+// Same consumer, after the predicate but before its per-view resource import.
+// The register loads can use a far trampoline without relocating a relative branch.
+inline constexpr uintptr_t fallback_hook_rva = 0x577C4F4;
+inline constexpr uintptr_t fallback_skip_rva = 0x577C8EE;
+inline constexpr std::array<uint8_t, 17> fallback_skip_code{
+    0x8B, 0x75, 0x90, 0x48, 0x8D, 0x85, 0xC0, 0x03, 0x00, 0x00,
+    0x48, 0x89, 0x9D, 0x50, 0x02, 0x00, 0x00
+};
 inline constexpr size_t state_offset = 0x3748;
 inline constexpr size_t sky_ao_offset = 0x1F28;
 inline constexpr size_t graph_rhi_stack_offset = 0x3C0;
 inline constexpr size_t saved_rhi_stack_offset = 0x68;
 
-inline constexpr std::array<fog::CodeEvidence, 12> code_evidence{{
+inline constexpr std::array<fog::CodeEvidence, 13> code_evidence{{
     {frame_rva, frame_code},
     {graph_init_rva, graph_init_code},
     {graph_rhi_rva, graph_rhi_code},
@@ -117,6 +125,7 @@ inline constexpr std::array<fog::CodeEvidence, 12> code_evidence{{
     {state_copy_rva, state_copy_code},
     {state_cleanup_rva, state_cleanup_code},
     {release_rva, release_code},
+    {fallback_skip_rva, fallback_skip_code},
 }};
 
 inline bool validate_code(const sdk::discovery::Memory& memory, uintptr_t base) {
