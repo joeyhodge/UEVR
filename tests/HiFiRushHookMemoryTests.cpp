@@ -40,6 +40,67 @@ bool rejected_write(uint8_t* p) {
 }
 __declspec(noinline) int replacement() { return 11; }
 void mid_replacement(safetyhook::Context&) {}
+bool reject_cloud{};
+void (*clobber_cloud_registers)(){};
+void cloud_consumer_test_hook(safetyhook::Context& ctx) {
+    clobber_cloud_registers();
+    if (reject_cloud) { ctx.rax &= ~uintptr_t{0xFF}; }
+}
+
+void test_ktjl_cloud_consumer_boundary() {
+    auto* page = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    expect(page != nullptr, "cloud boundary fixture allocates");
+    if (!page) { return; }
+    // RCX=predicate, RDX=XMM input, R8=output. Use the exact TEST/JZ bytes
+    // from KTJL's post-predicate boundary, including its original displacement.
+    const uint8_t setup[]{0x48,0x89,0xC8, 0x49,0xBA,1,2,3,4,5,6,7,8,
+        0x49,0xBB,8,7,6,5,4,3,2,1, 0xF3,0x0F,0x6F,0x2A};
+    constexpr uint8_t boundary[]{0x84,0xC0,0x0F,0x84,0x0B,0x04,0x00,0x00};
+    const uint8_t outputs[]{0x4D,0x89,0x10, 0x4D,0x89,0x58,0x08, 0xF3,0x41,0x0F,0x7F,0x68,0x10,
+        0x49,0x89,0x48,0x20, 0x49,0x89,0x50,0x28};
+    std::memcpy(page, setup, sizeof(setup));
+    auto* entry = page + sizeof(setup);
+    std::memcpy(entry, boundary, sizeof(boundary));
+    const auto emit_return = [&](uint8_t* at, uint32_t value) {
+        std::memcpy(at, outputs, sizeof(outputs)); at += sizeof(outputs);
+        *at++ = 0xB8; std::memcpy(at, &value, sizeof(value)); at[4] = 0xC3;
+    };
+    emit_return(entry + sizeof(boundary), 7);
+    emit_return(entry + sizeof(boundary) + 0x40B, 3);
+    const uint8_t clobber[]{0x31,0xC9, 0x31,0xD2, 0x45,0x31,0xC0, 0x45,0x31,0xC9,
+        0x45,0x31,0xD2, 0x45,0x31,0xDB, 0x66,0x0F,0xEF,0xED, 0xC3};
+    std::memcpy(page + 0x600, clobber, sizeof(clobber));
+    clobber_cloud_registers = reinterpret_cast<void(*)()>(page + 0x600);
+    DWORD old{};
+    VirtualProtect(page, 0x1000, PAGE_EXECUTE_READ, &old);
+    FlushInstructionCache(GetCurrentProcess(), page, 0x1000);
+    using Call = uint64_t(*)(uint64_t, const uint64_t*, uint64_t*);
+    const auto call = reinterpret_cast<Call>(page);
+    const std::array<uint64_t, 2> input{0x13579BDF2468ACE0, 0xFEDCBA9876543210};
+    std::array<uint64_t, 6> output{};
+    expect(call(1, input.data(), output.data()) == 7 && call(0, input.data(), output.data()) == 3,
+        "unhooked cloud predicate has both expected branches");
+    auto hook = safetyhook::MidHook::create(entry, cloud_consumer_test_hook, safetyhook::MidHook::StartDisabled);
+    expect(hook.has_value(), "exact KTJL cloud TEST/JZ boundary relocates");
+    if (hook) {
+        expect(hook->enable().has_value(), "cloud consumer midhook enables");
+        for (const auto reject : {false, true}) {
+            reject_cloud = reject;
+            for (const auto enabled : {uint64_t{0}, uint64_t{1}}) {
+                output = {};
+                const auto result = call(enabled, input.data(), output.data());
+                expect(result == (enabled && !reject ? 7 : 3), "cloud guard preserves or clears only the predicate result");
+                expect(output[0] == 0x0807060504030201 && output[1] == 0x0102030405060708 &&
+                    output[2] == input[0] && output[3] == input[1] && output[4] == enabled &&
+                    output[5] == reinterpret_cast<uintptr_t>(input.data()),
+                    "allocator-like calls cannot corrupt preserved volatile registers or XMM state");
+            }
+        }
+        expect(hook->disable().has_value() && call(1, input.data(), output.data()) == 7,
+            "cloud boundary uninstall restores the original branch");
+    }
+    VirtualFree(page, 0, MEM_RELEASE);
+}
 }
 
 int wmain(int argc, wchar_t** argv) {
@@ -180,6 +241,7 @@ int wmain(int argc, wchar_t** argv) {
         VirtualProtect(page, 0x1000, PAGE_EXECUTE_READ, &old);
     }
     safetyhook::set_protection_override(nullptr);
+    test_ktjl_cloud_consumer_boundary();
     VirtualFree(page, 0, MEM_RELEASE);
     VirtualFree(second, 0, MEM_RELEASE);
     std::cout << "Hi-Fi hook-memory tests: " << failures << " failures\n";
