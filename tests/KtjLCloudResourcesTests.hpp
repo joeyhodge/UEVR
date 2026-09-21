@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iterator>
 #include "mods/vr/KtjLCloudResources.hpp"
+#include "sdk/KtjLSceneViewLayout.hpp"
 
 void test_ktjl_cloud_memory_image(const char* path) {
     // A flat module snapshot uses RVAs as file offsets. This proves the actual
@@ -23,6 +24,8 @@ void test_ktjl_cloud_memory_image(const char* path) {
             return address >= base && address - base <= data.size() && size <= data.size() - (address - base);
         }};
     expect(uevr::ktjl::cloud::validate_code(memory, 0x140000000), "cloud/pool/cleanup contracts match the captured KTJL executable");
+    expect(sdk::ktjl::view_layout::validate_code(memory, 0x140000000),
+        "KTJL color/pass/IPD/world-scale consumers match the captured executable");
     expect(uevr::ktjl::hooks::validates_texture(memory, 0x140000000) &&
         uevr::ktjl::hooks::validates_native_texture(memory, 0x140000000),
         "typed allocator, C0->20 getter and typeless mapping match the captured executable");

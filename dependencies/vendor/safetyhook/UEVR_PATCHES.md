@@ -7,6 +7,8 @@ UEVR patches
    - Prefer ordinary nearby `VirtualAlloc` results first.
    - Only scan executable INT3 sleds if ordinary nearby allocation fails.
    - Reason: some game executables expose writable/protected image padding that is unsafe to reuse for trampolines.
+   - An isolated `Allocator::create_private()` pool never falls back to INT3
+     padding. KTJL mesh-lifetime hooks opt in; the global/default policy is unchanged.
 
 2. `src/inline_hook.cpp`
    - Fail cleanly if trampoline/intermediary memory cannot be unprotected.
