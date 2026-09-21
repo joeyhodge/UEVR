@@ -80,6 +80,7 @@
 #include "SifuRendererEntry.hpp"
 #include "SifuMeshCommands.hpp"
 #include "KtjLFogResources.hpp"
+#include "KtjLCloudResources.hpp"
 #include "KtjLHookContracts.hpp"
 #include "SWZeroCompanyBinary.hpp"
 #include "utility/HiFiRushHookMemory.hpp"
@@ -9446,6 +9447,69 @@ bool sifu_is_supported_dx11_runtime() {
 safetyhook::InlineHook g_ktjl_compute_fog_hook{};
 std::atomic_bool g_ktjl_fog_ready{};
 uintptr_t g_ktjl_fog_base{};
+std::atomic_bool g_ktjl_cloud_ready{};
+safetyhook::MidHook g_ktjl_cloud_hook{};
+uintptr_t g_ktjl_cloud_base{};
+
+void ktjl_cloud_resource_hook(safetyhook::Context& ctx) {
+    namespace c = uevr::ktjl::cloud;
+    namespace f = uevr::ktjl::fog;
+    if ((ctx.rax & 0xFF) == 0 || !g_ktjl_cloud_ready.load(std::memory_order_acquire)) { return; }
+    const auto memory = sdk::discovery::process_memory();
+    const auto result = c::ensure(memory, g_ktjl_cloud_base, ctx.rdi, ctx.r14, true, [&](const c::Plan& plan) {
+        uintptr_t rhi{}, saved_rhi{}, current{};
+        f::Header again{};
+        if (!memory.load(ctx.rbp + c::graph_rhi_stack_offset, rhi) ||
+            !memory.load(ctx.rbp + c::saved_rhi_stack_offset, saved_rhi) || rhi != saved_rhi ||
+            !sdk::ktjl::pointer(rhi) || !is_readable_process_range(rhi, 0xD8) ||
+            !is_writable_process_range(plan.right_slot, sizeof(uintptr_t)) ||
+            !memory.load(plan.right_slot, current) || current != plan.previous_right ||
+            !memory.load(plan.renderer + f::views_offset, again) || again != plan.views) { return false; }
+        using FindFreeElement = bool(*)(uintptr_t, uintptr_t, const void*, uintptr_t,
+                                       const wchar_t*, bool, bool, bool);
+        reinterpret_cast<FindFreeElement>(g_ktjl_cloud_base + f::pool_entry_rva)(
+            g_ktjl_cloud_base + f::pool_rva, rhi, plan.left.descriptor.bytes.data(), plan.right_slot,
+            L"CloudSkyAOTexture", true, true, false);
+        return true;
+    });
+    if (result == f::Outcome::rejected) {
+        // Resume at the original test/jump with AL=false. No invalid RDG import
+        // is queued, and other cloud/shadow work and the primary state survive.
+        ctx.rax &= ~uintptr_t{0xFF};
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][StereoCloud] Skipping unsafe sky-AO import: eye state/resource validation failed");
+    } else if (result == f::Outcome::allocated) {
+        SPDLOG_INFO_ONCE("[KTJL][StereoCloud] Initialized separate engine-owned right-eye CloudSkyAOTexture before per-view RDG import");
+    }
+}
+
+void attempt_hook_ktjl_stereo_cloud() {
+    namespace c = uevr::ktjl::cloud;
+    const auto path = utility::get_module_pathw(utility::get_executable());
+    if (!path || !uevr::ktjl::fog::supports(*path, g_framework != nullptr && g_framework->is_dx12())) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    if (!c::validate_code(sdk::discovery::process_memory(), base)) {
+        SPDLOG_WARN("[KTJL][StereoCloud] Producer/consumer/RHI/pool/cleanup contract mismatch; two-view bootstrap stays disabled");
+        return;
+    }
+    // Hook only the consumer boundary, not the shared leaf predicate: preserve
+    // all registers across compiler-internal calls with nonstandard clobbers.
+    auto hook = safetyhook::create_mid(reinterpret_cast<void*>(base + c::hook_rva),
+        &ktjl_cloud_resource_hook, safetyhook::MidHook::StartDisabled);
+    if (!hook) {
+        SPDLOG_WARN("[KTJL][StereoCloud] Cannot prepare consumer guard; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_cloud_base = base;
+    g_ktjl_cloud_hook = std::move(hook);
+    if (!g_ktjl_cloud_hook.enable().has_value()) {
+        SPDLOG_WARN("[KTJL][StereoCloud] Cannot enable consumer guard; two-view bootstrap stays disabled");
+        return;
+    }
+    g_ktjl_cloud_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[KTJL][StereoCloud] Validated sky-AO consumer and view-state ownership; two-view repair ready");
+}
 
 void ktjl_compute_fog_hook(uintptr_t renderer, uintptr_t rhi, uintptr_t shadow_scattering) {
     namespace f = uevr::ktjl::fog;
@@ -15225,6 +15289,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dead_island_ue425_hair_light_indices();
     attempt_hook_bodycam_update_pre_exposure();
     attempt_hook_sifu_native_mesh_commands();
+    attempt_hook_ktjl_stereo_cloud();
     attempt_hook_ktjl_stereo_fog();
     const auto vtable = locate_fake_stereo_rendering_vtable();
     if (uevr::nascar::is_target() && vtable != uevr::nascar::image_base() + uevr::nascar::layout().stereo_vtable_rva) {
@@ -28215,7 +28280,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
         return path && sdk::ktjl::matches_executable(*path);
     }();
     if (ktjl && (!g_hook->m_ktjl_view_states_ready.load(std::memory_order_acquire) ||
-                 !g_ktjl_fog_ready.load(std::memory_order_acquire))) {
+                 !g_ktjl_fog_ready.load(std::memory_order_acquire) ||
+                 !g_ktjl_cloud_ready.load(std::memory_order_acquire))) {
         // GetProjectionData indexes ViewStates without a bounds check. Keep
         // the first (bootstrap) frame mono until the actual pair is validated.
         return 1;
@@ -28743,8 +28809,8 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
             reject("not on the game thread");
             return;
         }
-        if (!g_ktjl_fog_ready.load(std::memory_order_acquire)) {
-            reject("two-view fog resource repair is not ready");
+        if (!g_ktjl_fog_ready.load(std::memory_order_acquire) || !g_ktjl_cloud_ready.load(std::memory_order_acquire)) {
+            reject("two-view fog/cloud resource repairs are not ready");
             return;
         }
         const char* reason{};
@@ -39753,23 +39819,47 @@ bool ktjl_is_current_game() {
     return target;
 }
 
-bool ktjl_valid_texture(FRHITexture2D* texture, uint32_t width, uint32_t height) {
+bool ktjl_query_identity(IUnknown* object, IUnknown** out) {
+    *out = nullptr;
+    __try { return object != nullptr && SUCCEEDED(object->QueryInterface(IID_PPV_ARGS(out))) && *out != nullptr; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { *out = nullptr; return false; }
+}
+
+bool ktjl_valid_texture(FRHITexture2D* texture, uint32_t width, uint32_t height, const char* label) {
+    namespace k = uevr::ktjl::hooks;
     const auto memory = sdk::discovery::process_memory();
-    uintptr_t vtable{}, function{};
-    if (!memory.load(reinterpret_cast<uintptr_t>(texture), vtable) ||
-        !memory.load(vtable, function) || !memory.executable(memory.context, function, 1)) { return false; }
-    auto* resource = static_cast<ID3D12Resource*>(texture->get_native_resource());
-    if (!is_probable_d3d_native_resource(resource)) { return false; }
+    const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
+    const auto reject = [&](const char* reason) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][Texture] {} {}x{} rejected: {}", label, width, height, reason);
+        return false;
+    };
+    // Read only the proven getter's chain. No speculative virtual calls or SDK
+    // offset publication are needed to validate a just-completed allocation.
+    const auto native = k::read_native_texture(memory, base, reinterpret_cast<uintptr_t>(texture));
+    if (!native) { return reject("FRHITexture/native chain mismatch"); }
+    auto* resource = reinterpret_cast<ID3D12Resource*>(*native);
+    if (!is_probable_d3d_native_resource(resource)) { return reject("native resource vtable mismatch"); }
     ID3D12Device4* device_raw{};
-    if (!get_d3d12_resource_device_guarded(resource, &device_raw)) { return false; }
+    if (!get_d3d12_resource_device_guarded(resource, &device_raw)) { return reject("GetDevice failed"); }
     Microsoft::WRL::ComPtr<ID3D12Device4> device;
     device.Attach(device_raw);
     const auto& hook = g_framework->get_d3d12_hook();
+    Microsoft::WRL::ComPtr<IUnknown> actual_identity, expected_identity;
+    if (!hook || !ktjl_query_identity(device.Get(), actual_identity.GetAddressOf()) ||
+        !ktjl_query_identity(hook->get_device(), expected_identity.GetAddressOf()) ||
+        actual_identity.Get() != expected_identity.Get()) { return reject("resource belongs to a different device"); }
     D3D12_RESOURCE_DESC desc{};
-    if (!hook || device.Get() != hook->get_device() || !get_d3d12_resource_desc_guarded(resource, desc)) { return false; }
-    return desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && desc.Width == width && desc.Height == height &&
-        desc.DepthOrArraySize == 1 && desc.MipLevels == 1 && desc.SampleDesc.Count == 1 &&
-        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM && (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
+    if (!get_d3d12_resource_desc_guarded(resource, desc)) { return reject("GetDesc failed"); }
+    const k::TextureDescription description{static_cast<uint32_t>(desc.Dimension), static_cast<uint32_t>(desc.Format),
+        static_cast<uint32_t>(desc.Flags), desc.Height, desc.Width, desc.DepthOrArraySize, desc.MipLevels,
+        desc.SampleDesc.Count, desc.SampleDesc.Quality};
+    if (!k::valid_texture_description(description, width, height)) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[KTJL][Texture] {} native descriptor: {}x{} format={} flags={:x} array={} mips={} samples={}",
+            label, desc.Width, desc.Height, static_cast<uint32_t>(desc.Format), static_cast<uint32_t>(desc.Flags),
+            desc.DepthOrArraySize, desc.MipLevels, desc.SampleDesc.Count);
+        return false;
+    }
+    return true;
 }
 }
 
@@ -39778,7 +39868,8 @@ bool VRRenderTargetManager_Base::prepare_ktjl_texture_hook(uintptr_t return_addr
     const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
     if (return_address != base + k::allocate_return_rva) { return false; }
     std::call_once(ktjl_texture_install_once, [&] {
-        if (!k::validates_texture(sdk::discovery::process_memory(), base)) {
+        if (!k::validates_texture(sdk::discovery::process_memory(), base) ||
+            !k::validates_native_texture(sdk::discovery::process_memory(), base)) {
             SPDLOG_ERROR("[KTJL][Texture] Allocator/caller contract mismatch; refusing texture replay");
             return;
         }
@@ -39833,8 +39924,9 @@ void VRRenderTargetManager_Base::ktjl_create_texture_hook(uint32_t width, uint32
     call(size.x, size.y, 2, reinterpret_cast<FTexture2DRHIRef*>(&rtm->ktjl_ui_output),
         reinterpret_cast<FTexture2DRHIRef*>(&rtm->ktjl_ui_shader_output));
     call(width, height, 2, out_rt, out_srv);
-    if (!ktjl_valid_texture(rtm->ktjl_ui_output, size.x, size.y) ||
-        !ktjl_valid_texture(out_rt->texture, width, height) || rtm->ktjl_ui_output == out_rt->texture) {
+    const bool valid_ui = ktjl_valid_texture(rtm->ktjl_ui_output, size.x, size.y, "UI");
+    const bool valid_scene = ktjl_valid_texture(out_rt->texture, width, height, "scene");
+    if (!valid_ui || !valid_scene || rtm->ktjl_ui_output == out_rt->texture) {
         rtm->ui_target = nullptr;
         rtm->render_target = nullptr;
         SPDLOG_ERROR("[KTJL][Texture] Completed allocation did not validate; refusing UI/scene publication");
