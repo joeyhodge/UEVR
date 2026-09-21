@@ -1425,6 +1425,7 @@ private:
     mutable uevr::native_frame::Recorder<> m_native_frame_diagnostics{};
     std::atomic<uint64_t> m_native_stereo_ue57_capability_failure_generation{};
     std::atomic_bool m_native_stereo_localplayer_bootstrap_failed{};
+    std::atomic_bool m_ktjl_view_states_ready{};
 
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
     safetyhook::InlineHook m_tick_hook{};
