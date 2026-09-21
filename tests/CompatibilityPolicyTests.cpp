@@ -1982,7 +1982,11 @@ void test_ktjl_hook_contracts() {
     expect(!h::collect_class_chain(0x20000, [](uintptr_t p, uintptr_t& out) { out = p + 8; return true; }), "class traversal is bounded");
 }
 
-int main() {
+#include "KtjLCloudResourcesTests.hpp"
+
+int main(int argc, char** argv) {
+    if (argc == 3 && std::string_view{argv[1]} == "--ktjl-memory-image") { test_ktjl_cloud_memory_image(argv[2]); }
+    test_ktjl_cloud_resources();
     test_ktjl_hook_contracts();
     test_ktjl_fog_resources();
     test_breathedge_inventory_world_guard();
