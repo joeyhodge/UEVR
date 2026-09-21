@@ -33,6 +33,7 @@
 #include <sdk/FArrayProperty.hpp>
 #include <sdk/UMotionControllerComponent.hpp>
 #include <sdk/Utility.hpp>
+#include <sdk/DiscoveryMemory.hpp>
 #ifdef min
 #undef min
 #endif
@@ -45,6 +46,7 @@
 
 #include "GameSpecific.hpp"
 #include "UObjectHook.hpp"
+#include "vr/KtjLHookContracts.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
 
@@ -62,6 +64,12 @@ constexpr size_t STALKER2_CLASS_BROWSER_CLASS_CAP = 256;
 constexpr size_t STALKER2_CLASS_BROWSER_OBJECT_CAP = 128;
 
 bool is_uobject_array_member(sdk::UObjectBase* object);
+
+bool is_ktjl_uobjecthook() {
+    static const bool target = sdk::ktjl::matches_executable(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    return target;
+}
 
 bool is_ue_5_1_uobjecthook_guard_enabled() {
     static const bool is_ue_5_1 = []() {
@@ -543,6 +551,45 @@ bool is_safe_uobject_candidate(UObjectHook& hook, sdk::UObjectBase* object, bool
     return is_probably_uobject_layout(cls);
 }
 
+bool ktjl_registered_header(uintptr_t address, sdk::ktjl::ObjectHeader& header) {
+    if (!sdk::ktjl::pointer(address)) { return false; }
+    // This runs for the initial object backfill too. Guard direct reads rather
+    // than issuing many VirtualQuery/ReadProcessMemory calls per superclass.
+    __try {
+        header = *reinterpret_cast<const sdk::ktjl::ObjectHeader*>(address);
+        auto* array = sdk::FUObjectArray::get();
+        if (!array || header.index < 0 || header.index >= array->get_object_count() ||
+            !sdk::ktjl::pointer(header.vtable) || !sdk::ktjl::pointer(header.class_private) ||
+            (header.name_index >> 16) >= 0x4000) { return false; }
+        const auto* item = array->get_object(header.index);
+        return item && reinterpret_cast<uintptr_t>(item->get_object()) == address;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+bool ktjl_read_super(uintptr_t address, uintptr_t& next) {
+    sdk::ktjl::ObjectHeader header{};
+    if (!ktjl_registered_header(address, header)) { return false; }
+    __try {
+        next = reinterpret_cast<uintptr_t>(reinterpret_cast<sdk::UStruct*>(address)->get_super_struct());
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+std::optional<uevr::ktjl::hooks::ClassChain> ktjl_class_chain(sdk::UObjectBase* object) {
+    static const bool image_validated = sdk::ktjl::validated_image(sdk::discovery::process_memory(),
+        reinterpret_cast<uintptr_t>(utility::get_executable()));
+    sdk::ktjl::ObjectHeader header{};
+    if (!image_validated || sdk::UObjectBase::get_class_private_offset() != offsetof(sdk::ktjl::ObjectHeader, class_private) ||
+        !ktjl_registered_header(reinterpret_cast<uintptr_t>(object), header)) {
+        return std::nullopt;
+    }
+    return uevr::ktjl::hooks::collect_class_chain(header.class_private, ktjl_read_super);
+}
+
 bool validate_ue4_14_through_4_17_uobject_layout(UObjectHook& hook, sdk::FUObjectArray* object_array) try {
     if (!is_ue4_14_through_4_17_uobjecthook_guard_enabled()) {
         return true;
@@ -808,6 +855,13 @@ void UObjectHook::hook() {
 
     auto add_object_fn = sdk::UObjectBase::get_add_object();
 
+    if (is_ktjl_uobjecthook() && add_object_fn &&
+        !uevr::ktjl::hooks::validates_add_object(sdk::discovery::process_memory(),
+            reinterpret_cast<uintptr_t>(utility::get_executable()), *add_object_fn)) {
+        SPDLOG_WARN("[KTJL][UObjectHook] AddObject instruction contract changed; using array tracking, not argument guessing");
+        add_object_fn.reset();
+    }
+
     if (!add_object_fn) {
         SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
@@ -820,7 +874,17 @@ void UObjectHook::hook() {
     }
 
     if (add_object_fn) {
-        m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
+        // KTJL's hook can run as soon as it is enabled. Publish its trampoline
+        // first; the validated allocator takes the UObject in RDX, not RCX.
+        if (is_ktjl_uobjecthook()) {
+            m_add_object_hook = safetyhook::create_inline((void*)add_object_fn.value(), &add_object,
+                safetyhook::InlineHook::StartDisabled);
+            if (m_add_object_hook && !m_add_object_hook.enable()) {
+                m_add_object_hook.reset();
+            }
+        } else {
+            m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
+        }
 
         if (m_add_object_hook) {
             m_add_object_hooked = true;
@@ -1200,7 +1264,12 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
         }
     }*/
 
-    const auto c = object->get_class();
+    // Validate the entire chain before inserting anything into the tracking
+    // maps. A partially constructed/stale class must not poison later readers.
+    const auto ktjl_chain = is_ktjl_uobjecthook() ? ktjl_class_chain(object) :
+        std::optional<uevr::ktjl::hooks::ClassChain>{};
+    if (is_ktjl_uobjecthook() && !ktjl_chain) { return false; }
+    const auto c = ktjl_chain ? reinterpret_cast<sdk::UClass*>(ktjl_chain->classes[0]) : object->get_class();
 
     if (c == nullptr) {
         return false;
@@ -1217,7 +1286,7 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
     m_objects.insert(object);
     meta_object->super_classes.clear();
     meta_object->full_name = object->get_full_name();
-    meta_object->uclass = object->get_class();
+    meta_object->uclass = c;
 
     m_most_recent_objects.push_front((sdk::UObject*)object);
 
@@ -1225,7 +1294,10 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
         m_most_recent_objects.pop_back();
     }
 
-    for (auto super = (sdk::UStruct*)object->get_class(); super != nullptr; super = super->get_super_struct()) {
+    size_t chain_index{};
+    for (auto super = (sdk::UStruct*)c; super != nullptr;
+         super = ktjl_chain ? (++chain_index < ktjl_chain->count ?
+             reinterpret_cast<sdk::UStruct*>(ktjl_chain->classes[chain_index]) : nullptr) : super->get_super_struct()) {
         meta_object->super_classes.push_back((sdk::UClass*)super);
 
         m_objects_by_class[(sdk::UClass*)super].insert(object);
@@ -1236,7 +1308,14 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
                     return;
                 }
 
-                for (auto super = (sdk::UStruct*)object->get_class(); super != nullptr; super = super->get_super_struct()) {
+                const auto chain = is_ktjl_uobjecthook() ? ktjl_class_chain(object) :
+                    std::optional<uevr::ktjl::hooks::ClassChain>{};
+                if (is_ktjl_uobjecthook() && !chain) { return; }
+                size_t index{};
+                for (auto super = chain ? reinterpret_cast<sdk::UStruct*>(chain->classes[0]) :
+                         (sdk::UStruct*)object->get_class(); super != nullptr;
+                     super = chain ? (++index < chain->count ?
+                         reinterpret_cast<sdk::UStruct*>(chain->classes[index]) : nullptr) : super->get_super_struct()) {
                     std::function<void(sdk::UObject*)> job{};
 
                     {
@@ -5974,6 +6053,14 @@ void UObjectHook::ui_handle_struct(void* addr, sdk::UStruct* uclass) {
 void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* stack1, void* stack2, void* stack3, void* stack4) {
     auto& hook = UObjectHook::get();
     auto result = hook->m_add_object_hook.unsafe_call<void*>(rcx, rdx, r8, r9, stack1, stack2, stack3, stack4);
+
+    if (is_ktjl_uobjecthook()) {
+        // Installation validated the RDX -> FUObjectItem::Object store. RCX is
+        // FUObjectArray and can look readable enough to fool the generic probe.
+        SPDLOG_INFO_ONCE("[KTJL][UObjectHook] Using instruction-validated RDX UObject argument");
+        hook->add_new_object(reinterpret_cast<sdk::UObjectBase*>(rdx));
+        return result;
+    }
 
     if (is_stalker2_uobjecthook_guard_enabled() &&
         !hook->m_stalker2_uobject_full_scan_requested.load(std::memory_order_relaxed)) {

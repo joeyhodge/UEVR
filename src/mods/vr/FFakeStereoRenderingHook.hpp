@@ -406,6 +406,19 @@ protected:
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 
+    bool prepare_ktjl_texture_hook(uintptr_t return_address);
+    static void ktjl_create_texture_hook(uint32_t width, uint32_t height, uint8_t format, uint32_t mips,
+        uint32_t flags, uint32_t target_flags, bool separate, void* create_info,
+        FTexture2DRHIRef* out_rt, FTexture2DRHIRef* out_srv, uint32_t samples);
+    std::once_flag ktjl_texture_install_once{};
+    safetyhook::InlineHook ktjl_texture_hook{};
+    std::atomic_bool ktjl_texture_ready{};
+    uintptr_t ktjl_texture_base{};
+    // Engine-owned TRefCountPtr output slots: only the engine assigns/releases
+    // these references, just as in the existing duplicate-UI allocation path.
+    FRHITexture2D* ktjl_ui_output{};
+    FRHITexture2D* ktjl_ui_shader_output{};
+
     FTexture2DRHIRef* texture_hook_ref{nullptr};
     FTexture2DRHIRef* shader_resource_hook_ref{nullptr};
     safetyhook::MidHook pre_texture_hook{}; // only used if pixel format cvar is missing
