@@ -22,6 +22,7 @@ int test_console_text();
 int test_discovery_validation();
 int test_cadence_replay();
 int test_ue58_ui_initialization();
+int test_ktjl_openxr_factory();
 
 namespace {
 int failures{};
@@ -292,6 +293,7 @@ int main() {
     failures += test_discovery_validation();
     failures += test_cadence_replay();
     failures += test_ue58_ui_initialization();
+    failures += test_ktjl_openxr_factory();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;

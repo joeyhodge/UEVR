@@ -49,6 +49,7 @@
 #include "VR.hpp"
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
+#include "vr/KtjLOpenXRFactory.hpp"
 
 namespace {
 bool is_stalker2_executable_cached();
@@ -3100,7 +3101,25 @@ std::optional<std::string> VR::initialize_openxr() {
         instance_create_info.applicationInfo.applicationName[XR_MAX_APPLICATION_NAME_SIZE - 1] = '\0';
         instance_create_info.applicationInfo.apiVersion = XR_CURRENT_API_VERSION;
         
+        std::unique_ptr<uevr::ktjl::openxr_factory::Repair> ktjl_factory_repair;
+        if (m_ktjl_openxr_factory_repair->value() && g_framework->is_dx12()) {
+            const auto path = utility::get_module_pathw(utility::get_executable());
+            if (path) {
+                ktjl_factory_repair = std::make_unique<uevr::ktjl::openxr_factory::Repair>(true, true,
+                    *path, m_requested_runtime_name->value());
+            }
+        }
+
         result = xrCreateInstance(&instance_create_info, &m_openxr->instance);
+        if (ktjl_factory_repair && ktjl_factory_repair->retry_after_failure(
+                static_cast<int32_t>(result), m_openxr->instance == XR_NULL_HANDLE)) {
+            // Same embedded loader, arguments, extensions, and thread; only WMR's
+            // validated Factory1 import differs during this one bounded retry.
+            result = xrCreateInstance(&instance_create_info, &m_openxr->instance);
+            spdlog::info("[KTJL][OpenXR][FactoryRepair] Corrected create result={}, instance={}",
+                static_cast<int32_t>(result), (void*)m_openxr->instance);
+            ktjl_factory_repair->finish(result == XR_SUCCESS && m_openxr->instance != XR_NULL_HANDLE);
+        }
 
         // we can't convert the result to a string here
         // because the function requires the instance to be valid
@@ -9514,6 +9533,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
         m_show_fps->draw("Show FPS");
         m_show_statistics->draw("Show Engine Statistics");
         m_enable_hitch_diagnostics->draw("Enable Hitch Diagnostics");
+        m_ktjl_openxr_factory_repair->draw("KTJL OpenXR DXGI repair (next launch)");
+        if (m_ktjl_openxr_factory_repair->value()) {
+            ImGui::TextWrapped("Opt-in for the validated KTJL DX12 + WMR runtime only. Restart the game to test. OpenVR and the game's DXGI route are unchanged.");
+        }
         if (m_enable_hitch_diagnostics->value()) {
             ImGui::TextWrapped("Records recent OpenXR/D3D12 state and writes hitch_snapshot JSON files after large tick gaps.");
         } else {
