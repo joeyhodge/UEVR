@@ -26,6 +26,10 @@ void test_ktjl_cloud_memory_image(const char* path) {
     expect(uevr::ktjl::hooks::validates_texture(memory, 0x140000000) &&
         uevr::ktjl::hooks::validates_native_texture(memory, 0x140000000),
         "typed allocator, C0->20 getter and typeless mapping match the captured executable");
+    namespace r = uevr::ktjl::renderer;
+    expect(r::resolve(memory, 0x140000000, 0x140000000 + r::callback_return_rva,
+        {0x140000000, r::entry_rva, r::end_rva, r::unwind_rva}, ktjl_renderer_test_layout()) == 0x140000000 + r::entry_rva,
+        "callable renderer, +0x40 frame provenance, extension loop and unwind match the captured executable");
 }
 
 void test_ktjl_cloud_resources() {
