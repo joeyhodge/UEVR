@@ -20,6 +20,7 @@
 #include "mods/vr/HiFiRushRendererEntry.hpp"
 #include "mods/vr/SifuRendererEntry.hpp"
 #include "mods/vr/SifuMeshCommands.hpp"
+#include "mods/vr/KtjLFogResources.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
 
 namespace {
@@ -1736,7 +1737,166 @@ void test_breathedge_inventory_world_guard() {
     }
 }
 
+void test_ktjl_fog_resources() {
+    namespace f = uevr::ktjl::fog;
+    namespace k = sdk::ktjl;
+    constexpr uintptr_t base = 0x140000000, renderer = 0x60000000, views = 0x61000000;
+    constexpr uintptr_t left = 0x62000000, right = 0x62001000, states = 0x63000000;
+    const auto slot = views + f::view_stride + f::fog_reference_offset;
+    struct Fixture {
+        struct Block { uintptr_t address; std::vector<uint8_t> bytes; bool executable{}; };
+        std::vector<Block> blocks;
+        size_t reads{};
+        void add(uintptr_t address, const void* p, size_t n, bool code = false) {
+            const auto first = static_cast<const uint8_t*>(p);
+            blocks.push_back({address, {first, first + n}, code});
+        }
+        void put(uintptr_t address, const void* p, size_t n) {
+            for (auto& b : blocks) {
+                if (address >= b.address && address - b.address <= b.bytes.size() && n <= b.bytes.size() - (address - b.address)) {
+                    std::memcpy(b.bytes.data() + address - b.address, p, n); return;
+                }
+            }
+            expect(false, "KTJL fog fixture writes stay in mapped storage");
+        }
+        sdk::discovery::Memory memory() {
+            return {this,
+                [](void* c, uintptr_t a, void* p, size_t n) {
+                    auto& self = *static_cast<Fixture*>(c); ++self.reads;
+                    for (const auto& b : self.blocks) {
+                        if (a >= b.address && a - b.address <= b.bytes.size() && n <= b.bytes.size() - (a - b.address)) {
+                            std::memcpy(p, b.bytes.data() + a - b.address, n); return true;
+                        }
+                    }
+                    return false;
+                },
+                [](void* c, uintptr_t a, size_t n) {
+                    for (const auto& b : static_cast<Fixture*>(c)->blocks) {
+                        if (b.executable && a >= b.address && a - b.address <= b.bytes.size() && n <= b.bytes.size() - (a - b.address)) { return true; }
+                    }
+                    return false;
+                }};
+        }
+    };
+    const auto resource = [&](uintptr_t texture) {
+        std::array<uint8_t, 0xF0> data{};
+        const auto put = [&](size_t offset, auto value) { std::memcpy(data.data() + offset, &value, sizeof(value)); };
+        put(0, base + f::pool_vtable_rva); put(8, texture); put(0x10, texture); put(0x18, texture + 0x100);
+        put(0x88, int32_t{2}); put(0xE8, base + f::pool_rva);
+        put(0x90 + 0x14, int32_t{80}); put(0x90 + 0x18, int32_t{45}); put(0x90 + 0x1C, int32_t{64});
+        put(0x90 + 0x20, int32_t{1}); put(0x90 + 0x26, uint16_t{1}); put(0x90 + 0x28, uint16_t{1});
+        put(0x90 + 0x2C, uint32_t{10}); put(0x90 + 0x30, uint32_t{8}); put(0x90 + 0x34, uint32_t{0x40010009});
+        return data;
+    };
+    const auto fixture = [&] {
+        Fixture x;
+        std::array<uint8_t, 512> pe{};
+        const auto put = [&](size_t offset, auto value) { std::memcpy(pe.data() + offset, &value, sizeof(value)); };
+        put(0, uint16_t{0x5A4D}); put(0x3C, uint32_t{0x80}); put(0x80, uint32_t{0x4550});
+        put(0x84, uint16_t{0x8664}); put(0x88, k::image_timestamp); put(0x98, uint16_t{0x20B}); put(0xD0, k::image_size);
+        x.add(base, pe.data(), pe.size());
+        const auto code = [&](uintptr_t rva, const auto& bytes) { x.add(base + rva, bytes.data(), bytes.size(), true); };
+        code(0xAFFF76, k::class_name_access); code(0xA1DC2F, k::object_iteration); code(0x58DC4E, k::name_entry_access);
+        for (const auto& e : f::code_evidence) { code(e.rva, e.bytes); }
+        const auto accessor = base + f::get_desc_rva, release = base + 0x55AAE0, destructor = base + 0x57836D0;
+        x.add(base + f::pool_vtable_rva + 0x10, &accessor, 8); x.add(base + f::pool_vtable_rva + 0x38, &release, 8);
+        x.add(base + f::view_vtable_rva, &destructor, 8);
+        const f::Header h{views, 2, 2}; x.add(renderer + f::views_offset, &h, sizeof(h));
+        for (size_t i = 0; i < 2; ++i) {
+            const f::ViewPrefix v{base + f::view_vtable_rva, 0, renderer + 0x10, states + 0x100 * i};
+            const auto vt = base + k::stereo::state_vtable_rva;
+            const f::Rect rect{static_cast<int32_t>(640 * i), 0, static_cast<int32_t>(640 * (i + 1)), 360};
+            const auto ref = i == 0 ? left : uintptr_t{};
+            x.add(views + f::view_stride * i, &v, sizeof(v)); x.add(v.state, &vt, 8);
+            x.add(views + f::view_stride * i + f::rect_offset, &rect, sizeof(rect));
+            x.add(views + f::view_stride * i + f::fog_reference_offset, &ref, 8);
+        }
+        const auto a = resource(0x64000000), b = resource(0x65000000);
+        x.add(left, a.data(), a.size()); x.add(right, b.data(), b.size());
+        return x;
+    };
+    const auto mutate = [](Fixture& x, uintptr_t address, auto value) { x.put(address, &value, sizeof(value)); };
+    expect(f::supports(L"D:\\Games\\SuicideSquad_KTJL.exe", true), "KTJL fog gate accepts exact DX12 executable");
+    for (const auto path : {L"Other.exe", L"SuicideSquad_KTJL.exe.bak", L"D:\\SuicideSquad_KTJL.exe\\Other.exe"}) {
+        expect(!f::supports(path, true), "KTJL fog repair does not select other titles");
+    }
+    expect(!f::supports(L"SuicideSquad_KTJL.exe", false), "KTJL fog repair does not change DX11");
+    auto x = fixture();
+    expect(f::validate_code(x.memory(), base), "KTJL complete fog producer/consumer/allocator/cleanup evidence validates");
+    for (const auto& e : f::code_evidence) {
+        for (size_t i = 0; i < e.bytes.size(); ++i) {
+            x = fixture(); mutate(x, base + e.rva + i, uint8_t(e.bytes[i] ^ 1));
+            expect(!f::validate_code(x.memory(), base), "any changed KTJL fog instruction rejects installation");
+        }
+        x = fixture();
+        for (auto& b : x.blocks) { if (b.address == base + e.rva) { b.bytes.pop_back(); } }
+        expect(!f::validate_code(x.memory(), base), "truncated KTJL fog instructions reject installation");
+    }
+    for (const auto address : {base + 0x88, base + f::pool_vtable_rva + 0x10, base + f::pool_vtable_rva + 0x38, base + f::view_vtable_rva}) {
+        x = fixture(); mutate(x, address, uint32_t{});
+        expect(!f::validate_code(x.memory(), base), "changed KTJL image/accessor/cleanup vtable rejects installation");
+    }
+    x = fixture();
+    auto p = f::prepare(x.memory(), base, renderer, true);
+    expect(p.decision == f::Decision::allocate && p.right_slot == slot && p.left.address == left && x.reads <= 16,
+        "null right fog volume resolves only its owned ref with bounded render-thread reads");
+    const auto before = x.blocks;
+    int calls{};
+    auto allocate = [&](const f::Plan& plan) { ++calls; mutate(x, plan.right_slot, right); return true; };
+    expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::allocated && calls == 1,
+        "right volume allocation succeeds only after its engine-owned postconditions validate");
+    for (size_t i = 0; i < before.size(); ++i) {
+        if (before[i].address != slot) { expect(before[i].bytes == x.blocks[i].bytes, "fog allocation preserves every primary/family/scene byte"); }
+    }
+    expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::existing && calls == 1,
+        "existing distinct right fog volume is never overwritten or reallocated");
+    for (int frame = 0; frame < 20; ++frame) {
+        mutate(x, slot, uintptr_t{});
+        expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::allocated,
+            "new per-frame FViewInfo fog refs are repaired without stale private texture caching");
+    }
+    x = fixture(); calls = 0;
+    expect(f::ensure(x.memory(), base, renderer, false, allocate) == f::Outcome::passthrough && calls == 0 && x.reads == 0,
+        "disabled fog stays an exact no-allocation passthrough");
+    for (int count : {0, 1, 3, 4}) {
+        x = fixture(); mutate(x, renderer + f::views_offset + 8, int32_t{count});
+        expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::passthrough && calls == 0,
+            "mono/AFR/capture/non-pair families never enter the two-view repair");
+    }
+    const std::array<uintptr_t, 17> invalid{
+        views, views + f::view_stride, views + 0x10, views + f::view_stride + 0x10,
+        views + 0x18, states, states + 0x100, views + f::rect_offset + 8,
+        views + f::view_stride + f::rect_offset + 12, views + f::fog_reference_offset,
+        left, left + 8, left + 0x10, left + 0x18, left + 0x88, left + 0xE8, left + 0x90 + 0x2C};
+    for (auto address : invalid) {
+        x = fixture(); mutate(x, address, uint32_t{});
+        expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::rejected && calls == 0,
+            "invalid view/resource/descriptor never authorizes an engine allocator call");
+    }
+    x = fixture(); mutate(x, views + f::view_stride + 0x18, states);
+    expect(f::prepare(x.memory(), base, renderer, true).decision == f::Decision::reject, "aliased eye states are not a validated pair");
+    x = fixture(); mutate(x, slot, left);
+    expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::rejected, "never share the primary fog texture with the secondary eye");
+    x = fixture();
+    expect(f::ensure(x.memory(), base, renderer, true, [](const f::Plan&) { return false; }) == f::Outcome::rejected,
+        "allocator refusal prevents dispatch with a null resource");
+    expect(f::ensure(x.memory(), base, renderer, true, [](const f::Plan&) { return true; }) == f::Outcome::rejected,
+        "allocator return alone cannot authorize dispatch");
+    x = fixture(); mutate(x, right + 8, uintptr_t{0x64000000});
+    expect(f::ensure(x.memory(), base, renderer, true, allocate) == f::Outcome::rejected,
+        "distinct pooled objects cannot alias the same GPU texture");
+    for (const auto offset : {0x14, 0x18, 0x1C, 0x20, 0x26, 0x28, 0x2C, 0x34}) {
+        x = fixture(); mutate(x, left + 0x90 + offset, uint16_t{});
+        expect(f::prepare(x.memory(), base, renderer, true).decision == f::Decision::reject,
+            "invalid volume extent/array/mip/sample/format/flags are rejected");
+    }
+    x = fixture(); p = f::prepare(x.memory(), base, renderer, true); mutate(x, slot, right);
+    mutate(x, renderer + f::views_offset, views + 0x20000);
+    expect(!f::allocation_completed(x.memory(), base, p), "changed renderer generation cannot publish a stale fog ref");
+}
+
 int main() {
+    test_ktjl_fog_resources();
     test_breathedge_inventory_world_guard();
     test_scene_view_layouts();
     test_rendering_mode_matrix();
