@@ -333,6 +333,22 @@ void test_uobject_metadata_filter() {
     missing_identity.identity_valid = false;
     expect(!utility::uobject::cached_recent_object_is_current(missing_identity, true, validate_identity) && identity_checks == 0,
         "recent UObjects without a cached FUObjectArray identity fail closed");
+
+    identity_checks = 0;
+    expect(utility::uobject::cached_object_identity_is_current(
+               poisoned, 17, 29, true, true, false, validate_identity) && identity_checks == 1,
+        "retained UObject pointers validate captured FUObjectArray identities without dereferencing them");
+    identity_checks = 0;
+    expect(!utility::uobject::cached_object_identity_is_current(
+               poisoned, 17, 28, true, true, false, validate_identity) && identity_checks == 1,
+        "retained UObject pointers reject mismatched serial numbers");
+    identity_checks = 0;
+    expect(utility::uobject::cached_object_identity_is_current(
+               poisoned, -1, -1, false, true, false, validate_identity) && identity_checks == 0,
+        "legacy retained UObject paths preserve pointer tracking when identity capture is unavailable");
+    expect(!utility::uobject::cached_object_identity_is_current(
+               poisoned, -1, -1, false, true, true, validate_identity) && identity_checks == 0,
+        "strict retained UObject paths fail closed when identity capture is unavailable");
 }
 }
 
