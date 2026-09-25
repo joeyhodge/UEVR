@@ -160,9 +160,10 @@ public:
         sdk::AActor* adjustment_visualizer{nullptr};
         bool adjusting{false};
 
-        // Stalker 2 can miss UObject destruction notifications in lazy mode.
         // Preserve the FUObjectArray identity so a recycled pointer is never
-        // treated as the component that was originally attached.
+        // treated as the component that was originally attached. Stalker 2
+        // requires this identity; other games retain legacy fallback behavior
+        // only when an identity could not be captured.
         int32_t component_internal_index{-1};
         int32_t component_serial_number{-1};
         bool component_identity_valid{false};
@@ -198,6 +199,21 @@ private:
     bool exists_unsafe(sdk::UObjectBase* object) const {
         return m_objects.contains(object);
     }
+
+    struct TrackedObjectSnapshot {
+        sdk::UObjectBase* object{};
+        std::wstring full_name{};
+        sdk::UClass* uclass{};
+        int32_t internal_index{-1};
+        int32_t serial_number{-1};
+        bool identity_valid{false};
+    };
+
+    std::optional<TrackedObjectSnapshot> get_tracked_object_snapshot(sdk::UObjectBase* object) const;
+    bool is_tracked_object_current(const TrackedObjectSnapshot& snapshot) const;
+    bool is_tracked_object_current(sdk::UObjectBase* object) const;
+    void set_camera_attach_object(sdk::UObject* object);
+    bool is_camera_attach_current() const;
 
     void hook();
     bool add_new_object(sdk::UObjectBase* object, bool run_creation_jobs = true, bool candidate_already_validated = false);
@@ -283,6 +299,9 @@ private:
         std::wstring full_name{};
         sdk::UClass* uclass{nullptr};
         std::vector<sdk::UClass*> super_classes{};
+        int32_t internal_index{-1};
+        int32_t serial_number{-1};
+        bool identity_valid{false};
     };
 
     std::unordered_set<sdk::UObjectBase*> m_objects{};
@@ -359,6 +378,9 @@ private:
     struct CameraState {
         sdk::UObject* object{nullptr};
         glm::vec3 offset{};
+        int32_t internal_index{-1};
+        int32_t serial_number{-1};
+        bool identity_valid{false};
     } m_camera_attach{};
 
     auto get_spawned_spheres() const {
