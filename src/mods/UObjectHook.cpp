@@ -9,6 +9,7 @@
 #include <utility/Module.hpp>
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
+#include <utility/Scan.hpp>
 #include <utility/UObjectMetadataFilter.hpp>
 
 #include <sdk/UObjectBase.hpp>
@@ -48,6 +49,7 @@
 #include "GameSpecific.hpp"
 #include "UObjectHook.hpp"
 #include "vr/KtjLHookContracts.hpp"
+#include "utility/UObjectAllocatorDiscovery.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
 
@@ -70,6 +72,136 @@ bool is_ktjl_uobjecthook() {
     static const bool target = sdk::ktjl::matches_executable(
         utility::get_module_pathw(utility::get_executable()).value_or(L""));
     return target;
+}
+
+bool is_townfall_ue56_uobjecthook() {
+    static const bool target = [] {
+        const auto executable = utility::get_executable();
+        const auto path = utility::get_module_pathw(executable);
+        if (!path || _wcsicmp(std::filesystem::path(*path).filename().c_str(),
+                L"Townfall-Win64-Shipping.exe") != 0) {
+            return false;
+        }
+
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 5 && LOWORD(version.dwFileVersionMS) == 6;
+    }();
+    return target;
+}
+
+std::optional<uintptr_t> find_townfall_object_allocator() {
+    const auto fail = [](const char* stage) -> std::optional<uintptr_t> {
+        SPDLOG_WARN("[Townfall][UObjectHook] Allocator discovery rejected at {}", stage);
+        return std::nullopt;
+    };
+
+    const auto executable = utility::get_executable();
+    const auto module_size = utility::get_module_size(executable).value_or(0);
+    if (!executable || module_size < 0x100) {
+        return fail("image bounds");
+    }
+
+    const auto base = reinterpret_cast<uintptr_t>(executable);
+    if (module_size > std::numeric_limits<uintptr_t>::max() - base) {
+        return fail("image overflow");
+    }
+
+    // These three independent UE5.6 diagnostics all belong to
+    // FUObjectArray::AllocateUObjectIndex. Unlike a code-byte signature, their
+    // owning unwind function and GUObjectArray references survive relinking.
+    constexpr std::array<const wchar_t*, 3> markers{
+        L"Attempting to add %s at index %d but another object",
+        L"Unable to add more objects to disregard for GC pool",
+        L"Maximum number of UObjects",
+    };
+    std::array<uintptr_t, markers.size()> strings{};
+    for (size_t i = 0; i < markers.size(); ++i) {
+        const auto matches = utility::scan_strings(executable, std::wstring{markers[i]});
+        if (matches.size() != 1) {
+            return fail("diagnostic uniqueness");
+        }
+        strings[i] = matches.front();
+    }
+
+    const auto initial_refs = utility::scan_displacement_references(executable, strings.front());
+    if (initial_refs.size() != 1) {
+        return fail("primary diagnostic reference");
+    }
+
+    DWORD64 unwind_base{};
+    const auto* unwind = RtlLookupFunctionEntry(initial_refs.front(), &unwind_base, nullptr);
+    if (!unwind || unwind_base != base || unwind->EndAddress <= unwind->BeginAddress ||
+        unwind->EndAddress > module_size) {
+        return fail("unwind bounds");
+    }
+
+    const auto start = base + unwind->BeginAddress;
+    const auto end = base + unwind->EndAddress;
+    const auto resolved_start = utility::find_function_start_unwind(initial_refs.front());
+    if (!resolved_start || *resolved_start != start || end - start > 0x2000) {
+        return fail("function start");
+    }
+
+    uevr::uobject::discovery::AllocatorEvidence evidence{};
+    evidence.image_base = base;
+    evidence.image_size = module_size;
+    evidence.function_start = start;
+    evidence.function_end = end;
+    evidence.diagnostic_references[0] = initial_refs.front();
+    evidence.unwind_matches = true;
+
+    for (size_t i = 1; i < strings.size(); ++i) {
+        const auto refs = utility::scan_displacement_references(start, end - start, strings[i]);
+        if (refs.size() != 1) {
+            return fail("secondary diagnostic reference");
+        }
+        evidence.diagnostic_references[i] = refs.front();
+    }
+
+    const auto executable_page = [executable](uintptr_t address) {
+        MEMORY_BASIC_INFORMATION region{};
+        if (VirtualQuery(reinterpret_cast<void*>(address), &region, sizeof(region)) == 0 ||
+            region.AllocationBase != executable || region.State != MEM_COMMIT ||
+            (region.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+            return false;
+        }
+        const auto protect = region.Protect & 0xff;
+        return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+            protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+    };
+    evidence.executable = executable_page(start) && executable_page(end - 1);
+
+    const auto* array = sdk::FUObjectArray::get();
+    if (!array || sdk::UObjectBase::get_internal_index_offset() != 0xc ||
+        sdk::FUObjectArray::get_item_object_offset() != 0) {
+        return fail("object-array layout");
+    }
+
+    const auto array_base = reinterpret_cast<uintptr_t>(array);
+    for (size_t offset = 0; offset <= 0x100; offset += 4) {
+        if (array_base > std::numeric_limits<uintptr_t>::max() - offset) {
+            return fail("object-array address overflow");
+        }
+        if (!utility::scan_displacement_references(start, end - start, array_base + offset).empty()) {
+            ++evidence.object_array_references;
+        }
+    }
+
+    for (const auto reference : utility::scan_displacement_references(executable, start)) {
+        const auto instruction = utility::resolve_instruction(reference);
+        if (instruction && std::string_view{instruction->instrux.Mnemonic}.starts_with("CALL") &&
+            (instruction->addr < start || instruction->addr >= end)) {
+            ++evidence.direct_callers;
+        }
+    }
+
+    if (!uevr::uobject::discovery::validates_allocator_evidence(evidence)) {
+        return fail("independent allocator evidence");
+    }
+
+    SPDLOG_INFO("[Townfall][UObjectHook] Validated FUObjectArray allocator at {:x} ({} array refs, {} callers)",
+        start, evidence.object_array_references, evidence.direct_callers);
+    return start;
 }
 
 bool is_ue_5_1_uobjecthook_guard_enabled() {
@@ -854,7 +986,13 @@ void UObjectHook::hook() {
         return;
     }
 
-    auto add_object_fn = sdk::UObjectBase::get_add_object();
+    // Townfall inlines AddObject in its normal constructor. Both constructor
+    // and deferred registration call the same FUObjectArray allocator instead.
+    auto add_object_fn = is_townfall_ue56_uobjecthook() ? find_townfall_object_allocator() :
+        sdk::UObjectBase::get_add_object();
+    if (is_townfall_ue56_uobjecthook() && !add_object_fn) {
+        SPDLOG_WARN("[Townfall][UObjectHook] Allocator evidence changed; using existing array-tracking fallback");
+    }
 
     if (is_ktjl_uobjecthook() && add_object_fn &&
         !uevr::ktjl::hooks::validates_add_object(sdk::discovery::process_memory(),
@@ -877,11 +1015,15 @@ void UObjectHook::hook() {
     if (add_object_fn) {
         // KTJL's hook can run as soon as it is enabled. Publish its trampoline
         // first; the validated allocator takes the UObject in RDX, not RCX.
-        if (is_ktjl_uobjecthook()) {
+        if (is_ktjl_uobjecthook() || is_townfall_ue56_uobjecthook()) {
             m_add_object_hook = safetyhook::create_inline((void*)add_object_fn.value(), &add_object,
                 safetyhook::InlineHook::StartDisabled);
+            if (m_add_object_hook && is_townfall_ue56_uobjecthook()) {
+                m_townfall_allocator_valid.store(true, std::memory_order_release);
+            }
             if (m_add_object_hook && !m_add_object_hook.enable()) {
                 m_add_object_hook.reset();
+                m_townfall_allocator_valid.store(false, std::memory_order_release);
             }
         } else {
             m_add_object_hook = safetyhook::create_inline((void**)add_object_fn.value(), &add_object);
@@ -6102,6 +6244,16 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
         // FUObjectArray and can look readable enough to fool the generic probe.
         SPDLOG_INFO_ONCE("[KTJL][UObjectHook] Using instruction-validated RDX UObject argument");
         hook->add_new_object(reinterpret_cast<sdk::UObjectBase*>(rdx));
+        return result;
+    }
+
+    if (hook->m_townfall_allocator_valid.load(std::memory_order_acquire)) {
+        // UE5.6 AllocateUObjectIndex receives the UObjectBase in RDX. Validate
+        // that the original registered it before adopting it into the hook.
+        auto* object = reinterpret_cast<sdk::UObjectBase*>(rdx);
+        if (is_safe_uobject_candidate(*hook, object, true)) {
+            hook->add_new_object(object, true, true);
+        }
         return result;
     }
 

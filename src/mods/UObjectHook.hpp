@@ -9,6 +9,7 @@
 #include <deque>
 #include <future>
 #include <optional>
+#include <atomic>
 
 #include <nlohmann/json.hpp>
 
@@ -263,6 +264,7 @@ private:
     bool m_fully_hooked{false};
     bool m_wants_activate{false};
     bool m_add_object_hooked{false};
+    std::atomic_bool m_townfall_allocator_valid{false};
     bool m_force_uobject_array_creation_scan{false};
     std::atomic_bool m_stalker2_uobject_full_scan_requested{false};
     float m_last_delta_time{1000.0f / 60.0f};
