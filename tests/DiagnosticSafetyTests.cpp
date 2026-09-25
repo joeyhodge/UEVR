@@ -9,6 +9,7 @@
 #include <spdlog/sinks/base_sink.h>
 #include "utility/Logging.hpp"
 #include "utility/SupportDiagnostics.hpp"
+#include "utility/UObjectAllocatorDiscovery.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
@@ -334,6 +335,31 @@ void test_uobject_metadata_filter() {
     expect(!utility::uobject::cached_recent_object_is_current(missing_identity, true, validate_identity) && identity_checks == 0,
         "recent UObjects without a cached FUObjectArray identity fail closed");
 }
+
+void test_uobject_allocator_discovery() {
+    using uevr::uobject::discovery::AllocatorEvidence;
+    using uevr::uobject::discovery::validates_allocator_evidence;
+
+    AllocatorEvidence evidence{
+        0x140000000, 0x0a978000, 0x1411bbda4, 0x1411bc083,
+        {0x1411bbf93, 0x1411bbe15, 0x1411bbf08}, 13, 2, true, true};
+    expect(validates_allocator_evidence(evidence),
+        "independent diagnostics and GUObjectArray references identify the shared allocator");
+    evidence.diagnostic_references[1] = evidence.function_end;
+    expect(!validates_allocator_evidence(evidence), "a diagnostic outside the unwind function fails closed");
+    evidence.diagnostic_references[1] = 0x1411bbe15;
+    evidence.object_array_references = 2;
+    expect(!validates_allocator_evidence(evidence), "insufficient object-array references fail closed");
+    evidence.object_array_references = 13;
+    evidence.direct_callers = 0;
+    expect(!validates_allocator_evidence(evidence), "an uncalled function fails closed");
+    evidence.direct_callers = 2;
+    evidence.unwind_matches = false;
+    expect(!validates_allocator_evidence(evidence), "unmatched unwind metadata fails closed");
+    evidence.unwind_matches = true;
+    evidence.function_end = evidence.image_base + evidence.image_size + 1;
+    expect(!validates_allocator_evidence(evidence), "out-of-image allocator fails closed");
+}
 }
 
 int main() {
@@ -343,6 +369,7 @@ int main() {
     test_gpu_retirement();
     test_bounded_texture_diagnostics();
     test_uobject_metadata_filter();
+    test_uobject_allocator_discovery();
     failures += test_cached_cvar_reads();
     failures += test_console_text();
     failures += test_discovery_validation();
