@@ -14,6 +14,7 @@
 #include "mods/vr/CVarDiagnostics.hpp"
 #include "utility/BoundedTextureDiagnostics.hpp"
 #include "utility/GpuRetirement.hpp"
+#include "utility/UObjectMetadataFilter.hpp"
 #undef max
 
 int disabled_log_argument_evaluations();
@@ -280,6 +281,40 @@ void test_bounded_texture_diagnostics() {
     for (auto& worker : workers) { worker.join(); }
     expect(admitted == 1, "concurrent viewport callbacks share one probe cadence");
 }
+
+void test_uobject_metadata_filter() {
+    struct ClassToken {};
+    ClassToken child{};
+    ClassToken parent{};
+    ClassToken missing{};
+    const auto poisoned = reinterpret_cast<ClassToken*>((std::numeric_limits<uintptr_t>::max)());
+
+    const std::wstring child_name = L"Class /Game/BP_Child.BP_Child_C";
+    const std::wstring parent_name = L"Class /Script/Engine.Actor";
+    const std::vector<ClassToken*> chain{&child, poisoned, &missing, &parent};
+    size_t lookups{};
+
+    const auto lookup = [&](ClassToken* pointer) -> const std::wstring* {
+        ++lookups;
+        if (pointer == &child) { return &child_name; }
+        if (pointer == &parent) { return &parent_name; }
+        return nullptr;
+    };
+
+    using utility::uobject::cached_class_chain_matches;
+    expect(cached_class_chain_matches(child_name, chain, L"BP_Child", lookup),
+        "UObject class filtering matches cached direct names");
+    lookups = 0;
+    expect(cached_class_chain_matches(child_name, chain, L"Engine.Actor", lookup) && lookups == 4,
+        "UObject class filtering reaches cached parents without dereferencing opaque pointers");
+    lookups = 0;
+    expect(!cached_class_chain_matches(child_name, chain, L"NotPresent", lookup) && lookups == 4,
+        "missing and poisoned cached class keys fail closed");
+    expect(!cached_class_chain_matches(child_name, chain, L"Engine.Actor", lookup, 2),
+        "UObject class filtering obeys its traversal bound");
+    expect(cached_class_chain_matches(child_name, chain, L"", lookup, 0),
+        "empty UObject class filters preserve the unfiltered list");
+}
 }
 
 int main() {
@@ -288,6 +323,7 @@ int main() {
     test_support_report();
     test_gpu_retirement();
     test_bounded_texture_diagnostics();
+    test_uobject_metadata_filter();
     failures += test_cached_cvar_reads();
     failures += test_console_text();
     failures += test_discovery_validation();
