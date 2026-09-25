@@ -1,11 +1,35 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace utility::uobject {
 constexpr size_t MAX_CACHED_CLASS_CHAIN_DEPTH = 128;
+
+template <typename Object>
+struct CachedRecentObject {
+    Object* object{};
+    std::wstring full_name{};
+    int32_t internal_index{-1};
+    int32_t serial_number{-1};
+    bool identity_valid{false};
+};
+
+template <typename Object, typename IdentityValidator>
+[[nodiscard]] bool cached_recent_object_is_current(
+    const CachedRecentObject<Object>& entry,
+    bool tracked,
+    IdentityValidator&& validate_identity) {
+    if (!tracked || entry.object == nullptr || !entry.identity_valid || entry.internal_index < 0) {
+        return false;
+    }
+
+    // The pointer is only an opaque identity token. The validator must resolve
+    // it through FUObjectArray rather than dereferencing stale game memory.
+    return validate_identity(entry.object, entry.internal_index, entry.serial_number);
+}
 
 template <typename Range, typename NameLookup>
 [[nodiscard]] bool cached_class_chain_matches(
