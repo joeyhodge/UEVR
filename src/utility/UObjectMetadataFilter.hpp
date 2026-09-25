@@ -4,7 +4,6 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
-#include <utility>
 
 namespace utility::uobject {
 constexpr size_t MAX_CACHED_CLASS_CHAIN_DEPTH = 128;
@@ -19,45 +18,17 @@ struct CachedRecentObject {
 };
 
 template <typename Object, typename IdentityValidator>
-[[nodiscard]] bool cached_object_identity_is_current(
-    Object* object,
-    int32_t internal_index,
-    int32_t serial_number,
-    bool identity_valid,
-    bool tracked,
-    bool require_identity,
-    IdentityValidator&& validate_identity) {
-    if (!tracked || object == nullptr) {
-        return false;
-    }
-
-    // Preserve legacy layouts that cannot expose an FUObjectArray identity,
-    // unless the caller explicitly requires fail-closed validation.
-    if (!identity_valid) {
-        return !require_identity;
-    }
-
-    if (internal_index < 0) {
-        return false;
-    }
-
-    // The pointer remains an opaque token; only the array slot is inspected.
-    return validate_identity(object, internal_index, serial_number);
-}
-
-template <typename Object, typename IdentityValidator>
 [[nodiscard]] bool cached_recent_object_is_current(
     const CachedRecentObject<Object>& entry,
     bool tracked,
     IdentityValidator&& validate_identity) {
-    return cached_object_identity_is_current(
-        entry.object,
-        entry.internal_index,
-        entry.serial_number,
-        entry.identity_valid,
-        tracked,
-        true,
-        std::forward<IdentityValidator>(validate_identity));
+    if (!tracked || entry.object == nullptr || !entry.identity_valid || entry.internal_index < 0) {
+        return false;
+    }
+
+    // The pointer is only an opaque identity token. The validator must resolve
+    // it through FUObjectArray rather than dereferencing stale game memory.
+    return validate_identity(entry.object, entry.internal_index, entry.serial_number);
 }
 
 template <typename Range, typename NameLookup>
