@@ -1304,7 +1304,17 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
     meta_object->full_name = object->get_full_name();
     meta_object->uclass = c;
 
-    m_most_recent_objects.push_front((sdk::UObject*)object);
+    const auto object_identity = get_uobject_index_serial(object);
+    std::erase_if(m_most_recent_objects, [object](const auto& recent) {
+        return recent.object == object;
+    });
+    m_most_recent_objects.push_front({
+        (sdk::UObject*)object,
+        meta_object->full_name,
+        object_identity ? object_identity->first : -1,
+        object_identity ? object_identity->second : -1,
+        object_identity.has_value()
+    });
 
     if (m_most_recent_objects.size() > 50) {
         m_most_recent_objects.pop_back();
@@ -4371,15 +4381,39 @@ void UObjectHook::draw_main() {
     }
 
     if (ImGui::TreeNode("Recent Objects")) {
-        for (auto& object : m_most_recent_objects) {
-            if (!this->exists_unsafe(object)) {
+        auto recent_objects = decltype(m_most_recent_objects){};
+
+        {
+            std::shared_lock lock{m_mutex};
+
+            for (const auto& recent : m_most_recent_objects) {
+                if (exists_unsafe(recent.object)) {
+                    recent_objects.push_back(recent);
+                }
+            }
+        }
+
+        for (const auto& recent : recent_objects) {
+            const auto current = utility::uobject::cached_recent_object_is_current(
+                recent,
+                true,
+                [](sdk::UObject* object, int32_t internal_index, int32_t serial_number) {
+                    return is_current_uobject_identity(object, internal_index, serial_number);
+                });
+
+            if (!current) {
                 continue;
             }
 
-            if (ImGui::TreeNode(utility::narrow(object->get_full_name()).data())) {
-                ui_handle_object(object);
+            const auto label = utility::narrow(recent.full_name);
+            ImGui::PushID(recent.object);
+
+            if (ImGui::TreeNode(label.c_str())) {
+                ui_handle_object(recent.object);
                 ImGui::TreePop();
             }
+
+            ImGui::PopID();
         }
 
         ImGui::TreePop();
@@ -6319,6 +6353,9 @@ void* UObjectHook::destructor(sdk::UObjectBase* object, void* rdx, void* r8, voi
             }
 
             hook->m_objects.erase(object);
+            std::erase_if(hook->m_most_recent_objects, [object](const auto& recent) {
+                return recent.object == object;
+            });
             hook->m_motion_controller_attached_components.erase((sdk::USceneComponent*)object);
             hook->m_spawned_spheres.erase((sdk::USceneComponent*)object);
             hook->m_spawned_spheres_to_components.erase((sdk::USceneComponent*)object);
