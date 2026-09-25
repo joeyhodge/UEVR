@@ -474,19 +474,12 @@ bool is_live_uobject_array_member(sdk::UObjectBase* object) {
     return identity.has_value() && is_current_uobject_identity(object, identity->first, identity->second);
 }
 
-bool is_current_attachment(
+bool is_current_stalker2_attachment(
     sdk::USceneComponent* component,
     const UObjectHook::MotionControllerState& state) {
-    return utility::uobject::cached_object_identity_is_current(
-        component,
-        state.component_internal_index,
-        state.component_serial_number,
-        state.component_identity_valid,
-        component != nullptr,
-        is_stalker2_uobjecthook_guard_enabled(),
-        [](sdk::USceneComponent* object, int32_t internal_index, int32_t serial_number) {
-            return is_current_uobject_identity(object, internal_index, serial_number);
-        });
+    return !is_stalker2_uobjecthook_guard_enabled() ||
+        (state.component_identity_valid &&
+         is_current_uobject_identity(component, state.component_internal_index, state.component_serial_number));
 }
 
 bool is_probably_uobject_layout(sdk::UObjectBase* object, uintptr_t* class_address = nullptr) {
@@ -742,75 +735,6 @@ sdk::APlayerCameraManager* resolve_camera_manager_for_ui(sdk::APlayerController*
         L"PlayerCameraManager",
         "PlayerController");
 }
-}
-
-std::optional<UObjectHook::TrackedObjectSnapshot> UObjectHook::get_tracked_object_snapshot(sdk::UObjectBase* object) const {
-    if (object == nullptr) {
-        return std::nullopt;
-    }
-
-    std::shared_lock lock{m_mutex};
-    const auto it = m_meta_objects.find(object);
-
-    if (!exists_unsafe(object) || it == m_meta_objects.end() || it->second == nullptr) {
-        return std::nullopt;
-    }
-
-    const auto& meta = *it->second;
-    return TrackedObjectSnapshot{
-        object,
-        meta.full_name,
-        meta.uclass,
-        meta.internal_index,
-        meta.serial_number,
-        meta.identity_valid
-    };
-}
-
-bool UObjectHook::is_tracked_object_current(const TrackedObjectSnapshot& snapshot) const {
-    return utility::uobject::cached_object_identity_is_current(
-        snapshot.object,
-        snapshot.internal_index,
-        snapshot.serial_number,
-        snapshot.identity_valid,
-        exists(snapshot.object),
-        false,
-        [](sdk::UObjectBase* object, int32_t internal_index, int32_t serial_number) {
-            return is_current_uobject_identity(object, internal_index, serial_number);
-        });
-}
-
-bool UObjectHook::is_tracked_object_current(sdk::UObjectBase* object) const {
-    const auto snapshot = get_tracked_object_snapshot(object);
-    return snapshot.has_value() && is_tracked_object_current(*snapshot);
-}
-
-void UObjectHook::set_camera_attach_object(sdk::UObject* object) {
-    m_camera_attach.object = object;
-    m_camera_attach.internal_index = -1;
-    m_camera_attach.serial_number = -1;
-    m_camera_attach.identity_valid = false;
-
-    if (const auto identity = get_uobject_index_serial(object); identity.has_value()) {
-        m_camera_attach.internal_index = identity->first;
-        m_camera_attach.serial_number = identity->second;
-        m_camera_attach.identity_valid = true;
-    }
-}
-
-bool UObjectHook::is_camera_attach_current() const {
-    if (m_camera_attach.object == nullptr) {
-        return false;
-    }
-
-    if (!m_camera_attach.identity_valid) {
-        return !is_stalker2_uobjecthook_guard_enabled();
-    }
-
-    return is_current_uobject_identity(
-        m_camera_attach.object,
-        m_camera_attach.internal_index,
-        m_camera_attach.serial_number);
 }
 
 UObjectHook::MotionControllerState::~MotionControllerState() {
@@ -1366,9 +1290,6 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
     meta_object->uclass = c;
 
     const auto object_identity = get_uobject_index_serial(object);
-    meta_object->internal_index = object_identity ? object_identity->first : -1;
-    meta_object->serial_number = object_identity ? object_identity->second : -1;
-    meta_object->identity_valid = object_identity.has_value();
     std::erase_if(m_most_recent_objects, [object](const auto& recent) {
         return recent.object == object;
     });
@@ -1611,19 +1532,19 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
     }
 
     const auto stalker2_guard = is_stalker2_uobjecthook_guard_enabled();
-    const auto component_identity = get_uobject_index_serial(component);
+    std::optional<std::pair<int32_t, int32_t>> component_identity{};
 
-    if (component_identity.has_value() &&
-        !is_current_uobject_identity(component, component_identity->first, component_identity->second)) {
-        return nullptr;
-    }
+    if (stalker2_guard) {
+        component_identity = get_uobject_index_serial(component);
 
-    if (stalker2_guard && !component_identity.has_value()) {
-        SPDLOG_WARNING_EVERY_N_SEC(
-            2,
-            "[Stalker2][UObjectHook] Refusing motion-controller attachment without a current FUObjectArray identity: {:x}",
-            (uintptr_t)component);
-        return nullptr;
+        if (!component_identity.has_value() ||
+            !is_current_uobject_identity(component, component_identity->first, component_identity->second)) {
+            SPDLOG_WARNING_EVERY_N_SEC(
+                2,
+                "[Stalker2][UObjectHook] Refusing motion-controller attachment without a current FUObjectArray identity: {:x}",
+                (uintptr_t)component);
+            return nullptr;
+        }
     }
 
     {
@@ -1631,11 +1552,11 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
 
         if (const auto it = m_motion_controller_attached_components.find(component);
             it != m_motion_controller_attached_components.end()) {
-            if (it->second != nullptr &&
-                ((!component_identity.has_value() && !stalker2_guard) ||
-                 (it->second->component_identity_valid && component_identity.has_value() &&
-                  it->second->component_internal_index == component_identity->first &&
-                  it->second->component_serial_number == component_identity->second))) {
+            if (!stalker2_guard ||
+                (it->second != nullptr &&
+                 it->second->component_identity_valid &&
+                 it->second->component_internal_index == component_identity->first &&
+                 it->second->component_serial_number == component_identity->second)) {
                 return it->second;
             }
         }
@@ -1656,33 +1577,21 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
 
     if (const auto it = m_motion_controller_attached_components.find(component);
         it != m_motion_controller_attached_components.end()) {
-        if (it->second != nullptr && !component_identity.has_value() && !stalker2_guard) {
+        if (!stalker2_guard ||
+            (it->second != nullptr &&
+             it->second->component_identity_valid &&
+             it->second->component_internal_index == component_identity->first &&
+             it->second->component_serial_number == component_identity->second)) {
             return it->second;
         }
 
-        if (it->second != nullptr && component_identity.has_value()) {
-            if (!it->second->component_identity_valid) {
-                it->second->component_internal_index = component_identity->first;
-                it->second->component_serial_number = component_identity->second;
-                it->second->component_identity_valid = true;
-                return it->second;
-            }
-
-            if (it->second->component_internal_index == component_identity->first &&
-                it->second->component_serial_number == component_identity->second) {
-                return it->second;
-            }
-        }
-
         m_motion_controller_attached_components.erase(it);
-        if (stalker2_guard) {
-            m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(1, std::memory_order_relaxed);
-        }
+        m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(1, std::memory_order_relaxed);
     }
 
     auto result = std::make_shared<MotionControllerState>();
 
-    if (component_identity.has_value()) {
+    if (stalker2_guard) {
         result->component_internal_index = component_identity->first;
         result->component_serial_number = component_identity->second;
         result->component_identity_valid = true;
@@ -2215,12 +2124,14 @@ void UObjectHook::on_pre_calculate_stereo_view_offset(void* stereo_device, const
         m_last_camera_location = *view_location;
     }
 
-    if (m_camera_attach.object != nullptr && !is_camera_attach_current()) {
+    if (m_camera_attach.object != nullptr &&
+        is_stalker2_uobjecthook_guard_enabled() &&
+        !is_live_uobject_array_member(m_camera_attach.object)) {
         SPDLOG_INFO_EVERY_N_SEC(
             2,
-            "[UObjectHook] Dropping stale camera attachment during world transition: {:x}",
+            "[Stalker2][UObjectHook] Dropping stale camera attachment during world transition: {:x}",
             (uintptr_t)m_camera_attach.object);
-        set_camera_attach_object(nullptr);
+        m_camera_attach.object = nullptr;
     }
 
     if (m_camera_attach.object != nullptr) {
@@ -2363,7 +2274,7 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
             const auto& state = it->second;
 
             if (component == nullptr || state == nullptr || !exists_unsafe(component) ||
-                !is_current_attachment(component, *state)) {
+                !is_current_stalker2_attachment(component, *state)) {
                 it = m_motion_controller_attached_components.erase(it);
                 ++stale_attachment_prunes;
                 continue;
@@ -2609,10 +2520,9 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
         }
 
         auto comp = it.first;
-        if (!this->exists(comp) || !is_current_attachment(comp, *it.second)) {
-            remove_motion_controller_state(comp);
-
+        if (!this->exists(comp) || !is_current_stalker2_attachment(comp, *it.second)) {
             if (is_stalker2_uobjecthook_guard_enabled()) {
+                remove_motion_controller_state(comp);
                 m_stalker2_lazy_stats.stale_attachment_prunes.fetch_add(1, std::memory_order_relaxed);
             }
             continue;
@@ -2790,19 +2700,13 @@ void UObjectHook::tick_attachments(Rotator<float>* view_rotation, const float wo
                 component_internal_index,
                 component_serial_number,
                 component_identity_valid]() {
-                const auto identity_current = utility::uobject::cached_object_identity_is_current(
-                    comp,
-                    component_internal_index,
-                    component_serial_number,
-                    component_identity_valid,
-                    this->exists(comp),
-                    is_stalker2_uobjecthook_guard_enabled(),
-                    [](sdk::USceneComponent* object, int32_t internal_index, int32_t serial_number) {
-                        return is_current_uobject_identity(object, internal_index, serial_number);
-                    });
-
-                if (!identity_current) {
-                    remove_motion_controller_state(comp);
+                if (!this->exists(comp) ||
+                    (is_stalker2_uobjecthook_guard_enabled() &&
+                     (!component_identity_valid ||
+                      !is_current_uobject_identity(comp, component_internal_index, component_serial_number)))) {
+                    if (is_stalker2_uobjecthook_guard_enabled()) {
+                        remove_motion_controller_state(comp);
+                    }
                     return;
                 }
 
@@ -3256,7 +3160,7 @@ void UObjectHook::update_persistent_states() {
         auto obj = m_persistent_camera_state->path.resolve(true);
 
         if (obj != nullptr) {
-            set_camera_attach_object(obj);
+            m_camera_attach.object = obj;
             m_camera_attach.offset = m_persistent_camera_state->offset;
         } else {
             had_tracking_miss = true;
@@ -3747,11 +3651,6 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve(bool require_tracked
                     continue;
                 }
 
-                if (require_tracked_objects &&
-                    !hook->try_track_object(comp, "persistent path component candidate", true, false)) {
-                    continue;
-                }
-
                 const auto& comp_fname = comp->get_fname();
                 const auto comp_name = comp_fname.to_string_remove_numbers();
                 const auto comp_ends_with_number = comp_fname.get_number() != 0;
@@ -3761,6 +3660,10 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve(bool require_tracked
                                                             : *next_it == comp_expanded_name;
 
                 if (is_match) {
+                    if (require_tracked_objects && !hook->try_track_object(comp, "persistent path component", true)) {
+                        return nullptr;
+                    }
+
                     found = true;
                     previous_data = comp;
                     previous_data_desc = comp->get_class();
@@ -3879,11 +3782,6 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve(bool require_tracked
                         continue;
                     }
 
-                    if (require_tracked_objects &&
-                        !hook->try_track_object(obj, "persistent path array candidate", true, false)) {
-                        continue;
-                    }
-
                     const auto& obj_fname = obj->get_fname();
                     const auto obj_name = obj_fname.to_string_remove_numbers();
                     const auto obj_ends_with_number = obj_fname.get_number() != 0;
@@ -3893,6 +3791,10 @@ UObjectHook::ResolvedObject UObjectHook::StatePath::resolve(bool require_tracked
                                                                : *prop_it == obj_expanded_name;
 
                     if (is_match) {
+                        if (require_tracked_objects && !hook->try_track_object(obj, "persistent path array object", true)) {
+                            return nullptr;
+                        }
+
                         found = true;
                         previous_data = obj;
                         previous_data_desc = obj->get_class();
@@ -4062,9 +3964,7 @@ void UObjectHook::draw_developer() {
                         continue;
                     }
 
-                    const auto snapshot = get_tracked_object_snapshot(ufunc);
-
-                    if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
+                    if (!this->exists(ufunc)) {
                         functions_to_cleanup.push_back(ufunc);
                         continue;
                     }
@@ -4081,7 +3981,7 @@ void UObjectHook::draw_developer() {
 
                     ImGui::SameLine();
 
-                    ImGui::Text("%s", utility::narrow(snapshot->full_name).c_str());
+                    ImGui::Text("%s", utility::narrow(ufunc->get_full_name()).c_str());
                 }
 
                 ImGui::TreePop();
@@ -4093,16 +3993,13 @@ void UObjectHook::draw_developer() {
 
                 std::string_view search{m_process_event_search.buffer.data()};
                 std::vector<sdk::UFunction*> functions_sorted_by_call_count{};
-                std::unordered_map<sdk::UFunction*, std::string> function_names{};
                 
                 for (auto& [ufunc, data] : m_called_functions) {
                     if (ufunc == nullptr) {
                         continue;
                     }
 
-                    const auto snapshot = get_tracked_object_snapshot(ufunc);
-
-                    if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
+                    if (!this->exists(ufunc)) {
                         functions_to_cleanup.push_back(ufunc);
                         continue;
                     }
@@ -4111,21 +4008,16 @@ void UObjectHook::draw_developer() {
                         continue;
                     }
 
-                    const auto function_name = utility::narrow(snapshot->full_name);
-
-                    if (!search.empty() && !function_name.contains(search)) {
+                    // maybe a TODO here for optimization
+                    if (!search.empty() && !utility::narrow(ufunc->get_full_name()).contains(search)) {
                         continue;
                     }
 
                     functions_sorted_by_call_count.push_back(ufunc);
-                    function_names.emplace(ufunc, function_name);
                 }
 
                 std::sort(functions_sorted_by_call_count.begin(), functions_sorted_by_call_count.end(), [this](sdk::UFunction* a, sdk::UFunction* b) {
-                    const auto a_it = m_called_functions.find(a);
-                    const auto b_it = m_called_functions.find(b);
-                    return a_it != m_called_functions.end() && b_it != m_called_functions.end() &&
-                        a_it->second.call_count > b_it->second.call_count;
+                    return m_called_functions[a].call_count > m_called_functions[b].call_count;
                 });
 
                 for (auto& ufunc : functions_sorted_by_call_count) {
@@ -4133,12 +4025,7 @@ void UObjectHook::draw_developer() {
                         continue;
                     }
 
-                    const auto snapshot = get_tracked_object_snapshot(ufunc);
-                    const auto data_it = m_called_functions.find(ufunc);
-                    const auto name_it = function_names.find(ufunc);
-
-                    if (!snapshot.has_value() || !is_tracked_object_current(*snapshot) ||
-                        data_it == m_called_functions.end() || name_it == function_names.end()) {
+                    if (!this->exists(ufunc)) {
                         functions_to_cleanup.push_back(ufunc);
                         continue;
                     }
@@ -4155,13 +4042,13 @@ void UObjectHook::draw_developer() {
 
                     ImGui::SameLine();
                     
-                    const auto made = ImGui::TreeNode(name_it->second.c_str());
+                    const auto made = ImGui::TreeNode(utility::narrow(ufunc->get_full_name()).c_str());
 
                     ImGui::SameLine();
-                    ImGui::Text(" (%llu)", data_it->second.call_count);
+                    ImGui::Text(" (%llu)", m_called_functions[ufunc].call_count);
 
                     if (made) {
-                        auto& data = data_it->second;
+                        auto& data = m_called_functions[ufunc];
                         data.wants_heavy_data = true;
 
                         if (data.heavy_data != nullptr) {
@@ -4202,11 +4089,9 @@ void UObjectHook::draw_developer() {
     try {
         auto obj = (sdk::UObject*)std::stoull(address_buffer.data(), nullptr, 16);
 
-        const auto snapshot = get_tracked_object_snapshot(obj);
-
-        if (snapshot.has_value() && is_tracked_object_current(*snapshot)) {
+        if (obj != nullptr && this->exists(obj)) {
             ImGui::PushID(obj);
-            if (ImGui::TreeNode(utility::narrow(snapshot->full_name).c_str())) {
+            if (ImGui::TreeNode(utility::narrow(obj->get_full_name()).c_str())) {
                 ui_handle_object(obj);
                 ImGui::TreePop();
             }
@@ -4244,8 +4129,8 @@ void UObjectHook::draw_main() {
                 size_t bare_scene_components = 0;
 
                 for (const auto& [component, state] : m_motion_controller_attached_components) {
-                    if (component == nullptr || state == nullptr || !exists(component) ||
-                        !is_current_attachment(component, *state)) {
+                    if (component == nullptr || state == nullptr || !exists_unsafe(component) ||
+                        !is_current_stalker2_attachment(component, *state)) {
                         continue;
                     }
 
@@ -4273,20 +4158,16 @@ void UObjectHook::draw_main() {
             }
 
             for (auto& it : attached) {
-                if (!this->exists(it.first) || it.second == nullptr ||
-                    !is_current_attachment(it.first, *it.second)) {
+                if (!this->exists_unsafe(it.first) || it.second == nullptr ||
+                    !is_current_stalker2_attachment(it.first, *it.second)) {
                     continue;
                 }
 
                 auto comp = it.first;
-                const auto snapshot = get_tracked_object_snapshot(comp);
-
-                if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
-                    continue;
-                }
+                std::wstring comp_name = comp->get_class()->get_fname().to_string() + L" " + comp->get_fname().to_string();
 
                 ImGui::PushID(comp);
-                if (ImGui::TreeNode(utility::narrow(snapshot->full_name).data())) {
+                if (ImGui::TreeNode(utility::narrow(comp_name).data())) {
                     ui_handle_object(comp);
 
                     ImGui::TreePop();
@@ -4302,7 +4183,7 @@ void UObjectHook::draw_main() {
 
     if (made2) {
         if (ImGui::Button("Detach Camera")) {
-            set_camera_attach_object(nullptr);
+            m_camera_attach.object = nullptr;
             m_camera_attach.offset = glm::vec3{0.0f, 0.0f, 0.0f};
 
             if (m_persistent_camera_state != nullptr) {
@@ -4322,7 +4203,7 @@ void UObjectHook::draw_main() {
             spawn_overlapper(0);
             spawn_overlapper(1);
         }
-    } else if (!this->exists(m_overlap_detection_actor)) {
+    } else if (!this->exists_unsafe(m_overlap_detection_actor)) {
         m_overlap_detection_actor = nullptr;
     } else {
         ImGui::SetNextItemOpen(true, ImGuiCond_Once);
@@ -4343,18 +4224,12 @@ void UObjectHook::draw_main() {
 
             for (auto& it : overlapped_components) {
                 auto comp = (sdk::USceneComponent*)it;
-                if (!this->exists(comp)) {
+                if (!this->exists_unsafe(comp)) {
                     continue;
                 }
 
                 if (m_spawned_spheres.contains(comp) && m_spawned_spheres_to_components.contains(comp)) {
                     comp = m_spawned_spheres_to_components[comp];
-                }
-
-                const auto snapshot = get_tracked_object_snapshot(comp);
-
-                if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
-                    continue;
                 }
 
                 if (attach_all){ 
@@ -4363,7 +4238,9 @@ void UObjectHook::draw_main() {
                     }
                 }
 
-                if (ImGui::TreeNode(utility::narrow(snapshot->full_name).data())) {
+                std::wstring comp_name = comp->get_class()->get_fname().to_string() + L" " + comp->get_fname().to_string();
+
+                if (ImGui::TreeNode(utility::narrow(comp_name).data())) {
                     ui_handle_object(comp);
                     ImGui::TreePop();
                 }
@@ -4623,16 +4500,11 @@ void UObjectHook::draw_main() {
             auto sort_classes = [this](std::vector<sdk::UClass*> classes) {
                 std::sort(classes.begin(), classes.end(), [this](sdk::UClass* a, sdk::UClass* b) {
                     std::shared_lock _{m_mutex};
-                    const auto a_it = m_meta_objects.find(a);
-                    const auto b_it = m_meta_objects.find(b);
-
-                    if (!m_objects.contains(a) || !m_objects.contains(b) ||
-                        a_it == m_meta_objects.end() || b_it == m_meta_objects.end() ||
-                        a_it->second == nullptr || b_it->second == nullptr) {
+                    if (!m_objects.contains(a) || !m_objects.contains(b)) {
                         return false;
                     }
 
-                    return a_it->second->full_name < b_it->second->full_name;
+                    return m_meta_objects[a]->full_name < m_meta_objects[b]->full_name;
                 });
 
                 return classes;
@@ -4640,12 +4512,8 @@ void UObjectHook::draw_main() {
 
             auto unsorted_classes = std::vector<sdk::UClass*>{};
 
-            {
-                std::shared_lock lock{m_mutex};
-
-                for (const auto& [c, set]: m_objects_by_class) {
-                    unsorted_classes.push_back(c);
-                }
+            for (auto& [c, set]: m_objects_by_class) {
+                unsorted_classes.push_back(c);
             }
 
             // Launch sorting in a separate thread
@@ -4675,36 +4543,31 @@ void UObjectHook::draw_main() {
                 break;
             }
 
-            const auto class_snapshot = get_tracked_object_snapshot(uclass);
+            const auto objects_it = m_objects_by_class.find(uclass);
 
-            if (!class_snapshot.has_value() || !is_tracked_object_current(*class_snapshot)) {
+            if (objects_it == m_objects_by_class.end() || objects_it->second.empty()) {
                 continue;
             }
 
-            std::unordered_set<sdk::UObjectBase*> objects_ref{};
-            std::wstring class_full_name{};
-            std::vector<sdk::UClass*> class_chain{};
+            const auto& objects_ref = objects_it->second;
+            std::string uclass_name{};
             bool valid = true;
 
             {
                 std::shared_lock lock{m_mutex};
-                const auto objects_it = m_objects_by_class.find(uclass);
                 const auto class_meta_it = m_meta_objects.find(uclass);
 
-                if (objects_it == m_objects_by_class.end() || objects_it->second.empty() ||
-                    class_meta_it == m_meta_objects.end() || class_meta_it->second == nullptr) {
+                if (class_meta_it == m_meta_objects.end() || class_meta_it->second == nullptr) {
                     continue;
                 }
 
                 const auto& class_meta = *class_meta_it->second;
-                objects_ref = objects_it->second;
-                class_full_name = class_meta.full_name;
-                class_chain = class_meta.super_classes;
+                uclass_name = utility::narrow(class_meta.full_name);
 
                 if (!filter_empty) {
                     valid = utility::uobject::cached_class_chain_matches(
-                        class_full_name,
-                        class_chain,
+                        class_meta.full_name,
+                        class_meta.super_classes,
                         wide_filter,
                         [this](sdk::UClass* cached_class) -> const std::wstring* {
                             const auto it = m_meta_objects.find(cached_class);
@@ -4718,19 +4581,13 @@ void UObjectHook::draw_main() {
                 continue;
             }
 
-            const auto uclass_name = utility::narrow(class_full_name);
-
             if (objects_ref.size() == 1 && m_hide_default_classes) {
                 auto first = *objects_ref.begin();
 
-                const auto first_snapshot = get_tracked_object_snapshot(first);
+                if (m_meta_objects.contains(first)) {
+                    auto fc = first != nullptr ? m_meta_objects[first]->uclass : nullptr;
 
-                if (first_snapshot.has_value() && is_tracked_object_current(*first_snapshot)) {
-                    const auto fc = first_snapshot->uclass;
-                    const auto fc_snapshot = get_tracked_object_snapshot(fc);
-
-                    if (fc_snapshot.has_value() && is_tracked_object_current(*fc_snapshot) &&
-                        fc->get_class_default_object() == first) {
+                    if (fc != nullptr && m_meta_objects.contains(fc) && fc->get_class_default_object() == first) {
                         continue;
                     }
                 }
@@ -4743,35 +4600,20 @@ void UObjectHook::draw_main() {
             if (ImGui::TreeNode(uclass_name.data())) {
                 ui_standard_object_context_menu(uclass);
 
-                struct ObjectRow {
-                    sdk::UObjectBase* object{};
-                    std::wstring full_name{};
-                };
-
-                std::vector<ObjectRow> objects{};
+                std::vector<sdk::UObjectBase*> objects{};
 
                 for (auto object : objects_ref) {
-                    const auto snapshot = get_tracked_object_snapshot(object);
-
-                    if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
-                        continue;
-                    }
-
                     if (m_hide_default_classes) {
-                        const auto c = snapshot->uclass;
-                        const auto c_snapshot = get_tracked_object_snapshot(c);
-
-                        if (c_snapshot.has_value() && is_tracked_object_current(*c_snapshot) &&
-                            c->get_class_default_object() != object) {
-                            objects.push_back({object, snapshot->full_name});
+                        if (auto c = m_meta_objects[object]->uclass; c != nullptr && m_meta_objects.contains(c) && c->get_class_default_object() != object) {
+                            objects.push_back(object);
                         }
                     } else {
-                        objects.push_back({object, snapshot->full_name});
+                        objects.push_back(object);   
                     }
                 }
 
-                std::sort(objects.begin(), objects.end(), [](const ObjectRow& a, const ObjectRow& b) {
-                    return a.full_name < b.full_name;
+                std::sort(objects.begin(), objects.end(), [this](sdk::UObjectBase* a, sdk::UObjectBase* b) {
+                    return m_meta_objects[a]->full_name < m_meta_objects[b]->full_name;
                 });
 
                 if (is_stalker2_uobjecthook_guard_enabled() &&
@@ -4846,9 +4688,8 @@ void UObjectHook::draw_main() {
                     }
                 }
 
-                for (const auto& row : objects) {
-                    const auto object = row.object;
-                    const auto made = ImGui::TreeNode(utility::narrow(row.full_name).data());
+                for (const auto& object : objects) {
+                    const auto made = ImGui::TreeNode(utility::narrow(m_meta_objects[object]->full_name).data());
 
                     if (made) {
                         ui_handle_object((sdk::UObject*)object);
@@ -4883,9 +4724,8 @@ void UObjectHook::ui_standard_object_context_menu(sdk::UObjectBase* object) {
             }
         };
 
-        if (const auto snapshot = get_tracked_object_snapshot(object);
-            snapshot.has_value() && ImGui::Button("Copy Name")) {
-            sc(utility::narrow(snapshot->full_name));
+        if (ImGui::Button("Copy Name")) {
+            sc(utility::narrow(m_meta_objects[object]->full_name));
         }
 
         if (ImGui::Button("Copy Address")) {
@@ -4903,35 +4743,26 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
         return;
     }
 
-    auto object_snapshot = get_tracked_object_snapshot(object);
-
-    if (!object_snapshot.has_value()) {
+    if (!this->exists_unsafe(object)) {
         try_track_reachable_ui_object(nullptr, object, "ui direct object");
-        object_snapshot = get_tracked_object_snapshot(object);
     }
 
-    if (!object_snapshot.has_value() || !is_tracked_object_current(*object_snapshot)) {
+    if (!this->exists_unsafe(object)) {
         ImGui::Text("Invalid object");
         return;
     }
 
     ui_standard_object_context_menu(object);
 
-    const auto uclass = object_snapshot->uclass;
+    const auto uclass = object->get_class();
 
     if (uclass == nullptr) {
         ImGui::Text("null class");
         return;
     }
 
-    auto class_snapshot = get_tracked_object_snapshot(uclass);
 
-    if (!class_snapshot.has_value()) {
-        try_track_reachable_ui_object(object, uclass, "ui object class");
-        class_snapshot = get_tracked_object_snapshot(uclass);
-    }
-
-    if (!class_snapshot.has_value() || !is_tracked_object_current(*class_snapshot)) {
+    if (!this->exists_unsafe(uclass)) {
         ImGui::Text("Invalid class");
         return;
     }
@@ -4950,7 +4781,7 @@ void UObjectHook::ui_handle_object(sdk::UObject* object) {
         }
     }
 
-    ImGui::Text("%s", utility::narrow(object_snapshot->full_name).data());
+    ImGui::Text("%s", utility::narrow(object->get_full_name()).data());
 
     if (ImGui::TreeNode("Outer")) {
         auto outer_scope = m_path.enter("Outer");
@@ -5148,19 +4979,19 @@ void UObjectHook::ui_handle_scene_component(sdk::USceneComponent* comp) {
             }
 
             if (ImGui::Button("Attach Camera to")) {
-                set_camera_attach_object(comp);
+                m_camera_attach.object = comp;
                 m_camera_attach.offset = glm::vec3{0.0f, 0.0f, 0.0f};
             }
 
             ImGui::SameLine();
 
             if (ImGui::Button("Attach Camera to (Relative)")) {
-                set_camera_attach_object(comp);
+                m_camera_attach.object = comp;
                 m_camera_attach.offset = glm::vec3{0.0f, 0.0f, m_last_camera_location.z - comp->get_world_location().z};
             }
         } else {
             if (ImGui::Button("Detach")) {
-                set_camera_attach_object(nullptr);
+                m_camera_attach.object = nullptr;
                 m_camera_attach.offset = glm::vec3{0.0f, 0.0f, 0.0f};
 
                 if (m_persistent_camera_state != nullptr) {
@@ -5513,19 +5344,19 @@ void UObjectHook::ui_handle_actor(sdk::UObject* object) {
 
     if (m_camera_attach.object != object ){
         if (ImGui::Button("Attach Camera to")) {
-            set_camera_attach_object(object);
+            m_camera_attach.object = object;
             m_camera_attach.offset = glm::vec3{0.0f, 0.0f, 0.0f};
         }
 
         ImGui::SameLine();
 
         if (ImGui::Button("Attach Camera to (Relative)")) {
-            set_camera_attach_object(object);
+            m_camera_attach.object = object;
             m_camera_attach.offset = glm::vec3{0.0f, 0.0f, m_last_camera_location.z - actor->get_actor_location().z};
         }
     } else {
         if (ImGui::Button("Detach")) {
-            set_camera_attach_object(nullptr);
+            m_camera_attach.object = nullptr;
             m_camera_attach.offset = glm::vec3{0.0f, 0.0f, 0.0f};
 
             if (m_persistent_camera_state != nullptr) {
@@ -5618,46 +5449,21 @@ void UObjectHook::ui_handle_actor(sdk::UObject* object) {
         auto scope = m_path.enter("Components");
         auto components = actor->get_all_components();
 
-        struct ComponentRow {
-            sdk::UObject* object{};
-            std::wstring full_name{};
-            std::string path_name{};
-        };
-
-        std::vector<ComponentRow> component_rows{};
-        component_rows.reserve(components.size());
+        std::sort(components.begin(), components.end(), [](sdk::UObject* a, sdk::UObject* b) {
+            return a->get_full_name() < b->get_full_name();
+        });
 
         for (auto comp : components) {
             auto comp_obj = (sdk::UObject*)comp;
 
-            if (!try_track_reachable_ui_object(object, comp_obj, "ui actor component")) {
-                continue;
-            }
-
-            const auto snapshot = get_tracked_object_snapshot(comp_obj);
-
-            if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
-                continue;
-            }
-
-            const auto path_name = utility::narrow(
-                comp->get_class()->get_fname().to_string() + L" " + comp->get_fname().to_string());
-            component_rows.push_back({comp_obj, snapshot->full_name, path_name});
-        }
-
-        std::sort(component_rows.begin(), component_rows.end(), [](const ComponentRow& a, const ComponentRow& b) {
-            return a.full_name < b.full_name;
-        });
-
-        for (const auto& row : component_rows) {
-            auto comp_obj = row.object;
-
             ImGui::PushID(comp_obj);
-            const auto made = ImGui::TreeNode(row.path_name.c_str());
+            // not using full_name because its HUGE
+            std::wstring comp_name = comp->get_class()->get_fname().to_string() + L" " + comp->get_fname().to_string();
+            const auto made = ImGui::TreeNode(utility::narrow(comp_name).data());
 
             if (made) {
-                auto scope2 = m_path.enter(row.path_name);
-                ui_handle_object(comp_obj);
+                auto scope2 = m_path.enter(utility::narrow(comp_name));
+                ui_handle_reachable_object(object, comp_obj, "ui actor component");
                 ImGui::TreePop();
             }
 
@@ -6188,23 +5994,12 @@ void UObjectHook::ui_handle_array_property(void* addr, sdk::FArrayProperty* prop
         }
 
         for (auto obj : array_obj) {
-            if (obj == nullptr ||
-                !try_track_reachable_ui_object(parent_object, obj, "ui object array")) {
-                continue;
-            }
-
-            const auto snapshot = get_tracked_object_snapshot(obj);
-
-            if (!snapshot.has_value() || !is_tracked_object_current(*snapshot)) {
-                continue;
-            }
-
             std::wstring name = obj->get_class()->get_fname().to_string() + L" " + obj->get_fname().to_string();
             const auto narrow_name = utility::narrow(name);
 
             if (ImGui::TreeNode(narrow_name.data())) {
                 auto scope = m_path.enter(narrow_name);
-                ui_handle_object(obj);
+                ui_handle_reachable_object(parent_object, obj, "ui object array");
                 ImGui::TreePop();
             }
         }
@@ -6269,7 +6064,7 @@ void UObjectHook::ui_handle_struct(void* addr, sdk::UStruct* uclass) {
         return;
     }
 
-    if (addr != nullptr && this->exists((sdk::UObject*)addr) && uclass->is_a(sdk::UStruct::static_class())) {
+    if (addr != nullptr && this->exists_unsafe((sdk::UObject*)addr) && uclass->is_a(sdk::UStruct::static_class())) {
         uclass = (sdk::UStruct*)addr;
         addr = nullptr;
     }
@@ -6456,9 +6251,6 @@ void* UObjectHook::destructor(sdk::UObjectBase* object, void* rdx, void* r8, voi
 
             if (object == hook->m_camera_attach.object) {
                 hook->m_camera_attach.object = nullptr;
-                hook->m_camera_attach.internal_index = -1;
-                hook->m_camera_attach.serial_number = -1;
-                hook->m_camera_attach.identity_valid = false;
             }
 
             /*for (auto super = (sdk::UStruct*)it->second->uclass; super != nullptr;) {
