@@ -1053,6 +1053,7 @@ public:
     static void begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family);
     static void pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family);
     static void pre_render_view_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneView& view);
+    static void pre_render_dune_frame(ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family);
 
     const char* get_ghosting_fix_status_text();
     const char* get_native_stereo_fix_status_text() const;

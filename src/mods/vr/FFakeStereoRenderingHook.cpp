@@ -79,6 +79,7 @@
 #include "HiFiRushRendererEntry.hpp"
 #include "SifuRendererEntry.hpp"
 #include "SifuMeshCommands.hpp"
+#include "DuneFrameHandoff.hpp"
 #include "KtjLFogResources.hpp"
 #include "KtjLCloudResources.hpp"
 #include "KtjLCloudHook.hpp"
@@ -9043,6 +9044,119 @@ bool is_probable_new_rhi_command(sdk::FRHICommandBase_New* command, const char*&
     reason = nullptr;
     return true;
 }
+
+bool read_dune_frame_memory(uintptr_t address, void* output, size_t size) {
+    if (!is_readable_process_range(address, size)) { return false; }
+    std::memcpy(output, reinterpret_cast<const void*>(address), size);
+    return true;
+}
+
+bool validated_dune_frame_handoff() {
+    static const bool validated = [] {
+        const auto module = utility::get_executable();
+        const auto path = utility::get_module_pathw(module);
+        const auto version = sdk::get_file_version_info();
+        if (!path || !uevr::games::is_dune_ue521_frame_handoff_runtime(
+                *path, version.dwFileVersionMS, version.dwFileVersionLS)) { return false; }
+        const auto base = reinterpret_cast<uintptr_t>(module);
+        IMAGE_DOS_HEADER dos{};
+        IMAGE_NT_HEADERS64 nt{};
+        if (!read_dune_frame_memory(base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+            dos.e_lfanew <= 0 || dos.e_lfanew > 0x1000 ||
+            !read_dune_frame_memory(base + dos.e_lfanew, &nt, sizeof(nt)) ||
+            nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) { return false; }
+        return uevr::dune_frame::validate_binary(base, nt.FileHeader.TimeDateStamp,
+            nt.OptionalHeader.SizeOfImage, read_dune_frame_memory);
+    }();
+    return validated;
+}
+
+bool dune_frame_handoff_enabled() {
+    auto& vr = VR::get();
+    const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
+    return g_hook != nullptr && g_framework != nullptr && vr != nullptr &&
+        runtime != nullptr &&
+        uevr::dune_frame::enabled(validated_dune_frame_handoff(), g_framework->is_dx12(),
+            runtime->is_openxr(), vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled());
+}
+
+bool valid_dune_frame_object(uintptr_t object) {
+    uintptr_t table{}, function{};
+    const auto module = utility::get_executable();
+    return uevr::dune_frame::aligned_pointer(object) &&
+        read_dune_frame_memory(object, &table, sizeof(table)) &&
+        utility::get_module_within(reinterpret_cast<void*>(table)).value_or(nullptr) == module &&
+        read_dune_frame_memory(table, &function, sizeof(function)) &&
+        utility::get_module_within(reinterpret_cast<void*>(function)).value_or(nullptr) == module &&
+        is_executable_process_range(function, 1);
+}
+
+struct DuneFrameCommands {
+    static inline std::mutex mutex{};
+    static inline uevr::dune_frame::PendingFrames<> pending{};
+    static inline std::mutex publish_mutex{};
+    static inline uint64_t published_generation{};
+    static inline uint32_t published_frame{};
+
+    static void execute(sdk::FRHICommandBase_New* command, sdk::FRHICommandListBase* list, void* context) {
+        std::optional<uevr::dune_frame::PendingFrame> frame{};
+        {
+            std::scoped_lock lock{mutex};
+            frame = pending.take(reinterpret_cast<uintptr_t>(command));
+            if (!frame) {
+                SPDLOG_ERROR_ONCE("[Dune][FrameHandoff] Missing owned command token; refusing an unknown virtual call");
+                return;
+            }
+            // Restore before ExecuteAndDestruct; it may release the command's storage.
+            InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(command),
+                reinterpret_cast<void*>(frame->vtable), vtable.data());
+        }
+        using Execute = void (*)(sdk::FRHICommandBase_New*, sdk::FRHICommandListBase*, void*);
+        const auto original = *reinterpret_cast<const Execute*>(frame->vtable);
+        original(command, list, context);
+
+        // Only publish the observed frame after its engine command executes. Do not
+        // flush extra worker queues, synchronize XR, or dereference the command again.
+        std::scoped_lock lock{publish_mutex};
+        if (!dune_frame_handoff_enabled() || !uevr::dune_frame::should_publish(
+                g_hook->get_render_target_manager()->get_scene_capture_generation(),
+                frame->generation, frame->frame, published_generation, published_frame)) { return; }
+        VR::get()->get_runtime()->enqueue_render_poses(frame->frame);
+        published_generation = frame->generation;
+        published_frame = frame->frame;
+        g_hook->note_successful_command_list_hijack();
+        SPDLOG_INFO_ONCE("[Dune][FrameHandoff] Validated RHI command executed; render frame identity is advancing");
+    }
+
+    static inline std::array<uintptr_t, 1> vtable{reinterpret_cast<uintptr_t>(&execute)};
+
+    static bool valid_command(uintptr_t command) {
+        if (pending.contains(command)) {
+            uintptr_t table{};
+            return read_dune_frame_memory(command, &table, sizeof(table)) &&
+                table == reinterpret_cast<uintptr_t>(vtable.data());
+        }
+        const char* reason{};
+        return valid_dune_frame_object(command) &&
+            is_probable_new_rhi_command(reinterpret_cast<sdk::FRHICommandBase_New*>(command), reason);
+    }
+
+    static bool enqueue(uintptr_t graph, uint32_t frame, uint64_t generation) {
+        std::scoped_lock lock{mutex};
+        const auto command = uevr::dune_frame::read_tail(graph, read_dune_frame_memory, valid_command);
+        if (!command || pending.contains(*command)) { return false; }
+        uintptr_t original{};
+        if (!read_dune_frame_memory(*command, &original, sizeof(original)) ||
+            !pending.reserve({*command, original, frame, generation})) { return false; }
+        const auto previous = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(*command),
+            vtable.data(), reinterpret_cast<void*>(original));
+        if (previous != reinterpret_cast<void*>(original)) {
+            pending.take(*command);
+            return false;
+        }
+        return true;
+    }
+};
 
 bool is_probable_old_rhi_command(sdk::FRHICommandBase_Old* command, const char*& reason) {
     const auto address = reinterpret_cast<uintptr_t>(command);
@@ -20248,7 +20362,8 @@ struct SceneViewExtensionAnalyzer {
 
         has_found_begin_render_viewfamily = true;
         begin_render_viewfamily_index = DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX;
-        pre_render_viewfamily_renderthread_index = DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX;
+        pre_render_viewfamily_renderthread_index = validated_dune_frame_handoff() && g_framework->is_dx12()
+            ? uevr::dune_frame::family_slot : DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX;
         frame_count_offset = DUNE_UE52_FRAME_NUMBER_OFFSET;
         sdk::FSceneViewFamily::set_frame_count_offset(frame_count_offset);
 
@@ -20258,7 +20373,8 @@ struct SceneViewExtensionAnalyzer {
             "PreRenderView_RenderThread={} IsActiveThisFrame_Internal={} FrameNumber=0x{:x}",
             begin_render_viewfamily_index,
             pre_render_viewfamily_renderthread_index,
-            DUNE_UE52_PRE_RENDER_VIEW_INDEX,
+            validated_dune_frame_handoff() && g_framework->is_dx12()
+                ? uevr::dune_frame::view_slot : DUNE_UE52_PRE_RENDER_VIEW_INDEX,
             observed_is_active_index,
             frame_count_offset);
 
@@ -20532,23 +20648,30 @@ struct SceneViewExtensionAnalyzer {
             dune_native_fix_renderer_resolver_is_current_game() &&
             !index_0_called &&
             begin_render_viewfamily_index == DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX &&
-            pre_render_viewfamily_renderthread_index == DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX &&
+            (pre_render_viewfamily_renderthread_index == DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX ||
+             pre_render_viewfamily_renderthread_index == uevr::dune_frame::family_slot) &&
             is_active_this_frame_index == DUNE_UE52_IS_ACTIVE_INTERNAL_INDEX &&
             frame_count_offset == DUNE_UE52_FRAME_NUMBER_OFFSET;
 
-        // Prefer the family callback, but also install a correctly typed
-        // per-view adapter. Dune has been observed calling slot 7 without slot
-        // 6 on some systems; the adapter resolves and validates the owning
-        // family instead of treating FSceneView as FSceneViewFamily.
-        g_view_extension_vtable[pre_render_viewfamily_renderthread_index] =
-            (uintptr_t)&FFakeStereoRenderingHook::pre_render_viewfamily_renderthread;
-        if (use_dune_ue52_source_callbacks) {
-            g_view_extension_vtable[DUNE_UE52_PRE_RENDER_VIEW_INDEX] =
-                (uintptr_t)&FFakeStereoRenderingHook::pre_render_view_renderthread;
+        if (use_dune_ue52_source_callbacks && validated_dune_frame_handoff() && g_framework->is_dx12()) {
+            // Select the isolated handler before publishing the slot. Never briefly
+            // expose the generic scanner, or add an extra per-view worker pump at 9.
+            pre_render_viewfamily_renderthread_index = uevr::dune_frame::family_slot;
+            g_view_extension_vtable[pre_render_viewfamily_renderthread_index] =
+                (uintptr_t)&FFakeStereoRenderingHook::pre_render_dune_frame;
             SPDLOG_INFO(
-                "[Dune][ViewExtension] Installed source-typed render-thread callbacks at family slot {} and view slot {}",
-                pre_render_viewfamily_renderthread_index,
-                DUNE_UE52_PRE_RENDER_VIEW_INDEX);
+                "[Dune][FrameHandoff] Validated family callback at slot 7 and RDG command list at +0x50; "
+                "per-view slot 9 and generic command discovery remain untouched");
+        } else {
+            g_view_extension_vtable[pre_render_viewfamily_renderthread_index] =
+                (uintptr_t)&FFakeStereoRenderingHook::pre_render_viewfamily_renderthread;
+            if (use_dune_ue52_source_callbacks) {
+                g_view_extension_vtable[DUNE_UE52_PRE_RENDER_VIEW_INDEX] =
+                    (uintptr_t)&FFakeStereoRenderingHook::pre_render_view_renderthread;
+                SPDLOG_INFO(
+                    "[Dune][ViewExtension] Installed legacy render-thread callbacks at family slot {} and view slot {}",
+                    pre_render_viewfamily_renderthread_index, DUNE_UE52_PRE_RENDER_VIEW_INDEX);
+            }
         }
 
         SPDLOG_INFO("Done setting up BeginRenderViewFamily hook!");
@@ -26047,6 +26170,38 @@ const char* FFakeStereoRenderingHook::get_dibr_single_view_status_text() const {
 
 bool FFakeStereoRenderingHook::is_dibr_single_view_active() const {
     return m_dibr_single_view_status.load(std::memory_order_acquire) == DIBR_SINGLE_VIEW_ACTIVE;
+}
+
+void FFakeStereoRenderingHook::pre_render_dune_frame(
+    ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family) {
+    // The baseline pumped this queue once at the same family callback. Preserve
+    // that cadence even while Native Fix is off or a candidate is rejected.
+    utility::ScopeGuard worker{[] { RenderThreadWorker::get().execute(); }};
+    if (!dune_frame_handoff_enabled() || !g_framework->is_game_data_intialized() ||
+        !g_hook->has_scene_view_family_offsets_ready() || !VR::get()->is_hmd_active() ||
+        VR::get()->is_stereo_emulation_enabled() || !VR::get()->get_runtime()->ready()) { return; }
+
+    const auto* manager = g_hook->get_render_target_manager();
+    const auto generation = manager->get_scene_capture_generation();
+    const auto candidate = uevr::dune_frame::read_family(reinterpret_cast<uintptr_t>(&family),
+        reinterpret_cast<uintptr_t>(manager->get_view_family_render_target()),
+        read_dune_frame_memory, valid_dune_frame_object);
+    if (!generation || !candidate) {
+        SPDLOG_WARN_ONCE("[Dune][FrameHandoff] Waiting for a validated initialized main-view family; poses unchanged");
+        return;
+    }
+
+    static thread_local std::optional<uevr::dune_frame::FamilyFrame> last_frame{};
+    static thread_local uint64_t last_generation{};
+    if (last_frame == candidate && last_generation == generation) { return; }
+    if (!DuneFrameCommands::enqueue(reinterpret_cast<uintptr_t>(graph),
+            candidate->frame + g_hook->get_frame_delay_compensation(), generation)) {
+        SPDLOG_WARN_ONCE("[Dune][FrameHandoff] No validated unowned RHI tail command; retaining poses without a speculative scan");
+        return;
+    }
+    last_frame = candidate;
+    last_generation = generation;
+    g_hook->note_prerender_viewfamily_seen();
 }
 
 void FFakeStereoRenderingHook::pre_render_view_renderthread(
