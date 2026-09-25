@@ -9,6 +9,7 @@
 #include <utility/Module.hpp>
 #include <utility/String.hpp>
 #include <utility/ScopeGuard.hpp>
+#include <utility/UObjectMetadataFilter.hpp>
 
 #include <sdk/UObjectBase.hpp>
 #include <sdk/UObjectArray.hpp>
@@ -4570,13 +4571,41 @@ void UObjectHook::draw_main() {
                 break;
             }
 
-            const auto& objects_ref = m_objects_by_class[uclass];
+            const auto objects_it = m_objects_by_class.find(uclass);
 
-            if (objects_ref.empty()) {
+            if (objects_it == m_objects_by_class.end() || objects_it->second.empty()) {
                 continue;
             }
 
-            if (!m_meta_objects.contains(uclass)) {
+            const auto& objects_ref = objects_it->second;
+            std::string uclass_name{};
+            bool valid = true;
+
+            {
+                std::shared_lock lock{m_mutex};
+                const auto class_meta_it = m_meta_objects.find(uclass);
+
+                if (class_meta_it == m_meta_objects.end() || class_meta_it->second == nullptr) {
+                    continue;
+                }
+
+                const auto& class_meta = *class_meta_it->second;
+                uclass_name = utility::narrow(class_meta.full_name);
+
+                if (!filter_empty) {
+                    valid = utility::uobject::cached_class_chain_matches(
+                        class_meta.full_name,
+                        class_meta.super_classes,
+                        wide_filter,
+                        [this](sdk::UClass* cached_class) -> const std::wstring* {
+                            const auto it = m_meta_objects.find(cached_class);
+                            return it != m_meta_objects.end() && it->second != nullptr ?
+                                &it->second->full_name : nullptr;
+                        });
+                }
+            }
+
+            if (!valid) {
                 continue;
             }
 
@@ -4590,26 +4619,6 @@ void UObjectHook::draw_main() {
                         continue;
                     }
                 }
-            }
-
-            const auto uclass_name = utility::narrow(m_meta_objects[uclass]->full_name);
-            bool valid = true;
-
-            if (!filter_empty) {
-                valid = false;
-
-                for (auto super = (sdk::UStruct*)uclass; super; super = super->get_super_struct()) {
-                    if (auto it = m_meta_objects.find(super); it != m_meta_objects.end()) {
-                        if (it->second->full_name.find(wide_filter) != std::wstring::npos) {
-                            valid = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (!valid) {
-                continue;
             }
 
             if (is_stalker2_uobjecthook_guard_enabled()) {
