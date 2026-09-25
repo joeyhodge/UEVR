@@ -314,6 +314,25 @@ void test_uobject_metadata_filter() {
         "UObject class filtering obeys its traversal bound");
     expect(cached_class_chain_matches(child_name, chain, L"", lookup, 0),
         "empty UObject class filters preserve the unfiltered list");
+
+    using RecentObject = utility::uobject::CachedRecentObject<ClassToken>;
+    const RecentObject recent{poisoned, L"Object /Game/Cached", 17, 29, true};
+    size_t identity_checks{};
+    const auto validate_identity = [&](ClassToken* pointer, int32_t index, int32_t serial) {
+        ++identity_checks;
+        return pointer == poisoned && index == 17 && serial == 29;
+    };
+
+    expect(utility::uobject::cached_recent_object_is_current(recent, true, validate_identity) && identity_checks == 1,
+        "recent UObject validation treats cached pointers as opaque identity tokens");
+    identity_checks = 0;
+    expect(!utility::uobject::cached_recent_object_is_current(recent, false, validate_identity) && identity_checks == 0,
+        "untracked recent UObjects fail closed without consulting game memory");
+    identity_checks = 0;
+    auto missing_identity = recent;
+    missing_identity.identity_valid = false;
+    expect(!utility::uobject::cached_recent_object_is_current(missing_identity, true, validate_identity) && identity_checks == 0,
+        "recent UObjects without a cached FUObjectArray identity fail closed");
 }
 }
 
