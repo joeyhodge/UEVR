@@ -504,7 +504,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
     if (vr->mono_frame_gate_required()) {
         if (!vr->m_openxr->has_mono_frame(static_cast<uint32_t>(vr->m_frame_count))) {
-            vr->set_mono_status("Waiting for a current main-view pose/projection (parallel optical axes required)");
+            vr->set_mono_status("Waiting for a current main-view pose and validated common projection");
             vr->m_openxr->end_mono_transition_frame();
             return vr::VRCompositorError_None;
         }
@@ -1702,7 +1702,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 }
 
 void D3D11Component::on_post_present(VR* vr) {
-    if (vr->is_mono_transition_quiescing() || vr->is_mono_transition_waiting() || m_mono_block_post_present) { return; }
+    if (vr->is_mono_transition_quiescing()) { return; }
+    if ((vr->is_mono_transition_waiting() || m_mono_block_post_present) &&
+        !uevr::mono::clear_waiting_backbuffer(vr->is_using_mono(), vr->is_mono_transition_quiescing(),
+            !m_force_reset, m_mono_generation, vr->mono_generation())) { return; }
     // Never erase the desktop while no validated scene source has reached the
     // compositor. Setup retries on the next frame without turning a recoverable
     // target-discovery delay into a black game window.
@@ -1743,6 +1746,9 @@ void D3D11Component::on_post_present(VR* vr) {
         }
 
         if (m_backbuffer_rtv != nullptr) {
+            // Waiting Mono frames can clear without reaching on_frame's normal
+            // query invalidation. A later resize must retire this new work too.
+            if (vr->is_using_mono()) { m_mono_retirement.invalidate(); }
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             context->ClearRenderTargetView(m_backbuffer_rtv.Get(), clear_color);
         }

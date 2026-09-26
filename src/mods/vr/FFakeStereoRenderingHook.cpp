@@ -28804,7 +28804,10 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
 
         const auto head_offset = quat_converter * (vqi_norm * (pos * world_scale));
         const auto head_offset_flat = quat_converter * (vqi_norm * (pos_flat * world_scale));
-        const auto eye_separation = quat_converter * (glm::normalize(new_rotation) * (eye_offset * world_scale));
+        // Mono's center is expressed in head space; its optical rotation must
+        // not rotate the translation a second time on calibrated/canted HMDs.
+        const auto eye_translation_rotation = mono ? glm::normalize(vqi_norm * current_hmd_rotation) : glm::normalize(new_rotation);
+        const auto eye_separation = quat_converter * (eye_translation_rotation * (eye_offset * world_scale));
 
         if (!has_double_precision) {
             if (!is_2d_screen) {

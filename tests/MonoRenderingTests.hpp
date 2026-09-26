@@ -120,15 +120,129 @@ void test_mono_rendering() {
                 "submitted per-eye crops preserve the central image's exact angular rays");
         }
     }
+    const auto rotation_matrix = [](const std::array<float, 4>& q) {
+        double n = 0;
+        for (auto v : q) { n += static_cast<double>(v) * v; }
+        const double x = q[0]/std::sqrt(n), y = q[1]/std::sqrt(n), z = q[2]/std::sqrt(n), w = q[3]/std::sqrt(n);
+        return std::array<std::array<double, 3>, 3>{{
+            {1-2*y*y-2*z*z, 2*x*y-2*z*w, 2*x*z+2*y*w},
+            {2*x*y+2*z*w, 1-2*x*x-2*z*z, 2*y*z-2*x*w},
+            {2*x*z-2*y*w, 2*y*z+2*x*w, 1-2*x*x-2*y*y}}};
+    };
+    const auto check_geometry = [&](const std::array<m::Eye, 2>& sample) {
+        const auto geometry = m::geometry(sample);
+        expect(geometry.has_value(), "finite calibrated eye rays have a common Mono projection");
+        if (!geometry) { return; }
+        const auto source_rotation = rotation_matrix(geometry->orientation);
+        for (size_t eye = 0; eye != 2; ++eye) {
+            const auto target_rotation = rotation_matrix(sample[eye].orientation);
+            const auto& f = sample[eye].fov;
+            // Independent matrix-based oracle, including interior rays, against
+            // the quaternion-based production frustum construction.
+            for (int xi = 0; xi <= 4; ++xi) {
+                for (int yi = 0; yi <= 4; ++yi) {
+                    const std::array<double, 3> ray{std::lerp(f[0], f[1], xi / 4.f), std::lerp(f[3], f[2], yi / 4.f), -1};
+                    std::array<double, 3> world{}, common{};
+                    for (int r = 0; r != 3; ++r) {
+                        for (int c = 0; c != 3; ++c) { world[r] += target_rotation[r][c] * ray[c]; }
+                    }
+                    for (int r = 0; r != 3; ++r) {
+                        for (int c = 0; c != 3; ++c) { common[r] += source_rotation[c][r] * world[c]; }
+                    }
+                    const auto tx = common[0] / -common[2], ty = common[1] / -common[2];
+                    const auto u = 0.5 + 0.5 * tx / geometry->horizontal;
+                    const auto v = 0.5 - 0.5 * ty / geometry->vertical;
+                    const auto& b = geometry->bounds[eye];
+                    expect(common[2] < 0 && u >= b[0] - 1e-6 && u <= b[1] + 1e-6 &&
+                        v >= b[2] - 1e-6 && v <= b[3] + 1e-6,
+                        "common-basis bounds cover every calibrated eye ray without assuming parallel optics");
+                }
+            }
+            for (const auto dims : {std::array{2472u,2416u}, std::array{3001u,1703u}, std::array{1u,1u}}) {
+                const auto crop = m::projection_crop(*geometry, eye, dims[0], dims[1]);
+                expect(crop && crop->width > 0 && crop->height > 0 && crop->x + crop->width <= dims[0] &&
+                    crop->y + crop->height <= dims[1], "integer Mono crops are nonempty and contained in their eye region");
+                if (!crop) { continue; }
+                const auto& b = geometry->bounds[eye];
+                expect(double(crop->x)/dims[0] <= b[0] && double(crop->x+crop->width)/dims[0] >= b[1] &&
+                    double(crop->y)/dims[1] <= b[2] && double(crop->y+crop->height)/dims[1] >= b[3],
+                    "outward-rounded crops never discard a requested edge ray");
+                for (float t : {0.f,0.13f,0.5f,0.81f,1.f}) {
+                    const auto tx = (2.0 * (crop->x + t*crop->width) / dims[0] - 1) * geometry->horizontal;
+                    const auto ty = (1 - 2.0 * (crop->y + t*crop->height) / dims[1]) * geometry->vertical;
+                    expect(std::abs(tx - std::lerp(crop->fov[0],crop->fov[1],t)) < 1e-5 &&
+                        std::abs(ty - std::lerp(crop->fov[2],crop->fov[3],t)) < 1e-5,
+                        "submitted FOV describes the actual integer crop's rays, including nonintegral edges");
+                }
+            }
+        }
+    };
+    check_geometry(eyes);
+    auto canted = eyes;
+    canted[1].orientation = {0, std::sin(0.05f), 0, std::cos(0.05f)};
+    check_geometry(canted);
+    canted[1].orientation = {0, 0, std::sin(0.13f), std::cos(0.13f)};
+    check_geometry(canted);
+    canted[1].orientation = {std::sin(0.08f), 0, 0, std::cos(0.08f)};
+    check_geometry(canted);
+
+    // WMR Sandfall read-only capture: 0.400211 degrees between the optical axes.
+    auto calibrated = eyes;
+    calibrated[0].orientation = {-0.0009746211f,0.0012330962f,0.0007600746f,0.9999984503f};
+    calibrated[1].orientation = {0.0009753961f,-0.0012333887f,-0.0007602721f,0.9999984503f};
+    calibrated[0].position = {-0.0339998901f,-0.0000579178f,-0.0000477611f};
+    calibrated[1].position = {0.0339998305f,0.0000573580f,0.0000488133f};
+    calibrated[0].fov = {std::tan(-0.8581431508f),std::tan(0.7822603583f),std::tan(0.8117937446f),std::tan(-0.8128302097f)};
+    calibrated[1].fov = {std::tan(-0.7820497751f),std::tan(0.8614106178f),std::tan(0.8153690696f),std::tan(-0.8087611198f)};
+    check_geometry(calibrated);
+    const auto calibrated_geometry = m::geometry(calibrated);
+    auto stage = calibrated;
+    stage[0].orientation = {-0.0952989757f,0.0157259218f,0.0320377983f,0.9948087335f};
+    stage[1].orientation = {-0.0933033898f,0.0131897330f,0.0307295416f,0.9950759411f};
+    check_geometry(stage);
+    const auto stage_geometry = m::geometry(stage);
+    expect(calibrated_geometry && stage_geometry &&
+        std::abs(calibrated_geometry->horizontal - stage_geometry->horizontal) < 1e-5 &&
+        std::abs(calibrated_geometry->vertical - stage_geometry->vertical) < 1e-5,
+        "captured view-space and stage-space calibrations agree on the rendered union projection");
+    for (auto& eye : calibrated) { for (auto& q : eye.orientation) { q = -q; } }
+    check_geometry(calibrated);
+    const auto opposite_sign = m::geometry(calibrated);
+    expect(opposite_sign && calibrated_geometry && opposite_sign->bounds == calibrated_geometry->bounds,
+        "quaternion sign changes do not alter the common-basis crop");
+
     auto invalid = eyes;
-    invalid[1].orientation = {0, std::sin(0.05f), 0, std::cos(0.05f)};
-    expect(!m::geometry(invalid), "canted displays fail closed rather than duplicate the wrong orientation");
+    invalid[1].orientation = {0, std::sin(0.7f), 0, std::cos(0.7f)};
+    expect(!m::geometry(invalid), "frusta crossing the common perspective horizon remain fail-closed");
     invalid = eyes; invalid[1].orientation[3] = -1;
     expect(m::geometry(invalid).has_value(), "equivalent quaternion signs are accepted");
     invalid = eyes; invalid[0].fov[0] = std::numeric_limits<float>::quiet_NaN();
     expect(!m::geometry(invalid), "nonfinite FOV fails closed");
     invalid = eyes; invalid[0].fov[0] = 0;
     expect(!m::geometry(invalid), "degenerate FOV fails closed");
+    invalid = eyes; invalid[0].orientation = {};
+    expect(!m::geometry(invalid), "zero orientation fails closed");
+    invalid = eyes; invalid[0].position[0] = std::numeric_limits<float>::infinity();
+    expect(!m::geometry(invalid), "nonfinite center position fails closed");
+    invalid = eyes; invalid[1].fov[1] = 101;
+    expect(!m::geometry(invalid), "unbounded frusta fail closed");
+    if (g) {
+        expect(!m::projection_crop(*g,2,2472,2416) && !m::projection_crop(*g,0,0,2416) &&
+            !m::projection_crop(*g,0,2472,0) && !m::projection_crop(*g,0,65536,2416),
+            "missing or unsupported submission regions fail closed");
+        auto bad = *g; bad.bounds[0][1] = std::numeric_limits<float>::quiet_NaN();
+        expect(!m::projection_crop(bad,0,2472,2416), "nonfinite crop cannot become a submitted image rectangle");
+        bad = *g; bad.bounds[0][0] = -0.01f;
+        expect(!m::projection_crop(bad,0,2472,2416), "out-of-bounds crop fails closed");
+    }
+    expect(m::clear_waiting_backbuffer(true,false,true,3,3),
+        "blocked Mono submission still clears a ready current-generation backbuffer");
+    expect(!m::clear_waiting_backbuffer(false,false,true,3,3) &&
+        !m::clear_waiting_backbuffer(true,true,true,3,3) &&
+        !m::clear_waiting_backbuffer(true,false,false,3,3) &&
+        !m::clear_waiting_backbuffer(true,false,true,2,3) &&
+        !m::clear_waiting_backbuffer(true,false,true,0,0),
+        "Mono clearing never adds work during retirement, setup, a stale generation or an ordinary mode");
     for (auto width : {2048u, 4944u, 6008u}) {
         auto copies = m::copy_regions(width, 2416, width, 2416);
         expect(copies && (*copies)[0].left == (*copies)[1].left && (*copies)[0].right == (*copies)[1].right &&

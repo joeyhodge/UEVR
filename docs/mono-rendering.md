@@ -11,7 +11,9 @@ Native, Synced, AFR and the two DIBR IDs remain 0 through 4.
   into both OpenXR eye regions every frame. It does not alternate eyes, reuse
   the previous eye, or synthesize depth like DIBR.
 - Uses a symmetric union projection with separately validated per-eye crops.
-  Both submitted views describe the same centered rendered pose.
+  Both submitted views describe the same centered rendered pose. Calibrated
+  eye rotations are transformed into that common optical basis, not discarded.
+  Submitted FOVs match the actual integer-pixel crops, including rounded edges.
 - Retains UEVR's double-wide engine allocation to avoid a new engine render
   target layout/lifetime contract. Only the left region supplies scene pixels.
   This reduces scene-view work but does not halve allocation size or guarantee
@@ -25,9 +27,13 @@ Image quality, comfort and performance require testing in each game/headset.
 
 ## Supported path and rejection behavior
 
-Implemented for **DX11 or DX12 with OpenXR**, parallel optical axes, and a
-validated single-view main family/scene source. OpenVR and canted displays are
-not implemented. Extreme Compatibility, split-screen, 2D Screen Mode,
+Implemented for **DX11 or DX12 with OpenXR** and a validated single-view main
+family/scene source. Eye calibration/cant is supported when both frusta fit a
+finite forward-facing common perspective; horizon-crossing rays fail closed.
+The engine renders in the left optical orientation at the midpoint of the eyes.
+OpenXR maps the submitted common-pose crops to each physical display (as allowed
+by [XrCompositionLayerProjectionView](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrCompositionLayerProjectionView.html)).
+OpenVR is not implemented. Extreme Compatibility, split-screen, 2D Screen Mode,
 SceneView compatibility, stereo emulation, and the restricted NASCAR rendering
 paths are not eligible.
 
@@ -42,6 +48,8 @@ capability disappears while Mono is already active, submission stops with an
 in-game status; select a supported method to exit through the same retirement
 transaction. An unsupported saved mode ID is preserved and explicitly reported,
 not silently converted to another mode.
+While awaiting a valid scene, a ready Mono backbuffer is still cleared to avoid
+desktop feedback/flicker. No new clear work is queued during resource retirement.
 
 ## Startup and live switching
 
@@ -66,7 +74,10 @@ before rebuilding; DX12 retains each source through its image's command fence.
 
 Offline checks cover stable IDs, old-mode policy outcomes, unknown profile values,
 startup/live/config transitions, rapid cancellation, concurrent method/generation
-publication, geometry/crops and stale-frame rejection. DX11 and DX12 WARP tests
+publication, geometry/crops and stale-frame rejection. Geometry fixtures include
+the captured WMR 0.4-degree inter-eye calibration, yaw/pitch/roll, asymmetric FOV,
+quaternion signs, stage/view-space agreement, pixel rounding and horizon rejection.
+DX11 and DX12 WARP tests
 execute the actual copy helpers and read back both output regions across resize,
 including invalid-source rejection. DX12 also tests state restoration and checks
 the debug message queue when the debug layer is available. Frontend ID tests run
