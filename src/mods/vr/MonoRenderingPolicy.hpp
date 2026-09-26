@@ -116,34 +116,90 @@ struct Geometry {
 };
 
 inline std::optional<Geometry> geometry(const std::array<Eye, 2>& eyes) {
-    float dot = 0;
-    std::array<float, 2> norms{};
+    std::array<std::array<double, 4>, 2> orientations{};
     for (size_t eye = 0; eye != 2; ++eye) {
-        float norm = 0;
-        for (float v : eyes[eye].orientation) { if (!std::isfinite(v)) { return {}; } norm += v * v; }
+        double norm = 0;
+        for (float v : eyes[eye].orientation) { if (!std::isfinite(v)) { return {}; } norm += static_cast<double>(v) * v; }
         if (std::abs(norm - 1.0f) > 0.001f) { return {}; }
-        norms[eye] = norm;
+        const auto length = std::sqrt(norm);
+        for (size_t i = 0; i != 4; ++i) { orientations[eye][i] = eyes[eye].orientation[i] / length; }
         for (float v : eyes[eye].position) { if (!std::isfinite(v)) { return {}; } }
         for (float v : eyes[eye].fov) { if (!std::isfinite(v) || std::abs(v) > 100.f) { return {}; } }
         const auto& f = eyes[eye].fov;
         if (!(f[0] < -0.001f && f[1] > 0.001f && f[2] > 0.001f && f[3] < -0.001f)) { return {}; }
     }
-    for (size_t i = 0; i != 4; ++i) { dot += eyes[0].orientation[i] * eyes[1].orientation[i]; }
-    // Parallel optical axes only (quaternion sign is immaterial). No canted approximation.
-    if (std::abs(dot) / std::sqrt(norms[0] * norms[1]) < 0.999999f) { return {}; }
     Geometry g{};
-    for (size_t i = 0; i != 4; ++i) { g.orientation[i] = eyes[0].orientation[i] / std::sqrt(norms[0]); }
-    for (size_t i = 0; i != 3; ++i) { g.center[i] = (eyes[0].position[i] + eyes[1].position[i]) * 0.5f; }
-    for (const auto& eye : eyes) {
-        g.horizontal = (std::max)({g.horizontal, -eye.fov[0], eye.fov[1]});
-        g.vertical = (std::max)({g.vertical, eye.fov[2], -eye.fov[3]});
+    for (size_t i = 0; i != 4; ++i) { g.orientation[i] = static_cast<float>(orientations[0][i]); }
+    for (size_t i = 0; i != 3; ++i) { g.center[i] = eyes[0].position[i] * 0.5f + eyes[1].position[i] * 0.5f; }
+    std::array<std::array<float, 4>, 2> common_fov{};
+    common_fov[0] = eyes[0].fov;
+
+    // The engine's one view uses the left optical orientation. Rotate the
+    // right frustum into that same basis, including calibration yaw/pitch/roll.
+    // Ignoring even a small eye rotation makes the submitted rays incorrect.
+    const auto& a = orientations[0];
+    const auto& b = orientations[1];
+    const std::array<double, 4> q{ // conjugate(left) * right
+        a[3]*b[0] - a[0]*b[3] - a[1]*b[2] + a[2]*b[1],
+        a[3]*b[1] + a[0]*b[2] - a[1]*b[3] - a[2]*b[0],
+        a[3]*b[2] - a[0]*b[1] + a[1]*b[0] - a[2]*b[3],
+        a[3]*b[3] + a[0]*b[0] + a[1]*b[1] + a[2]*b[2]};
+    common_fov[1] = {100.f, -100.f, -100.f, 100.f};
+    for (float x : {eyes[1].fov[0], eyes[1].fov[1]}) {
+        for (float y : {eyes[1].fov[2], eyes[1].fov[3]}) {
+            const std::array<double, 3> t{2 * (-q[1] - q[2]*y),
+                2 * (q[2]*x + q[0]), 2 * (q[0]*y - q[1]*x)};
+            const auto rx = x + q[3]*t[0] + q[1]*t[2] - q[2]*t[1];
+            const auto ry = y + q[3]*t[1] + q[2]*t[0] - q[0]*t[2];
+            const auto rz = -1 + q[3]*t[2] + q[0]*t[1] - q[1]*t[0];
+            // A single perspective image cannot cover rays crossing its horizon.
+            if (!std::isfinite(rz) || rz >= -0.00001) { return {}; }
+            const float tx = static_cast<float>(rx / -rz), ty = static_cast<float>(ry / -rz);
+            if (!std::isfinite(tx) || !std::isfinite(ty) || std::abs(tx) > 100.f || std::abs(ty) > 100.f) { return {}; }
+            auto& f = common_fov[1];
+            f[0] = (std::min)(f[0], tx); f[1] = (std::max)(f[1], tx);
+            f[2] = (std::max)(f[2], ty); f[3] = (std::min)(f[3], ty);
+        }
+    }
+    for (const auto& f : common_fov) {
+        if (!(f[0] < f[1] && f[3] < f[2])) { return {}; }
+        g.horizontal = (std::max)({g.horizontal, std::abs(f[0]), std::abs(f[1])});
+        g.vertical = (std::max)({g.vertical, std::abs(f[2]), std::abs(f[3])});
     }
     for (size_t i = 0; i != 2; ++i) {
-        const auto& f = eyes[i].fov;
+        const auto& f = common_fov[i];
         g.bounds[i] = {0.5f + 0.5f * f[0] / g.horizontal, 0.5f + 0.5f * f[1] / g.horizontal,
                        0.5f - 0.5f * f[2] / g.vertical, 0.5f - 0.5f * f[3] / g.vertical};
     }
     return g;
+}
+
+struct ProjectionCrop {
+    uint32_t x{}, y{}, width{}, height{};
+    std::array<float, 4> fov{}; // tangents in the common rendered basis
+};
+
+inline std::optional<ProjectionCrop> projection_crop(const Geometry& g, size_t eye, uint32_t width, uint32_t height) {
+    if (eye >= 2 || width == 0 || height == 0 || width > 32768 || height > 32768 ||
+        !std::isfinite(g.horizontal) || !std::isfinite(g.vertical) ||
+        g.horizontal <= 0 || g.horizontal > 100 || g.vertical <= 0 || g.vertical > 100) { return {}; }
+    const auto& b = g.bounds[eye];
+    for (float v : b) { if (!std::isfinite(v) || v < 0 || v > 1) { return {}; } }
+    if (!(b[0] < b[1] && b[2] < b[3])) { return {}; }
+    const auto left = static_cast<uint32_t>(std::floor(static_cast<double>(b[0]) * width));
+    const auto right = static_cast<uint32_t>(std::ceil(static_cast<double>(b[1]) * width));
+    const auto top = static_cast<uint32_t>(std::floor(static_cast<double>(b[2]) * height));
+    const auto bottom = static_cast<uint32_t>(std::ceil(static_cast<double>(b[3]) * height));
+    // Describe the actual integer-pixel crop, not the unrounded runtime FOV.
+    // OpenXR maps these common-pose rays into each display's optical geometry.
+    return ProjectionCrop{left, top, right - left, bottom - top, {
+        (2.f * left / width - 1.f) * g.horizontal, (2.f * right / width - 1.f) * g.horizontal,
+        (1.f - 2.f * top / height) * g.vertical, (1.f - 2.f * bottom / height) * g.vertical}};
+}
+
+constexpr bool clear_waiting_backbuffer(bool mono, bool quiescing, bool resources_ready,
+    uint64_t resource_generation, uint64_t current_generation) {
+    return mono && !quiescing && resources_ready && current_generation != 0 && resource_generation == current_generation;
 }
 
 constexpr bool frame_matches(uint64_t generation, uint64_t produced_generation,

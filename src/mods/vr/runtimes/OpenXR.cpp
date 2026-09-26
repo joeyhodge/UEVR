@@ -1935,12 +1935,51 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
 
     // always update the pose:
     std::unique_lock ___{ this->pose_mtx };
+    if (VR::get()->is_using_mono() && this->views.size() != 2) {
+        return VRRuntime::Error::SUCCESS;
+    }
     const auto& left_pose = this->views[0].pose;
     const auto& right_pose = this->views[1].pose;
     this->eyes[0] = Matrix4x4f{OpenXR::to_glm(left_pose.orientation)};
     this->eyes[0][3] = Vector4f{*(Vector3f*)&left_pose.position, 1.0f};
     this->eyes[1] = Matrix4x4f{OpenXR::to_glm(right_pose.orientation)};
     this->eyes[1][3] = Vector4f{*(Vector3f*)&right_pose.position, 1.0f};
+
+    if (const auto vr = VR::get(); vr->is_using_mono()) {
+        const auto g = mono_geometry(this->views);
+        if (g && std::isfinite(nearz)) {
+            std::unique_lock eyes_lock{this->eyes_mtx};
+            for (size_t i = 0; i != 2; ++i) {
+                const auto& f = this->views[i].fov;
+                this->raw_projections[i] = {std::tan(f.angleLeft), std::tan(f.angleRight),
+                    std::tan(f.angleUp), std::tan(f.angleDown)};
+                std::copy(g->bounds[i].begin(), g->bounds[i].end(), this->view_bounds[i]);
+                // Both copies come from this one common optical basis, not
+                // from an unrotated union of the runtime's two eye FOVs.
+                this->projections[i] = Matrix4x4f{
+                    1.f / g->horizontal, 0, 0, 0,
+                    0, 1.f / g->vertical, 0, 0,
+                    0, 0, 0, 1,
+                    0, 0, nearz, 0};
+            }
+            if (this->should_recalculate_eye_projections || !this->has_valid_projection_data) {
+                // Keep allocation scaling stable until a projection/settings
+                // reset, just like the ordinary path. Calibration noise must
+                // not resize GPU resources each frame.
+                eye_width_adjustment = vr->should_grow_rectangle_for_projection_cropping()
+                    ? 1.f / std::max(g->bounds[0][1] - g->bounds[0][0], g->bounds[1][1] - g->bounds[1][0]) : 1.f;
+                eye_height_adjustment = vr->should_grow_rectangle_for_projection_cropping()
+                    ? 1.f / std::max(g->bounds[0][3] - g->bounds[0][2], g->bounds[1][3] - g->bounds[1][2]) : 1.f;
+                SPDLOG_INFO("[Mono] Initialized common optical projection: tan_half_fov={} x {}, texture_scale={} x {}",
+                    g->horizontal, g->vertical, eye_width_adjustment, eye_height_adjustment);
+            }
+            this->has_valid_projection_data = true;
+            this->should_recalculate_eye_projections = false;
+            this->last_eye_matrix_nearz = nearz;
+        }
+        this->should_update_eye_matrices = false;
+        return VRRuntime::Error::SUCCESS;
+    }
 
     auto get_mat = [&](int eye) {
         const auto& vr = VR::get();
@@ -3698,6 +3737,15 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto& pipelined_stage_views = submit_state.stage_views;
     const auto& pipelined_frame_state = submit_state.frame_state;
     const auto mono_projection = mono ? mono_geometry(pipelined_stage_views) : std::nullopt;
+    std::array<std::optional<uevr::mono::ProjectionCrop>, 2> mono_crops{};
+    if (mono_projection) {
+        const auto& sc = this->swapchains[(uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE];
+        if (sc.width > 0 && (sc.width % 2) == 0 && sc.height > 0) {
+            for (size_t i = 0; i != 2; ++i) {
+                mono_crops[i] = uevr::mono::projection_crop(*mono_projection, i, sc.width / 2, sc.height);
+            }
+        }
+    }
     const auto debug_submit_empty = this->debug_submit_empty_frame->value();
 
     if (pipelined_stage_views.empty()) {
@@ -3748,7 +3796,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
     if (!debug_submit_empty && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty() &&
-        (!mono || mono_projection.has_value())) {
+        (!mono || (mono_projection && mono_crops[0] && mono_crops[1]))) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
@@ -3792,13 +3840,14 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             offset_y = view_bounds[i][2] * swapchain->height;
             extent_y = view_bounds[i][3] * swapchain->height - offset_y;
             if (mono_projection) {
-                const auto& bounds = mono_projection->bounds[i];
+                const auto& crop = *mono_crops[i];
                 const int eye_width = swapchain->width / 2;
-                offset_x = static_cast<int>(bounds[0] * eye_width);
-                extent_x = static_cast<int>(bounds[1] * eye_width) - offset_x;
-                offset_x += static_cast<int>(i) * eye_width;
-                offset_y = static_cast<int>(bounds[2] * swapchain->height);
-                extent_y = static_cast<int>(bounds[3] * swapchain->height) - offset_y;
+                offset_x = static_cast<int>(crop.x) + static_cast<int>(i) * eye_width;
+                offset_y = static_cast<int>(crop.y);
+                extent_x = static_cast<int>(crop.width);
+                extent_y = static_cast<int>(crop.height);
+                projection_layer_views[i].fov = {std::atan(crop.fov[0]), std::atan(crop.fov[1]),
+                    std::atan(crop.fov[2]), std::atan(crop.fov[3])};
             }
             
             // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);

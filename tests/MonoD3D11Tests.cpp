@@ -61,6 +61,26 @@ int main() {
             context->Unmap(readback.Get(), 0);
         } else { expect(false, "readback map"); }
 
+        ComPtr<ID3D11RenderTargetView> rtv;
+        expect(SUCCEEDED(device->CreateRenderTargetView(destination.Get(), nullptr, &rtv)), "waiting-frame RTV allocation");
+        if (rtv) {
+            const float black[4]{};
+            retirement.invalidate(); // Same invalidation as blocked-Mono post-Present clearing.
+            context->ClearRenderTargetView(rtv.Get(), black);
+            context->CopyResource(readback.Get(), destination.Get());
+            expect(!retirement.poll(context.Get(), width), "waiting-frame clear invalidates same-token retirement");
+            expect(wait_retired(width), "resize/transition retires the newly queued waiting-frame clear");
+            if (SUCCEEDED(context->Map(readback.Get(), 0, D3D11_MAP_READ, 0, &mapped))) {
+                bool cleared = true;
+                for (UINT y = 0; y != height; ++y) {
+                    const auto row = reinterpret_cast<const uint32_t*>(static_cast<const uint8_t*>(mapped.pData) + y * mapped.RowPitch);
+                    for (UINT x = 0; x != width; ++x) { cleared &= row[x] == 0; }
+                }
+                expect(cleared, "blocked-frame clearing removes old scene pixels before retirement");
+                context->Unmap(readback.Get(), 0);
+            } else { expect(false, "waiting-frame clear readback"); }
+        }
+
         expect(!mono::copy_scene(context.Get(), destination.Get(), destination.Get()), "self-copy rejected");
         expect(!mono::copy_scene(context.Get(), destination.Get(), readback.Get()), "staging output rejected");
         desc.Usage = D3D11_USAGE_DEFAULT; desc.CPUAccessFlags = 0; desc.BindFlags = D3D11_BIND_RENDER_TARGET;

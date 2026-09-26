@@ -2376,7 +2376,7 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
 
     if (vr->mono_frame_gate_required()) {
         if (!vr->m_openxr->has_mono_frame(static_cast<uint32_t>(vr->m_frame_count))) {
-            vr->set_mono_status("Waiting for a current main-view pose/projection (parallel optical axes required)");
+            vr->set_mono_status("Waiting for a current main-view pose and validated common projection");
             vr->m_openxr->end_mono_transition_frame();
             return vr::VRCompositorError_None;
         }
@@ -5866,7 +5866,16 @@ void D3D12Component::clear_backbuffer() {
 }
 
 void D3D12Component::on_post_present(VR* vr) {
-    if (vr->is_mono_transition_quiescing() || vr->is_mono_transition_waiting() || m_mono_block_post_present) { return; }
+    if (vr->is_mono_transition_quiescing()) { return; }
+    if (vr->is_mono_transition_waiting() || m_mono_block_post_present) {
+        // A rejected scene must not suppress backbuffer clearing indefinitely.
+        // Never add queue work while retiring/replacing Mono resources.
+        if (vr->is_hmd_active() && uevr::mono::clear_waiting_backbuffer(vr->is_using_mono(),
+            vr->is_mono_transition_quiescing(), !m_force_reset, m_mono_generation, vr->mono_generation())) {
+            clear_backbuffer();
+        }
+        return;
+    }
     const bool collect_frame_timing = vr != nullptr && vr->is_hitch_diagnostics_enabled();
     const auto post_present_start = collect_frame_timing
         ? std::chrono::steady_clock::now()
