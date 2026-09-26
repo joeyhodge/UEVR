@@ -68,7 +68,8 @@ Press the **Insert** key or **L3+R3** on an XInput based controller to access th
 
 ### Mono (Experimental, opt-in branch)
 
-On `UEVRMono+DIBR+UEVR`, Mono renders one centered head-tracked scene for both eyes
+On `eBaseballfocused`, `uevr-dibr-optin-safe`, and `UEVRMono+DIBR+UEVR`,
+Mono renders one centered head-tracked scene for both eyes
 using DX11 or DX12 with OpenXR. There is no binocular scene depth. Existing mode
 IDs and defaults are retained. See [Mono support, limitations and test checklist](docs/mono-rendering.md)
 before testing live transitions. Credit to Noniv's upstream [PR #442](https://github.com/praydog/UEVR/pull/442).

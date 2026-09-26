@@ -1,6 +1,7 @@
 # Mono rendering (experimental)
 
-This feature is isolated on `UEVRMono+DIBR+UEVR`. It does not change the default
+This opt-in feature is available on `eBaseballfocused`, `uevr-dibr-optin-safe`, and
+`UEVRMono+DIBR+UEVR`. It does not change the default
 rendering method. Select **Mono (Experimental)** in the injector or in
 **VR / Unreal / Rendering Method**. Its saved `VR_RenderingMethod` ID is **5**;
 Native, Synced, AFR and the two DIBR IDs remain 0 through 4.
