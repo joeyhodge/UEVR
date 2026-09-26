@@ -175,10 +175,26 @@ inline bool is_prospi_executable_path(std::wstring_view path) {
            lowered.find(L"prospi24-win64-shipping") != std::wstring::npos;
 }
 
+inline bool is_dune_awakening_gdk_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    return filename == L"dunesandbox-wingdk-shipping.exe";
+}
+
 inline bool is_dune_awakening_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.find(L"dunesandbox-win64-shipping") != std::wstring::npos ||
-           lowered.find(L"duneawakening") != std::wstring::npos;
+           lowered.find(L"duneawakening") != std::wstring::npos ||
+           is_dune_awakening_gdk_executable_path(path);
+}
+
+inline bool is_dune_awakening_source_view_extension_path(std::wstring_view path) {
+    // GDK may try signature-validated guards, but its callback ABI is not yet
+    // validated. Keep the existing Win64 mappings separate from title detection.
+    return !is_dune_awakening_gdk_executable_path(path) &&
+           is_dune_awakening_executable_path(path);
 }
 
 inline bool is_mechwarrior_clans_executable_path(std::wstring_view path) {
