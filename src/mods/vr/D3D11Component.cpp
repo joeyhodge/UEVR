@@ -467,8 +467,32 @@ bool D3D11Component::TextureContext::clear_rtv(float* color) {
     return true;
 }
 
+bool D3D11Component::mono_consumers_retired(uint64_t request_token) {
+    const auto& hook = g_framework->get_d3d11_hook();
+    const auto device = hook != nullptr ? hook->get_device() : nullptr;
+    if (device == nullptr) { return false; }
+    ComPtr<ID3D11DeviceContext> context;
+    device->GetImmediateContext(&context);
+    return m_mono_retirement.poll(context.Get(), request_token);
+}
+
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
+    m_mono_block_post_present = vr->mono_generation() != 0;
+    if (m_mono_generation != vr->mono_generation()) {
+        if (!mono_consumers_retired(vr->mono_request_token())) {
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
+        m_mono_generation = vr->mono_generation();
+        m_last_rendered_frame = 0;
+        m_submitted_left_eye = false;
+        m_force_reset = true;
+    }
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
+        if (vr->mono_generation() != 0 && !mono_consumers_retired(vr->mono_request_token())) {
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "Failed to setup D3D11Component, trying again next frame");
             m_force_reset = true;
@@ -477,6 +501,17 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
         m_last_afr_state = vr->is_using_afr();
     }
+
+    if (vr->mono_frame_gate_required()) {
+        if (!vr->m_openxr->has_mono_frame(static_cast<uint32_t>(vr->m_frame_count))) {
+            vr->set_mono_status("Waiting for a current main-view pose/projection (parallel optical axes required)");
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
+        vr->note_mono_frame_ready(m_mono_generation);
+    }
+    m_mono_block_post_present = false;
+    m_mono_retirement.invalidate();
 
     auto& hook = g_framework->get_d3d11_hook();
 
@@ -638,7 +673,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
     namespace frame_diag = uevr::native_frame;
     frame_diag::Ticket native_frame_ticket{};
-    auto native_stereo_packet = ffsr != nullptr
+    auto native_stereo_packet = ffsr != nullptr && !vr->is_using_mono()
         ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count, frame_diag::Backend::d3d11, &native_frame_ticket)
         : nullptr;
     const auto record_native_submit = [&](frame_diag::Runtime api, frame_diag::Stage stage, int32_t result = 0, uint8_t eye = 2) {
@@ -1289,7 +1324,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             } else {
                 // Copy over the entire double wide back buffer instead
-                if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
+                if (vr->is_using_mono()) {
+                    const auto frame = static_cast<uint32_t>(vr->m_frame_count);
+                    bool recorded = false;
+                    vr->m_openxr->note_mono_copy(frame, false);
+                    const bool copied = m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE,
+                        nullptr, nullptr, [&](ID3D11Texture2D* destination) {
+                            recorded = uevr::mono::dx11::copy_scene(context.Get(), backbuffer.Get(), destination);
+                        }, backbuffer.Get());
+                    vr->m_openxr->note_mono_copy(frame, copied && recorded);
+                    if (!copied || !recorded) {
+                        vr->set_mono_status("Waiting: Mono DX11 scene/device/format/extent validation failed");
+                    }
+                } else if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), nullptr);
                 } else {
                     // copy invokes this callback synchronously; the local packet
@@ -1583,7 +1630,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 source_rect.top = 0;
                 source_rect.right = (LONG)full_source_width;
                 source_rect.bottom = (LONG)full_source_height;
-            } else if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+            } else if (vr->is_using_mono() || vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
                 // left side of double wide tex only on AFR/synced
                 source_rect.left = 0;
                 source_rect.top = 0;
@@ -1655,6 +1702,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 }
 
 void D3D11Component::on_post_present(VR* vr) {
+    if (vr->is_mono_transition_quiescing() || vr->is_mono_transition_waiting() || m_mono_block_post_present) { return; }
     // Never erase the desktop while no validated scene source has reached the
     // compositor. Setup retries on the next frame without turning a recoverable
     // target-discovery delay into a black game window.
@@ -1701,8 +1749,14 @@ void D3D11Component::on_post_present(VR* vr) {
     }
 }
 
-void D3D11Component::on_reset(VR* vr) {
+void D3D11Component::on_reset(VR* vr, bool mono_retired) {
     m_force_reset = true;
+    if (vr->mono_generation() != 0 && !mono_retired) {
+        // Resize/reinit callbacks only request work. Present retires the
+        // immediate-context copies before destroying Mono swapchains/resources.
+        m_mono_block_post_present = true;
+        return;
+    }
     m_daysgone_ahud_was_active = false;
 
     if (vr != nullptr) {
@@ -2307,7 +2361,8 @@ bool D3D11Component::setup() {
     SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Setting up D3D11 textures...");
 
     auto& vr = VR::get();
-    on_reset(vr.get());
+    if (vr->mono_generation() != 0 && !mono_consumers_retired(vr->mono_request_token())) { return false; }
+    on_reset(vr.get(), true);
 
     // Get device and swapchain.
     auto& hook = g_framework->get_d3d11_hook();
@@ -3236,7 +3291,8 @@ void D3D11Component::OpenXR::destroy_swapchains() {
     vr->m_openxr->swapchains.clear();
 }
 
-bool D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box, std::function<void(ID3D11Texture2D*)> pre_commands) {
+bool D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box,
+    std::function<void(ID3D11Texture2D*)> pre_commands, ID3D11Texture2D* retained_mono_source) {
     std::scoped_lock _{this->mtx};
 
     auto vr = VR::get();
@@ -3295,6 +3351,11 @@ bool D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
             spdlog::error("[VR] xrWaitSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
         } else {
             LOG_VERBOSE("Copying swapchain image {} for {}", texture_index, swapchain_idx);
+
+            if (retained_mono_source != nullptr) {
+                if (ctx.mono_sources.size() != ctx.textures.size()) { ctx.mono_sources.resize(ctx.textures.size()); }
+                ctx.mono_sources[texture_index] = retained_mono_source;
+            }
 
             if (pre_commands != nullptr) {
                 pre_commands(ctx.textures[texture_index].texture);

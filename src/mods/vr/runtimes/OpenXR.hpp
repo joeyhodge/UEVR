@@ -22,6 +22,7 @@
 #include <sdk/Math.hpp>
 
 #include "Mod.hpp"
+#include "../MonoRenderingPolicy.hpp"
 
 #include "VRRuntime.hpp"
 
@@ -363,6 +364,21 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+    void end_mono_transition_frame();
+    void reset_mono_projection_history();
+    void note_mono_projection();
+    void note_mono_main_family(uint32_t frame, bool main_family);
+    bool has_mono_pose(uint32_t frame);
+    bool has_mono_frame(uint32_t frame);
+    void note_mono_copy(uint32_t frame, bool success);
+    struct MonoFrame {
+        uint64_t generation{};
+        uint32_t pose_frame{}, projection_frame{};
+        bool pose_valid{}, main_family{}, copied{};
+        std::optional<uevr::mono::Geometry> geometry;
+    };
+    std::array<MonoFrame, QUEUE_SIZE> mono_frames{}; // protected by sync_assignment_mtx
+    std::optional<uint32_t> mono_copied_frame; // exact copy producer, not a later render callback
     bool capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot);
     bool is_everspace2_snapshot_fresh(
         const PipelineState& snapshot,

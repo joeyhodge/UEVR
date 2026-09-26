@@ -13,6 +13,7 @@
 
 #include <DirectXMath.h>
 #include <SpriteBatch.h>
+#include "MonoD3D11.hpp"
 
 class VR;
 namespace render {
@@ -30,7 +31,7 @@ public:
 
     vr::EVRCompositorError on_frame(VR* vr);
     void on_post_present(VR* vr);
-    void on_reset(VR* vr);
+    void on_reset(VR* vr, bool mono_retired = false);
 
     auto& openxr() { return m_openxr; }
 
@@ -41,6 +42,7 @@ public:
     void copy_tex(ID3D11Resource* src, ID3D11Resource* dst);
 
     void force_reset() { m_force_reset = true; }
+    bool mono_consumers_retired(uint64_t request_token);
 
 private:
     friend class render::FrameResourceInspector;
@@ -210,6 +212,9 @@ private:
     ID3D11Texture2D* m_last_checked_native{nullptr};
 
     uint32_t m_last_rendered_frame{0};
+    uint64_t m_mono_generation{};
+    bool m_mono_block_post_present{};
+    uevr::mono::dx11::Retirement m_mono_retirement;
     bool m_force_reset{true};
     bool m_submitted_left_eye{false};
     bool m_is_shader_setup{false};
@@ -222,7 +227,8 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
-        bool copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr, std::function<void(ID3D11Texture2D*)> pre_commands = nullptr);
+        bool copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr,
+            std::function<void(ID3D11Texture2D*)> pre_commands = nullptr, ID3D11Texture2D* retained_mono_source = nullptr);
 
         bool ever_acquired(uint32_t swapchain_idx) {
             std::scoped_lock _{this->mtx};
@@ -239,6 +245,9 @@ private:
 
         struct SwapchainContext {
             std::vector<XrSwapchainImageD3D11KHR> textures{};
+            // Replaced only after xrWaitSwapchainImage reacquires this image.
+            // D3D11 additionally retains resources referenced by queued commands.
+            std::vector<ComPtr<ID3D11Texture2D>> mono_sources{};
             uint32_t num_textures_acquired{0};
             bool ever_acquired{false};
         };

@@ -237,6 +237,30 @@ add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-test
 set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.mono-d3d11-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/MonoD3D11Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11"]
+cmake-after = """
+add_test(NAME mono-d3d11-tests COMMAND mono-d3d11-tests)
+set_tests_properties(mono-d3d11-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.mono-d3d12-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/MonoD3D12Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "dxgi"]
+cmake-after = """
+add_test(NAME mono-d3d12-tests COMMAND mono-d3d12-tests)
+set_tests_properties(mono-d3d12-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]

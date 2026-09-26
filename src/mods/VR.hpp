@@ -32,6 +32,7 @@
 #include "vr/CVarManager.hpp"
 
 #include "Mod.hpp"
+#include "vr/RenderingMethodSetting.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -47,6 +48,7 @@ public:
         ALTERNATING = 2,
         SYNTHETIC_DIBR = 3,
         SYNTHETIC_DIBR_SINGLE_VIEW = 4,
+        MONO = uevr::mono::method_id,
     };
 
     enum SynchronizeStage {
@@ -483,7 +485,34 @@ public:
         return m_openvr_mtx;
     }
 
+    bool is_using_mono() const { return m_rendering_method->value() == RenderingMethod::MONO; }
+    bool is_mono_transition_pending() const { return m_rendering_method->selection().pending(); }
+    bool is_mono_transition_waiting() const {
+        return m_mono_ready_generation.load(std::memory_order_acquire) != mono_generation();
+    }
+    bool is_mono_transition_quiescing() const {
+        return is_mono_transition_pending() &&
+            (requested_rendering_method() != RenderingMethod::MONO || mono_unavailable_reason() == nullptr);
+    }
+    uint64_t mono_generation() const { return m_rendering_method->selection().generation(); }
+    uint64_t mono_request_token() const { return m_rendering_method->selection().request_token(); }
+    int32_t requested_rendering_method() const { return m_rendering_method->requested_value(); }
+    bool has_unsupported_rendering_method() const { return !m_rendering_method->is_available(requested_rendering_method()); }
+    const char* mono_unavailable_reason() const;
+    bool service_mono_transition_present();
+    void service_mono_transition_game_thread();
+    bool mono_frame_gate_required() const {
+        const auto state = m_rendering_method->selection().snapshot();
+        return uevr::mono::needs_frame_gate(state.method, state.generation, m_mono_ready_generation.load(std::memory_order_acquire));
+    }
+    void note_mono_frame_ready(uint64_t generation) { m_mono_ready_generation.store(generation, std::memory_order_release); }
+    bool take_mono_main_view_update(uint32_t frame);
+    bool take_mono_attachment_update(uint32_t frame);
+    const char* mono_status() const { return m_mono_status.load(std::memory_order_acquire); }
+    void set_mono_status(const char* status) { m_mono_status.store(status, std::memory_order_release); }
+
     bool is_using_afr() const {
+        if (is_using_mono()) { return false; }
         return m_rendering_method->value() == RenderingMethod::ALTERNATING || 
                m_rendering_method->value() == RenderingMethod::SYNCHRONIZED ||
                m_extreme_compat_mode->value() == true;
@@ -544,7 +573,7 @@ public:
     }
 
     bool is_depth_enabled() const {
-        return m_enable_depth->value();
+        return !is_using_mono() && m_enable_depth->value();
     }
 
     bool is_decoupled_pitch_enabled() const {
@@ -630,6 +659,7 @@ public:
     }
 
     bool is_splitscreen_compatibility_enabled() const {
+        if (is_using_mono()) { return false; }
         if (uevr::nascar::is_target()) { return false; }
         return m_splitscreen_compatibility_mode->value();
     }
@@ -639,11 +669,13 @@ public:
     }
 
     bool is_sceneview_compatibility_enabled() const {
+        if (is_using_mono()) { return false; }
         if (uevr::nascar::is_target()) { return false; }
         return m_sceneview_compatibility_mode->value();
     }
 
     bool is_native_stereo_fix_enabled() const {
+        if (is_mono_transition_quiescing()) { return false; }
         if (uevr::nascar::is_target()) {
             return is_nascar_native_stereo_fix_requested() && m_fake_stereo_hook && m_fake_stereo_hook->is_nascar_native_ready();
         }
@@ -903,6 +935,7 @@ public:
     void native_openxr_async_wait_worker_loop(std::stop_token stop_token);
 
     bool is_ghosting_fix_enabled() const {
+        if (is_using_mono() || is_mono_transition_quiescing()) { return false; }
         if (uevr::nascar::is_target()) { return false; }
         return m_ghosting_fix->value();
     }
@@ -920,7 +953,7 @@ public:
     }
 
     bool is_ghosting_fix_bootstrap_enabled() const {
-        return m_ghosting_fix_bootstrap_view_states->value();
+        return !is_using_mono() && !is_mono_transition_quiescing() && m_ghosting_fix_bootstrap_view_states->value();
     }
 
     auto& get_fake_stereo_hook() {
@@ -1059,6 +1092,7 @@ public:
     }
 
     int32_t get_horizontal_projection_override() const {
+        if (is_using_mono()) { return static_cast<int32_t>(HORIZONTAL_SYMMETRIC); }
         if (is_dibr_single_view_projection_configured()) {
             return static_cast<int32_t>(HORIZONTAL_SYMMETRIC);
         }
@@ -1067,6 +1101,7 @@ public:
     }
 
     int32_t get_vertical_projection_override() const {
+        if (is_using_mono()) { return static_cast<int32_t>(VERTICAL_SYMMETRIC); }
         if (is_dibr_single_view_projection_configured()) {
             return static_cast<int32_t>(VERTICAL_SYMMETRIC);
         }
@@ -1451,14 +1486,6 @@ private:
     std::chrono::nanoseconds m_last_input_delay{};
     std::chrono::nanoseconds m_avg_input_delay{};
 
-    static const inline std::vector<std::string> s_rendering_method_names {
-        "Native Stereo",
-        "Synchronized Sequential",
-        "Alternating/AFR",
-        "Synthetic Stereo (DIBR, Experimental)",
-        "Synthetic Stereo (DIBR Single View, Experimental)",
-    };
-
     static const inline std::vector<std::string> s_sync_mode_names{
         "Early",
         "Late",
@@ -1524,7 +1551,11 @@ private:
         "Disable SingleLayerWater Fallback",
     };
 
-    const ModCombo::Ptr m_rendering_method{ ModCombo::create(generate_name("RenderingMethod"), s_rendering_method_names) };
+    const std::unique_ptr<RenderingMethodSetting> m_rendering_method{
+        std::make_unique<RenderingMethodSetting>(generate_name("RenderingMethod"), uevr::mono::choices)};
+    std::atomic<const char*> m_mono_status{"Not selected"};
+    std::atomic<uint64_t> m_mono_ready_generation{};
+    std::atomic<uint64_t> m_mono_main_view_token{}, m_mono_attachment_token{};
     const ModCombo::Ptr m_synced_afr_method{ ModCombo::create(generate_name("SyncedSequentialMethod"), s_synced_afr_method_names, 1) };
     const ModToggle::Ptr m_extreme_compat_mode{ ModToggle::create(generate_name("ExtremeCompatibilityMode"), false, true) };
     const ModToggle::Ptr m_uncap_framerate{ ModToggle::create(generate_name("UncapFramerate"), true) };

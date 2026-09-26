@@ -1397,6 +1397,16 @@ void Framework::draw_ui() {
     ImGui::SetNextWindowSize(ImVec2(window_w, window_h), ImGuiCond_::ImGuiCond_Once);
     ImGui::Begin(UEVR_NAME.c_str(), &m_draw_ui);
 
+    if (m_mods_fully_initialized) {
+        const auto vr = VR::get();
+        if (vr->has_unsupported_rendering_method()) {
+            ImGui::TextWrapped("Unsupported rendering method ID %d; select a supported method in VR / Unreal.", vr->requested_rendering_method());
+        }
+        if (vr->is_using_mono() || vr->requested_rendering_method() == VR::MONO || vr->is_mono_transition_pending()) {
+            ImGui::TextWrapped("Mono (Experimental): %s", vr->mono_status());
+        }
+    }
+
     ImGui::BeginGroup();
     ImGui::Columns(2);
     ImGui::BeginGroup();

@@ -1986,8 +1986,10 @@ void test_ktjl_hook_contracts() {
 #include "KtjLCloudResourcesTests.hpp"
 #include "DuneFrameHandoffTests.hpp"
 #include "HalloweenRenderTargetsTests.hpp"
+#include "MonoRenderingTests.hpp"
 
 int main(int argc, char** argv) {
+    test_mono_rendering();
     test_halloween_render_targets();
     test_halloween_native_family();
     if (argc == 3 && std::string_view{argv[1]} == "--halloween-allocation-fixture") { test_halloween_allocation_fixture(argv[2]); }

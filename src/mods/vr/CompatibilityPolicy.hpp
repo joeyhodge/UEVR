@@ -11,6 +11,7 @@ enum class RenderingMethod : int32_t {
     Alternating = 2,
     SyntheticDibr = 3,
     SyntheticDibrSingleView = 4,
+    Mono = 5,
 };
 
 constexpr bool should_preserve_mafia_pending_rhi_identity(
@@ -328,6 +329,7 @@ struct ModeMatrix {
 };
 
 constexpr bool is_using_afr(RenderingMethod method, bool extreme_compatibility) noexcept {
+    if (method == RenderingMethod::Mono) { return false; }
     return method == RenderingMethod::Alternating ||
         method == RenderingMethod::Synchronized ||
         extreme_compatibility;
