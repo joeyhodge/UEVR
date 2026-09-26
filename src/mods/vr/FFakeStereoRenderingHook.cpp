@@ -80,6 +80,7 @@
 #include "SifuRendererEntry.hpp"
 #include "SifuMeshCommands.hpp"
 #include "DuneFrameHandoff.hpp"
+#include "HalloweenRenderTargets.hpp"
 #include "KtjLFogResources.hpp"
 #include "KtjLCloudResources.hpp"
 #include "KtjLCloudHook.hpp"
@@ -6064,6 +6065,17 @@ bool supports_ue57_dedicated_ui_target() {
     return g_framework->is_dx12() || g_framework->is_dx11();
 }
 
+bool halloween_ue574_dx12_runtime() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+    static const bool exact_title_and_version = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        const auto version = sdk::get_file_version_info();
+        return path && uevr::games::is_halloween_ue574_dx12_runtime(
+            *path, version.dwFileVersionMS, version.dwFileVersionLS, true);
+    }();
+    return exact_title_and_version;
+}
+
 bool supports_borderlands4_ue554_dedicated_ui_target() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
@@ -6087,6 +6099,9 @@ bool supports_borderlands4_ue554_dedicated_ui_target() {
 }
 
 bool supports_ue55_dedicated_ui_target_for_current_game() {
+    // Halloween uses the same RegisterExternalTexture ABI, but its UE5.7
+    // input structure is parsed separately before the legacy Slate path.
+    if (halloween_ue574_dx12_runtime()) { return true; }
     // These UE5.5/5.6 titles expose a valid Slate UI texture but route Slate to
     // the wrong target, leaving the HUD clipped in the upper-left/left-eye path.
     // Keep this allowlisted and DX12-only until more games validate it.
@@ -14300,6 +14315,18 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
 
     if (slate_output_ref_ip == 0 || register_callsite == 0) {
         SPDLOG_ERROR("[UE5.5][SlateUI] Failed to find SlateOutputTexture RegisterExternalTexture callsite in DrawWindow_RenderThread");
+        return;
+    }
+
+    if (halloween_ue574_dx12_runtime() &&
+        (!uevr::halloween_rt::code_matches(sdk::discovery::process_memory(),
+            draw_window + 0x36, uevr::halloween_rt::slate_entry_contract) ||
+         register_callsite < uevr::halloween_rt::slate_register_arguments.size() ||
+         !uevr::halloween_rt::code_matches(sdk::discovery::process_memory(),
+            register_callsite - uevr::halloween_rt::slate_register_arguments.size(),
+            uevr::halloween_rt::slate_register_arguments)))
+    {
+        SPDLOG_ERROR("[Halloween][UE5.7][SlateUI] RegisterExternalTexture argument contract changed; preserving engine routing");
         return;
     }
 
@@ -35113,6 +35140,45 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
     UE55SlateDrawWindowPassInputsHead ue55_inputs{};
     UE55SlateDrawWindowPassInputs ue55_inputs_full{};
 
+    if (halloween_ue574_dx12_runtime()) {
+        const auto previous_inside = g_hook->m_inside_slate_draw_window;
+        const auto previous_thread = g_hook->m_slate_draw_window_thread_id;
+        g_hook->m_inside_slate_draw_window = false;
+        utility::ScopeGuard restore_slate_scope{[&] {
+            g_hook->m_inside_slate_draw_window = previous_inside;
+            g_hook->m_slate_draw_window_thread_id = previous_thread;
+        }};
+        static const bool slate_contract = uevr::halloween_rt::code_matches(
+            sdk::discovery::process_memory(), g_hook->m_slate_thread_hook.target_address() + 0x36,
+            uevr::halloween_rt::slate_entry_contract);
+        const auto match = slate_contract ? uevr::halloween_rt::slate_inputs(
+            sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(renderer),
+            reinterpret_cast<uintptr_t>(a2), reinterpret_cast<uintptr_t>(a3), reinterpret_cast<uintptr_t>(a4),
+            [](uintptr_t object) { return looks_like_vtable_object(reinterpret_cast<void*>(object)); })
+            : std::nullopt;
+        if (!match || !is_readable_process_range(match->command_list, 0x100)) {
+            SPDLOG_WARNING_EVERY_N_SEC(10,
+                "[Halloween][UE5.7][SlateUI] No validated stock input/command-list contract; preserving original draw");
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
+
+        // This is the engine's RHICmdList reference, not hidden sret storage.
+        g_hook->get_slate_thread_worker()->execute(reinterpret_cast<FRHICommandListImmediate*>(match->command_list));
+        const auto vr = VR::get();
+        auto* rtm = g_hook->get_render_target_manager();
+        if (vr != nullptr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() && rtm != nullptr) {
+            g_hook->note_stable_slate_draw();
+            g_hook->attempt_hook_ue55_slate_output_texture_register();
+            rtm->request_dedicated_ui_target(match->width, match->height);
+            rtm->ensure_dedicated_ui_target(0);
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+            SPDLOG_INFO_ONCE("[Halloween][UE5.7][SlateUI] Validated stock input/sret ABI; UI extent {}x{}",
+                match->width, match->height);
+        }
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
     if (sw_zero_company_ue56_is_current_game() &&
         is_ue_5_6_dx12_backend() &&
         sw_zero_company_has_source_matched_slate_sret_abi() &&
@@ -39017,6 +39083,12 @@ bool VRRenderTargetManager_Base::can_attempt_dedicated_ui_creation() {
         return false;
     }
 
+    if (halloween_ue574_dx12_runtime() && get_render_target() == nullptr) {
+        // Do not create a UObject render target during the first viewport
+        // allocation. Wait until the engine's completed native scene validates.
+        return false;
+    }
+
     const bool automatic_ue58_synthetic_route =
         is_ue_5_8() &&
         !supports_legacy_allowlisted_ue58_ui_route() &&
@@ -40946,7 +41018,102 @@ void VRRenderTargetManager_Base::ktjl_create_texture_hook(uint32_t width, uint32
         size.x, size.y, width, height);
 }
 
+namespace {
+struct HalloweenPendingAllocation {
+    VRRenderTargetManager_Base* manager{};
+    FTexture2DRHIRef* target{};
+    FTexture2DRHIRef* shader{};
+};
+thread_local HalloweenPendingAllocation halloween_pending_allocation{};
+}
+
+bool VRRenderTargetManager_Base::prepare_halloween_texture_hook(uintptr_t return_address) {
+    std::call_once(halloween_texture_install_once, [&] {
+        const auto memory = sdk::discovery::process_memory();
+        const auto join = uevr::halloween_rt::allocation_join(memory, return_address);
+        const auto release = join ? uevr::halloween_rt::allocation_release(memory, *join) : std::nullopt;
+        if (!join || !release) {
+            SPDLOG_ERROR("[Halloween][UE5.7][RT] Completed-allocation contract mismatch; no allocator replay or speculative hooks");
+            return;
+        }
+        auto result = safetyhook::MidHook::create(reinterpret_cast<void*>(*join), &halloween_texture_completed);
+        if (!result) {
+            SPDLOG_ERROR("[Halloween][UE5.7][RT] Could not install completed-allocation observer; preserving engine allocation");
+            return;
+        }
+        halloween_texture_hook = std::move(*result);
+        halloween_allocate_return = return_address;
+        halloween_texture_release = *release;
+        halloween_texture_ready.store(true, std::memory_order_release);
+        SPDLOG_INFO("[Halloween][UE5.7][RT] Observing completed engine allocation at {:x}; descriptor/initializer replay disabled", *join);
+    });
+    return halloween_texture_ready.load(std::memory_order_acquire) && halloween_allocate_return == return_address;
+}
+
+void VRRenderTargetManager_Base::halloween_texture_completed(safetyhook::Context& ctx) {
+    namespace h = uevr::halloween_rt;
+    const auto pending = std::exchange(halloween_pending_allocation, {});
+    auto* rtm = pending.manager;
+    if (rtm == nullptr || !rtm->halloween_texture_ready.load(std::memory_order_acquire) ||
+        reinterpret_cast<uintptr_t>(pending.target) != ctx.rsp + 0x78 ||
+        reinterpret_cast<uintptr_t>(pending.shader) != ctx.rsp + 0x70) { return; }
+
+    const auto memory = sdk::discovery::process_memory();
+    uintptr_t target{}, shader{};
+    if (!memory.load(reinterpret_cast<uintptr_t>(pending.target), target) ||
+        !memory.load(reinterpret_cast<uintptr_t>(pending.shader), shader) || target == 0 || target != shader) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[Halloween][UE5.7][RT] Completed RT/SRV references do not agree; publication deferred");
+        return;
+    }
+    const auto native = h::native_resource(memory, target);
+    auto* resource = native ? reinterpret_cast<ID3D12Resource*>(*native) : nullptr;
+    D3D12_RESOURCE_DESC desc{};
+    ID3D12Device4* device_raw{};
+    if (resource == nullptr || !is_probable_d3d_native_resource(resource) ||
+        !get_d3d12_resource_desc_guarded(resource, desc) || !get_d3d12_resource_device_guarded(resource, &device_raw)) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[Halloween][UE5.7][RT] Completed texture has no validated native resource; publication deferred");
+        return;
+    }
+    Microsoft::WRL::ComPtr<ID3D12Device4> device;
+    device.Attach(device_raw);
+    Microsoft::WRL::ComPtr<IUnknown> actual, expected;
+    const auto& d3d = g_framework->get_d3d12_hook();
+    const auto vr = VR::get();
+    const h::NativeDescription description{desc.Width, desc.Height, static_cast<uint32_t>(desc.Dimension),
+        static_cast<uint32_t>(desc.Format), static_cast<uint32_t>(desc.Flags), desc.SampleDesc.Count,
+        desc.SampleDesc.Quality, desc.DepthOrArraySize, desc.MipLevels};
+    if (!d3d || !vr || !ktjl_query_identity(device.Get(), actual.GetAddressOf()) ||
+        !ktjl_query_identity(d3d->get_device(), expected.GetAddressOf()) || actual.Get() != expected.Get() ||
+        !h::valid_scene(description, vr->get_hmd_width() * 2, vr->get_hmd_height())) {
+        SPDLOG_WARNING_EVERY_N_SEC(5, "[Halloween][UE5.7][RT] Rejected scene device/extent/format: {}x{} format={} flags={:x}",
+            desc.Width, desc.Height, static_cast<uint32_t>(desc.Format), static_cast<uint32_t>(desc.Flags));
+        return;
+    }
+
+    auto* texture = reinterpret_cast<FRHITexture2D*>(target);
+    FRHITexture2D::set_vtable(*reinterpret_cast<void**>(texture));
+    // Pair the proven +8 AddRef with the engine's validated Release, including
+    // deferred deletion. A decrement-only SDK ref would leak retired targets.
+    texture->add_ref();
+    auto owner = std::shared_ptr<FRHITexture2D>(texture, [release = rtm->halloween_texture_release](FRHITexture2D* value) {
+        reinterpret_cast<uint32_t (*)(FRHITexture2D*)>(release)(value);
+    });
+    rtm->render_target = texture;
+    rtm->halloween_scene_owner = std::move(owner);
+    VR::get()->reinitialize_renderer();
+    SPDLOG_INFO("[Halloween][UE5.7][RT] Published completed engine scene texture {:x} native={:x} {}x{} format={}",
+        target, *native, desc.Width, desc.Height, static_cast<uint32_t>(desc.Format));
+}
+
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
+    if (halloween_ue574_dx12_runtime()) {
+        texture_hook_ref = nullptr;
+        shader_resource_hook_ref = nullptr;
+        allocate_texture_called = false;
+        halloween_pending_allocation = prepare_halloween_texture_hook(return_address)
+            ? HalloweenPendingAllocation{this, tex, shader_resource} : HalloweenPendingAllocation{};
+        return false;
+    }
     if (ktjl_is_current_game() && g_framework != nullptr && g_framework->is_dx12()) {
         texture_hook_ref = nullptr;
         shader_resource_hook_ref = nullptr;
