@@ -1985,8 +1985,11 @@ void test_ktjl_hook_contracts() {
 #include "KtjLRendererEntryTests.hpp"
 #include "KtjLCloudResourcesTests.hpp"
 #include "DuneFrameHandoffTests.hpp"
+#include "HalloweenRenderTargetsTests.hpp"
 
 int main(int argc, char** argv) {
+    test_halloween_render_targets();
+    if (argc == 3 && std::string_view{argv[1]} == "--halloween-allocation-fixture") { test_halloween_allocation_fixture(argv[2]); }
     test_dune_frame_handoff();
     if (argc == 3 && std::string_view{argv[1]} == "--ktjl-memory-image") { test_ktjl_cloud_memory_image(argv[2]); }
     test_ktjl_renderer_entry();
