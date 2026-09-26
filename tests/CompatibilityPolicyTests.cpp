@@ -1989,7 +1989,9 @@ void test_ktjl_hook_contracts() {
 
 int main(int argc, char** argv) {
     test_halloween_render_targets();
+    test_halloween_native_family();
     if (argc == 3 && std::string_view{argv[1]} == "--halloween-allocation-fixture") { test_halloween_allocation_fixture(argv[2]); }
+    if (argc == 3 && std::string_view{argv[1]} == "--halloween-native-family-fixture") { test_halloween_native_family_fixture(argv[2]); }
     test_dune_frame_handoff();
     if (argc == 3 && std::string_view{argv[1]} == "--ktjl-memory-image") { test_ktjl_cloud_memory_image(argv[2]); }
     test_ktjl_renderer_entry();

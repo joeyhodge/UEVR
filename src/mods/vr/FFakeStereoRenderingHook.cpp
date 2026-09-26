@@ -81,6 +81,7 @@
 #include "SifuMeshCommands.hpp"
 #include "DuneFrameHandoff.hpp"
 #include "HalloweenRenderTargets.hpp"
+#include "HalloweenNativeFix.hpp"
 #include "KtjLFogResources.hpp"
 #include "KtjLCloudResources.hpp"
 #include "KtjLCloudHook.hpp"
@@ -134,6 +135,7 @@ namespace {
 bool is_writable_process_range(uintptr_t address, size_t size);
 bool is_readable_process_range(uintptr_t address, size_t size);
 bool is_executable_process_range(uintptr_t address, size_t size);
+bool halloween_ue574_dx12_runtime();
 bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out);
 bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4** out);
 
@@ -406,6 +408,32 @@ std::optional<UE57FSceneViewFamilyFunctions> resolve_ue57_fsceneviewfamily_funct
             copy_constructor_vtable = *resolved_vtable;
             deleting_destructor_address = *candidate_deleting_destructor;
             ++copy_constructor_candidates;
+        }
+    }
+
+    if (copy_constructor_candidates == 0 && halloween_ue574_dx12_runtime()) {
+        namespace h = uevr::halloween_native;
+        const auto memory = sdk::discovery::process_memory();
+        scan_cursor = module_base;
+        while (module_size != 0 && scan_cursor < module_end) {
+            const auto match = utility::scan(scan_cursor, module_end - scan_cursor, h::family_copy_signature);
+            if (!match) { break; }
+            scan_cursor = *match + 1;
+            const auto entry = utility::find_function_entry(*match);
+            const auto start = utility::find_function_start_unwind(*match);
+            if (!entry || !start || *start != *match || module_base + entry->BeginAddress != *match) { continue; }
+            const auto table = h::family_copy_vtable(memory, *match,
+                entry->EndAddress - entry->BeginAddress, module_base, module_size);
+            if (!table || !is_readable_process_range(*table, sizeof(uintptr_t))) { continue; }
+            const auto destructor = resolve_deleting_destructor(*table);
+            if (!destructor) { continue; }
+            copy_constructor_address = *match;
+            copy_constructor_vtable = *table;
+            deleting_destructor_address = *destructor;
+            ++copy_constructor_candidates;
+        }
+        if (copy_constructor_candidates == 1) {
+            SPDLOG_INFO("[Halloween][UE5.7][NativeStereoFix] Validated outlined Views/AllViews family copy and existing owned-interface destructor contract");
         }
     }
 
