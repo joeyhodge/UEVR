@@ -42,7 +42,8 @@ public:
 
     vr::EVRCompositorError on_frame(VR* vr);
     void on_post_present(VR* vr);
-    void on_reset(VR* vr);
+    void on_reset(VR* vr, bool mono_retired = false);
+    bool mono_consumers_retired();
 
     void force_reset() { m_force_reset = true; }
 
@@ -109,6 +110,8 @@ public:
 
 private:
     friend class render::FrameResourceInspector;
+    uint64_t m_mono_generation{};
+    bool m_mono_block_post_present{};
 
     bool setup();
     std::unique_ptr<DirectX::DX12::SpriteBatch> setup_sprite_batch_pso(
@@ -413,17 +416,18 @@ private:
         void destroy_swapchains();
         bool pre_acquire(uint32_t swapchain_idx);
         void release_acquired(uint32_t swapchain_idx);
-        void copy(uint32_t swapchain_idx, ID3D12Resource* src,
+        bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands = std::nullopt,
             std::optional<std::function<void(d3d12::CommandContext&)>> additional_commands = std::nullopt,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
             D3D12_BOX* src_box = nullptr,
-            std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands = std::nullopt);
+            std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands = std::nullopt,
+            ID3D12Resource* retained_mono_source = nullptr);
 
-        void copy(uint32_t swapchain_idx, ID3D12Resource* src,
+        bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr)
         {
-            this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
+            return this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
         }
         void retire_framework_ui_delayed_release(bool force_wait = false);
         void copy_framework_ui_ue58(
@@ -469,6 +473,8 @@ private:
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
 
         struct SwapchainContext {
+            // Declared first so command contexts retire before these references are destroyed.
+            std::vector<ComPtr<ID3D12Resource>> mono_sources{};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};

@@ -724,6 +724,99 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target mono-d3d11-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET mono-d3d11-tests)
+	set(mono-d3d11-tests_SOURCES "")
+
+	list(APPEND mono-d3d11-tests_SOURCES
+		"tests/MonoD3D11Tests.cpp"
+	)
+
+	list(APPEND mono-d3d11-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${mono-d3d11-tests_SOURCES})
+	add_executable(mono-d3d11-tests)
+
+	if(mono-d3d11-tests_SOURCES)
+		target_sources(mono-d3d11-tests PRIVATE ${mono-d3d11-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT mono-d3d11-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${mono-d3d11-tests_SOURCES})
+
+	target_compile_features(mono-d3d11-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(mono-d3d11-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(mono-d3d11-tests PRIVATE
+		d3d11
+	)
+
+	add_test(NAME mono-d3d11-tests COMMAND mono-d3d11-tests)
+	set_tests_properties(mono-d3d11-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target mono-d3d12-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET mono-d3d12-tests)
+	set(mono-d3d12-tests_SOURCES "")
+
+	list(APPEND mono-d3d12-tests_SOURCES
+		"tests/MonoD3D12Tests.cpp"
+	)
+
+	list(APPEND mono-d3d12-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${mono-d3d12-tests_SOURCES})
+	add_executable(mono-d3d12-tests)
+
+	if(mono-d3d12-tests_SOURCES)
+		target_sources(mono-d3d12-tests PRIVATE ${mono-d3d12-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT mono-d3d12-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${mono-d3d12-tests_SOURCES})
+
+	target_compile_features(mono-d3d12-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(mono-d3d12-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(mono-d3d12-tests PRIVATE
+		d3d12
+		dxgi
+	)
+
+	add_test(NAME mono-d3d12-tests COMMAND mono-d3d12-tests)
+	set_tests_properties(mono-d3d12-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -1092,10 +1185,14 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/KtjLRendererEntry.hpp"
 	"src/mods/vr/KtjLShadowGather.hpp"
 	"src/mods/vr/KtjLShadowGatherHook.hpp"
+	"src/mods/vr/MonoD3D11.hpp"
+	"src/mods/vr/MonoD3D12.hpp"
+	"src/mods/vr/MonoRenderingPolicy.hpp"
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/RenderTargetPoolHook.hpp"
+	"src/mods/vr/RenderingMethodSetting.hpp"
 	"src/mods/vr/SWZeroCompanyBinary.hpp"
 	"src/mods/vr/SifuMeshCommands.hpp"
 	"src/mods/vr/SifuRendererEntry.hpp"

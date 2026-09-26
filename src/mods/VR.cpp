@@ -3990,6 +3990,7 @@ bool VR::should_ignore_native_stereo_fix_for_avowed_sync() const {
 }
 
 bool VR::should_force_native_stereo_fix_same_pass() const {
+    if (is_using_mono()) { return false; }
     if (!m_native_stereo_fix->value() || is_using_afr() || !stalker2_native_fix_requires_same_pass_cached()) {
         return false;
     }
@@ -5733,6 +5734,8 @@ nlohmann::json VR::get_support_diagnostics() {
     }
     const auto ui = get_ui_layer_pose_telemetry_snapshot();
     nlohmann::json result{
+        {"rendering_method", {{"requested", requested_rendering_method()}, {"effective", m_rendering_method->value()},
+            {"mono_generation", mono_generation()}, {"mono_status", mono_status()}, {"transition_pending", is_mono_transition_pending()}}},
         {"read_only", true}, {"cvars", std::move(cvars)}, {"openxr", std::move(xr)},
         {"pacing", utility::support::pacing(display_period, cap)},
         {"ui_pose_telemetry", {{"sample_count", ui.sample_count},
@@ -7544,6 +7547,7 @@ void VR::update_prospi_frame_pace_override(sdk::UGameEngine* engine) {
 }
 
 void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
+    service_mono_transition_game_thread();
     ZoneScopedN(__FUNCTION__);
 
     const auto now = std::chrono::steady_clock::now();
@@ -12776,8 +12780,81 @@ void VR::on_pre_calculate_stereo_view_offset(void* stereo_device, const int32_t 
     }
 }
 
+const char* VR::mono_unavailable_reason() const {
+    const auto runtime = get_runtime();
+    return uevr::mono::unavailable_reason({
+        .dx11 = g_framework != nullptr && g_framework->get_renderer_type() == Framework::RendererType::D3D11,
+        .dx12 = g_framework != nullptr && g_framework->is_dx12(),
+        .openxr = runtime != nullptr && runtime->is_openxr(),
+        .restricted_title = uevr::nascar::is_target(),
+        .extreme = m_extreme_compat_mode->value(),
+        .split_screen = m_splitscreen_compatibility_mode->value(),
+        .screen_2d = m_2d_screen_mode->value(),
+        .sceneview_compat = m_sceneview_compatibility_mode->value(),
+        .stereo_emulation = m_stereo_emulation_mode,
+    });
+}
+
+bool VR::service_mono_transition_present() {
+    auto& selection = m_rendering_method->selection();
+    if (!m_rendering_method->is_available(selection.active()) && !selection.pending()) {
+        set_mono_status("Unsupported rendering method ID; preserved in profile, select a supported method");
+        return true;
+    }
+    const bool entering = selection.requested() == RenderingMethod::MONO;
+    if (is_using_mono() || entering) {
+        if (const auto reason = mono_unavailable_reason()) {
+            set_mono_status(reason);
+            // Rejected startup/live requests leave the previous method running.
+            // An invalidated active Mono remains blocked until a safe exit.
+            if (!is_using_mono()) { return false; }
+            if (get_runtime()->is_openxr()) { m_openxr->end_mono_transition_frame(); }
+            if (!selection.pending()) { return true; }
+        }
+    }
+    if (!selection.pending()) { return false; }
+    // A previously requested Native Fix wait may still own the XR frame or
+    // pre-acquire an array image. Do not acknowledge retirement underneath it.
+    if (m_native_openxr_async_wait_inflight.load(std::memory_order_acquire)) {
+        set_mono_status("Transition: waiting for the previous OpenXR worker");
+        return true;
+    }
+    set_mono_status("Transition: waiting for GPU consumers / main viewport");
+    const auto token = selection.request_token();
+    const bool retired = g_framework->is_dx12() ? m_d3d12.mono_consumers_retired()
+        : m_d3d11.mono_consumers_retired(token);
+    if (retired) { selection.consumers_retired(token); }
+    m_openxr->end_mono_transition_frame();
+    return true;
+}
+
+void VR::service_mono_transition_game_thread() {
+    auto& selection = m_rendering_method->selection();
+    if (!selection.pending()) { return; }
+    if (selection.requested() == RenderingMethod::MONO && mono_unavailable_reason() != nullptr) { return; }
+    if (!selection.commit_at_game_frame_boundary()) { return; }
+    m_mono_main_view_token = 0;
+    m_mono_attachment_token = 0;
+    m_openxr->reset_mono_projection_history();
+    set_mono_status("Waiting for a current main-view projection and scene");
+    spdlog::info("[Mono] Committed rendering method {} at viewport boundary, generation={}",
+        selection.active(), selection.generation());
+}
+
+bool VR::take_mono_main_view_update(uint32_t frame) {
+    const auto token = (mono_generation() << 32) | frame;
+    return m_mono_main_view_token.exchange(token, std::memory_order_acq_rel) != token;
+}
+
+bool VR::take_mono_attachment_update(uint32_t frame) {
+    const auto token = (mono_generation() << 32) | frame;
+    return m_mono_attachment_token.exchange(token, std::memory_order_acq_rel) != token;
+}
+
 void VR::on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas){
     ZoneScopedN(__FUNCTION__);
+
+    service_mono_transition_game_thread();
 
     if (m_custom_z_near_enabled->value()) {
         SPDLOG_INFO_ONCE("Attempting to set custom z near");
@@ -14206,6 +14283,8 @@ void VR::on_present() {
 
     m_fake_stereo_hook->on_frame();
 
+    if (service_mono_transition_present()) { return; }
+
     auto openvr = get_runtime<runtimes::OpenVR>();
 
     if (runtime->is_openvr()) {
@@ -14570,14 +14649,26 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             int method = is_nascar_code_preserving_mode() ? m_rendering_method->value() : -1;
             const char* methods[]{"Native Stereo", "Synced Sequential (Skip Tick)"};
             if (ImGui::Combo("Rendering Method", &method, methods, 2)) {
-                m_rendering_method->value() = method;
+                m_rendering_method->request(method);
                 m_extreme_compat_mode->value() = false;
                 rendering_method_changed = true;
             }
         } else {
             rendering_method_changed = m_rendering_method->draw("Rendering Method");
         }
-        if (rendering_method_changed && get_runtime() != nullptr) {
+        if (has_unsupported_rendering_method()) {
+            ImGui::TextWrapped("Unsupported rendering method ID %d is preserved; select an available method.", requested_rendering_method());
+        }
+        if (is_using_mono() || requested_rendering_method() == RenderingMethod::MONO || is_mono_transition_pending()) {
+            ImGui::TextWrapped("Mono (Experimental): one centered, head-tracked scene for both eyes; no binocular scene depth. DX11/DX12 with OpenXR. Native Fix, Ghost Fix/bootstrap and depth submission are inactive in Mono; saved preferences are retained.");
+            ImGui::TextWrapped("Mono: %s", mono_status());
+            if (const auto reason = mono_unavailable_reason()) { ImGui::TextWrapped("Unavailable: %s", reason); }
+            if (is_mono_transition_pending()) {
+                ImGui::TextWrapped("Requested: %s; still rendering: %s. Waiting for retired GPU copies and the next main viewport frame.",
+                    uevr::mono::label(requested_rendering_method()), uevr::mono::label(m_rendering_method->value()));
+            }
+        }
+        if (rendering_method_changed && !is_mono_transition_pending() && get_runtime() != nullptr) {
             // Method 4 owns a union projection while active. Rebuild the
             // runtime matrices when users switch into or out of it instead of
             // leaving a stale asymmetric/symmetric pair in flight.

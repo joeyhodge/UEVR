@@ -21968,7 +21968,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
 
     last_frame_count = g_frame_count;
 
-    const auto true_index =
+    const auto true_index = vr->is_using_mono() ? 0u :
         split_fiction_haze_metadata_active
             ? static_cast<uint32_t>(g_split_fiction_haze_view_build.eye)
             : dune_manual_custom_present_pose
@@ -25502,6 +25502,14 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
     runtime->internal_frame_count = frame_count;
     runtime->on_pre_render_game_thread(frame_count);
 
+    if (vr->mono_frame_gate_required() && runtime->is_openxr()) {
+        const bool main_family = view_family.get_render_target() != nullptr && view_family.get_render_target() ==
+            reinterpret_cast<sdk::FRenderTarget*>(g_hook->get_render_target_manager()->get_viewport());
+        vr->get_openxr_runtime()->note_mono_main_family(frame_count,
+            main_family && views_ptr != nullptr && views_ptr->count > 0 &&
+            (!vr->is_using_mono() || views_ptr->count == 1));
+    }
+
     if (is_ue_5_8() &&
         runtime->is_openxr() &&
         runtime->ready() &&
@@ -25522,14 +25530,17 @@ void FFakeStereoRenderingHook::begin_render_viewfamily(ISceneViewExtension* exte
         const bool ue58_d3d12_without_draw =
             g_framework != nullptr && g_framework->is_dx12() &&
             !g_hook->m_has_game_viewport_client_draw_hook;
-        if (ue58_d3d12_without_draw) {
+        if (ue58_d3d12_without_draw || vr->is_using_mono()) {
             // Keep the next token current even while the user temporarily
             // selects another rendering mode, so returning to Native cannot
             // consume a stale frame identifier.
             g_ue58_next_render_pose_frame.store(frame_count + 1, std::memory_order_release);
         }
 
-        if (use_ue58_render_pose &&
+        if (vr->is_using_mono()) {
+            // The scene already consumed its pose. A late refresh would erase
+            // the exact projection/pose token; wait for the next pre-view sample.
+        } else if (use_ue58_render_pose &&
             g_ue58_last_render_pose_frame.load(std::memory_order_acquire) == frame_count)
         {
             SPDLOG_INFO_ONCE(
@@ -28495,7 +28506,10 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
         SPDLOG_INFO_ONCE("[Medium][UE4.25Plus] Forcing one-based stereo eye passes (1=left, 2=right)");
     }
 
-    if (!VR::get()->is_native_stereo_fix_enabled()) {
+    if (VR::get()->is_using_mono()) {
+        *x = 0;
+        *y = 0;
+    } else if (!VR::get()->is_native_stereo_fix_enabled()) {
         *x += *w * true_index;
     }
 }
@@ -28581,6 +28595,8 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     const auto has_double_precision = g_hook->m_has_double_precision;
     const auto rot_d = (Rotator<double>*)view_rotation;
 
+    const bool mono = vr->is_using_mono();
+    if (mono && !is_full_pass) { true_index = 0; }
     if (vr->is_using_afr() && !is_full_pass) {
         true_index = g_frame_count % 2;
 
@@ -28622,20 +28638,29 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
                 .draw_hook_resolved = g_hook->m_has_game_viewport_client_draw_hook,
             });
 
-        if (use_ue58_render_pose) {
+        const bool mono_pre_view_pose = mono && is_ue_5_8() && runtime != nullptr &&
+            runtime->is_openxr() && runtime->ready() &&
+            (!g_hook->m_has_game_viewport_client_draw_hook ||
+             !g_hook->m_game_viewport_client_draw_observed.load(std::memory_order_acquire));
+        if (use_ue58_render_pose || mono_pre_view_pose) {
             const auto frame_count = get_ue58_next_render_pose_frame(runtime);
 
             if (frame_count != 0 &&
+                (mono_pre_view_pose ? !vr->get_openxr_runtime()->has_mono_pose(frame_count) :
                 g_ue58_last_render_pose_frame.exchange(
                     frame_count,
-                    std::memory_order_acq_rel) != frame_count)
+                    std::memory_order_acq_rel) != frame_count))
             {
                 // Some UE5.8 D3D12 titles do not execute SetupViewPoint during
                 // steady-state gameplay. Publish immediately before the first
                 // eye consumes the pose instead of one stereo pair later.
                 vr->update_hmd_state(true, frame_count);
-                SPDLOG_INFO_ONCE(
-                    "[UE5.8][OpenXR][render-pose] Publishing D3D12 Native HMD poses before the first eye");
+                if (mono_pre_view_pose) {
+                    SPDLOG_INFO_ONCE("[Mono][UE5.8] Publishing HMD pose before the centered view (Draw unavailable)");
+                } else {
+                    SPDLOG_INFO_ONCE(
+                        "[UE5.8][OpenXR][render-pose] Publishing D3D12 Native HMD poses before the first eye");
+                }
             }
         } else if (everspace2_is_current_game() && !g_hook->m_has_game_viewport_client_draw_hook) {
             const auto frame_count = everspace2_get_next_view_pose_frame(runtime);
@@ -28677,6 +28702,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     }
 
     const auto& mods = g_framework->get_mods()->get_mods();
+    const bool last_eye_update = mono
+        ? (!is_full_pass && vr->take_mono_main_view_update(vr->get_runtime()->internal_frame_count))
+        : true_index == 1;
 
     if (!is_full_pass) {
         for (auto& mod : mods) {
@@ -28763,7 +28791,9 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         const auto current_eye_rotation_offset = glm::normalize(glm::quat{vr->get_eye_transform(true_index)});
 
         const auto new_rotation = glm::normalize(vqi_norm * current_hmd_rotation * current_eye_rotation_offset);
-        const auto eye_offset = glm::vec3{vr->get_eye_offset((VRRuntime::Eye)(true_index))};
+        const auto eye_offset = mono
+            ? (glm::vec3{vr->get_eye_offset(VRRuntime::Eye::LEFT)} + glm::vec3{vr->get_eye_offset(VRRuntime::Eye::RIGHT)}) * 0.5f
+            : glm::vec3{vr->get_eye_offset((VRRuntime::Eye)(true_index))};
 
 
         const auto standing_delta = vr->get_position(0) - vr->get_standing_origin();
@@ -28808,7 +28838,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // only do it on the right eye pass
         // if we did it on the left, there would be eye desyncs when the right eye is rendered
         const auto payday3_aim_guard = is_payday3_aim_guard_enabled();
-        if (true_index == 1 && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
+        if (last_eye_update && (vr->is_roomscale_enabled() || (!payday3_aim_guard && vr->is_aim_pawn_control_rotation_enabled()))) {
             const auto engine = sdk::UEngine::get();
             const auto world = engine != nullptr ? engine->get_world() : nullptr;
 
@@ -28886,7 +28916,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
             (vr->is_headlocked_aim_enabled() ||
                 (vr->is_controller_aim_enabled() && vr->is_using_controllers()));
 
-        if (true_index == 1 &&
+        if (last_eye_update &&
             vr->is_any_aim_method_active() &&
             !controller_camera_guard_active &&
             (vr->is_aim_modify_player_control_rotation_enabled() || direct_aim_compatibility_fallback))
@@ -28938,13 +28968,13 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
     const bool ue425_426_needs_localplayer_bootstrap =
         is_ue_4_25_runtime() || is_ue_4_26_runtime();
     const bool native_needs_localplayer_bootstrap = vr->is_native_stereo_fix_enabled();
-    const bool wants_localplayer_bootstrap =
+    const bool wants_localplayer_bootstrap = !vr->is_using_mono() && (
         wants_ghosting_bootstrap ||
         ue425_426_needs_localplayer_bootstrap ||
         native_needs_localplayer_bootstrap ||
         vr->is_splitscreen_compatibility_enabled() ||
         vr->is_sceneview_compatibility_enabled() ||
-        !g_hook->m_get_desired_number_of_views_hook;
+        !g_hook->m_get_desired_number_of_views_hook);
 
     if (!uevr::nascar::is_target() && !vr->should_skip_post_init_properties() && wants_localplayer_bootstrap &&
         !stalker2_uses_lazy_synced_viewstates()) {
@@ -29143,6 +29173,7 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         if (vr->is_using_afr()) {
             true_index = g_frame_count % 2;
         }
+        if (vr->is_using_mono()) { true_index = 0; }
 
         auto& double_matrix = *(Matrix4x4d*)out;
 
@@ -29161,6 +29192,9 @@ __forceinline Matrix4x4f* FFakeStereoRenderingHook::calculate_stereo_projection_
         } else {
             const auto fmat = VR::get()->get_projection_matrix((VRRuntime::Eye)(true_index));
             double_matrix = fmat;
+        }
+        if (vr->mono_frame_gate_required() && vr->get_runtime()->is_openxr()) {
+            vr->get_openxr_runtime()->note_mono_projection();
         }
     } else {
         SPDLOG_ERROR("CalculateStereoProjectionMatrix returned nullptr!");
@@ -29353,6 +29387,8 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
     }
 
     update_sifu_native_mesh_command_mode(is_stereo_enabled, vr->is_using_native_stereo());
+
+    if (vr->is_using_mono()) { return 1; }
 
     if (!is_stereo_enabled || (vr->is_using_afr() && !vr->is_splitscreen_compatibility_enabled())) {
         constexpr uint32_t BOOTSTRAP_PULSE_ENGINE_FRAMES = 2;

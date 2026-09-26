@@ -313,6 +313,10 @@ bool is_ue_5_5_or_newer_uobjecthook() {
 }
 
 bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool is_double) {
+    if (const auto vr = VR::get(); vr->is_using_mono()) {
+        // Called only for an eye pass by the stereo hook, never the full/auxiliary pass.
+        return view_index >= 0 && vr->take_mono_attachment_update(vr->get_runtime()->internal_frame_count);
+    }
     if ((view_index + 1) % 2 == 0) {
         return true;
     }

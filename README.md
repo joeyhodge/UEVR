@@ -66,6 +66,13 @@ Press the **Insert** key or **L3+R3** on an XInput based controller to access th
 
 ## Quick overview of rendering methods
 
+### Mono (Experimental, opt-in branch)
+
+On `UEVRMono+DIBR+UEVR`, Mono renders one centered head-tracked scene for both eyes
+using DX11 or DX12 with OpenXR. There is no binocular scene depth. Existing mode
+IDs and defaults are retained. See [Mono support, limitations and test checklist](docs/mono-rendering.md)
+before testing live transitions. Credit to Noniv's upstream [PR #442](https://github.com/praydog/UEVR/pull/442).
+
 ### Native Stereo
 
 When it works, it looks the best, performs the best (usually). Can cause crashes or graphical bugs if the game does not play well with it.
