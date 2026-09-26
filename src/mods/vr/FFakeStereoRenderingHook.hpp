@@ -406,6 +406,15 @@ protected:
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 
+    bool prepare_halloween_texture_hook(uintptr_t return_address);
+    static void halloween_texture_completed(safetyhook::Context& ctx);
+    std::once_flag halloween_texture_install_once{};
+    safetyhook::MidHook halloween_texture_hook{};
+    uintptr_t halloween_allocate_return{};
+    uintptr_t halloween_texture_release{};
+    std::atomic_bool halloween_texture_ready{};
+    std::shared_ptr<FRHITexture2D> halloween_scene_owner{};
+
     bool prepare_ktjl_texture_hook(uintptr_t return_address);
     static void ktjl_create_texture_hook(uint32_t width, uint32_t height, uint8_t format, uint32_t mips,
         uint32_t flags, uint32_t target_flags, bool separate, void* create_info,
