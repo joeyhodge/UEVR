@@ -2,6 +2,38 @@
 
 void test_dune_frame_handoff() {
     namespace d = uevr::dune_frame;
+    for (const auto path : {
+             L"C:\\XboxGames\\Dune- Awakening\\Content\\DuneSandbox\\Binaries\\WinGDK\\DuneSandbox-WinGDK-Shipping.exe",
+             L"DuneSandbox-WinGDK-Shipping.exe",
+             L"D:/Games/DUNESANDBOX-WINGDK-SHIPPING.EXE",
+             L"D:\\DuneAwakening\\DuneSandbox-WinGDK-Shipping.exe"}) {
+        expect(uevr::games::is_dune_awakening_gdk_executable_path(path), "Dune GDK exact basename accepted");
+        expect(uevr::games::is_dune_awakening_executable_path(path), "Dune GDK can attempt signature-validated guards");
+        expect(!uevr::games::is_dune_awakening_source_view_extension_path(path),
+            "Dune GDK cannot inherit Win64 callback slots, even under a legacy title directory");
+        expect(!uevr::games::is_dune_ue521_frame_handoff_runtime(path, 0x50002, 0x10000),
+            "Dune GDK cannot inherit Steam frame-handoff addresses");
+    }
+    for (const auto path : {
+             L"DuneSandbox-WinGDK-Shipping.exe.bak",
+             L"OtherDuneSandbox-WinGDK-Shipping.exe",
+             L"DuneSandbox-WinGDK-Shipping",
+             L"D:\\DuneSandbox-WinGDK-Shipping.exe\\Other.exe",
+             L"DuneSandbox-WinGDK-Shipping.exe/",
+             L"FortSolis.exe", L""}) {
+        expect(!uevr::games::is_dune_awakening_gdk_executable_path(path), "Dune GDK lookalike rejected");
+        expect(!uevr::games::is_dune_awakening_executable_path(path), "GDK recognition does not widen other title matches");
+        expect(!uevr::games::is_dune_awakening_source_view_extension_path(path), "unrelated titles do not gain Dune callbacks");
+    }
+    for (const auto path : {
+             L"D:\\Steam\\DuneSandbox-Win64-Shipping.exe",
+             L"D:/Games/DUNESANDBOX-WIN64-SHIPPING.EXE",
+             L"D:\\Games\\DuneAwakening\\Game.exe"}) {
+        expect(!uevr::games::is_dune_awakening_gdk_executable_path(path), "Win64 title matches are not classified as GDK");
+        expect(uevr::games::is_dune_awakening_executable_path(path), "existing Dune title detection is preserved");
+        expect(uevr::games::is_dune_awakening_source_view_extension_path(path), "existing Win64 source callbacks remain eligible");
+    }
+    expect(!uevr::games::dune_experimental_rendering_enabled, "legacy Dune rendering experiments remain disabled");
     expect(uevr::games::is_dune_ue521_frame_handoff_runtime(
         L"D:\\Steam\\DuneSandbox-Win64-Shipping.exe", 0x50002, 0x10000), "Dune exact basename/version accepted");
     expect(!uevr::games::is_dune_ue521_frame_handoff_runtime(

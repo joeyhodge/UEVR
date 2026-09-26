@@ -1501,6 +1501,15 @@ bool dune_native_fix_renderer_resolver_is_current_game() {
     return result;
 }
 
+bool dune_source_view_extension_is_current_game() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_dune_awakening_source_view_extension_path(*exe_path);
+    }();
+
+    return result;
+}
+
 bool halo_campaign_evolved_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
@@ -20228,7 +20237,7 @@ struct SceneViewExtensionAnalyzer {
     }
 
     static bool try_apply_dune_ue52_source_layout(uint32_t observed_is_active_index) {
-        if (!dune_native_fix_renderer_resolver_is_current_game() ||
+        if (!dune_source_view_extension_is_current_game() ||
             index_0_called ||
             observed_is_active_index != DUNE_UE52_IS_ACTIVE_INTERNAL_INDEX ||
             has_found_begin_render_viewfamily)
@@ -20303,7 +20312,7 @@ struct SceneViewExtensionAnalyzer {
             has_found_is_active_this_frame_index = true;
             is_active_this_frame_index = max_index;
 
-            // Dune's UE5.2 interface layout is known. Bypass the generic
+            // Dune's Win64 UE5.2 interface layout is known. Bypass the generic
             // frame-counter heuristic, which can confuse PreRenderView's
             // FSceneView argument (or stale registers from GetPriority) for an
             // FSceneViewFamily and install an ABI-incompatible callback.
@@ -20323,7 +20332,7 @@ struct SceneViewExtensionAnalyzer {
             return false;
         }
 
-        if (dune_native_fix_renderer_resolver_is_current_game() && has_found_is_active_this_frame_index) {
+        if (dune_source_view_extension_is_current_game() && has_found_is_active_this_frame_index) {
             SPDLOG_WARN_ONCE(
                 "[Dune][ViewExtension] Source mapping validation failed; refusing unsafe heuristic callback discovery");
             return false;
@@ -20521,7 +20530,7 @@ struct SceneViewExtensionAnalyzer {
         }
 
         const bool use_dune_ue52_source_callbacks =
-            dune_native_fix_renderer_resolver_is_current_game() &&
+            dune_source_view_extension_is_current_game() &&
             !index_0_called &&
             begin_render_viewfamily_index == DUNE_UE52_BEGIN_RENDER_VIEWFAMILY_INDEX &&
             (pre_render_viewfamily_renderthread_index == DUNE_UE52_PRE_RENDER_VIEWFAMILY_INDEX ||
@@ -25701,7 +25710,7 @@ void FFakeStereoRenderingHook::pre_render_view_renderthread(
     sdk::FRHICommandListBase* cmd_list,
     sdk::FSceneView& view)
 {
-    if (!dune_native_fix_renderer_resolver_is_current_game()) {
+    if (!dune_source_view_extension_is_current_game()) {
         return;
     }
 
@@ -25804,7 +25813,7 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
         }
     }};
 
-    if (dune_native_fix_renderer_resolver_is_current_game() &&
+    if (dune_source_view_extension_is_current_game() &&
         SceneViewExtensionAnalyzer::frame_count_offset == SceneViewExtensionAnalyzer::DUNE_UE52_FRAME_NUMBER_OFFSET)
     {
         const auto family_address = reinterpret_cast<uintptr_t>(&view_family);
