@@ -41,8 +41,8 @@ jobs:
         uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11
         with:
           repository: joeyhodge/uevr-frontend
-          # Pair Mono ID 5 with this experimental branch; do not modify other injectors.
-          ref: UEVRMono+DIBR+UEVR
+          # Pair the stable DIBR and Mono rendering IDs with their matching injector.
+          ref: uevr-dibr-optin-safe
           path: frontend
 
       - name: Set up dotnet
