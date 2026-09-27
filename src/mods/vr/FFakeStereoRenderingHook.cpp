@@ -12844,7 +12844,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
                 {"validated_source_runtime", is_validated_ue58_slate_ui_runtime()},
                 {"diagnostic_only", false},
                 {"phase2_capability_routing", true},
-                {"validated_source_versions", {"5.8.0", "5.8.1", "5.8.2"}},
+                {"validated_source_versions", {"5.8.0", "5.8.1", "5.8.2", "5.8.3"}},
                 {"source_contract", "DrawWindowViewport_RenderThread -> RegisterExternalTexture(SlateOutputTexture)"},
                 {"scanner", {
                     {"state", uevr::vr_compatibility::to_string(scanner_state)},
