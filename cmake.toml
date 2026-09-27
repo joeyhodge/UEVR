@@ -285,6 +285,18 @@ add_test(NAME ui-alpha-lifecycle-tests COMMAND ui-alpha-lifecycle-tests)
 set_tests_properties(ui-alpha-lifecycle-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.ui-composition-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UICompositionTests.cpp", "src/mods/vr/UIComposition.cpp", "src/mods/vr/UICompositionGPU.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader", "spdlog", "glm"]
+cmake-after = """
+add_test(NAME ui-composition-tests COMMAND ui-composition-tests)
+set_tests_properties(ui-composition-tests PROPERTIES TIMEOUT 90)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]

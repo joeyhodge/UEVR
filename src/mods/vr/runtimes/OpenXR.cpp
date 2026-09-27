@@ -24,6 +24,7 @@
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
 #include "OpenXR.hpp"
+#include "../UIComposition.hpp"
 
 using namespace nlohmann;
 
@@ -3668,7 +3669,8 @@ XrResult OpenXR::begin_frame(const char* caller) {
     return result;
 }
 
-XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth) {
+XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
+    uevr::ui_composition::Compositor* ui_composition) {
     std::scoped_lock _{sync_mtx};
 
     emit_openxr_state_probes(this, "end_frame");
@@ -3691,6 +3693,9 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
     const bool mono = vr->is_using_mono();
+    if (!uevr::ui_composition::eligible(true, mono, vr->is_dibr_rendering_method_selected(),
+            vr->is_mono_transition_pending(), vr->is_using_2d_screen()) ||
+        !(vr->get_overlay_component().get_ui_composition_request() & 1)) { ui_composition = nullptr; }
     if (mono) { has_depth = false; }
     if (is_afr && is_dead_island_2_ue425_executable()) {
         has_depth = false;
@@ -3760,6 +3765,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto& projection_layer_views = this->end_frame_data.projection_layer_views;
     auto& depth_layers           = this->end_frame_data.depth_layers;
     auto& layers                 = this->end_frame_data.layers;
+    uevr::ui_composition::Result composed_ui; // Holds projection views/resources through xrEndFrame.
 
     // Dummy projection layers for Virtual Desktop. If we don't do this, timewarp does not work correctly on VD.
     // the reasoning from ggodin (VD dev) is that VD composites all layers using the top layer's pose (apparently)
@@ -3904,8 +3910,27 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             layers.push_back((XrCompositionLayerBaseHeader*)&l);
         }
 
-        for (auto& l : quad_layers) {   
-            layers.push_back(l);
+        if (ui_composition && pipelined_stage_views.size() == 2) {
+            const auto scene = this->swapchains.find((uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE);
+            if (scene != this->swapchains.end() && scene->second.width > 0 && !(scene->second.width % 2) && scene->second.height > 0) {
+                uevr::ui_composition::Frame frame{this->instance, this->system, this->session, this->stage_space, this->view_space};
+                std::copy_n(pipelined_stage_views.begin(), 2, frame.eyes.begin());
+                const auto& location = submit_state.view_space_location;
+                constexpr auto valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+                if ((location.locationFlags & valid) == valid) { frame.view_in_stage = location.pose; }
+                frame.eye_extent = {static_cast<uint32_t>(scene->second.width / 2), static_cast<uint32_t>(scene->second.height)};
+                frame.request = vr->get_overlay_component().get_ui_composition_request();
+                composed_ui = ui_composition->compose(frame, quad_layers);
+                vr->get_overlay_component().set_ui_composition_status(ui_composition->status());
+                SPDLOG_INFO_EVERY_N_SEC(5, "[UI Composition] request={} status={} original_layers={} replacement_layers={} eye_extent={}x{}",
+                    frame.request, uevr::ui_composition::status_text(ui_composition->status()), quad_layers.size(),
+                    composed_ui.count, frame.eye_extent.width, frame.eye_extent.height);
+            }
+        }
+        if (composed_ui && composed_ui.count == quad_layers.size()) {
+            for (uint32_t i = 0; i < composed_ui.count; ++i) { layers.push_back(composed_ui.layers[i]); }
+        } else {
+            for (auto* l : quad_layers) { layers.push_back(l); }
         }
     } else if (debug_submit_empty) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -3938,6 +3963,12 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
     auto result = xrEndFrame(this->session, &frame_end_info);
+    if (composed_ui && result != XR_SUCCESS && ui_composition) {
+        ui_composition->reject_submission();
+        vr->get_overlay_component().set_ui_composition_status(uevr::ui_composition::Status::failed);
+        spdlog::warn("[UI Composition] Runtime rejected optional projection UI ({}); original layers restored on subsequent frames until toggled",
+            this->get_result_string(result));
+    }
     if (mono && result == XR_SUCCESS && !projection_layer_views.empty()) {
         vr->set_mono_status("Active: one current centered scene submitted to both eyes");
     }

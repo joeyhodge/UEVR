@@ -26,6 +26,7 @@
 #include "d3d12/DIBRPreview.hpp"
 #include "d3d12/TextureContext.hpp"
 #include "UIAlpha.hpp"
+#include "UIComposition.hpp"
 
 class VR;
 namespace render {
@@ -462,6 +463,7 @@ private:
 
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
         uevr::ui_alpha::D3D12 game_ui_alpha, framework_ui_alpha;
+        uevr::ui_composition::D3D12 ui_composition;
         void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {

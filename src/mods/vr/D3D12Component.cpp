@@ -2303,6 +2303,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         return uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
             vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen());
     };
+    const auto ui_composition_request = ui_alpha_allowed() ? vr->get_overlay_component().get_ui_composition_request() : 0;
+    m_openxr.ui_composition.begin_frame(ui_composition_request);
+    vr->get_overlay_component().set_ui_composition_status((ui_composition_request & 1)
+        ? uevr::ui_composition::Status::waiting : uevr::ui_composition::Status::off);
     for (bool framework : {false, true}) {
         const auto mode = vr->get_overlay_component().get_ui_alpha_mode(framework);
         if (!ui_alpha_allowed() || mode == uevr::ui_alpha::Mode::unchanged) {
@@ -5082,6 +5086,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         if (game_alpha_lease) { vr->get_overlay_component().set_ui_alpha_status(false, uevr::ui_alpha::Status::active); }
                         vr->get_overlay_component().observe_ui_alpha_layer(false, flags, slate_layer->get().layerFlags);
                     }
+                    if (ui_composition_request & 1) {
+                        m_openxr.ui_composition.bind(false, &slate_layer->get(),
+                            vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].handle,
+                            game_alpha_lease ? alpha : uevr::ui_alpha::Mode::unchanged);
+                    }
                     quad_layers.push_back(&slate_layer->get());
                 }   
             }
@@ -5103,6 +5112,11 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                         if (framework_alpha_lease) { vr->get_overlay_component().set_ui_alpha_status(true, uevr::ui_alpha::Status::active); }
                         vr->get_overlay_component().observe_ui_alpha_layer(true, flags, framework_quad->get().layerFlags);
                     }
+                    if (ui_composition_request & 1) {
+                        m_openxr.ui_composition.bind(true, reinterpret_cast<XrCompositionLayerBaseHeader*>(&framework_quad->get()),
+                            vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI].handle,
+                            framework_alpha_lease ? vr->get_overlay_component().get_ui_alpha_mode(true) : uevr::ui_alpha::Mode::unchanged);
+                    }
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&framework_quad->get());
                 }
             }
@@ -5112,7 +5126,8 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
                 quad_layers,
                 scene_depth_tex.Get() != nullptr &&
                     !native_stereo_array_submit_active &&
-                    !dead_island_2_afr_depth_disabled);
+                    !dead_island_2_afr_depth_disabled,
+                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr);
             record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
 
             if (result == XR_ERROR_LAYER_INVALID) {
@@ -6685,6 +6700,7 @@ void D3D12Component::OpenXR::destroy_swapchains() {
     if (vr != nullptr && vr->m_openxr != nullptr) {
         vr->m_openxr->clear_cached_swapchain_dimensions();
     }
+    const bool composition_retired = this->ui_composition.reset();
     const bool game_alpha_retired = this->game_ui_alpha.reset();
     const bool framework_alpha_retired = this->framework_ui_alpha.reset();
 
@@ -6724,9 +6740,9 @@ void D3D12Component::OpenXR::destroy_swapchains() {
             }
         }
 
-        if ((i == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI && !game_alpha_retired) ||
-            (i == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI && !framework_alpha_retired)) {
-            spdlog::error("[UI Alpha] Retaining original UI swapchain after unproven GPU retirement");
+        if ((i == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI && (!game_alpha_retired || !composition_retired)) ||
+            (i == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI && (!framework_alpha_retired || !composition_retired))) {
+            spdlog::error("[UI Processing] Retaining original UI swapchain after unproven GPU retirement");
         } else if (vr->m_openxr->swapchains.contains(i)) {
             const auto result = xrDestroySwapchain(vr->m_openxr->swapchains[i].handle);
 
@@ -6971,7 +6987,7 @@ void D3D12Component::OpenXR::retire_framework_ui_delayed_release(bool force_wait
     // The old converted ImGui image stays valid while this copy is pending.
     // Process the new image only now, immediately before its original release.
     if (!texture_ctx->commands.poisoned) { process_ui_alpha(framework_ui_idx, texture_index); }
-    else { framework_ui_alpha.begin_frame(); }
+    else { framework_ui_alpha.begin_frame(); ui_composition.invalidate(true); }
     XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     auto result = xrReleaseSwapchainImage(swapchain_it->second.handle, &release_info);
 
@@ -6991,7 +7007,7 @@ void D3D12Component::OpenXR::retire_framework_ui_delayed_release(bool force_wait
 
     if (result != XR_SUCCESS) {
         spdlog::error("[UE5.8][FrameworkUI] Delayed xrReleaseSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
-        framework_ui_alpha.begin_frame();
+        framework_ui_alpha.begin_frame(); ui_composition.invalidate(true);
         return;
     }
 
@@ -7338,7 +7354,10 @@ bool D3D12Component::OpenXR::copy(
     if (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI ||
         swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI) {
         if (src_box == nullptr && !texture_ctx->commands.poisoned) { this->process_ui_alpha(swapchain_idx, texture_index); }
-        else { (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI ? game_ui_alpha : framework_ui_alpha).begin_frame(); }
+        else {
+            (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI ? game_ui_alpha : framework_ui_alpha).begin_frame();
+            ui_composition.invalidate(swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI);
+        }
     }
     XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
     auto result = xrReleaseSwapchainImage(swapchain.handle, &release_info);
@@ -7370,6 +7389,7 @@ bool D3D12Component::OpenXR::copy(
         ctx.pre_acquired = used_pre_acquired_image;
         this->game_ui_alpha.begin_frame();
         this->framework_ui_alpha.begin_frame();
+        this->ui_composition.invalidate(false); this->ui_composition.invalidate(true);
         return false;
     }
 
@@ -7388,13 +7408,13 @@ void D3D12Component::OpenXR::process_ui_alpha(uint32_t swapchain_idx, uint32_t t
         this->binding.queue != g_framework->get_d3d12_hook()->get_command_queue() ||
         !uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
             vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen())) {
-        helper.begin_frame(); return;
+        helper.begin_frame(); ui_composition.invalidate(framework); return;
     }
     const auto it = contexts.find(swapchain_idx);
     const auto chain = vr->m_openxr->swapchains.find(swapchain_idx);
     if (it == contexts.end() || chain == vr->m_openxr->swapchains.end() || it->second.num_textures_acquired == 0 ||
         texture_index >= it->second.textures.size() || it->second.textures.size() > 16 || chain->second.width <= 0 || chain->second.height <= 0) {
-        helper.begin_frame(); return;
+        helper.begin_frame(); ui_composition.invalidate(framework); return;
     }
     std::array<ID3D12Resource*, 16> sources{};
     for (size_t i = 0; i < it->second.textures.size(); ++i) { sources[i] = it->second.textures[i].texture; }
@@ -7403,6 +7423,11 @@ void D3D12Component::OpenXR::process_ui_alpha(uint32_t swapchain_idx, uint32_t t
         vr->get_overlay_component().get_ui_alpha_mode(framework)};
     const auto status = helper.copy(request, binding.device, binding.queue,
         std::span<ID3D12Resource* const>{sources.data(), it->second.textures.size()}, texture_index);
+    if (vr->get_overlay_component().get_ui_composition_request() & 1) {
+        ui_composition.capture(framework, {request.session, request.source, request.extent, request.mode},
+            binding.device, binding.queue,
+            std::span<ID3D12Resource* const>{sources.data(), it->second.textures.size()}, texture_index);
+    }
     vr->get_overlay_component().set_ui_alpha_status(framework, status);
     if (const auto sample = helper.sample()) { vr->get_overlay_component().set_ui_alpha_sample(framework, *sample); }
 }

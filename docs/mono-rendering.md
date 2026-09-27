@@ -98,6 +98,44 @@ These checks are **not** HMD/game validation. Before treating the mode as stable
    bundle includes requested/effective mode, generation and Mono status. Compare
    CPU/GPU timings at identical resolution/settings before judging performance.
 
+## Optional per-eye UI composition (Mono/DIBR)
+
+In **Overlay Options**, select **UI Composition (Mono/DIBR) -> Per-eye projection
+(experimental)** to test an alternative to the normal runtime quad layers.
+The default remains **Runtime layers (default)**; the profile key
+`UI_PerEyeComposition_MonoDIBR` enables this only with the explicit value `1`.
+Native, Native Fix, Synced, AFR, OpenVR and 2D Screen Mode do not use this path.
+
+For OpenXR DX11/DX12, this copies acquired, validated game-UI and ImGui images
+into owned snapshots, then renders each quad separately for the actual XR eyes.
+Those transparent projection layers follow scene processing: they never enter
+DIBR's depth warp or alter the scene texture. Original placement, physical size,
+input hit testing, layer order and selected alpha handling are retained. The
+original quads are replaced only when every selected UI layer is ready, avoiding
+duplicate or partially missing UI.
+
+Only full-image, both-eye, premultiplied-alpha BGRA8 quad layers in UEVR's stage
+or view space are supported initially. Cylinders, unknown formats/spaces/flags,
+missing poses, resource limits and unavailable images retain the original layers.
+A runtime submission rejection disables this optional generation until toggled.
+Copy/projection resources retire before reuse or destruction; switching the
+option off polls retirement without waiting on the render thread.
+
+This adds GPU work and VRAM use, and is **not a confirmed fix for HMD waviness**.
+It is not supersampling or a runtime reprojection control. Projection coverage is
+limited to the submitted eye FOV; late head motion can expose its boundaries.
+Existing runtime quads remain preferable when this path offers no improvement.
+
+For the first test, leave alpha handling **Unchanged** and compare only this
+option on/off in the same scene. Check HUD/menu borders, ImGui, transparency,
+head motion, UI placement and mouse/controller hits in both Mono and DIBR. Also
+check repeated toggles, resize, level travel and returning to Native/Synced. The
+DX11/DX12 WARP pixel/lifecycle tests do not replace those HMD/runtime checks.
+
+The implementation follows OpenXR's
+[projection layer pose/space contract](https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrCompositionLayerProjection.html)
+and [swapchain retirement requirements](https://registry.khronos.org/OpenXR/specs/1.1/man/html/xrDestroySwapchain.html).
+
 ## Attribution
 
 The feature concept and single-centered-view integration are adapted from
