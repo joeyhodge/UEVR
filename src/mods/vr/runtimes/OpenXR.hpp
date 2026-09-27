@@ -26,6 +26,8 @@
 
 #include "VRRuntime.hpp"
 
+namespace uevr::ui_composition { class Compositor; }
+
 namespace runtimes{
 struct OpenXR final : public VRRuntime {
 
@@ -161,7 +163,8 @@ public:
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
     XrResult begin_frame(const char* caller = "unknown");
-    XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
+    XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
+        uevr::ui_composition::Compositor* ui_composition = nullptr);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
     bool discard_synced_frame_without_layers(const char* reason);

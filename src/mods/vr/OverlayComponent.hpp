@@ -8,6 +8,7 @@
 #include <atomic>
 #include <array>
 #include "UIAlphaPolicy.hpp"
+#include "UICompositionPolicy.hpp"
 #include <mutex>
 
 #include "Mod.hpp"
@@ -78,6 +79,11 @@ public:
     }
     void observe_ui_alpha_layer(bool framework, XrCompositionLayerFlags original, XrCompositionLayerFlags submitted);
     void set_ui_alpha_sample(bool framework, const uevr::ui_alpha::Sample& sample);
+
+    uint64_t get_ui_composition_request() const { return m_ui_composition_request.load(std::memory_order_relaxed); }
+    void set_ui_composition_status(uevr::ui_composition::Status status) {
+        m_ui_composition_status.store(status, std::memory_order_relaxed);
+    }
 
 private:
     // Cached data for imgui VR overlay so we know when we need to update it
@@ -150,6 +156,16 @@ private:
     std::mutex m_ui_alpha_sample_mutex;
     std::array<uevr::ui_alpha::Sample, 2> m_ui_alpha_samples{};
 
+    const ModCombo::Ptr m_ui_composition{ModCombo::create("UI_PerEyeComposition_MonoDIBR",
+        {"Runtime layers (default)", "Per-eye projection (experimental)"})};
+    std::atomic<uint64_t> m_ui_composition_request{};
+    std::atomic<uevr::ui_composition::Status> m_ui_composition_status{};
+    void publish_ui_composition(bool enabled) {
+        auto old = m_ui_composition_request.load(std::memory_order_relaxed);
+        while (!m_ui_composition_request.compare_exchange_weak(old, ((old & ~uint64_t{1}) + 2) | (enabled ? 1 : 0),
+            std::memory_order_relaxed)) {}
+    }
+
     const ModSlider::Ptr m_framework_distance{ ModSlider::create("UI_Framework_Distance", 0.5f, 10.0f, 1.75f) };
     const ModSlider::Ptr m_framework_size{ ModSlider::create("UI_Framework_Size", 0.5f, 10.0f, 2.0f) };
     const ModToggle::Ptr m_framework_ui_follows_view{ ModToggle::create("UI_Framework_FollowView", false) };
@@ -171,6 +187,7 @@ public:
             *m_ui_invert_alpha,
             *m_game_ui_alpha,
             *m_imgui_alpha,
+            *m_ui_composition,
             *m_framework_distance,
             *m_framework_size,
             *m_framework_ui_follows_view,

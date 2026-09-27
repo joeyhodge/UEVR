@@ -923,6 +923,61 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target ui-composition-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET ui-composition-tests)
+	set(ui-composition-tests_SOURCES "")
+
+	list(APPEND ui-composition-tests_SOURCES
+		"tests/UICompositionTests.cpp"
+		"src/mods/vr/UIComposition.cpp"
+		"src/mods/vr/UICompositionGPU.cpp"
+		"src/mods/vr/UIAlphaGPU.cpp"
+	)
+
+	list(APPEND ui-composition-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${ui-composition-tests_SOURCES})
+	add_executable(ui-composition-tests)
+
+	if(ui-composition-tests_SOURCES)
+		target_sources(ui-composition-tests PRIVATE ${ui-composition-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ui-composition-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ui-composition-tests_SOURCES})
+
+	target_compile_features(ui-composition-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(ui-composition-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(ui-composition-tests PRIVATE
+		d3d11
+		d3d12
+		d3dcompiler
+		dxgi
+		openxr_loader
+		spdlog
+		glm
+	)
+
+	add_test(NAME ui-composition-tests COMMAND ui-composition-tests)
+	set_tests_properties(ui-composition-tests PROPERTIES TIMEOUT 90)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -1221,6 +1276,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UIAlpha.cpp"
 	"src/mods/vr/UIAlphaGPU.cpp"
 	"src/mods/vr/UIAlphaProbe.cpp"
+	"src/mods/vr/UIComposition.cpp"
+	"src/mods/vr/UICompositionGPU.cpp"
 	"src/mods/vr/d3d12/CommandContext.cpp"
 	"src/mods/vr/d3d12/DIBRPreview.cpp"
 	"src/mods/vr/d3d12/DirectXTK.cpp"
@@ -1314,6 +1371,9 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UIAlphaPolicy.hpp"
 	"src/mods/vr/UIAlphaProbe.hpp"
 	"src/mods/vr/UIAlphaSwapchain.hpp"
+	"src/mods/vr/UIComposition.hpp"
+	"src/mods/vr/UICompositionGPU.hpp"
+	"src/mods/vr/UICompositionPolicy.hpp"
 	"src/mods/vr/d3d12/ComPtr.hpp"
 	"src/mods/vr/d3d12/CommandContext.hpp"
 	"src/mods/vr/d3d12/DIBRPreview.hpp"

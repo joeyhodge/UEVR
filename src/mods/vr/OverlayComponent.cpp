@@ -203,7 +203,7 @@ void OverlayComponent::on_config_save(utility::Config& cfg) {
 
 void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
-        if (&option != m_game_ui_alpha.get() && &option != m_imgui_alpha.get()) {
+        if (&option != m_game_ui_alpha.get() && &option != m_imgui_alpha.get() && &option != m_ui_composition.get()) {
             option.config_load(cfg, set_defaults);
         }
     }
@@ -217,6 +217,10 @@ void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defau
         m_ui_alpha_modes[i].store(mode, std::memory_order_relaxed);
         m_ui_alpha_layers[i].store(0, std::memory_order_relaxed);
     }
+    const auto value = !set_defaults ? cfg.get(m_ui_composition->get_config_name()) : std::nullopt;
+    const bool composition = value && uevr::ui_composition::enabled_config(*value);
+    m_ui_composition->value() = composition ? 1 : 0;
+    publish_ui_composition(composition);
 }
 
 void OverlayComponent::observe_ui_alpha_layer(bool framework, XrCompositionLayerFlags original, XrCompositionLayerFlags submitted) {
@@ -271,6 +275,16 @@ void OverlayComponent::on_draw_ui() {
         }
         m_framework_mouse_emulation->draw("Framework Mouse Emulation");
         if (VR::get()->is_using_mono() || VR::get()->is_dibr_rendering_method_selected()) {
+            m_ui_composition->draw("UI Composition (Mono/DIBR)");
+            const bool per_eye = m_ui_composition->value() == 1;
+            if (per_eye != ((get_ui_composition_request() & 1) != 0)) { publish_ui_composition(per_eye); }
+            if (per_eye) {
+                ImGui::TextWrapped("%s", uevr::ui_composition::status_text(m_ui_composition_status.load(std::memory_order_relaxed)));
+                ImGui::TextWrapped("Experimental OpenXR DX11/DX12 quad UI only. Game UI and ImGui are rasterized per eye after "
+                    "scene processing, without scene-depth warping. Placement, physical size, input and alpha settings are retained. "
+                    "Cylinder/unsupported layers or unavailable resources keep the original runtime layers. Adds GPU work; "
+                    "does not guarantee a fix for runtime reprojection artifacts. Toggle off to restore the default.");
+            }
             if (ImGui::TreeNode("UI Alpha Handling (Mono/DIBR)")) {
                 ImGui::TextWrapped("OpenXR DX11/DX12 only. Unchanged is the default. Conversion uses a separate 1:1 image; "
                     "scene, placement, input coordinates and source textures are not modified. Inspection leaves presentation unchanged.");
