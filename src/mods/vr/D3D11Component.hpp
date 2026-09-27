@@ -14,6 +14,7 @@
 #include <DirectXMath.h>
 #include <SpriteBatch.h>
 #include "MonoD3D11.hpp"
+#include "UIAlpha.hpp"
 
 class VR;
 namespace render {
@@ -242,6 +243,8 @@ private:
         }
 
         XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
+        uevr::ui_alpha::D3D11 game_ui_alpha, framework_ui_alpha;
+        void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
             std::vector<XrSwapchainImageD3D11KHR> textures{};

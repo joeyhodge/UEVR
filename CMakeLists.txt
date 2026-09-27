@@ -817,6 +817,112 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target ui-alpha-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET ui-alpha-tests)
+	set(ui-alpha-tests_SOURCES "")
+
+	list(APPEND ui-alpha-tests_SOURCES
+		"tests/UIAlphaTests.cpp"
+		"src/mods/vr/UIAlphaProbe.cpp"
+		"src/mods/vr/UIAlphaGPU.cpp"
+	)
+
+	list(APPEND ui-alpha-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${ui-alpha-tests_SOURCES})
+	add_executable(ui-alpha-tests)
+
+	if(ui-alpha-tests_SOURCES)
+		target_sources(ui-alpha-tests PRIVATE ${ui-alpha-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ui-alpha-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ui-alpha-tests_SOURCES})
+
+	target_compile_features(ui-alpha-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(ui-alpha-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(ui-alpha-tests PRIVATE
+		d3d11
+		d3d12
+		d3dcompiler
+		dxgi
+		openxr_loader
+	)
+
+	add_test(NAME ui-alpha-tests COMMAND ui-alpha-tests)
+	set_tests_properties(ui-alpha-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target ui-alpha-lifecycle-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET ui-alpha-lifecycle-tests)
+	set(ui-alpha-lifecycle-tests_SOURCES "")
+
+	list(APPEND ui-alpha-lifecycle-tests_SOURCES
+		"tests/UIAlphaLifecycleTests.cpp"
+		"src/mods/vr/UIAlpha.cpp"
+		"src/mods/vr/UIAlphaProbe.cpp"
+		"src/mods/vr/UIAlphaGPU.cpp"
+	)
+
+	list(APPEND ui-alpha-lifecycle-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${ui-alpha-lifecycle-tests_SOURCES})
+	add_executable(ui-alpha-lifecycle-tests)
+
+	if(ui-alpha-lifecycle-tests_SOURCES)
+		target_sources(ui-alpha-lifecycle-tests PRIVATE ${ui-alpha-lifecycle-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ui-alpha-lifecycle-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${ui-alpha-lifecycle-tests_SOURCES})
+
+	target_compile_features(ui-alpha-lifecycle-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(ui-alpha-lifecycle-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(ui-alpha-lifecycle-tests PRIVATE
+		d3d11
+		d3d12
+		d3dcompiler
+		dxgi
+		openxr_loader
+		spdlog
+	)
+
+	add_test(NAME ui-alpha-lifecycle-tests COMMAND ui-alpha-lifecycle-tests)
+	set_tests_properties(ui-alpha-lifecycle-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target vr-plugin-nullifier
 set(CMKR_TARGET vr-plugin-nullifier)
 set(vr-plugin-nullifier_SOURCES "")
@@ -1112,6 +1218,9 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/OverlayComponent.cpp"
 	"src/mods/vr/RenderTargetPoolHook.cpp"
 	"src/mods/vr/UE57SlateSymbols.cpp"
+	"src/mods/vr/UIAlpha.cpp"
+	"src/mods/vr/UIAlphaGPU.cpp"
+	"src/mods/vr/UIAlphaProbe.cpp"
 	"src/mods/vr/d3d12/CommandContext.cpp"
 	"src/mods/vr/d3d12/DIBRPreview.cpp"
 	"src/mods/vr/d3d12/DirectXTK.cpp"
@@ -1200,6 +1309,11 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
+	"src/mods/vr/UIAlpha.hpp"
+	"src/mods/vr/UIAlphaGPU.hpp"
+	"src/mods/vr/UIAlphaPolicy.hpp"
+	"src/mods/vr/UIAlphaProbe.hpp"
+	"src/mods/vr/UIAlphaSwapchain.hpp"
 	"src/mods/vr/d3d12/ComPtr.hpp"
 	"src/mods/vr/d3d12/CommandContext.hpp"
 	"src/mods/vr/d3d12/DIBRPreview.hpp"
