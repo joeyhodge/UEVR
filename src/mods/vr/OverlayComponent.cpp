@@ -203,7 +203,38 @@ void OverlayComponent::on_config_save(utility::Config& cfg) {
 
 void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
-        option.config_load(cfg, set_defaults);
+        if (&option != m_game_ui_alpha.get() && &option != m_imgui_alpha.get()) {
+            option.config_load(cfg, set_defaults);
+        }
+    }
+    ModCombo* const options[]{m_game_ui_alpha.get(), m_imgui_alpha.get()};
+    for (size_t i = 0; i < 2; ++i) {
+        auto mode = uevr::ui_alpha::Mode::unchanged;
+        if (!set_defaults) {
+            if (const auto value = cfg.get(options[i]->get_config_name())) { mode = uevr::ui_alpha::mode_from_config(*value); }
+        }
+        options[i]->value() = static_cast<int32_t>(mode);
+        m_ui_alpha_modes[i].store(mode, std::memory_order_relaxed);
+        m_ui_alpha_layers[i].store(0, std::memory_order_relaxed);
+    }
+}
+
+void OverlayComponent::observe_ui_alpha_layer(bool framework, XrCompositionLayerFlags original, XrCompositionLayerFlags submitted) {
+    const auto convention = [](XrCompositionLayerFlags flags) {
+        return uevr::ui_alpha::layer_alpha((flags & XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT) != 0,
+            (flags & XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT) != 0);
+    };
+    m_ui_alpha_layers[framework ? 1 : 0].store(uevr::ui_alpha::layer_observation(convention(original), convention(submitted)),
+        std::memory_order_relaxed);
+}
+
+void OverlayComponent::set_ui_alpha_sample(bool framework, const uevr::ui_alpha::Sample& sample) {
+    std::scoped_lock lock{m_ui_alpha_sample_mutex};
+    m_ui_alpha_samples[framework ? 1 : 0] = sample;
+    if (sample.sequence == 1 || sample.sequence % 10 == 0) {
+        spdlog::info("[UI Alpha][{}] sampled={} alpha_zero={} partial={} opaque={} zero_alpha_rgb={} above_linear_alpha={} above_encoded_alpha={} (evidence only; no automatic classification)",
+            framework ? "ImGui" : "Game", sample.pixels, sample.transparent, sample.translucent, sample.opaque,
+            sample.transparent_rgb, sample.exceeds_linear_alpha, sample.exceeds_encoded_alpha);
     }
 }
 
@@ -239,6 +270,44 @@ void OverlayComponent::on_draw_ui() {
             m_framework_wrist_ui->draw("Framework Wrist UI");
         }
         m_framework_mouse_emulation->draw("Framework Mouse Emulation");
+        if (VR::get()->is_using_mono() || VR::get()->is_dibr_rendering_method_selected()) {
+            if (ImGui::TreeNode("UI Alpha Handling (Mono/DIBR)")) {
+                ImGui::TextWrapped("OpenXR DX11/DX12 only. Unchanged is the default. Conversion uses a separate 1:1 image; "
+                    "scene, placement, input coordinates and source textures are not modified. Inspection leaves presentation unchanged.");
+                ModCombo* const options[]{m_game_ui_alpha.get(), m_imgui_alpha.get()};
+                for (size_t i = 0; i < 2; ++i) {
+                    options[i]->draw(i == 0 ? "Game UI Alpha" : "ImGui Alpha");
+                    const auto value = options[i]->value();
+                    const auto mode = value >= 0 && value <= 3 ? static_cast<uevr::ui_alpha::Mode>(value) : uevr::ui_alpha::Mode::unchanged;
+                    const auto before = m_ui_alpha_modes[i].exchange(mode, std::memory_order_relaxed);
+                    if (before != mode) { m_ui_alpha_layers[i].store(0, std::memory_order_relaxed); }
+                    uevr::ui_alpha::Sample sample;
+                    {
+                        std::scoped_lock lock{m_ui_alpha_sample_mutex};
+                        if (before != mode) { m_ui_alpha_samples[i] = {}; }
+                        sample = m_ui_alpha_samples[i];
+                    }
+                    ImGui::TextWrapped("%s", uevr::ui_alpha::status_text(m_ui_alpha_status[i].load(std::memory_order_relaxed)));
+                    const auto layers = m_ui_alpha_layers[i].load(std::memory_order_relaxed);
+                    if (mode != uevr::ui_alpha::Mode::unchanged) {
+                        ImGui::TextWrapped("Layer flags: original %s; submitted %s.",
+                            uevr::ui_alpha::layer_alpha_text(uevr::ui_alpha::original_alpha(layers)),
+                            uevr::ui_alpha::layer_alpha_text(uevr::ui_alpha::submitted_alpha(layers)));
+                    }
+                    if (mode != uevr::ui_alpha::Mode::unchanged && sample.pixels) {
+                        ImGui::TextWrapped("Last bounded sample: %u pixels; transparent %u, translucent %u, opaque %u. "
+                            "RGB above alpha: linear %u, encoded %u; RGB with zero alpha %u.", sample.pixels,
+                            sample.transparent, sample.translucent, sample.opaque, sample.exceeds_linear_alpha,
+                            sample.exceeds_encoded_alpha, sample.transparent_rgb);
+                    }
+                }
+                ImGui::TextWrapped("Samples cannot prove straight vs premultiplied alpha: additive/custom UI can look similar. "
+                    "Choose conversion only for a known source convention. Opaque pixels are preserved; changing alpha flags alone is not a conversion.");
+                ImGui::TextWrapped("UEVR's usual ImGui path blends into a non-sRGB UNORM target and already associates RGB with alpha. "
+                    "Do not multiply it again as straight RGB. The encoded-premultiplied option reconstructs that association in linear space.");
+                ImGui::TreePop();
+            }
+        }
         ImGui::TreePop();
     }
 }

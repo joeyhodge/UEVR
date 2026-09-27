@@ -25,6 +25,7 @@
 #include "d3d12/CommandContext.hpp"
 #include "d3d12/DIBRPreview.hpp"
 #include "d3d12/TextureContext.hpp"
+#include "UIAlpha.hpp"
 
 class VR;
 namespace render {
@@ -471,6 +472,8 @@ private:
         }
 
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
+        uevr::ui_alpha::D3D12 game_ui_alpha, framework_ui_alpha;
+        void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
             // Declared first so command contexts retire before these references are destroyed.

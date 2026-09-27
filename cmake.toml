@@ -261,6 +261,30 @@ add_test(NAME mono-d3d12-tests COMMAND mono-d3d12-tests)
 set_tests_properties(mono-d3d12-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.ui-alpha-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UIAlphaTests.cpp", "src/mods/vr/UIAlphaProbe.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader"]
+cmake-after = """
+add_test(NAME ui-alpha-tests COMMAND ui-alpha-tests)
+set_tests_properties(ui-alpha-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.ui-alpha-lifecycle-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UIAlphaLifecycleTests.cpp", "src/mods/vr/UIAlpha.cpp", "src/mods/vr/UIAlphaProbe.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader", "spdlog"]
+cmake-after = """
+add_test(NAME ui-alpha-lifecycle-tests COMMAND ui-alpha-lifecycle-tests)
+set_tests_properties(ui-alpha-lifecycle-tests PROPERTIES TIMEOUT 60)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
