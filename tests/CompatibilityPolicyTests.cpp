@@ -815,10 +815,10 @@ void test_ue58_pooled_slate_fallback() {
         .pooled_wrapper_transactions = 1,
         .shared_strict_pooled_transactions = 1,
     };
-    for (uint32_t patch = 0; patch <= 3; ++patch) {
+    for (uint32_t patch = 0; patch <= 4; ++patch) {
         input.exact_ue58 = is_validated_ue58_slate_source_version(0x00050008, patch << 16);
-        expect(should_use_ue58_pooled_slate_fallback(input) == (patch <= 2),
-            "pooled fallback must be restricted to validated UE5.8.0-5.8.2 source versions");
+        expect(should_use_ue58_pooled_slate_fallback(input) == (patch <= 3),
+            "pooled fallback must be restricted to validated UE5.8.0-5.8.3 source versions");
     }
     input.exact_ue58 = false;
     expect(!should_use_ue58_pooled_slate_fallback(input),
@@ -977,10 +977,20 @@ void test_ue58_slate_ui_capability() {
         "UE5.8.1 must be eligible for validated Slate capability routing");
     expect(is_validated_ue58_slate_source_version(0x00050008, 0x00020000),
         "UE5.8.2 must be eligible for validated Slate capability routing");
-    expect(!is_validated_ue58_slate_source_version(0x00050008, 0x00030000),
-        "an unvalidated future UE5.8 patch must fail automatic Slate routing closed");
+    expect(is_validated_ue58_slate_source_version(0x00050008, 0x00030000),
+        "source-reviewed UE5.8.3 must be eligible for validated Slate capability routing");
+    for (uint32_t revision : {0u, 1u, 0xffffu}) {
+        for (uint32_t patch : {0u, 1u, 2u, 3u, 4u, 5u, 0xffffu}) {
+            expect(is_validated_ue58_slate_source_version(0x00050008, (patch << 16) | revision) == (patch <= 3),
+                "the build revision must not exclude reviewed patches or admit unreviewed UE5.8 patches");
+        }
+    }
     expect(!is_validated_ue58_slate_source_version(0x00050007, 0x00020000),
         "UE5.7 must remain outside the UE5.8 Slate capability route");
+    expect(!is_validated_ue58_slate_source_version(0x00050009, 0x00000000) &&
+        !is_validated_ue58_slate_source_version(0x00040008, 0x00030000) &&
+        !is_validated_ue58_slate_source_version(0x00060008, 0x00030000),
+        "different engine minors and majors must not inherit the reviewed UE5.8.3 contract");
 
     UE58SlateCallABIObservation direct_call{
         .rcx_builder = true,
