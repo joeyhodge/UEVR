@@ -43,6 +43,7 @@
 #include <sdk/MafiaDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/KtjLStereoBootstrap.hpp>
+#include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
 #include <sdk/RtmDiscovery.hpp>
 #include <sdk/Slate.hpp>
@@ -3485,6 +3486,79 @@ sdk::UTexture* create_daysgone_legacy_render_target(
         width,
         height);
     return texture;
+}
+
+sdk::UTexture* create_kh3_native_capture_target(
+    sdk::UGameplayStatics* gameplay_statics, sdk::UWorld* world, uint32_t width, uint32_t height)
+{
+    namespace kh3 = sdk::kh3;
+    const auto vr = VR::get();
+    if (!kh3::is_process() || !kh3::validated_objects_code() || g_framework == nullptr ||
+        !g_framework->is_dx11() || vr == nullptr || !vr->is_native_stereo_fix_enabled() ||
+        gameplay_statics == nullptr || world == nullptr || !kh3::valid_capture_extent(width, height)) {
+        return nullptr;
+    }
+
+    const auto memory = sdk::discovery::process_memory();
+    const auto base = kh3::module_base();
+    static const auto factory = kh3::render_target_factory(memory, base);
+    if (!factory || !sdk::FField::is_ufield_only()) {
+        SPDLOG_ERROR_ONCE("[KH3][NativeFix] Rejected the legacy capture-target instruction contract");
+        return nullptr;
+    }
+
+    try {
+        const auto target_class = sdk::find_uobject<sdk::UClass>(L"Class /Script/Engine.TextureRenderTarget2D");
+        if (!kh3::registered_object(memory, base, reinterpret_cast<uintptr_t>(target_class)) ||
+            target_class->get_properties_size() != kh3::target_object_size) {
+            SPDLOG_ERROR_ONCE("[KH3][NativeFix] Rejected the TextureRenderTarget2D class layout");
+            return nullptr;
+        }
+
+        constexpr std::array<std::pair<std::wstring_view, int32_t>, 7> properties{{
+            {L"SizeX", 0x100}, {L"SizeY", 0x104}, {L"ClearColor", 0x108},
+            {L"bForceLinearGamma", 0x11C}, {L"RenderTargetFormat", 0x120},
+            {L"bAutoGenerateMips", 0x124}, {L"OverrideFormat", 0x128},
+        }};
+        for (const auto& [name, offset] : properties) {
+            const auto property = target_class->find_property(name);
+            if (!kh3::registered_object(memory, base, reinterpret_cast<uintptr_t>(property)) ||
+                property->get_offset() != offset) {
+                SPDLOG_ERROR_ONCE("[KH3][NativeFix] Capture-target reflection does not match the validated factory");
+                return nullptr;
+            }
+        }
+
+        // KH3's reflected Kismet factory has no Format parameter and creates
+        // RGBA16F. Initialize our own empty target once, before exposing it to
+        // the render thread; never reformat the game or a published resource.
+        auto* object = gameplay_statics->spawn_object(target_class, world);
+        const auto address = reinterpret_cast<uintptr_t>(object);
+        if (!kh3::fresh_render_target(memory, base, address,
+                reinterpret_cast<uintptr_t>(target_class), reinterpret_cast<uintptr_t>(world)) ||
+            !is_writable_process_range(address, kh3::target_object_size)) {
+            SPDLOG_ERROR_ONCE("[KH3][NativeFix] Refused a nonempty or invalid capture-target object");
+            return nullptr;
+        }
+
+        constexpr std::array<float, 4> clear_color{0.0f, 0.0f, 0.0f, 1.0f};
+        std::memcpy(reinterpret_cast<void*>(address + 0x108), clear_color.data(), sizeof(clear_color));
+        *reinterpret_cast<uint8_t*>(address + 0x120) = 2; // RTF_RGBA8; EPixelFormat is specified separately below.
+        *reinterpret_cast<uint32_t*>(address + 0x124) &= ~2u;
+        using InitCustomFormatFn = void(__fastcall*)(sdk::UTexture*, uint32_t, uint32_t, uint8_t, bool);
+        auto* texture = static_cast<sdk::UTexture*>(object);
+        reinterpret_cast<InitCustomFormatFn>(*factory)(texture, width, height, 2, false); // PF_B8G8R8A8, sRGB.
+        if (!kh3::initialized_capture_target(memory, address, width, height)) {
+            SPDLOG_ERROR_ONCE("[KH3][NativeFix] Capture-target initialization did not retain the requested format/extent");
+            return nullptr;
+        }
+
+        SPDLOG_INFO("[KH3][NativeFix] Created validated BGRA8 capture target {:x} [{}x{}, one mip]", address, width, height);
+        return texture;
+    } catch (...) {
+        SPDLOG_ERROR_ONCE("[KH3][NativeFix] Legacy capture-target creation raised an exception");
+        return nullptr;
+    }
 }
 
 bool strikers_club_is_current_game() {
@@ -11083,6 +11157,11 @@ bool ghosting_is_live_uobject(
         return false;
     }
 
+    // KH3 stores an independent flag in the index's high bit. Use the same
+    // validated interpretation as UObjectHook before comparing array identity.
+    internal_index = static_cast<int32_t>(sdk::UObjectBase::normalize_internal_index(
+        static_cast<uint32_t>(internal_index)));
+
     if (expected_identity != nullptr &&
         (vtable != expected_identity->vtable ||
          object_class != expected_identity->object_class ||
@@ -11551,6 +11630,34 @@ bool ghosting_resolve_direct_view_state_slots(
     sdk::FSceneViewStateInterface* right_state,
     GhostingFixOwnerCandidate& out)
 {
+    if (sdk::kh3::is_process()) {
+        if (g_framework == nullptr || !g_framework->is_dx11() || !sdk::kh3::validated_local_player_code()) {
+            return false;
+        }
+        const auto states = sdk::kh3::local_player_states(
+            sdk::discovery::process_memory(), sdk::kh3::module_base(), local_player_address);
+        if (!states) { return false; }
+        const auto left = reinterpret_cast<uintptr_t>(left_state);
+        const auto right = reinterpret_cast<uintptr_t>(right_state);
+        const bool natural_order = states->primary == left && states->secondary == right;
+        const bool swapped_order = states->primary == right && states->secondary == left;
+        if (!natural_order && !swapped_order) { return false; }
+
+        const auto first = local_player_address + sdk::kh3::primary_reference_offset;
+        const auto second = local_player_address + sdk::kh3::secondary_reference_offset;
+        out.view_states_header = 0;
+        out.view_states_data = first;
+        out.view_states_count = 2;
+        out.view_states_capacity = 2;
+        out.view_state_stride = sdk::kh3::reference_stride;
+        out.view_state_reference_vtable = states->reference_vtable;
+        out.eye_state_slot[0] = (natural_order ? first : second) + sizeof(uintptr_t);
+        out.eye_state_slot[1] = (natural_order ? second : first) + sizeof(uintptr_t);
+        out.view_states_are_array = false;
+        SPDLOG_INFO_ONCE("[KH3][StereoOwner] Validated primary/secondary LocalPlayer references +430/+458; auxiliary +480 excluded");
+        return true;
+    }
+
     if (daysgone_is_current_game()) {
         constexpr uintptr_t FIRST_REFERENCE_OFFSET = 0x90;
         constexpr uintptr_t SECOND_REFERENCE_OFFSET = 0xB8;
@@ -11778,13 +11885,20 @@ bool ghosting_resolve_current_owner(
         // Days Gone's UE4.11 fork does not expose ControllerId through the
         // reflected LocalPlayer layout. Resolve its two exact, BN-validated
         // scene-state references before relying on reflected boundaries.
-        if (daysgone_is_current_game()) {
+        if (daysgone_is_current_game() || sdk::kh3::is_process()) {
             found_view_states = ghosting_resolve_direct_view_state_slots(
                 local_player_address,
                 controller_id_data,
                 left_state,
                 right_state,
                 candidate);
+        }
+
+        // KH3 also has a third, auxiliary reference. Do not let the broad
+        // legacy search adopt it when the exact primary/secondary pair fails.
+        if (sdk::kh3::is_process() && !found_view_states) {
+            diagnostic.failure = GhostingOwnerResolveFailure::ViewStateStorage;
+            continue;
         }
 
         if (!found_view_states && controller_id_data == 0) {
@@ -21077,8 +21191,9 @@ bool FFakeStereoRenderingHook::bind_ghosting_fix_owner(GhostingFixPair& pair, co
     return true;
 }
 
-bool FFakeStereoRenderingHook::orient_daysgone_ghosting_fix_pair_from_owner(GhostingFixPair& pair) {
-    if (!daysgone_is_current_game() ||
+bool FFakeStereoRenderingHook::orient_legacy_ghosting_fix_pair_from_owner(GhostingFixPair& pair) {
+    const bool kh3 = sdk::kh3::validated_local_player_code();
+    if ((!daysgone_is_current_game() && !kh3) ||
         g_framework == nullptr ||
         !g_framework->is_dx11() ||
         !ghosting_is_valid_scene_state(pair.eye_state[0]) ||
@@ -21107,9 +21222,9 @@ bool FFakeStereoRenderingHook::orient_daysgone_ghosting_fix_pair_from_owner(Ghos
             object_hook_diagnostic);
     }
 
-    constexpr uintptr_t FIRST_REFERENCE_OFFSET = 0x90;
-    constexpr uintptr_t SECOND_REFERENCE_OFFSET = 0xB8;
-    constexpr uint32_t REFERENCE_STRIDE =
+    const uintptr_t FIRST_REFERENCE_OFFSET = kh3 ? sdk::kh3::primary_reference_offset : 0x90;
+    const uintptr_t SECOND_REFERENCE_OFFSET = kh3 ? sdk::kh3::secondary_reference_offset : 0xB8;
+    const uint32_t REFERENCE_STRIDE =
         static_cast<uint32_t>(SECOND_REFERENCE_OFFSET - FIRST_REFERENCE_OFFSET);
 
     if (!resolved ||
@@ -21166,8 +21281,9 @@ bool FFakeStereoRenderingHook::orient_daysgone_ghosting_fix_pair_from_owner(Ghos
     pair.logged_naturally_separated = false;
 
     SPDLOG_INFO(
-        "[GhostingFix][DaysGone] Confirmed AFR eye ownership from exact LocalPlayer "
+        "[GhostingFix][{}] Confirmed AFR eye ownership from exact LocalPlayer "
         "ViewState/StereoViewState slots owner={:x} generation={} primary={:x} secondary={:x} swapped={}",
+        kh3 ? "KH3" : "DaysGone",
         reinterpret_cast<uintptr_t>(candidate.local_player),
         pair.generation,
         primary_state_address,
@@ -22131,8 +22247,8 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         const auto scene_id = (uintptr_t)init_options_scene;
         const auto eye_index = true_index & 1;
         const auto other_eye_index = eye_index ^ 1;
-        const bool daysgone_exact_owner_orientation =
-            daysgone_is_current_game() &&
+        const bool exact_legacy_owner_orientation =
+            (daysgone_is_current_game() || sdk::kh3::validated_local_player_code()) &&
             g_framework != nullptr &&
             g_framework->is_dx11();
         const bool bootstrap_enabled = vr->is_ghosting_fix_bootstrap_enabled();
@@ -22393,15 +22509,15 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 ghosting_pair.eye_state[0] != ghosting_pair.eye_state[1];
 
             if (has_valid_pair) {
-                if (daysgone_exact_owner_orientation && !ghosting_pair.orientation_confirmed) {
-                    orient_daysgone_ghosting_fix_pair_from_owner(ghosting_pair);
+                if (exact_legacy_owner_orientation && !ghosting_pair.orientation_confirmed) {
+                    orient_legacy_ghosting_fix_pair_from_owner(ghosting_pair);
                 }
 
                 // Bootstrap can construct both candidate states in one engine
                 // frame, before AFR eye ownership is stable. Treat the pair as
                 // unordered until the same raw state is observed repeatedly
                 // on later left-eye frames.
-                if (!daysgone_exact_owner_orientation && eye_index == 0) {
+                if (!exact_legacy_owner_orientation && eye_index == 0) {
                     const bool is_new_engine_frame =
                         !ghosting_pair.pending_left_source_frame_valid ||
                         ghosting_pair.pending_left_source_frame != g_frame_count;
@@ -22521,10 +22637,10 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                                     ghosting_pair.owner.view_state_stride);
                             }
                         } else {
-                            const bool daysgone_has_applied_remap =
-                                daysgone_exact_owner_orientation &&
+                            const bool legacy_has_applied_remap =
+                                exact_legacy_owner_orientation &&
                                 g_hook->m_sceneview_data.ghosting_last_right_eye_remap_observation != 0;
-                            ghosting_state = daysgone_has_applied_remap
+                            ghosting_state = legacy_has_applied_remap
                                 ? GhostingFixState::Active
                                 : GhostingFixState::NaturallySeparated;
 
@@ -22541,7 +22657,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                         }
                     }
                 } else if (
-                    !(daysgone_exact_owner_orientation && owner_is_current) &&
+                    !(exact_legacy_owner_orientation && owner_is_current) &&
                     ghosting_state != GhostingFixState::NaturallySeparated &&
                     (g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time.time_since_epoch().count() == 0 ||
                      now - g_hook->m_sceneview_data.ghosting_last_right_eye_remap_time > std::chrono::milliseconds{500}))
@@ -37573,6 +37689,15 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
                 expected_device != nullptr && resource_device.Get() == expected_device &&
                 bgra_compatible && desc.Width == expected_width && desc.Height == expected_height &&
                 desc.MipLevels == 1 && desc.ArraySize == 1 && desc.SampleDesc.Count == 1;
+            if (!resource_valid && sdk::kh3::is_process()) {
+                static std::atomic_uint32_t rejected_descriptors{};
+                if (rejected_descriptors.fetch_add(1, std::memory_order_relaxed) < 4) {
+                    SPDLOG_WARN("[KH3][NativeFix] Rejected capture: DXGI format={}, {}x{} (expected {}x{}), mips={}, array={}, samples={}, same_device={}",
+                        static_cast<uint32_t>(desc.Format), desc.Width, desc.Height, expected_width, expected_height,
+                        desc.MipLevels, desc.ArraySize, desc.SampleDesc.Count,
+                        expected_device != nullptr && resource_device.Get() == expected_device);
+                }
+            }
         }
     } else if (g_framework->get_renderer_type() == Framework::RendererType::D3D12) {
         Microsoft::WRL::ComPtr<ID3D12Resource> texture{};
@@ -39785,7 +39910,9 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     const auto target_width = VR::get()->get_hmd_width();
     const auto target_height = VR::get()->get_hmd_height();
     sdk::UTexture* tgt_raw{};
-    if (kismet_rendering != nullptr) {
+    if (sdk::kh3::is_process() && g_framework->is_dx11() && VR::get()->is_native_stereo_fix_enabled()) {
+        tgt_raw = create_kh3_native_capture_target(ugs, world, target_width, target_height);
+    } else if (kismet_rendering != nullptr) {
         tgt_raw = kismet_rendering->create_render_target_2d(
             world,
             target_width,
