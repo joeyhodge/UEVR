@@ -13,6 +13,7 @@
 #include <utility/UObjectMetadataFilter.hpp>
 
 #include <sdk/UObjectBase.hpp>
+#include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FField.hpp>
@@ -339,7 +340,7 @@ bool should_tick_motion_controller_attachments_for_view(int32_t view_index, bool
 }
 
 bool use_dynamic_uobjecthook_candidate_guard() {
-    return is_ue4_14_through_4_17_uobjecthook_guard_enabled() ||
+    return sdk::kh3::is_process() || is_ue4_14_through_4_17_uobjecthook_guard_enabled() ||
         is_ue_5_1_uobjecthook_guard_enabled() ||
         is_avowed_uobjecthook_guard_enabled() ||
         is_stalker2_uobjecthook_guard_enabled() ||
@@ -488,6 +489,7 @@ bool is_uobject_array_member(sdk::UObjectBase* object) {
         return false;
     }
 
+    internal_index = sdk::UObjectBase::normalize_internal_index(internal_index);
     const auto object_count = object_array->get_object_count();
 
     if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
@@ -528,6 +530,7 @@ std::optional<std::pair<int32_t, int32_t>> get_uobject_index_serial(sdk::UObject
         return std::nullopt;
     }
 
+    internal_index = sdk::UObjectBase::normalize_internal_index(internal_index);
     const auto object_count = object_array->get_object_count();
 
     if (object_count <= 0 || internal_index >= (uint32_t)object_count) {
@@ -1005,7 +1008,13 @@ void UObjectHook::hook() {
         SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
 
-    m_destructor_hook = safetyhook::create_inline((void**)destructor_fn.value(), &destructor);
+    if (sdk::kh3::is_process()) {
+        m_destructor_hook = safetyhook::create_inline((void*)destructor_fn.value(), &destructor,
+            safetyhook::InlineHook::StartDisabled);
+        if (m_destructor_hook && !m_destructor_hook.enable()) { m_destructor_hook.reset(); }
+    } else {
+        m_destructor_hook = safetyhook::create_inline((void**)destructor_fn.value(), &destructor);
+    }
 
     if (!m_destructor_hook) {
         SPDLOG_ERROR("[UObjectHook] Failed to hook UObjectBase::destructor, cannot hook UObjectBase");
@@ -1015,7 +1024,7 @@ void UObjectHook::hook() {
     if (add_object_fn) {
         // KTJL's hook can run as soon as it is enabled. Publish its trampoline
         // first; the validated allocator takes the UObject in RDX, not RCX.
-        if (is_ktjl_uobjecthook() || is_townfall_ue56_uobjecthook()) {
+        if (is_ktjl_uobjecthook() || is_townfall_ue56_uobjecthook() || sdk::kh3::is_process()) {
             m_add_object_hook = safetyhook::create_inline((void*)add_object_fn.value(), &add_object,
                 safetyhook::InlineHook::StartDisabled);
             if (m_add_object_hook && is_townfall_ue56_uobjecthook()) {
@@ -1396,7 +1405,7 @@ bool UObjectHook::add_new_object(sdk::UObjectBase* object, bool run_creation_job
         }
     }
 
-    const auto require_array_member = is_avowed_uobjecthook_guard_enabled();
+    const auto require_array_member = sdk::kh3::is_process() || is_avowed_uobjecthook_guard_enabled();
 
     if (!candidate_already_validated && use_dynamic_uobjecthook_candidate_guard() &&
         !is_safe_uobject_candidate(*this, object, require_array_member)) {
@@ -6304,6 +6313,11 @@ void* UObjectHook::add_object(void* rcx, void* rdx, void* r8, void* r9, void* st
     auto& hook = UObjectHook::get();
     auto result = hook->m_add_object_hook.unsafe_call<void*>(rcx, rdx, r8, r9, stack1, stack2, stack3, stack4);
 
+    if (sdk::kh3::is_process()) {
+        // Registration and hashing have finished. RDX is an FName, not an object.
+        hook->add_new_object(reinterpret_cast<sdk::UObjectBase*>(rcx));
+        return result;
+    }
     if (is_ktjl_uobjecthook()) {
         // Installation validated the RDX -> FUObjectItem::Object store. RCX is
         // FUObjectArray and can look readable enough to fool the generic probe.
