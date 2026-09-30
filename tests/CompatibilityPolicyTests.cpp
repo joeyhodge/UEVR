@@ -11,6 +11,7 @@
 #include <sdk/MafiaDiscovery.hpp>
 
 #include "mods/GameSpecific.hpp"
+#include "utility/UObjectScanBudget.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
 #include "mods/vr/BreathedgeInventoryPolicy.hpp"
 #include "mods/vr/Borderlands4Slate.hpp"
@@ -39,6 +40,81 @@ void expect(bool condition, std::string_view message) {
 
 constexpr size_t offset_delta(size_t member, size_t base) {
     return member - base;
+}
+
+void test_outerworlds2_tracking_policy() {
+    using uevr::games::is_outerworlds2_executable_path;
+    for (const auto path : {L"TheOuterWorlds2-Win64-Shipping.exe",
+            L"D:\\Games\\OW2\\THEOUTERWORLDS2-WINGDK-SHIPPING.EXE",
+            L"C:/Program Files/WindowsApps/Microsoft.OE-Arkansas/Arkansas/Binaries/WinGDK/TheOuterWorlds2-WinGDK-Shipping.exe"}) {
+        expect(is_outerworlds2_executable_path(path), "OW2 Steam and GDK basenames select the guarded array path");
+    }
+    for (const auto path : {L"", L"Townfall-Win64-Shipping.exe", L"Stalker2-Win64-Shipping.exe",
+            L"Avowed-WinGDK-Shipping.exe", L"DaysGone.exe", L"KINGDOM HEARTS III.exe",
+            L"IndianaEpicGameStore-Win64-Shipping.exe", L"OtherUE54-Win64-Shipping.exe",
+            L"TheOuterWorlds-Win64-Shipping.exe", L"TheOuterWorlds2-Win64-Shipping.exe.bak",
+            L"NotTheOuterWorlds2-Win64-Shipping.exe", L"TheOuterWorlds2-Win64-Shipping",
+            L"D:\\TheOuterWorlds2-Win64-Shipping.exe\\Unrelated.exe"}) {
+        expect(!is_outerworlds2_executable_path(path), "other games, substring matches and renamed copies remain unchanged");
+    }
+
+    using utility::uobject::scan_with_budget;
+    using namespace std::chrono_literals;
+    auto time = std::chrono::steady_clock::time_point{};
+    const auto now = [&] { return time; };
+    std::vector<int32_t> visited;
+    const auto visit = [&](int32_t slot) { visited.push_back(slot); time += 1ms; };
+    auto slice = scan_with_budget(0, 11, 8192, 4ms, now, visit);
+    expect(slice.next == 4 && slice.visited == 4 && slice.yielded,
+        "OW2 budget includes traversal and stops before the first unvisited slot");
+    slice = scan_with_budget(slice.next, 11, 8192, 4ms, now, visit);
+    expect(slice.next == 8 && slice.visited == 4 && slice.yielded, "budgeted scans resume without a lost batch");
+    slice = scan_with_budget(slice.next, 11, 8192, 4ms, now, visit);
+    expect(slice.next == 11 && slice.visited == 3 && !slice.yielded, "the final partial slice completes the sweep");
+    expect(visited == std::vector<int32_t>{0,1,2,3,4,5,6,7,8,9,10}, "every slot is visited exactly once");
+
+    int calls{};
+    const auto no_time = [&](int32_t) { ++calls; };
+    slice = scan_with_budget(10, 13, 2, 4ms, now, no_time);
+    expect(slice.next == 12 && slice.visited == 2 && !slice.yielded && calls == 2,
+        "the existing slot cap is honored even when work is cheap");
+    slice = scan_with_budget(13, 13, 8192, 4ms, now, no_time);
+    expect(slice.next == 13 && slice.visited == 0 && calls == 2, "an exhausted array is not re-read");
+    scan_with_budget(0, 13, 0, 4ms, now, no_time);
+    scan_with_budget(0, 0, 8192, 4ms, now, no_time);
+    scan_with_budget(0, -1, 8192, 4ms, now, no_time);
+    expect(calls == 2, "zero budget and absent arrays do not call the engine");
+    slice = scan_with_budget(100, 9, 2, 4ms, now, no_time);
+    expect(slice.next == 2 && slice.visited == 2, "a shrunken array restarts within its new bounds");
+    slice = scan_with_budget(-4, 9, 2, 4ms, now, no_time);
+    expect(slice.next == 2, "negative cursors fail back to the beginning");
+    slice = scan_with_budget(INT32_MAX - 2, INT32_MAX, UINT32_MAX, 4ms, now, no_time);
+    expect(slice.next == INT32_MAX && slice.visited == 2, "large slot caps cannot overflow the signed cursor");
+    slice = scan_with_budget(0, 4, 4, 4ms, now, [&](int32_t) { time += 20ms; });
+    expect(slice.next == 1 && slice.visited == 1 && slice.yielded,
+        "a slow individual adoption makes progress but does not start a second one");
+    slice = scan_with_budget(0, 4, 4, 0ms, now, no_time);
+    expect(slice.next == 1 && slice.yielded, "even an exhausted soft budget cannot starve the cursor");
+
+    // Model holes, already tracked entries, tombstones, rejected candidates and
+    // new objects: every path consumes time and resumes at a raw array index.
+    std::vector<int> counts(67);
+    int adopted{};
+    int32_t cursor{};
+    do {
+        slice = scan_with_budget(cursor, static_cast<int32_t>(counts.size()), 8192, 4ms, now, [&](int32_t i) {
+            ++counts[i];
+            time += 300us;
+            if (i % 5 != 4) { return; }
+            time += 1300us;
+            ++adopted;
+        });
+        expect(slice.next > cursor, "mixed rejected/skipped batches keep making progress");
+        if (slice.next <= cursor) { break; }
+        cursor = slice.next;
+    } while (cursor < static_cast<int32_t>(counts.size()));
+    expect(std::all_of(counts.begin(), counts.end(), [](int count) { return count == 1; }) && adopted == 13,
+        "sparse arrays neither skip candidates nor replay creation callbacks across timeouts");
 }
 
 void test_family_snapshot_accessors() {
@@ -2032,6 +2108,7 @@ void test_ktjl_hook_contracts() {
 #include "MonoRenderingTests.hpp"
 
 int main(int argc, char** argv) {
+    test_outerworlds2_tracking_policy();
     test_mono_rendering();
     test_halloween_render_targets();
     test_halloween_native_family();
