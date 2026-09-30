@@ -16,6 +16,7 @@
 #include <safetyhook.hpp>
 #include <utility/PointerHook.hpp>
 #include <utility/UObjectMetadataFilter.hpp>
+#include <sdk/ObjectIdentity.hpp>
 
 #include "Mod.hpp"
 
@@ -30,6 +31,7 @@ class USceneComponent;
 class UActorComponent;
 class AActor;
 class FArrayProperty;
+struct FUObjectArray;
 }
 
 class UObjectHook : public Mod {
@@ -49,6 +51,8 @@ public:
         std::shared_lock _{m_mutex};
         return exists_unsafe(object);
     }
+
+    bool is_live_tracked_object(sdk::UObjectBase* object) const;
 
     bool all_exist(sdk::UObjectBase* const* objects, size_t count) const {
         if (objects == nullptr || count == 0) {
@@ -159,6 +163,7 @@ public:
 
         // In-memory state
         sdk::AActor* adjustment_visualizer{nullptr};
+        sdk::object_liveness::Identity visualizer_identity{};
         bool adjusting{false};
 
         // Stalker 2 can miss UObject destruction notifications in lazy mode.
@@ -167,6 +172,7 @@ public:
         int32_t component_internal_index{-1};
         int32_t component_serial_number{-1};
         bool component_identity_valid{false};
+        sdk::object_liveness::Identity component_identity{};
     };
 
     std::shared_ptr<MotionControllerState> get_or_add_motion_controller_state(sdk::USceneComponent* component);
@@ -181,13 +187,22 @@ public:
     }
 
     void remove_motion_controller_state(sdk::USceneComponent* component) {
-        std::unique_lock _{m_mutex};
-        m_motion_controller_attached_components.erase(component);
+        std::shared_ptr<MotionControllerState> retired;
+        {
+            std::unique_lock _{m_mutex};
+            if (auto it = m_motion_controller_attached_components.find(component); it != m_motion_controller_attached_components.end()) {
+                retired = std::move(it->second);
+                m_motion_controller_attached_components.erase(it);
+            }
+        }
     }
 
     void remove_all_motion_controller_states() {
-        std::unique_lock _{m_mutex};
-        m_motion_controller_attached_components.clear();
+        decltype(m_motion_controller_attached_components) retired;
+        {
+            std::unique_lock _{m_mutex};
+            retired.swap(m_motion_controller_attached_components);
+        }
     }
 
 private:
@@ -259,19 +274,21 @@ private:
 
     static void* add_object(void* rcx, void* rdx, void* r8, void* r9, void* stack1, void* stack2, void* stack3, void* stack4);
     static void* destructor(sdk::UObjectBase* object, void* rdx, void* r8, void* r9);
+    static void townfall_free_object(safetyhook::Context& context);
+    void remove_tracked_object(sdk::UObjectBase* object, const sdk::object_liveness::Identity* identity = nullptr);
 
-    bool m_hooked{false};
-    bool m_fully_hooked{false};
-    bool m_wants_activate{false};
-    bool m_add_object_hooked{false};
+    std::atomic_bool m_hooked{false};
+    std::atomic_bool m_fully_hooked{false};
+    std::atomic_bool m_wants_activate{false};
+    std::atomic_bool m_add_object_hooked{false};
     std::atomic_bool m_townfall_allocator_valid{false};
     bool m_force_uobject_array_creation_scan{false};
     std::atomic_bool m_stalker2_uobject_full_scan_requested{false};
     float m_last_delta_time{1000.0f / 60.0f};
 
     struct DebugInfo {
-        uint64_t constructor_calls{0};
-        uint64_t destructor_calls{0};
+        std::atomic<uint64_t> constructor_calls{0};
+        std::atomic<uint64_t> destructor_calls{0};
     } m_debug{};
 
     glm::vec3 m_last_left_grip_location{};
@@ -285,6 +302,9 @@ private:
         std::wstring full_name{};
         sdk::UClass* uclass{nullptr};
         std::vector<sdk::UClass*> super_classes{};
+        sdk::object_liveness::Identity identity{};
+        uint64_t generation{};
+        bool is_default{};
     };
 
     std::unordered_set<sdk::UObjectBase*> m_objects{};
@@ -295,10 +315,30 @@ private:
 
     SafetyHookInline m_add_object_hook{};
     SafetyHookInline m_destructor_hook{};
+    std::vector<SafetyHookMid> m_townfall_free_hooks;
+    std::atomic<sdk::FUObjectArray*> m_townfall_object_array{};
 
-    std::chrono::steady_clock::time_point m_last_sort_time{};
-    std::vector<sdk::UClass*> m_sorted_classes{};
-    std::future<std::vector<sdk::UClass*>> m_sorting_task{};
+    struct BrowserRow {
+        sdk::UObjectBase* object{};
+        std::wstring name;
+        std::vector<std::wstring> class_names;
+        sdk::object_liveness::Identity identity{};
+        uint64_t generation{};
+        bool is_default{};
+        sdk::UClass* uclass{};
+    };
+    struct ClassSnapshot { uint64_t generation{}; std::vector<BrowserRow> rows; };
+    uint64_t m_next_object_generation{};
+    uint64_t m_class_catalogue_generation{};
+    std::unordered_map<sdk::UClass*, uint64_t> m_class_object_generations;
+    std::unordered_map<sdk::UClass*, std::vector<sdk::UClass*>> m_class_hierarchy;
+    ClassSnapshot m_sorted_classes;
+    std::future<ClassSnapshot> m_sorting_task;
+    struct ClassObjects { uint64_t generation{}; std::vector<BrowserRow> rows; };
+    std::unordered_map<sdk::UClass*, ClassObjects> m_browser_objects;
+    bool is_current_browser_row(const BrowserRow& row) const;
+    std::optional<BrowserRow> cached_browser_row(sdk::UObjectBase* object) const;
+
 
     std::unordered_map<sdk::UClass*, std::function<void (sdk::UObject*)>> m_on_creation_add_component_jobs{};
 
@@ -556,9 +596,17 @@ private:
     std::vector<std::shared_ptr<PersistentProperties>> m_persistent_properties{};
 
     void reload_persistent_states() {
-        m_persistent_states = deserialize_all_mc_states();
-        m_persistent_camera_state = deserialize_camera_state();
-        m_persistent_properties = deserialize_all_persistent_properties();
+        // A bad profile must not leave hook initialization half-published.
+        try {
+            auto states = deserialize_all_mc_states();
+            auto camera = deserialize_camera_state();
+            auto properties = deserialize_all_persistent_properties();
+            m_persistent_states = std::move(states);
+            m_persistent_camera_state = std::move(camera);
+            m_persistent_properties = std::move(properties);
+        } catch (...) {
+            SPDLOG_ERROR("[UObjectHook] Could not reload persistent states; retaining the previous profile state");
+        }
     }
 
     void reset_persistent_states() {
@@ -580,9 +628,9 @@ private:
     bool m_hide_default_classes{false};
 
     safetyhook::InlineHook m_process_event_hook{};
-    bool m_process_event_listening{true};
-    bool m_attempted_hook_process_event{false};
-    bool m_hooked_process_event{false};
+    std::atomic_bool m_process_event_listening{true};
+    std::atomic_bool m_attempted_hook_process_event{false};
+    std::atomic_bool m_hooked_process_event{false};
     void hook_process_event();
     static void* process_event_hook(sdk::UObject* obj, sdk::UFunction* func, void* params, void* r9);
 

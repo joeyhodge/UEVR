@@ -1349,7 +1349,7 @@ void IXRTrackingSystemHook::pre_initialize() {
 
     // GetSystemName
     m_xrtracking_vtable[0] = (uintptr_t)+[](void* this_ptr, sdk::FName* out) -> sdk::FName* {
-        static sdk::FName fake_name{};
+        static sdk::OwnedFName fake_name{};
         return &fake_name;
     };
 

@@ -1,3 +1,4 @@
+#include <sdk/ReflectedNameCall.hpp>
 #define NOMINMAX
 
 #include <fstream>
@@ -2953,16 +2954,10 @@ bool call_material_instance_set_scalar_parameter(sdk::UObject* material, std::ws
         return false;
     }
 
-    struct ScalarParameterParams {
-        sdk::FName parameter_name{};
-        float value{0.0f};
-    } params{};
-
-    params.parameter_name = sdk::FName{parameter_name, sdk::EFindName::Add};
-    params.value = value;
-
-    material->process_event(fn, &params);
-    return true;
+    sdk::ReflectedNameCall params{fn};
+    params.write_name(L"ParameterName", sdk::OwnedFName{parameter_name});
+    params.write(L"Value", value);
+    return params.invoke(material);
 } catch (...) {
     return false;
 }
