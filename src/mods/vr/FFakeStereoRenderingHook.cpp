@@ -3547,13 +3547,16 @@ sdk::UTexture* create_kh3_native_capture_target(
         *reinterpret_cast<uint32_t*>(address + 0x124) &= ~2u;
         using InitCustomFormatFn = void(__fastcall*)(sdk::UTexture*, uint32_t, uint32_t, uint8_t, bool);
         auto* texture = static_cast<sdk::UTexture*>(object);
-        reinterpret_cast<InitCustomFormatFn>(*factory)(texture, width, height, 2, false); // PF_B8G8R8A8, sRGB.
+        // The traced main-eye RTV is BGRA8 UNORM, not sRGB. Suppress the extra
+        // sRGB encode on this new owned target; the existing post-RHI gamma
+        // hook still matches the viewport for scene rendering.
+        reinterpret_cast<InitCustomFormatFn>(*factory)(texture, width, height, 2, true); // PF_B8G8R8A8, force linear.
         if (!kh3::initialized_capture_target(memory, address, width, height)) {
-            SPDLOG_ERROR_ONCE("[KH3][NativeFix] Capture-target initialization did not retain the requested format/extent");
+            SPDLOG_ERROR_ONCE("[KH3][NativeFix] Capture-target initialization did not retain the requested format/extent/linear encoding");
             return nullptr;
         }
 
-        SPDLOG_INFO("[KH3][NativeFix] Created validated BGRA8 capture target {:x} [{}x{}, one mip]", address, width, height);
+        SPDLOG_INFO("[KH3][NativeFix] Created validated linear BGRA8 capture target {:x} [{}x{}, one mip]", address, width, height);
         return texture;
     } catch (...) {
         SPDLOG_ERROR_ONCE("[KH3][NativeFix] Legacy capture-target creation raised an exception");
