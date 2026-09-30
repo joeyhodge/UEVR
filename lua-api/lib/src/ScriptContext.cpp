@@ -586,6 +586,11 @@ int ScriptContext::setup_bindings() {
         }
     );
 
+    // get_fname() returns borrowed engine storage, not an OwnedFName value.
+    m_lua.new_usertype<uevr::API::FName>("UEVR_FNameRef", sol::no_constructor,
+        "to_string", &uevr::API::FName::to_string
+    );
+
     m_lua.new_usertype<uevr::API::OwnedFName>("UEVR_FName",
         "to_string", &uevr::API::OwnedFName::to_string
     );

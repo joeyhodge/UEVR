@@ -1232,6 +1232,46 @@ set_target_properties(LuaVR PROPERTIES
 unset(CMKR_TARGET)
 unset(CMKR_SOURCES)
 
+# Target lua-fname-binding-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET lua-fname-binding-tests)
+	set(lua-fname-binding-tests_SOURCES "")
+
+	list(APPEND lua-fname-binding-tests_SOURCES
+		"tests/LuaFNameBindingTests.cpp"
+	)
+
+	list(APPEND lua-fname-binding-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${lua-fname-binding-tests_SOURCES})
+	add_executable(lua-fname-binding-tests)
+
+	if(lua-fname-binding-tests_SOURCES)
+		target_sources(lua-fname-binding-tests PRIVATE ${lua-fname-binding-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT lua-fname-binding-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lua-fname-binding-tests_SOURCES})
+
+	target_link_libraries(lua-fname-binding-tests PRIVATE
+		luavrlib
+	)
+
+	add_test(NAME lua-fname-bindings-8 COMMAND lua-fname-binding-tests 8)
+	add_test(NAME lua-fname-bindings-12 COMMAND lua-fname-binding-tests 12)
+	add_test(NAME lua-fname-bindings-legacy COMMAND lua-fname-binding-tests 8 legacy)
+	set_tests_properties(lua-fname-bindings-8 lua-fname-bindings-12 lua-fname-bindings-legacy PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target uevr
 set(CMKR_TARGET uevr)
 set(uevr_SOURCES "")
@@ -1334,7 +1374,10 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/CompatibilityPolicy.hpp"
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
+	"src/mods/vr/DuneFrameHandoff.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
+	"src/mods/vr/HalloweenNativeFix.hpp"
+	"src/mods/vr/HalloweenRenderTargets.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
 	"src/mods/vr/KtjLCloudHook.hpp"
@@ -1401,9 +1444,13 @@ list(APPEND uevr_SOURCES
 	"src/utility/Logging.hpp"
 	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/NascarHookCompatibility.hpp"
+	"src/utility/OpaqueStateRegistry.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/utility/UObjectAllocatorDiscovery.hpp"
+	"src/utility/UObjectArrayBrowser.hpp"
+	"src/utility/UObjectCandidateSnapshot.hpp"
+	"src/utility/UObjectMetadataFilter.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
 	"src/uevr-imgui/imgui_impl_dx12.h"
 	"src/uevr-imgui/imgui_impl_win32.h"

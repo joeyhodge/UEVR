@@ -193,7 +193,7 @@ set_tests_properties(build-metadata-tests PROPERTIES TIMEOUT 120)
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/DiagnosticSafetyTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
 include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
@@ -356,6 +356,18 @@ LIBRARY_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 ARCHIVE_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
+
+[target.lua-fname-binding-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/LuaFNameBindingTests.cpp"]
+link-libraries = ["luavrlib"]
+cmake-after = """
+add_test(NAME lua-fname-bindings-8 COMMAND lua-fname-binding-tests 8)
+add_test(NAME lua-fname-bindings-12 COMMAND lua-fname-binding-tests 12)
+add_test(NAME lua-fname-bindings-legacy COMMAND lua-fname-binding-tests 8 legacy)
+set_tests_properties(lua-fname-bindings-8 lua-fname-bindings-12 lua-fname-bindings-legacy PROPERTIES TIMEOUT 60)
+"""
 
 [template.ue4template]
 type = "shared"
