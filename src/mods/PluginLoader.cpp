@@ -1,3 +1,7 @@
+#include <sdk/DiscoveryMemory.hpp>
+#include <cmath>
+#include <utility/OpaqueStateRegistry.hpp>
+#include <sdk/threading/GameThreadWorker.hpp>
 #include <filesystem>
 
 #include <imgui.h>
@@ -734,6 +738,7 @@ namespace uobjecthook {
 
         unsigned int i = 0;
         for (auto&& obj : objects) {
+            if (!instance->is_live_tracked_object(obj)) { continue; }
             if (!allow_default) {
                 const auto c = obj->get_class();
 
@@ -772,11 +777,9 @@ namespace uobjecthook {
             return nullptr;
         }
 
-        if (allow_default) {
-            return (UEVR_UObjectHandle)*objects.begin();
-        }
-
         for (auto&& obj : objects) {
+            if (!instance->is_live_tracked_object(obj)) { continue; }
+            if (allow_default) { return (UEVR_UObjectHandle)obj; }
             const auto c = obj->get_class();
 
             if (c == nullptr || c->get_class_default_object() == obj) {
@@ -799,38 +802,59 @@ namespace uobjecthook {
         return get_first_object_by_class((UEVR_UClassHandle)c, allow_default);
     }
 
-    UEVR_UObjectHookMotionControllerStateHandle get_or_add_motion_controller_state(UEVR_UObjectHandle obj_handle) {
+    utility::OpaqueStateRegistry<UObjectHook::MotionControllerState, sdk::USceneComponent*> g_motion_handles;
+
+    bool live_component(sdk::USceneComponent* obj) try {
+        const auto identity = sdk::observe_uobject(obj);
+        return identity && sdk::is_current_object(identity->identity) &&
+            obj->is_a(sdk::USceneComponent::static_class());
+    } catch (...) { return false; }
+
+    template<class F> void update_motion_handle(UEVR_UObjectHookMotionControllerStateHandle handle, F update) try {
+        auto [state, component] = g_motion_handles.resolve(handle);
+        if (!state || !component) { return; }
+        auto apply = [state = std::move(state), component, update = std::move(update)] {
+            try {
+            const auto current = UObjectHook::get()->get_motion_controller_state(component);
+            if (!current || *current != state || !state->component_identity_valid ||
+                !sdk::is_current_object(state->component_identity) || !live_component(component)) { return; }
+            update(*state);
+            } catch (...) { /* A retired object must not unwind into the game-thread drain. */ }
+        };
+        if (GameThreadWorker::get().is_same_thread()) { apply(); }
+        else { GameThreadWorker::get().enqueue(std::move(apply)); }
+    } catch (...) { /* Never unwind a handle lookup/allocation through the plugin C ABI. */ }
+
+    UEVR_UObjectHookMotionControllerStateHandle get_or_add_motion_controller_state(UEVR_UObjectHandle obj_handle) try {
         const auto obj = (sdk::USceneComponent*)obj_handle;
-        if (obj == nullptr || !obj->is_a(sdk::USceneComponent::static_class())) {
+        if (!live_component(obj)) {
             return nullptr;
         }
 
         const auto result = UObjectHook::get()->get_or_add_motion_controller_state(obj);
 
-        return (UEVR_UObjectHookMotionControllerStateHandle)result.get();
-    }
+        return (UEVR_UObjectHookMotionControllerStateHandle)g_motion_handles.publish(result, obj);
+    } catch (...) { return nullptr; }
 
-    UEVR_UObjectHookMotionControllerStateHandle get_motion_controller_state(UEVR_UObjectHandle obj_handle) {
+    UEVR_UObjectHookMotionControllerStateHandle get_motion_controller_state(UEVR_UObjectHandle obj_handle) try {
         const auto obj = (sdk::USceneComponent*)obj_handle;
-        if (obj == nullptr || !obj->is_a(sdk::USceneComponent::static_class())) {
+        if (!live_component(obj)) {
             return nullptr;
         }
 
         const auto result = UObjectHook::get()->get_motion_controller_state(obj);
 
-        if (!result.has_value()) {
+        if (!result || !*result || !(*result)->component_identity_valid ||
+            !sdk::is_current_object((*result)->component_identity)) {
             return nullptr;
         }
 
-        return (UEVR_UObjectHookMotionControllerStateHandle)result->get();
-    }
+        return (UEVR_UObjectHookMotionControllerStateHandle)g_motion_handles.publish(*result, obj);
+    } catch (...) { return nullptr; }
 
     void remove_motion_controller_state(UEVR_UObjectHandle obj_handle) {
         const auto obj = (sdk::USceneComponent*)obj_handle;
-        if (obj == nullptr || !obj->is_a(sdk::USceneComponent::static_class())) {
-            return;
-        }
-
+        // Removing a stale key must not dereference the object it used to describe.
         UObjectHook::get()->remove_motion_controller_state(obj);
     }
 
@@ -848,48 +872,24 @@ namespace uobjecthook {
 
 namespace mc_state {
     void set_rotation_offset(UEVR_UObjectHookMotionControllerStateHandle state, const UEVR_Quaternionf* rotation) {
-        if (state == nullptr) {
-            return;
-        }
-
-        auto& s = *(UObjectHook::MotionControllerState*)state;
-        s.rotation_offset.x = rotation->x;
-        s.rotation_offset.y = rotation->y;
-        s.rotation_offset.z = rotation->z;
-        s.rotation_offset.w = rotation->w;
+        if (!rotation || !std::isfinite(rotation->x) || !std::isfinite(rotation->y) ||
+            !std::isfinite(rotation->z) || !std::isfinite(rotation->w)) { return; }
+        const auto value = *rotation;
+        update_motion_handle(state, [value](auto& s) {
+            s.rotation_offset = glm::quat{value.w, value.x, value.y, value.z};
+        });
     }
-
     void set_location_offset(UEVR_UObjectHookMotionControllerStateHandle state, const UEVR_Vector3f* location) {
-        if (state == nullptr) {
-            return;
-        }
-
-        auto& s = *(UObjectHook::MotionControllerState*)state;
-        s.location_offset.x = location->x;
-        s.location_offset.y = location->y;
-        s.location_offset.z = location->z;
+        if (!location || !std::isfinite(location->x) || !std::isfinite(location->y) || !std::isfinite(location->z)) { return; }
+        const auto value = *location;
+        update_motion_handle(state, [value](auto& s) { s.location_offset = glm::vec3{value.x, value.y, value.z}; });
     }
-
     void set_hand(UEVR_UObjectHookMotionControllerStateHandle state, unsigned int hand) {
-        if (state == nullptr) {
-            return;
-        }
-
-        if (hand > 2) {
-            return;
-        }
-
-        auto& s = *(UObjectHook::MotionControllerState*)state;
-        s.hand = (uint8_t)hand;
+        if (hand > 2) { return; }
+        update_motion_handle(state, [hand](auto& s) { s.hand = static_cast<uint8_t>(hand); });
     }
-
     void set_permanent(UEVR_UObjectHookMotionControllerStateHandle state, bool permanent) {
-        if (state == nullptr) {
-            return;
-        }
-
-        auto& s = *(UObjectHook::MotionControllerState*)state;
-        s.permanent = permanent;
+        update_motion_handle(state, [permanent](auto& s) { s.permanent = permanent; });
     }
 }
 }
@@ -1149,6 +1149,28 @@ UEVR_UGameViewportClientFunctions g_game_viewport_client_functions {
     },
 };
 
+UEVR_OwnedFNameFunctions g_owned_fname_functions {
+    []() -> unsigned int { return static_cast<unsigned int>(sdk::FName::runtime_size()); },
+    [](void* output, unsigned int capacity, const wchar_t* text, unsigned int type) -> bool {
+        try {
+            if (!output || !text || type > sdk::EFindName::Add || capacity < sdk::FName::runtime_size() ||
+                !sdk::FName::get_constructor()) { return false; }
+            const sdk::OwnedFName value{text, static_cast<sdk::EFindName>(type)};
+            return value.write_to(output, capacity);
+        } catch (...) { return false; }
+    },
+    [](void* output, unsigned int capacity, UEVR_FNameHandle source) -> bool {
+        try {
+            sdk::OwnedFName value;
+            if (!output || !source || capacity < sdk::FName::runtime_size() ||
+                !sdk::discovery::read_process(nullptr, reinterpret_cast<uintptr_t>(source), &value, sdk::FName::runtime_size())) {
+                return false;
+            }
+            return value.write_to(output, capacity);
+        } catch (...) { return false; }
+    }
+};
+
 UEVR_SDKData g_sdk_data {
     &g_sdk_functions,
     &g_sdk_callbacks,
@@ -1174,6 +1196,7 @@ UEVR_SDKData g_sdk_data {
     &g_fenum_property_functions,
     &g_ufield_functions,
     &g_game_viewport_client_functions,
+    &g_owned_fname_functions,
 };
 
 namespace uevr {
