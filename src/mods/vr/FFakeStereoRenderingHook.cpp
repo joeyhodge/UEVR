@@ -7150,27 +7150,38 @@ bool ue58_ui_validate_accessor(uintptr_t object, size_t slot, const std::array<u
         uevr::ue58_owned_ui::matches_accessor(code, expected);
 }
 
-std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> ue58_pooled_ui_validate_native_texture(
+bool ue58_dx12_has_proven_native_accessor(uintptr_t rhi) {
+    uintptr_t vtable{};
+    if (rhi == 0 || !safe_read_value(rhi, vtable) || vtable == 0) {
+        return false;
+    }
+    // Cache only immutable game code, never an instance or an inferred offset.
+    static std::atomic<uintptr_t> proven_native_vtable{};
+    if (proven_native_vtable.load(std::memory_order_acquire) != vtable) {
+        if (!ue58_ui_validate_accessor(rhi, 5, uevr::ue58_owned_ui::native_resource_accessor)) {
+            return false;
+        }
+        proven_native_vtable.store(vtable, std::memory_order_release);
+    }
+    return true;
+}
+
+std::optional<Microsoft::WRL::ComPtr<ID3D12Resource>> ue58_dx12_validate_native_texture(
     FRHITexture2D* texture, FRHITexture2D* scene, uint32_t width, uint32_t height)
 try {
     namespace layout = uevr::ue58_owned_ui;
     const auto rhi = reinterpret_cast<uintptr_t>(texture);
     const auto scene_rhi = reinterpret_cast<uintptr_t>(scene);
     uintptr_t vtable{}, scene_vtable{};
-    if (!uses_ue58_pooled_ui_owned_resource_path() || rhi == 0 || scene_rhi == 0 || rhi == scene_rhi ||
+    if (!is_validated_ue58_slate_ui_runtime() || !is_ue58_dx12_backend() ||
+        rhi == 0 || scene_rhi == 0 || rhi == scene_rhi ||
         !safe_read_value(rhi, vtable) || !safe_read_value(scene_rhi, scene_vtable) || vtable != scene_vtable)
     {
         return std::nullopt;
     }
 
-    // Only cache immutable code proof. No UESDK offset/vtable is learned from a
-    // partially initialized object, and no engine virtual function is invoked.
-    static std::atomic<uintptr_t> proven_native_vtable{};
-    if (proven_native_vtable.load(std::memory_order_acquire) != vtable) {
-        if (!ue58_ui_validate_accessor(rhi, 5, layout::native_resource_accessor)) {
-            return std::nullopt;
-        }
-        proven_native_vtable.store(vtable, std::memory_order_release);
+    if (!ue58_dx12_has_proven_native_accessor(rhi)) {
+        return std::nullopt;
     }
 
     uintptr_t d3d_resource{}, native_address{}, scene_resource{}, scene_native{};
@@ -7224,17 +7235,25 @@ try {
     return std::nullopt;
 }
 
-struct UE58OwnedUIResource {
+struct UE58OwnedTextureResource {
     uevr::ue58_owned_ui::Resource identity{};
     Microsoft::WRL::ComPtr<ID3D12Resource> native{};
 };
 
-std::optional<UE58OwnedUIResource> ue58_pooled_ui_validate_owned_resource(
-    sdk::UTexture* texture, FRHITexture2D* scene, uint32_t width, uint32_t height, const char*& reason)
+std::optional<UE58OwnedTextureResource> ue58_dx12_validate_owned_resource(
+    sdk::UTexture* texture, FRHITexture2D* scene, uint32_t width, uint32_t height, const char*& reason,
+    bool* recognized_layout = nullptr)
 try {
     namespace layout = uevr::ue58_owned_ui;
     reason = "owner or scene is unavailable";
-    if (!uses_ue58_pooled_ui_owned_resource_path() || texture == nullptr || scene == nullptr) {
+    if (!is_validated_ue58_slate_ui_runtime() || !is_ue58_dx12_backend() || texture == nullptr) {
+        return std::nullopt;
+    }
+    // Establish the RHI ABI from the live scene before claiming this owner.
+    // Custom RHIs/compiler shapes must keep their existing discovery path, not
+    // become permanently pending just because FTextureResource looks stock.
+    reason = "scene native-resource accessor is unavailable or unsupported";
+    if (!ue58_dx12_has_proven_native_accessor(reinterpret_cast<uintptr_t>(scene))) {
         return std::nullopt;
     }
     const auto owner = reinterpret_cast<uintptr_t>(texture);
@@ -7249,11 +7268,17 @@ try {
         return std::nullopt;
     }
     const auto read = [](uintptr_t address, auto& out) { return safe_read_value(address, out); };
-    const auto validate = [&](uintptr_t resource, uintptr_t rhi) {
-        uintptr_t rhi_vtable{}, scene_vtable{};
+    const auto validate_layout = [&](uintptr_t resource) {
         return is_readable_process_range(resource, layout::resource_size) &&
             ue58_ui_validate_accessor(resource, 6, layout::size_x_accessor) &&
-            ue58_ui_validate_accessor(resource + layout::render_target_offset, 2, layout::render_target_accessor) &&
+            ue58_ui_validate_accessor(resource + layout::render_target_offset, 2, layout::render_target_accessor);
+    };
+    if (recognized_layout != nullptr && layout::recognizes_resource(owner, size, read, validate_layout)) {
+        *recognized_layout = true;
+    }
+    const auto validate = [&](uintptr_t resource, uintptr_t rhi) {
+        uintptr_t rhi_vtable{}, scene_vtable{};
+        return validate_layout(resource) &&
             safe_read_value(rhi, rhi_vtable) &&
             safe_read_value(reinterpret_cast<uintptr_t>(scene), scene_vtable) && rhi_vtable == scene_vtable;
     };
@@ -7263,8 +7288,8 @@ try {
     if (!identity) {
         return std::nullopt;
     }
-    reason = "native UI texture, format or device is not ready";
-    auto native = ue58_pooled_ui_validate_native_texture(
+    reason = "native texture, format or device is not ready";
+    auto native = ue58_dx12_validate_native_texture(
         reinterpret_cast<FRHITexture2D*>(identity->rhi_texture), scene, width, height);
     if (!native) {
         return std::nullopt;
@@ -7275,7 +7300,7 @@ try {
         return std::nullopt;
     }
     reason = "ready";
-    return UE58OwnedUIResource{*identity, std::move(*native)};
+    return UE58OwnedTextureResource{*identity, std::move(*native)};
 } catch (...) {
     reason = "owned resource became unreadable during validation";
     return std::nullopt;
@@ -24862,10 +24887,28 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     }
 
     const auto rt = rtm->get_scene_capture_utexture();
-    const auto rtrsrc = rt != nullptr ? reinterpret_cast<sdk::FTextureRenderTargetResource*>(rt->get_resource()) : nullptr;
-    const auto rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
-    auto* const rt_texture_ref = rtfrt != nullptr ? rtfrt->get_render_target_texture() : nullptr;
-    auto* const scene_capture_rhi = rt_texture_ref != nullptr ? *rt_texture_ref : nullptr;
+    sdk::FTextureRenderTargetResource* rtrsrc{};
+    sdk::FRenderTarget* rtfrt{};
+    FRHITexture2D* scene_capture_rhi{};
+    if (native_capture_snapshot != nullptr && native_capture_snapshot->ue58_owned_resource) {
+        namespace layout = uevr::ue58_owned_ui;
+        const auto& identity = *native_capture_snapshot->ue58_owned_resource;
+        if (rt != nullptr && reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
+            native_capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            layout::resource_matches(reinterpret_cast<uintptr_t>(rt), identity,
+                native_capture_snapshot->width, native_capture_snapshot->height,
+                [](uintptr_t address, auto& out) { return safe_read_value(address, out); }))
+        {
+            rtrsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(identity.resource);
+            rtfrt = reinterpret_cast<sdk::FRenderTarget*>(identity.resource + layout::render_target_offset);
+            scene_capture_rhi = reinterpret_cast<FRHITexture2D*>(identity.rhi_texture);
+        }
+    } else {
+        rtrsrc = rt != nullptr ? reinterpret_cast<sdk::FTextureRenderTargetResource*>(rt->get_resource()) : nullptr;
+        rtfrt = rtrsrc != nullptr ? rtrsrc->as_render_target() : nullptr;
+        auto* const rt_texture_ref = rtfrt != nullptr ? rtfrt->get_render_target_texture() : nullptr;
+        scene_capture_rhi = rt_texture_ref != nullptr ? *rt_texture_ref : nullptr;
+    }
     const auto scene_capture_native = avowed_try_get_native_resource(scene_capture_rhi);
     const bool capture_transaction_valid =
         native_capture_snapshot != nullptr && rt != nullptr && rtfrt != nullptr &&
@@ -38257,7 +38300,9 @@ uint64_t VRRenderTargetManager_Base::invalidate_scene_capture_generation(const c
 bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
     sdk::UTexture* owner_texture,
     FRHITexture2D* rhi_texture,
-    uint64_t generation)
+    uint64_t generation,
+    const uevr::ue58_owned_ui::Resource* ue58_owned_resource,
+    IUnknown* validated_native)
 {
     if (owner_texture == nullptr || rhi_texture == nullptr ||
         generation == 0 || generation != scene_capture_generation.load(std::memory_order_acquire))
@@ -38265,7 +38310,13 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
         return false;
     }
 
-    auto* native = reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource());
+    if (ue58_owned_resource != nullptr &&
+        (validated_native == nullptr || ue58_owned_resource->rhi_texture != reinterpret_cast<uintptr_t>(rhi_texture)))
+    {
+        return false;
+    }
+    auto* native = ue58_owned_resource != nullptr
+        ? validated_native : reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource());
     if (native == nullptr) {
         return false;
     }
@@ -38344,6 +38395,15 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
     snapshot->generation = generation;
     snapshot->width = expected_width;
     snapshot->height = expected_height;
+    if (ue58_owned_resource != nullptr) {
+        if (!uevr::ue58_owned_ui::resource_matches(reinterpret_cast<uintptr_t>(owner_texture),
+                *ue58_owned_resource, expected_width, expected_height,
+                [](uintptr_t address, auto& out) { return safe_read_value(address, out); }))
+        {
+            return false;
+        }
+        snapshot->ue58_owned_resource = *ue58_owned_resource;
+    }
 
     if (generation != scene_capture_generation.load(std::memory_order_acquire)) {
         return false;
@@ -38519,6 +38579,7 @@ struct VRRenderTargetManager_Base::UE58UITextureOwner {
     inline static std::atomic_bool servicing_enabled{};
     sdk::UObjectReference<sdk::UTexture> texture{nullptr};
     uevr::ue58_owned_ui::StableResource stability{};
+    bool recognized_stock_layout{};
     bool rooted{};
     UE58UITextureOwner* next_retired{};
 
@@ -38668,11 +38729,14 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
             return;
         }
         FRHITexture2D* ready_texture{};
-        std::optional<UE58OwnedUIResource> validated{};
-        if (uses_ue58_pooled_ui_owned_resource_path()) {
-            const char* reason{};
-            validated = ue58_pooled_ui_validate_owned_resource(
-                owner.texture.get(), get_render_target(), ticket->width, ticket->height, reason);
+        std::optional<UE58OwnedTextureResource> validated{};
+        const char* reason{};
+        if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+            validated = ue58_dx12_validate_owned_resource(
+                owner.texture.get(), get_render_target(), ticket->width, ticket->height, reason,
+                &owner.recognized_stock_layout);
+        }
+        if (uses_ue58_pooled_ui_owned_resource_path() || owner.recognized_stock_layout || validated) {
             if (!validated) {
                 owner.stability.observe(std::nullopt);
                 retry(reason);
@@ -38686,8 +38750,7 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
             }
             ready_texture = reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture);
         } else {
-            // Retain the cache-aware discovery path used by existing working
-            // UE5.8 DX12 sessions; this patch changes scheduling, not layouts.
+            // Unrecognized custom layouts retain their existing discovery path.
             if (!sdk::UTexture::update_render_resource_offset_texture2d(owner.texture)) {
                 retry("UTexture resource offset is not ready");
                 return;
@@ -38723,6 +38786,10 @@ void VRRenderTargetManager_Base::service_ue58_ui_initialization(uevr::ue58_ui::S
         {
             SPDLOG_INFO("[UE5.8][SlateUI][Init] Published UI generation {} [{}x{}] via {}",
                 ticket->generation, ticket->width, ticket->height, uevr::ue58_ui::to_string(source));
+            if (validated) {
+                SPDLOG_INFO("[UE5.8][SlateUI][Init] Validated owned resource at owner+0x{:x}, "
+                    "FRenderTarget+0x40; no global texture offset updates", validated->identity.private_resource_offset);
+            }
         }
     } catch (...) {
         retry("UI resource validation raised an exception");
@@ -39761,7 +39828,7 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                             }
                         } else if (uses_ue58_pooled_ui_owned_resource_path()) {
                             const char* reason{};
-                            const auto validated = ue58_pooled_ui_validate_owned_resource(
+                            const auto validated = ue58_dx12_validate_owned_resource(
                                 tgt.get(), this->get_render_target(), width, height, reason);
                             if (!validated) {
                                 stability.observe(std::nullopt);
@@ -39955,7 +40022,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     // republish the UI target; a miss preserves the original Slate input.
     if (uses_ue58_pooled_ui_owned_resource_path()) {
         if (existing_target != nullptr) {
-            if (ue58_pooled_ui_validate_native_texture(
+            if (ue58_dx12_validate_native_texture(
                     existing_target, get_render_target(), dedicated_ui_width, dedicated_ui_height))
             {
                 return;
@@ -39965,7 +40032,7 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
         }
         if (dedicated_ui_texture != nullptr && dedicated_ui_texture.valid()) {
             const char* reason{};
-            const auto validated = ue58_pooled_ui_validate_owned_resource(
+            const auto validated = ue58_dx12_validate_owned_resource(
                 dedicated_ui_texture.get(), get_render_target(), dedicated_ui_width, dedicated_ui_height, reason);
             if (validated) {
                 set_dedicated_ui_target(reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture),
@@ -40637,7 +40704,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     };
 
     RenderThreadWorker::ConditionalJobFunc render_thread_conditional_task =
-        [this, tgt, generation, fail_generation]() -> bool {
+        [this, tgt, generation, fail_generation, recognized_stock_layout = false,
+            stability = uevr::ue58_owned_ui::StableResource{}]() mutable -> bool {
         if (generation != scene_capture_generation.load(std::memory_order_acquire)) {
             return true;
         }
@@ -40652,6 +40720,27 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             sdk::FTextureRenderTargetResource* rsrc{};
             sdk::FRenderTarget* frt{};
             FRHITexture2D* rhi_texture{};
+            std::optional<UE58OwnedTextureResource> ue58_owned{};
+            if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
+                const char* reason{};
+                ue58_owned = ue58_dx12_validate_owned_resource(tgt.get(), get_render_target(),
+                    static_cast<uint32_t>(VR::get()->get_hmd_width()),
+                    static_cast<uint32_t>(VR::get()->get_hmd_height()), reason, &recognized_stock_layout);
+                if (recognized_stock_layout || ue58_owned) {
+                    recognized_stock_layout = true;
+                    if (!ue58_owned) {
+                        stability.observe(std::nullopt);
+                        SPDLOG_INFO_EVERY_N_SEC(2,
+                            "[UE5.8][NativeStereoFix] Waiting for initialized owned capture resource: {}", reason);
+                        return false;
+                    }
+                    if (!stability.observe(uevr::ue58_owned_ui::Observation{
+                            generation, ue58_owned->identity, reinterpret_cast<uintptr_t>(ue58_owned->native.Get())}))
+                    {
+                        return false;
+                    }
+                }
+            }
 
             const bool use_stalker2_capture_layout =
                 stalker2_uses_validated_ue55_native_fix_capture_layout();
@@ -40660,7 +40749,15 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             const bool use_storm_escape_capture_layout =
                 storm_escape_uses_validated_ue561_native_fix_capture_layout();
 
-            if (use_stalker2_capture_layout || use_bodycam_capture_layout || use_storm_escape_capture_layout) {
+            if (ue58_owned) {
+                // The complete owned chain, not Slate's ABI or a title name,
+                // selects this path. Keep it local to this capture generation.
+                rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(ue58_owned->identity.resource);
+                frt = reinterpret_cast<sdk::FRenderTarget*>(
+                    ue58_owned->identity.resource + uevr::ue58_owned_ui::render_target_offset);
+                rhi_texture = reinterpret_cast<FRHITexture2D*>(ue58_owned->identity.rhi_texture);
+                sdk::FRenderTarget::update_offsets(frt);
+            } else if (use_stalker2_capture_layout || use_bodycam_capture_layout || use_storm_escape_capture_layout) {
                 // These targets can exist before the engine initializes their
                 // nested render resources. Never let the broad pointer scan run
                 // while the stock chain is merely pending.
@@ -40778,6 +40875,19 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
                 }
             }
 
+            // If publication is deferred, restore the stock table so the next
+            // observation can prove its code again. Successful captures retain
+            // the established viewport-matching gamma hook.
+            uintptr_t ue58_original_table{};
+            if (ue58_owned && !safe_read_value(reinterpret_cast<uintptr_t>(frt), ue58_original_table)) {
+                return false;
+            }
+            bool keep_ue58_gamma_hook = false;
+            utility::ScopeGuard restore_pending_ue58_table{[&] {
+                if (ue58_owned && !keep_ue58_gamma_hook) {
+                    *reinterpret_cast<uintptr_t*>(frt) = ue58_original_table;
+                }
+            }};
             hook_frt(frt);
 
             // The RHI worker can be starved on newer parallel-RHI paths. Publish
@@ -40786,13 +40896,22 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             if (!publish_scene_capture_target_snapshot(
                     reinterpret_cast<sdk::UTexture*>(tgt.get()),
                     rhi_texture,
-                    generation))
+                    generation,
+                    ue58_owned ? &ue58_owned->identity : nullptr,
+                    ue58_owned ? ue58_owned->native.Get() : nullptr))
             {
                 SPDLOG_INFO_EVERY_N_SEC(
                     2,
                     "[NativeStereoFix] Waiting for scene-capture generation {} native resource publication",
                     generation);
                 return false;
+            }
+            keep_ue58_gamma_hook = true;
+            if (ue58_owned) {
+                SPDLOG_INFO(
+                    "[UE5.8][NativeStereoFix] Validated capture generation {}: owner+0x{:x}, "
+                    "FRenderTarget+0x40, RHI={:x}; no global texture offset updates",
+                    generation, ue58_owned->identity.private_resource_offset, ue58_owned->identity.rhi_texture);
             }
 
             RHIThreadWorker::get().enqueue([this, tgt, generation]() {

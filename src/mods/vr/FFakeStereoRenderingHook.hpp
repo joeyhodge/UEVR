@@ -32,6 +32,7 @@
 #include "IXRTrackingSystemHook.hpp"
 #include "CompatibilityPolicy.hpp"
 #include "UE58UIInitialization.hpp"
+#include "UE58OwnedUITexture.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "UE57SlateSymbols.hpp"
 #include "utility/NascarHookCompatibility.hpp"
@@ -72,6 +73,7 @@ public:
         uint64_t generation{};
         uint32_t width{};
         uint32_t height{};
+        std::optional<uevr::ue58_owned_ui::Resource> ue58_owned_resource{};
     };
 
     struct Everspace2D3D12SceneTargetSnapshot {
@@ -347,7 +349,9 @@ protected:
     bool publish_scene_capture_target_snapshot(
         sdk::UTexture* owner_texture,
         FRHITexture2D* rhi_texture,
-        uint64_t generation);
+        uint64_t generation,
+        const uevr::ue58_owned_ui::Resource* ue58_owned_resource = nullptr,
+        IUnknown* validated_native = nullptr);
     std::shared_ptr<const SceneCaptureTargetSnapshot> get_preservable_scene_capture_for_same_size_reallocation(
         uint32_t width,
         uint32_t height) const;
