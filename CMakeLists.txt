@@ -518,6 +518,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND diagnostic-safety-tests_SOURCES
 		"tests/DiagnosticSafetyTests.cpp"
+		"tests/UObjectBrowserCostTests.cpp"
 		"tests/CadenceReplayTests.cpp"
 		"tests/LoggingDisabledTests.cpp"
 		"tests/CachedCVarReadTests.cpp"
