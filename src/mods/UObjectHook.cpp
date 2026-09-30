@@ -14,6 +14,7 @@
 #include <utility/UObjectMetadataFilter.hpp>
 #include <utility/UObjectArrayBrowser.hpp>
 #include <utility/UObjectCandidateSnapshot.hpp>
+#include <utility/UObjectScanBudget.hpp>
 
 #include <sdk/UObjectBase.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
@@ -71,6 +72,12 @@ constexpr size_t STALKER2_CLASS_BROWSER_CLASS_CAP = 256;
 constexpr size_t STALKER2_CLASS_BROWSER_OBJECT_CAP = 128;
 
 bool is_uobject_array_member(sdk::UObjectBase* object);
+
+bool is_outerworlds2_uobjecthook() {
+    static const bool target = uevr::games::is_outerworlds2_executable_path(
+        utility::get_module_pathw(utility::get_executable()).value_or(L""));
+    return target;
+}
 
 bool is_ktjl_uobjecthook() {
     static const bool target = sdk::ktjl::matches_executable(
@@ -956,8 +963,13 @@ void UObjectHook::hook() {
 
     // Townfall inlines AddObject in its normal constructor. Both constructor
     // and deferred registration call the same FUObjectArray allocator instead.
-    auto add_object_fn = is_townfall_ue56_uobjecthook() ? find_townfall_object_allocator() :
-        sdk::UObjectBase::get_add_object();
+    // OW2's backup resolver can select an unrelated helper. Do not discover or
+    // hook it; keep destructor tracking and the validated object-array fallback.
+    auto add_object_fn = is_outerworlds2_uobjecthook() ? std::optional<uintptr_t>{} :
+        is_townfall_ue56_uobjecthook() ? find_townfall_object_allocator() : sdk::UObjectBase::get_add_object();
+    if (is_outerworlds2_uobjecthook()) {
+        SPDLOG_INFO("[OW2][UObjectHook] Skipping AddObject discovery; using validated array tracking with a 4 ms soft tick budget");
+    }
     if (is_townfall_ue56_uobjecthook() && !add_object_fn) {
         SPDLOG_WARN("[Townfall][UObjectHook] Allocator evidence changed; using existing array-tracking fallback");
     }
@@ -969,7 +981,7 @@ void UObjectHook::hook() {
         add_object_fn.reset();
     }
 
-    if (!add_object_fn) {
+    if (!add_object_fn && !is_outerworlds2_uobjecthook()) {
         SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
 
@@ -1594,6 +1606,33 @@ void UObjectHook::ui_handle_reachable_object(sdk::UObject* parent, sdk::UObject*
     ui_handle_object(child);
 }
 
+bool UObjectHook::try_track_outerworlds2_object(sdk::UObjectBase* object, bool run_creation_jobs) try {
+    const auto observed = sdk::observe_uobject(object);
+    if (!observed || !sdk::is_current_object(observed->identity)) { return false; }
+
+    std::optional<sdk::object_liveness::Identity> tracked;
+    {
+        std::shared_lock lock{m_mutex};
+        if (const auto it = m_meta_objects.find(object); it != m_meta_objects.end() && it->second) {
+            tracked = it->second->identity;
+        }
+    }
+    if (tracked) {
+        if (sdk::object_liveness::same_registration(*tracked, observed->identity)) {
+            return is_live_tracked_object(object);
+        }
+        // Retire only the old registration, never a replacement published by
+        // another callback. Pointer equality alone cannot prove membership.
+        remove_tracked_object(object, &*tracked);
+    }
+    if (!is_safe_uobject_candidate(*this, object, true)) { return false; }
+    add_new_object(object, run_creation_jobs, true);
+    return sdk::is_current_object(observed->identity) && is_live_tracked_object(object);
+} catch (...) {
+    SPDLOG_WARNING_EVERY_N_SEC(5, "[OW2][UObjectHook] Refused object adoption after an exception");
+    return false;
+}
+
 bool UObjectHook::try_track_object(
     sdk::UObjectBase* object,
     std::string_view context,
@@ -1601,6 +1640,10 @@ bool UObjectHook::try_track_object(
     bool run_creation_jobs) {
     if (object == nullptr) {
         return false;
+    }
+
+    if (is_outerworlds2_uobjecthook()) {
+        return try_track_outerworlds2_object(object, run_creation_jobs);
     }
 
     if (exists(object)) {
@@ -1653,6 +1696,17 @@ bool UObjectHook::exists_or_track_plugin_object(sdk::UObjectBase* object) {
 }
 
 void UObjectHook::track_plugin_created_component(sdk::UActorComponent* component) {
+    if (is_outerworlds2_uobjecthook()) {
+        if (!component || !m_fully_hooked) { return; }
+        const auto observed = sdk::observe_uobject(component);
+        if (!observed || !try_track_outerworlds2_object(component, false) ||
+            !sdk::is_current_object(observed->identity)) { return; }
+        if (const auto outer = component->get_outer()) {
+            try_track_outerworlds2_object(outer, false);
+        }
+        return;
+    }
+
     if (!is_stalker2_uobjecthook_guard_enabled() || component == nullptr || !m_fully_hooked) {
         return;
     }
@@ -1687,6 +1741,13 @@ std::shared_ptr<UObjectHook::MotionControllerState> UObjectHook::get_or_add_moti
             if (const auto outer = component->get_outer(); outer != nullptr) {
                 try_track_object(outer, "motion-controller API component outer", true, false);
             }
+        }
+    } else if (is_outerworlds2_uobjecthook() && m_fully_hooked) {
+        // A newly equipped mesh must not wait for the background sweep. No
+        // creation callbacks are replayed for an API-owned component or outer.
+        track_plugin_created_component(component);
+        if (!sdk::is_current_object(component_identity->identity) || !is_live_tracked_object(component)) {
+            return nullptr;
         }
     }
 
@@ -2029,6 +2090,59 @@ uint32_t UObjectHook::get_uobject_array_scan_budget(sdk::UGameEngine* engine) {
     return budget;
 }
 
+void UObjectHook::refresh_outerworlds2_objects(sdk::FUObjectArray* array, int32_t object_count, uint32_t max_objects) {
+    const auto began = std::chrono::steady_clock::now();
+    prune_destroyed_object_tombstones(began);
+    uint32_t added{};
+    uint32_t rejected{};
+    uint32_t tombstone_skips{};
+
+    const auto slice = utility::uobject::scan_with_budget(m_uobject_array_scan_cursor, object_count, max_objects,
+        std::chrono::milliseconds{4}, [] { return std::chrono::steady_clock::now(); }, [&](int32_t index) {
+        try {
+            const auto item = array->get_object(index);
+            const auto object = item ? item->get_object() : nullptr;
+            if (!object) { return; }
+            const auto serial = item->get_serial_number();
+            {
+                std::shared_lock lock{m_mutex};
+                if (const auto it = m_meta_objects.find(object); it != m_meta_objects.end() && it->second &&
+                    it->second->identity.index == index &&
+                    (!it->second->identity.has_serial() || it->second->identity.serial == serial)) { return; }
+                if (const auto it = m_destroyed_object_tombstones.find(object);
+                    it != m_destroyed_object_tombstones.end() && it->second.index == index &&
+                    it->second.serial == serial && began - it->second.time <= std::chrono::seconds(30)) {
+                    ++tombstone_skips;
+                    return;
+                }
+            }
+            if (try_track_outerworlds2_object(object, true)) { ++added; }
+            else { ++rejected; }
+        } catch (...) {
+            // A slot may retire while being inspected. Do not strand the scan
+            // or unwind through the game's tick; retry it on the next sweep.
+            ++rejected;
+        }
+    });
+
+    m_uobject_array_scan_cursor = slice.next;
+    ++m_uobject_array_scan_stats.ticks;
+    m_uobject_array_scan_stats.scanned += slice.visited;
+    m_uobject_array_scan_stats.added += added;
+    m_uobject_array_scan_stats.rejected += rejected;
+    m_uobject_array_scan_stats.tombstone_skips += tombstone_skips;
+    m_uobject_array_scan_stats.time_budget_cuts += slice.yielded ? 1 : 0;
+    m_uobject_array_scan_stats.last_scan_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    if (slice.next >= object_count) { m_uobject_array_full_sweep_active = false; }
+    if (added > 0) {
+        SPDLOG_INFO_EVERY_N_SEC(2,
+            "[OW2][UObjectHook] Incrementally tracked {} objects (cursor {}/{}, {:.2f} ms, budget yields {})",
+            added, slice.next, object_count, m_uobject_array_scan_stats.last_scan_ms,
+            m_uobject_array_scan_stats.time_budget_cuts);
+    }
+}
+
 void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
     if ((!should_incrementally_refresh_uobject_array() && !m_force_uobject_array_creation_scan) || max_objects == 0) {
         return;
@@ -2048,6 +2162,11 @@ void UObjectHook::refresh_new_objects_from_uobject_array(uint32_t max_objects) {
 
     if (m_uobject_array_scan_cursor < 0 || m_uobject_array_scan_cursor > object_count) {
         m_uobject_array_scan_cursor = 0;
+    }
+
+    if (is_outerworlds2_uobjecthook()) {
+        refresh_outerworlds2_objects(object_array, object_count, max_objects);
+        return;
     }
 
     const auto now = std::chrono::steady_clock::now();
@@ -4435,6 +4554,10 @@ void UObjectHook::draw_main() {
             "Persistent misses: %llu tombstones=%zu",
             m_uobject_array_scan_stats.persistent_tracking_misses,
             m_destroyed_object_tombstones.size());
+        if (is_outerworlds2_uobjecthook()) {
+            ImGui::Text("OW2 scan: %.2f ms last slice, %llu soft-budget yields",
+                m_uobject_array_scan_stats.last_scan_ms, m_uobject_array_scan_stats.time_budget_cuts);
+        }
         ImGui::Text(
             "UI nested resolver: attempts=%llu adopted=%llu refused=%llu cached_refusals=%llu",
             m_ui_nested_resolve_stats.attempts,

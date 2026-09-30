@@ -259,6 +259,8 @@ private:
     std::shared_ptr<PersistentCameraState> deserialize_camera_state();
     void update_persistent_states();
     void refresh_new_objects_from_uobject_array(uint32_t max_objects = 4096);
+    void refresh_outerworlds2_objects(sdk::FUObjectArray* array, int32_t object_count, uint32_t max_objects);
+    bool try_track_outerworlds2_object(sdk::UObjectBase* object, bool run_creation_jobs);
     uint32_t get_uobject_array_scan_budget(sdk::UGameEngine* engine);
     void mark_persistent_tracking_miss();
     void prune_destroyed_object_tombstones(std::chrono::steady_clock::time_point now);
@@ -360,6 +362,8 @@ private:
         uint64_t tombstone_skips{};
         uint64_t full_sweeps{};
         uint64_t persistent_tracking_misses{};
+        uint64_t time_budget_cuts{};
+        double last_scan_ms{};
         uint32_t last_budget{};
     } m_uobject_array_scan_stats{};
 
