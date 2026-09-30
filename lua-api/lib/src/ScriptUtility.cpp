@@ -141,7 +141,7 @@ sol::object prop_to_object(sol::this_state s, void* self, uevr::API::FProperty* 
         return sol::make_object(s, sol::lua_nil);
     }
     case L"NameProperty"_fnv:
-        return sol::make_object(s, *(uevr::API::FName*)((uintptr_t)self + offset));
+        return sol::make_object(s, uevr::API::OwnedFName{*(uevr::API::FName*)((uintptr_t)self + offset)});
     case L"StrProperty"_fnv:
     {
         using FString = uevr::API::TArray<wchar_t>;
@@ -404,21 +404,24 @@ void set_property(sol::this_state s, void* self, uevr::API::UStruct* owner_c, ue
 
         throw sol::error("Could not set enum property");
     }
-    case L"NameProperty"_fnv:
-        if (value.is<std::string>()) {
-            const auto arg = ::utility::widen(value.as<std::string>());
-            *(uevr::API::FName*)((uintptr_t)self + offset) = uevr::API::FName{arg};
-        } else if (value.is<std::wstring>()) {
-            const auto arg = value.as<std::wstring>();
-            *(uevr::API::FName*)((uintptr_t)self + offset) = uevr::API::FName{arg};
-        } else if (value.is<uevr::API::FName>()) {
-            const auto arg = value.as<uevr::API::FName>();
-            *(uevr::API::FName*)((uintptr_t)self + offset) = arg;
-        } else {
+    case L"NameProperty"_fnv: {
+        const auto name = [&]() -> uevr::API::OwnedFName {
+            if (value.is<std::string>()) { return uevr::API::OwnedFName{::utility::widen(value.as<std::string>())}; }
+            if (value.is<std::wstring>()) { return uevr::API::OwnedFName{value.as<std::wstring>()}; }
+            if (value.is<uevr::API::OwnedFName>()) { return value.as<uevr::API::OwnedFName>(); }
+            if (value.is<uevr::API::FName>()) {
+                if (uevr::API::OwnedFName::runtime_size() != sizeof(uevr::API::FName)) {
+                    throw sol::error("Use an owned FName or string for a case-preserving NameProperty");
+                }
+                return uevr::API::OwnedFName{value.as<uevr::API::FName>()};
+            }
             throw sol::error("Invalid argument type for FName");
+        }();
+        if (!name.write_to(reinterpret_cast<void*>((uintptr_t)self + offset), uevr::API::OwnedFName::runtime_size())) {
+            throw sol::error("Could not write NameProperty");
         }
-
         return;
+    }
     case L"InterfaceProperty"_fnv:
     case L"ObjectProperty"_fnv:
         *(uevr::API::UObject**)((uintptr_t)self + offset) = value.as<uevr::API::UObject*>();

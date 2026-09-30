@@ -36,7 +36,7 @@ SOFTWARE.
 #define UEVR_OUT
 
 #define UEVR_PLUGIN_VERSION_MAJOR 2
-#define UEVR_PLUGIN_VERSION_MINOR 39
+#define UEVR_PLUGIN_VERSION_MINOR 40
 #define UEVR_PLUGIN_VERSION_PATCH 0
 
 #define UEVR_RENDERER_D3D11 0
@@ -468,6 +468,15 @@ typedef struct {
     void (*exec_ex)(UEVR_UGameViewportClientHandle vp, UEVR_UObjectHandle world, const wchar_t* command, void* output_device);
 } UEVR_UGameViewportClientFunctions;
 
+/* SDK 2.40+: optional size-aware owned FName calls. The legacy FName table
+   and its eight-byte C++ wrapper are unchanged. Never read this extension on
+   a backend older than 2.40. */
+typedef struct {
+    unsigned int (*get_size)();
+    bool (*construct)(void* destination, unsigned int capacity, const wchar_t* text, unsigned int find_type);
+    bool (*copy)(void* destination, unsigned int capacity, UEVR_FNameHandle source);
+} UEVR_OwnedFNameFunctions;
+
 typedef struct {
     const UEVR_SDKFunctions* functions;
     const UEVR_SDKCallbacks* callbacks;
@@ -493,6 +502,7 @@ typedef struct {
     const UEVR_FEnumPropertyFunctions* fenumproperty;
     const UEVR_UFieldFunctions* ufield;
     const UEVR_UGameViewportClientFunctions* game_viewport_client;
+    const UEVR_OwnedFNameFunctions* owned_fname; /* since 2.40 */
 } UEVR_SDKData;
 
 DECLARE_UEVR_HANDLE(UEVR_IVRSystem);
