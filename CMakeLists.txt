@@ -1178,6 +1178,7 @@ list(APPEND uevr_SOURCES
 	"src/utility/UObjectArrayBrowser.hpp"
 	"src/utility/UObjectCandidateSnapshot.hpp"
 	"src/utility/UObjectMetadataFilter.hpp"
+	"src/utility/UObjectScanBudget.hpp"
 	"src/uevr-imgui/imgui_impl_dx11.h"
 	"src/uevr-imgui/imgui_impl_dx12.h"
 	"src/uevr-imgui/imgui_impl_win32.h"

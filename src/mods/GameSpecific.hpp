@@ -84,6 +84,15 @@ inline bool is_avowed_executable_path(std::wstring_view path) {
            lowered.find(L"avowed-wingdk-shipping") != std::wstring::npos;
 }
 
+inline bool is_outerworlds2_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    return filename == L"theouterworlds2-win64-shipping.exe" ||
+        filename == L"theouterworlds2-wingdk-shipping.exe";
+}
+
 inline bool is_stalker2_executable_path(std::wstring_view path) {
     const auto lowered = lowercase_path(path);
     return lowered.find(L"stalker2-win64-shipping") != std::wstring::npos;
