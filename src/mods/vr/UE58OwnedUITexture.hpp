@@ -53,15 +53,65 @@ struct Resource {
     uintptr_t private_resource_offset{};
     uintptr_t resource{};
     uintptr_t rhi_texture{};
+    size_t owner_size{};
     bool operator==(const Resource&) const = default;
 };
+
+// Recognize the owned resource before InitRHI finishes. Once recognized, a
+// missing RT mirror/RHI/device is a retry, not permission to run a broad scan.
+template <typename Read, typename ValidateLayout>
+bool recognizes_resource(uintptr_t owner, size_t owner_size, const Read& read, const ValidateLayout& validate_layout) {
+    if (owner == 0 || owner_size < 2 * sizeof(uintptr_t) || owner_size > max_owner_size ||
+        owner > (std::numeric_limits<uintptr_t>::max)() - owner_size)
+    {
+        return false;
+    }
+    for (uintptr_t offset = sizeof(uintptr_t); offset + sizeof(uintptr_t) <= owner_size; offset += sizeof(uintptr_t)) {
+        uintptr_t resource{}, actual_owner{};
+        if (!read(owner + offset, resource)) {
+            return false;
+        }
+        if (resource != 0 && (resource % alignof(uintptr_t)) == 0 &&
+            resource <= (std::numeric_limits<uintptr_t>::max)() - resource_size &&
+            read(resource + owner_offset, actual_owner) && actual_owner == owner && validate_layout(resource))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Bounded revalidation of a previously proved chain; consumers never rescan or
+// consult process-global UTexture/FRenderTarget offsets on this path.
+template <typename Read>
+bool resource_matches(uintptr_t owner, const Resource& expected, uint32_t width, uint32_t height, const Read& read) {
+    const auto offset = expected.private_resource_offset;
+    if (owner == 0 || expected.owner_size < 2 * sizeof(uintptr_t) || expected.owner_size > max_owner_size ||
+        owner > (std::numeric_limits<uintptr_t>::max)() - expected.owner_size ||
+        offset < sizeof(uintptr_t) || offset > expected.owner_size - 2 * sizeof(uintptr_t) ||
+        (offset % alignof(uintptr_t)) != 0 || expected.resource == 0 || expected.rhi_texture == 0 ||
+        expected.resource > (std::numeric_limits<uintptr_t>::max)() - resource_size ||
+        width == 0 || height == 0 || width > 65536 || height > 65536)
+    {
+        return false;
+    }
+    uintptr_t resource{}, rt_resource{}, actual_owner{}, rhi{}, target_rhi{};
+    uint32_t actual_width{}, actual_height{};
+    return read(owner + offset, resource) && resource == expected.resource &&
+        read(owner + offset + sizeof(uintptr_t), rt_resource) && rt_resource == resource &&
+        read(resource + owner_offset, actual_owner) && actual_owner == owner &&
+        read(resource + texture_rhi_offset, rhi) && rhi == expected.rhi_texture &&
+        read(resource + render_target_texture_offset, target_rhi) && target_rhi == rhi &&
+        read(resource + width_offset, actual_width) && actual_width == width &&
+        read(resource + height_offset, actual_height) && actual_height == height;
+}
 
 template <typename Read, typename Validate>
 std::optional<Resource> find_resource(
     uintptr_t owner, size_t owner_size, uint32_t width, uint32_t height,
     const Read& read, const Validate& validate) {
     if (owner == 0 || owner_size < 2 * sizeof(uintptr_t) || owner_size > max_owner_size ||
-        owner > std::numeric_limits<uintptr_t>::max() - owner_size ||
+        owner > (std::numeric_limits<uintptr_t>::max)() - owner_size ||
         width == 0 || height == 0 || width > 65536 || height > 65536)
     {
         return std::nullopt;
@@ -74,7 +124,7 @@ std::optional<Resource> find_resource(
             return std::nullopt;
         }
         if (resource == 0 || resource != render_thread_resource || (resource % alignof(uintptr_t)) != 0 ||
-            resource > std::numeric_limits<uintptr_t>::max() - resource_size)
+            resource > (std::numeric_limits<uintptr_t>::max)() - resource_size)
         {
             continue;
         }
@@ -93,7 +143,7 @@ std::optional<Resource> find_resource(
         if (result) {
             return std::nullopt; // Ambiguous owner fields must not publish an offset.
         }
-        result = Resource{offset, resource, rhi};
+        result = Resource{offset, resource, rhi, owner_size};
     }
     return result;
 }
