@@ -1725,8 +1725,12 @@ void UObjectHook::track_plugin_created_component(sdk::UActorComponent* component
         const auto observed = sdk::observe_uobject(component);
         if (!observed || !try_track_outerworlds2_object(component, false) ||
             !sdk::is_current_object(observed->identity)) { return; }
-        if (const auto outer = component->get_outer()) {
-            try_track_outerworlds2_object(outer, false);
+        const auto header = sdk::UObjectBase::published_header_layout();
+        const auto outer_address = sdk::object_array::add(reinterpret_cast<uintptr_t>(component), header->outer);
+        uintptr_t outer{};
+        if (outer_address && safe_read_uintptr(*outer_address, outer) && outer &&
+            sdk::is_current_object(observed->identity)) {
+            try_track_outerworlds2_object(reinterpret_cast<sdk::UObjectBase*>(outer), false);
         }
         return;
     }
