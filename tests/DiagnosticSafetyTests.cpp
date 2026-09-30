@@ -1,4 +1,7 @@
 #include <atomic>
+#include <cstddef>
+#include "../include/uevr/API.h"
+#include "utility/OpaqueStateRegistry.hpp"
 #include <barrier>
 #include <iostream>
 #include <limits>
@@ -16,6 +19,7 @@
 #include "utility/BoundedTextureDiagnostics.hpp"
 #include "utility/GpuRetirement.hpp"
 #include "utility/UObjectMetadataFilter.hpp"
+#include "utility/UObjectArrayBrowser.hpp"
 #undef max
 
 int disabled_log_argument_evaluations();
@@ -25,8 +29,40 @@ int test_discovery_validation();
 int test_cadence_replay();
 int test_ue58_ui_initialization();
 int test_ktjl_openxr_factory();
+int test_uobject_browser_cost();
 
 namespace {
+// Existing SDK tables must remain a byte-for-byte prefix for pre-2.40 plugins.
+#define SDK_PREFIX_SLOT(member, index) static_assert(offsetof(UEVR_SDKData, member) == (index) * sizeof(void*))
+SDK_PREFIX_SLOT(functions, 0);
+SDK_PREFIX_SLOT(callbacks, 1);
+SDK_PREFIX_SLOT(uobject, 2);
+SDK_PREFIX_SLOT(uobject_array, 3);
+SDK_PREFIX_SLOT(ffield, 4);
+SDK_PREFIX_SLOT(fproperty, 5);
+SDK_PREFIX_SLOT(ustruct, 6);
+SDK_PREFIX_SLOT(uclass, 7);
+SDK_PREFIX_SLOT(ufunction, 8);
+SDK_PREFIX_SLOT(uobject_hook, 9);
+SDK_PREFIX_SLOT(ffield_class, 10);
+SDK_PREFIX_SLOT(fname, 11);
+SDK_PREFIX_SLOT(console, 12);
+SDK_PREFIX_SLOT(malloc, 13);
+SDK_PREFIX_SLOT(render_target_pool_hook, 14);
+SDK_PREFIX_SLOT(stereo_hook, 15);
+SDK_PREFIX_SLOT(frhitexture2d, 16);
+SDK_PREFIX_SLOT(uscriptstruct, 17);
+SDK_PREFIX_SLOT(farrayproperty, 18);
+SDK_PREFIX_SLOT(fboolproperty, 19);
+SDK_PREFIX_SLOT(fstructproperty, 20);
+SDK_PREFIX_SLOT(fenumproperty, 21);
+SDK_PREFIX_SLOT(ufield, 22);
+SDK_PREFIX_SLOT(game_viewport_client, 23);
+SDK_PREFIX_SLOT(owned_fname, 24);
+#undef SDK_PREFIX_SLOT
+static_assert(sizeof(UEVR_FNameFunctions) == 2 * sizeof(void*));
+static_assert(UEVR_PLUGIN_VERSION_MAJOR == 2 && UEVR_PLUGIN_VERSION_MINOR >= 40);
+
 int failures{};
 void expect(bool value, const char* message) {
     if (!value) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
@@ -47,6 +83,30 @@ void concurrent_sites(std::atomic<int>& arguments) {
 }
 
 void runtime_disabled_site(int& arguments) { SPDLOG_INFO_ONCE("{}", ++arguments); }
+
+void test_opaque_states() {
+    utility::OpaqueStateRegistry<int, uintptr_t> registry;
+    auto first = std::make_shared<int>(42);
+    const auto handle = registry.publish(first, 123);
+    expect(handle && registry.publish(first,123) == handle, "repeated queries preserve public handle identity");
+    expect(registry.resolve(handle).first == first, "registered handle resolves payload");
+    expect(!registry.resolve(reinterpret_cast<void*>(UINTPTR_MAX)).first, "arbitrary plugin handle is never dereferenced");
+    const auto second_owner = registry.publish(first,124);
+    expect(second_owner != handle, "different owner has a separate handle");
+    first.reset();
+    expect(!registry.resolve(handle).first && !registry.resolve(second_owner).first, "retired payload is not retained by plugin handles");
+    std::vector<std::jthread> workers;
+    for (int n=0;n<8;++n) {
+        workers.emplace_back([&, n] {
+            auto state = std::make_shared<int>(n);
+            for (int i=0;i<1000;++i) { auto h=registry.publish(state,123); if (registry.resolve(h).first != state) { std::terminate(); } }
+        });
+    }
+    workers.clear();
+    auto replacement = std::make_shared<int>(99);
+    expect(registry.publish(replacement,123) != handle && !registry.resolve(handle).first,
+        "stale handles never resolve a replacement payload");
+}
 
 void test_logging() {
     const auto previous = spdlog::default_logger();
@@ -337,6 +397,13 @@ void test_uobject_metadata_filter() {
 }
 
 void test_uobject_allocator_discovery() {
+    using utility::uobject::browser_element;
+    expect(browser_element(0x10000, 3, 4, 8, 2) == 0x10010, "object array stride remains pointer-sized");
+    expect(browser_element(0x10000, 3, 4, 16, 2) == 0x10020, "interface arrays skip native interface pointers");
+    expect(!browser_element(0x10000, -1, 4, 8, 0) && !browser_element(0x10000, 5, 4, 8, 0) &&
+        !browser_element(0x10000, 3, 4, 8, 3), "browser rejects invalid counts before reading elements");
+    expect(!browser_element(UINTPTR_MAX - 3, 1, 1, 8, 0) && !browser_element(0x10000, 3, 4, SIZE_MAX, 0),
+        "browser rejects element range overflow");
     using uevr::uobject::discovery::AllocatorEvidence;
     using uevr::uobject::discovery::validates_allocator_evidence;
 
@@ -359,10 +426,25 @@ void test_uobject_allocator_discovery() {
     evidence.unwind_matches = true;
     evidence.function_end = evidence.image_base + evidence.image_size + 1;
     expect(!validates_allocator_evidence(evidence), "out-of-image allocator fails closed");
+
+    std::array<uint8_t, 30> free_stores{
+        0x48,0xC7,0x43,0x08,0,0,0,0, 0x48,0xC7,0x43,0x10,0,0,0,0,
+        0x48,0xC7,0x03,0,0,0,0, 0xC7,0x46,0x0C,0xFF,0xFF,0xFF,0xFF};
+    using uevr::uobject::discovery::validates_townfall_free_stores;
+    expect(validates_townfall_free_stores(free_stores), "Townfall inlined GC invalidation has a complete item/index contract");
+    free_stores[24] = 0x45;
+    expect(validates_townfall_free_stores(free_stores), "Townfall standalone free path has the same item contract");
+    for (size_t i = 0; i < free_stores.size(); ++i) {
+        auto changed = free_stores;
+        changed[i] ^= 0x80;
+        expect(!validates_townfall_free_stores(changed), "changed free-store instructions fail closed");
+        expect(!validates_townfall_free_stores(std::span{free_stores}.first(i)), "truncated free-store contract fails closed");
+    }
 }
 }
 
 int main() {
+    test_opaque_states();
     test_logging();
     test_readbacks();
     test_support_report();
@@ -376,6 +458,7 @@ int main() {
     failures += test_cadence_replay();
     failures += test_ue58_ui_initialization();
     failures += test_ktjl_openxr_factory();
+    failures += test_uobject_browser_cost();
     if (failures != 0) { return 1; }
     std::cout << "Diagnostic safety tests passed\n";
     return 0;
