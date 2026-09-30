@@ -1,3 +1,4 @@
+#include <cstring>
 /*
 This file (API.hpp) is licensed under the MIT license and is separate from the rest of the UEVR codebase.
 
@@ -293,6 +294,41 @@ public:
         }
     };
     
+    struct OwnedFName {
+        static const UEVR_OwnedFNameFunctions* functions() {
+            const auto& api = API::get();
+            const auto version = api->param()->version;
+            return version && version->major == 2 && version->minor >= 40 ? api->sdk()->owned_fname : nullptr;
+        }
+        static unsigned int runtime_size() {
+            const auto fn = functions();
+            return fn ? fn->get_size() : 0;
+        }
+        OwnedFName() = default;
+        explicit OwnedFName(const FName& source) {
+            if (const auto fn = functions()) {
+                if (!fn->copy(this, sizeof(*this), source.to_handle())) { throw std::runtime_error("Invalid FName source"); }
+            } else { throw std::runtime_error("OwnedFName requires SDK 2.40 or newer"); }
+        }
+        explicit OwnedFName(std::wstring_view text, FName::EFindName type = FName::EFindName::Add) {
+            const std::wstring terminated{text};
+            if (const auto fn = functions()) {
+                if (!fn->construct(this, sizeof(*this), terminated.c_str(), static_cast<uint32_t>(type))) {
+                    throw std::runtime_error("FName construction failed");
+                }
+            } else { throw std::runtime_error("OwnedFName requires SDK 2.40 or newer"); }
+        }
+        std::wstring to_string() const { return reinterpret_cast<const FName*>(this)->to_string(); }
+        bool write_to(void* destination, unsigned int capacity) const {
+            if (const auto fn = functions()) { return fn->copy(destination, capacity, (UEVR_FNameHandle)this); }
+            // Older backends cannot report the name width. Do not guess eight
+            // bytes for an owned call; the legacy FName API remains available.
+            return false;
+        }
+        int32_t words[3]{};
+    };
+    static_assert(sizeof(FName) == 8 && sizeof(OwnedFName) == 12);
+
     struct UObject {
         static consteval std::string_view internal_name() {
             return "Object";

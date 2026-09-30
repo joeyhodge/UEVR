@@ -4,6 +4,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <span>
+#include <algorithm>
 
 namespace uevr::uobject::discovery {
 
@@ -42,6 +44,18 @@ inline bool validates_allocator_evidence(const AllocatorEvidence& evidence) {
     }
 
     return true;
+}
+
+// Source + Townfall disassembly: clear the 24-byte FUObjectItem in RBX, then
+// invalidate the object's InternalIndex at +0xC. Called only at a decoded
+// instruction boundary inside an unwind owner of the FreeUObjectIndex diagnostic.
+inline bool validates_townfall_free_stores(std::span<const uint8_t> bytes) {
+    constexpr std::array<uint8_t, 23> clear_item{
+        0x48,0xC7,0x43,0x08,0,0,0,0, 0x48,0xC7,0x43,0x10,0,0,0,0,
+        0x48,0xC7,0x03,0,0,0,0};
+    return bytes.size() >= 30 && std::equal(clear_item.begin(), clear_item.end(), bytes.begin()) &&
+        bytes[23] == 0xC7 && (bytes[24] == 0x45 || bytes[24] == 0x46) && bytes[25] == 0x0C &&
+        bytes[26] == 0xFF && bytes[27] == 0xFF && bytes[28] == 0xFF && bytes[29] == 0xFF;
 }
 
 } // namespace uevr::uobject::discovery

@@ -1,12 +1,32 @@
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace utility::uobject {
 constexpr size_t MAX_CACHED_CLASS_CHAIN_DEPTH = 128;
+
+template <typename Value>
+struct NamedBrowserValue {
+    Value value;
+    std::wstring name;
+};
+
+// Frame-local labels: sorting must not call Unreal or retain reflected pointers
+// for the next frame. Property values and lifetime checks still run normally.
+template <typename Value, typename NameLookup>
+[[nodiscard]] std::vector<NamedBrowserValue<Value>> named_browser_values(
+    const std::vector<Value>& values, NameLookup&& lookup_name) {
+    std::vector<NamedBrowserValue<Value>> rows;
+    rows.reserve(values.size());
+    for (const auto value : values) { rows.push_back({value, lookup_name(value)}); }
+    std::stable_sort(rows.begin(), rows.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    return rows;
+}
 
 template <typename Object>
 struct CachedRecentObject {
@@ -15,6 +35,7 @@ struct CachedRecentObject {
     int32_t internal_index{-1};
     int32_t serial_number{-1};
     bool identity_valid{false};
+    uint64_t generation{};
 };
 
 template <typename Object, typename IdentityValidator>
