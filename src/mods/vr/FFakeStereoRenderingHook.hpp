@@ -13,6 +13,7 @@
 
 #include <d3d12.h>
 #include <wrl.h>
+#include <openxr/openxr.h>
 
 #include <SafetyHook.hpp>
 
@@ -34,6 +35,7 @@
 #include "UE58UIInitialization.hpp"
 #include "UE58OwnedUITexture.hpp"
 #include "NativeFrameDiagnostics.hpp"
+#include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
 #include "utility/NascarHookCompatibility.hpp"
 
@@ -832,6 +834,10 @@ public:
         int32_t player_index{-1};
         uint32_t left_pass{};
         uint32_t right_pass{};
+        uevr::stalker2_native::Key stalker_key{};
+        std::array<XrView, 2> stalker_views{};
+        bool stalker_pose_valid{};
+        uint32_t stalker_pose_frame{};
         // Observation only; never used to accept a packet or retime a frame.
         uevr::native_frame::ClockStamp diagnostic_clock{};
     };
@@ -843,6 +849,16 @@ public:
         uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
     void note_native_stereo_frame_packet_consumed(uint64_t serial);
     void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
+    void sync_stalker2_native_experiment(bool enabled);
+    uint64_t stalker2_native_epoch() const { return m_stalker2_native_packets.epoch(); }
+    void note_stalker2_rhi_handoff(uint32_t frame);
+    bool stalker2_native_capability() const;
+    std::shared_ptr<const NativeStereoFramePacket> stalker2_latest_packet() const { return m_stalker2_native_packets.latest(); }
+    std::shared_ptr<const NativeStereoFramePacket> get_stalker2_native_packet(uint32_t frame,
+        uevr::native_frame::Ticket* ticket) const;
+    void reject_stalker2_native_packet(const std::shared_ptr<const NativeStereoFramePacket>& packet, const char* detail);
+    uevr::native_frame::Ticket observe_stalker2_native_pair(const NativeStereoFramePacket& packet,
+        uint32_t frame, bool reused) const;
     void observe_native_frame_engine(uint32_t frame);
     void observe_native_frame_present(int32_t frame);
     void record_native_frame_stage(const NativeStereoFramePacket& packet,
@@ -1442,6 +1458,8 @@ private:
 
     std::atomic<NativeStereoFixState> m_native_stereo_fix_state{NativeStereoFixState::Off};
     std::atomic<std::shared_ptr<const NativeStereoFramePacket>> m_native_stereo_frame_packet{};
+    uevr::stalker2_native::PacketRing<NativeStereoFramePacket> m_stalker2_native_packets{};
+    std::atomic_bool m_stalker2_native_experiment{};
     std::atomic<uint64_t> m_native_stereo_packet_serial{};
     std::atomic<uint64_t> m_native_stereo_consumed_serial{};
     std::atomic<uint64_t> m_native_stereo_rejected_capture_generation{};

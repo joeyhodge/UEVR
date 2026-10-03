@@ -20775,6 +20775,7 @@ struct SceneViewExtensionAnalyzer {
             if (N == correct_execute_index) {
                 runtime->enqueue_render_poses(frame_count);
                 if (g_hook != nullptr) { g_hook->note_nascar25_render_pose_handoff(frame_count); }
+                if (g_hook != nullptr) { g_hook->note_stalker2_rhi_handoff(frame_count); }
             }
 
             return result;
@@ -24619,6 +24620,21 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
+    const bool stalker_experiment = vr->is_stalker2_native_fix_experiment_enabled();
+    g_hook->sync_stalker2_native_experiment(stalker_experiment);
+    const auto stalker_epoch = stalker_experiment ? g_hook->stalker2_native_epoch() : 0;
+    std::optional<uint32_t> stalker_primary_frame{}, stalker_secondary_frame{};
+    std::array<XrView, 2> stalker_pose{};
+    uint32_t stalker_pose_frame{};
+    bool stalker_pose_valid{};
+    const auto stalker_family_frame = [&]() -> std::optional<uint32_t> {
+        const auto offset = SceneViewExtensionAnalyzer::frame_count_offset;
+        if (!stalker_experiment || offset == 0 || offset >= 0x1000 ||
+            !is_readable_process_range(reinterpret_cast<uintptr_t>(view_family) + offset, sizeof(uint32_t))) { return std::nullopt; }
+        uint32_t frame{};
+        std::memcpy(&frame, reinterpret_cast<const uint8_t*>(view_family) + offset, sizeof(frame));
+        return frame;
+    };
     const auto publish_native_packet = [&]() {
         auto packet = std::make_shared<NativeStereoFramePacket>();
         packet->capture = native_capture_snapshot;
@@ -24637,6 +24653,13 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         packet->player_index = native_left_metadata.player_index;
         packet->left_pass = native_left_metadata.original_stereo_pass;
         packet->right_pass = native_right_metadata.original_stereo_pass;
+        if (stalker_primary_frame && stalker_secondary_frame) {
+            packet->stalker_key = uevr::stalker2_native::make_key(stalker_epoch,
+                *stalker_primary_frame, *stalker_secondary_frame, g_hook->get_frame_delay_compensation());
+            packet->stalker_views = stalker_pose;
+            packet->stalker_pose_valid = stalker_pose_valid;
+            packet->stalker_pose_frame = stalker_pose_frame;
+        }
         if (const auto token = g_hook->m_native_frame_diagnostics.control()) {
             packet->diagnostic_clock = g_hook->m_native_frame_diagnostics.clock(token);
         }
@@ -25017,6 +25040,16 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         std::scoped_lock lock{openxr->sync_assignment_mtx};
         const auto last_frame = runtime_frame_count % runtimes::OpenXR::QUEUE_SIZE;
         const auto now_frame = (runtime_frame_count + 1) % runtimes::OpenXR::QUEUE_SIZE;
+        if (stalker_experiment) {
+            // Use the pose assignment the existing transaction clones for the
+            // second eye, not a guessed family-frame queue index.
+            const auto& pose = openxr->pipeline_states[last_frame];
+            if (pose.frame_count == runtime_frame_count && pose.stage_views.size() == 2) {
+                std::copy_n(pose.stage_views.begin(), 2, stalker_pose.begin());
+                stalker_pose_frame = runtime_frame_count;
+                stalker_pose_valid = uevr::stalker2_native::valid_views(stalker_pose);
+            }
+        }
         openxr->pipeline_states[now_frame] = openxr->pipeline_states[last_frame];
         openxr->pipeline_states[now_frame].frame_count = now_frame;
     } else {
@@ -25047,6 +25080,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     call_original();
 
     uint32_t daysgone_first_frame{};
+    stalker_primary_frame = stalker_family_frame();
     if (use_daysgone_same_frame_render) {
         uint32_t global_frame{};
         uint32_t family_frame{};
@@ -25176,6 +25210,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     } else {
         render_secondary_view();
     }
+    stalker_secondary_frame = stalker_family_frame();
 
     if (use_daysgone_same_frame_render) {
         const auto override_applied = g_daysgone_native_frame_override.applied;
@@ -25542,6 +25577,10 @@ void fill_native_frame_packet_event(uevr::native_frame::Event& event,
     event.producer_engine = packet.engine_frame;
     event.producer_render = packet.render_frame;
     event.producer_clock = packet.diagnostic_clock;
+    event.transaction_epoch = packet.stalker_key.epoch;
+    event.transaction_primary = packet.stalker_key.primary;
+    event.transaction_secondary = packet.stalker_key.secondary;
+    event.source_pose_frame = packet.stalker_pose_frame;
     if (packet.capture != nullptr) {
         // Opaque identities from the owned snapshot, not new resource queries.
         event.rhi = reinterpret_cast<uintptr_t>(packet.capture->rhi_texture);
@@ -25585,6 +25624,7 @@ void FFakeStereoRenderingHook::record_native_frame_stage(const NativeStereoFrame
     event.submit_call = submit_call;
     event.submit_render = ticket.submit_render;
     event.consumer_clock = ticket.consumer_clock;
+    event.pair_reused = ticket.pair_reused;
     event.copy_source = reinterpret_cast<uintptr_t>(copy_source);
     event.copy_destination = reinterpret_cast<uintptr_t>(copy_destination);
     event.thread = GetCurrentThreadId();
@@ -25595,6 +25635,7 @@ void FFakeStereoRenderingHook::invalidate_native_stereo_frame_packet(
     NativeStereoFixState state,
     const char* detail)
 {
+    if (m_stalker2_native_experiment.load(std::memory_order_acquire)) { m_stalker2_native_packets.invalidate(); }
     m_native_stereo_frame_packet.store(nullptr, std::memory_order_release);
     set_native_stereo_fix_state(state, detail);
     if (const auto token = m_native_frame_diagnostics.control()) {
@@ -25626,6 +25667,10 @@ void FFakeStereoRenderingHook::publish_native_stereo_frame_packet(
         fill_native_frame_packet_event(*observation, *packet);
         observation->stage = uevr::native_frame::Stage::producer;
         observation->thread = GetCurrentThreadId();
+    }
+    if (m_stalker2_native_experiment.load(std::memory_order_acquire)) {
+        if (!packet->stalker_key.valid || !packet->stalker_pose_valid) { m_stalker2_native_packets.invalidate(); }
+        else { m_stalker2_native_packets.publish(packet); }
     }
     m_native_stereo_frame_packet.store(std::move(packet), std::memory_order_release);
     if (observation) {
@@ -25773,6 +25818,118 @@ FFakeStereoRenderingHook::get_native_stereo_frame_packet_for_submit(int32_t rend
     record_outcome(exact_render_frame ? frame_diag::Reason::exact_frame :
         same_engine_frame_present_grace ? frame_diag::Reason::same_engine_frame : frame_diag::Reason::one_frame_handoff, true);
     return packet;
+}
+
+void FFakeStereoRenderingHook::sync_stalker2_native_experiment(bool enabled) {
+    if (m_stalker2_native_experiment.exchange(enabled, std::memory_order_acq_rel) != enabled) {
+        m_stalker2_native_packets.invalidate();
+    }
+}
+
+void FFakeStereoRenderingHook::note_stalker2_rhi_handoff(uint32_t frame) {
+    if (m_stalker2_native_experiment.load(std::memory_order_acquire) &&
+        VR::get()->is_stalker2_native_fix_experiment_enabled()) {
+        m_stalker2_native_packets.note_handoff(frame, GetCurrentThreadId());
+    }
+}
+
+bool FFakeStereoRenderingHook::stalker2_native_capability() const {
+    if (!m_stalker2_native_experiment.load(std::memory_order_acquire)) { return false; }
+    const auto handoff = m_stalker2_native_packets.handoff();
+    const auto latest = m_stalker2_native_packets.latest();
+    return handoff.thread == GetCurrentThreadId() && handoff.epoch != 0 && latest &&
+        latest->stalker_key.valid && latest->stalker_pose_valid && latest->stalker_key.epoch == handoff.epoch;
+}
+
+uevr::native_frame::Ticket FFakeStereoRenderingHook::observe_stalker2_native_pair(
+    const NativeStereoFramePacket& packet, uint32_t frame, bool reused) const {
+    namespace diag = uevr::native_frame;
+    const auto token = m_native_frame_diagnostics.control();
+    if (!token) { return {}; }
+    auto ticket = m_native_frame_diagnostics.ticket(token, packet.serial);
+    ticket.submit_render = std::bit_cast<int32_t>(frame);
+    ticket.consumer_clock = m_native_frame_diagnostics.clock(token);
+    ticket.pair_reused = reused;
+    diag::Event event{};
+    fill_native_frame_packet_event(event, packet);
+    event.attempt = ticket.attempt;
+    event.submit_render = ticket.submit_render;
+    event.consumer_clock = ticket.consumer_clock;
+    event.backend = diag::Backend::d3d12;
+    event.runtime = diag::Runtime::openxr;
+    event.stage = diag::Stage::selection;
+    event.reason = reused ? diag::Reason::cached_pair : diag::Reason::exact_transaction;
+    event.packet_accepted = true;
+    event.thread = GetCurrentThreadId();
+    event.pair_reused = reused;
+    m_native_frame_diagnostics.record(token, event);
+    return ticket;
+}
+
+std::shared_ptr<const FFakeStereoRenderingHook::NativeStereoFramePacket>
+FFakeStereoRenderingHook::get_stalker2_native_packet(uint32_t frame, uevr::native_frame::Ticket* ticket) const {
+    if (ticket) { *ticket = {}; }
+    const auto packet = m_stalker2_native_packets.select(frame);
+    const auto handoff = m_stalker2_native_packets.handoff();
+    const auto rtm = const_cast<FFakeStereoRenderingHook*>(this)->get_render_target_manager();
+    const auto current = rtm ? rtm->get_scene_capture_target_snapshot() : nullptr;
+    const bool valid = packet && packet->serial != 0 && packet->scene && packet->main_target &&
+        packet->capture && current && packet->stalker_pose_valid &&
+        packet->stalker_key.epoch == handoff.epoch && handoff.thread == GetCurrentThreadId() && handoff.frame == frame &&
+        packet->capture_generation != m_native_stereo_rejected_capture_generation.load(std::memory_order_acquire) &&
+        packet->capture_generation == current->generation && packet->capture->generation == current->generation &&
+        packet->capture->rhi_texture == current->rhi_texture &&
+        packet->capture->native_resource.Get() == current->native_resource.Get();
+    if (valid) {
+        const auto observation = observe_stalker2_native_pair(*packet, frame, false);
+        if (ticket) { *ticket = observation; }
+        return packet;
+    }
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        uevr::native_frame::Event event{};
+        if (packet) { fill_native_frame_packet_event(event, *packet); }
+        auto miss = m_native_frame_diagnostics.ticket(token, packet ? packet->serial : 0);
+        miss.submit_render = std::bit_cast<int32_t>(frame);
+        miss.consumer_clock = m_native_frame_diagnostics.clock(token);
+        if (ticket) { *ticket = miss; }
+        event.attempt = miss.attempt;
+        event.consumer_clock = miss.consumer_clock;
+        event.stage = uevr::native_frame::Stage::selection;
+        event.reason = uevr::native_frame::Reason::transaction_miss;
+        event.submit_render = std::bit_cast<int32_t>(frame);
+        event.backend = uevr::native_frame::Backend::d3d12;
+        event.runtime = uevr::native_frame::Runtime::openxr;
+        event.current_generation = current ? current->generation : 0;
+        event.resource_checks_ran = true;
+        event.current_rhi = current ? reinterpret_cast<uintptr_t>(current->rhi_texture) : 0;
+        event.current_resource = current ? reinterpret_cast<uintptr_t>(current->native_resource.Get()) : 0;
+        event.thread = GetCurrentThreadId();
+        m_native_frame_diagnostics.record(token, event);
+    }
+    return nullptr;
+}
+
+void FFakeStereoRenderingHook::reject_stalker2_native_packet(
+    const std::shared_ptr<const NativeStereoFramePacket>& packet, const char* detail) {
+    const auto rtm = get_render_target_manager();
+    const auto current = rtm ? rtm->get_scene_capture_target_snapshot() : nullptr;
+    if (!m_stalker2_native_packets.reject(packet, current ? current->generation : 0)) { return; }
+    m_native_stereo_rejected_capture_generation.store(packet->capture_generation, std::memory_order_release);
+    auto latest = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    while (latest && latest->capture_generation == packet->capture_generation &&
+        !m_native_stereo_frame_packet.compare_exchange_weak(latest, nullptr, std::memory_order_acq_rel)) {}
+    latest = m_native_stereo_frame_packet.load(std::memory_order_acquire);
+    if (!latest || latest->capture_generation == packet->capture_generation) {
+        set_native_stereo_fix_state(NativeStereoFixState::FailedClosed, detail);
+    }
+    if (const auto token = m_native_frame_diagnostics.control()) {
+        uevr::native_frame::Event event{};
+        fill_native_frame_packet_event(event, *packet);
+        event.stage = uevr::native_frame::Stage::invalidation;
+        event.reason = uevr::native_frame::Reason::rejected_generation;
+        event.thread = GetCurrentThreadId();
+        m_native_frame_diagnostics.record(token, event);
+    }
 }
 
 void FFakeStereoRenderingHook::note_native_stereo_frame_packet_consumed(uint64_t serial) {
