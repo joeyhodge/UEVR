@@ -155,8 +155,10 @@ private:
     static inline std::vector<void*> s_callbacks_to_remove{};
     static inline std::mutex s_callbacks_to_remove_mtx{};
 
+    // Destroyed last: state_view also owns registry references that must be
+    // released before closing a VM retained only by this context.
+    std::shared_ptr<sol::state> m_lua_shared{};
     sol::state_view m_lua;
-    std::shared_ptr<sol::state> m_lua_shared{}; // This allows us to keep the state alive (if it was created by ScriptState)
     ScriptErrorState m_last_script_error_state{};
     mutable std::shared_mutex m_script_error_mutex{};
 
