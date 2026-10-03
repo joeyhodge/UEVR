@@ -22,6 +22,33 @@ inline std::wstring lowercase_path(std::wstring_view path) {
     return lowered;
 }
 
+inline bool is_minecraft_dungeons_executable_path(std::wstring_view path) {
+    const auto lowered = lowercase_path(path);
+    const auto separator = lowered.find_last_of(L"/\\");
+    const auto filename = std::wstring_view{lowered}.substr(
+        separator == std::wstring::npos ? 0 : separator + 1);
+    return filename == L"dungeons-win64-shipping.exe" ||
+        filename == L"dungeons-wingdk-shipping.exe";
+}
+
+inline bool should_use_minecraft_dungeons_ue561_dedicated_ui_target(
+    std::wstring_view path,
+    std::wstring_view detected_version,
+    uint32_t file_version_ms,
+    uint32_t file_version_ls,
+    bool dx12) {
+    if (!dx12 || !is_minecraft_dungeons_executable_path(path)) {
+        return false;
+    }
+
+    if (!detected_version.empty() && detected_version != L"unknown" &&
+        detected_version != L"0.00" && detected_version != L"5.6") {
+        return detected_version == L"5.6.1" || detected_version.starts_with(L"5.6.1.");
+    }
+
+    return file_version_ms == 0x00050006 && (file_version_ls >> 16) == 1;
+}
+
 inline bool is_dune_ue521_frame_handoff_runtime(
     std::wstring_view path, uint32_t version_ms, uint32_t version_ls) {
     const auto lowered = lowercase_path(path);
