@@ -70,6 +70,9 @@ tag = "70db095765ab2066dd88dfb7bbcc42259ed167c5"
 [fetch-content.kananlib]
 git = "https://github.com/cursey/kananlib"
 tag = "49fdf2d3b1db350e370beacb607d5721bc2911ad"
+cmake-after = """
+include(cmake/KananlibDecodeWindow.cmake)
+"""
 
 [fetch-content.sdkgenny]
 git = "https://github.com/cursey/sdkgenny"
@@ -199,6 +202,24 @@ compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
 cmake-after = """
 add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+"""
+
+[target.kananlib-decode-window-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/KananlibDecodeWindowTests.cpp"]
+compile-features = ["cxx_std_23"]
+compile-options = ["/EHa"]
+link-libraries = ["kananlib"]
+cmake-after = """
+add_test(NAME kananlib-decode-window-tests COMMAND kananlib-decode-window-tests)
+set_tests_properties(kananlib-decode-window-tests PROPERTIES TIMEOUT 60)
+add_test(NAME kananlib-decode-window-configuration-tests COMMAND "${CMAKE_COMMAND}"
+    "-DUEVR_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DKANANLIB_SOURCE_DIR=${kananlib_SOURCE_DIR}"
+    "-DUEVR_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/kananlib-decode-window/configuration-fixture"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/KananlibBackportConfigurationTests.cmake")
+set_tests_properties(kananlib-decode-window-configuration-tests PROPERTIES TIMEOUT 120)
 """
 
 [target.hifi-hook-memory-tests]
