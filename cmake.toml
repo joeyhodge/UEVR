@@ -237,6 +237,30 @@ add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-test
 set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
 """
 
+[target.stalker2-native-policy-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Stalker2NativePolicyTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME stalker2-native-policy-tests COMMAND stalker2-native-policy-tests)
+set_tests_properties(stalker2-native-policy-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.stalker2-native-d3d12-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Stalker2NativeD3D12Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "dxgi", "openxr_loader"]
+cmake-after = """
+add_test(NAME stalker2-native-d3d12-tests COMMAND stalker2-native-d3d12-tests)
+set_tests_properties(stalker2-native-d3d12-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]

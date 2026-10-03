@@ -292,12 +292,22 @@ int test_native_frame_adapters() {
         const auto getter = code.find("get_native_stereo_frame_packet_for_submit(");
         expect(getter != std::string::npos && code.substr(getter, 180).find("&native_frame_ticket") != std::string::npos,
             "backend selection freezes a diagnostic ticket");
-        size_t pos = 0, copies = 0, submits = 0;
+        size_t pos = 0, copies = 0, deferred_pair_copies = 0, submits = 0;
         while ((pos = code.find("->note_native_stereo_frame_packet_consumed(", pos)) != std::string::npos) {
             const auto before = code.substr(pos > 750 ? pos - 750 : 0, pos > 750 ? 750 : pos);
-            expect(before.find("record_native_frame_stage(*native_stereo_packet, native_frame_ticket") != std::string::npos &&
-                before.find("Stage::copy_recorded") != std::string::npos, "every existing consume site records retained packet, not newest global packet");
-            ++pos; ++copies;
+            if (std::string(backend) == "D3D12" && pos >= 4 && code.substr(pos - 4, 4) == "ffsr") {
+                expect(std::string(backend) == "D3D12" &&
+                    before.find("xr->set_stalker2_pair_submit(") != std::string::npos &&
+                    code.substr(pos, 100).find("native_stereo_packet->serial") != std::string::npos,
+                    "owned-pair consumption retains the submitted packet after confirmation");
+                ++deferred_pair_copies;
+            } else {
+                expect(before.find("record_native_frame_stage(*native_stereo_packet, native_frame_ticket") != std::string::npos &&
+                    before.find("Stage::copy_recorded") != std::string::npos,
+                    "every existing consume site records retained packet, not newest global packet");
+                ++copies;
+            }
+            ++pos;
         }
         for (const auto needle : {"vr::VRCompositor()->Submit(", "vr->m_openxr->end_frame("}) {
             pos = 0;
@@ -309,7 +319,9 @@ int test_native_frame_adapters() {
                 ++pos; ++submits;
             }
         }
-        expect(copies == (std::string(backend) == "D3D11" ? 2 : 3) && submits == (std::string(backend) == "D3D11" ? 4 : 5),
+        expect(copies == (std::string(backend) == "D3D11" ? 2 : 3) &&
+            deferred_pair_copies == (std::string(backend) == "D3D11" ? 0 : 2) &&
+            submits == (std::string(backend) == "D3D11" ? 4 : 5),
             "expected backend copy/submit coverage (update fixture for new paths)");
         if (std::string(backend) == "D3D11") {
             const auto copy = code.find("bool D3D11Component::OpenXR::copy(");
@@ -319,6 +331,23 @@ int test_native_frame_adapters() {
             expect(code.find("native_stereo_packet,\n        native_frame_ticket,") != std::string::npos &&
                 code.find("native_stereo_packet, native_stereo_hook, native_frame_ticket]") != std::string::npos,
                 "D3D12 deferred double-wide and array copies retain selection ticket by value");
+            const auto pair_begin = code.find("const auto copy_stalker_pair = [&]()");
+            const auto pair_end = code.find("// For copying the real backbuffer", pair_begin);
+            expect(pair_begin != std::string::npos && pair_end != std::string::npos,
+                "owned-pair adapter boundaries found");
+            if (pair_begin != std::string::npos && pair_end != std::string::npos) {
+                const auto pair = code.substr(pair_begin, pair_end - pair_begin);
+                expect(pair.find("if (submitted && recorded)") != std::string::npos &&
+                    pair.find("const bool current = submitted && recorded") != std::string::npos &&
+                    pair.find("m_stalker2_pair_cache.commit(pair, identity, now, current)") != std::string::npos &&
+                    pair.find("if (current && pair->validity.submitted)") != std::string::npos,
+                    "both fresh pair paths defer consumption/publication until copy submission succeeds");
+                expect(pair.find("pre_render(commands, destination)") != std::string::npos &&
+                    pair.find("observe_stalker2_native_pair(*source_packet, stalker_frame, true)") != std::string::npos &&
+                    pair.find("record_native_frame_stage(*source_packet, native_frame_ticket") != std::string::npos &&
+                    pair.find("Stage::copy_recorded") != std::string::npos,
+                    "fresh and cached pair copies correlate the retained packet and consumer ticket");
+            }
         }
     }
     const auto hook = source("src/mods/vr/FFakeStereoRenderingHook.cpp");
