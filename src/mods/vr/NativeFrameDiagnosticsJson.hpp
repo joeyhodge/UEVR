@@ -45,7 +45,8 @@ nlohmann::json export_json(Recorder<Capacity>& recorder) {
         ++stages[name(e.stage)];
         if (e.stage == Stage::selection) {
             ++reasons[name(e.reason)];
-            consumer_observed |= e.window_observed;
+            consumer_observed |= e.window_observed || e.reason == Reason::exact_transaction ||
+                e.reason == Reason::transaction_miss || e.reason == Reason::cached_pair;
             if (e.window_observed) { ++shadows[name(e.shadow)]; }
             if (e.packet_accepted) { selected.insert(e.attempt); newest_selected = e.packet_serial; }
         } else if (e.stage == Stage::copy_recorded) {
@@ -76,6 +77,10 @@ nlohmann::json export_json(Recorder<Capacity>& recorder) {
             {"producer_shadow_clock", clock_json(e.producer_clock)},
             {"consumer_shadow_clock", clock_json(e.consumer_clock)}, {"frame_window", std::move(window)},
             {"selection_reason", name(e.reason)},
+            {"stalker_transaction_epoch", e.transaction_epoch},
+            {"stalker_primary_key", e.transaction_primary}, {"stalker_secondary_key", e.transaction_secondary},
+            {"source_pose_frame", e.source_pose_frame},
+            {"stalker_pair_reused", e.pair_reused},
             {"packet_accepted", e.stage == Stage::selection ? nlohmann::json(e.packet_accepted) : nlohmann::json(nullptr)},
             {"resource_checks_reached", e.resource_checks_ran}, {"observed_generation", e.current_generation},
             {"observed_rhi", address_json(e.current_rhi)}, {"observed_resource", address_json(e.current_resource)},

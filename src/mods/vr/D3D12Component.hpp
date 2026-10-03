@@ -21,6 +21,7 @@
 
 #include "d3d12/CommandContext.hpp"
 #include "d3d12/TextureContext.hpp"
+#include "Stalker2NativeD3D12.hpp"
 
 class VR;
 namespace render {
@@ -190,6 +191,9 @@ private:
     FrameTimingStats m_perf_post_present{};
 
     d3d12::TextureContext m_backbuffer_copy{};
+    uevr::stalker2_native::PairCache m_stalker2_pair_cache{};
+    bool m_stalker2_pair_was_enabled{};
+    uint64_t m_stalker2_established_epoch{};
 
     d3d12::TextureContext m_game_ui_tex{};
     static constexpr uint32_t UE58_CONVERTED_UI_SLOT_COUNT = 3;
@@ -340,16 +344,19 @@ private:
         void destroy_swapchains();
         bool pre_acquire(uint32_t swapchain_idx);
         void release_acquired(uint32_t swapchain_idx);
-        void copy(uint32_t swapchain_idx, ID3D12Resource* src,
+        bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands = std::nullopt,
             std::optional<std::function<void(d3d12::CommandContext&)>> additional_commands = std::nullopt,
-            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr);
+            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_BOX* src_box = nullptr,
+            std::shared_ptr<uevr::stalker2_native::PairFrame> retained_stalker_pair = nullptr);
 
         void copy(uint32_t swapchain_idx, ID3D12Resource* src,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr)
         {
             this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
         }
+        void retire_stalker2_pair_references();
         void retire_framework_ui_delayed_release(bool force_wait = false);
         void copy_framework_ui_ue58(
             ID3D12Resource* src,
@@ -394,6 +401,8 @@ private:
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
 
         struct SwapchainContext {
+            // Declared first so command contexts retire before these references are destroyed.
+            std::vector<std::shared_ptr<uevr::stalker2_native::PairFrame>> stalker_pairs{};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};
