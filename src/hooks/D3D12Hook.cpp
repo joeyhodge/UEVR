@@ -13,12 +13,14 @@
 
 #include "WindowFilter.hpp"
 #include "Framework.hpp"
+#include "mods/GameSpecific.hpp"
 #include "render/D3D12Diagnostics.hpp"
 #include "render/ShaderOverrideRegistry.hpp"
 
 #include "D3D12Hook.hpp"
 
 static D3D12Hook* g_d3d12_hook = nullptr;
+thread_local bool g_inside_depth_stencil_observer = false;
 
 namespace {
 constexpr size_t CREATE_GRAPHICS_PIPELINE_STATE_VTABLE_INDEX = 10;
@@ -52,7 +54,8 @@ bool should_preserve_present_params_for_current_game() {
 bool is_dune_awakening_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && exe_path->find(L"DuneSandbox-Win64-Shipping") != std::wstring::npos;
+        return uevr::games::dune_experimental_rendering_enabled &&
+               exe_path && uevr::games::is_dune_awakening_executable_path(*exe_path);
     }();
 
     return result;
@@ -515,6 +518,7 @@ bool D3D12Hook::hook() {
         std::unordered_set<uintptr_t> render_target_view_slots{};
         std::unordered_set<uintptr_t> depth_stencil_view_slots{};
         std::unordered_set<uintptr_t> set_pipeline_state_slots{};
+        std::unordered_set<uintptr_t> resource_barrier_slots{};
 
         add_unique_pointer_hook(
             device,
@@ -620,6 +624,14 @@ bool D3D12Hook::hook() {
             m_set_pipeline_state_hook_lookup,
             set_pipeline_state_slots
         );
+        add_unique_pointer_hook(
+            command_list,
+            RESOURCE_BARRIER_VTABLE_INDEX,
+            reinterpret_cast<void*>(&D3D12Hook::resource_barrier),
+            m_resource_barrier_hooks,
+            m_resource_barrier_hook_lookup,
+            resource_barrier_slots
+        );
 
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList1> command_list1{};
         Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> command_list2{};
@@ -656,6 +668,14 @@ bool D3D12Hook::hook() {
                 m_set_pipeline_state_hook_lookup,
                 set_pipeline_state_slots
             );
+            add_unique_pointer_hook(
+                iface,
+                RESOURCE_BARRIER_VTABLE_INDEX,
+                reinterpret_cast<void*>(&D3D12Hook::resource_barrier),
+                m_resource_barrier_hooks,
+                m_resource_barrier_hook_lookup,
+                resource_barrier_slots
+            );
         }
 
         m_hooked = true;
@@ -690,6 +710,8 @@ bool D3D12Hook::hook() {
 }
 
 bool D3D12Hook::unhook() {
+    m_depth_stencil_observer.store(nullptr, std::memory_order_release);
+
     if (!m_hooked) {
         return true;
     }
@@ -703,11 +725,13 @@ bool D3D12Hook::unhook() {
     m_create_render_target_view_hooks.clear();
     m_create_depth_stencil_view_hooks.clear();
     m_set_pipeline_state_hooks.clear();
+    m_resource_barrier_hooks.clear();
     m_create_graphics_pipeline_state_hook_lookup.clear();
     m_create_pipeline_state_hook_lookup.clear();
     m_create_render_target_view_hook_lookup.clear();
     m_create_depth_stencil_view_hook_lookup.clear();
     m_set_pipeline_state_hook_lookup.clear();
+    m_resource_barrier_hook_lookup.clear();
     m_set_pipeline_state_hook_generation.fetch_add(1, std::memory_order_release);
     m_swapchain_hook.reset();
 
@@ -755,6 +779,14 @@ PointerHook* D3D12Hook::find_set_pipeline_state_hook(void* slot) const {
     }
 
     return m_set_pipeline_state_hooks.empty() ? nullptr : m_set_pipeline_state_hooks.front().get();
+}
+
+PointerHook* D3D12Hook::find_resource_barrier_hook(void* slot) const {
+    if (const auto it = m_resource_barrier_hook_lookup.find(reinterpret_cast<uintptr_t>(slot)); it != m_resource_barrier_hook_lookup.end()) {
+        return it->second;
+    }
+
+    return m_resource_barrier_hooks.empty() ? nullptr : m_resource_barrier_hooks.front().get();
 }
 
 thread_local int32_t g_present_depth = 0;
@@ -1055,7 +1087,6 @@ void WINAPI D3D12Hook::create_render_target_view(
     const D3D12_RENDER_TARGET_VIEW_DESC* desc,
     D3D12_CPU_DESCRIPTOR_HANDLE descriptor
 ) {
-    (void)desc;
     auto d3d12 = g_d3d12_hook;
     const auto slot = device != nullptr ? &(*(void***)device)[CREATE_RENDER_TARGET_VIEW_VTABLE_INDEX] : nullptr;
     auto* hook = d3d12 != nullptr ? d3d12->find_create_render_target_view_hook(slot) : nullptr;
@@ -1085,6 +1116,12 @@ void WINAPI D3D12Hook::create_depth_stencil_view(
     }
 
     render::D3D12Diagnostics::get().register_dsv_descriptor("D3D12Hook::CreateDepthStencilView", resource, descriptor);
+
+    if (d3d12 != nullptr) {
+        if (const auto observer = d3d12->m_depth_stencil_observer.load(std::memory_order_acquire); observer != nullptr) {
+            observer->on_depth_stencil_view_created(resource, desc, descriptor);
+        }
+    }
 }
 
 void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_list, ID3D12PipelineState* pipeline_state) {
@@ -1125,6 +1162,32 @@ void WINAPI D3D12Hook::set_pipeline_state(ID3D12GraphicsCommandList* command_lis
     auto bound_pipeline_state = shader_registry.resolve_d3d12_pipeline_state(pipeline_state);
     shader_registry.note_d3d12_pipeline_state_bound(pipeline_state, bound_pipeline_state);
     original(command_list, bound_pipeline_state);
+}
+
+void WINAPI D3D12Hook::resource_barrier(
+    ID3D12GraphicsCommandList* command_list,
+    UINT count,
+    const D3D12_RESOURCE_BARRIER* barriers)
+{
+    auto d3d12 = g_d3d12_hook;
+    const auto slot = command_list != nullptr ? &(*(void***)command_list)[RESOURCE_BARRIER_VTABLE_INDEX] : nullptr;
+    auto* hook = d3d12 != nullptr ? d3d12->find_resource_barrier_hook(slot) : nullptr;
+    auto original = hook != nullptr ? hook->get_original<decltype(D3D12Hook::resource_barrier)*>() : nullptr;
+
+    // DIBR's UE5 depth capture must run before the engine restores a depth
+    // resource to DEPTH_WRITE. Nested ResourceBarrier calls made by that copy
+    // bypass observation and continue through the real vtable entry normally.
+    if (original != nullptr && !g_inside_depth_stencil_observer && d3d12 != nullptr) {
+        if (const auto observer = d3d12->m_depth_stencil_observer.load(std::memory_order_acquire); observer != nullptr) {
+            g_inside_depth_stencil_observer = true;
+            observer->on_resource_barriers(command_list, count, barriers);
+            g_inside_depth_stencil_observer = false;
+        }
+    }
+
+    if (original != nullptr) {
+        original(command_list, count, barriers);
+    }
 }
 
 thread_local int32_t g_resize_buffers_depth = 0;

@@ -61,9 +61,11 @@ float4 SpritePixelShader(float4 color : COLOR0, float2 texCoord : TEXCOORD0) : S
     float4 tex = Texture.Sample(TextureSampler, texCoord);
     float threshold = saturate(color.r);
     float softness = max(color.g, 0.001);
+    float invertAmount = saturate(color.b);
     float opacity = saturate(color.a);
     float luma = max(max(tex.r, tex.g), tex.b);
     float alpha = smoothstep(threshold, threshold + softness, luma) * opacity;
+    alpha = lerp(alpha, 1.0 - alpha, invertAmount);
     return float4(tex.rgb, alpha);
 }
 )";
@@ -465,8 +467,48 @@ bool D3D11Component::TextureContext::clear_rtv(float* color) {
     return true;
 }
 
+bool D3D11Component::mono_consumers_retired(uint64_t request_token) {
+    const auto& hook = g_framework->get_d3d11_hook();
+    const auto device = hook != nullptr ? hook->get_device() : nullptr;
+    if (device == nullptr) { return false; }
+    ComPtr<ID3D11DeviceContext> context;
+    device->GetImmediateContext(&context);
+    return m_mono_retirement.poll(context.Get(), request_token);
+}
+
 vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
+    const auto ui_alpha_allowed = [vr] {
+        return uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
+            vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen());
+    };
+    const auto ui_composition_request = ui_alpha_allowed() ? vr->get_overlay_component().get_ui_composition_request() : 0;
+    m_openxr.ui_composition.begin_frame(ui_composition_request);
+    vr->get_overlay_component().set_ui_composition_status((ui_composition_request & 1)
+        ? uevr::ui_composition::Status::waiting : uevr::ui_composition::Status::off);
+    for (bool framework : {false, true}) {
+        const auto mode = vr->get_overlay_component().get_ui_alpha_mode(framework);
+        if (!ui_alpha_allowed() || mode == uevr::ui_alpha::Mode::unchanged) {
+            (framework ? m_openxr.framework_ui_alpha : m_openxr.game_ui_alpha).begin_frame();
+            vr->get_overlay_component().set_ui_alpha_status(framework, mode == uevr::ui_alpha::Mode::unchanged
+                ? uevr::ui_alpha::Status::off : uevr::ui_alpha::Status::unsupported);
+        }
+    }
+    m_mono_block_post_present = vr->mono_generation() != 0;
+    if (m_mono_generation != vr->mono_generation()) {
+        if (!mono_consumers_retired(vr->mono_request_token())) {
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
+        m_mono_generation = vr->mono_generation();
+        m_last_rendered_frame = 0;
+        m_submitted_left_eye = false;
+        m_force_reset = true;
+    }
     if (m_force_reset || m_last_afr_state != vr->is_using_afr()) {
+        if (vr->mono_generation() != 0 && !mono_consumers_retired(vr->mono_request_token())) {
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
         if (!setup()) {
             SPDLOG_ERROR_EVERY_N_SEC(1, "Failed to setup D3D11Component, trying again next frame");
             m_force_reset = true;
@@ -475,6 +517,17 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
         m_last_afr_state = vr->is_using_afr();
     }
+
+    if (vr->mono_frame_gate_required()) {
+        if (!vr->m_openxr->has_mono_frame(static_cast<uint32_t>(vr->m_frame_count))) {
+            vr->set_mono_status("Waiting for a current main-view pose and validated common projection");
+            vr->m_openxr->end_mono_transition_frame();
+            return vr::VRCompositorError_None;
+        }
+        vr->note_mono_frame_ready(m_mono_generation);
+    }
+    m_mono_block_post_present = false;
+    m_mono_retirement.invalidate();
 
     auto& hook = g_framework->get_d3d11_hook();
 
@@ -510,6 +563,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         spdlog::error("[VR] Failed to get back buffer.");
         m_engine_tex_ref.reset();
         m_scene_capture_tex_ref.reset();
+        m_scene_capture_snapshot_transaction = 0;
         return vr::VRCompositorError_None;
     }
 
@@ -633,27 +687,186 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto& ffsr = VR::get()->m_fake_stereo_hook;
-
-    if (vr->is_native_stereo_fix_enabled()) {
-        const auto scene_capture = ffsr->get_render_target_manager()->get_scene_capture_render_target();
-        const auto scene_capture_rt = scene_capture != nullptr ? (ID3D11Texture2D*)scene_capture->get_native_resource() : nullptr;
-
-        if (scene_capture_rt != nullptr && scene_capture_rt != m_scene_capture_tex_ref.tex.Get()) {
-            D3D11_TEXTURE2D_DESC desc{};
-            scene_capture_rt->GetDesc(&desc);
-
-            spdlog::info("[VR] Scene capture texture format: {}, {}x{}", (uint32_t)desc.Format, desc.Width, desc.Height);
-            m_scene_capture_tex_ref.set(scene_capture_rt, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_B8G8R8A8_UNORM);
-        } else if (scene_capture_rt == nullptr && m_scene_capture_tex_ref.has_texture()) {
-            m_scene_capture_tex_ref.reset();
+    namespace frame_diag = uevr::native_frame;
+    frame_diag::Ticket native_frame_ticket{};
+    auto native_stereo_packet = ffsr != nullptr && !vr->is_using_mono()
+        ? ffsr->get_native_stereo_frame_packet_for_submit(vr->m_render_frame_count, frame_diag::Backend::d3d11, &native_frame_ticket)
+        : nullptr;
+    const auto record_native_submit = [&](frame_diag::Runtime api, frame_diag::Stage stage, int32_t result = 0, uint8_t eye = 2) {
+        if (native_frame_ticket && native_stereo_packet != nullptr && ffsr != nullptr) {
+            ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                frame_diag::Backend::d3d11, api, stage, result, eye);
         }
-    } else {
-        m_scene_capture_tex_ref.reset();
+    };
+    D3D11_TEXTURE2D_DESC scene_capture_desc{};
+    bool scene_capture_packet_ready = false;
+    bool daysgone_snapshot_deferred = false;
+
+    if (vr->is_native_stereo_fix_enabled() && native_stereo_packet != nullptr) {
+        ComPtr<ID3D11Texture2D> scene_capture_rt{};
+        ComPtr<ID3D11Device> scene_capture_device{};
+        const auto capture = native_stereo_packet->capture;
+        std::shared_ptr<const D3D11Hook::DaysGoneNativeSnapshot> daysgone_snapshot{};
+        IUnknown* selected_native_resource = capture != nullptr
+            ? capture->native_resource.Get()
+            : nullptr;
+
+        const bool expects_daysgone_snapshot =
+            is_daysgone_executable() &&
+            native_stereo_packet->d3d11_snapshot_transaction != 0;
+        if (expects_daysgone_snapshot) {
+            auto& d3d11_hook = g_framework->get_d3d11_hook();
+            daysgone_snapshot = d3d11_hook != nullptr
+                ? d3d11_hook->get_daysgone_native_snapshot(
+                    native_stereo_packet->d3d11_snapshot_transaction,
+                    native_stereo_packet->capture_generation)
+                : nullptr;
+            if (daysgone_snapshot == nullptr) {
+                daysgone_snapshot_deferred = true;
+                selected_native_resource = nullptr;
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[DaysGone][NativeFix][D3D11] Waiting for persistent snapshot transaction {} "
+                    "generation {} at Present",
+                    native_stereo_packet->d3d11_snapshot_transaction,
+                    native_stereo_packet->capture_generation);
+            } else {
+                selected_native_resource = daysgone_snapshot->texture.Get();
+            }
+        }
+
+        const auto query_result = selected_native_resource != nullptr
+            ? selected_native_resource->QueryInterface(IID_PPV_ARGS(&scene_capture_rt))
+            : E_NOINTERFACE;
+
+        if (SUCCEEDED(query_result) && scene_capture_rt != nullptr) {
+            scene_capture_rt->GetDesc(&scene_capture_desc);
+            scene_capture_rt->GetDevice(&scene_capture_device);
+
+            const bool bgra_compatible =
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+            const bool desc_valid =
+                scene_capture_device.Get() == device &&
+                bgra_compatible &&
+                scene_capture_desc.Width == static_cast<uint32_t>(vr->get_hmd_width()) &&
+                scene_capture_desc.Height == static_cast<uint32_t>(vr->get_hmd_height()) &&
+                scene_capture_desc.MipLevels == 1 && scene_capture_desc.ArraySize == 1 &&
+                scene_capture_desc.SampleDesc.Count == 1;
+
+            if (desc_valid) {
+                const auto view_format = scene_capture_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS
+                    ? DXGI_FORMAT_B8G8R8A8_UNORM
+                    : scene_capture_desc.Format;
+                const auto selected_generation = daysgone_snapshot != nullptr
+                    ? daysgone_snapshot->capture_generation
+                    : capture->generation;
+                const auto selected_transaction = daysgone_snapshot != nullptr
+                    ? native_stereo_packet->d3d11_snapshot_transaction
+                    : uint64_t{};
+
+                if (m_scene_capture_generation != selected_generation ||
+                    m_scene_capture_snapshot_transaction != selected_transaction ||
+                    scene_capture_rt.Get() != m_scene_capture_tex_ref.tex.Get())
+                {
+                    const bool generation_changed =
+                        m_scene_capture_generation != selected_generation;
+                    m_scene_capture_tex_ref.reset();
+                    m_scene_capture_generation = 0;
+                    m_scene_capture_snapshot_transaction = 0;
+                    if (m_scene_capture_tex_ref.set(scene_capture_rt.Get(), view_format, view_format)) {
+                        m_scene_capture_generation = selected_generation;
+                        m_scene_capture_snapshot_transaction = selected_transaction;
+                        m_scene_capture_width = scene_capture_desc.Width;
+                        m_scene_capture_height = scene_capture_desc.Height;
+                        if (generation_changed) {
+                            spdlog::info(
+                                "[NativeStereoFix][D3D11] Accepted scene capture generation {} transaction {} format {} {}x{}",
+                                selected_generation,
+                                selected_transaction,
+                                static_cast<uint32_t>(scene_capture_desc.Format),
+                                scene_capture_desc.Width,
+                                scene_capture_desc.Height);
+                        } else {
+                            SPDLOG_INFO_EVERY_N_SEC(
+                                30,
+                                "[NativeStereoFix][D3D11] Scene capture remains active at generation {} transaction {} format {} {}x{}",
+                                selected_generation,
+                                selected_transaction,
+                                static_cast<uint32_t>(scene_capture_desc.Format),
+                                scene_capture_desc.Width,
+                                scene_capture_desc.Height);
+                        }
+                    }
+                }
+
+                scene_capture_packet_ready =
+                    m_scene_capture_generation == selected_generation &&
+                    m_scene_capture_snapshot_transaction == selected_transaction &&
+                    m_scene_capture_tex_ref.has_texture();
+            } else {
+                SPDLOG_WARNING_EVERY_N_SEC(
+                    2,
+                    "[NativeStereoFix][D3D11] Rejecting capture generation {} device_match={} format={} size={}x{} mips={} array={} samples={}",
+                    daysgone_snapshot != nullptr
+                        ? daysgone_snapshot->capture_generation
+                        : (capture != nullptr ? capture->generation : uint64_t{}),
+                    scene_capture_device.Get() == device,
+                    static_cast<uint32_t>(scene_capture_desc.Format),
+                    scene_capture_desc.Width,
+                    scene_capture_desc.Height,
+                    scene_capture_desc.MipLevels,
+                    scene_capture_desc.ArraySize,
+                    scene_capture_desc.SampleDesc.Count);
+            }
+        }
     }
 
-    // Update the UI overlay. Days Gone normally composites Slate through BendTemporalAA
-    // into the scene. When the game-specific overlay path is enabled, use the captured
-    // SlateIntermediateBuffer and key black out into a real OpenXR UI layer.
+    if (native_stereo_packet != nullptr && !scene_capture_packet_ready &&
+        !daysgone_snapshot_deferred &&
+        native_stereo_packet->d3d11_snapshot_transaction == 0 && ffsr != nullptr)
+    {
+        ffsr->reject_native_stereo_frame_packet(
+            native_stereo_packet->serial,
+            "D3D11 rejected the capture resource or its views");
+    }
+
+    if (!scene_capture_packet_ready) {
+        bool cached_capture_is_current = false;
+
+        if (native_stereo_packet == nullptr &&
+            vr->is_native_stereo_fix_enabled() &&
+            m_scene_capture_generation != 0 &&
+            m_scene_capture_snapshot_transaction == 0 &&
+            m_scene_capture_tex_ref.has_texture())
+        {
+            const auto current_capture = ffsr != nullptr
+                ? ffsr->get_render_target_manager()->get_scene_capture_target_snapshot()
+                : nullptr;
+            ComPtr<ID3D11Texture2D> current_resource{};
+
+            cached_capture_is_current =
+                current_capture != nullptr &&
+                current_capture->generation == m_scene_capture_generation &&
+                SUCCEEDED(current_capture->native_resource.As(&current_resource)) &&
+                current_resource.Get() == m_scene_capture_tex_ref.tex.Get();
+        }
+
+        if (!cached_capture_is_current) {
+            m_scene_capture_tex_ref.reset();
+            m_scene_capture_generation = 0;
+            m_scene_capture_snapshot_transaction = 0;
+            m_scene_capture_width = 0;
+            m_scene_capture_height = 0;
+        }
+
+        native_stereo_packet.reset();
+    }
+
+    // Days Gone bypasses the normal viewport UI target and feeds a private
+    // SlateIntermediateBuffer into BendTemporalAA. AHUD consumes that exact
+    // target while leaving every other game's UI path unchanged.
     const auto daysgone_menu_is_in_scene = is_daysgone_executable();
     auto* daysgone_native_ui_target = static_cast<ID3D11Texture2D*>(nullptr);
     D3D11_TEXTURE2D_DESC daysgone_native_ui_desc{};
@@ -663,8 +876,19 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
         daysgone_menu_is_in_scene &&
         vr != nullptr &&
         vr->is_daysgone_bend_ui_placement_fix_enabled();
+    const bool daysgone_ahud_active =
+        daysgone_menu_is_in_scene &&
+        vr != nullptr &&
+        runtime != nullptr &&
+        runtime->is_openxr() &&
+        vr->is_hmd_active() &&
+        vr->is_ahud_compatibility_enabled();
+    const bool daysgone_slate_target_requested =
+        ffsr != nullptr &&
+        (daysgone_ahud_active ||
+         (daysgone_bend_fix_active && ffsr->should_use_daysgone_slate_ui_overlay()));
 
-    if (daysgone_bend_fix_active && ffsr != nullptr && ffsr->should_use_daysgone_slate_ui_overlay()) {
+    if (daysgone_slate_target_requested) {
         daysgone_native_ui_target = reinterpret_cast<ID3D11Texture2D*>(ffsr->get_daysgone_slate_native_ui_target());
         if (daysgone_native_ui_target != nullptr &&
             is_d3d11_or_dxgi_com_object(reinterpret_cast<IUnknown*>(daysgone_native_ui_target)))
@@ -680,6 +904,23 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
     }
 
     const auto using_daysgone_native_ui_target = daysgone_native_ui_target != nullptr;
+    const auto using_daysgone_ahud_ui_target =
+        using_daysgone_native_ui_target && daysgone_ahud_active;
+
+    if (daysgone_ahud_active != m_daysgone_ahud_was_active) {
+        if (ffsr != nullptr) {
+            ffsr->reset_daysgone_ahud_overlay_readiness();
+        }
+        if (vr != nullptr) {
+            vr->get_overlay_component().get_openxr().reset_daysgone_ahud_pose();
+        }
+
+        if (daysgone_ahud_active) {
+            SPDLOG_INFO("[DaysGone][AHUD] Armed fixed-stage UI after OpenXR/HMD became ready");
+        }
+    }
+    m_daysgone_ahud_was_active = daysgone_ahud_active;
+
     const auto ui_target = (!using_daysgone_native_ui_target && !daysgone_menu_is_in_scene)
         ? ffsr->get_render_target_manager()->get_ui_target()
         : nullptr;
@@ -700,7 +941,8 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             SPDLOG_INFO_EVERY_N_SEC(
                 5,
-                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) offset=({:.1f},{:.1f}) scale={:.3f}",
+                "[DaysGone][SlateOverlay] using captured SlateIntermediateBuffer route={} native={:x} [{}x{} fmt={} bind=0x{:X}] key=({:.3f},{:.3f},{:.3f}) invert={:.3f} offset=({:.1f},{:.1f}) scale={:.3f}",
+                using_daysgone_ahud_ui_target ? "AHUD fixed-stage" : "Bend placement",
                 (uintptr_t)native_ui_target,
                 daysgone_native_ui_desc.Width,
                 daysgone_native_ui_desc.Height,
@@ -709,9 +951,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 ffsr->get_daysgone_slate_ui_key_threshold(),
                 ffsr->get_daysgone_slate_ui_key_softness(),
                 ffsr->get_daysgone_slate_ui_key_opacity(),
-                ffsr->get_daysgone_slate_ui_offset_x(),
-                ffsr->get_daysgone_slate_ui_offset_y(),
-                ffsr->get_daysgone_slate_ui_scale());
+                vr->get_overlay_component().get_ui_invert_alpha(),
+                using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
+                using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
+                using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale());
         } else if (is_naruto_executable() && native_ui_target != nullptr) {
             D3D11_TEXTURE2D_DESC desc{};
             native_ui_target->GetDesc(&desc);
@@ -744,15 +987,17 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 native->GetDesc(&desc);
 
                 if (runtime->is_openxr()) {
-                    if (auto it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
-                        it != vr->m_openxr->swapchains.end()) 
-                    {
-                        const auto& uisc = it->second;
-                        if (desc.Width != uisc.width ||
-                            desc.Height != uisc.height)
+                    if (!using_daysgone_ahud_ui_target) {
+                        if (auto it = vr->m_openxr->swapchains.find((uint32_t)runtimes::OpenXR::SwapchainIndex::UI);
+                            it != vr->m_openxr->swapchains.end())
                         {
-                            SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
-                            ffsr->set_should_recreate_textures(true);
+                            const auto& uisc = it->second;
+                            if (desc.Width != uisc.width ||
+                                desc.Height != uisc.height)
+                            {
+                                SPDLOG_INFO_EVERY_N_SEC(1, "[OpenXR] UI size changed, recreating [{}x{}]->[{}x{}]", desc.Width, desc.Height, uisc.width, uisc.height);
+                                ffsr->set_should_recreate_textures(true);
+                            }
                         }
                     }
                 } else if (m_ui_tex != nullptr) {
@@ -808,7 +1053,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
         if (!is_afr) {
             // Render right side to right screen tex
-            if (m_scene_capture_tex_ref.has_texture() && m_scene_capture_tex_ref.has_srv()) {
+            if (native_stereo_packet != nullptr &&
+                m_scene_capture_tex_ref.has_texture() &&
+                m_scene_capture_tex_ref.has_srv())
+            {
                 render_srv_to_rtv(
                     m_game_batch.get(),
                     m_scene_capture_tex_ref,
@@ -868,7 +1116,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             } else {
                 if (m_engine_ui_ref.has_texture() && m_engine_ui_ref.has_srv()) {
                     if (using_daysgone_native_ui_target && ensure_daysgone_ui_key_resources()) {
-                        m_openxr.copy(
+                        const auto copied = m_openxr.copy(
                             (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
                             nullptr,
                             nullptr,
@@ -879,10 +1127,11 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_key_threshold(),
                                     ffsr->get_daysgone_slate_ui_key_softness(),
                                     ffsr->get_daysgone_slate_ui_key_opacity(),
-                                    ffsr->get_daysgone_slate_ui_offset_x(),
-                                    ffsr->get_daysgone_slate_ui_offset_y(),
-                                    ffsr->get_daysgone_slate_ui_scale(),
-                                    ffsr->should_split_daysgone_slate_ui_overlay(),
+                                    ui_invert_alpha,
+                                    using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_x(),
+                                    using_daysgone_ahud_ui_target ? 0.0f : ffsr->get_daysgone_slate_ui_offset_y(),
+                                    using_daysgone_ahud_ui_target ? 1.0f : ffsr->get_daysgone_slate_ui_scale(),
+                                    using_daysgone_ahud_ui_target ? false : ffsr->should_split_daysgone_slate_ui_overlay(),
                                     ffsr->get_daysgone_slate_ui_menu_src_x(),
                                     ffsr->get_daysgone_slate_ui_menu_src_y(),
                                     ffsr->get_daysgone_slate_ui_menu_src_w(),
@@ -893,6 +1142,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                                     ffsr->get_daysgone_slate_ui_footer_src_y(),
                                     ffsr->get_daysgone_slate_ui_footer_src_h());
                             });
+                        if (copied && using_daysgone_ahud_ui_target) {
+                            ffsr->note_daysgone_ahud_overlay_submitted();
+                        }
                     } else if (ui_invert_alpha > 0.0f && ensure_ui_invert_resources()) {
                         m_openxr.copy(
                             (uint32_t)runtimes::OpenXR::SwapchainIndex::UI,
@@ -1014,7 +1266,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             };
             const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
                                                            runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 0);
             const auto e = vr::VRCompositor()->Submit(vr::Eye_Left, &left_eye, &left_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 0);
 
             if (e != vr::VRCompositorError_None) {
                 spdlog::error("[VR] VRCompositor failed to submit left eye: {}", (int)e);
@@ -1086,9 +1340,23 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 }
             } else {
                 // Copy over the entire double wide back buffer instead
-                if (!m_scene_capture_tex_ref.has_texture()) {
+                if (vr->is_using_mono()) {
+                    const auto frame = static_cast<uint32_t>(vr->m_frame_count);
+                    bool recorded = false;
+                    vr->m_openxr->note_mono_copy(frame, false);
+                    const bool copied = m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE,
+                        nullptr, nullptr, [&](ID3D11Texture2D* destination) {
+                            recorded = uevr::mono::dx11::copy_scene(context.Get(), backbuffer.Get(), destination);
+                        }, backbuffer.Get());
+                    vr->m_openxr->note_mono_copy(frame, copied && recorded);
+                    if (!copied || !recorded) {
+                        vr->set_mono_status("Waiting: Mono DX11 scene/device/format/extent validation failed");
+                    }
+                } else if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, backbuffer.Get(), nullptr);
                 } else {
+                    // copy invokes this callback synchronously; the local packet
+                    // and ticket remain owned by this submit invocation.
                     m_openxr.copy((uint32_t)runtimes::OpenXR::SwapchainIndex::DOUBLE_WIDE, nullptr, nullptr, [&](ID3D11Texture2D* render_target) {
                         D3D11_BOX left_src_box{
                             .left = 0,
@@ -1098,9 +1366,33 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                             .bottom = m_backbuffer_size[1],
                             .back = 1
                         };
+                        const D3D11_BOX right_src_box{
+                            .left = 0,
+                            .top = 0,
+                            .front = 0,
+                            .right = m_scene_capture_width,
+                            .bottom = m_scene_capture_height,
+                            .back = 1,
+                        };
 
                         context->CopySubresourceRegion(render_target, 0, 0, 0, 0, backbuffer.Get(), 0, &left_src_box);
-                        context->CopySubresourceRegion(render_target, 0, m_backbuffer_size[0] / 2, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &left_src_box);
+                        context->CopySubresourceRegion(
+                            render_target,
+                            0,
+                            m_backbuffer_size[0] / 2,
+                            0,
+                            0,
+                            m_scene_capture_tex_ref.tex.Get(),
+                            0,
+                            &right_src_box);
+                        if (native_stereo_packet != nullptr) {
+                            if (native_frame_ticket) {
+                                ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                                    frame_diag::Backend::d3d11, frame_diag::Runtime::openxr, frame_diag::Stage::copy_recorded,
+                                    0, 2, 0, m_scene_capture_tex_ref.tex.Get(), render_target);
+                            }
+                            ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                        }
                     });
                 }
 
@@ -1111,6 +1403,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
             LOG_VERBOSE("Ending frame");
             thread_local std::vector<XrCompositionLayerBaseHeader*> quad_layers{}; quad_layers.clear();
+            std::shared_ptr<void> game_alpha_lease, framework_alpha_lease;
 
             auto& openxr_overlay = vr->get_overlay_component().get_openxr();
 
@@ -1126,9 +1419,23 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&right_layer->get());
                 }
             } else if (m_openxr.ever_acquired((uint32_t)runtimes::OpenXR::SwapchainIndex::UI)) {
-                const auto slate_layer = openxr_overlay.generate_slate_layer();
+                const auto slate_layer = daysgone_ahud_active && using_daysgone_ahud_ui_target
+                    ? openxr_overlay.generate_daysgone_ahud_slate_layer()
+                    : openxr_overlay.generate_slate_layer();
 
                 if (slate_layer) {
+                    const auto alpha = vr->get_overlay_component().get_ui_alpha_mode();
+                    if (ui_alpha_allowed() && alpha != uevr::ui_alpha::Mode::unchanged) {
+                        const auto flags = slate_layer->get().layerFlags;
+                        game_alpha_lease = m_openxr.game_ui_alpha.apply(slate_layer->get(), alpha);
+                        if (game_alpha_lease) { vr->get_overlay_component().set_ui_alpha_status(false, uevr::ui_alpha::Status::active); }
+                        vr->get_overlay_component().observe_ui_alpha_layer(false, flags, slate_layer->get().layerFlags);
+                    }
+                    if (ui_composition_request & 1) {
+                        m_openxr.ui_composition.bind(false, &slate_layer->get(),
+                            vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::UI].handle,
+                            game_alpha_lease ? alpha : uevr::ui_alpha::Mode::unchanged);
+                    }
                     quad_layers.push_back(&slate_layer->get());
                 }   
             }
@@ -1137,11 +1444,26 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 const auto framework_quad = openxr_overlay.generate_framework_ui_quad();
 
                 if (framework_quad) {
+                    if (ui_alpha_allowed() && vr->get_overlay_component().get_ui_alpha_mode(true) != uevr::ui_alpha::Mode::unchanged) {
+                        const auto flags = framework_quad->get().layerFlags;
+                        framework_alpha_lease = m_openxr.framework_ui_alpha.apply(
+                            reinterpret_cast<XrCompositionLayerBaseHeader&>(framework_quad->get()), vr->get_overlay_component().get_ui_alpha_mode(true));
+                        if (framework_alpha_lease) { vr->get_overlay_component().set_ui_alpha_status(true, uevr::ui_alpha::Status::active); }
+                        vr->get_overlay_component().observe_ui_alpha_layer(true, flags, framework_quad->get().layerFlags);
+                    }
+                    if (ui_composition_request & 1) {
+                        m_openxr.ui_composition.bind(true, reinterpret_cast<XrCompositionLayerBaseHeader*>(&framework_quad->get()),
+                            vr->m_openxr->swapchains[(uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI].handle,
+                            framework_alpha_lease ? vr->get_overlay_component().get_ui_alpha_mode(true) : uevr::ui_alpha::Mode::unchanged);
+                    }
                     quad_layers.push_back((XrCompositionLayerBaseHeader*)&framework_quad->get());
                 }
             }
             
-            auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr);
+            record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_attempt);
+            auto result = vr->m_openxr->end_frame(quad_layers, scene_depth_tex != nullptr,
+                (ui_composition_request & 1) ? &m_openxr.ui_composition : nullptr);
+            record_native_submit(frame_diag::Runtime::openxr, frame_diag::Stage::submit_result, static_cast<int32_t>(result));
 
             vr->m_openxr->needs_pose_update = true;
             vr->m_submitted = result == XR_SUCCESS;
@@ -1182,7 +1504,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 };
                 const auto left_bounds = vr::VRTextureBounds_t{runtime->view_bounds[0][0], runtime->view_bounds[0][2],
                                                                runtime->view_bounds[0][1], runtime->view_bounds[0][3]};
+                record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 0);
                 e = vr::VRCompositor()->Submit(vr::Eye_Left, &left_eye, &left_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+                record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 0);
 
                 if (e != vr::VRCompositorError_None) {
                     spdlog::error("[VR] VRCompositor failed to submit left eye: {}", (int)e);
@@ -1192,7 +1516,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             }
 
             // Copy the back buffer to the right eye texture.
-            if (!m_scene_capture_tex_ref.has_texture()) {
+            if (native_stereo_packet == nullptr || !m_scene_capture_tex_ref.has_texture()) {
                 D3D11_BOX src_box{};
                 if (!vr->is_extreme_compatibility_mode_enabled()) {
                     if (!is_afr) {
@@ -1221,16 +1545,24 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 
                 context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, backbuffer.Get(), 0, &src_box);
             } else {
-                D3D11_BOX left_src_box{
+                D3D11_BOX right_src_box{
                     .left = 0,
                     .top = 0,
                     .front = 0,
-                    .right = m_backbuffer_size[0] / 2,
-                    .bottom = m_backbuffer_size[1],
+                    .right = m_scene_capture_width,
+                    .bottom = m_scene_capture_height,
                     .back = 1
                 };
 
-                context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &left_src_box);
+                context->CopySubresourceRegion(m_right_eye_tex.Get(), 0, 0, 0, 0, m_scene_capture_tex_ref.tex.Get(), 0, &right_src_box);
+                if (native_stereo_packet != nullptr) {
+                    if (native_frame_ticket) {
+                        ffsr->record_native_frame_stage(*native_stereo_packet, native_frame_ticket,
+                            frame_diag::Backend::d3d11, frame_diag::Runtime::openvr, frame_diag::Stage::copy_recorded,
+                            0, 1, 0, m_scene_capture_tex_ref.tex.Get(), m_right_eye_tex.Get());
+                    }
+                    ffsr->note_native_stereo_frame_packet_consumed(native_stereo_packet->serial);
+                }
             }
 
             if (m_is_shader_setup) {
@@ -1246,7 +1578,9 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
             };
             const auto right_bounds = vr::VRTextureBounds_t{runtime->view_bounds[1][0], runtime->view_bounds[1][2],
                                                             runtime->view_bounds[1][1], runtime->view_bounds[1][3]};
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_attempt, 0, 1);
             e = vr::VRCompositor()->Submit(vr::Eye_Right, &right_eye, &right_bounds, vr::EVRSubmitFlags::Submit_TextureWithPose);
+            record_native_submit(frame_diag::Runtime::openvr, frame_diag::Stage::submit_result, static_cast<int32_t>(e), 1);
             runtime->frame_synced = false;
 
             bool submitted = true;
@@ -1338,7 +1672,7 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
                 source_rect.top = 0;
                 source_rect.right = (LONG)full_source_width;
                 source_rect.bottom = (LONG)full_source_height;
-            } else if (vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
+            } else if (vr->is_using_mono() || vr->is_using_afr() || vr->is_native_stereo_fix_enabled()) {
                 // left side of double wide tex only on AFR/synced
                 source_rect.left = 0;
                 source_rect.top = 0;
@@ -1410,6 +1744,10 @@ vr::EVRCompositorError D3D11Component::on_frame(VR* vr) {
 }
 
 void D3D11Component::on_post_present(VR* vr) {
+    if (vr->is_mono_transition_quiescing()) { return; }
+    if ((vr->is_mono_transition_waiting() || m_mono_block_post_present) &&
+        !uevr::mono::clear_waiting_backbuffer(vr->is_using_mono(), vr->is_mono_transition_quiescing(),
+            !m_force_reset, m_mono_generation, vr->mono_generation())) { return; }
     // Never erase the desktop while no validated scene source has reached the
     // compositor. Setup retries on the next frame without turning a recoverable
     // target-discovery delay into a black game window.
@@ -1450,14 +1788,31 @@ void D3D11Component::on_post_present(VR* vr) {
         }
 
         if (m_backbuffer_rtv != nullptr) {
+            // Waiting Mono frames can clear without reaching on_frame's normal
+            // query invalidation. A later resize must retire this new work too.
+            if (vr->is_using_mono()) { m_mono_retirement.invalidate(); }
             float clear_color[] = { 0.0f, 0.0f, 0.0f, 0.0f };
             context->ClearRenderTargetView(m_backbuffer_rtv.Get(), clear_color);
         }
     }
 }
 
-void D3D11Component::on_reset(VR* vr) {
+void D3D11Component::on_reset(VR* vr, bool mono_retired) {
     m_force_reset = true;
+    if (vr->mono_generation() != 0 && !mono_retired) {
+        // Resize/reinit callbacks only request work. Present retires the
+        // immediate-context copies before destroying Mono swapchains/resources.
+        m_mono_block_post_present = true;
+        return;
+    }
+    m_daysgone_ahud_was_active = false;
+
+    if (vr != nullptr) {
+        if (vr->m_fake_stereo_hook != nullptr) {
+            vr->m_fake_stereo_hook->reset_daysgone_ahud_overlay_readiness();
+        }
+        vr->get_overlay_component().get_openxr().reset_daysgone_ahud_pose();
+    }
 
     m_backbuffer_rtv.Reset();
     m_backbuffer.Reset();
@@ -1465,6 +1820,11 @@ void D3D11Component::on_reset(VR* vr) {
     m_extreme_compat_backbuffer.Reset();
     m_converted_backbuffer.Reset();
     m_extreme_compat_backbuffer_ctx.reset();
+    m_scene_capture_tex_ref.reset();
+    m_scene_capture_generation = 0;
+    m_scene_capture_snapshot_transaction = 0;
+    m_scene_capture_width = 0;
+    m_scene_capture_height = 0;
     m_left_eye_tex.Reset();
     m_right_eye_tex.Reset();
     m_left_eye_rtv.Reset();
@@ -1890,6 +2250,7 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
     float threshold,
     float softness,
     float opacity,
+    float invert_amount,
     float offset_x,
     float offset_y,
     float scale,
@@ -1969,7 +2330,7 @@ void D3D11Component::render_daysgone_ui_key_to_rt(
     const auto tint = DirectX::XMVectorSet(
         std::clamp(threshold, 0.0f, 0.5f),
         std::clamp(softness, 0.001f, 0.5f),
-        1.0f,
+        std::clamp(invert_amount, 0.0f, 1.0f),
         std::clamp(opacity, 0.0f, 2.0f));
 
     auto set_custom_shaders = [&]() {
@@ -2048,7 +2409,8 @@ bool D3D11Component::setup() {
     SPDLOG_INFO_EVERY_N_SEC(1, "[VR] Setting up D3D11 textures...");
 
     auto& vr = VR::get();
-    on_reset(vr.get());
+    if (vr->mono_generation() != 0 && !mono_consumers_retired(vr->mono_request_token())) { return false; }
+    on_reset(vr.get(), true);
 
     // Get device and swapchain.
     auto& hook = g_framework->get_d3d11_hook();
@@ -2711,7 +3073,6 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
         }
 
         vr->m_openxr->swapchains[i] = swapchain;
-        vr->m_openxr->cache_swapchain_dimensions(i, swapchain.width, swapchain.height);
 
         uint32_t image_count{};
         auto result = xrEnumerateSwapchainImages(swapchain.handle, 0, &image_count, nullptr);
@@ -2921,17 +3282,11 @@ std::optional<std::string> D3D11Component::OpenXR::create_swapchains() {
 
 void D3D11Component::OpenXR::destroy_swapchains() {
     std::scoped_lock _{this->mtx};
-    auto vr = VR::get();
-
-    if (vr != nullptr && vr->m_openxr != nullptr) {
-        vr->m_openxr->clear_cached_swapchain_dimensions();
-    }
+    const bool composition_retired = this->ui_composition.reset();
+    const bool game_alpha_retired = this->game_ui_alpha.reset();
+    const bool framework_alpha_retired = this->framework_ui_alpha.reset();
 
 	if (this->contexts.empty()) {
-        return;
-    }
-
-    if (vr == nullptr || vr->m_openxr == nullptr) {
         return;
     }
 
@@ -2950,8 +3305,11 @@ void D3D11Component::OpenXR::destroy_swapchains() {
             }
         }
 
-        if (vr->m_openxr->swapchains.contains(i)) {
-            auto result = xrDestroySwapchain(vr->m_openxr->swapchains[i].handle);
+        if ((i == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI && (!game_alpha_retired || !composition_retired)) ||
+            (i == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI && (!framework_alpha_retired || !composition_retired))) {
+            spdlog::error("[UI Processing] Retaining original UI swapchain after unproven GPU retirement");
+        } else if (VR::get()->m_openxr->swapchains.contains(i)) {
+            auto result = xrDestroySwapchain(VR::get()->m_openxr->swapchains[i].handle);
 
             if (result != XR_SUCCESS) {
                 spdlog::error("[VR] Failed to destroy swapchain {}.", i);
@@ -2974,16 +3332,17 @@ void D3D11Component::OpenXR::destroy_swapchains() {
     }
 
     this->contexts.clear();
-    vr->m_openxr->swapchains.clear();
+    VR::get()->m_openxr->swapchains.clear();
 }
 
-void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box, std::function<void(ID3D11Texture2D*)> pre_commands) {
+bool D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box,
+    std::function<void(ID3D11Texture2D*)> pre_commands, ID3D11Texture2D* retained_mono_source) {
     std::scoped_lock _{this->mtx};
 
     auto vr = VR::get();
 
     if (vr->m_openxr->frame_state.shouldRender != XR_TRUE) {
-        return;
+        return false;
     }
 
     if (!vr->m_openxr->frame_began) {
@@ -2993,12 +3352,12 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
 
     if (!this->contexts.contains(swapchain_idx)) {
         spdlog::error("[VR] OpenXR: Trying to copy to swapchain {} but it doesn't exist.", swapchain_idx);
-        return;
+        return false;
     }
 
     if (!vr->m_openxr->swapchains.contains(swapchain_idx)) {
         spdlog::error("[VR] OpenXR: Trying to copy to swapchain {} but it doesn't exist.", swapchain_idx);
-        return;
+        return false;
     }
 
     if (this->contexts[swapchain_idx].num_textures_acquired > 0) {
@@ -3037,6 +3396,11 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
         } else {
             LOG_VERBOSE("Copying swapchain image {} for {}", texture_index, swapchain_idx);
 
+            if (retained_mono_source != nullptr) {
+                if (ctx.mono_sources.size() != ctx.textures.size()) { ctx.mono_sources.resize(ctx.textures.size()); }
+                ctx.mono_sources[texture_index] = retained_mono_source;
+            }
+
             if (pre_commands != nullptr) {
                 pre_commands(ctx.textures[texture_index].texture);
             }
@@ -3051,6 +3415,14 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
                 }
             }
 
+            if (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI ||
+                swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI) {
+                if (src_box == nullptr) { this->process_ui_alpha(swapchain_idx, texture_index); }
+                else {
+                    (swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::UI ? game_ui_alpha : framework_ui_alpha).begin_frame();
+                    ui_composition.invalidate(swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI);
+                }
+            }
             XrSwapchainImageReleaseInfo release_info{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
 
             LOG_VERBOSE("Releasing swapchain image for {}", swapchain_idx);
@@ -3058,12 +3430,48 @@ void D3D11Component::OpenXR::copy(uint32_t swapchain_idx, ID3D11Texture2D* resou
 
             if (result != XR_SUCCESS) {
                 spdlog::error("[VR] xrReleaseSwapchainImage failed: {}", vr->m_openxr->get_result_string(result));
-                return;
+                this->game_ui_alpha.begin_frame();
+                this->framework_ui_alpha.begin_frame();
+                this->ui_composition.invalidate(false); this->ui_composition.invalidate(true);
+                return false;
             }
 
             ctx.num_textures_acquired--;
             ctx.ever_acquired = true;
+            return true;
         }
     }
+
+    return false;
+}
+void D3D11Component::OpenXR::process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index) {
+    const auto vr = VR::get();
+    const bool framework = swapchain_idx == (uint32_t)runtimes::OpenXR::SwapchainIndex::FRAMEWORK_UI;
+    auto& helper = framework ? framework_ui_alpha : game_ui_alpha;
+    if (!vr || !vr->m_openxr || !vr->m_openxr->frame_began ||
+        !uevr::ui_alpha::eligible(vr->get_runtime()->is_openxr(), vr->is_using_mono(),
+            vr->is_dibr_rendering_method_selected(), vr->is_mono_transition_pending(), vr->is_using_2d_screen())) {
+        helper.begin_frame(); ui_composition.invalidate(framework); return;
+    }
+    const auto it = contexts.find(swapchain_idx);
+    const auto chain = vr->m_openxr->swapchains.find(swapchain_idx);
+    if (it == contexts.end() || chain == vr->m_openxr->swapchains.end() || it->second.num_textures_acquired == 0 ||
+        texture_index >= it->second.textures.size() || it->second.textures.size() > 16 || chain->second.width <= 0 || chain->second.height <= 0) {
+        helper.begin_frame(); ui_composition.invalidate(framework); return;
+    }
+    std::array<ID3D11Texture2D*, 16> sources{};
+    for (size_t i = 0; i < it->second.textures.size(); ++i) { sources[i] = it->second.textures[i].texture; }
+    const uevr::ui_alpha::Request request{vr->m_openxr->instance, vr->m_openxr->system, vr->m_openxr->session,
+        chain->second.handle, {static_cast<uint32_t>(chain->second.width), static_cast<uint32_t>(chain->second.height)},
+        vr->get_overlay_component().get_ui_alpha_mode(framework)};
+    const auto status = helper.copy(request, g_framework->get_d3d11_hook()->get_device(),
+        std::span<ID3D11Texture2D* const>{sources.data(), it->second.textures.size()}, texture_index);
+    if (vr->get_overlay_component().get_ui_composition_request() & 1) {
+        ui_composition.capture(framework, {request.session, request.source, request.extent, request.mode},
+            g_framework->get_d3d11_hook()->get_device(),
+            std::span<ID3D11Texture2D* const>{sources.data(), it->second.textures.size()}, texture_index);
+    }
+    vr->get_overlay_component().set_ui_alpha_status(framework, status);
+    if (const auto sample = helper.sample()) { vr->get_overlay_component().set_ui_alpha_sample(framework, *sample); }
 }
 } // namespace vrmod

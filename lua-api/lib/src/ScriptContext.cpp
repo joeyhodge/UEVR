@@ -28,14 +28,24 @@ public:
 
     template<typename T>
     void for_each(T&& fn) {
-        std::scoped_lock _{mtx};
-        for (auto it = list.begin(); it != list.end();) {
-            if (auto ctx = it->lock()) {
-                fn(ctx);
-                ++it;
-            } else {
-                it = list.erase(it); // Naturally removes the weak_ptr from the list
+        std::vector<std::shared_ptr<ScriptContext>> contexts;
+        {
+            std::scoped_lock _{mtx};
+            contexts.reserve(list.size());
+            for (auto it = list.begin(); it != list.end();) {
+                if (auto ctx = it->lock()) {
+                    contexts.push_back(std::move(ctx));
+                    ++it;
+                } else {
+                    it = list.erase(it); // Naturally removes the weak_ptr from the list
+                }
             }
+        }
+
+        // Lua can reenter this registry through Unreal. Keep contexts alive,
+        // but never hold the registry lock while waiting for a Lua-state lock.
+        for (auto& ctx : contexts) {
+            ctx->dispatch_if_active([&] { fn(ctx); });
         }
     }
 
@@ -586,8 +596,13 @@ int ScriptContext::setup_bindings() {
         }
     );
 
-    m_lua.new_usertype<uevr::API::FName>("UEVR_FName",
+    // get_fname() returns borrowed engine storage, not an OwnedFName value.
+    m_lua.new_usertype<uevr::API::FName>("UEVR_FNameRef", sol::no_constructor,
         "to_string", &uevr::API::FName::to_string
+    );
+
+    m_lua.new_usertype<uevr::API::OwnedFName>("UEVR_FName",
+        "to_string", &uevr::API::OwnedFName::to_string
     );
 
     m_lua.new_usertype<uevr::API::UObject>("UEVR_UObject",
@@ -657,7 +672,9 @@ int ScriptContext::setup_bindings() {
             return self.get_property<uint32_t>(name);
         },
         "get_fname_property", [](uevr::API::UObject& self, const std::wstring& name) {
-            return self.get_property<uevr::API::FName>(name);
+            const auto value = self.get_property_data<uevr::API::FName>(name);
+            if (!value) { throw sol::error("NameProperty not found"); }
+            return uevr::API::OwnedFName{*value};
         },
         "get_uobject_property", [](uevr::API::UObject& self, const std::wstring& name) {
             return self.get_property<uevr::API::UObject*>(name);
@@ -945,8 +962,8 @@ int ScriptContext::setup_bindings() {
                 state->set_rotation_offset(vq);
             } else if (obj.is<lua::datatypes::Vector4d>()) {
                 const auto v = obj.as<lua::datatypes::Vector4d>();
-                const auto v_as_f = lua::datatypes::Vector3f{ (float)v.x, (float)v.y, (float)v.z };
-                const auto vq = (UEVR_Quaternionf*)&v_as_f;
+                const UEVR_Quaternionf v_as_f{ (float)v.x, (float)v.y, (float)v.z, (float)v.w };
+                const auto vq = &v_as_f;
                 state->set_rotation_offset(vq);
             } else if (obj.is<lua::datatypes::Vector3f>()) { // Assume euler
                 const auto euler = obj.as<lua::datatypes::Vector3f>();

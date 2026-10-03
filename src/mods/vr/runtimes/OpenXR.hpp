@@ -1,6 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <array>
+#include <optional>
+#include <utility>
 #include <unordered_set>
 #include <deque>
 #include <chrono>
@@ -22,8 +25,11 @@
 #include <sdk/Math.hpp>
 
 #include "Mod.hpp"
+#include "../MonoRenderingPolicy.hpp"
 
 #include "VRRuntime.hpp"
+
+namespace uevr::ui_composition { class Compositor; }
 
 namespace runtimes{
 struct OpenXR final : public VRRuntime {
@@ -160,9 +166,11 @@ public:
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
     XrResult begin_frame(const char* caller = "unknown");
-    XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false);
+    XrResult end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth = false,
+        uevr::ui_composition::Compositor* ui_composition = nullptr);
     XrResult recover_wedged_frame(const char* reason);
     bool close_synced_frame_without_layers(const char* reason);
+    bool discard_synced_frame_without_layers(const char* reason);
     void prepare_resolution_scale_reconfigure(const char* reason);
     bool recover_focused_stale_frame_loop(const char* caller);
     void log_frame_lifecycle_state(const char* prefix) const;
@@ -363,6 +371,40 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+    struct Stalker2PairSubmit {
+        std::array<XrView, 2> views{};
+        uint64_t epoch{}, generation{};
+        uint32_t source_frame{};
+        bool reused{};
+        bool scene_available{true};
+    };
+    void set_stalker2_pair_submit(std::optional<Stalker2PairSubmit> value) {
+        std::scoped_lock lock{sync_assignment_mtx}; m_stalker2_pair_submit = std::move(value);
+        m_stalker2_pair_pending.store(m_stalker2_pair_submit.has_value(), std::memory_order_release);
+    }
+    std::optional<Stalker2PairSubmit> take_stalker2_pair_submit() {
+        if (!m_stalker2_pair_pending.load(std::memory_order_acquire)) { return std::nullopt; }
+        std::scoped_lock lock{sync_assignment_mtx};
+        m_stalker2_pair_pending.store(false, std::memory_order_release);
+        return std::exchange(m_stalker2_pair_submit, std::nullopt);
+    }
+    std::optional<Stalker2PairSubmit> m_stalker2_pair_submit{}; // sync_assignment_mtx
+    std::atomic_bool m_stalker2_pair_pending{};
+    void end_mono_transition_frame();
+    void reset_mono_projection_history();
+    void note_mono_projection();
+    void note_mono_main_family(uint32_t frame, bool main_family);
+    bool has_mono_pose(uint32_t frame);
+    bool has_mono_frame(uint32_t frame);
+    void note_mono_copy(uint32_t frame, bool success);
+    struct MonoFrame {
+        uint64_t generation{};
+        uint32_t pose_frame{}, projection_frame{};
+        bool pose_valid{}, main_family{}, copied{};
+        std::optional<uevr::mono::Geometry> geometry;
+    };
+    std::array<MonoFrame, QUEUE_SIZE> mono_frames{}; // protected by sync_assignment_mtx
+    std::optional<uint32_t> mono_copied_frame; // exact copy producer, not a later render callback
     bool capture_everspace2_submit_snapshot(uint32_t frame_count, PipelineState& snapshot);
     bool is_everspace2_snapshot_fresh(
         const PipelineState& snapshot,

@@ -68,6 +68,10 @@ public:
     /// @return The new Allocator.
     [[nodiscard]] static std::shared_ptr<Allocator> create();
 
+    /// @brief Creates an isolated allocator that never reuses executable image padding.
+    /// @note A failed nearby allocation is returned to the hook's normal far/failure path.
+    [[nodiscard]] static std::shared_ptr<Allocator> create_private();
+
     Allocator(const Allocator&) = delete;
     Allocator(Allocator&&) noexcept = delete;
     Allocator& operator=(const Allocator&) = delete;
@@ -115,8 +119,10 @@ private:
 
     std::vector<std::unique_ptr<Memory>> m_memory{};
     std::mutex m_mutex{};
+    const bool m_allow_image_padding{true};
 
     Allocator() = default;
+    explicit Allocator(bool allow_image_padding) : m_allow_image_padding{allow_image_padding} {}
 
     [[nodiscard]] std::expected<Allocation, Error> internal_allocate_near(
         const std::vector<uint8_t*>& desired_addresses, size_t size, size_t max_distance = 0x7FFF'FFFF);

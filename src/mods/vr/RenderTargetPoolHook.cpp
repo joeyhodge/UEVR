@@ -4,7 +4,6 @@
 #include <utility/String.hpp>
 
 #include <sdk/FRenderTargetPool.hpp>
-#include <sdk/EngineVersion.hpp>
 #include <sdk/EngineModule.hpp>
 #include <sdk/Utility.hpp>
 #include <sdk/threading/RHIThreadWorker.hpp>
@@ -17,7 +16,17 @@ RenderTargetPoolHook* g_hook{nullptr};
 
 namespace {
 bool is_ue_5_1() {
-    static const bool result = sdk::get_engine_version().is(5, 1);
+    static const bool result = []() {
+        const auto found_version = sdk::search_for_version(GetModuleHandleW(nullptr));
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
 
     return result;
 }
@@ -27,8 +36,35 @@ RenderTargetPoolHook::RenderTargetPoolHook() {
     g_hook = this;
 }
 
+bool RenderTargetPoolHook::try_get_native_resource(IPooledRenderTarget* rt, void** out_native) {
+    if (out_native == nullptr) {
+        return false;
+    }
+
+    *out_native = nullptr;
+
+    __try {
+        if (rt == nullptr) {
+            return true;
+        }
+
+        auto* texture = rt->item.texture.texture;
+        if (texture == nullptr) {
+            return true;
+        }
+
+        *out_native = texture->get_native_resource();
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        *out_native = nullptr;
+        return false;
+    }
+}
+
 void RenderTargetPoolHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
-    if (!m_attempted_hook && VR::get()->is_depth_enabled()) {
+    // DIBR needs SceneDepthZ as a private synthesis input even when users
+    // intentionally leave compositor depth submission disabled.
+    if (!m_attempted_hook && (VR::get()->is_depth_enabled() || VR::get()->is_dibr_preview_active())) {
         m_wants_activate = true;
     }
 

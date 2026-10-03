@@ -10,6 +10,13 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Get-SnapshotHash([string]$Path) {
+    $stream = [IO.File]::OpenRead($Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+    finally { $sha.Dispose(); $stream.Dispose() }
+}
+
 if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
     $ManifestPath = Join-Path $PSScriptRoot 'ue6-snapshot.json'
 }
@@ -80,7 +87,7 @@ foreach ($entry in $manifest.files) {
     if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
         $targetStatus = 'missing'
     } else {
-        $targetHash = (Get-FileHash -LiteralPath $targetPath -Algorithm SHA256).Hash
+        $targetHash = Get-SnapshotHash $targetPath
         if ($targetHash -ne $entry.targetSha256) {
             $targetStatus = 'changed'
         }
@@ -92,7 +99,7 @@ foreach ($entry in $manifest.files) {
         if (-not (Test-Path -LiteralPath $baselinePath -PathType Leaf)) {
             $baselineStatus = 'missing'
         } else {
-            $baselineHash = (Get-FileHash -LiteralPath $baselinePath -Algorithm SHA256).Hash
+            $baselineHash = Get-SnapshotHash $baselinePath
             $baselineStatus = if ($baselineHash -eq $entry.baselineSha256) { 'match' } else { 'changed' }
         }
     }

@@ -67,6 +67,10 @@ std::shared_ptr<Allocator> Allocator::create() {
     return std::shared_ptr<Allocator>{new Allocator{}};
 }
 
+std::shared_ptr<Allocator> Allocator::create_private() {
+    return std::shared_ptr<Allocator>{new Allocator{false}};
+}
+
 std::expected<Allocation, Allocator::Error> Allocator::allocate(size_t size) {
     return allocate_near({}, size, std::numeric_limits<size_t>::max());
 }
@@ -122,7 +126,7 @@ std::expected<Allocation, Allocator::Error> Allocator::internal_allocate_near(
 
     // UEVR patch: only fall back to executable INT3 sleds if ordinary nearby allocation
     // fails. Reusing image padding can crash on executables with unusual protections.
-    if (!allocation_address.has_value() && !desired_addresses.empty()) {
+    if (!allocation_address.has_value() && !desired_addresses.empty() && m_allow_image_padding) {
         // Locate an address in desired_addresses that has executable permissions.
         // TODO: We could potentially look through other regions not in the desired_addresses list.
         uint8_t* address = nullptr;

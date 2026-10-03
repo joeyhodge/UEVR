@@ -15,7 +15,6 @@
 #include <imgui.h>
 
 #include <sdk/CVar.hpp>
-#include <sdk/EngineVersion.hpp>
 #include <sdk/Globals.hpp>
 #include <sdk/Utility.hpp>
 
@@ -25,17 +24,18 @@
 #include "../../VR.hpp"
 #include "../../../utility/Logging.hpp"
 #include "OpenXR.hpp"
+#include "../UIComposition.hpp"
 
 using namespace nlohmann;
 
 namespace runtimes {
+static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views);
 namespace {
 constexpr auto FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD = 180u;
 constexpr auto FRAME_BEGIN_SKIP_SUMMARY_INTERVAL = std::chrono::minutes(1);
 constexpr auto FRAME_SYNCED_SKIP_LOG_INTERVAL = std::chrono::minutes(1);
 constexpr auto FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE = std::chrono::milliseconds(1000);
-constexpr auto FOCUSED_SYNCED_NO_BEGIN_RECOVERY_AGE = std::chrono::milliseconds(300);
-constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(1);
+constexpr auto FOCUSED_FRAME_LOOP_RECOVERY_COOLDOWN = std::chrono::seconds(2);
 constexpr auto READY_STATE_STUCK_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto VALID_POSE_PROBE_LOG_INTERVAL = std::chrono::seconds(2);
 constexpr auto RELAXED_STARTUP_POSE_POST_SUBMIT_WINDOW = std::chrono::seconds(30);
@@ -76,6 +76,24 @@ int64_t elapsed_ms_since(std::chrono::steady_clock::time_point now, std::chrono:
     }
 
     return std::chrono::duration_cast<std::chrono::milliseconds>(now - then).count();
+}
+
+bool is_prospi_executable_cached() {
+    static const bool is_prospi = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        return exe_path && uevr::games::is_prospi_executable_path(*exe_path);
+    }();
+
+    return is_prospi;
+}
+
+bool is_prospi_cut_cadence_guard_active() {
+    if (!is_prospi_executable_cached()) {
+        return false;
+    }
+
+    const auto& vr = VR::get();
+    return vr != nullptr && vr->is_prospi_cut_cadence_guard_active();
 }
 
 bool is_older_frame_count(uint32_t frame_count, uint32_t current_frame_count) {
@@ -129,7 +147,16 @@ bool is_eye_projection_valid(const Vector4f& projection) {
 bool is_stalker2_openxr_frame_loop_guarded() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && uevr::games::is_stalker2_executable_path(*exe_path);
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto detected_version = sdk::search_for_version(utility::get_executable()).value_or(L"0.00");
+        const auto file_version = sdk::get_file_version_info();
+        return uevr::games::is_stalker2_legacy_ue51_runtime(
+            *exe_path,
+            detected_version,
+            file_version.dwFileVersionMS);
     }();
 
     return result;
@@ -162,7 +189,9 @@ bool is_dead_island_2_ue425_executable() {
             return false;
         }
 
-        return sdk::get_engine_version().is(4, 25);
+        const auto version = sdk::get_file_version_info();
+        return HIWORD(version.dwFileVersionMS) == 4 &&
+            LOWORD(version.dwFileVersionMS) == 25;
     }();
 
     return result;
@@ -569,6 +598,11 @@ void OpenXR::on_config_save(utility::Config& cfg) {
 }
 
 void OpenXR::on_pre_render_game_thread(uint32_t frame_count) {
+    if (VR::get()->mono_frame_gate_required()) {
+        std::scoped_lock lock{this->sync_assignment_mtx};
+        this->pipeline_states[frame_count % QUEUE_SIZE].frame_count = frame_count;
+        return;
+    }
     if (this->is_everspace2_coherent_submit_active()) {
         std::scoped_lock _{this->sync_assignment_mtx};
 
@@ -855,7 +889,8 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         !this->ever_submitted ||
         !this->got_first_poses ||
         !this->got_first_valid_poses ||
-        !this->frame_synced)
+        !this->frame_synced ||
+        !this->frame_began)
     {
         return false;
     }
@@ -896,13 +931,9 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
         return false;
     }
 
-    const auto recovery_age = this->frame_began
-        ? FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE
-        : FOCUSED_SYNCED_NO_BEGIN_RECOVERY_AGE;
-
-    if (std::chrono::milliseconds{wait_age_ms} < recovery_age ||
-        std::chrono::milliseconds{begin_age_ms} < recovery_age ||
-        std::chrono::milliseconds{end_age_ms} < recovery_age)
+    if (std::chrono::milliseconds{wait_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
+        std::chrono::milliseconds{begin_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE ||
+        std::chrono::milliseconds{end_age_ms} < FOCUSED_FRAME_LOOP_STALE_RECOVERY_AGE)
     {
         return false;
     }
@@ -935,6 +966,11 @@ bool OpenXR::recover_focused_stale_frame_loop(const char* caller) {
 
     if (this->frame_began) {
         this->recover_wedged_frame("focused stale frame loop");
+    } else if (is_prospi_cut_cadence_guard_active()) {
+        // ProSpi camera cuts can poison cadence when an old synchronized frame is
+        // opened and closed empty. During the cut guard, fail closed by dropping
+        // the local synchronized state and letting the next frame wait fresh.
+        this->discard_synced_frame_without_layers("prospi_focused_stale_synced_no_begin");
     } else {
         // xrWaitFrame succeeded but no render submit reached xrBeginFrame for too long.
         // Preserve OpenXR call order by opening and ending an empty frame instead of
@@ -1104,6 +1140,30 @@ bool OpenXR::close_synced_frame_without_layers(const char* reason) {
     return true;
 }
 
+bool OpenXR::discard_synced_frame_without_layers(const char* reason) {
+    std::scoped_lock _{sync_mtx};
+
+    if (this->session == XR_NULL_HANDLE || !this->frame_synced || this->frame_began) {
+        return false;
+    }
+
+    const auto safe_reason = reason != nullptr ? reason : "discard_synced_frame";
+    spdlog::warn(
+        "[OpenXR] Discarding synchronized frame without xrBeginFrame reason={} session={} ready={} last_begin_caller={} recoveries={}",
+        safe_reason,
+        this->get_session_state_string(this->session_state),
+        this->session_ready,
+        this->last_begin_frame_caller,
+        this->forced_frame_recovery_count);
+
+    this->clear_frame_synced(safe_reason);
+    this->frame_synced_skip_streak = 0;
+    this->frame_began_skip_streak = 0;
+    this->frame_began_skip_suppressed_count = 0;
+    ++this->forced_frame_recovery_count;
+    return true;
+}
+
 void OpenXR::prepare_resolution_scale_reconfigure(const char* reason) {
     const auto safe_reason = reason != nullptr ? reason : "resolution_scale_reconfigure";
     const auto had_synced = this->frame_synced;
@@ -1184,8 +1244,13 @@ VRRuntime::Error OpenXR::synchronize_frame(std::optional<uint32_t> frame_count, 
                 }
             }
 
-            if (this->frame_began_skip_streak >= FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD) {
-                this->recover_wedged_frame("synchronize_frame stuck with frame_began");
+            const auto prospi_cut_guard = is_prospi_cut_cadence_guard_active();
+            const auto stuck_recovery_threshold = prospi_cut_guard ? 30u : FRAME_BEGIN_STUCK_RECOVERY_THRESHOLD;
+
+            if (this->frame_began_skip_streak >= stuck_recovery_threshold) {
+                this->recover_wedged_frame(prospi_cut_guard
+                    ? "prospi synchronize_frame stuck with frame_began during cut guard"
+                    : "synchronize_frame stuck with frame_began");
                 this->frame_began_skip_streak = 0;
             }
         }
@@ -1409,6 +1474,10 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
 
     auto& pipeline_state = this->pipeline_states[frame_count % OpenXR::QUEUE_SIZE];
 
+    if (vr->mono_frame_gate_required()) {
+        mono_frames[frame_count % QUEUE_SIZE] = {};
+    }
+
     if (this->is_everspace2_coherent_submit_active()) {
         if (pipeline_state.frame_count != frame_count) {
             pipeline_state = {};
@@ -1516,6 +1585,19 @@ VRRuntime::Error OpenXR::update_poses(bool from_view_extensions, uint32_t frame_
     const auto used_dead_island_stage_pose = synthesize_dead_island_view_space_pose(this);
 
     pipeline_state.view_space_location = this->view_space_location;
+
+    if (vr->mono_frame_gate_required()) {
+        auto& mono = mono_frames[frame_count % QUEUE_SIZE];
+        mono.generation = vr->mono_generation();
+        mono.pose_frame = frame_count;
+        const auto flags = XR_VIEW_STATE_ORIENTATION_VALID_BIT | XR_VIEW_STATE_POSITION_VALID_BIT;
+        mono.pose_valid = (this->stage_view_state.viewStateFlags & flags) == flags &&
+            (this->view_state.viewStateFlags & flags) == flags && view_count == 2;
+        if (vr->is_using_mono()) {
+            mono.geometry = mono_geometry(this->stage_views);
+            if (!mono_geometry(this->views)) { mono.geometry.reset(); }
+        }
+    }
 
     if (this->is_everspace2_coherent_submit_active()) {
         pipeline_state.stage_views = this->stage_views;
@@ -1808,6 +1890,87 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
     return VRRuntime::Error::SUCCESS;
 }
 
+static std::optional<uevr::mono::Geometry> mono_geometry(const std::vector<XrView>& views) {
+    if (views.size() != 2) { return {}; }
+    std::array<uevr::mono::Eye, 2> eyes{};
+    for (size_t i = 0; i != 2; ++i) {
+        const auto& p = views[i].pose;
+        const auto& f = views[i].fov;
+        eyes[i] = {{p.orientation.x, p.orientation.y, p.orientation.z, p.orientation.w},
+                   {p.position.x, p.position.y, p.position.z},
+                   {std::tan(f.angleLeft), std::tan(f.angleRight), std::tan(f.angleUp), std::tan(f.angleDown)}};
+    }
+    return uevr::mono::geometry(eyes);
+}
+
+void OpenXR::reset_mono_projection_history() {
+    std::scoped_lock lock{this->sync_assignment_mtx, this->pose_mtx};
+    mono_frames = {};
+    mono_copied_frame.reset();
+    this->should_recalculate_eye_projections = true;
+    this->should_update_eye_matrices = true;
+}
+
+void OpenXR::note_mono_projection() {
+    std::scoped_lock lock{this->sync_assignment_mtx, this->pose_mtx};
+    const auto vr = VR::get();
+    auto& frame = mono_frames[this->internal_frame_count % QUEUE_SIZE];
+    if (frame.pose_frame != this->internal_frame_count || !frame.pose_valid) { return; }
+    if (vr->is_using_mono()) {
+        if (!frame.geometry ||
+            std::abs(this->projections[0][0][0] - 1.f / frame.geometry->horizontal) > 0.0001f ||
+            std::abs(this->projections[0][1][1] - 1.f / frame.geometry->vertical) > 0.0001f ||
+            std::abs(this->projections[0][2][0]) > 0.0001f || std::abs(this->projections[0][2][1]) > 0.0001f) { return; }
+    }
+    frame.projection_frame = this->internal_frame_count;
+    frame.generation = vr->mono_generation();
+}
+
+void OpenXR::note_mono_main_family(uint32_t frame, bool main_family) {
+    if (!main_family) { return; }
+    std::scoped_lock lock{this->sync_assignment_mtx};
+    auto& entry = mono_frames[frame % QUEUE_SIZE];
+    entry.main_family = entry.pose_frame == frame && entry.projection_frame == frame &&
+        entry.generation == VR::get()->mono_generation();
+}
+
+bool OpenXR::has_mono_frame(uint32_t frame) {
+    std::scoped_lock lock{this->sync_assignment_mtx};
+    const auto& entry = mono_frames[frame % QUEUE_SIZE];
+    return entry.pose_valid && uevr::mono::frame_matches(VR::get()->mono_generation(), entry.generation,
+        frame, entry.pose_frame, entry.projection_frame, entry.main_family) &&
+        (!VR::get()->is_using_mono() || entry.geometry.has_value());
+}
+
+bool OpenXR::has_mono_pose(uint32_t frame) {
+    std::scoped_lock lock{this->sync_assignment_mtx};
+    const auto& entry = mono_frames[frame % QUEUE_SIZE];
+    return entry.pose_valid && entry.pose_frame == frame && entry.generation == VR::get()->mono_generation();
+}
+
+void OpenXR::note_mono_copy(uint32_t frame, bool success) {
+    std::scoped_lock lock{this->sync_assignment_mtx};
+    auto& entry = mono_frames[frame % QUEUE_SIZE];
+    entry.copied = success && has_mono_frame(frame);
+    mono_copied_frame = entry.copied ? std::optional<uint32_t>{frame} : std::nullopt;
+}
+
+void OpenXR::end_mono_transition_frame() {
+    std::scoped_lock lock{this->sync_mtx};
+    if (!this->can_run_frame_loop() || !this->frame_synced) { return; }
+    if (!this->frame_began) { this->begin_frame("mono_transition"); }
+    if (!this->frame_began) { return; }
+    XrFrameEndInfo info{XR_TYPE_FRAME_END_INFO};
+    info.displayTime = this->frame_state.predictedDisplayTime;
+    info.environmentBlendMode = this->blend_mode;
+    const auto result = xrEndFrame(this->session, &info);
+    if (XR_FAILED(result)) {
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Mono] Empty transition frame failed: {}", this->get_result_string(result));
+    }
+    this->frame_began = false;
+    this->clear_frame_synced("mono_transition");
+}
+
 VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
     // exit immediately if we've updated the eye matrices since the last frame sync, so we only do this
     // operation once per sync
@@ -1821,12 +1984,51 @@ VRRuntime::Error OpenXR::update_matrices(float nearz, float farz) {
 
     // always update the pose:
     std::unique_lock ___{ this->pose_mtx };
+    if (VR::get()->is_using_mono() && this->views.size() != 2) {
+        return VRRuntime::Error::SUCCESS;
+    }
     const auto& left_pose = this->views[0].pose;
     const auto& right_pose = this->views[1].pose;
     this->eyes[0] = Matrix4x4f{OpenXR::to_glm(left_pose.orientation)};
     this->eyes[0][3] = Vector4f{*(Vector3f*)&left_pose.position, 1.0f};
     this->eyes[1] = Matrix4x4f{OpenXR::to_glm(right_pose.orientation)};
     this->eyes[1][3] = Vector4f{*(Vector3f*)&right_pose.position, 1.0f};
+
+    if (const auto vr = VR::get(); vr->is_using_mono()) {
+        const auto g = mono_geometry(this->views);
+        if (g && std::isfinite(nearz)) {
+            std::unique_lock eyes_lock{this->eyes_mtx};
+            for (size_t i = 0; i != 2; ++i) {
+                const auto& f = this->views[i].fov;
+                this->raw_projections[i] = {std::tan(f.angleLeft), std::tan(f.angleRight),
+                    std::tan(f.angleUp), std::tan(f.angleDown)};
+                std::copy(g->bounds[i].begin(), g->bounds[i].end(), this->view_bounds[i]);
+                // Both copies come from this one common optical basis, not
+                // from an unrotated union of the runtime's two eye FOVs.
+                this->projections[i] = Matrix4x4f{
+                    1.f / g->horizontal, 0, 0, 0,
+                    0, 1.f / g->vertical, 0, 0,
+                    0, 0, 0, 1,
+                    0, 0, nearz, 0};
+            }
+            if (this->should_recalculate_eye_projections || !this->has_valid_projection_data) {
+                // Keep allocation scaling stable until a projection/settings
+                // reset, just like the ordinary path. Calibration noise must
+                // not resize GPU resources each frame.
+                eye_width_adjustment = vr->should_grow_rectangle_for_projection_cropping()
+                    ? 1.f / std::max(g->bounds[0][1] - g->bounds[0][0], g->bounds[1][1] - g->bounds[1][0]) : 1.f;
+                eye_height_adjustment = vr->should_grow_rectangle_for_projection_cropping()
+                    ? 1.f / std::max(g->bounds[0][3] - g->bounds[0][2], g->bounds[1][3] - g->bounds[1][2]) : 1.f;
+                SPDLOG_INFO("[Mono] Initialized common optical projection: tan_half_fov={} x {}, texture_scale={} x {}",
+                    g->horizontal, g->vertical, eye_width_adjustment, eye_height_adjustment);
+            }
+            this->has_valid_projection_data = true;
+            this->should_recalculate_eye_projections = false;
+            this->last_eye_matrix_nearz = nearz;
+        }
+        this->should_update_eye_matrices = false;
+        return VRRuntime::Error::SUCCESS;
+    }
 
     auto get_mat = [&](int eye) {
         const auto& vr = VR::get();
@@ -2038,6 +2240,8 @@ void OpenXR::destroy() {
     }
 
     std::scoped_lock _{sync_mtx};
+    if (VR::get()->mono_generation() != 0) { reset_mono_projection_history(); }
+    if (m_stalker2_pair_pending.load(std::memory_order_acquire)) { set_stalker2_pair_submit(std::nullopt); }
 
     if (this->session != nullptr) {
         if (this->session_ready) {
@@ -2230,12 +2434,28 @@ void OpenXR::log_everspace2_coherent_submit_summary_if_needed() {
 }
 
 OpenXR::PipelineState OpenXR::get_submit_state() {
+    if (VR::get()->is_using_mono()) {
+        // Do not relabel the latest pose as the rendered pose. Mono's two eyes
+        // share one exact scene/pose/projection generation, never an AFR hold.
+        std::scoped_lock lock{this->sync_assignment_mtx};
+        const auto frame = mono_copied_frame.value_or(this->internal_render_frame_count);
+        const auto& mono = mono_frames[frame % QUEUE_SIZE];
+        auto selected = this->pipeline_states[frame % QUEUE_SIZE];
+        if (!mono_copied_frame || !has_mono_frame(frame) || !mono.copied || selected.frame_count != frame) {
+            selected = {};
+            selected.frame_state = this->frame_state;
+        }
+        this->has_render_frame_count = false;
+        this->last_submit_state = selected;
+        mono_copied_frame.reset();
+        return selected;
+    }
     if (this->is_everspace2_coherent_submit_active()) {
         SPDLOG_INFO_ONCE(
             "[Everspace2][OpenXR][coherent-submit] Active executable=ES2-Win64-Shipping.exe "
             "runtime=OpenXR renderer=D3D12 engine={} persistent_pose_latch=false "
             "slate_target_redirect=false global_mixed_frame_fallback=false",
-            utility::narrow(sdk::format_engine_version(sdk::get_engine_version(), true)));
+            utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"unknown")));
         SPDLOG_INFO_ONCE(
             "[Everspace2][OpenXR][coherent-submit] Prior rejected paths remain disabled: "
             "persistent pose latching produced multi-second stale poses; Slate target redirection "
@@ -3498,7 +3718,8 @@ XrResult OpenXR::begin_frame(const char* caller) {
     return result;
 }
 
-XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth) {
+XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& quad_layers, bool has_depth,
+    uevr::ui_composition::Compositor* ui_composition) {
     std::scoped_lock _{sync_mtx};
 
     emit_openxr_state_probes(this, "end_frame");
@@ -3520,6 +3741,11 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     auto vr = VR::get();
     const auto is_afr = vr->is_using_afr();
+    const bool mono = vr->is_using_mono();
+    if (!uevr::ui_composition::eligible(true, mono, vr->is_dibr_rendering_method_selected(),
+            vr->is_mono_transition_pending(), vr->is_using_2d_screen()) ||
+        !(vr->get_overlay_component().get_ui_composition_request() & 1)) { ui_composition = nullptr; }
+    if (mono) { has_depth = false; }
     if (is_afr && is_dead_island_2_ue425_executable()) {
         has_depth = false;
         SPDLOG_INFO_ONCE("[DeadIsland2][UE4.25][OpenXR] Submitting the AFR projection layer without depth");
@@ -3564,10 +3790,32 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto submit_state = this->get_submit_state();
     const auto& pipelined_stage_views = submit_state.stage_views;
     const auto& pipelined_frame_state = submit_state.frame_state;
+    auto stalker_pair = take_stalker2_pair_submit();
+    if (stalker_pair) {
+        auto& stereo = vr->get_fake_stereo_hook();
+        if (!vr->is_stalker2_native_fix_experiment_enabled()) { stalker_pair.reset(); }
+        else if (pipelined_stage_views.size() != 2 || !stereo ||
+            stalker_pair->epoch != stereo->stalker2_native_epoch() ||
+            stalker_pair->generation != stereo->get_render_target_manager()->get_scene_capture_generation()) {
+            stalker_pair->scene_available = false;
+        }
+    }
+    if (stalker_pair && stalker_pair->reused) { has_depth = false; }
+    const auto mono_projection = mono ? mono_geometry(pipelined_stage_views) : std::nullopt;
+    std::array<std::optional<uevr::mono::ProjectionCrop>, 2> mono_crops{};
+    if (mono_projection) {
+        const auto& sc = this->swapchains[(uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE];
+        if (sc.width > 0 && (sc.width % 2) == 0 && sc.height > 0) {
+            for (size_t i = 0; i != 2; ++i) {
+                mono_crops[i] = uevr::mono::projection_crop(*mono_projection, i, sc.width / 2, sc.height);
+            }
+        }
+    }
     const auto debug_submit_empty = this->debug_submit_empty_frame->value();
 
     if (pipelined_stage_views.empty()) {
-        spdlog::warn("[VR] No stage views to submit");
+        if (mono) { SPDLOG_WARNING_EVERY_N_SEC(2, "[Mono] No validated current scene/pose to submit"); }
+        else { spdlog::warn("[VR] No stage views to submit"); }
     }
 
     // Reset size of end frame data containers to 0.
@@ -3577,6 +3825,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     auto& projection_layer_views = this->end_frame_data.projection_layer_views;
     auto& depth_layers           = this->end_frame_data.depth_layers;
     auto& layers                 = this->end_frame_data.layers;
+    uevr::ui_composition::Result composed_ui; // Holds projection views/resources through xrEndFrame.
 
     // Dummy projection layers for Virtual Desktop. If we don't do this, timewarp does not work correctly on VD.
     // the reasoning from ggodin (VD dev) is that VD composites all layers using the top layer's pose (apparently)
@@ -3612,7 +3861,8 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
-    if (!debug_submit_empty && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
+    if (!debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty() &&
+        (!mono || (mono_projection && mono_crops[0] && mono_crops[1]))) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
@@ -3632,8 +3882,13 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             }
 
             projection_layer_views[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-            projection_layer_views[i].pose = pipelined_stage_views[i].pose;
-            projection_layer_views[i].fov = pipelined_stage_views[i].fov;
+            projection_layer_views[i].pose = stalker_pair ? stalker_pair->views[i].pose : pipelined_stage_views[i].pose;
+            if (mono_projection) {
+                const auto& g = *mono_projection;
+                projection_layer_views[i].pose.position = {g.center[0], g.center[1], g.center[2]};
+                projection_layer_views[i].pose.orientation = {g.orientation[0], g.orientation[1], g.orientation[2], g.orientation[3]};
+            }
+            projection_layer_views[i].fov = stalker_pair ? stalker_pair->views[i].fov : pipelined_stage_views[i].fov;
             projection_layer_views[i].subImage.swapchain = swapchain->handle;
             projection_layer_views[i].subImage.imageArrayIndex = has_native_stereo_array ? (uint32_t)i : 0;
 
@@ -3650,6 +3905,16 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             }
             offset_y = view_bounds[i][2] * swapchain->height;
             extent_y = view_bounds[i][3] * swapchain->height - offset_y;
+            if (mono_projection) {
+                const auto& crop = *mono_crops[i];
+                const int eye_width = swapchain->width / 2;
+                offset_x = static_cast<int>(crop.x) + static_cast<int>(i) * eye_width;
+                offset_y = static_cast<int>(crop.y);
+                extent_x = static_cast<int>(crop.width);
+                extent_y = static_cast<int>(crop.height);
+                projection_layer_views[i].fov = {std::atan(crop.fov[0]), std::atan(crop.fov[1]),
+                    std::atan(crop.fov[2]), std::atan(crop.fov[3])};
+            }
             
             // SPDLOG_INFO("image calc for eye {} {}, {}, {}, {}", i, offset_x, extent_x, offset_y, extent_y);
             projection_layer_views[i].subImage.imageRect.offset = {offset_x, offset_y};
@@ -3705,8 +3970,27 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             layers.push_back((XrCompositionLayerBaseHeader*)&l);
         }
 
-        for (auto& l : quad_layers) {   
-            layers.push_back(l);
+        if (ui_composition && pipelined_stage_views.size() == 2) {
+            const auto scene = this->swapchains.find((uint32_t)OpenXR::SwapchainIndex::DOUBLE_WIDE);
+            if (scene != this->swapchains.end() && scene->second.width > 0 && !(scene->second.width % 2) && scene->second.height > 0) {
+                uevr::ui_composition::Frame frame{this->instance, this->system, this->session, this->stage_space, this->view_space};
+                std::copy_n(pipelined_stage_views.begin(), 2, frame.eyes.begin());
+                const auto& location = submit_state.view_space_location;
+                constexpr auto valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+                if ((location.locationFlags & valid) == valid) { frame.view_in_stage = location.pose; }
+                frame.eye_extent = {static_cast<uint32_t>(scene->second.width / 2), static_cast<uint32_t>(scene->second.height)};
+                frame.request = vr->get_overlay_component().get_ui_composition_request();
+                composed_ui = ui_composition->compose(frame, quad_layers);
+                vr->get_overlay_component().set_ui_composition_status(ui_composition->status());
+                SPDLOG_INFO_EVERY_N_SEC(5, "[UI Composition] request={} status={} original_layers={} replacement_layers={} eye_extent={}x{}",
+                    frame.request, uevr::ui_composition::status_text(ui_composition->status()), quad_layers.size(),
+                    composed_ui.count, frame.eye_extent.width, frame.eye_extent.height);
+            }
+        }
+        if (composed_ui && composed_ui.count == quad_layers.size()) {
+            for (uint32_t i = 0; i < composed_ui.count; ++i) { layers.push_back(composed_ui.layers[i]); }
+        } else {
+            for (auto* l : quad_layers) { layers.push_back(l); }
         }
     } else if (debug_submit_empty) {
         SPDLOG_INFO_EVERY_N_SEC(
@@ -3739,6 +4023,15 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
         ? std::chrono::steady_clock::now()
         : std::chrono::steady_clock::time_point{};
     auto result = xrEndFrame(this->session, &frame_end_info);
+    if (composed_ui && result != XR_SUCCESS && ui_composition) {
+        ui_composition->reject_submission();
+        vr->get_overlay_component().set_ui_composition_status(uevr::ui_composition::Status::failed);
+        spdlog::warn("[UI Composition] Runtime rejected optional projection UI ({}); original layers restored on subsequent frames until toggled",
+            this->get_result_string(result));
+    }
+    if (mono && result == XR_SUCCESS && !projection_layer_views.empty()) {
+        vr->set_mono_status("Active: one current centered scene submitted to both eyes");
+    }
     if (collect_frame_timing) {
         this->end_frame_timing.add(std::chrono::steady_clock::now() - end_frame_start);
     }

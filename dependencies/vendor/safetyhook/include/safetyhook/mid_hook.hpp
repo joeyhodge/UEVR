@@ -110,7 +110,7 @@ public:
     MidHook(MidHook&& other) noexcept;
     MidHook& operator=(const MidHook&) = delete;
     MidHook& operator=(MidHook&& other) noexcept;
-    ~MidHook() = default;
+    ~MidHook();
 
     /// @brief Reset the hook.
     /// @details This will remove the hook and free the stub.
@@ -152,6 +152,7 @@ private:
     Allocation m_stub{};
     MidHookFn m_destination{};
 
+    void retain_on_failed_removal();
     std::expected<void, Error> setup(
         const std::shared_ptr<Allocator>& allocator, uint8_t* target, MidHookFn destination);
 };

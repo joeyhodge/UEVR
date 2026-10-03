@@ -35,12 +35,20 @@ endif()
 
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
+option(UEVR_BUILD_COMPATIBILITY_TESTS "Build the offline compatibility policy tests" OFF)
+if(UEVR_BUILD_COMPATIBILITY_TESTS)
+    enable_testing()
+endif()
+
 add_subdirectory(dependencies/submodules/UESDK)
 
 set(SAFETYHOOK_FETCH_ZYDIS ON CACHE BOOL "" FORCE)
 message(STATUS "Using vendored safetyhook (b62c7356f3e364209a2ae14489550156d7b58b8b + UEVR patches)...")
 add_subdirectory(dependencies/vendor/safetyhook)
 """
+
+[conditions]
+compatibility-policy-tests = "UEVR_BUILD_COMPATIBILITY_TESTS"
 
 [target.spdlog]
 type = "static"
@@ -62,6 +70,9 @@ tag = "70db095765ab2066dd88dfb7bbcc42259ed167c5"
 [fetch-content.kananlib]
 git = "https://github.com/cursey/kananlib"
 tag = "49fdf2d3b1db350e370beacb607d5721bc2911ad"
+cmake-after = """
+include(cmake/KananlibDecodeWindow.cmake)
+"""
 
 [fetch-content.sdkgenny]
 git = "https://github.com/cursey/sdkgenny"
@@ -164,6 +175,185 @@ link-libraries = [
     "uesdk"
 ]
 
+[target.compatibility-policy-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/CompatibilityPolicyTests.cpp"]
+include-directories = [
+    "src/",
+    "dependencies/submodules/UESDK/src",
+    "dependencies/submodules/glm",
+]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json", "bddisasm"]
+cmake-after = """
+add_test(NAME compatibility-policy-tests COMMAND compatibility-policy-tests)
+add_test(NAME build-metadata-tests COMMAND powershell -NoProfile -NonInteractive
+    -ExecutionPolicy Bypass -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/BuildMetadataTests.ps1")
+set_tests_properties(build-metadata-tests PROPERTIES TIMEOUT 120)
+"""
+
+[target.diagnostic-safety-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/DiagnosticSafetyTests.cpp", "tests/UObjectBrowserCostTests.cpp", "tests/CadenceReplayTests.cpp", "tests/LoggingDisabledTests.cpp", "tests/CachedCVarReadTests.cpp", "tests/ConsoleTextTests.cpp", "tests/UE58UIInitializationTests.cpp", "tests/KtjLOpenXRFactoryTests.cpp", "src/mods/vr/KtjLOpenXRFactory.cpp", "dependencies/submodules/UESDK/tests/DiscoveryValidationTests.cpp", "dependencies/submodules/UESDK/tests/LayoutSafetyTests.cpp"]
+include-directories = ["src/", "dependencies/submodules/UESDK/src"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json", "spdlog", "uesdk", "Version", "imgui"]
+cmake-after = """
+add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+"""
+
+[target.kananlib-decode-window-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/KananlibDecodeWindowTests.cpp"]
+compile-features = ["cxx_std_23"]
+compile-options = ["/EHa"]
+link-libraries = ["kananlib"]
+cmake-after = """
+add_test(NAME kananlib-decode-window-tests COMMAND kananlib-decode-window-tests)
+set_tests_properties(kananlib-decode-window-tests PROPERTIES TIMEOUT 60)
+add_test(NAME kananlib-decode-window-configuration-tests COMMAND "${CMAKE_COMMAND}"
+    "-DUEVR_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+    "-DKANANLIB_SOURCE_DIR=${kananlib_SOURCE_DIR}"
+    "-DUEVR_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/kananlib-decode-window/configuration-fixture"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/KananlibBackportConfigurationTests.cmake")
+set_tests_properties(kananlib-decode-window-configuration-tests PROPERTIES TIMEOUT 120)
+"""
+
+[target.hifi-hook-memory-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/HiFiRushHookMemoryTests.cpp", "tests/KtjLCloudHookTests.cpp", "tests/KtjLShadowGatherTests.cpp", "tests/KtjLCloudOutputTests.cpp", "tests/KtjLLightingThreadTests.cpp", "tests/KtjLMeshResourceTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
+include-directories = ["src/", "dependencies/submodules/UESDK/src"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook", "spdlog", "kananlib"]
+cmake-after = """
+add_test(NAME hifi-hook-memory-tests COMMAND hifi-hook-memory-tests)
+set_tests_properties(hifi-hook-memory-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.nascar-hook-compatibility-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Nascar26HookCompatibilityTests.cpp", "tests/Nascar25HookCompatibilityTests.cpp", "src/utility/Nascar26HookCompatibility.cpp", "src/utility/Nascar25HookCompatibility.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook", "spdlog", "kananlib", "bcrypt", "Version"]
+cmake-after = """
+add_test(NAME nascar-hook-compatibility-tests COMMAND nascar-hook-compatibility-tests)
+set_tests_properties(nascar-hook-compatibility-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.input-hook-installation-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/InputHookInstallationTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["safetyhook"]
+cmake-after = """
+add_test(NAME input-hook-installation-tests COMMAND input-hook-installation-tests)
+set_tests_properties(input-hook-installation-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.ue6-source-profile-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UE6SourceProfileTests.cpp"]
+include-directories = ["src/", "dependencies/submodules/UESDK/src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["bddisasm"]
+cmake-after = """
+add_test(NAME ue6-source-profile-tests COMMAND ue6-source-profile-tests)
+add_test(NAME ue6-snapshot-tests COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${CMAKE_SOURCE_DIR}/tests/UE6SnapshotTests.ps1")
+"""
+
+[target.mono-d3d11-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/MonoD3D11Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11"]
+cmake-after = """
+add_test(NAME mono-d3d11-tests COMMAND mono-d3d11-tests)
+set_tests_properties(mono-d3d11-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.mono-d3d12-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/MonoD3D12Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "dxgi"]
+cmake-after = """
+add_test(NAME mono-d3d12-tests COMMAND mono-d3d12-tests)
+set_tests_properties(mono-d3d12-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.stalker2-native-policy-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Stalker2NativePolicyTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME stalker2-native-policy-tests COMMAND stalker2-native-policy-tests)
+set_tests_properties(stalker2-native-policy-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.stalker2-native-d3d12-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/Stalker2NativeD3D12Tests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d12", "dxgi", "openxr_loader"]
+cmake-after = """
+add_test(NAME stalker2-native-d3d12-tests COMMAND stalker2-native-d3d12-tests)
+set_tests_properties(stalker2-native-d3d12-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.ui-alpha-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UIAlphaTests.cpp", "src/mods/vr/UIAlphaProbe.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader"]
+cmake-after = """
+add_test(NAME ui-alpha-tests COMMAND ui-alpha-tests)
+set_tests_properties(ui-alpha-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.ui-alpha-lifecycle-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UIAlphaLifecycleTests.cpp", "src/mods/vr/UIAlpha.cpp", "src/mods/vr/UIAlphaProbe.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader", "spdlog"]
+cmake-after = """
+add_test(NAME ui-alpha-lifecycle-tests COMMAND ui-alpha-lifecycle-tests)
+set_tests_properties(ui-alpha-lifecycle-tests PROPERTIES TIMEOUT 60)
+"""
+
+[target.ui-composition-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/UICompositionTests.cpp", "src/mods/vr/UIComposition.cpp", "src/mods/vr/UICompositionGPU.cpp", "src/mods/vr/UIAlphaGPU.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["d3d11", "d3d12", "d3dcompiler", "dxgi", "openxr_loader", "spdlog", "glm"]
+cmake-after = """
+add_test(NAME ui-composition-tests COMMAND ui-composition-tests)
+set_tests_properties(ui-composition-tests PROPERTIES TIMEOUT 90)
+"""
+
 [target.vr-plugin-nullifier]
 type = "shared"
 sources = ["vr-plugin-nullifier/**.cpp", "vr-plugin-nullifier/**.c"]
@@ -224,6 +414,30 @@ LIBRARY_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET
 ARCHIVE_OUTPUT_DIRECTORY_RELEASE = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 ARCHIVE_OUTPUT_DIRECTORY_RELWITHDEBINFO = "${CMAKE_BINARY_DIR}/lib/${CMKR_TARGET}"
 
+[target.lua-fname-binding-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/LuaFNameBindingTests.cpp"]
+link-libraries = ["luavrlib"]
+cmake-after = """
+add_test(NAME lua-fname-bindings-8 COMMAND lua-fname-binding-tests 8)
+add_test(NAME lua-fname-bindings-12 COMMAND lua-fname-binding-tests 12)
+add_test(NAME lua-fname-bindings-legacy COMMAND lua-fname-binding-tests 8 legacy)
+set_tests_properties(lua-fname-bindings-8 lua-fname-bindings-12 lua-fname-bindings-legacy PROPERTIES TIMEOUT 60)
+"""
+
+[target.lua-context-dispatch-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/LuaContextDispatchTests.cpp"]
+link-libraries = ["luavrlib"]
+cmake-after = """
+foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset queued-reset owner-retirement stress)
+    add_test(NAME lua-context-dispatch-${case} COMMAND lua-context-dispatch-tests ${case})
+    set_tests_properties(lua-context-dispatch-${case} PROPERTIES TIMEOUT 20)
+endforeach()
+"""
+
 [template.ue4template]
 type = "shared"
 sources = ["src/**.cpp", "src/**.c"]
@@ -250,6 +464,7 @@ link-libraries = [
     "openxr_loader",
     "nlohmann_json",
     "Version",
+    "bcrypt",
     "TracyClient",
     "DirectXTK",
     "DirectXTK12",

@@ -15,6 +15,7 @@
 namespace vrmod {
 void OverlayComponent::on_reset() {
     m_overlay_data = {};
+    m_openxr.reset_daysgone_ahud_pose();
 }
 
 std::optional<std::string> OverlayComponent::on_initialize_openvr() {
@@ -202,7 +203,42 @@ void OverlayComponent::on_config_save(utility::Config& cfg) {
 
 void OverlayComponent::on_config_load(const utility::Config& cfg, bool set_defaults) {
     for (IModValue& option : m_options) {
-        option.config_load(cfg, set_defaults);
+        if (&option != m_game_ui_alpha.get() && &option != m_imgui_alpha.get() && &option != m_ui_composition.get()) {
+            option.config_load(cfg, set_defaults);
+        }
+    }
+    ModCombo* const options[]{m_game_ui_alpha.get(), m_imgui_alpha.get()};
+    for (size_t i = 0; i < 2; ++i) {
+        auto mode = uevr::ui_alpha::Mode::unchanged;
+        if (!set_defaults) {
+            if (const auto value = cfg.get(options[i]->get_config_name())) { mode = uevr::ui_alpha::mode_from_config(*value); }
+        }
+        options[i]->value() = static_cast<int32_t>(mode);
+        m_ui_alpha_modes[i].store(mode, std::memory_order_relaxed);
+        m_ui_alpha_layers[i].store(0, std::memory_order_relaxed);
+    }
+    const auto value = !set_defaults ? cfg.get(m_ui_composition->get_config_name()) : std::nullopt;
+    const bool composition = value && uevr::ui_composition::enabled_config(*value);
+    m_ui_composition->value() = composition ? 1 : 0;
+    publish_ui_composition(composition);
+}
+
+void OverlayComponent::observe_ui_alpha_layer(bool framework, XrCompositionLayerFlags original, XrCompositionLayerFlags submitted) {
+    const auto convention = [](XrCompositionLayerFlags flags) {
+        return uevr::ui_alpha::layer_alpha((flags & XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT) != 0,
+            (flags & XR_COMPOSITION_LAYER_UNPREMULTIPLIED_ALPHA_BIT) != 0);
+    };
+    m_ui_alpha_layers[framework ? 1 : 0].store(uevr::ui_alpha::layer_observation(convention(original), convention(submitted)),
+        std::memory_order_relaxed);
+}
+
+void OverlayComponent::set_ui_alpha_sample(bool framework, const uevr::ui_alpha::Sample& sample) {
+    std::scoped_lock lock{m_ui_alpha_sample_mutex};
+    m_ui_alpha_samples[framework ? 1 : 0] = sample;
+    if (sample.sequence == 1 || sample.sequence % 10 == 0) {
+        spdlog::info("[UI Alpha][{}] sampled={} alpha_zero={} partial={} opaque={} zero_alpha_rgb={} above_linear_alpha={} above_encoded_alpha={} (evidence only; no automatic classification)",
+            framework ? "ImGui" : "Game", sample.pixels, sample.transparent, sample.translucent, sample.opaque,
+            sample.transparent_rgb, sample.exceeds_linear_alpha, sample.exceeds_encoded_alpha);
     }
 }
 
@@ -238,6 +274,54 @@ void OverlayComponent::on_draw_ui() {
             m_framework_wrist_ui->draw("Framework Wrist UI");
         }
         m_framework_mouse_emulation->draw("Framework Mouse Emulation");
+        if (VR::get()->is_using_mono() || VR::get()->is_dibr_rendering_method_selected()) {
+            m_ui_composition->draw("UI Composition (Mono/DIBR)");
+            const bool per_eye = m_ui_composition->value() == 1;
+            if (per_eye != ((get_ui_composition_request() & 1) != 0)) { publish_ui_composition(per_eye); }
+            if (per_eye) {
+                ImGui::TextWrapped("%s", uevr::ui_composition::status_text(m_ui_composition_status.load(std::memory_order_relaxed)));
+                ImGui::TextWrapped("Experimental OpenXR DX11/DX12 quad UI only. Game UI and ImGui are rasterized per eye after "
+                    "scene processing, without scene-depth warping. Placement, physical size, input and alpha settings are retained. "
+                    "Cylinder/unsupported layers or unavailable resources keep the original runtime layers. Adds GPU work; "
+                    "does not guarantee a fix for runtime reprojection artifacts. Toggle off to restore the default.");
+            }
+            if (ImGui::TreeNode("UI Alpha Handling (Mono/DIBR)")) {
+                ImGui::TextWrapped("OpenXR DX11/DX12 only. Unchanged is the default. Conversion uses a separate 1:1 image; "
+                    "scene, placement, input coordinates and source textures are not modified. Inspection leaves presentation unchanged.");
+                ModCombo* const options[]{m_game_ui_alpha.get(), m_imgui_alpha.get()};
+                for (size_t i = 0; i < 2; ++i) {
+                    options[i]->draw(i == 0 ? "Game UI Alpha" : "ImGui Alpha");
+                    const auto value = options[i]->value();
+                    const auto mode = value >= 0 && value <= 3 ? static_cast<uevr::ui_alpha::Mode>(value) : uevr::ui_alpha::Mode::unchanged;
+                    const auto before = m_ui_alpha_modes[i].exchange(mode, std::memory_order_relaxed);
+                    if (before != mode) { m_ui_alpha_layers[i].store(0, std::memory_order_relaxed); }
+                    uevr::ui_alpha::Sample sample;
+                    {
+                        std::scoped_lock lock{m_ui_alpha_sample_mutex};
+                        if (before != mode) { m_ui_alpha_samples[i] = {}; }
+                        sample = m_ui_alpha_samples[i];
+                    }
+                    ImGui::TextWrapped("%s", uevr::ui_alpha::status_text(m_ui_alpha_status[i].load(std::memory_order_relaxed)));
+                    const auto layers = m_ui_alpha_layers[i].load(std::memory_order_relaxed);
+                    if (mode != uevr::ui_alpha::Mode::unchanged) {
+                        ImGui::TextWrapped("Layer flags: original %s; submitted %s.",
+                            uevr::ui_alpha::layer_alpha_text(uevr::ui_alpha::original_alpha(layers)),
+                            uevr::ui_alpha::layer_alpha_text(uevr::ui_alpha::submitted_alpha(layers)));
+                    }
+                    if (mode != uevr::ui_alpha::Mode::unchanged && sample.pixels) {
+                        ImGui::TextWrapped("Last bounded sample: %u pixels; transparent %u, translucent %u, opaque %u. "
+                            "RGB above alpha: linear %u, encoded %u; RGB with zero alpha %u.", sample.pixels,
+                            sample.transparent, sample.translucent, sample.opaque, sample.exceeds_linear_alpha,
+                            sample.exceeds_encoded_alpha, sample.transparent_rgb);
+                    }
+                }
+                ImGui::TextWrapped("Samples cannot prove straight vs premultiplied alpha: additive/custom UI can look similar. "
+                    "Choose conversion only for a known source convention. Opaque pixels are preserved; changing alpha flags alone is not a conversion.");
+                ImGui::TextWrapped("UEVR's usual ImGui path blends into a non-sRGB UNORM target and already associates RGB with alpha. "
+                    "Do not multiply it again as straight RGB. The encoded-premultiplied option reconstructs that association in linear space.");
+                ImGui::TreePop();
+            }
+        }
         ImGui::TreePop();
     }
 }
@@ -849,7 +933,8 @@ const char* get_ui_layer_pose_refusal_reason(const UILayerPoseBasis* pose_basis,
 std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::OpenXR::generate_slate_quad(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     auto& vr = VR::get();
 
@@ -882,7 +967,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
     layer.eyeVisibility = eye;
 
     auto glm_matrix = glm::identity<glm::mat4>();
-    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto follows_view = !force_stage_space && vr->m_overlay_component.m_ui_follows_view->value();
     const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
     const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
     const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
@@ -981,7 +1066,8 @@ std::optional<std::reference_wrapper<XrCompositionLayerQuad>> OverlayComponent::
 std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComponent::OpenXR::generate_slate_cylinder(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     auto& vr = VR::get();
 
@@ -1010,7 +1096,7 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
     layer.eyeVisibility = eye;
     
     auto glm_matrix = glm::identity<glm::mat4>();
-    const auto follows_view = vr->m_overlay_component.m_ui_follows_view->value();
+    const auto follows_view = !force_stage_space && vr->m_overlay_component.m_ui_follows_view->value();
     const auto pose_tracking_enabled = pose_basis != nullptr || vr->is_ui_layer_pose_telemetry_enabled() || vr->is_ui_layer_pose_stabilizer_enabled();
     const auto hmd_rotation = pose_tracking_enabled ? glm::quat{vr->get_rotation(0)} : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
     const auto live_pre_flattened_rotation = vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
@@ -1074,31 +1160,64 @@ std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> OverlayComp
 std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> OverlayComponent::OpenXR::generate_slate_layer(
     runtimes::OpenXR::SwapchainIndex swapchain, 
     XrEyeVisibility eye,
-    const UILayerPoseBasis* pose_basis)
+    const UILayerPoseBasis* pose_basis,
+    bool force_stage_space)
 {
     switch ((OverlayComponent::OverlayType)m_parent->m_slate_overlay_type->value()) {
     default:
     case OverlayComponent::OverlayType::QUAD:
-        if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
+        if (auto result = generate_slate_quad(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 
         return std::nullopt;
     case OverlayComponent::OverlayType::CYLINDER:
         if (!VR::get()->get_runtime()->is_cylinder_layer_allowed()) {
-            if (auto result = generate_slate_quad(swapchain, eye, pose_basis); result.has_value()) {
+            if (auto result = generate_slate_quad(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
                 return *(XrCompositionLayerBaseHeader*)&result.value().get();
             }
 
             return std::nullopt;
         }
 
-        if (auto result = generate_slate_cylinder(swapchain, eye, pose_basis); result.has_value()) {
+        if (auto result = generate_slate_cylinder(swapchain, eye, pose_basis, force_stage_space); result.has_value()) {
             return *(XrCompositionLayerBaseHeader*)&result.value().get();
         }
 
         return std::nullopt;
     };
+}
+
+std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>>
+OverlayComponent::OpenXR::generate_daysgone_ahud_slate_layer() {
+    auto vr = VR::get();
+    if (vr == nullptr) {
+        return std::nullopt;
+    }
+
+    if (!m_daysgone_ahud_pose_basis.valid) {
+        m_daysgone_ahud_pose_basis.valid = true;
+        m_daysgone_ahud_pose_basis.stabilizer_allowed = true;
+        m_daysgone_ahud_pose_basis.rotation_offset = vr->get_rotation_offset();
+        m_daysgone_ahud_pose_basis.pre_flattened_rotation =
+            vr->is_decoupled_pitch_enabled() && vr->is_decoupled_pitch_ui_adjust_enabled()
+            ? vr->get_pre_flattened_rotation()
+            : glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+        m_daysgone_ahud_pose_basis.standing_origin = vr->get_standing_origin();
+        m_daysgone_ahud_pose_basis.capture_time = std::chrono::steady_clock::now();
+
+        SPDLOG_INFO("[DaysGone][AHUD] Latched the UI layer in OpenXR stage space");
+    }
+
+    return generate_slate_layer(
+        runtimes::OpenXR::SwapchainIndex::UI,
+        XR_EYE_VISIBILITY_BOTH,
+        &m_daysgone_ahud_pose_basis,
+        true);
+}
+
+void OverlayComponent::OpenXR::reset_daysgone_ahud_pose() {
+    m_daysgone_ahud_pose_basis = {};
 }
 
 

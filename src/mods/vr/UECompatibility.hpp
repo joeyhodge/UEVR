@@ -121,6 +121,13 @@ const char* slate_input_layout_name(SlateInputLayout layout) noexcept;
 const char* cvar_layout_name(CVarLayout layout) noexcept;
 const char* xr_layout_name(XRLayout layout) noexcept;
 
+constexpr bool has_reviewed_slate_ui_source(const Profile& profile, bool ue58_source_validated) noexcept {
+    if (profile.version.major == 6) {
+        return profile.source_validated && profile.slate_input_layout == SlateInputLayout::UE60;
+    }
+    return ue58_source_validated;
+}
+
 static_assert(make_profile({6, 0, 0, sdk::EngineVersionSource::Embedded}).source_validated);
 static_assert(make_profile({6, 0, 0, sdk::EngineVersionSource::Embedded}).scene_view_layout == SceneViewLayout::UE60);
 static_assert(make_profile({6, 0, 0, sdk::EngineVersionSource::Embedded}).slate_input_layout == SlateInputLayout::UE60);

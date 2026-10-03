@@ -5,6 +5,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <span>
 #include <nlohmann/json.hpp>
 
 #include <utility/Config.hpp>
@@ -12,7 +13,7 @@
 #include <utility/String.hpp>
 
 #include <sdk/CVar.hpp>
-#include <sdk/EngineVersion.hpp>
+#include <sdk/MafiaDiscovery.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
 #include <sdk/ConsoleManager.hpp>
 #include <sdk/UGameplayStatics.hpp>
@@ -21,6 +22,9 @@
 #include "Framework.hpp"
 
 #include "CVarManager.hpp"
+#include "mods/VR.hpp"
+#include "utility/ImGui.hpp"
+#include "utility/Logging.hpp"
 
 #include <tracy/Tracy.hpp>
 
@@ -29,12 +33,81 @@ constexpr std::string_view cvars_data_txt_name = "cvars_data.txt";
 constexpr std::string_view user_script_txt_name = "user_script.txt";
 
 namespace {
+bool invoke_stalker_flags(void* function, sdk::IConsoleVariable* variable, uint32_t& flags) {
+    __try {
+        flags = reinterpret_cast<uint32_t(__fastcall*)(sdk::IConsoleVariable*)>(function)(variable);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+std::optional<uint32_t> validated_stalker_flags(sdk::IConsoleVariable* variable) {
+    if (!variable || !variable->is_validated_ue55_variable()) { return std::nullopt; }
+    uintptr_t table{}, function{};
+    MEMORY_BASIC_INFORMATION memory{};
+    std::array<uint8_t, 4> code{};
+    SIZE_T read{};
+    const auto read_exact = [&](const void* source, void* destination, size_t size) {
+        return ReadProcessMemory(GetCurrentProcess(), source, destination, size, &read) && read == size;
+    };
+    if (!read_exact(variable, &table, sizeof(table)) ||
+        !read_exact(reinterpret_cast<void*>(table + 3 * sizeof(void*)), &function, sizeof(function)) ||
+        utility::get_module_within(reinterpret_cast<void*>(function)).value_or(nullptr) != utility::get_executable() ||
+        !VirtualQuery(reinterpret_cast<void*>(function), &memory, sizeof(memory)) || memory.State != MEM_COMMIT ||
+        (memory.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+        !(memory.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) ||
+        !read_exact(reinterpret_cast<void*>(function), code.data(), code.size()) ||
+        !uevr::stalker2_native::flags_accessor(code)) { return std::nullopt; }
+    uint32_t flags{};
+    return invoke_stalker_flags(reinterpret_cast<void*>(function), variable, flags)
+        ? std::optional{flags} : std::nullopt;
+}
+
+int64_t diagnostic_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+
+template <typename T>
+std::optional<double> read_raw_cvar_for_diagnostics(sdk::ConsoleVariableDataWrapper* wrapper) {
+    __try {
+        const auto data = wrapper != nullptr ? wrapper->get<T>() : nullptr;
+        if (data == nullptr || IsBadReadPtr(data, sizeof(*data))) {
+            return std::nullopt;
+        }
+        return static_cast<double>(data->get());
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        return std::nullopt;
+    }
+}
+
+std::optional<double> read_interface_for_diagnostics(sdk::IConsoleVariable* variable, bool floating) {
+    if (variable == nullptr) {
+        return std::nullopt;
+    }
+    if (floating) {
+        const auto value = variable->TryGetFloat();
+        return value && std::isfinite(*value) ? std::optional<double>{*value} : std::nullopt;
+    }
+    return variable->TryGetInt();
+}
+
 bool is_ue_5_1_dx12_backend_for_cvars() {
     if (g_framework == nullptr || !g_framework->is_dx12()) {
         return false;
     }
 
-    static const bool is_ue_5_1 = sdk::get_engine_version().is(5, 1);
+    static const bool is_ue_5_1 = []() {
+        const auto found_version = sdk::search_for_version(utility::get_executable());
+
+        if (found_version) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.1" || version.starts_with("5.1.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050001;
+    }();
 
     return is_ue_5_1;
 }
@@ -43,6 +116,23 @@ bool is_stalker2_current_game_for_cvars() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
         return exe_path && exe_path->find(L"Stalker2-Win64-Shipping") != std::wstring::npos;
+    }();
+
+    return result;
+}
+
+bool is_stalker2_ue55_current_game_for_cvars() {
+    if (!is_stalker2_current_game_for_cvars()) {
+        return false;
+    }
+
+    static const bool result = []() {
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.5" || version.starts_with("5.5.");
+        }
+
+        return sdk::get_file_version_info().dwFileVersionMS == 0x00050005;
     }();
 
     return result;
@@ -72,7 +162,13 @@ bool is_windrose_ue56_dx12_current_game_for_cvars() {
             return false;
         }
 
-        return sdk::get_engine_version().is(5, 6);
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+            return version == "5.6" || version.starts_with("5.6.");
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        return disk_version.dwFileVersionMS == 0x00050006;
     }();
 
     return result;
@@ -80,8 +176,20 @@ bool is_windrose_ue56_dx12_current_game_for_cvars() {
 
 bool propagate_alpha_allows_tonemapper_value() {
     static const bool result = []() {
-        const auto& version = sdk::get_engine_version();
-        return version.major < 5 || (version.major == 5 && version.minor <= 4);
+        int major{};
+        int minor{};
+
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            if (swscanf_s(found_version->c_str(), L"%d.%d", &major, &minor) == 2) {
+                return major < 5 || (major == 5 && minor <= 4);
+            }
+        }
+
+        const auto disk_version = sdk::get_file_version_info();
+        major = (int)((disk_version.dwFileVersionMS >> 16) & 0xffff);
+        minor = (int)(disk_version.dwFileVersionMS & 0xffff);
+
+        return major < 5 || (major == 5 && minor <= 4);
     }();
 
     return result;
@@ -169,6 +277,82 @@ bool force_ue51_fsr3_runtime_cvars_once(int attempt) {
         set_ok,
         set_failed);
 
+    return true;
+}
+
+bool force_stalker2_ue55_deepdvc_runtime_cvars_once(int attempt) {
+    if (g_framework == nullptr || !g_framework->is_dx12() ||
+        !is_stalker2_ue55_current_game_for_cvars()) {
+        return true;
+    }
+
+    struct ForcedCVar {
+        const wchar_t* name;
+        bool required;
+    };
+
+    // DeepDVC is independent from DLSS/DLSSG. The current Stalker 2 UE5.5
+    // transition failure ends inside nvngx_deepdvc, so disable only its load
+    // gate and runtime feature through the validated console interface.
+    static constexpr std::array forced_cvars{
+        ForcedCVar{L"r.Streamline.Load.DeepDVC", false},
+        ForcedCVar{L"r.Streamline.DeepDVC.Enable", true},
+    };
+
+    bool required_found{};
+    bool required_disabled{};
+    bool retry{};
+
+    for (const auto& forced : forced_cvars) {
+        auto* variable = sdk::find_validated_console_variable(forced.name);
+
+        if (variable == nullptr) {
+            retry |= forced.required;
+
+            if ((attempt == 1 || attempt % 120 == 0) && forced.required) {
+                SPDLOG_INFO(
+                    "[Stalker2][UE5.5][DeepDVC] waiting for validated {}",
+                    utility::narrow(forced.name));
+            }
+
+            continue;
+        }
+
+        required_found |= forced.required;
+
+        int before{};
+        int after{};
+        bool set_ok{};
+
+        try {
+            before = variable->GetInt();
+            set_ok = before == 0 || variable->Set(L"0");
+            after = variable->GetInt();
+        } catch (...) {
+            set_ok = false;
+        }
+
+        const auto disabled = set_ok && after == 0;
+        required_disabled |= forced.required && disabled;
+        retry |= !disabled;
+
+        if (!disabled || before != 0 || attempt == 1) {
+            SPDLOG_INFO(
+                "[Stalker2][UE5.5][DeepDVC] {} before={} after={} ok={}",
+                utility::narrow(forced.name),
+                before,
+                after,
+                disabled);
+        }
+    }
+
+    if (retry || !required_found || !required_disabled) {
+        return false;
+    }
+
+    SPDLOG_INFO(
+        "[Stalker2][UE5.5][DeepDVC] runtime feature disabled after {} attempt(s)",
+        attempt);
     return true;
 }
 
@@ -347,6 +531,29 @@ bool force_windrose_shadow_runtime_cvars_once(int attempt) {
 }
 }
 
+void CVarManager::process_stalker2_sharpen_priority() {
+    const auto vr = VR::get();
+    if (!vr || !vr->is_stalker2_sharpen_priority_enabled()) { m_stalker2_sharpen_priority = {}; return; }
+    const auto setting = std::find_if(m_all_cvars.begin(), m_all_cvars.end(), [](const auto& cvar) {
+        return cvar->get_name() == L"r.Tonemapper.Sharpen" && cvar->get_type() == CVar::Type::FLOAT && cvar->is_frozen();
+    });
+    if (setting == m_all_cvars.end()) { m_stalker2_sharpen_priority = {}; return; }
+    auto* variable = sdk::find_validated_cvar_cached_only(L"r.Tonemapper.Sharpen");
+    const auto flags = validated_stalker_flags(variable);
+    const auto actual = variable ? variable->TryGetFloat() : std::nullopt;
+    if (!flags || !actual) { m_stalker2_sharpen_priority = {}; return; }
+    const auto requested = (*setting)->get_frozen_float_value();
+    const auto priority = m_stalker2_sharpen_priority.observe(true, reinterpret_cast<uintptr_t>(variable),
+        *flags, requested, *actual);
+    if (!priority) { return; }
+    const auto text = uevr::stalker2_native::float_text(requested);
+    const bool callable = !text.empty() && variable->Set(text.c_str(), *priority);
+    const auto after = variable->TryGetFloat();
+    SPDLOG_INFO_EVERY_N_SEC(2, "[Stalker2][NativeFix][Sharpen] existing_priority=0x{:08x} requested={} before={} after={} callable={} observed={}",
+        *priority, requested, *actual, after.value_or(*actual), callable,
+        after && uevr::stalker2_native::close_float(requested, *after));
+}
+
 CVarManager::CVarManager() {
     ZoneScopedN(__FUNCTION__);
 
@@ -386,23 +593,149 @@ CVarManager::ChangeSnapshot CVarManager::get_change_snapshot() const {
     return s_change_snapshot;
 }
 
-uint64_t CVarManager::get_change_counter() const {
-    return s_change_counter.load(std::memory_order_relaxed);
+uint64_t CVarManager::CVar::begin_ui_write(double requested) {
+    std::scoped_lock lock{m_write_observation_mutex};
+    return m_write_observation.begin(requested, m_type == Type::FLOAT);
+}
+
+void CVarManager::CVar::finish_ui_write(uint64_t request_id, bool callable) {
+    std::scoped_lock lock{m_write_observation_mutex};
+    if (m_write_observation.dispatched(request_id, callable, diagnostic_now_ms())) {
+        s_pending_ui_readbacks.store(true, std::memory_order_release);
+    }
+}
+
+uevr::cvar_diagnostics::WriteObservation CVarManager::CVar::get_write_observation() const {
+    std::scoped_lock lock{m_write_observation_mutex};
+    return m_write_observation;
+}
+
+void CVarManager::CVar::poll_write_observation(int64_t now_ms) {
+    const auto before = get_write_observation();
+    if (!before.due(now_ms)) {
+        return;
+    }
+    std::optional<double> actual;
+    try { actual = read_diagnostic_value(); } catch (...) {}
+    std::scoped_lock lock{m_write_observation_mutex};
+    if (m_write_observation.observe(before.request_id, actual, now_ms) && !m_write_observation.pending) {
+        SPDLOG_INFO("[CVarReadback] {} requested={} actual={} status={} (observation only; no priority/retry changes)",
+            utility::narrow(m_name), m_write_observation.requested,
+            m_write_observation.actual ? fmt::format("{}", *m_write_observation.actual) : "unavailable",
+            uevr::cvar_diagnostics::name(m_write_observation.state));
+    }
+}
+
+void CVarManager::CVar::draw_write_observation() const {
+    const auto observation = get_write_observation();
+    if (observation.request_id == 0) {
+        return;
+    }
+    ImGui::TextDisabled("  Requested: %.6g | Actual: %s | %s%s", observation.requested,
+        observation.actual ? fmt::format("{:.6g}", *observation.actual).c_str() : "unavailable",
+        uevr::cvar_diagnostics::name(observation.state), observation.pending ? " (sampling)" : "");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Readback samples the game-thread value four times. A mismatch may mean rejection, clamping, or a later game override.\nIt does not identify the cause or alter priorities, saved values, or freeze enforcement.");
+    }
+}
+
+std::optional<double> CVarManager::CVarStandard::read_diagnostic_value() try {
+    auto* variable = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+    return read_interface_for_diagnostics(variable, m_type == Type::FLOAT);
+} catch (...) { return std::nullopt; }
+
+std::optional<double> CVarManager::CVarData::read_diagnostic_value() try {
+    if (m_interface_cvar != nullptr) {
+        return read_interface_for_diagnostics(m_interface_cvar, m_type == Type::FLOAT);
+    }
+    auto* wrapper = m_cvar_data ? &*m_cvar_data : nullptr;
+    return m_type == Type::FLOAT ? read_raw_cvar_for_diagnostics<float>(wrapper)
+        : read_raw_cvar_for_diagnostics<int32_t>(wrapper);
+} catch (...) { return std::nullopt; }
+
+nlohmann::json CVarManager::get_diagnostic_snapshot() const {
+    std::scoped_lock lock{m_diagnostic_snapshot_mutex};
+    auto result = m_diagnostic_snapshot;
+    result["refresh_requested"] = m_diagnostic_snapshot_requested.load(std::memory_order_acquire);
+    return result;
+}
+
+void CVarManager::process_diagnostics() try {
+    if (!s_pending_ui_readbacks.load(std::memory_order_acquire) &&
+        !m_diagnostic_snapshot_requested.load(std::memory_order_acquire)) {
+        return;
+    }
+    const bool readbacks = s_pending_ui_readbacks.exchange(false, std::memory_order_acq_rel);
+    const bool report = m_diagnostic_snapshot_requested.exchange(false, std::memory_order_acq_rel);
+    if (!readbacks && !report) {
+        return;
+    }
+    const auto now_ms = diagnostic_now_ms();
+    if (readbacks) {
+        size_t budget = 4;
+        for (auto& cvar : m_all_cvars) {
+            if (budget != 0 && cvar->get_write_observation().due(now_ms)) {
+                cvar->poll_write_observation(now_ms);
+                --budget;
+            }
+            if (cvar->get_write_observation().pending) {
+                s_pending_ui_readbacks.store(true, std::memory_order_release);
+            }
+        }
+    }
+    if (!report) {
+        return;
+    }
+
+    // Only already-resolved getters are sampled; support export never starts a CVar scan.
+    nlohmann::json snapshot{{"sampled", true}, {"sample_steady_ms", now_ms},
+        {"read_only", true}, {"ui_edits", nlohmann::json::array()}, {"values", nlohmann::json::object()},
+        {"note", "UI edits are session-local. Missing values mean not previously resolved/readable, not absent from the game. Owner priority is not sampled."}};
+    for (auto& cvar : m_all_cvars) {
+        const auto observation = cvar->get_write_observation();
+        if (observation.request_id != 0) {
+            auto edit = uevr::cvar_diagnostics::to_json(observation);
+            edit["name"] = utility::narrow(cvar->get_name());
+            snapshot["ui_edits"].push_back(std::move(edit));
+        }
+    }
+    constexpr std::array watched_names{L"r.OneFrameThreadLag", L"r.VSync", L"t.MaxFPS", L"r.ScreenPercentage",
+        L"r.AllowOcclusionQueries", L"r.TranslucentLightingVolume", L"r.LightCulling.Quality", L"r.PostProcessing.PropagateAlpha"};
+    const auto watched_count = sdk::mafia::uses_ue544_discovery() ? watched_names.size() : size_t{4};
+    for (const auto name : std::span{watched_names}.first(watched_count)) {
+        std::optional<double> value;
+        const auto found = std::find_if(m_all_cvars.begin(), m_all_cvars.end(),
+            [name](const auto& cvar) { return cvar->get_name() == name; });
+        if (found != m_all_cvars.end()) {
+            value = (*found)->read_diagnostic_value();
+        }
+        if (!value) {
+            value = read_interface_for_diagnostics(sdk::find_validated_cvar_cached_only(name),
+                std::wstring_view{name} == L"t.MaxFPS" || std::wstring_view{name} == L"r.ScreenPercentage");
+        }
+        snapshot["values"][utility::narrow(name)] = value && std::isfinite(*value)
+            ? nlohmann::json(*value) : nlohmann::json(nullptr);
+    }
+    {
+        std::scoped_lock lock{m_diagnostic_snapshot_mutex};
+        m_diagnostic_snapshot = std::move(snapshot);
+        m_diagnostic_snapshot_revision.fetch_add(1, std::memory_order_release);
+    }
+} catch (...) {
+    SPDLOG_WARN_ONCE("[CVarReadback] Diagnostic sample unavailable; engine/CVar behavior is unchanged");
 }
 
 void CVarManager::record_global_change(std::wstring_view name, std::wstring_view value, std::string_view source) {
-    const auto counter = s_change_counter.fetch_add(1, std::memory_order_relaxed) + 1;
     std::scoped_lock _{s_change_mutex};
-    s_change_snapshot.counter = counter;
+    ++s_change_snapshot.counter;
     s_change_snapshot.name = utility::narrow(std::wstring{name});
     s_change_snapshot.value = utility::narrow(std::wstring{value});
     s_change_snapshot.source = std::string{source};
 }
 
 void CVarManager::record_global_command(std::string_view command, std::string_view source) {
-    const auto counter = s_change_counter.fetch_add(1, std::memory_order_relaxed) + 1;
     std::scoped_lock _{s_change_mutex};
-    s_change_snapshot.counter = counter;
+    ++s_change_snapshot.counter;
     s_change_snapshot.name = "<console_command>";
     s_change_snapshot.value = std::string{command};
     s_change_snapshot.source = std::string{source};
@@ -412,6 +745,87 @@ void CVarManager::refresh_frozen_cvar_state() {
     m_has_frozen_cvars = std::any_of(m_all_cvars.begin(), m_all_cvars.end(), [](const auto& cvar) {
         return cvar->is_frozen();
     });
+}
+
+void CVarManager::begin_cvar_refresh() {
+    m_cvar_refresh_in_progress = true;
+    m_cvar_refresh_cursor = 0;
+}
+
+void CVarManager::process_cvar_refresh_budget() {
+    if (!m_cvar_refresh_in_progress || m_all_cvars.empty()) {
+        m_cvar_refresh_in_progress = false;
+        return;
+    }
+
+    constexpr size_t cvar_update_budget = 2;
+    size_t processed = 0;
+
+    while (m_cvar_refresh_cursor < m_all_cvars.size() && processed < cvar_update_budget) {
+        m_all_cvars[m_cvar_refresh_cursor++]->update();
+        ++processed;
+    }
+
+    if (m_cvar_refresh_cursor >= m_all_cvars.size()) {
+        m_cvar_refresh_in_progress = false;
+        m_cvar_refresh_cursor = 0;
+    }
+}
+
+void CVarManager::process_frozen_cvar_budget(bool budgeted) {
+    if (!m_has_frozen_cvars || m_all_cvars.empty()) {
+        return;
+    }
+
+    const size_t budget = budgeted ? 2 : m_all_cvars.size();
+    size_t visited = 0;
+    size_t frozen_processed = 0;
+
+    while (visited < m_all_cvars.size() && frozen_processed < budget) {
+        if (m_cvar_freeze_cursor >= m_all_cvars.size()) {
+            m_cvar_freeze_cursor = 0;
+        }
+
+        auto& cvar = m_all_cvars[m_cvar_freeze_cursor++];
+        ++visited;
+
+        if (!cvar->is_frozen()) {
+            continue;
+        }
+
+        cvar->update();
+        cvar->freeze();
+        ++frozen_processed;
+    }
+}
+
+void CVarManager::process_pending_console_script(sdk::UGameEngine* engine) {
+    if (engine == nullptr || m_pending_console_script_commands.empty()) {
+        return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (m_next_console_script_command_time.time_since_epoch().count() != 0 && now < m_next_console_script_command_time) {
+        return;
+    }
+
+    auto line = std::move(m_pending_console_script_commands.front());
+    m_pending_console_script_commands.pop_front();
+
+    const auto start = std::chrono::steady_clock::now();
+    {
+        ZoneScopedN("CVarManager console exec");
+        CVarManager::record_global_command(line, "console_script");
+        engine->exec(utility::widen(line));
+    }
+    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+    if (elapsed_ms > 100) {
+        SPDLOG_WARN("[execute_console_script] Console command \"{}\" took {}ms; spacing remaining commands", line, elapsed_ms);
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{500};
+    } else {
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    }
 }
 
 void CVarManager::spawn_console() {
@@ -440,40 +854,44 @@ void CVarManager::spawn_console() {
 void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
-    const bool process_all_cvars = m_needs_full_refresh || m_cvar_ui_open_this_frame;
+    process_diagnostics();
 
-    if (process_all_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            cvar->update();
-        }
-    } else if (m_has_frozen_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            if (cvar->is_frozen()) {
-                cvar->update();
-            }
-        }
+    const bool opened_cvar_ui = m_cvar_ui_open_this_frame && !m_cvar_ui_open_last_tick;
+    if (m_needs_full_refresh || opened_cvar_ui) {
+        begin_cvar_refresh();
+        m_needs_full_refresh = false;
     }
 
-    if (m_has_frozen_cvars) {
-        for (auto& cvar : m_all_cvars) {
-            if (process_all_cvars || cvar->is_frozen()) {
-                cvar->freeze();
-            }
-        }
-    }
+    process_cvar_refresh_budget();
 
-    m_needs_full_refresh = false;
+    const auto now = std::chrono::steady_clock::now();
+    const auto console_script_spacing =
+        m_next_console_script_command_time.time_since_epoch().count() != 0 &&
+        now < m_next_console_script_command_time;
+    process_frozen_cvar_budget(
+        m_cvar_ui_open_this_frame ||
+        m_cvar_refresh_in_progress ||
+        !m_pending_console_script_commands.empty() ||
+        console_script_spacing
+    );
+    process_stalker2_sharpen_priority();
+
+    m_cvar_ui_open_last_tick = m_cvar_ui_open_this_frame;
 
     if (m_should_execute_console_script) {
         execute_console_script(engine, user_script_txt_name.data());
         m_should_execute_console_script = false;
         m_ue51_fsr3_runtime_cvars_done = false;
         m_ue51_fsr3_runtime_cvar_attempts = 0;
+        m_stalker2_deepdvc_runtime_cvars_done = false;
+        m_stalker2_deepdvc_runtime_cvar_attempts = 0;
         m_aphelion_framegen_runtime_cvars_done = false;
         m_aphelion_framegen_runtime_cvar_attempts = 0;
         m_windrose_shadow_runtime_cvars_done = false;
         m_windrose_shadow_runtime_cvar_attempts = 0;
     }
+
+    process_pending_console_script(engine);
 
     if (!m_ue51_fsr3_runtime_cvars_done) {
         ++m_ue51_fsr3_runtime_cvar_attempts;
@@ -494,6 +912,19 @@ void CVarManager::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         } else if (m_aphelion_framegen_runtime_cvar_attempts >= 600) {
             SPDLOG_WARN("[Aphelion][DX12] frame-generation cvars were not found after {} attempts; giving up", m_aphelion_framegen_runtime_cvar_attempts);
             m_aphelion_framegen_runtime_cvars_done = true;
+        }
+    }
+
+    if (!m_stalker2_deepdvc_runtime_cvars_done) {
+        ++m_stalker2_deepdvc_runtime_cvar_attempts;
+
+        if (force_stalker2_ue55_deepdvc_runtime_cvars_once(m_stalker2_deepdvc_runtime_cvar_attempts)) {
+            m_stalker2_deepdvc_runtime_cvars_done = true;
+        } else if (m_stalker2_deepdvc_runtime_cvar_attempts >= 600) {
+            SPDLOG_WARN(
+                "[Stalker2][UE5.5][DeepDVC] validated runtime controls were not available after {} attempts; giving up",
+                m_stalker2_deepdvc_runtime_cvar_attempts);
+            m_stalker2_deepdvc_runtime_cvars_done = true;
         }
     }
 
@@ -575,6 +1006,7 @@ void CVarManager::on_draw_ui() {
         
         for (auto& cvar : m_displayed_cvars) {
             cvar->draw_ui();
+            cvar->draw_write_observation();
         }
 
         refresh_frozen_cvar_state();
@@ -862,7 +1294,7 @@ void CVarManager::display_console() {
                     ImGui::TextUnformatted(command.current_value.c_str());
 
                     ImGui::TableSetColumnIndex(2);
-                    ImGui::TextWrapped(command.description.c_str());
+                    imgui::text_wrapped_unformatted(command.description);
                 }
 
                 ImGui::EndTable();
@@ -1013,12 +1445,12 @@ void CVarManager::CVarStandard::load_from_config(const utility::Config& cfg, boo
 void CVarManager::CVarStandard::save() {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         // CVar not found, don't save.
         return;
     }
-
-    auto cvar = *m_cvar;
 
     switch (m_type) {
     case Type::BOOL:
@@ -1044,7 +1476,9 @@ void CVarManager::CVarStandard::freeze() {
         return;
     }
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         return;
     }
 
@@ -1053,30 +1487,38 @@ void CVarManager::CVarStandard::freeze() {
         SPDLOG_INFO("[CVarManager] (Standard) First time freezing \"{}\"...", utility::narrow(m_name));
     }
 
+    const auto set_frozen_value = [&](const std::wstring& value) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto ok = cvar->Set(value.c_str());
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+        if (!ok) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
+            return;
+        }
+
+        if (elapsed_ms > 250) {
+            m_setter_unavailable = true;
+            SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" after slow Set took {}ms", utility::narrow(m_name), elapsed_ms);
+        }
+    };
+
     switch(m_type) {
     case Type::BOOL:
         // Limiting the amount of times Set gets called with string conversions.
-        if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetInt() != m_frozen_int_value) {
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::INT:
-        if ((*m_cvar)->GetInt() != m_frozen_int_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_int_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetInt() != m_frozen_int_value) {
+            set_frozen_value(std::to_wstring(m_frozen_int_value));
         }
         break;
     case Type::FLOAT:
-        if ((*m_cvar)->GetFloat() != m_frozen_float_value) {
-            if (!(*m_cvar)->Set(std::to_wstring(m_frozen_float_value).c_str())) {
-                m_setter_unavailable = true;
-                SPDLOG_WARN("[CVarManager] (Standard) Disabling freeze enforcement for \"{}\" because its setter is unavailable", utility::narrow(m_name));
-            }
+        if (cvar->GetFloat() != m_frozen_float_value) {
+            set_frozen_value(std::to_wstring(m_frozen_float_value));
         }
         break;
     default:
@@ -1087,20 +1529,32 @@ void CVarManager::CVarStandard::freeze() {
 void CVarManager::CVarStandard::update() {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr) {
+    if (m_cvar == nullptr && m_interface_cvar == nullptr) {
+        if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
+            return;
+        }
+
         m_cvar = sdk::find_cvar_cached(m_module, m_name);
+
+        if (m_cvar == nullptr && (!m_interface_fallback_attempted ||
+            (sdk::mafia::uses_ue544_discovery() && sdk::mafia::supports_interface_fallback(m_name)))) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
+        }
     }
 }
 
 void CVarManager::CVarStandard::draw_ui() try {
     ZoneScopedN(__FUNCTION__);
 
-    if (m_cvar == nullptr || *m_cvar == nullptr) {
+    auto* cvar = m_cvar != nullptr && *m_cvar != nullptr ? *m_cvar : m_interface_cvar;
+
+    if (cvar == nullptr) {
         ImGui::TextWrapped("Failed to find cvar: %s", utility::narrow(m_name).c_str());
         return;
     }
-
-    auto cvar = *m_cvar;
     const auto narrow_name = utility::narrow(m_name);
     
     switch (m_type) {
@@ -1113,15 +1567,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(static_cast<int>(value));
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring((int)value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring((int)value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch (...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1138,15 +1596,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(value);
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring(value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch(...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1163,15 +1625,19 @@ void CVarManager::CVarStandard::draw_ui() try {
             CVarManager::record_global_change(m_name, std::to_wstring(value), "standard_ui");
             save_internal(cvars_standard_txt_name.data());
 
-            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value]() {
+            const auto request = begin_ui_write(value);
+            GameThreadWorker::get().enqueue([sft = std::static_pointer_cast<CVarStandard>(shared_from_this()), cvar, value, request]() {
                 try {
-                    if (cvar->Set(std::to_wstring(value).c_str())) {
+                    const auto callable = cvar->Set(std::to_wstring(value).c_str());
+                    sft->finish_ui_write(request, callable);
+                    if (callable) {
                         sft->m_setter_unavailable = false;
                     } else {
                         sft->m_setter_unavailable = true;
                         spdlog::warn("Setter unavailable for cvar: {}", utility::narrow(sft->get_name()));
                     }
                 } catch(...) {
+                    sft->finish_ui_write(request, false);
                     spdlog::error("Failed to set cvar: {}", utility::narrow(sft->get_name()));
                 }
             });
@@ -1201,7 +1667,24 @@ void CVarManager::CVarData::load_from_config(const utility::Config& cfg, bool se
 void CVarManager::CVarData::save() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
+        return;
+    }
+
+    if (m_interface_cvar != nullptr) {
+        switch (m_type) {
+        case Type::BOOL:
+        case Type::INT:
+            m_frozen_int_value = m_interface_cvar->GetInt();
+            break;
+        case Type::FLOAT:
+            m_frozen_float_value = m_interface_cvar->GetFloat();
+            break;
+        default:
+            break;
+        }
+
+        save_internal(cvars_data_txt_name.data());
         return;
     }
 
@@ -1233,17 +1716,52 @@ void CVarManager::CVarData::save() {
 void CVarManager::CVarData::freeze() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_frozen) {
+    if (!m_frozen || m_setter_unavailable) {
         return;
     }
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
         return;
     }
 
     if (!m_ever_frozen) {
         m_ever_frozen = true;
         SPDLOG_INFO("[CVarManager] (Data) First time freezing \"{}\"...", utility::narrow(m_name));
+    }
+
+    if (m_interface_cvar != nullptr) {
+        bool needs_set = false;
+        std::wstring value{};
+
+        switch (m_type) {
+        case Type::BOOL:
+        case Type::INT:
+            needs_set = m_interface_cvar->GetInt() != m_frozen_int_value;
+            value = std::to_wstring(m_frozen_int_value);
+            break;
+        case Type::FLOAT:
+            needs_set = m_interface_cvar->GetFloat() != m_frozen_float_value;
+            value = std::to_wstring(m_frozen_float_value);
+            break;
+        default:
+            break;
+        }
+
+        if (needs_set) {
+            const auto start = std::chrono::steady_clock::now();
+            const auto ok = m_interface_cvar->Set(value.c_str());
+            const auto elapsed_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+
+            if (!ok || elapsed_ms > 250) {
+                m_setter_unavailable = true;
+                SPDLOG_WARN(
+                    "[CVarManager] Disabling validated interface freeze enforcement for {} (ok={}, elapsed={}ms)",
+                    utility::narrow(m_name), ok, elapsed_ms);
+            }
+        }
+
+        return;
     }
 
     // Points to the same thing, just different data internally.
@@ -1272,16 +1790,94 @@ void CVarManager::CVarData::freeze() {
 void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
+        if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
+            return;
+        }
+
         m_cvar_data = sdk::find_cvar_data_cached(m_module, m_name);
+
+        if (!m_cvar_data && (!m_interface_fallback_attempted ||
+            (sdk::mafia::uses_ue544_discovery() && sdk::mafia::supports_interface_fallback(m_name)))) {
+            m_interface_fallback_attempted = true;
+            m_interface_cvar = sdk::find_validated_console_variable(m_name);
+        }
     }
 }
 
 void CVarManager::CVarData::draw_ui() try {
     ZoneScopedN(__FUNCTION__);
 
-    if (!m_cvar_data) {
+    if (!m_cvar_data && m_interface_cvar == nullptr) {
         ImGui::TextWrapped("Failed to find cvar data: %s", utility::narrow(m_name).c_str());
+        return;
+    }
+
+    if (m_interface_cvar != nullptr) {
+        const auto narrow_name = utility::narrow(m_name);
+        const auto set_value = [this](double requested, std::wstring value) {
+            m_setter_unavailable = false;
+            auto* cvar = m_interface_cvar;
+            const auto request = begin_ui_write(requested);
+
+            GameThreadWorker::get().enqueue(
+                [sft = std::static_pointer_cast<CVarData>(shared_from_this()), cvar, value = std::move(value), request]() {
+                    try {
+                        const auto callable = cvar->Set(value.c_str());
+                        sft->finish_ui_write(request, callable);
+                        if (!callable) {
+                            sft->m_setter_unavailable = true;
+                            SPDLOG_WARN("Validated CVar interface Set failed for {}", utility::narrow(sft->get_name()));
+                        }
+                    } catch (...) {
+                        sft->finish_ui_write(request, false);
+                        sft->m_setter_unavailable = true;
+                        SPDLOG_ERROR("Validated CVar interface Set threw for {}", utility::narrow(sft->get_name()));
+                    }
+                });
+        };
+
+        switch (m_type) {
+        case Type::BOOL: {
+            auto value = static_cast<bool>(m_interface_cvar->GetInt());
+
+            if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
+                m_frozen_int_value = static_cast<int>(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(m_frozen_int_value, std::to_wstring(m_frozen_int_value));
+            }
+            break;
+        }
+        case Type::INT: {
+            auto value = m_interface_cvar->GetInt();
+
+            if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, effective_max_int_value())) {
+                m_frozen_int_value = clamp_int_value(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_int_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(m_frozen_int_value, std::to_wstring(m_frozen_int_value));
+            }
+            break;
+        }
+        case Type::FLOAT: {
+            auto value = m_interface_cvar->GetFloat();
+
+            if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
+                m_frozen_float_value = clamp_float_value(value);
+                CVarManager::record_global_change(m_name, std::to_wstring(m_frozen_float_value), "data_ue55_interface_ui");
+                save_internal(cvars_data_txt_name.data());
+                set_value(m_frozen_float_value, std::to_wstring(m_frozen_float_value));
+            }
+            break;
+        }
+        default:
+            ImGui::TextWrapped("Unimplemented cvar type: %s", narrow_name.c_str());
+            break;
+        }
+
         return;
     }
 
@@ -1301,7 +1897,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = (bool)cvar_int->get();
 
         if (ImGui::Checkbox(narrow_name.c_str(), &value)) {
-            cvar_int->set((int)value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(static_cast<int>(value));
+            const auto callable = cvar_int->set((int)value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring((int)value), "data_ui");
             this->save();
         }
@@ -1311,7 +1909,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = cvar_int->get();
 
         if (ImGui::SliderInt(narrow_name.c_str(), &value, m_min_int_value, m_max_int_value)) {
-            cvar_int->set(value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(value);
+            const auto callable = cvar_int->set(value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
@@ -1321,7 +1921,9 @@ void CVarManager::CVarData::draw_ui() try {
         auto value = cvar_float->get();
 
         if (ImGui::SliderFloat(narrow_name.c_str(), &value, m_min_float_value, m_max_float_value)) {
-            cvar_float->set(value); // no need to run on game thread, direct access
+            const auto request = begin_ui_write(value);
+            const auto callable = cvar_float->set(value); // no need to run on game thread, direct access
+            finish_ui_write(request, callable);
             CVarManager::record_global_change(m_name, std::to_wstring(value), "data_ui");
             this->save();
         }
@@ -1368,6 +1970,8 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
         return;
     }
 
+    m_pending_console_script_commands.clear();
+
     for (std::string line{}; getline(cscript_file, line); ) {
         trim(line);
 
@@ -1390,10 +1994,11 @@ void CVarManager::execute_console_script(sdk::UGameEngine* engine, const std::st
             continue;
         }
 
-        spdlog::debug("[execute_console_script] Attempting to execute \"{}\"", line);
-        CVarManager::record_global_command(line, "console_script");
-        engine->exec(utility::widen(line));
+        m_pending_console_script_commands.emplace_back(std::move(line));
     }
 
-    spdlog::debug("[execute_console_script] done");
+    if (!m_pending_console_script_commands.empty()) {
+        m_next_console_script_command_time = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+        spdlog::info("[execute_console_script] Queued {} commands from {}; first command deferred", m_pending_console_script_commands.size(), filename);
+    }
 }

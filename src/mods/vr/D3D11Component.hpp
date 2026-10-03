@@ -13,6 +13,9 @@
 
 #include <DirectXMath.h>
 #include <SpriteBatch.h>
+#include "MonoD3D11.hpp"
+#include "UIAlpha.hpp"
+#include "UIComposition.hpp"
 
 class VR;
 namespace render {
@@ -30,7 +33,7 @@ public:
 
     vr::EVRCompositorError on_frame(VR* vr);
     void on_post_present(VR* vr);
-    void on_reset(VR* vr);
+    void on_reset(VR* vr, bool mono_retired = false);
 
     auto& openxr() { return m_openxr; }
 
@@ -41,6 +44,7 @@ public:
     void copy_tex(ID3D11Resource* src, ID3D11Resource* dst);
 
     void force_reset() { m_force_reset = true; }
+    bool mono_consumers_retired(uint64_t request_token);
 
 private:
     friend class render::FrameResourceInspector;
@@ -74,6 +78,7 @@ private:
         float threshold,
         float softness,
         float opacity,
+        float invert_amount,
         float offset_x,
         float offset_y,
         float scale,
@@ -164,6 +169,10 @@ private:
     TextureContext m_engine_ui_ref{};
     TextureContext m_engine_tex_ref{};
     TextureContext m_scene_capture_tex_ref{};
+    uint64_t m_scene_capture_generation{};
+    uint64_t m_scene_capture_snapshot_transaction{};
+    uint32_t m_scene_capture_width{};
+    uint32_t m_scene_capture_height{};
     std::array<TextureContext, 2> m_2d_screen_tex{};
     ComPtr<ID3D11Texture2D> m_left_eye_tex{};
     ComPtr<ID3D11Texture2D> m_right_eye_tex{};
@@ -205,10 +214,14 @@ private:
     ID3D11Texture2D* m_last_checked_native{nullptr};
 
     uint32_t m_last_rendered_frame{0};
+    uint64_t m_mono_generation{};
+    bool m_mono_block_post_present{};
+    uevr::mono::dx11::Retirement m_mono_retirement;
     bool m_force_reset{true};
     bool m_submitted_left_eye{false};
     bool m_is_shader_setup{false};
     bool m_last_afr_state{false};
+    bool m_daysgone_ahud_was_active{false};
 
     struct OpenXR {
         OpenXR(D3D11Component* p) : parent(p) {}
@@ -216,7 +229,8 @@ private:
         void initialize(XrSessionCreateInfo& session_info);
         std::optional<std::string> create_swapchains();
         void destroy_swapchains();
-        void copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr, std::function<void(ID3D11Texture2D*)> pre_commands = nullptr);
+        bool copy(uint32_t swapchain_idx, ID3D11Texture2D* resource, D3D11_BOX* src_box = nullptr,
+            std::function<void(ID3D11Texture2D*)> pre_commands = nullptr, ID3D11Texture2D* retained_mono_source = nullptr);
 
         bool ever_acquired(uint32_t swapchain_idx) {
             std::scoped_lock _{this->mtx};
@@ -230,9 +244,15 @@ private:
         }
 
         XrGraphicsBindingD3D11KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D11_KHR};
+        uevr::ui_alpha::D3D11 game_ui_alpha, framework_ui_alpha;
+        uevr::ui_composition::D3D11 ui_composition;
+        void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
             std::vector<XrSwapchainImageD3D11KHR> textures{};
+            // Replaced only after xrWaitSwapchainImage reacquires this image.
+            // D3D11 additionally retains resources referenced by queued commands.
+            std::vector<ComPtr<ID3D11Texture2D>> mono_sources{};
             uint32_t num_textures_acquired{0};
             bool ever_acquired{false};
         };

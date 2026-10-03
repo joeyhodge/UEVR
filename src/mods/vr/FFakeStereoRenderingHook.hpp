@@ -13,6 +13,7 @@
 
 #include <d3d12.h>
 #include <wrl.h>
+#include <openxr/openxr.h>
 
 #include <SafetyHook.hpp>
 
@@ -30,7 +31,13 @@
 #include <sdk/DynamicRHI.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
+#include "CompatibilityPolicy.hpp"
+#include "UE58UIInitialization.hpp"
+#include "UE58OwnedUITexture.hpp"
+#include "NativeFrameDiagnostics.hpp"
+#include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
+#include "utility/NascarHookCompatibility.hpp"
 
 #include "Mod.hpp"
 
@@ -50,6 +57,8 @@ class AActor;
 class UObject;
 class USceneCaptureComponent2D;
 class UTexture;
+class FRenderTarget;
+class FSceneInterface;
 class FSceneViewFamily;
 class FSceneView;
 }
@@ -59,6 +68,16 @@ class FSceneView;
 // so we need a unified way of storing data that can be used for all versions
 struct VRRenderTargetManager_Base {
 public:
+    struct SceneCaptureTargetSnapshot {
+        Microsoft::WRL::ComPtr<IUnknown> native_resource{};
+        FRHITexture2D* rhi_texture{};
+        uintptr_t owner_texture{};
+        uint64_t generation{};
+        uint32_t width{};
+        uint32_t height{};
+        std::optional<uevr::ue58_owned_ui::Resource> ue58_owned_resource{};
+    };
+
     struct Everspace2D3D12SceneTargetSnapshot {
         Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
         D3D12_RESOURCE_DESC desc{};
@@ -66,6 +85,56 @@ public:
         uint64_t generation{};
         const char* source{};
     };
+
+    struct SWZeroCompanyD3D12SceneTargetSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+    };
+
+    struct Stalker2D3D12SceneTargetSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+    };
+
+    struct NascarTextureSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uintptr_t viewport{};
+        mutable std::atomic_uint64_t last_seen_ms{};
+    };
+
+    std::shared_ptr<const NascarTextureSnapshot> get_nascar_scene_target_snapshot() const {
+        auto snapshot = nascar_scene_target_snapshot.load(std::memory_order_acquire);
+        if (!snapshot) { return nullptr; }
+        const auto observed = snapshot->last_seen_ms.load(std::memory_order_acquire);
+        return uevr::nascar::scene_observation_fresh(GetTickCount64(), observed) ? snapshot : nullptr;
+    }
+    std::shared_ptr<const NascarTextureSnapshot> get_nascar_ui_target_snapshot() const {
+        return nascar_ui_target_snapshot.load(std::memory_order_acquire);
+    }
+    bool observe_nascar_scene_target(uintptr_t viewport);
+    void invalidate_nascar_scene_target();
+
+    struct NascarNativeTarget {
+        std::shared_ptr<const SceneCaptureTargetSnapshot> capture{};
+        uintptr_t resource{}, render_target{}, instance{};
+        uevr::nascar::NativeOwnedObject owner{};
+    };
+    void prepare_nascar_native_target(uintptr_t instance, uint32_t width, uint32_t height);
+    static float nascar_native_capture_display_gamma(const sdk::FRenderTarget* target);
+    bool nascar_native_gamma_owns(uintptr_t render_target) const {
+        return nascar_native_gamma_hook.owns(render_target);
+    }
+    bool nascar_native_target_owner_valid(const NascarNativeTarget& target) const;
+    void retire_nascar_native_target();
+    std::shared_ptr<const NascarNativeTarget> get_nascar_native_target() const {
+        return nascar_native_target.load(std::memory_order_acquire);
+    }
 
     bool allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource);
 
@@ -81,6 +150,10 @@ public:
 
 public:
     FRHITexture2D* get_ui_target() {
+        if (uevr::nascar::is_target()) {
+            const auto snapshot = get_nascar_ui_target_snapshot();
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         auto& dedicated = static_cast<FRHITexture2D*&>(dedicated_ui_target);
 
         if (dedicated != nullptr) {
@@ -105,6 +178,7 @@ public:
     }
 
     FRHITexture2D* get_dedicated_ui_target() {
+        if (uevr::nascar::is_target()) { return get_ui_target(); }
         return static_cast<FRHITexture2D*&>(dedicated_ui_target);
     }
 
@@ -121,12 +195,37 @@ public:
     }
 
     FRHITexture2D* get_render_target() {
+        if (uevr::nascar::is_target()) {
+            const auto snapshot = get_nascar_scene_target_snapshot();
+            // Identity only. D3D12 consumers retain the COM-owned snapshot.
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         return render_target; 
     }
 
     std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot> get_everspace2_scene_target_snapshot() const {
         return everspace2_scene_target_snapshot.load(std::memory_order_acquire);
     }
+
+    std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot> get_sw_zero_company_scene_target_snapshot() const {
+        return sw_zero_company_scene_target_snapshot.load(std::memory_order_acquire);
+    }
+
+    std::shared_ptr<const Stalker2D3D12SceneTargetSnapshot> get_stalker2_scene_target_snapshot() const {
+        return stalker2_scene_target_snapshot.load(std::memory_order_acquire);
+    }
+
+    bool publish_stalker2_scene_target_snapshot(
+        FRHITexture2D* source_texture,
+        ID3D12Resource* resource,
+        const D3D12_RESOURCE_DESC& desc);
+
+    bool publish_sw_zero_company_scene_target_snapshot(
+        FRHITexture2D* source_texture,
+        ID3D12Resource* resource,
+        const D3D12_RESOURCE_DESC& desc);
+    std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>
+        retire_sw_zero_company_scene_target_snapshot(const char* reason);
 
     bool publish_everspace2_scene_target_snapshot(
         FRHITexture2D* source_texture,
@@ -137,6 +236,12 @@ public:
         retire_everspace2_scene_target_snapshot(const char* reason);
 
     FRHITexture2D* get_scene_capture_render_target();
+    std::shared_ptr<const SceneCaptureTargetSnapshot> get_scene_capture_target_snapshot() const {
+        return scene_capture_target_snapshot.load(std::memory_order_acquire);
+    }
+    uint64_t get_scene_capture_generation() const {
+        return scene_capture_generation.load(std::memory_order_acquire);
+    }
     void set_render_target(FRHITexture2D* rt) { render_target = rt; }
     void reset_ue58_scene_target_observation() {
         ue58_pending_scene_target = nullptr;
@@ -159,7 +264,21 @@ public:
 
         return ue58_pending_scene_target_observations;
     }
+    void observe_sw_zero_company_desktop_extent(uint64_t width, uint32_t height) {
+        if (width == 0 || width > UINT32_MAX || height == 0) {
+            return;
+        }
+
+        sw_zero_company_desktop_extent.store(
+            (width << 32) | static_cast<uint64_t>(height),
+            std::memory_order_release);
+    }
+    uint64_t get_sw_zero_company_desktop_extent() const {
+        return sw_zero_company_desktop_extent.load(std::memory_order_acquire);
+    }
     void set_dedicated_ui_target(FRHITexture2D* rt, uint32_t width = 0, uint32_t height = 0);
+    bool prepare_sw_zero_company_dedicated_ui_target(FRHITexture2D* rt, uint32_t width, uint32_t height);
+    bool is_sw_zero_company_dedicated_ui_target_prepared(FRHITexture2D* rt) const;
     void inherit_dedicated_ui_state_from(VRRenderTargetManager_Base& source, const char* reason);
     void request_dedicated_ui_target(uint32_t width, uint32_t height);
     void destroy_dedicated_ui_target();
@@ -169,11 +288,19 @@ public:
     bool create_dedicated_ui_texture();
     bool try_schedule_dedicated_ui_creation();
     bool can_attempt_dedicated_ui_creation();
+    void service_ue58_ui_initialization(uevr::ue58_ui::Source source);
+    void service_ue58_ui_game_thread();
+    uevr::ue58_ui::Snapshot get_ue58_ui_initialization_snapshot() const {
+        return ue58_ui_initialization.snapshot();
+    }
     void reset_dedicated_ui_creation_state();
     bool is_dedicated_ui_generation_current(uint64_t generation) const {
         return in_flight_dedicated_ui_generation == generation;
     }
     bool is_dedicated_ui_target_pending() const {
+        if (ue58_ui_initialization_enabled.load(std::memory_order_acquire)) {
+            return ue58_ui_initialization.pending();
+        }
         return dedicated_ui_creation_pending || in_flight_dedicated_ui_texture != nullptr || in_flight_dedicated_ui_generation != 0;
     }
 
@@ -192,11 +319,45 @@ public:
         return last_viewport;
     }
 
+    sdk::FRenderTarget* get_view_family_render_target() const {
+        if (auto* const validated = validated_view_family_render_target.load(std::memory_order_acquire);
+            validated != nullptr)
+        {
+            return validated;
+        }
+
+        return reinterpret_cast<sdk::FRenderTarget*>(last_viewport);
+    }
+
+    void set_view_family_render_target(sdk::FRenderTarget* target) {
+        validated_view_family_render_target.store(target, std::memory_order_release);
+    }
+
     void set_viewport(sdk::FViewport* vp) {
         last_viewport = vp;
+        if (vp != nullptr) {
+            set_view_family_render_target(reinterpret_cast<sdk::FRenderTarget*>(vp));
+        }
     }
 
 protected:
+    struct UE58UITextureOwner;
+    bool create_ue58_ui_texture();
+    void set_dedicated_ui_target_unlocked(FRHITexture2D* rt, uint32_t width, uint32_t height);
+    uevr::ue58_ui::Initialization<UE58UITextureOwner> ue58_ui_initialization{};
+    std::atomic_bool ue58_ui_initialization_enabled{};
+
+    uint64_t invalidate_scene_capture_generation(const char* reason);
+    bool publish_scene_capture_target_snapshot(
+        sdk::UTexture* owner_texture,
+        FRHITexture2D* rhi_texture,
+        uint64_t generation,
+        const uevr::ue58_owned_ui::Resource* ue58_owned_resource = nullptr,
+        IUnknown* validated_native = nullptr);
+    std::shared_ptr<const SceneCaptureTargetSnapshot> get_preservable_scene_capture_for_same_size_reallocation(
+        uint32_t width,
+        uint32_t height) const;
+
     void retain_everspace2_dedicated_ui_target(FRHITexture2D* rt);
 
     struct VerifiedFTexture2D {
@@ -251,6 +412,28 @@ protected:
     static void pre_texture_hook_callback(safetyhook::Context& ctx, bool from_second = false); // only used if pixel format cvar is missing
     static void texture_hook_callback(safetyhook::Context& ctx, bool from_second = false);
 
+    bool prepare_halloween_texture_hook(uintptr_t return_address);
+    static void halloween_texture_completed(safetyhook::Context& ctx);
+    std::once_flag halloween_texture_install_once{};
+    safetyhook::MidHook halloween_texture_hook{};
+    uintptr_t halloween_allocate_return{};
+    uintptr_t halloween_texture_release{};
+    std::atomic_bool halloween_texture_ready{};
+    std::shared_ptr<FRHITexture2D> halloween_scene_owner{};
+
+    bool prepare_ktjl_texture_hook(uintptr_t return_address);
+    static void ktjl_create_texture_hook(uint32_t width, uint32_t height, uint8_t format, uint32_t mips,
+        uint32_t flags, uint32_t target_flags, bool separate, void* create_info,
+        FTexture2DRHIRef* out_rt, FTexture2DRHIRef* out_srv, uint32_t samples);
+    std::once_flag ktjl_texture_install_once{};
+    safetyhook::InlineHook ktjl_texture_hook{};
+    std::atomic_bool ktjl_texture_ready{};
+    uintptr_t ktjl_texture_base{};
+    // Engine-owned TRefCountPtr output slots: only the engine assigns/releases
+    // these references, just as in the existing duplicate-UI allocation path.
+    FRHITexture2D* ktjl_ui_output{};
+    FRHITexture2D* ktjl_ui_shader_output{};
+
     FTexture2DRHIRef* texture_hook_ref{nullptr};
     FTexture2DRHIRef* shader_resource_hook_ref{nullptr};
     safetyhook::MidHook pre_texture_hook{}; // only used if pixel format cvar is missing
@@ -286,10 +469,23 @@ protected:
     bool m_attempted_find_force_separate_rt{false};
 
     sdk::UObjectReference<sdk::AActor> scene_capture_actor{nullptr};
+    // One persistent, rooted target per injection. Never release its Unreal
+    // wrapper while queued linked renderers or GPU copies can still borrow it.
+    sdk::UObjectReference<sdk::UTexture> nascar_native_texture{nullptr};
+    bool nascar_native_creation_started{};
+    uevr::nascar::ObjectVTable nascar_native_gamma_hook{};
+    uevr::nascar::NativeDisplayGamma nascar_native_gamma{};
+    std::atomic<std::shared_ptr<const NascarNativeTarget>> nascar_native_target{};
     sdk::UObjectReference<sdk::USceneCaptureComponent2D> scene_capture_component{nullptr};
     sdk::UObjectReference<sdk::UTexture> scene_capture_target{nullptr}; // For custom compatibility rendering
     sdk::UObjectReference<sdk::UTexture> scene_capture_target_rhi_thread{nullptr}; // For custom compatibility rendering
     sdk::UTexture* in_flight_target{nullptr}; // Not a reference because this is basically a barrier against creating a new scene capture target
+    uint64_t in_flight_scene_capture_generation{};
+    std::atomic_bool scene_capture_lifetime_active{};
+    std::atomic_bool scene_capture_creation_requested{};
+    std::atomic_bool scene_capture_destruction_requested{};
+    std::atomic<uint64_t> scene_capture_request_serial{};
+    std::atomic<uint64_t> scene_capture_retry_after_ms{};
     sdk::UObjectReference<sdk::UTexture> dedicated_ui_texture{nullptr};
     sdk::UTexture* in_flight_dedicated_ui_texture{nullptr};
     std::unique_ptr<FTexture2DRHIRef> owned_dedicated_ui_target{};
@@ -302,14 +498,26 @@ protected:
     std::chrono::steady_clock::time_point dedicated_ui_resource_pending_since{};
     bool dedicated_ui_creation_pending{false};
     bool dedicated_ui_object_created{false};
+    std::atomic_bool stalker2_dedicated_ui_creation_failed{};
     uint64_t dedicated_ui_generation{0};
     uint64_t in_flight_dedicated_ui_generation{0};
     sdk::FViewport* last_viewport{nullptr};
+    std::atomic<sdk::FRenderTarget*> validated_view_family_render_target{};
     FRHITexture2D* ue58_pending_scene_target{nullptr};
     void* ue58_pending_native_resource{nullptr};
     uint32_t ue58_pending_scene_target_observations{0};
     std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
     std::atomic<uint64_t> everspace2_scene_target_generation{};
+    std::atomic<std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>> sw_zero_company_scene_target_snapshot{};
+    std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
+    std::atomic<std::shared_ptr<const Stalker2D3D12SceneTargetSnapshot>> stalker2_scene_target_snapshot{};
+    std::atomic<uint64_t> stalker2_scene_target_generation{};
+    std::atomic<std::shared_ptr<const NascarTextureSnapshot>> nascar_scene_target_snapshot{};
+    std::atomic<std::shared_ptr<const NascarTextureSnapshot>> nascar_ui_target_snapshot{};
+    uevr::nascar::SceneStability nascar_scene_stability{};
+    std::atomic<uint64_t> sw_zero_company_desktop_extent{};
+    std::atomic<std::shared_ptr<const SceneCaptureTargetSnapshot>> scene_capture_target_snapshot{};
+    std::atomic<uint64_t> scene_capture_generation{};
 };
 
 struct VRRenderTargetManager : IStereoRenderTargetManager, VRRenderTargetManager_Base {
@@ -578,6 +786,12 @@ public:
         return m_has_seen_prerender_viewfamily;
     }
 
+    bool has_seen_nascar25_ui_render_callback() const {
+        return m_nascar25_ui_render_callback_seen.load(std::memory_order_acquire);
+    }
+
+    void note_nascar25_render_pose_handoff(uint32_t frame_count);
+
     bool has_scene_view_family_offsets_ready() const {
         return m_has_scene_view_family_offsets_ready;
     }
@@ -602,6 +816,56 @@ public:
         uint32_t render_frame{};
         uint8_t eye{};
     };
+
+    struct NativeStereoFramePacket {
+        std::shared_ptr<const VRRenderTargetManager_Base::SceneCaptureTargetSnapshot> capture{};
+        sdk::FSceneViewFamily* family{};
+        sdk::FSceneView* left_view{};
+        sdk::FSceneView* right_view{};
+        sdk::FSceneViewStateInterface* left_state{};
+        sdk::FSceneViewStateInterface* right_state{};
+        sdk::FRenderTarget* main_target{};
+        sdk::FSceneInterface* scene{};
+        uint64_t serial{};
+        uint64_t capture_generation{};
+        uint64_t d3d11_snapshot_transaction{};
+        uint32_t engine_frame{};
+        int32_t render_frame{};
+        int32_t player_index{-1};
+        uint32_t left_pass{};
+        uint32_t right_pass{};
+        uevr::stalker2_native::Key stalker_key{};
+        std::array<XrView, 2> stalker_views{};
+        bool stalker_pose_valid{};
+        uint32_t stalker_pose_frame{};
+        // Observation only; never used to accept a packet or retime a frame.
+        uevr::native_frame::ClockStamp diagnostic_clock{};
+    };
+
+    bool is_nascar_native_ready() const { return m_nascar_native_ready.load(std::memory_order_acquire); }
+
+    std::shared_ptr<const NativeStereoFramePacket> get_native_stereo_frame_packet_for_submit(
+        int32_t render_frame, uevr::native_frame::Backend backend = uevr::native_frame::Backend::unknown,
+        uevr::native_frame::Ticket* diagnostic_ticket = nullptr) const;
+    void note_native_stereo_frame_packet_consumed(uint64_t serial);
+    void reject_native_stereo_frame_packet(uint64_t serial, const char* detail);
+    void sync_stalker2_native_experiment(bool enabled);
+    uint64_t stalker2_native_epoch() const { return m_stalker2_native_packets.epoch(); }
+    void note_stalker2_rhi_handoff(uint32_t frame);
+    bool stalker2_native_capability() const;
+    std::shared_ptr<const NativeStereoFramePacket> stalker2_latest_packet() const { return m_stalker2_native_packets.latest(); }
+    std::shared_ptr<const NativeStereoFramePacket> get_stalker2_native_packet(uint32_t frame,
+        uevr::native_frame::Ticket* ticket) const;
+    void reject_stalker2_native_packet(const std::shared_ptr<const NativeStereoFramePacket>& packet, const char* detail);
+    uevr::native_frame::Ticket observe_stalker2_native_pair(const NativeStereoFramePacket& packet,
+        uint32_t frame, bool reused) const;
+    void observe_native_frame_engine(uint32_t frame);
+    void observe_native_frame_present(int32_t frame);
+    void record_native_frame_stage(const NativeStereoFramePacket& packet,
+        uevr::native_frame::Ticket ticket, uevr::native_frame::Backend backend,
+        uevr::native_frame::Runtime runtime, uevr::native_frame::Stage stage,
+        int32_t api_result = 0, uint8_t submit_eye = 2, uint8_t submit_call = 0,
+        const void* copy_source = nullptr, const void* copy_destination = nullptr) const;
 
     std::optional<DuneTrueStereoFrameSnapshot> get_dune_true_stereo_frame_snapshot() const {
         const auto packed = m_dune_true_stereo_frame.load(std::memory_order_acquire);
@@ -651,6 +915,14 @@ public:
     bool should_use_daysgone_slate_ui_overlay() const {
         return m_daysgone_bend_ui_use_slate_overlay->value() &&
             m_daysgone_slate_native_ui_target.load() != 0;
+    }
+
+    void note_daysgone_ahud_overlay_submitted();
+
+    void reset_daysgone_ahud_overlay_readiness() {
+        m_daysgone_ahud_overlay_ready.store(false, std::memory_order_release);
+        m_daysgone_ahud_overlay_last_submit_frame.store(0, std::memory_order_relaxed);
+        m_daysgone_slate_consumer_target_frame.store(0, std::memory_order_relaxed);
     }
 
     float get_daysgone_slate_ui_key_threshold() const {
@@ -763,7 +1035,11 @@ public:
     }
 
     bool has_slate_hook() {
-        return (bool)m_slate_thread_hook;
+        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active();
+    }
+
+    uintptr_t get_slate_hook_target_address() const {
+        return m_slate_thread_hook.target_address();
     }
 
     bool has_engine_tick_hook() {
@@ -805,11 +1081,48 @@ public:
     static void begin_render_viewfamily_real(void* render_module, sdk::FCanvas* canvas, sdk::FSceneViewFamily* view_family);
     static void begin_render_viewfamily(ISceneViewExtension* extension, sdk::FSceneViewFamily& view_family);
     static void pre_render_viewfamily_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneViewFamily& view_family);
+    static void pre_render_view_renderthread(ISceneViewExtension* extension, sdk::FRHICommandListBase* cmd_list, sdk::FSceneView& view);
+    static void pre_render_dune_frame(ISceneViewExtension* extension, void* graph, sdk::FSceneViewFamily& family);
 
     const char* get_ghosting_fix_status_text();
+    const char* get_native_stereo_fix_status_text() const;
+    bool is_native_stereo_fix_operational() const;
+    bool is_hook_provenance_diagnostics_enabled() const noexcept {
+        return m_hook_provenance_diagnostics.load(std::memory_order_acquire);
+    }
+    uevr::vr_compatibility::UE58DedicatedUICapability get_ue58_dedicated_ui_capability() const {
+        return m_ue58_slate_ui_capability.capability.load(std::memory_order_acquire);
+    }
+    bool is_ue58_automatic_ui_route_ready() const {
+        return uevr::vr_compatibility::should_enable_ue58_automatic_ui_route(
+            get_ue58_dedicated_ui_capability());
+    }
+    bool requires_ue58_synthetic_ui_target() const {
+        return uevr::vr_compatibility::should_create_ue58_synthetic_ui_target(
+            get_ue58_dedicated_ui_capability());
+    }
+    const char* get_dibr_single_view_status_text() const;
+    bool is_dibr_single_view_active() const;
+    uint32_t get_dibr_single_view_suppressed_frames() const { return m_dibr_single_view_suppressed_frames.load(std::memory_order_acquire); }
+    uint32_t get_dibr_single_view_fallback_frames() const { return m_dibr_single_view_fallback_frames.load(std::memory_order_acquire); }
     const char* get_splitscreen_compatibility_status_text();
 
 private:
+    std::string build_hook_provenance_json();
+    void draw_hook_provenance_diagnostics();
+    void note_ue58_slate_ui_runtime_observation(
+        uintptr_t original,
+        uintptr_t scene_target,
+        uint64_t width,
+        uint32_t height,
+        uint32_t format,
+        bool target_desc_valid,
+        bool scene_relation_valid,
+        bool target_is_scene,
+        bool target_is_distinct_from_scene,
+        uint32_t expected_width,
+        uint32_t expected_height);
+
     std::atomic_bool m_dune_character_creation_active{false};
     std::atomic_bool m_dune_has_live_pawn{false};
     std::atomic_uint64_t m_dune_true_stereo_frame{0};
@@ -833,6 +1146,8 @@ private:
     bool nonstandard_create_stereo_device_hook_4_18();
     
     bool hook_game_viewport_client();
+    void attempt_hook_bodycam_scene_viewport_init_rhi();
+    void attempt_hook_bodycam_update_pre_exposure();
     bool setup_view_extensions();
 
     static std::optional<uintptr_t> locate_fake_stereo_rendering_constructor();
@@ -924,9 +1239,18 @@ private:
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
     static void slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
+    static void* sw_zero_company_ue56_register_external_texture_hook(
+        void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
     static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_slate_texture_hook(safetyhook::Context& ctx);
+    static void daysgone_bend_taa_temporal_slate_texture_hook(safetyhook::Context& ctx);
+    bool try_redirect_daysgone_bend_slate_texture(
+        uintptr_t pass,
+        uintptr_t loaded_rhi_texture,
+        const char* variant,
+        uintptr_t& replacement_rhi_texture);
     static void windrose_hfsm_state_enter_hook(void* state);
     static void windrose_hfsm_state_exit_hook(void* state, uintptr_t destination_name);
     static void windrose_hfsm_component_enter_hook(void* component);
@@ -945,6 +1269,10 @@ private:
 
     // FSceneViewport
     static void update_viewport_rhi_hook(void* viewport, size_t destroyed, size_t new_size_x, size_t new_size_y, size_t new_window_mode, size_t preferred_pixel_format);
+    static void bodycam_scene_viewport_init_rhi_hook(
+        void* render_resource,
+        void* rhi_command_list);
+    static void bodycam_update_pre_exposure_hook(void* view);
 
     std::unique_ptr<ThreadWorker<FRHICommandListImmediate*>> m_slate_thread_worker{std::make_unique<ThreadWorker<FRHICommandListImmediate*>>()};
 
@@ -957,6 +1285,84 @@ private:
         NaturallySeparated,
         Active,
         FailedClosed,
+    };
+
+    enum class NativeStereoFixState : uint8_t {
+        Off,
+        WaitingForHooks,
+        WaitingForTarget,
+        LearningMainFamily,
+        LearningEyePair,
+        TransitionHold,
+        PairReady,
+        Active,
+        FailedClosed,
+    };
+
+    struct NativeStereoViewMetadata {
+        sdk::FSceneViewFamily* family{};
+        sdk::FSceneViewStateInterface* state{};
+        sdk::FSceneInterface* scene{};
+        int32_t player_index{-1};
+        bool player_index_valid{};
+        uint32_t original_stereo_pass{};
+        uint32_t frame{};
+        FIntRect view_rect{};
+        FIntRect constrained_view_rect{};
+        uint64_t projection_hash{};
+        bool projection_valid{};
+    };
+
+    void set_native_stereo_fix_state(NativeStereoFixState state, const char* detail = nullptr);
+    void invalidate_native_stereo_frame_packet(NativeStereoFixState state, const char* detail);
+    void publish_native_stereo_frame_packet(std::shared_ptr<const NativeStereoFramePacket> packet);
+
+    struct GhostingFixOwner {
+        sdk::UObject* engine{};
+        uintptr_t engine_vtable{};
+        uintptr_t engine_class{};
+        int32_t engine_index{-1};
+        int32_t engine_serial{};
+        uintptr_t game_instance_slot{};
+        sdk::UObject* game_instance{};
+        uintptr_t game_instance_vtable{};
+        uintptr_t game_instance_class{};
+        int32_t game_instance_index{-1};
+        int32_t game_instance_serial{};
+        uintptr_t local_players_header{};
+        uintptr_t local_players_data{};
+        int32_t local_players_count{};
+        int32_t local_players_capacity{};
+        uintptr_t local_player_slot{};
+        sdk::UObject* local_player{};
+        uintptr_t local_player_vtable{};
+        uintptr_t local_player_class{};
+        int32_t local_player_index{-1};
+        int32_t local_player_serial{};
+        uintptr_t view_states_header{};
+        uintptr_t view_states_data{};
+        int32_t view_states_count{};
+        int32_t view_states_capacity{};
+        uint32_t view_state_stride{};
+        uintptr_t view_state_reference_vtable{};
+        uintptr_t eye_state_slot[2]{};
+        uintptr_t viewport_client_slot{};
+        sdk::UObject* viewport_client{};
+        uintptr_t viewport_client_vtable{};
+        uintptr_t viewport_client_class{};
+        int32_t viewport_client_index{-1};
+        int32_t viewport_client_serial{};
+        uintptr_t world_slot{};
+        sdk::UObject* world{};
+        uintptr_t world_vtable{};
+        uintptr_t world_class{};
+        int32_t world_index{-1};
+        int32_t world_serial{};
+        uint32_t last_validated_frame{};
+        uint32_t stable_frames{};
+        bool view_states_are_array{};
+        bool uses_uobject_hook_validation{};
+        bool verified{};
     };
 
     struct GhostingFixPair {
@@ -976,7 +1382,16 @@ private:
         uint32_t generation{};
         bool orientation_confirmed{};
         bool logged_naturally_separated{};
+        bool logged_owner_unavailable{};
+        bool logged_owner_stabilizing{};
+        bool logged_owner_validation_failed{};
+        GhostingFixOwner owner{};
     };
+
+    static bool bind_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
+    static bool orient_legacy_ghosting_fix_pair_from_owner(GhostingFixPair& pair);
+    static bool validate_ghosting_fix_owner(const GhostingFixPair& pair, const char** failure_stage = nullptr);
+    static bool refresh_ghosting_fix_owner(GhostingFixPair& pair, const char* log_label = "GhostingFix");
 
     enum class SplitScreenCompatibilityState : uint8_t {
         Off,
@@ -1021,6 +1436,17 @@ private:
         uint8_t ghosting_bootstrap_attempts{};
         bool ghosting_bootstrap_ready{};
         bool ghosting_logged_bootstrap_deferred{};
+        bool ghosting_bootstrap_was_enabled{};
+
+        // Source-backed pair used only to separate Native Fix histories when
+        // legacy LocalPlayer code feeds both constructors the left-eye state.
+        GhostingFixPair native_stereo_state_pair{};
+        std::unordered_map<sdk::FSceneView*, NativeStereoViewMetadata> native_stereo_views{};
+        uint32_t native_stereo_metadata_frame{};
+        uintptr_t native_stereo_target{};
+        uintptr_t native_stereo_scene{};
+        uint64_t native_stereo_capture_generation{};
+        uint32_t native_stereo_stable_frames{};
 
         std::unordered_map<sdk::FSceneView*, SplitScreenViewMetadata> splitscreen_views{};
         uint32_t splitscreen_metadata_frame{};
@@ -1034,8 +1460,65 @@ private:
         std::unordered_set<uintptr_t> seen_retaddrs{};
     } m_sceneview_data;
 
+    std::atomic<NativeStereoFixState> m_native_stereo_fix_state{NativeStereoFixState::Off};
+    std::atomic<std::shared_ptr<const NativeStereoFramePacket>> m_native_stereo_frame_packet{};
+    uevr::stalker2_native::PacketRing<NativeStereoFramePacket> m_stalker2_native_packets{};
+    std::atomic_bool m_stalker2_native_experiment{};
+    std::atomic<uint64_t> m_native_stereo_packet_serial{};
+    std::atomic<uint64_t> m_native_stereo_consumed_serial{};
+    std::atomic<uint64_t> m_native_stereo_rejected_capture_generation{};
+    mutable uevr::native_frame::Recorder<> m_native_frame_diagnostics{};
+    std::atomic<uint64_t> m_native_stereo_ue57_capability_failure_generation{};
+    std::atomic_bool m_native_stereo_localplayer_bootstrap_failed{};
+    std::atomic_bool m_ktjl_view_states_ready{};
+
     safetyhook::InlineHook m_localplayer_get_viewpoint_hook{};
     safetyhook::InlineHook m_tick_hook{};
+    uevr::nascar::ObjectVTable m_nascar_tick{}, m_nascar_draw{}, m_nascar_slate_getter{}, m_nascar_stereo{};
+    std::atomic_uintptr_t m_nascar_viewport{};
+    std::atomic_bool m_nascar_ready{};
+    std::atomic_uint64_t m_nascar_ui_routes{};
+    std::atomic_bool m_nascar_synced_redraw_validated{};
+    std::atomic_uint64_t m_nascar_synced_redraws{}, m_nascar_synced_redraw_rejections{};
+    uevr::nascar::SyncedRedraw m_nascar_pending_redraw{};
+    uint64_t m_nascar_draw_serial{};
+    bool m_nascar_redrawing{};
+    uevr::nascar::ObjectVTable m_nascar_localplayer{};
+    uevr::nascar::ObjectVTable m_nascar_renderer{};
+    uevr::nascar::GhostOwnerGate m_nascar_native_owner{};
+    uevr::nascar::NativePairGate m_nascar_native_pair{};
+    std::array<uevr::nascar::NativeView, 2> m_nascar_native_views{};
+    std::array<uint32_t, 2> m_nascar_native_view_counts{};
+    std::atomic_bool m_nascar_native_ready{};
+    std::atomic_uint32_t m_nascar25_first_render_pose_frame{};
+    bool m_nascar_native_attempted{}, m_nascar_native_validated{}, m_nascar_native_requested{}, m_nascar_native_failed{};
+    bool install_nascar_localplayer(uintptr_t player);
+    void prepare_nascar_native_view();
+    void record_nascar_native_view(const uevr::nascar::NativeCall& call, sdk::FSceneView* view);
+    static void nascar_begin_render_family(void* renderer, sdk::FCanvas* canvas, sdk::FSceneViewFamily* family);
+    uevr::nascar::GhostOwnerGate m_nascar_ghost_owner{};
+    bool m_nascar_ghost_validated{}, m_nascar_ghost_validation_attempted{}, m_nascar_ghost_failed{};
+    std::atomic<uevr::nascar::GhostStatus> m_nascar_ghost_status{uevr::nascar::GhostStatus::Off};
+    std::atomic_uint64_t m_nascar_ghost_last_consumer_ms{}, m_nascar_ghost_consumers{};
+    uint64_t m_nascar_ghost_left_frame{UINT64_MAX};
+    uint32_t m_nascar_ghost_pairs{};
+    uintptr_t m_nascar_ghost_right_state{};
+    std::optional<uevr::nascar::GhostOwner> nascar_ghost_owner() const;
+    bool nascar_ghost_states(uintptr_t player, uintptr_t& left, uintptr_t& right) const;
+    void prepare_nascar_ghost_view();
+    static sdk::FSceneView* nascar_calc_scene_view(void* player, sdk::FSceneViewFamily* family,
+        void* location, void* rotation, sdk::FViewport* viewport, void* drawer, int32_t index);
+    static bool nascar_init_options(void* player, void* options, sdk::FViewport* viewport, void* drawer, int32_t index);
+    static bool nascar_projection_data(void* player, sdk::FViewport* viewport, void* data, int32_t index);
+    std::optional<uevr::nascar::RedrawIdentity> nascar_redraw_identity() const;
+    void queue_nascar_synced_redraw();
+    void service_nascar_synced_redraw(sdk::UGameEngine* engine);
+    static sdk::FSlateResource* nascar_slate_texture_getter(sdk::ISlateViewport* viewport);
+    static void nascar_render_texture(FFakeStereoRendering* stereo, FRDGBuilder* graph,
+        FRDGTexture* backbuffer, FRDGTexture* source, uevr::nascar::WindowSize window_size);
+    static void nascar25_render_texture(FFakeStereoRendering* stereo, FRHICommandListImmediate* immediate,
+        FRHITexture2D* backbuffer, FRHITexture2D* source, uevr::nascar::WindowSize25 window_size);
+    void call_game_viewport_draw_original(sdk::UGameViewportClient* self, sdk::FViewport* viewport, sdk::FCanvas* canvas, void* a4);
     safetyhook::InlineHook m_adjust_view_rect_hook{};
     safetyhook::InlineHook m_calculate_stereo_view_offset_hook_inline{};
     std::unique_ptr<PointerHook> m_calculate_stereo_view_offset_hook_ptr{}; // some games have a short jmp which isnt supported by safetyhook right now so we use pointerhook
@@ -1050,9 +1533,46 @@ private:
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    safetyhook::InlineHook m_sw_zero_company_ue56_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
+
+    struct UE58SlateUICapabilityDiagnostics {
+        std::atomic<uevr::vr_compatibility::UE58SlateScannerState> scanner_state{
+            uevr::vr_compatibility::UE58SlateScannerState::NotRun};
+        std::atomic<uevr::vr_compatibility::UE58SlateRouteABI> route_abi{
+            uevr::vr_compatibility::UE58SlateRouteABI::Unknown};
+        std::atomic<uevr::vr_compatibility::UE58DedicatedUICapability> capability{
+            uevr::vr_compatibility::UE58DedicatedUICapability::Unproven};
+        std::atomic_uint32_t proven_draw_functions{};
+        std::atomic_uint32_t cross_anchor_candidates{};
+        std::atomic_uint32_t direct_raw_transactions{};
+        std::atomic_uint32_t pooled_wrapper_transactions{};
+        std::atomic_uint32_t unclassified_candidates{};
+        std::atomic_uint32_t hooked_callsites{};
+        std::atomic_uintptr_t draw_function{};
+        std::atomic_uintptr_t first_hook_callsite{};
+        std::atomic_uintptr_t first_hook_target{};
+        std::atomic_uint64_t runtime_observations{};
+        std::atomic_uint32_t stable_observations{};
+        std::atomic_uint64_t last_observation_signature{};
+        std::atomic_uintptr_t original_target{};
+        std::atomic_uintptr_t scene_target{};
+        std::atomic_uint64_t original_width{};
+        std::atomic_uint32_t original_height{};
+        std::atomic_uint32_t original_format{};
+        std::atomic_uint32_t trusted_width{};
+        std::atomic_uint32_t trusted_height{};
+        std::atomic_bool runtime_name_validated{};
+        std::atomic_bool target_desc_valid{};
+        std::atomic_bool scene_relation_valid{};
+        std::atomic_bool target_is_scene{};
+        std::atomic_bool target_is_distinct_from_scene{};
+    } m_ue58_slate_ui_capability{};
+
     safetyhook::MidHook m_daysgone_slate_intermediate_buffer_hook{};
     safetyhook::MidHook m_daysgone_bend_taa_composite_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_slate_texture_hook{};
+    safetyhook::MidHook m_daysgone_bend_taa_temporal_slate_texture_hook{};
     safetyhook::MidHook m_naruto_ue416_init_dynamic_rhi_size_hook{};
     safetyhook::MidHook m_naruto_ue416_projection_rect_hook{};
     safetyhook::MidHook m_naruto_ue416_draw_stereo_predicate_hook{};
@@ -1063,8 +1583,25 @@ private:
     safetyhook::InlineHook m_windrose_layout_template_enter_hook{};
     safetyhook::InlineHook m_windrose_layout_template_exit_hook{};
     safetyhook::InlineHook m_gameviewportclient_draw_hook{};
+    safetyhook::InlineHook m_bodycam_scene_viewport_init_rhi_hook{};
+    safetyhook::InlineHook m_bodycam_update_pre_exposure_hook{};
     safetyhook::InlineHook m_viewport_draw_hook{}; // for AFR
     safetyhook::InlineHook m_render_module_begin_render_viewfamily_hook{};
+    std::atomic<bool> m_render_module_begin_render_viewfamily_observed{};
+
+    // DIBR single-view state is separate from Native Stereo Fix. It only
+    // controls the temporary renderer-visible view count after D3D12 has
+    // proven a matching DIBR scene/depth source is stable.
+    std::atomic<uint32_t> m_dibr_single_view_status{};
+    std::atomic<uint32_t> m_dibr_single_view_suppressed_frames{};
+    std::atomic<uint32_t> m_dibr_single_view_fallback_frames{};
+    uint64_t m_dibr_single_view_generation{};
+    uint64_t m_dibr_single_view_latched_generation{};
+    uintptr_t m_dibr_single_view_family{};
+    uintptr_t m_dibr_single_view_target{};
+    uintptr_t m_dibr_single_view_scene{};
+    uint32_t m_dibr_single_view_stable_frames{};
+    uint32_t m_dibr_single_view_failure_frames{};
 
     // both of these are used to figure out where the localplayer is, they aren't actively
     // used for anything else, the second one is an alternative hook if the first one
@@ -1124,6 +1661,7 @@ private:
     bool m_prefer_slate_thread_for_session{false};
     bool m_has_seen_stable_slate_draw{false};
     bool m_has_seen_prerender_viewfamily{false};
+    std::atomic<bool> m_nascar25_ui_render_callback_seen{false};
     bool m_has_scene_view_family_offsets_ready{false};
     bool m_has_successful_command_list_hijack{false};
     std::chrono::steady_clock::time_point m_first_stable_slate_draw_at{};
@@ -1142,8 +1680,19 @@ private:
     std::atomic<uintptr_t> m_daysgone_slate_native_ui_target{0};
     std::atomic<uint32_t> m_daysgone_slate_native_ui_width{0};
     std::atomic<uint32_t> m_daysgone_slate_native_ui_height{0};
+    static constexpr size_t DAYSGONE_RECENT_SLATE_TARGET_COUNT = 4;
+    std::array<std::atomic<uintptr_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_pooled_targets{};
+    std::array<std::atomic<uintptr_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_native_targets{};
+    std::array<std::atomic<uint32_t>, DAYSGONE_RECENT_SLATE_TARGET_COUNT> m_daysgone_recent_slate_target_frames{};
+    std::atomic<uint32_t> m_daysgone_recent_slate_target_write_index{0};
+    std::atomic<uint32_t> m_daysgone_slate_consumer_target_frame{0};
+    std::atomic_bool m_daysgone_ahud_overlay_ready{false};
+    std::atomic<uint32_t> m_daysgone_ahud_overlay_last_submit_frame{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_seen{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_crop_suppressed{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_consumer_seen{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_rejected{0};
+    std::atomic<uint64_t> m_daysgone_bend_taa_slate_suppressed{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_composite_extent_overrides{0};
     std::atomic<uint64_t> m_daysgone_bend_taa_shader_param_overrides{0};
     std::chrono::steady_clock::time_point m_daysgone_ui_telemetry_last_queue{};
@@ -1244,6 +1793,10 @@ private:
     bool m_wants_texture_recreation{false};
     bool m_has_view_extension_hook{false};
     bool m_has_game_viewport_client_draw_hook{false};
+    std::atomic_bool m_game_viewport_client_draw_observed{false};
+    std::atomic_bool m_bodycam_scene_target_rebuild_requested{false};
+    bool m_attempted_hook_bodycam_scene_viewport_init_rhi{false};
+    bool m_attempted_hook_bodycam_update_pre_exposure{false};
     std::atomic_bool m_dead_island_2_viewport_allocation_requested{false};
     bool m_skip_next_adjust_view_rect{true};
     bool m_inside_slate_draw_window{false};
@@ -1259,6 +1812,9 @@ private:
     bool m_ignore_next_engine_tick{false};
     void* m_last_destroyed_viewport{nullptr}; // used to check if the viewport is destroyed when we call FViewport::Draw again
     void** m_last_viewport_vtable{nullptr};
+    std::atomic_uint64_t m_synced_draw_lifecycle_generation{1};
+    std::atomic<void*> m_synced_draw_viewport{nullptr};
+    std::atomic<void*> m_synced_draw_viewport_client{nullptr};
 
 
     bool m_analyzing_view_extensions{false};
@@ -1297,6 +1853,21 @@ private:
     const ModToggle::Ptr m_use_fmalloc_scene_view_extensions{ ModToggle::create("VR_UseFMallocSceneViewExtensions", false) };
     // Off by default: restores safetyhook's trampoline lock path for games that dislike the faster original-call path.
     const ModToggle::Ptr m_safe_tick_hook{ ModToggle::create("VR_SafeTickHook", false) };
+    std::atomic_bool m_hook_provenance_diagnostics{false};
+    std::string m_hook_provenance_json{};
+    std::string m_hook_provenance_export_status{};
+    std::string m_native_frame_export_status{};
+    uint64_t m_hook_provenance_cvar_revision{};
+    struct RtmDiscoveryDiagnostic {
+        bool attempted{};
+        bool accepted{};
+        size_t index{};
+        size_t examined{};
+        const char* accessor{"not_observed"};
+        const char* reason{"not_observed"};
+    };
+    std::mutex m_rtm_discovery_mutex{};
+    RtmDiscoveryDiagnostic m_rtm_discovery{};
     const ModInt32::Ptr m_daysgone_bend_ui_mode{ ModInt32::create("VR_DaysGoneBendUI_Mode", 2, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_force_player_camera{ ModToggle::create("VR_DaysGoneBendUI_ForcePlayerCamera", true, true) };
     const ModToggle::Ptr m_daysgone_bend_ui_override_widget_transform{ ModToggle::create("VR_DaysGoneBendUI_OverrideWidgetTransform", true, true) };
@@ -1350,6 +1921,7 @@ private:
     const ModSlider::Ptr m_daysgone_bend_ui_root_loc_x{ ModSlider::create("VR_DaysGoneBendUI_RootLocX", -4000.0f, 4000.0f, 0.0f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_root_loc_y{ ModSlider::create("VR_DaysGoneBendUI_RootLocY", -4000.0f, 4000.0f, 0.0f, true) };
     const ModSlider::Ptr m_daysgone_bend_ui_root_loc_z{ ModSlider::create("VR_DaysGoneBendUI_RootLocZ", -6000.0f, 2000.0f, -1200.0f, true) };
+
 
     void setup_options() {
         m_options = {
@@ -1411,6 +1983,7 @@ private:
             *m_daysgone_bend_ui_root_loc_x,
             *m_daysgone_bend_ui_root_loc_y,
             *m_daysgone_bend_ui_root_loc_z
+
         };
     }
 

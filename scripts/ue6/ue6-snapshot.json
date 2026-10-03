@@ -1,8 +1,9 @@
 {
   "schemaVersion": 1,
+  "reviewedOn": "2026-10-03",
   "target": {
-    "name": "UE6 Phase 1",
-    "archiveCommit": "3e62f9ca59cb493c7e435569483c2a9dfd83af02",
+    "name": "UE6 main October refresh",
+    "archiveCommit": "6e797985ecc380099fca961d292c46a8bd6b3f91",
     "version": {
       "major": 6,
       "minor": 0,
@@ -10,7 +11,15 @@
     }
   },
   "baseline": {
-    "name": "UE5.8.1",
+    "name": "UE6 main August snapshot",
+    "archiveCommit": "3e62f9ca59cb493c7e435569483c2a9dfd83af02",
+    "version": {
+      "major": 6,
+      "minor": 0,
+      "patch": 0
+    }
+  },
+  "historicalUE5Baseline": {
     "archiveCommit": "dcc331c30ec045ba3ba7e25f36490a0b988649f5",
     "version": {
       "major": 5,
@@ -24,42 +33,252 @@
       "area": "engine-version-boundary",
       "path": "Engine/Build/Build.version",
       "targetSha256": "FCA02D910724985FD1D51015CA0F27947FCB86A3FACD50679DB2763A2C9120AF",
-      "baselineSha256": "29F7A3E61C24327147037EE15928D1BD1603FB65BCD19058E8381E26A12D38BD"
+      "baselineSha256": "FCA02D910724985FD1D51015CA0F27947FCB86A3FACD50679DB2763A2C9120AF"
+    },
+    {
+      "severity": "critical",
+      "area": "consolemanager",
+      "path": "Engine/Source/Runtime/Core/Private/HAL/ConsoleManager.cpp",
+      "targetSha256": "4DB78A7E5337A920AE52A0A6036FFCE5DE22200E7471BAB008A8BF74F6FF646B",
+      "baselineSha256": "D0B5A6EB70CFA594C173E77212A451B72896A58D3E12B21F517919EC81971C5C"
+    },
+    {
+      "severity": "critical",
+      "area": "unrealnames",
+      "path": "Engine/Source/Runtime/Core/Private/UObject/UnrealNames.cpp",
+      "targetSha256": "414DAE28B725761A04C65A924A37A79CE518F6D70005E6D711B66EB744A984C2",
+      "baselineSha256": "BB78E8DAACB204D237BE7A4554499B0F28D48D439066E120A3D0E988D0AE70AA"
+    },
+    {
+      "severity": "critical",
+      "area": "colorspace",
+      "path": "Engine/Source/Runtime/Core/Public/ColorManagement/ColorSpace.h",
+      "targetSha256": "F802682C49FA2559DBE724C12208BF6F785175903E7FA954A6159BEE2C4240FB",
+      "baselineSha256": "F802682C49FA2559DBE724C12208BF6F785175903E7FA954A6159BEE2C4240FB"
+    },
+    {
+      "severity": "critical",
+      "area": "genericplatformmisc",
+      "path": "Engine/Source/Runtime/Core/Public/GenericPlatform/GenericPlatformMisc.h",
+      "targetSha256": "8DAF0FAD6ABB1627B5222AF9D6C596AF4091E1AE279E3412D14FE909D53889D0",
+      "baselineSha256": "5C3623E9796A61A3D9869D87AF663793BA5406796CB5232C93E210C47D91D71E"
+    },
+    {
+      "severity": "critical",
+      "area": "console-variable-vtable",
+      "path": "Engine/Source/Runtime/Core/Public/HAL/IConsoleManager.h",
+      "targetSha256": "D27B619DF81A7E43712CC79FCD540E49B034C8E57250D4AEE41DCA4EFE8D2236",
+      "baselineSha256": "C4420A8EEC58D6F5CA3CDE1713680A77163DA2DB0537F7A12EDBDB07672552E1"
+    },
+    {
+      "severity": "support",
+      "area": "color-types",
+      "path": "Engine/Source/Runtime/Core/Public/Math/Color.h",
+      "targetSha256": "425424DF1ECC792F4AD2CB0787DFC46C78B1B4CF5B05AF30B24AB6786A64E82C",
+      "baselineSha256": "CE9C6A790CE142983822066B6639A9ADA952A569A83F77763D0F6C807F1B9F7F"
+    },
+    {
+      "severity": "critical",
+      "area": "int-point-return-abi",
+      "path": "Engine/Source/Runtime/Core/Public/Math/IntPoint.h",
+      "targetSha256": "DDC3D2B62A045C35CC45E1AEBDAF7B87EEA9A9D1E97CA7A9890AAD5197E8B29A",
+      "baselineSha256": "6465BED005CD503E858BAEF957F6231CE12882B9F3CA5D4697731A8BDB54DAD5"
+    },
+    {
+      "severity": "critical",
+      "area": "view-math-precision",
+      "path": "Engine/Source/Runtime/Core/Public/Math/Matrix.h",
+      "targetSha256": "7B27537CED7512ABCBBD25DEE25AAFD1F08321B2E785AB3B4CF02A9FA0F2B03C",
+      "baselineSha256": "BFB76C0D7A2883781A6B2FEDDB7AB4B9B31CFB20F3E24B75CBA047C4D7343F48"
+    },
+    {
+      "severity": "critical",
+      "area": "view-math-precision",
+      "path": "Engine/Source/Runtime/Core/Public/Math/Vector.h",
+      "targetSha256": "54B589D2D0D6062DCFB3D0F00D7D89AED8BEC40758711E60E51B7E5FEE559D5D",
+      "baselineSha256": "429259AE8B464B7CF5A363200EE365A7DA045051750A0C2260FE71A585256590"
+    },
+    {
+      "severity": "critical",
+      "area": "engine-version-encoding",
+      "path": "Engine/Source/Runtime/Core/Public/Misc/EngineVersion.h",
+      "targetSha256": "B42317B4DAA119CDE85AB0B77F6DE551D8C77765D359F44BDDDE0AF080941408",
+      "baselineSha256": "B42317B4DAA119CDE85AB0B77F6DE551D8C77765D359F44BDDDE0AF080941408"
+    },
+    {
+      "severity": "critical",
+      "area": "view-math-types",
+      "path": "Engine/Source/Runtime/Core/Public/Misc/LargeWorldCoordinates.h",
+      "targetSha256": "B6632E332B7F497E9833CFA68D45DAF1E48D9B226BBF80B39081647F9DFE3892",
+      "baselineSha256": "B6632E332B7F497E9833CFA68D45DAF1E48D9B226BBF80B39081647F9DFE3892"
+    },
+    {
+      "severity": "critical",
+      "area": "memstack",
+      "path": "Engine/Source/Runtime/Core/Public/Misc/MemStack.h",
+      "targetSha256": "5C71F171FA3AE63F5551CA45F74887ACBC98FAC25C48FA8B87A4783138D603C2",
+      "baselineSha256": "5C71F171FA3AE63F5551CA45F74887ACBC98FAC25C48FA8B87A4783138D603C2"
+    },
+    {
+      "severity": "critical",
+      "area": "pixel-format-enum",
+      "path": "Engine/Source/Runtime/Core/Public/PixelFormat.h",
+      "targetSha256": "E31146589788F71DB8CAF1FC285593ACBF4AEB51536376F9767E28BD029256F2",
+      "baselineSha256": "0191EC384C6246287A330BF09C3667EFC7CFFDCAAC69A5B047D75736B2DC9A2B"
+    },
+    {
+      "severity": "critical",
+      "area": "fname-layout",
+      "path": "Engine/Source/Runtime/Core/Public/UObject/NameTypes.h",
+      "targetSha256": "A9A6D865249A64BF142DBF7D896F38C7C30F2DFFCD79BC335978E3F295DF0763",
+      "baselineSha256": "A9A6D865249A64BF142DBF7D896F38C7C30F2DFFCD79BC335978E3F295DF0763"
+    },
+    {
+      "severity": "critical",
+      "area": "garbagecollection",
+      "path": "Engine/Source/Runtime/CoreUObject/Private/UObject/GarbageCollection.cpp",
+      "targetSha256": "5EAF2B4D048670FA8B1C406F756BA5C92D37BE3D24CE11111763C110247A0D00",
+      "baselineSha256": "7293F6D5C26697266A8F5599A9D26E1C758161F66AF37FD185DBE818A523A2C5"
+    },
+    {
+      "severity": "critical",
+      "area": "obj",
+      "path": "Engine/Source/Runtime/CoreUObject/Private/UObject/Obj.cpp",
+      "targetSha256": "813D0823C767E4C6EF4DA30D168B9D498C931895D6849BA32D81C7BAF2E847B4",
+      "baselineSha256": "0A3EAC0DE5DB8D41A745555B2B862D99709EE70DCDCC99D993741C0FBF8727B3"
+    },
+    {
+      "severity": "critical",
+      "area": "uobjectbase",
+      "path": "Engine/Source/Runtime/CoreUObject/Private/UObject/UObjectBase.cpp",
+      "targetSha256": "2DA4A448EC0D76D960A148E3ED8C9174DBE9B8A47B23E2B193662F51D51A69E0",
+      "baselineSha256": "FA3AA434A72D650DBE182ED9012584D7B9CDC30408A089F993253853B21EF556"
+    },
+    {
+      "severity": "critical",
+      "area": "class",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/Class.h",
+      "targetSha256": "572F0155E8D5B44ECBCA1E270E990E3D69539A402143063D107B04C4731C88F8",
+      "baselineSha256": "7BFFAAED3F5878BBAF717053BC06CA0887127B8A6531FD0FEF5B457D7F91FE17"
+    },
+    {
+      "severity": "critical",
+      "area": "ffield-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/Field.h",
+      "targetSha256": "9952922AC105AD14D0BF425EE5CB5A609471FD58CF78F9E6163E0EED9FACC661",
+      "baselineSha256": "8D8F1AC76F0038C8A937455EF228A96EBCD344C55E6717343A77F12716749FEC"
+    },
+    {
+      "severity": "critical",
+      "area": "object",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/Object.h",
+      "targetSha256": "23054591F63F3B45B0459208435CAEE0A87A1C352A2F8EFF4FB96B07692D7D66",
+      "baselineSha256": "C3E05F9220B4CCEE0752E33E5EB43CCA88ECDF57566277429F12270EC3E6340C"
+    },
+    {
+      "severity": "critical",
+      "area": "objectmacros",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectMacros.h",
+      "targetSha256": "05CB99A9621EC1D1BAE67257EDA6B8852FCD5DE597ED427FA7727F1FF9091D50",
+      "baselineSha256": "28F689729905EA0D5430F12E03AA08DEEDC7C67DCB21F36F92662A1A76EBCF7F"
+    },
+    {
+      "severity": "critical",
+      "area": "objectptr",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/ObjectPtr.h",
+      "targetSha256": "3B4064BDDB0EC45A633A17E92810F1D9B166F9E103EE0D121616BBE41CA020DB",
+      "baselineSha256": "623388BC76EDA5C1FC52A47D0B7898ADD08F3B544A31FB95394EDC9ABD3BCD02"
+    },
+    {
+      "severity": "critical",
+      "area": "uobject-array-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UObjectArray.h",
+      "targetSha256": "614BB6592B231C1AEC223DF56DC73E2981A4DA03B8CA5F356D78A2BCD6A06223",
+      "baselineSha256": "2B499018F5A4509811076C4461113DE79AA5E5F09A4ED196CE7A9EC30D3D7F8C"
+    },
+    {
+      "severity": "critical",
+      "area": "uobjectbase",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UObjectBase.h",
+      "targetSha256": "F62FAA580950808E64554F98486761663AD2F589BB70369D77EB98284B64CAA4",
+      "baselineSha256": "6389E4F1425183FD75906DF7E9B9B0BC9428BB1BB377898437DD80AB317A644C"
+    },
+    {
+      "severity": "critical",
+      "area": "uobjectbaseutility",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UObjectBaseUtility.h",
+      "targetSha256": "8F98CDE71B9D66CE7211C99F5304A35EA673235BBAA3EBB62BB50C142974A31E",
+      "baselineSha256": "B154B84F2CFC5D7E61C3070FC5D78B8193AB3D78B7340A694D7048D9F58F547B"
+    },
+    {
+      "severity": "critical",
+      "area": "fproperty-layout",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h",
+      "targetSha256": "1A812C151A5A470DA87A83D001EC07BC30B5FEDD563C2251FFE2ABBB29C882B5",
+      "baselineSha256": "D4DA1AE5042D4754097803D87FB0FFEF9406DC0DDAD5A63D366AFBAB1A6D5898"
+    },
+    {
+      "severity": "critical",
+      "area": "weakobjectptr",
+      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/WeakObjectPtr.h",
+      "targetSha256": "C788EF6C9A14A26AF08EFA6004F7AC06F3260EC199DF88FA65FE7F02C4FDA1EC",
+      "baselineSha256": "CB4973CCE9777BAE9721A25441D6A6AF9CFC5E0EF6E22F7ABE0F681331ED92FB"
+    },
+    {
+      "severity": "critical",
+      "area": "d3d12texture",
+      "path": "Engine/Source/Runtime/D3D12RHI/Private/D3D12Texture.cpp",
+      "targetSha256": "3B1067D10783CCC6380DAEEA8AAB736C2F3315D0957874C2299B8B2BE92BD6F3",
+      "baselineSha256": "D7417BACC03B716684CDCBED8C88E3B2ABBA848F86D069B4CE2C7AA69DAA50E5"
+    },
+    {
+      "severity": "critical",
+      "area": "native-texture-vtable",
+      "path": "Engine/Source/Runtime/D3D12RHI/Private/D3D12Texture.h",
+      "targetSha256": "5C376F102871A9E9B607EBE821202CA1A471E3DBD8AB33D6CA2F4DD9AB9F869E",
+      "baselineSha256": "74A3AA2DF9DC3F6AC7A630271E821F6C5166877E00853E22E4FBCCAC952B9B59"
+    },
+    {
+      "severity": "critical",
+      "area": "gameviewportclient",
+      "path": "Engine/Source/Runtime/Engine/Classes/Engine/GameViewportClient.h",
+      "targetSha256": "70B5636B59EDA088B5DA69FAAE39E148180F4B3ADC26CBDED8511668D3C2F01C",
+      "baselineSha256": "CB3DCB5743B17538B0B0ADAF8F1108294D4DCD85FBAB4B366270318C0F16C781"
+    },
+    {
+      "severity": "critical",
+      "area": "gameviewportclient",
+      "path": "Engine/Source/Runtime/Engine/Private/GameViewportClient.cpp",
+      "targetSha256": "023B1228EA8D37AA81F2F641F402C7F278B809505184A9B4D6027B0789160A42",
+      "baselineSha256": "599686E49F7EA83D05081984779E5A4DD44D06D475BC3C72DA2A579E509BE8F5"
     },
     {
       "severity": "critical",
       "area": "scene-view-layout",
       "path": "Engine/Source/Runtime/Engine/Public/SceneView.h",
-      "targetSha256": "640C74531355550896F23E72AA469E4E0D80AC2FF7102DD816F26D7A9C69508B",
-      "baselineSha256": "60C49099E222C1CD5415795213E3DF03F4F2888513216F034F292E5800B06DDC"
+      "targetSha256": "48AFAC4EA08FAFF4DCF0A9D6179DE2D93012CE02F47AC2E30E42F017DA7DEF42",
+      "baselineSha256": "640C74531355550896F23E72AA469E4E0D80AC2FF7102DD816F26D7A9C69508B"
     },
     {
       "severity": "critical",
       "area": "scene-view-extension-vtable",
       "path": "Engine/Source/Runtime/Engine/Public/SceneViewExtension.h",
-      "targetSha256": "B8C9072167BCB3BB00F6E21556E6B28733940BF3F762EDB36F461C3A0CA5742C",
-      "baselineSha256": "7D9B652434FE5BA934A574B889CFB6FCDB2855B82B6DBA9853F0EE03A2868BA2"
+      "targetSha256": "93C2A5084C1811561CBF28186F40A732B3F7BB5F86E73D63612C87BC4DD1796E",
+      "baselineSha256": "B8C9072167BCB3BB00F6E21556E6B28733940BF3F762EDB36F461C3A0CA5742C"
+    },
+    {
+      "severity": "support",
+      "area": "scene-view-owner",
+      "path": "Engine/Source/Runtime/Engine/Public/SceneViewOwner.h",
+      "targetSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F",
+      "baselineSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F"
     },
     {
       "severity": "critical",
-      "area": "stereo-rendering-vtable",
-      "path": "Engine/Source/Runtime/Engine/Public/StereoRendering.h",
-      "targetSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7",
-      "baselineSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7"
-    },
-    {
-      "severity": "critical",
-      "area": "xr-tracking-vtable",
-      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IXRTrackingSystem.h",
-      "targetSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89",
-      "baselineSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89"
-    },
-    {
-      "severity": "critical",
-      "area": "hmd-vtable",
-      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IHeadMountedDisplay.h",
-      "targetSha256": "059BB77AE45B4A821C44EC68E0837457322154C681FF722F410B62628CE27CB3",
-      "baselineSha256": "B8A2B9180EBD47843A2B30EA6DB76A7D5381583392097B0BC9105D58061C684E"
+      "area": "sceneviewport",
+      "path": "Engine/Source/Runtime/Engine/Public/Slate/SceneViewport.h",
+      "targetSha256": "51B69F4E6D3C8D0AA037BC1458BBEE97822DE74202620ECE039A2F1B549768F7",
+      "baselineSha256": "F18C49C2C1FB091DC5706FF4D5B6217FBE10280F9AEB8349958ADC0563ECEBC6"
     },
     {
       "severity": "critical",
@@ -70,87 +289,164 @@
     },
     {
       "severity": "critical",
-      "area": "rhi-command-list-layout",
-      "path": "Engine/Source/Runtime/RHI/Public/RHICommandList.h",
-      "targetSha256": "4C6592A5699476DE582520E57F58D4956312325960274D9AE31C12BE2924B19E",
-      "baselineSha256": "DD409BC5B84F0B7CA96BF0995491DAF018276A8C95B123C825E2E429B9408738"
+      "area": "stereo-rendering-vtable",
+      "path": "Engine/Source/Runtime/Engine/Public/StereoRendering.h",
+      "targetSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7",
+      "baselineSha256": "FEF3657772C8CBCC554744CC046F1392E1F69C3EC0D43BE22285F4AB7BE041B7"
     },
     {
       "severity": "critical",
       "area": "viewport-render-target-vtables",
       "path": "Engine/Source/Runtime/Engine/Public/UnrealClient.h",
-      "targetSha256": "ECA094D5ECDDC3FB133DE29A0E2A8158D2E1330115E09FAC920BABC97D019418",
-      "baselineSha256": "DDFF2ACD146D534452042ED415461798FA0BFA4DF5CAD752E3D08D8582AF10D9"
+      "targetSha256": "BB3A5EDE9F2E723BB7E83D7262CE6DDDC317A7D96DB2062CEFBDB1EB6B2FB882",
+      "baselineSha256": "ECA094D5ECDDC3FB133DE29A0E2A8158D2E1330115E09FAC920BABC97D019418"
     },
     {
       "severity": "critical",
-      "area": "slate-renderer-vtable",
-      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.h",
-      "targetSha256": "C9325EC99E11A28C0A14EFCC1AD0DFBE7B9EE98DCD0BA9A2A062AF0334A12BBC",
-      "baselineSha256": "C9325EC99E11A28C0A14EFCC1AD0DFBE7B9EE98DCD0BA9A2A062AF0334A12BBC"
-    },
-    {
-      "severity": "critical",
-      "area": "slate-draw-input-layout",
-      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.cpp",
-      "targetSha256": "C9759C4EE1FA6362B9E3DE14617A46CE790CCE91EA5B95C02AC2BC7F851817A6",
-      "baselineSha256": "AD4DE2F2E26B3E265890DC873399651CBD6134166B43965B393D5A6258F5FBED"
-    },
-    {
-      "severity": "critical",
-      "area": "uobject-array-layout",
-      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UObjectArray.h",
-      "targetSha256": "2B499018F5A4509811076C4461113DE79AA5E5F09A4ED196CE7A9EC30D3D7F8C",
-      "baselineSha256": "3E49FD65C877F1914A7613CCE566FC19F73E5612CC91B2AE8A47CA03953C9221"
-    },
-    {
-      "severity": "critical",
-      "area": "fname-layout",
-      "path": "Engine/Source/Runtime/Core/Public/UObject/NameTypes.h",
-      "targetSha256": "A9A6D865249A64BF142DBF7D896F38C7C30F2DFFCD79BC335978E3F295DF0763",
-      "baselineSha256": "D5C0E85A53D7EC56A4D77F06DB8AD6ECE805BE31285DADF3CBEF8CA2330F467C"
-    },
-    {
-      "severity": "critical",
-      "area": "ffield-layout",
-      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/Field.h",
-      "targetSha256": "8D8F1AC76F0038C8A937455EF228A96EBCD344C55E6717343A77F12716749FEC",
-      "baselineSha256": "8D8F1AC76F0038C8A937455EF228A96EBCD344C55E6717343A77F12716749FEC"
-    },
-    {
-      "severity": "critical",
-      "area": "fproperty-layout",
-      "path": "Engine/Source/Runtime/CoreUObject/Public/UObject/UnrealType.h",
-      "targetSha256": "D4DA1AE5042D4754097803D87FB0FFEF9406DC0DDAD5A63D366AFBAB1A6D5898",
-      "baselineSha256": "BB9705086A01C5AB0F620C1541651F3F2A1314A0E4C6646D53FBD70C5DB609B5"
-    },
-    {
-      "severity": "critical",
-      "area": "console-variable-vtable",
-      "path": "Engine/Source/Runtime/Core/Public/HAL/IConsoleManager.h",
-      "targetSha256": "C4420A8EEC58D6F5CA3CDE1713680A77163DA2DB0537F7A12EDBDB07672552E1",
-      "baselineSha256": "C4420A8EEC58D6F5CA3CDE1713680A77163DA2DB0537F7A12EDBDB07672552E1"
-    },
-    {
-      "severity": "support",
-      "area": "scene-view-owner",
-      "path": "Engine/Source/Runtime/Engine/Public/SceneViewOwner.h",
-      "targetSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F",
-      "baselineSha256": "A74D63C00A691D75F5ACBCF51288EA4093956B4017E0ECBC6FF19CF2EC33B43F"
+      "area": "viewportclient",
+      "path": "Engine/Source/Runtime/Engine/Public/ViewportClient.h",
+      "targetSha256": "AE92F452B9716A44BBC8C9B5F3C3960F8D831E82BB54F203F2026C3F932DD04F",
+      "baselineSha256": "951DB24B7AA01691BA5D950DC34AA4AA4953715FB93FD40F4A7430533588F17E"
     },
     {
       "severity": "support",
       "area": "stereo-pass-types",
       "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/HeadMountedDisplayTypes.h",
       "targetSha256": "FAE3497BE40CD7D800620792D9DE8D618C59A9DC4CDD449AD7390012A0DA6A6D",
-      "baselineSha256": "8AD74DE577586BF95E88C0B756D0A8D906E22E043DEF01A38F0F7D81DD15AC93"
+      "baselineSha256": "FAE3497BE40CD7D800620792D9DE8D618C59A9DC4CDD449AD7390012A0DA6A6D"
+    },
+    {
+      "severity": "critical",
+      "area": "hmd-vtable",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IHeadMountedDisplay.h",
+      "targetSha256": "059BB77AE45B4A821C44EC68E0837457322154C681FF722F410B62628CE27CB3",
+      "baselineSha256": "059BB77AE45B4A821C44EC68E0837457322154C681FF722F410B62628CE27CB3"
+    },
+    {
+      "severity": "critical",
+      "area": "ixrcamera",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IXRCamera.h",
+      "targetSha256": "43E2CAE4ADD6BF711928FD96DAC9A683FB9FE251E60B44109A6EB51C2F432919",
+      "baselineSha256": "43E2CAE4ADD6BF711928FD96DAC9A683FB9FE251E60B44109A6EB51C2F432919"
+    },
+    {
+      "severity": "critical",
+      "area": "xr-tracking-vtable",
+      "path": "Engine/Source/Runtime/HeadMountedDisplay/Public/IXRTrackingSystem.h",
+      "targetSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89",
+      "baselineSha256": "0BA3CD81CD236E5DC4DC4D422D7CE17DFAB10877B7B48FB5FB96D0B48126CB89"
+    },
+    {
+      "severity": "critical",
+      "area": "dynamicrhi",
+      "path": "Engine/Source/Runtime/RHI/Public/DynamicRHI.h",
+      "targetSha256": "A65A71983CED96383809B432E2ED72039B14DBC871D6AECA85B247379119C9EC",
+      "baselineSha256": "A2B6FC2B5D831893BDA2075157A61A91E5F3D8FF9264B835177AEDE6A79FAA8A"
+    },
+    {
+      "severity": "critical",
+      "area": "gpu-mask-storage",
+      "path": "Engine/Source/Runtime/RHI/Public/MultiGPU.h",
+      "targetSha256": "74077D30C97162FEBCF7C404A1BEA6C558D2128B2CA227DE955B50CDA89AD452",
+      "baselineSha256": "74077D30C97162FEBCF7C404A1BEA6C558D2128B2CA227DE955B50CDA89AD452"
+    },
+    {
+      "severity": "critical",
+      "area": "rhi-command-list-layout",
+      "path": "Engine/Source/Runtime/RHI/Public/RHICommandList.h",
+      "targetSha256": "8BA644BE2C12C160F6D48B47253173F39D0F93FAAB61C91C4240CE2538FE58EE",
+      "baselineSha256": "4C6592A5699476DE582520E57F58D4956312325960274D9AE31C12BE2924B19E"
+    },
+    {
+      "severity": "critical",
+      "area": "rhidefinitions",
+      "path": "Engine/Source/Runtime/RHI/Public/RHIDefinitions.h",
+      "targetSha256": "C709555E66F4E6DA556FAA8955B9A400C4B49088CD9D6399D4A7C8EE558C5112",
+      "baselineSha256": "C0EED4506E92CB4525881CFA73A8A482598E60F828A4B060F5329B25A7378D03"
+    },
+    {
+      "severity": "support",
+      "area": "gpu-readback",
+      "path": "Engine/Source/Runtime/RHI/Public/RHIGPUReadback.h",
+      "targetSha256": "D8079218EBF9DEA6F0E257657795C8A4C8A7972A331B1AD94CC52358BC1660C1",
+      "baselineSha256": "5C8BF88BCD904D989109C9936C23593E9E8D42B84C5F9E51B167811A67A0E729"
+    },
+    {
+      "severity": "critical",
+      "area": "rhiresources",
+      "path": "Engine/Source/Runtime/RHI/Public/RHIResources.h",
+      "targetSha256": "9314B5E9CAB41D8B014ADFDAF25ABD46CB7C461697CBE7CEFA946CDE78E00574",
+      "baselineSha256": "6362A775624AB40502248C73FA32B33941AEAD0EA293037AF9880FCCB5DEB351"
+    },
+    {
+      "severity": "critical",
+      "area": "hdrhelper",
+      "path": "Engine/Source/Runtime/RenderCore/Public/HDRHelper.h",
+      "targetSha256": "74ED573AEECFFC765677454BAB1B0CE4C2A4F1FDA58BA19627746284E1B8D437",
+      "baselineSha256": "975D3182CE9FE160F5D64439CABC428CF0C4D75BAA250CC329559405A78A6E63"
     },
     {
       "severity": "support",
       "area": "render-graph-builder-layout",
       "path": "Engine/Source/Runtime/RenderCore/Public/RenderGraphBuilder.h",
-      "targetSha256": "ED66804A3CC9EBCC83DFB7635BAF04D9C160424B73F924596FE596F5B3292919",
+      "targetSha256": "DD1B91B0C7C48780B3321C406E61F287779B2CEC2064A4F69580BFEBA697CEF6",
       "baselineSha256": "ED66804A3CC9EBCC83DFB7635BAF04D9C160424B73F924596FE596F5B3292919"
+    },
+    {
+      "severity": "critical",
+      "area": "rendergraphresources",
+      "path": "Engine/Source/Runtime/RenderCore/Public/RenderGraphResources.h",
+      "targetSha256": "9E9593C469939F866D2E36A6C9E896DE5B11C3474A604970F018972B6E5DFA0B",
+      "baselineSha256": "85ABF80426B1A6AAFD254F143614CEB49CFB0E234BCEFED8A25608F9D4BD3FA3"
+    },
+    {
+      "severity": "critical",
+      "area": "renderresource",
+      "path": "Engine/Source/Runtime/RenderCore/Public/RenderResource.h",
+      "targetSha256": "B865D8B94665C543A29E97287C11EF986E0360E2A645C3F53FADB47F427E988F",
+      "baselineSha256": "B865D8B94665C543A29E97287C11EF986E0360E2A645C3F53FADB47F427E988F"
+    },
+    {
+      "severity": "critical",
+      "area": "rendertargetpool",
+      "path": "Engine/Source/Runtime/RenderCore/Public/RenderTargetPool.h",
+      "targetSha256": "BCCDE0640216C7A0C6C93BF9F0FC6EC5ACCDE01D2F00E8306D3B85FAF0D8FA99",
+      "baselineSha256": "C9496DF1900B1EBCAD30B3B9CD435B96EC0E383A1B3F005BD29EBEB418557026"
+    },
+    {
+      "severity": "critical",
+      "area": "slate-draw-input-layout",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.cpp",
+      "targetSha256": "BFF8CF16C5DA24E20383C8359132D2211623B03C28BD005DE0F39B1AB9C74901",
+      "baselineSha256": "C9759C4EE1FA6362B9E3DE14617A46CE790CCE91EA5B95C02AC2BC7F851817A6"
+    },
+    {
+      "severity": "critical",
+      "area": "slate-renderer-vtable",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderer.h",
+      "targetSha256": "15A4689E6D33665020AE68008AC119DE3E4FC7A9881AACC3DFEA3DD2D2E4DE62",
+      "baselineSha256": "C9325EC99E11A28C0A14EFCC1AD0DFBE7B9EE98DCD0BA9A2A062AF0334A12BBC"
+    },
+    {
+      "severity": "critical",
+      "area": "slaterhirenderingpolicy",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderingPolicy.cpp",
+      "targetSha256": "4953B97CEDA7E6B1F3413CBAF31086C5E9F9BCCA6E5B9D7FF89B41EABF957CC8",
+      "baselineSha256": "C25E75945D22FF57107E349C43B71F881012E7A7A59BF029FD3BE234603BAB71"
+    },
+    {
+      "severity": "critical",
+      "area": "slaterhirenderingpolicy",
+      "path": "Engine/Source/Runtime/SlateRHIRenderer/Private/SlateRHIRenderingPolicy.h",
+      "targetSha256": "3CE772A53482CB1BF556D9B9E55E68237629949798B16E056F34ADA43DDE8DC8",
+      "baselineSha256": "3802A290374C52B70A56C00CFF3E523FDE33E705C4521F61D9991719F50B6FD9"
+    },
+    {
+      "severity": "critical",
+      "area": "d3d11resources",
+      "path": "Engine/Source/Runtime/Windows/D3D11RHI/Public/D3D11Resources.h",
+      "targetSha256": "296735DCCC7AED4CD62D519873331447E331F1140A6A76EB09392BE2E3669693",
+      "baselineSha256": "296735DCCC7AED4CD62D519873331447E331F1140A6A76EB09392BE2E3669693"
     }
   ]
 }

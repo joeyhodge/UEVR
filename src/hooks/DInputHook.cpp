@@ -1,3 +1,4 @@
+#include <array>
 #include <chrono>
 
 #include <spdlog/spdlog.h>
@@ -5,6 +6,7 @@
 
 #include "Framework.hpp"
 #include "mods/VR.hpp"
+#include "utility/InputHookInstallation.hpp"
 #include "utility/Logging.hpp"
 
 #include "DInputHook.hpp"
@@ -54,7 +56,21 @@ DInputHook::DInputHook() {
 
         SPDLOG_INFO("[DInputHook] Found DirectInput8Create at {:x}", (uintptr_t)create_addr);
 
-        m_create_hook = safetyhook::create_inline(create_addr, (uintptr_t)create_hooked);
+        {
+            std::array<wchar_t, 32768> path{};
+            const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+            const auto executable = length > 0 && length < path.size()
+                ? std::wstring_view{path.data(), length} : std::wstring_view{};
+
+            // SHf's input trampolines share a page. Match XInput's installation
+            // lock so overlapping protection restores cannot leave that page NX.
+            auto installation_lock = uevr::input_hooks::acquire_shf_installation_lock(
+                executable, g_framework->get_hook_monitor_mutex());
+            if (installation_lock.owns_lock()) {
+                SPDLOG_INFO("[SHf][InputHook] Serializing DirectInput installation with XInput");
+            }
+            m_create_hook = safetyhook::create_inline(create_addr, (uintptr_t)create_hooked);
+        }
 
         if (!m_create_hook) {
             SPDLOG_ERROR("[DInputHook] Failed to hook DirectInput8Create, aborting hook");

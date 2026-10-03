@@ -343,6 +343,8 @@ Framework::Framework(HMODULE framework_module)
     spdlog::flush_on(spdlog::level::err);
     spdlog::info("UnrealVR entry");
     spdlog::info("Commit hash: {}", UEVR_COMMIT_HASH);
+    spdlog::info("UESDK commit: {} (tracked changes: UEVR={}, UESDK={})",
+        UEVR_UESDK_COMMIT_HASH, UEVR_TRACKED_DIRTY, UEVR_UESDK_TRACKED_DIRTY);
     spdlog::info("Tag: {}", UEVR_TAG);
     spdlog::info("Commits past tag: {}", UEVR_COMMITS_PAST_TAG);
     spdlog::info("Branch: {}", UEVR_BRANCH);
@@ -1394,6 +1396,16 @@ void Framework::draw_ui() {
 
     ImGui::SetNextWindowSize(ImVec2(window_w, window_h), ImGuiCond_::ImGuiCond_Once);
     ImGui::Begin(UEVR_NAME.c_str(), &m_draw_ui);
+
+    if (m_mods_fully_initialized) {
+        const auto vr = VR::get();
+        if (vr->has_unsupported_rendering_method()) {
+            ImGui::TextWrapped("Unsupported rendering method ID %d; select a supported method in VR / Unreal.", vr->requested_rendering_method());
+        }
+        if (vr->is_using_mono() || vr->requested_rendering_method() == VR::MONO || vr->is_mono_transition_pending()) {
+            ImGui::TextWrapped("Mono (Experimental): %s", vr->mono_status());
+        }
+    }
 
     ImGui::BeginGroup();
     ImGui::Columns(2);

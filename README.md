@@ -4,7 +4,12 @@ Universal Unreal Engine VR Mod (4/5)
 
 ## Supported Engine Versions
 
-4.8 - 5.4
+4.8 - 5.8
+
+`UE6Testing` additionally carries an experimental stock Win64 UE6.0 profile
+reviewed against the October 2026 development source. Packaged-game/HMD
+compatibility is not yet confirmed; UE6.1+ is not enabled. See the
+[UE6 refresh notes](docs/ue6-phase1.md) for scope and the next-snapshot checklist.
 
 ## Links
 
@@ -65,6 +70,14 @@ Press the **Insert** key or **L3+R3** on an XInput based controller to access th
 - RT + X: Reset standing origin
 
 ## Quick overview of rendering methods
+
+### Mono (Experimental, opt-in branch)
+
+On `eBaseballfocused`, `uevr-dibr-optin-safe`, and `UEVRMono+DIBR+UEVR`,
+Mono renders one centered head-tracked scene for both eyes
+using DX11 or DX12 with OpenXR. There is no binocular scene depth. Existing mode
+IDs and defaults are retained. See [Mono support, limitations and test checklist](docs/mono-rendering.md)
+before testing live transitions. Credit to Noniv's upstream [PR #442](https://github.com/praydog/UEVR/pull/442).
 
 ### Native Stereo
 

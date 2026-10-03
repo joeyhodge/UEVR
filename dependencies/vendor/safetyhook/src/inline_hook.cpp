@@ -433,9 +433,11 @@ std::expected<void, InlineHook::Error> InlineHook::enable() {
     }
 
     std::optional<Error> error;
+    bool write_attempted = false;
 
     // jmp from original to trampoline.
-    trap_threads(m_target, m_trampoline.data(), m_original_bytes.size(), [this, &error] {
+    trap_threads(m_target, m_trampoline.data(), m_original_bytes.size(), [this, &error, &write_attempted] {
+        write_attempted = true;
         if (m_type == Type::E9) {
             auto jmp_to_destination = m_trampoline_intermediary.data();
 
@@ -454,6 +456,10 @@ std::expected<void, InlineHook::Error> InlineHook::enable() {
 #endif
     });
 
+    if (!write_attempted) {
+        return std::unexpected{Error::failed_to_unprotect(m_target)};
+    }
+
     if (error) {
         return std::unexpected{*error};
     }
@@ -470,8 +476,16 @@ std::expected<void, InlineHook::Error> InlineHook::disable() {
         return {};
     }
 
+    bool write_attempted = false;
     trap_threads(m_trampoline.data(), m_target, m_original_bytes.size(),
-        [this] { std::copy(m_original_bytes.begin(), m_original_bytes.end(), m_target); });
+        [this, &write_attempted] {
+            write_attempted = true;
+            std::copy(m_original_bytes.begin(), m_original_bytes.end(), m_target);
+        });
+
+    if (!write_attempted) {
+        return std::unexpected{Error::failed_to_unprotect(m_target)};
+    }
 
     m_enabled = false;
 
@@ -480,6 +494,12 @@ std::expected<void, InlineHook::Error> InlineHook::disable() {
 
 void InlineHook::destroy() {
     [[maybe_unused]] auto disable_result = disable();
+
+    if (!disable_result && has_protection_override()) {
+        // Keep a still-referenced trampoline alive if the opt-in backend cannot remove the hook.
+        [[maybe_unused]] auto* retained = new InlineHook(std::move(*this));
+        return;
+    }
 
     std::scoped_lock lock{m_mutex};
 

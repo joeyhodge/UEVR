@@ -1,10 +1,13 @@
 #include <algorithm>
 #include <atomic>
+#include <cwctype>
 #include <mutex>
 #include <optional>
 #include <spdlog/spdlog.h>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility/Logging.hpp>
 #include <utility/Thread.hpp>
 #include <utility/Module.hpp>
 
@@ -50,6 +53,134 @@ static bool daysgone_d3d11_guard_enabled() {
     }();
 
     return result;
+}
+
+static bool daysgone_native_snapshot_guard_enabled() {
+    static const bool result = []() {
+        const auto exe_path = utility::get_module_pathw(utility::get_executable());
+        if (!exe_path) {
+            return false;
+        }
+
+        auto lower = std::wstring{*exe_path};
+        std::transform(lower.begin(), lower.end(), lower.begin(), ::towlower);
+        return lower.ends_with(L"\\daysgone.exe") ||
+               lower.ends_with(L"/daysgone.exe") ||
+               lower == L"daysgone.exe";
+    }();
+
+    return result;
+}
+
+static bool is_daysgone_native_packed_uav(
+    const D3D11_TEXTURE2D_DESC& desc,
+    uint32_t eye_width,
+    uint32_t eye_height)
+{
+    const bool bgra_format =
+        desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+        desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB;
+
+    return eye_width != 0 && eye_height != 0 && eye_width <= UINT32_MAX / 2 &&
+           desc.Width == eye_width * 2 && desc.Height == eye_height &&
+           desc.MipLevels == 1 && desc.ArraySize == 1 &&
+           desc.Usage == D3D11_USAGE_DEFAULT && desc.CPUAccessFlags == 0 &&
+           desc.SampleDesc.Count == 1 &&
+           (desc.BindFlags & D3D11_BIND_UNORDERED_ACCESS) != 0 &&
+           bgra_format;
+}
+
+static bool get_daysgone_view_texture(
+    ID3D11View* view,
+    Microsoft::WRL::ComPtr<ID3D11Texture2D>& texture,
+    D3D11_TEXTURE2D_DESC& desc)
+{
+    if (view == nullptr) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Resource> resource{};
+    view->GetResource(&resource);
+    if (resource == nullptr || FAILED(resource.As(&texture)) || texture == nullptr) {
+        return false;
+    }
+
+    texture->GetDesc(&desc);
+    return true;
+}
+
+static bool is_daysgone_native_final_color_dispatch(
+    ID3D11DeviceContext* context,
+    ID3D11Texture2D* packed_target,
+    uint32_t eye_width,
+    uint32_t eye_height,
+    UINT groups_x,
+    UINT groups_y,
+    UINT groups_z)
+{
+    if (context == nullptr || packed_target == nullptr || eye_width == 0 || eye_height == 0 ||
+        groups_x != (eye_width + 7) / 8 || groups_y != (eye_height + 7) / 8 || groups_z != 1)
+    {
+        return false;
+    }
+
+    std::array<ID3D11ShaderResourceView*, 4> raw_srvs{};
+    std::array<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>, 4> srvs{};
+    context->CSGetShaderResources(0, static_cast<UINT>(raw_srvs.size()), raw_srvs.data());
+    for (size_t index = 0; index < raw_srvs.size(); ++index) {
+        srvs[index].Attach(raw_srvs[index]);
+    }
+
+    std::array<ID3D11UnorderedAccessView*, 2> raw_uavs{};
+    std::array<Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView>, 2> uavs{};
+    context->CSGetUnorderedAccessViews(0, static_cast<UINT>(raw_uavs.size()), raw_uavs.data());
+    for (size_t index = 0; index < raw_uavs.size(); ++index) {
+        uavs[index].Attach(raw_uavs[index]);
+    }
+
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> constant_texture{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> packed_uav_texture{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> depth_texture{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> hdr_scene_texture{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> postprocess_texture{};
+    Microsoft::WRL::ComPtr<ID3D11Texture2D> auxiliary_uav_texture{};
+    D3D11_TEXTURE2D_DESC constant_desc{};
+    D3D11_TEXTURE2D_DESC packed_uav_desc{};
+    D3D11_TEXTURE2D_DESC depth_desc{};
+    D3D11_TEXTURE2D_DESC hdr_scene_desc{};
+    D3D11_TEXTURE2D_DESC postprocess_desc{};
+    D3D11_TEXTURE2D_DESC auxiliary_uav_desc{};
+
+    if (!get_daysgone_view_texture(srvs[0].Get(), constant_texture, constant_desc) ||
+        !get_daysgone_view_texture(uavs[0].Get(), packed_uav_texture, packed_uav_desc) ||
+        packed_uav_texture.Get() != packed_target ||
+        !is_daysgone_native_packed_uav(packed_uav_desc, eye_width, eye_height) ||
+        !get_daysgone_view_texture(srvs[1].Get(), depth_texture, depth_desc) ||
+        !get_daysgone_view_texture(srvs[2].Get(), hdr_scene_texture, hdr_scene_desc) ||
+        !get_daysgone_view_texture(srvs[3].Get(), postprocess_texture, postprocess_desc) ||
+        !get_daysgone_view_texture(uavs[1].Get(), auxiliary_uav_texture, auxiliary_uav_desc))
+    {
+        return false;
+    }
+
+    const auto is_eye_sized = [&](const D3D11_TEXTURE2D_DESC& candidate) {
+        return candidate.Width == eye_width && candidate.Height == eye_height &&
+               candidate.MipLevels == 1 && candidate.ArraySize == 1 &&
+               candidate.SampleDesc.Count == 1;
+    };
+
+    const bool constant_matches =
+        constant_desc.Width == 1 && constant_desc.Height == 1 &&
+        constant_desc.MipLevels == 1 && constant_desc.ArraySize == 1 &&
+        constant_desc.SampleDesc.Count == 1 &&
+        constant_desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS;
+
+    return constant_matches &&
+           is_eye_sized(depth_desc) && depth_desc.Format == DXGI_FORMAT_R32_UINT &&
+           is_eye_sized(hdr_scene_desc) && hdr_scene_desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT &&
+           is_eye_sized(postprocess_desc) && postprocess_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM &&
+           is_eye_sized(auxiliary_uav_desc) && auxiliary_uav_desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM;
 }
 
 static const char* to_resource_dim_name(D3D11_RESOURCE_DIMENSION dim) {
@@ -177,6 +308,170 @@ void D3D11Hook::end_naruto_slate_ui_capture() {
     // renews them every Slate frame and the timeout fails closed on teardown.
 }
 
+bool D3D11Hook::prepare_daysgone_native_snapshot() {
+    return daysgone_native_snapshot_guard_enabled() &&
+           m_device != nullptr &&
+           hook_daysgone_native_context(m_device);
+}
+
+uint64_t D3D11Hook::begin_daysgone_native_snapshot(
+    uint64_t capture_generation,
+    uint32_t width,
+    uint32_t height)
+{
+    if (capture_generation == 0 || width == 0 || height == 0 ||
+        !prepare_daysgone_native_snapshot())
+    {
+        return 0;
+    }
+
+    const auto transaction =
+        m_daysgone_native_snapshot_transaction_counter.fetch_add(1, std::memory_order_acq_rel) + 1;
+
+    {
+        std::scoped_lock lock{m_daysgone_native_snapshot_mutex};
+        m_daysgone_native_packed_target.Reset();
+        m_daysgone_native_packed_desc = {};
+        m_daysgone_native_packed_transaction = 0;
+        m_daysgone_native_snapshot_generation.store(capture_generation, std::memory_order_relaxed);
+        m_daysgone_native_snapshot_width.store(width, std::memory_order_relaxed);
+        m_daysgone_native_snapshot_height.store(height, std::memory_order_relaxed);
+        m_daysgone_native_snapshot_transaction.store(transaction, std::memory_order_relaxed);
+        m_daysgone_native_snapshot_armed.store(true, std::memory_order_release);
+    }
+
+    return transaction;
+}
+
+void D3D11Hook::cancel_daysgone_native_snapshot(uint64_t transaction_serial) {
+    if (transaction_serial == 0) {
+        return;
+    }
+
+    std::scoped_lock lock{m_daysgone_native_snapshot_mutex};
+    if (m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed) != transaction_serial) {
+        return;
+    }
+
+    m_daysgone_native_snapshot_armed.store(false, std::memory_order_release);
+    m_daysgone_native_packed_target.Reset();
+    m_daysgone_native_packed_desc = {};
+    m_daysgone_native_packed_transaction = 0;
+}
+
+std::shared_ptr<const D3D11Hook::DaysGoneNativeSnapshot>
+D3D11Hook::get_daysgone_native_snapshot(
+    uint64_t transaction_serial,
+    uint64_t capture_generation) const
+{
+    if (transaction_serial == 0 || capture_generation == 0) {
+        return nullptr;
+    }
+
+    const auto snapshot = m_daysgone_native_snapshot_ready.load(std::memory_order_acquire);
+    if (snapshot == nullptr || snapshot->transaction_serial != transaction_serial ||
+        snapshot->capture_generation != capture_generation || snapshot->texture == nullptr)
+    {
+        return nullptr;
+    }
+
+    return snapshot;
+}
+
+void D3D11Hook::reset_daysgone_native_snapshot_state() {
+    m_daysgone_native_snapshot_armed.store(false, std::memory_order_release);
+    m_daysgone_native_snapshot_ready.store(nullptr, std::memory_order_release);
+
+    std::scoped_lock lock{m_daysgone_native_snapshot_mutex};
+    m_daysgone_native_packed_target.Reset();
+    m_daysgone_native_packed_desc = {};
+    m_daysgone_native_packed_transaction = 0;
+    m_daysgone_native_snapshot_transaction.store(0, std::memory_order_relaxed);
+    m_daysgone_native_snapshot_generation.store(0, std::memory_order_relaxed);
+    m_daysgone_native_snapshot_width.store(0, std::memory_order_relaxed);
+    m_daysgone_native_snapshot_height.store(0, std::memory_order_relaxed);
+    m_daysgone_native_snapshot_next_slot = 0;
+    for (auto& slot : m_daysgone_native_snapshot_slots) {
+        slot.reset();
+    }
+}
+
+bool D3D11Hook::create_daysgone_native_snapshot_slots_locked(
+    const D3D11_TEXTURE2D_DESC& packed_desc,
+    uint32_t eye_width,
+    uint32_t eye_height)
+{
+    if (m_daysgone_native_snapshot_device == nullptr ||
+        !is_daysgone_native_packed_uav(packed_desc, eye_width, eye_height))
+    {
+        return false;
+    }
+
+    auto snapshot_desc = packed_desc;
+    snapshot_desc.Width = eye_width;
+    snapshot_desc.Height = eye_height;
+    snapshot_desc.Usage = D3D11_USAGE_DEFAULT;
+    snapshot_desc.CPUAccessFlags = 0;
+    snapshot_desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    snapshot_desc.MiscFlags = 0;
+
+    const auto slots_match = std::all_of(
+        m_daysgone_native_snapshot_slots.begin(),
+        m_daysgone_native_snapshot_slots.end(),
+        [&](const auto& slot) {
+            return slot != nullptr && slot->texture != nullptr &&
+                   slot->desc.Width == snapshot_desc.Width &&
+                   slot->desc.Height == snapshot_desc.Height &&
+                   slot->desc.Format == snapshot_desc.Format &&
+                   slot->desc.MipLevels == snapshot_desc.MipLevels &&
+                   slot->desc.ArraySize == snapshot_desc.ArraySize &&
+                   slot->desc.SampleDesc.Count == snapshot_desc.SampleDesc.Count &&
+                   slot->desc.SampleDesc.Quality == snapshot_desc.SampleDesc.Quality;
+        });
+
+    if (slots_match) {
+        return true;
+    }
+
+    m_daysgone_native_snapshot_ready.store(nullptr, std::memory_order_release);
+    for (auto& slot : m_daysgone_native_snapshot_slots) {
+        slot.reset();
+    }
+    m_daysgone_native_snapshot_next_slot = 0;
+
+    for (auto& slot : m_daysgone_native_snapshot_slots) {
+        auto created = std::make_shared<DaysGoneNativeSnapshot>();
+        const auto result = m_daysgone_native_snapshot_device->CreateTexture2D(
+            &snapshot_desc,
+            nullptr,
+            &created->texture);
+        if (FAILED(result) || created->texture == nullptr) {
+            for (auto& cleanup : m_daysgone_native_snapshot_slots) {
+                cleanup.reset();
+            }
+            spdlog::error(
+                "[DaysGone][NativeFix][D3D11] Failed to create persistent right-eye snapshot pool: "
+                "hr=0x{:08X} size={}x{} format={}",
+                static_cast<uint32_t>(result),
+                snapshot_desc.Width,
+                snapshot_desc.Height,
+                static_cast<uint32_t>(snapshot_desc.Format));
+            return false;
+        }
+
+        created->texture->GetDesc(&created->desc);
+        slot = std::move(created);
+    }
+
+    spdlog::info(
+        "[DaysGone][NativeFix][D3D11] Created {} persistent right-eye snapshot slots [{}x{} format={}]",
+        DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT,
+        snapshot_desc.Width,
+        snapshot_desc.Height,
+        static_cast<uint32_t>(snapshot_desc.Format));
+    return true;
+}
+
 bool D3D11Hook::hook() {
     spdlog::info("Hooking D3D11");
 
@@ -244,6 +539,10 @@ bool D3D11Hook::hook() {
         m_ps_set_shader_hook.reset();
         m_draw_indexed_hook.reset();
         m_naruto_draw_context_vtable = nullptr;
+        m_daysgone_cs_set_uavs_hook.reset();
+        m_daysgone_dispatch_hook.reset();
+        m_daysgone_context_vtable = nullptr;
+        m_daysgone_native_snapshot_context = nullptr;
 
         auto& present_fn = (*(void***)swap_chain)[8];
         auto& resize_buffers_fn = (*(void***)swap_chain)[13];
@@ -300,9 +599,22 @@ bool D3D11Hook::unhook() {
     m_draw_indexed_hook.reset();
     m_naruto_draw_context_vtable = nullptr;
 
+    const auto daysgone_cs_unhooked =
+        m_daysgone_cs_set_uavs_hook == nullptr ||
+        m_daysgone_cs_set_uavs_hook->remove();
+    m_daysgone_cs_set_uavs_hook.reset();
+    m_daysgone_dispatch_hook.reset();
+    const auto daysgone_dispatch_unhooked = true;
+    m_daysgone_context_vtable = nullptr;
+    m_daysgone_native_snapshot_context = nullptr;
+    reset_daysgone_native_snapshot_state();
+    m_daysgone_native_snapshot_device.Reset();
+
     if (uav_unhooked &&
         tex2d_unhooked &&
         naruto_draw_unhooked &&
+        daysgone_cs_unhooked &&
+        daysgone_dispatch_unhooked &&
         m_present_hook->remove() &&
         m_resize_buffers_hook->remove() &&
         m_create_vertex_shader_hook->remove() &&
@@ -358,6 +670,7 @@ HRESULT WINAPI D3D11Hook::present(IDXGISwapChain* swap_chain, UINT sync_interval
     if (daysgone_d3d11_guard_enabled()) {
         d3d11->hook_create_texture2d(d3d11->m_device);
         d3d11->hook_create_uav(d3d11->m_device);
+        d3d11->hook_daysgone_native_context(d3d11->m_device);
     }
 
     /*if (d3d11->m_set_render_targets_hook == nullptr) {
@@ -453,6 +766,7 @@ HRESULT WINAPI D3D11Hook::resize_buffers(
     d3d11->m_swapchain_0 = nullptr;
     d3d11->m_swapchain_1 = nullptr;
     d3d11->m_last_depthstencil_used.Reset();
+    d3d11->reset_daysgone_native_snapshot_state();
 
     if (d3d11->m_on_resize_buffers) {
         d3d11->m_on_resize_buffers(*d3d11, width, height);
@@ -844,6 +1158,287 @@ void D3D11Hook::hook_naruto_draw_indexed(ID3D11Device* device) {
     } catch (...) {
         spdlog::error("[Naruto][UE4.16][SlateUI] Failed to hook live DrawIndexed");
     }
+}
+
+bool D3D11Hook::hook_daysgone_native_context(ID3D11Device* device) {
+    if (!daysgone_native_snapshot_guard_enabled() || device == nullptr) {
+        return false;
+    }
+
+    ComPtr<ID3D11DeviceContext> context{};
+    device->GetImmediateContext(&context);
+    if (context == nullptr) {
+        return false;
+    }
+
+    auto** const vtable = *reinterpret_cast<void***>(context.Get());
+    if (vtable == nullptr) {
+        return false;
+    }
+
+    std::scoped_lock hook_lock{m_daysgone_context_hook_mutex};
+    if (m_daysgone_cs_set_uavs_hook != nullptr &&
+        m_daysgone_dispatch_hook &&
+        m_daysgone_context_vtable == vtable &&
+        m_daysgone_native_snapshot_context == context.Get())
+    {
+        // The D3D11 runtime can lazily rewrite individual context-vtable
+        // entries. Keep the context-local CS hook restored; Dispatch is hooked
+        // inline because Days Gone rewrites that slot on every use.
+        if (!m_daysgone_cs_set_uavs_hook->restore()) {
+            return false;
+        }
+        if (!m_daysgone_dispatch_hook.enabled()) {
+            const auto enable_result = m_daysgone_dispatch_hook.enable();
+            if (!enable_result.has_value()) {
+                return false;
+            }
+        }
+        if (m_daysgone_native_snapshot_device.Get() != device) {
+            reset_daysgone_native_snapshot_state();
+            m_daysgone_native_snapshot_device = device;
+        }
+        return true;
+    }
+
+    // Do not replace a live context hook from another implementation table.
+    // A device transition resets through Framework before a new game context
+    // can safely be instrumented.
+    if (m_daysgone_cs_set_uavs_hook != nullptr ||
+        m_daysgone_dispatch_hook)
+    {
+        return false;
+    }
+
+    try {
+        // ID3D11DeviceContext vtable slots from the public D3D11 ABI.
+        auto& dispatch_fn = vtable[41];
+        auto& cs_set_uavs_fn = vtable[68];
+        if (dispatch_fn == nullptr || cs_set_uavs_fn == nullptr ||
+            cs_set_uavs_fn == reinterpret_cast<void*>(&D3D11Hook::daysgone_cs_set_unordered_access_views))
+        {
+            return false;
+        }
+
+        auto dispatch_hook = safetyhook::create_inline(
+            dispatch_fn,
+            reinterpret_cast<void*>(&D3D11Hook::daysgone_dispatch),
+            safetyhook::InlineHook::StartDisabled);
+        if (!dispatch_hook) {
+            spdlog::error(
+                "[DaysGone][NativeFix][D3D11] Failed to inline-hook the live Dispatch implementation");
+            return false;
+        }
+
+        m_daysgone_cs_set_uavs_hook = std::make_unique<PointerHook>(
+            &cs_set_uavs_fn,
+            reinterpret_cast<void*>(&D3D11Hook::daysgone_cs_set_unordered_access_views));
+        m_daysgone_dispatch_hook = std::move(dispatch_hook);
+        m_daysgone_context_vtable = vtable;
+        m_daysgone_native_snapshot_context = context.Get();
+        m_daysgone_native_snapshot_device = device;
+        const auto enable_result = m_daysgone_dispatch_hook.enable();
+        if (!enable_result.has_value()) {
+            throw std::runtime_error("failed to enable the Days Gone Dispatch inline hook");
+        }
+        spdlog::info(
+            "[DaysGone][NativeFix][D3D11] Hooked live CS binding and the stable Dispatch implementation for persistent right-eye snapshots");
+        return true;
+    } catch (const std::exception& e) {
+        if (m_daysgone_cs_set_uavs_hook != nullptr) {
+            m_daysgone_cs_set_uavs_hook->remove();
+            m_daysgone_cs_set_uavs_hook.reset();
+        }
+        m_daysgone_dispatch_hook.reset();
+        m_daysgone_context_vtable = nullptr;
+        m_daysgone_native_snapshot_context = nullptr;
+        spdlog::error(
+            "[DaysGone][NativeFix][D3D11] Failed to hook the live CS/Dispatch final-color boundary: {}",
+            e.what());
+    } catch (...) {
+        if (m_daysgone_cs_set_uavs_hook != nullptr) {
+            m_daysgone_cs_set_uavs_hook->remove();
+            m_daysgone_cs_set_uavs_hook.reset();
+        }
+        m_daysgone_dispatch_hook.reset();
+        m_daysgone_context_vtable = nullptr;
+        m_daysgone_native_snapshot_context = nullptr;
+        spdlog::error("[DaysGone][NativeFix][D3D11] Failed to hook the live CS/Dispatch final-color boundary");
+    }
+
+    return false;
+}
+
+void WINAPI D3D11Hook::daysgone_cs_set_unordered_access_views(
+    ID3D11DeviceContext* context,
+    UINT start_slot,
+    UINT num_uavs,
+    ID3D11UnorderedAccessView* const* uavs,
+    const UINT* initial_counts)
+{
+    auto* const d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_daysgone_cs_set_uavs_hook
+        ->get_original<decltype(D3D11Hook::daysgone_cs_set_unordered_access_views)*>();
+
+    if (d3d11->m_daysgone_native_snapshot_armed.load(std::memory_order_acquire) &&
+        context != nullptr && start_slot == 0 && num_uavs >= 1 &&
+        uavs != nullptr && uavs[0] != nullptr)
+    {
+        const auto transaction =
+            d3d11->m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed);
+        const auto width = d3d11->m_daysgone_native_snapshot_width.load(std::memory_order_relaxed);
+        const auto height = d3d11->m_daysgone_native_snapshot_height.load(std::memory_order_relaxed);
+
+        ComPtr<ID3D11Resource> packed_resource{};
+        ComPtr<ID3D11Texture2D> packed_texture{};
+        uavs[0]->GetResource(&packed_resource);
+        if (packed_resource != nullptr &&
+            SUCCEEDED(packed_resource.As(&packed_texture)) &&
+            packed_texture != nullptr)
+        {
+            D3D11_TEXTURE2D_DESC packed_desc{};
+            packed_texture->GetDesc(&packed_desc);
+
+            ComPtr<ID3D11Device> packed_device{};
+            packed_texture->GetDevice(&packed_device);
+            if (packed_device.Get() == d3d11->m_daysgone_native_snapshot_device.Get() &&
+                is_daysgone_native_packed_uav(packed_desc, width, height))
+            {
+                std::scoped_lock lock{d3d11->m_daysgone_native_snapshot_mutex};
+                if (d3d11->m_daysgone_native_snapshot_armed.load(std::memory_order_relaxed) &&
+                    d3d11->m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed) == transaction)
+                {
+                    d3d11->m_daysgone_native_packed_target = packed_texture;
+                    d3d11->m_daysgone_native_packed_desc = packed_desc;
+                    d3d11->m_daysgone_native_packed_transaction = transaction;
+                }
+            }
+        }
+    }
+
+    original(context, start_slot, num_uavs, uavs, initial_counts);
+}
+
+void WINAPI D3D11Hook::daysgone_dispatch(
+    ID3D11DeviceContext* context,
+    UINT thread_group_count_x,
+    UINT thread_group_count_y,
+    UINT thread_group_count_z)
+{
+    auto* const d3d11 = g_d3d11_hook;
+    auto original = d3d11->m_daysgone_dispatch_hook
+        .original<decltype(D3D11Hook::daysgone_dispatch)*>();
+
+    if (original == nullptr) {
+        return;
+    }
+
+    if (!d3d11->m_daysgone_native_snapshot_armed.load(std::memory_order_acquire) ||
+        context == nullptr ||
+        context != d3d11->m_daysgone_native_snapshot_context)
+    {
+        original(context, thread_group_count_x, thread_group_count_y, thread_group_count_z);
+        return;
+    }
+
+    const auto transaction =
+        d3d11->m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed);
+    const auto generation =
+        d3d11->m_daysgone_native_snapshot_generation.load(std::memory_order_relaxed);
+    const auto width = d3d11->m_daysgone_native_snapshot_width.load(std::memory_order_relaxed);
+    const auto height = d3d11->m_daysgone_native_snapshot_height.load(std::memory_order_relaxed);
+    ComPtr<ID3D11Texture2D> packed_target{};
+    D3D11_TEXTURE2D_DESC packed_desc{};
+
+    {
+        std::scoped_lock lock{d3d11->m_daysgone_native_snapshot_mutex};
+        if (d3d11->m_daysgone_native_snapshot_armed.load(std::memory_order_relaxed) &&
+            d3d11->m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed) == transaction &&
+            d3d11->m_daysgone_native_packed_transaction == transaction &&
+            d3d11->m_daysgone_native_packed_target != nullptr)
+        {
+            packed_target = d3d11->m_daysgone_native_packed_target;
+            packed_desc = d3d11->m_daysgone_native_packed_desc;
+        }
+    }
+
+    const bool is_final_color_dispatch =
+        packed_target != nullptr &&
+        is_daysgone_native_packed_uav(packed_desc, width, height) &&
+        is_daysgone_native_final_color_dispatch(
+            context,
+            packed_target.Get(),
+            width,
+            height,
+            thread_group_count_x,
+            thread_group_count_y,
+            thread_group_count_z);
+
+    original(context, thread_group_count_x, thread_group_count_y, thread_group_count_z);
+
+    if (!is_final_color_dispatch) {
+        return;
+    }
+
+    std::scoped_lock lock{d3d11->m_daysgone_native_snapshot_mutex};
+    if (!d3d11->m_daysgone_native_snapshot_armed.load(std::memory_order_relaxed) ||
+        d3d11->m_daysgone_native_snapshot_transaction.load(std::memory_order_relaxed) != transaction ||
+        d3d11->m_daysgone_native_packed_transaction != transaction ||
+        d3d11->m_daysgone_native_packed_target.Get() != packed_target.Get() ||
+        !d3d11->create_daysgone_native_snapshot_slots_locked(packed_desc, width, height))
+    {
+        return;
+    }
+
+    std::shared_ptr<DaysGoneNativeSnapshot> selected{};
+    for (size_t offset = 0; offset < DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT; ++offset) {
+        const auto index =
+            (d3d11->m_daysgone_native_snapshot_next_slot + offset) %
+            DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT;
+        auto& slot = d3d11->m_daysgone_native_snapshot_slots[index];
+        if (slot != nullptr && slot.use_count() == 1) {
+            selected = slot;
+            d3d11->m_daysgone_native_snapshot_next_slot =
+                (index + 1) % DAYS_GONE_NATIVE_SNAPSHOT_SLOT_COUNT;
+            break;
+        }
+    }
+
+    if (selected != nullptr) {
+        const D3D11_BOX secondary_region{0, 0, 0, width, height, 1};
+        context->CopySubresourceRegion(
+            selected->texture.Get(),
+            0,
+            0,
+            0,
+            0,
+            packed_target.Get(),
+            0,
+            &secondary_region);
+        selected->capture_generation = generation;
+        selected->transaction_serial = transaction;
+        d3d11->m_daysgone_native_snapshot_ready.store(
+            std::shared_ptr<const DaysGoneNativeSnapshot>{selected},
+            std::memory_order_release);
+        d3d11->m_daysgone_native_snapshot_armed.store(false, std::memory_order_release);
+
+        static std::atomic_bool logged_snapshot{false};
+        if (!logged_snapshot.exchange(true, std::memory_order_relaxed)) {
+            spdlog::info(
+                "[DaysGone][NativeFix][D3D11] Snapshotted the final-color secondary eye "
+                "from the packed BGRA target after its validated compute dispatch");
+        }
+    } else {
+        d3d11->m_daysgone_native_snapshot_armed.store(false, std::memory_order_release);
+        SPDLOG_WARNING_EVERY_N_SEC(
+            2,
+            "[DaysGone][NativeFix][D3D11] Persistent snapshot pool is still in use; "
+            "skipping this right-eye transaction");
+    }
+
+    d3d11->m_daysgone_native_packed_target.Reset();
+    d3d11->m_daysgone_native_packed_desc = {};
+    d3d11->m_daysgone_native_packed_transaction = 0;
 }
 
 void WINAPI D3D11Hook::draw_indexed(

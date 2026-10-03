@@ -1,5 +1,11 @@
+#include "UECompatibility.hpp"
+#include "utility/NascarHookCompatibility.hpp"
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
+#include <optional>
+#include <string_view>
 #include <unordered_map>
 
 #include <bdshemu.h>
@@ -16,6 +22,7 @@
 #include <sdk/Utility.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/UClass.hpp>
+#include <sdk/UObjectBase.hpp>
 #include <sdk/FProperty.hpp>
 #include <sdk/ScriptRotator.hpp>
 #include <sdk/ScriptVector.hpp>
@@ -34,7 +41,6 @@
 #include <sdk/UFunction.hpp>
 
 #include "IXRTrackingSystemHook.hpp"
-#include "UECompatibility.hpp"
 
 namespace {
 bool is_deadzone_ue56_executable() {
@@ -45,7 +51,10 @@ bool is_deadzone_ue56_executable() {
             return false;
         }
 
-        return sdk::get_engine_version().is(5, 6);
+        const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+        const auto file_version = sdk::get_file_version_info();
+
+        return str_version.starts_with("5.6") || file_version.dwFileVersionMS == 0x00050006;
     }();
 
     return result;
@@ -55,27 +64,51 @@ bool is_daysgone_executable() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
 
-        return exe_path && exe_path->find(L"DaysGone.exe") != std::wstring::npos;
+        if (!exe_path) {
+            return false;
+        }
+
+        const auto separator = exe_path->find_last_of(L"\\/");
+        const auto filename = separator == std::wstring::npos ? *exe_path : exe_path->substr(separator + 1);
+        return _wcsicmp(filename.c_str(), L"DaysGone.exe") == 0;
     }();
 
     return result;
 }
 
-bool is_daysgone_controller_aim_requested() {
-    return is_daysgone_executable() && VR::get()->is_controller_aim_enabled();
+bool is_daysgone_native_aim_requested() {
+    return is_daysgone_executable() && VR::get()->is_any_aim_method_active();
 }
 
 bool is_ue4_14_through_4_17() {
     static const bool result = []() {
-        const auto& version = sdk::get_engine_version();
-        return version.major == 4 && version.minor >= 14 && version.minor <= 17;
+        if (const auto found_version = sdk::search_for_version(utility::get_executable())) {
+            const auto version = utility::narrow(*found_version);
+
+            try {
+                const auto separator = version.find('.');
+
+                if (separator != std::string::npos) {
+                    const auto major = std::stoi(version.substr(0, separator));
+                    const auto minor = std::stoi(version.substr(separator + 1));
+                    return major == 4 && minor >= 14 && minor <= 17;
+                }
+            } catch (...) {
+                // Fall through to the executable's file version.
+            }
+        }
+
+        const auto file_version = sdk::get_file_version_info();
+        const auto major = HIWORD(file_version.dwFileVersionMS);
+        const auto minor = LOWORD(file_version.dwFileVersionMS);
+        return major == 4 && minor >= 14 && minor <= 17;
     }();
 
     return result;
 }
 
 bool is_guarded_legacy_aim_path() {
-    return is_ue4_14_through_4_17() || is_daysgone_executable();
+    return is_ue4_14_through_4_17();
 }
 
 bool is_live_legacy_aim_object(sdk::UObjectBase* object) try {
@@ -144,11 +177,7 @@ bool is_legacy_aim_reflection_ready() try {
     ready = control_rotation != nullptr;
 
     if (ready) {
-        if (is_daysgone_executable()) {
-            SPDLOG_INFO("[DaysGone][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for guarded ProcessEvent aim");
-        } else {
-            SPDLOG_INFO("[UE4.14-4.17][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for direct aim");
-        }
+        SPDLOG_INFO("[UE4.14-4.17][Aim] Validated reflected ControlRotation and 12-byte FRotator layout for direct aim");
     }
 
     return ready;
@@ -159,15 +188,15 @@ bool is_legacy_aim_reflection_ready() try {
 bool is_payday3_aim_guard_enabled();
 
 bool is_direct_aim_compatibility_requested() {
+    if (is_daysgone_executable()) {
+        return false;
+    }
+
     if (is_deadzone_ue56_executable()) {
         return true;
     }
 
     if (is_payday3_aim_guard_enabled()) {
-        return true;
-    }
-
-    if (is_daysgone_controller_aim_requested()) {
         return true;
     }
 
@@ -179,6 +208,10 @@ bool is_direct_aim_compatibility_requested() {
 }
 
 bool is_direct_aim_compatibility_active() {
+    if (is_daysgone_executable()) {
+        return false;
+    }
+
     if (!is_direct_aim_compatibility_requested()) {
         return false;
     }
@@ -207,10 +240,6 @@ bool is_direct_aim_compatibility_active() {
         return vr->is_headlocked_aim_enabled() || (vr->is_controller_aim_enabled() && vr->is_using_controllers());
     }
 
-    if (is_daysgone_controller_aim_requested()) {
-        return vr->is_using_controllers();
-    }
-
     if (is_ue4_14_through_4_17()) {
         // UE4.14-4.17 exposes only the legacy IHeadMountedDisplay interface.
         // Keep its incomplete fake-HMD vtable out of the aim path even while a
@@ -237,11 +266,6 @@ bool is_payday3_aim_guard_enabled() {
 sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, sdk::UWorld* world) {
     if (engine != nullptr) {
         if (const auto local_player = reinterpret_cast<sdk::UObject*>(engine->get_localplayer(0)); local_player != nullptr) {
-            if (is_daysgone_executable() && !is_live_legacy_aim_object(local_player)) {
-                SPDLOG_WARNING_EVERY_N_SEC(2, "[DaysGone][Aim] Refusing a stale or invalid LocalPlayer during controller resolution");
-                return nullptr;
-            }
-
             if (const auto data = local_player->get_property_data(L"PlayerController"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
                 if (const auto controller = *(sdk::APlayerController**)data; controller != nullptr) {
                     return controller;
@@ -254,12 +278,6 @@ sdk::APlayerController* resolve_player_controller_for_aim(sdk::UEngine* engine, 
         SPDLOG_WARNING_EVERY_N_SEC(
             2,
             "[PAYDAY3][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
-        return nullptr;
-    }
-    if (is_daysgone_executable()) {
-        SPDLOG_WARNING_EVERY_N_SEC(
-            2,
-            "[DaysGone][Aim] PlayerController unavailable through LocalPlayer reflection; skipping GameplayStatics fallback");
         return nullptr;
     }
     if (is_ue4_14_through_4_17()) {
@@ -282,7 +300,7 @@ sdk::APawn* resolve_acknowledged_pawn_for_aim(sdk::APlayerController* controller
         return nullptr;
     }
 
-    if (is_payday3_aim_guard_enabled() || is_ue4_14_through_4_17() || is_daysgone_executable()) {
+    if (is_payday3_aim_guard_enabled() || is_ue4_14_through_4_17()) {
         const auto controller_obj = reinterpret_cast<sdk::UObject*>(controller);
 
         if (const auto data = controller_obj->get_property_data(L"AcknowledgedPawn"); data != nullptr && !IsBadReadPtr(data, sizeof(void*))) {
@@ -331,123 +349,109 @@ bool write_payday3_control_rotation_property(sdk::APlayerController* controller,
 
 }
 
-sdk::EngineVersion resolve_xr_vtable_version(const std::optional<std::string>& version_override) {
-    if (!version_override) {
-        return sdk::get_engine_version();
-    }
-
-    const std::wstring wide_version{version_override->begin(), version_override->end()};
-    const auto parsed = sdk::parse_engine_version(wide_version, sdk::EngineVersionSource::Unknown);
-
-    if (!parsed) {
-        SPDLOG_ERROR("IXRTrackingSystemHook: invalid engine version override '{}'", *version_override);
-        return {};
-    }
-
-    SPDLOG_INFO("IXRTrackingSystemHook: using engine version override {}", *version_override);
-    return *parsed;
-}
-
 detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::string> version_override = std::nullopt) {
-    const auto version = resolve_xr_vtable_version(version_override);
+    if (!version_override && uevr::compat::get().version.major == 6) {
+        return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
+            ? static_cast<detail::IXRTrackingSystemVT&>(ue5_8::IXRTrackingSystemVT::get()) : detail::IXRTrackingSystemVT::get();
+    }
+    const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+    auto version = sdk::get_file_version_info();
 
-    if (uevr::compat::make_profile(version).xr_layout == uevr::compat::XRLayout::UE60) {
-        return ue6_0::IXRTrackingSystemVT::get();
+    if (str_version != "0.00") {
+        SPDLOG_INFO("Found version {} from executable", str_version);
+        version.dwFileVersionMS = 0;
+    } else {
+        SPDLOG_INFO("Found version {}.{} from executable (disk version)", HIWORD(version.dwFileVersionMS), LOWORD(version.dwFileVersionMS));
     }
 
-    if (version.major == 6) {
-        SPDLOG_ERROR_ONCE("IXRTrackingSystemHook: unsupported UE6 minor; refusing an unvalidated IXRTrackingSystem vtable");
-        return detail::IXRTrackingSystemVT::get();
-    }
-
-    if (version.is(5, 8)) {
+    if (version.dwFileVersionMS == 0x50008 || str_version.starts_with("5.8")) {
         return ue5_8::IXRTrackingSystemVT::get();
     }
 
-    if (version.is(5, 7)) {
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
         return ue5_7::IXRTrackingSystemVT::get();
     }
 
-    if (version.is(5, 6)) {
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
         return ue5_6::IXRTrackingSystemVT::get();
     }
 
-    if (version.is(5, 5)) {
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
         return ue5_5::IXRTrackingSystemVT::get();
     }
 
-    if (version.is(5, 4)) {
+    if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
         return ue5_4::IXRTrackingSystemVT::get();
     }
 
     // >= 5.3
-    if (version.is(5, 3)) {
+    if (version.dwFileVersionMS == 0x50003 || str_version.starts_with("5.3")) {
         return ue5_3::IXRTrackingSystemVT::get();
     }
 
     // TODO: actually dump 5.2
     // >= 5.2
-    if (version.is(5, 2)) {
+    if (version.dwFileVersionMS == 0x50002 || str_version.starts_with("5.2")) {
         return ue5_1::IXRTrackingSystemVT::get();
     }
 
     // >= 5.1
-    if (version.is(5, 1)) {
+    if (version.dwFileVersionMS == 0x50001 || str_version.starts_with("5.1")) {
         return ue5_1::IXRTrackingSystemVT::get();
     }
 
     // >= 5.0
-    if (version.is(5, 0)) {
+    if (version.dwFileVersionMS == 0x50000 || str_version.starts_with("5.0")) {
         return ue5_00::IXRTrackingSystemVT::get();
     }
 
     // 4.27
-    if (version.is(4, 27)) {
+    if (version.dwFileVersionMS == 0x4001B || str_version.starts_with("4.27")) {
         return ue4_27::IXRTrackingSystemVT::get();
     }
 
     // 4.26
-    if (version.is(4, 26)) {
+    if (version.dwFileVersionMS == 0x4001A || str_version.starts_with("4.26")) {
         return ue4_26::IXRTrackingSystemVT::get();
     }
     
     // 4.25
-    if (version.is(4, 25)) {
+    if (version.dwFileVersionMS == 0x40019 || str_version.starts_with("4.25")) {
         return ue4_25::IXRTrackingSystemVT::get();
     }
 
     // 4.24
-    if (version.is(4, 24)) {
+    if (version.dwFileVersionMS == 0x40018 || str_version.starts_with("4.24")) {
         return ue4_24::IXRTrackingSystemVT::get();
     }
 
     // 4.23
-    if (version.is(4, 23)) {
+    if (version.dwFileVersionMS == 0x40017 || str_version.starts_with("4.23")) {
         return ue4_23::IXRTrackingSystemVT::get();
     }
 
     // 4.22
-    if (version.is(4, 22)) {
+    if (version.dwFileVersionMS == 0x40016 || str_version.starts_with("4.22")) {
         return ue4_22::IXRTrackingSystemVT::get();
     }
 
     // 4.21
-    if (version.is(4, 21)) {
+    if (version.dwFileVersionMS == 0x40015 || str_version.starts_with("4.21")) {
         return ue4_21::IXRTrackingSystemVT::get();
     }
 
     // 4.20
-    if (version.is(4, 20)) {
+    if (version.dwFileVersionMS == 0x40014 || str_version.starts_with("4.20")) {
         return ue4_20::IXRTrackingSystemVT::get();
     }
 
     // 4.19
-    if (version.is(4, 19)) {
+    if (version.dwFileVersionMS == 0x40013 || str_version.starts_with("4.19")) {
         return ue4_19::IXRTrackingSystemVT::get();
     }
 
     // 4.18
-    if (version.is(4, 18)) {
+    if (version.dwFileVersionMS == 0x40012 || str_version.starts_with("4.18")) {
         return ue4_18::IXRTrackingSystemVT::get();
     }
 
@@ -457,104 +461,104 @@ detail::IXRTrackingSystemVT& get_tracking_system_vtable(std::optional<std::strin
 
 
 detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_override = std::nullopt) {
-    const auto version = resolve_xr_vtable_version(version_override);
+    if (!version_override && uevr::compat::get().version.major == 6) {
+        return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
+            ? static_cast<detail::IXRCameraVT&>(ue5_8::IXRCameraVT::get()) : detail::IXRCameraVT::get();
+    }
+    const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+    auto version = sdk::get_file_version_info();
 
-    if (uevr::compat::make_profile(version).xr_layout == uevr::compat::XRLayout::UE60) {
-        return ue6_0::IXRCameraVT::get();
+    if (str_version != "0.00") {
+        version.dwFileVersionMS = 0;
     }
 
-    if (version.major == 6) {
-        SPDLOG_ERROR_ONCE("IXRTrackingSystemHook: unsupported UE6 minor; refusing an unvalidated IXRCamera vtable");
-        return detail::IXRCameraVT::get();
-    }
-
-    if (version.is(5, 8)) {
+    if (version.dwFileVersionMS == 0x50008 || str_version.starts_with("5.8")) {
         return ue5_8::IXRCameraVT::get();
     }
 
-    if (version.is(5, 7)) {
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
         return ue5_7::IXRCameraVT::get();
     }
 
-    if (version.is(5, 6)) {
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
         return ue5_6::IXRCameraVT::get();
     }
 
-    if (version.is(5, 5)) {
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
         return ue5_5::IXRCameraVT::get();
     }
 
-    if (version.is(5, 4)) {
+    if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
         return ue5_4::IXRCameraVT::get();
     }
 
     // TODO: actually dump 5.2
-    if (version.is(5, 3)) {
+    if (version.dwFileVersionMS == 0x50003 || str_version.starts_with("5.3")) {
         return ue5_3::IXRCameraVT::get();
     }
 
     // >= 5.2
-    if (version.is(5, 2)) {
+    if (version.dwFileVersionMS == 0x50002 || str_version.starts_with("5.2")) {
         return ue5_1::IXRCameraVT::get();
     }
 
     // >= 5.1
-    if (version.is(5, 1)) {
+    if (version.dwFileVersionMS == 0x50001 || str_version.starts_with("5.1")) {
         return ue5_1::IXRCameraVT::get();
     }
 
     // >= 5.0
-    if (version.is(5, 0)) {
+    if (version.dwFileVersionMS == 0x50000 || str_version.starts_with("5.0")) {
         return ue5_00::IXRCameraVT::get();
     }
 
     // 4.27
-    if (version.is(4, 27)) {
+    if (version.dwFileVersionMS == 0x4001B || str_version.starts_with("4.27")) {
         return ue4_27::IXRCameraVT::get();
     }
 
     // 4.26
-    if (version.is(4, 26)) {
+    if (version.dwFileVersionMS == 0x4001A || str_version.starts_with("4.26")) {
         return ue4_26::IXRCameraVT::get();
     }
 
     // 4.25
-    if (version.is(4, 25)) {
+    if (version.dwFileVersionMS == 0x40019 || str_version.starts_with("4.25")) {
         return ue4_25::IXRCameraVT::get();
     }
 
     // 4.24
-    if (version.is(4, 24)) {
+    if (version.dwFileVersionMS == 0x40018 || str_version.starts_with("4.24")) {
         return ue4_24::IXRCameraVT::get();
     }
 
     // 4.23
-    if (version.is(4, 23)) {
+    if (version.dwFileVersionMS == 0x40017 || str_version.starts_with("4.23")) {
         return ue4_23::IXRCameraVT::get();
     }
 
     // 4.22
-    if (version.is(4, 22)) {
+    if (version.dwFileVersionMS == 0x40016 || str_version.starts_with("4.22")) {
         return ue4_22::IXRCameraVT::get();
     }
 
     // 4.21
-    if (version.is(4, 21)) {
+    if (version.dwFileVersionMS == 0x40015 || str_version.starts_with("4.21")) {
         return ue4_21::IXRCameraVT::get();
     }
 
     // 4.20
-    if (version.is(4, 20)) {
+    if (version.dwFileVersionMS == 0x40014 || str_version.starts_with("4.20")) {
         return ue4_20::IXRCameraVT::get();
     }
 
     // 4.19
-    if (version.is(4, 19)) {
+    if (version.dwFileVersionMS == 0x40013 || str_version.starts_with("4.19")) {
         return ue4_19::IXRCameraVT::get();
     }
 
     // 4.18
-    if (version.is(4, 18)) {
+    if (version.dwFileVersionMS == 0x40012 || str_version.starts_with("4.18")) {
         return ue4_18::IXRCameraVT::get();
     }
 
@@ -563,145 +567,145 @@ detail::IXRCameraVT& get_camera_vtable(std::optional<std::string> version_overri
 }
 
 detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version_override = std::nullopt) {
-    const auto version = resolve_xr_vtable_version(version_override);
+    if (!version_override && uevr::compat::get().version.major == 6) {
+        return uevr::compat::get().xr_layout == uevr::compat::XRLayout::UE60
+            ? static_cast<detail::IHeadMountedDisplayVT&>(ue5_8::IHeadMountedDisplayVT::get()) : detail::IHeadMountedDisplayVT::get();
+    }
+    const auto str_version = version_override.has_value() ? version_override.value() : utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
+    auto version = sdk::get_file_version_info();
 
-    if (uevr::compat::make_profile(version).xr_layout == uevr::compat::XRLayout::UE60) {
-        return ue6_0::IHeadMountedDisplayVT::get();
+    if (str_version != "0.00") {
+        version.dwFileVersionMS = 0;
     }
 
-    if (version.major == 6) {
-        SPDLOG_ERROR_ONCE("IXRTrackingSystemHook: unsupported UE6 minor; refusing an unvalidated IHeadMountedDisplay vtable");
-        return detail::IHeadMountedDisplayVT::get();
-    }
-
-    if (version.is(5, 8)) {
+    if (version.dwFileVersionMS == 0x50008 || str_version.starts_with("5.8")) {
         return ue5_8::IHeadMountedDisplayVT::get();
     }
 
-    if (version.is(5, 7)) {
+    if (version.dwFileVersionMS == 0x50007 || str_version.starts_with("5.7")) {
         return ue5_7::IHeadMountedDisplayVT::get();
     }
 
-    if (version.is(5, 6)) {
+    if (version.dwFileVersionMS == 0x50006 || str_version.starts_with("5.6")) {
         return ue5_6::IHeadMountedDisplayVT::get();
     }
 
-    if (version.is(5, 5)) {
+    if (version.dwFileVersionMS == 0x50005 || str_version.starts_with("5.5")) {
         return ue5_5::IHeadMountedDisplayVT::get();
     }
 
-    if (version.is(5, 4)) {
+    if (version.dwFileVersionMS == 0x50004 || str_version.starts_with("5.4")) {
         return ue5_4::IHeadMountedDisplayVT::get();
     }
 
     // 5.3
-    if (version.is(5, 3)) {
+    if (version.dwFileVersionMS == 0x50003 || str_version.starts_with("5.3")) {
         return ue5_3::IHeadMountedDisplayVT::get();
     }
 
     // TODO: actually dump 5.2
     // >= 5.2
-    if (version.is(5, 2)) {
+    if (version.dwFileVersionMS == 0x50002 || str_version.starts_with("5.2")) {
         return ue5_1::IHeadMountedDisplayVT::get();
     }
 
     // >= 5.1
-    if (version.is(5, 1)) {
+    if (version.dwFileVersionMS == 0x50001 || str_version.starts_with("5.1")) {
         return ue5_1::IHeadMountedDisplayVT::get();
     }
 
     // >= 5.0
-    if (version.is(5, 0)) {
+    if (version.dwFileVersionMS == 0x50000 || str_version.starts_with("5.0")) {
         return ue5_00::IHeadMountedDisplayVT::get();
     }
 
     // 4.27
-    if (version.is(4, 27)) {
+    if (version.dwFileVersionMS == 0x4001B || str_version.starts_with("4.27")) {
         return ue4_27::IHeadMountedDisplayVT::get();
     }
 
     // 4.26
-    if (version.is(4, 26)) {
+    if (version.dwFileVersionMS == 0x4001A || str_version.starts_with("4.26")) {
         return ue4_26::IHeadMountedDisplayVT::get();
     }
 
     // 4.25
-    if (version.is(4, 25)) {
+    if (version.dwFileVersionMS == 0x40019 || str_version.starts_with("4.25")) {
         return ue4_25::IHeadMountedDisplayVT::get();
     }
 
     // 4.24
-    if (version.is(4, 24)) {
+    if (version.dwFileVersionMS == 0x40018 || str_version.starts_with("4.24")) {
         return ue4_24::IHeadMountedDisplayVT::get();
     }
 
     // 4.23
-    if (version.is(4, 23)) {
+    if (version.dwFileVersionMS == 0x40017 || str_version.starts_with("4.23")) {
         return ue4_23::IHeadMountedDisplayVT::get();
     }
 
     // 4.22
-    if (version.is(4, 22)) {
+    if (version.dwFileVersionMS == 0x40016 || str_version.starts_with("4.22")) {
         return ue4_22::IHeadMountedDisplayVT::get();
     }
 
     // 4.21
-    if (version.is(4, 21)) {
+    if (version.dwFileVersionMS == 0x40015 || str_version.starts_with("4.21")) {
         return ue4_21::IHeadMountedDisplayVT::get();
     }
 
     // 4.20
-    if (version.is(4, 20)) {
+    if (version.dwFileVersionMS == 0x40014 || str_version.starts_with("4.20")) {
         return ue4_20::IHeadMountedDisplayVT::get();
     }
 
     // 4.19
-    if (version.is(4, 19)) {
+    if (version.dwFileVersionMS == 0x40013 || str_version.starts_with("4.19")) {
         return ue4_19::IHeadMountedDisplayVT::get();
     }
 
     // 4.18
-    if (version.is(4, 18)) {
+    if (version.dwFileVersionMS == 0x40012 || str_version.starts_with("4.18")) {
         return ue4_18::IHeadMountedDisplayVT::get();
     }
 
     // 4.17
-    if (version.is(4, 17)) {
+    if (version.dwFileVersionMS == 0x40011 || str_version.starts_with("4.17")) {
         return ue4_17::IHeadMountedDisplayVT::get();
     }
 
     // 4.16
-    if (version.is(4, 16)) {
+    if (version.dwFileVersionMS == 0x40010 || str_version.starts_with("4.16")) {
         return ue4_16::IHeadMountedDisplayVT::get();
     }
 
     // 4.15
-    if (version.is(4, 15)) {
+    if (version.dwFileVersionMS == 0x4000F || str_version.starts_with("4.15")) {
         return ue4_15::IHeadMountedDisplayVT::get();
     }
 
     // 4.14
-    if (version.is(4, 14)) {
+    if (version.dwFileVersionMS == 0x4000E || str_version.starts_with("4.14")) {
         return ue4_14::IHeadMountedDisplayVT::get();
     }
 
     // 4.13
-    if (version.is(4, 13)) {
+    if (version.dwFileVersionMS == 0x4000D || str_version.starts_with("4.13")) {
         return ue4_13::IHeadMountedDisplayVT::get();
     }
 
     // 4.12
-    if (version.is(4, 12)) {
+    if (version.dwFileVersionMS == 0x4000C || str_version.starts_with("4.12")) {
         return ue4_12::IHeadMountedDisplayVT::get();
     }
 
     // 4.11
-    if (version.is(4, 11)) {
+    if (version.dwFileVersionMS == 0x4000B || str_version.starts_with("4.11")) {
         return ue4_11::IHeadMountedDisplayVT::get();
     }
 
     // 4.10
-    if (version.is(4, 10)) {
+    if (version.dwFileVersionMS == 0x4000A || str_version.starts_with("4.10")) {
         return ue4_10::IHeadMountedDisplayVT::get();
     }
 
@@ -711,6 +715,124 @@ detail::IHeadMountedDisplayVT& get_hmd_vtable(std::optional<std::string> version
 IXRTrackingSystemHook* g_hook = nullptr;
 
 namespace detail {
+constexpr uintptr_t DAYS_GONE_GAME_ENGINE_GAME_INSTANCE_OFFSET = 0xBE8;
+constexpr uintptr_t DAYS_GONE_GAME_INSTANCE_LOCAL_PLAYERS_OFFSET = 0x38;
+constexpr uintptr_t DAYS_GONE_LOCAL_PLAYER_CONTROLLER_OFFSET = 0x30;
+constexpr uintptr_t DAYS_GONE_PLAYER_CONTROLLER_PAWN_OFFSET = 0x3B8;
+constexpr uintptr_t DAYS_GONE_PLAYER_CONTROLLER_HUD_OFFSET = 0x3D0;
+constexpr uintptr_t DAYS_GONE_BEND_HUD_SLATE_HUD_OFFSET = 0x480;
+constexpr uintptr_t DAYS_GONE_SLATE_HUD_WIDGET_OFFSET = 0xB0;
+constexpr uintptr_t DAYS_GONE_HUD_WIDGET_RETICLES_OFFSET = 0x528;
+constexpr uintptr_t DAYS_GONE_RETICLES_IS_AIMING_OFFSET = 0x2C8;
+constexpr uintptr_t DAYS_GONE_RETICLES_HIDDEN_OFFSET = 0x359;
+constexpr uintptr_t DAYS_GONE_WIDGET_SLOT_OFFSET = 0x30;
+constexpr uintptr_t DAYS_GONE_WIDGET_VISIBILITY_OFFSET = 0x91;
+constexpr uintptr_t DAYS_GONE_PANEL_SLOT_PARENT_OFFSET = 0x28;
+constexpr uintptr_t DAYS_GONE_PANEL_SLOT_CONTENT_OFFSET = 0x30;
+constexpr uintptr_t DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET = 0x38;
+constexpr uintptr_t DAYS_GONE_CANVAS_SLOT_AUTO_SIZE_OFFSET = 0x60;
+constexpr uintptr_t DAYS_GONE_PANEL_WIDGET_SLOTS_OFFSET = 0x118;
+constexpr float DAYS_GONE_HUD_DESIGN_WIDTH = 1920.0f;
+constexpr float DAYS_GONE_HUD_DESIGN_HEIGHT = 1080.0f;
+constexpr float DAYS_GONE_RETICLE_SLOT_SIZE = 256.0f;
+// Permit the firing ray to leave the desktop viewport without treating a
+// still-valid projection as a widget failure. This keeps the range bounded to
+// one additional viewport in each direction.
+constexpr float DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET = 1.0f;
+struct DaysGoneReticleDescriptor {
+    uintptr_t child_offset{};
+    const char* name{};
+    bool is_scope{};
+};
+
+constexpr std::array<DaysGoneReticleDescriptor, 6> DAYS_GONE_RETICLE_DESCRIPTORS{{
+    {0x270, "Assault", false},
+    {0x278, "Crossbow", false},
+    {0x280, "Marksman", false},
+    {0x288, "Pistol", false},
+    {0x290, "Scope", true},
+    {0x298, "Shotgun", false}
+}};
+constexpr uintptr_t DAYS_GONE_PAWN_AIM_STANCE_OFFSET = 0x1E90;
+constexpr uintptr_t DAYS_GONE_PAWN_WEAPON_MANAGER_OFFSET = 0x1B98;
+constexpr uintptr_t DAYS_GONE_PAWN_EQUIPPED_WEAPON_OFFSET = 0x3568;
+constexpr uintptr_t DAYS_GONE_WEAPON_MANAGER_EQUIPPED_ITEMS_OFFSET = 0xE8;
+constexpr uintptr_t DAYS_GONE_WEAPON_MANAGER_DESIRED_WEAPON_OFFSET = 0x110;
+constexpr uintptr_t DAYS_GONE_WEAPON_INSTIGATOR_OFFSET = 0x150;
+constexpr uintptr_t DAYS_GONE_WEAPON_OWNER_IS_PLAYER_OFFSET = 0x3B0;
+constexpr uintptr_t DAYS_GONE_WEAPON_AIM_AT_DIR_OFFSET = 0x1884;
+constexpr uintptr_t DAYS_GONE_WEAPON_TARGET_AIM_AT_DIR_OFFSET = 0x1890;
+constexpr uintptr_t DAYS_GONE_WEAPON_AIM_AT_POINT_OFFSET = 0x1878;
+constexpr uintptr_t DAYS_GONE_WEAPON_OVERRIDE_AIM_POINT_OFFSET = 0x18A0;
+constexpr uintptr_t DAYS_GONE_WEAPON_OVERRIDE_AIM_FLAG_OFFSET = 0x18B0;
+constexpr size_t DAYS_GONE_WEAPON_AIM_TRACE_VTABLE_INDEX = 0x750 / sizeof(void*);
+constexpr size_t DAYS_GONE_FUOBJECT_ITEM_SIZE = 0x10;
+constexpr uintptr_t DAYS_GONE_FUOBJECT_ITEM_SERIAL_OFFSET = 0xC;
+constexpr uint64_t DAYS_GONE_AIM_SAMPLE_MAX_AGE_MS = 250;
+constexpr uint32_t DAYS_GONE_UNREACHABLE_OBJECT_FLAGS = 0x30000000;
+
+struct DaysGoneArray {
+    uintptr_t data{};
+    int32_t count{};
+    int32_t max{};
+};
+
+struct DaysGoneVector {
+    float x{};
+    float y{};
+    float z{};
+};
+
+struct DaysGoneVec2 {
+    float x{};
+    float y{};
+};
+
+struct DaysGoneMargin {
+    float left{};
+    float top{};
+    float right{};
+    float bottom{};
+};
+
+struct DaysGoneAnchors {
+    DaysGoneVec2 minimum{};
+    DaysGoneVec2 maximum{};
+};
+
+struct DaysGoneAnchorData {
+    DaysGoneMargin offsets{};
+    DaysGoneAnchors anchors{};
+    DaysGoneVec2 alignment{};
+};
+
+struct DaysGoneProjectWorldToScreenParams {
+    DaysGoneVector world_location{};
+    DaysGoneVec2 screen_location{};
+    uint8_t return_value{};
+    uint8_t padding[3]{};
+};
+
+struct DaysGoneGetViewportSizeParams {
+    int32_t size_x{};
+    int32_t size_y{};
+};
+
+struct DaysGoneWeakObjectPtr {
+    int32_t object_index{-1};
+    int32_t object_serial{};
+};
+
+static_assert(sizeof(DaysGoneArray) == 0x10);
+static_assert(sizeof(DaysGoneVector) == 0xC);
+static_assert(sizeof(DaysGoneVec2) == 0x8);
+static_assert(sizeof(DaysGoneMargin) == 0x10);
+static_assert(sizeof(DaysGoneAnchors) == 0x10);
+static_assert(sizeof(DaysGoneAnchorData) == 0x28);
+static_assert(sizeof(DaysGoneProjectWorldToScreenParams) == 0x18);
+static_assert(sizeof(DaysGoneGetViewportSizeParams) == 0x8);
+static_assert(sizeof(DaysGoneWeakObjectPtr) == 0x8);
+
 struct FunctionInfo {
     size_t functions_within{0};
     bool calls_xr_camera{false};
@@ -750,6 +872,432 @@ bool is_writable_process_range(uintptr_t address, size_t size) {
            protect == PAGE_EXECUTE_WRITECOPY;
 }
 
+static bool is_readable_process_range(uintptr_t address, size_t size) {
+    if (address == 0 || size == 0 || address + size < address) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT) {
+        return false;
+    }
+
+    const auto base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    return address + size <= base + mbi.RegionSize &&
+        (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) == 0;
+}
+
+static bool is_executable_process_address(uintptr_t address) {
+    if (!is_readable_process_range(address, 1)) {
+        return false;
+    }
+
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (VirtualQuery(reinterpret_cast<void*>(address), &mbi, sizeof(mbi)) == 0) {
+        return false;
+    }
+
+    const auto protect = mbi.Protect & 0xff;
+    return protect == PAGE_EXECUTE || protect == PAGE_EXECUTE_READ ||
+           protect == PAGE_EXECUTE_READWRITE || protect == PAGE_EXECUTE_WRITECOPY;
+}
+
+template <typename T>
+static bool read_process_value(uintptr_t address, T& value) {
+    if (!is_readable_process_range(address, sizeof(T))) {
+        return false;
+    }
+
+    std::memcpy(&value, reinterpret_cast<const void*>(address), sizeof(T));
+    return true;
+}
+
+static uint64_t steady_clock_milliseconds() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+static bool is_live_daysgone_object(void* object) try {
+    if (!is_daysgone_executable() || object == nullptr ||
+        !is_readable_process_range(reinterpret_cast<uintptr_t>(object), 0x28)) {
+        return false;
+    }
+
+    int32_t index{};
+    uintptr_t object_class{};
+    if (!read_process_value(reinterpret_cast<uintptr_t>(object) + 0xC, index) ||
+        !read_process_value(reinterpret_cast<uintptr_t>(object) + 0x10, object_class) ||
+        object_class == 0 || !is_readable_process_range(object_class, 0x28)) {
+        return false;
+    }
+
+    const auto objects = sdk::FUObjectArray::get();
+    if (objects == nullptr || index < 0 || index >= objects->get_object_count()) {
+        return false;
+    }
+
+    const auto item = objects->get_object(index);
+    return item != nullptr && item->get_object() == object &&
+        (item->get_flags() & DAYS_GONE_UNREACHABLE_OBJECT_FLAGS) == 0;
+} catch (...) {
+    return false;
+}
+
+static void* resolve_daysgone_weak_object(const DaysGoneWeakObjectPtr& weak) try {
+    const auto objects = sdk::FUObjectArray::get();
+    if (!is_daysgone_executable() || objects == nullptr || weak.object_index < 0 ||
+        weak.object_index >= objects->get_object_count() || weak.object_serial <= 0 ||
+        sdk::FUObjectArray::get_item_distance() != DAYS_GONE_FUOBJECT_ITEM_SIZE) {
+        return nullptr;
+    }
+
+    const auto item = objects->get_object(weak.object_index);
+    int32_t item_serial{};
+    if (item == nullptr ||
+        !read_process_value(
+            reinterpret_cast<uintptr_t>(item) + DAYS_GONE_FUOBJECT_ITEM_SERIAL_OFFSET,
+            item_serial) ||
+        item_serial != weak.object_serial ||
+        (item->get_flags() & DAYS_GONE_UNREACHABLE_OBJECT_FLAGS) != 0) {
+        return nullptr;
+    }
+
+    auto* const object = item->get_object();
+    return is_live_daysgone_object(object) ? object : nullptr;
+} catch (...) {
+    return nullptr;
+}
+
+static bool is_daysgone_player_weapon(void* weapon, uintptr_t pawn) {
+    if (weapon == nullptr || pawn == 0 || !is_live_daysgone_object(weapon)) {
+        return false;
+    }
+
+    uint8_t owner_is_player{};
+    uintptr_t instigator{};
+    return read_process_value(
+               reinterpret_cast<uintptr_t>(weapon) + DAYS_GONE_WEAPON_OWNER_IS_PLAYER_OFFSET,
+               owner_is_player) &&
+        owner_is_player != 0 &&
+        read_process_value(
+            reinterpret_cast<uintptr_t>(weapon) + DAYS_GONE_WEAPON_INSTIGATOR_OFFSET,
+            instigator) &&
+        instigator == pawn;
+}
+
+static void* resolve_daysgone_player_weapon(uintptr_t pawn) {
+    uintptr_t direct_weapon{};
+    if (read_process_value(pawn + DAYS_GONE_PAWN_EQUIPPED_WEAPON_OFFSET, direct_weapon)) {
+        auto* const weapon = reinterpret_cast<void*>(direct_weapon);
+        if (is_daysgone_player_weapon(weapon, pawn)) {
+            return weapon;
+        }
+    }
+
+    uintptr_t manager{};
+    if (!read_process_value(pawn + DAYS_GONE_PAWN_WEAPON_MANAGER_OFFSET, manager) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(manager))) {
+        return nullptr;
+    }
+
+    DaysGoneWeakObjectPtr desired_weapon{};
+    if (read_process_value(
+            manager + DAYS_GONE_WEAPON_MANAGER_DESIRED_WEAPON_OFFSET,
+            desired_weapon)) {
+        auto* const weapon = resolve_daysgone_weak_object(desired_weapon);
+        if (is_daysgone_player_weapon(weapon, pawn)) {
+            return weapon;
+        }
+    }
+
+    DaysGoneArray equipped_items{};
+    if (!read_process_value(
+            manager + DAYS_GONE_WEAPON_MANAGER_EQUIPPED_ITEMS_OFFSET,
+            equipped_items) ||
+        equipped_items.count < 1 || equipped_items.count > equipped_items.max ||
+        equipped_items.max > 32 ||
+        !is_readable_process_range(
+            equipped_items.data,
+            static_cast<size_t>(equipped_items.count) * sizeof(DaysGoneWeakObjectPtr))) {
+        return nullptr;
+    }
+
+    for (int32_t i = 0; i < equipped_items.count; ++i) {
+        DaysGoneWeakObjectPtr weak{};
+        if (!read_process_value(
+                equipped_items.data + static_cast<uintptr_t>(i) * sizeof(weak),
+                weak)) {
+            continue;
+        }
+
+        auto* const weapon = resolve_daysgone_weak_object(weak);
+        if (is_daysgone_player_weapon(weapon, pawn)) {
+            return weapon;
+        }
+    }
+
+    return nullptr;
+}
+
+static bool validate_daysgone_weapon_aim_trace_helper(uintptr_t candidate) {
+    if (!is_daysgone_executable() || !is_executable_process_address(candidate) ||
+        utility::get_module_within(candidate).value_or(nullptr) != utility::get_executable()) {
+        return false;
+    }
+
+    // Shared BendWeapon trace helper: preserve R9/R8, save the nonvolatile
+    // registers, then consume endpoint.xyz and start.xyz. This exact ABI is
+    // common to the base weapon and projectile weapon overrides.
+    constexpr std::array<uint8_t, 47> expected_prologue{
+        0x4C, 0x89, 0x4C, 0x24, 0x20,
+        0x4C, 0x89, 0x44, 0x24, 0x18,
+        0x53, 0x55, 0x56, 0x57,
+        0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
+        0x48, 0x83, 0xEC, 0x78,
+        0x4C, 0x8B, 0xFA,
+        0xF2, 0x41, 0x0F, 0x10, 0x11,
+        0x45, 0x8B, 0x51, 0x08,
+        0xF2, 0x41, 0x0F, 0x10, 0x08,
+        0x41, 0x8B, 0x40, 0x08
+    };
+
+    return is_readable_process_range(candidate, expected_prologue.size()) &&
+        std::memcmp(
+            reinterpret_cast<const void*>(candidate),
+            expected_prologue.data(),
+            expected_prologue.size()) == 0;
+}
+
+static bool validate_daysgone_weapon_aim_trace_update(uintptr_t candidate, uintptr_t& trace_hook_point) {
+    trace_hook_point = 0;
+
+    if (!is_daysgone_executable() || !is_executable_process_address(candidate) ||
+        utility::get_module_within(candidate).value_or(nullptr) != utility::get_executable()) {
+        return false;
+    }
+
+    uint32_t matches = 0;
+    bool saw_return = false;
+    for (uintptr_t ip = candidate; ip < candidate + 0x1200;) {
+        if (!is_readable_process_range(ip, 16)) {
+            return false;
+        }
+
+        const auto decoded = utility::decode_one(reinterpret_cast<uint8_t*>(ip));
+        if (!decoded || decoded->Length == 0) {
+            return false;
+        }
+
+        const std::string_view mnemonic{decoded->Mnemonic};
+        if (decoded->InstructionBytes[0] == 0xE8) {
+            if (const auto target = utility::resolve_displacement(ip, &*decoded);
+                target && validate_daysgone_weapon_aim_trace_helper(*target)) {
+                trace_hook_point = *target;
+                ++matches;
+            }
+        }
+
+        if (mnemonic.starts_with("RET")) {
+            saw_return = true;
+            break;
+        }
+
+        ip += decoded->Length;
+    }
+
+    return saw_return && matches == 1 && trace_hook_point != 0;
+}
+
+static void* resolve_daysgone_active_reticle_root(
+    uintptr_t controller,
+    const char*& reticle_name) {
+    reticle_name = nullptr;
+
+    uintptr_t hud{};
+    uintptr_t slate_hud{};
+    uintptr_t hud_widget{};
+    uintptr_t reticles{};
+    if (!read_process_value(controller + DAYS_GONE_PLAYER_CONTROLLER_HUD_OFFSET, hud) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(hud)) ||
+        !read_process_value(hud + DAYS_GONE_BEND_HUD_SLATE_HUD_OFFSET, slate_hud) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(slate_hud)) ||
+        !read_process_value(slate_hud + DAYS_GONE_SLATE_HUD_WIDGET_OFFSET, hud_widget) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(hud_widget)) ||
+        !read_process_value(hud_widget + DAYS_GONE_HUD_WIDGET_RETICLES_OFFSET, reticles) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(reticles))) {
+        return nullptr;
+    }
+
+    uint8_t is_aiming{};
+    uint8_t reticle_hidden{};
+    if (!read_process_value(reticles + DAYS_GONE_RETICLES_IS_AIMING_OFFSET, is_aiming) ||
+        !read_process_value(reticles + DAYS_GONE_RETICLES_HIDDEN_OFFSET, reticle_hidden) ||
+        is_aiming == 0 || reticle_hidden != 0) {
+        return nullptr;
+    }
+
+    const DaysGoneReticleDescriptor* visible_descriptor{};
+    uintptr_t visible_reticle{};
+    uint32_t visible_count{};
+    for (const auto& descriptor : DAYS_GONE_RETICLE_DESCRIPTORS) {
+        uintptr_t child{};
+        uint8_t visibility{};
+        if (!read_process_value(reticles + descriptor.child_offset, child) ||
+            !is_live_daysgone_object(reinterpret_cast<void*>(child)) ||
+            !read_process_value(child + DAYS_GONE_WIDGET_VISIBILITY_OFFSET, visibility) ||
+            visibility > 4) {
+            continue;
+        }
+
+        // Visible, HitTestInvisible, and SelfHitTestInvisible all draw.
+        if (visibility == 0 || visibility == 3 || visibility == 4) {
+            visible_descriptor = &descriptor;
+            visible_reticle = child;
+            ++visible_count;
+        }
+    }
+
+    // Scope is a full-screen overlay. Never reposition it or an ambiguous
+    // transition where more than one weapon reticle is visible.
+    if (visible_count != 1 || visible_descriptor == nullptr || visible_descriptor->is_scope) {
+        return nullptr;
+    }
+
+    reticle_name = visible_descriptor->name;
+    return reinterpret_cast<void*>(visible_reticle);
+}
+
+static void* resolve_daysgone_centered_reticle_slot(
+    void* root_reticle,
+    DaysGoneAnchorData& layout) {
+    if (!is_live_daysgone_object(root_reticle)) {
+        return nullptr;
+    }
+
+    uintptr_t slot{};
+    uintptr_t parent{};
+    uintptr_t content{};
+    uint8_t auto_size{};
+    if (!read_process_value(
+            reinterpret_cast<uintptr_t>(root_reticle) + DAYS_GONE_WIDGET_SLOT_OFFSET,
+            slot) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(slot)) ||
+        !read_process_value(slot + DAYS_GONE_PANEL_SLOT_PARENT_OFFSET, parent) ||
+        !is_live_daysgone_object(reinterpret_cast<void*>(parent)) ||
+        !read_process_value(slot + DAYS_GONE_PANEL_SLOT_CONTENT_OFFSET, content) ||
+        content != reinterpret_cast<uintptr_t>(root_reticle) ||
+        !read_process_value(slot + DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET, layout) ||
+        !read_process_value(slot + DAYS_GONE_CANVAS_SLOT_AUTO_SIZE_OFFSET, auto_size) ||
+        auto_size != 0) {
+        return nullptr;
+    }
+
+    const auto nearly_equal = [](float value, float expected, float tolerance = 0.01f) {
+        return std::isfinite(value) && std::abs(value - expected) <= tolerance;
+    };
+
+    if (!nearly_equal(layout.anchors.minimum.x, 0.5f) ||
+        !nearly_equal(layout.anchors.minimum.y, 0.5f) ||
+        !nearly_equal(layout.anchors.maximum.x, 0.5f) ||
+        !nearly_equal(layout.anchors.maximum.y, 0.5f) ||
+        !nearly_equal(layout.alignment.x, 0.5f) ||
+        !nearly_equal(layout.alignment.y, 0.5f) ||
+        !nearly_equal(layout.offsets.right, DAYS_GONE_RETICLE_SLOT_SIZE, 1.0f) ||
+        !nearly_equal(layout.offsets.bottom, DAYS_GONE_RETICLE_SLOT_SIZE, 1.0f) ||
+        !std::isfinite(layout.offsets.left) || !std::isfinite(layout.offsets.top) ||
+        std::abs(layout.offsets.left) > DAYS_GONE_HUD_DESIGN_WIDTH ||
+        std::abs(layout.offsets.top) > DAYS_GONE_HUD_DESIGN_HEIGHT) {
+        return nullptr;
+    }
+
+    DaysGoneArray parent_slots{};
+    if (!read_process_value(parent + DAYS_GONE_PANEL_WIDGET_SLOTS_OFFSET, parent_slots) ||
+        parent_slots.count < 1 || parent_slots.count > parent_slots.max ||
+        parent_slots.max > 128 ||
+        !is_readable_process_range(
+            parent_slots.data,
+            static_cast<size_t>(parent_slots.count) * sizeof(uintptr_t))) {
+        return nullptr;
+    }
+
+    bool found_slot = false;
+    for (int32_t i = 0; i < parent_slots.count; ++i) {
+        uintptr_t candidate{};
+        if (read_process_value(
+                parent_slots.data + static_cast<uintptr_t>(i) * sizeof(uintptr_t),
+                candidate) && candidate == slot) {
+            found_slot = true;
+            break;
+        }
+    }
+
+    return found_slot ? reinterpret_cast<void*>(slot) : nullptr;
+}
+
+static bool set_daysgone_canvas_slot_position(void* slot, const DaysGoneVec2& position) try {
+    if (!is_live_daysgone_object(slot) ||
+        !std::isfinite(position.x) || !std::isfinite(position.y)) {
+        return false;
+    }
+
+    struct Params {
+        DaysGoneVec2 position{};
+    } params{position};
+
+    reinterpret_cast<sdk::UObjectBase*>(slot)->call_function(L"SetPosition", &params);
+
+    DaysGoneAnchorData updated{};
+    return read_process_value(
+               reinterpret_cast<uintptr_t>(slot) + DAYS_GONE_CANVAS_SLOT_LAYOUT_OFFSET,
+               updated) &&
+        std::isfinite(updated.offsets.left) && std::isfinite(updated.offsets.top) &&
+        std::abs(updated.offsets.left - position.x) <= 0.5f &&
+        std::abs(updated.offsets.top - position.y) <= 0.5f;
+} catch (...) {
+    return false;
+}
+
+static bool project_daysgone_endpoint_to_hud(
+    uintptr_t controller,
+    const DaysGoneVector& endpoint,
+    DaysGoneVec2& centered_position) try {
+    if (!is_live_daysgone_object(reinterpret_cast<void*>(controller)) ||
+        !std::isfinite(endpoint.x) || !std::isfinite(endpoint.y) || !std::isfinite(endpoint.z)) {
+        return false;
+    }
+
+    auto* const controller_object = reinterpret_cast<sdk::UObjectBase*>(controller);
+    DaysGoneProjectWorldToScreenParams projection{};
+    projection.world_location = endpoint;
+    controller_object->call_function(L"ProjectWorldLocationToScreen", &projection);
+
+    DaysGoneGetViewportSizeParams viewport{};
+    controller_object->call_function(L"GetViewportSize", &viewport);
+
+    if (projection.return_value == 0 || viewport.size_x < 640 || viewport.size_x > 16384 ||
+        viewport.size_y < 360 || viewport.size_y > 16384 ||
+        !std::isfinite(projection.screen_location.x) ||
+        !std::isfinite(projection.screen_location.y)) {
+        return false;
+    }
+
+    const auto normalized_x =
+        projection.screen_location.x / static_cast<float>(viewport.size_x) - 0.5f;
+    const auto normalized_y =
+        projection.screen_location.y / static_cast<float>(viewport.size_y) - 0.5f;
+    if (!std::isfinite(normalized_x) || !std::isfinite(normalized_y) ||
+        std::abs(normalized_x) > DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET ||
+        std::abs(normalized_y) > DAYS_GONE_RETICLE_MAX_NORMALIZED_OFFSET) {
+        return false;
+    }
+
+    centered_position.x = normalized_x * DAYS_GONE_HUD_DESIGN_WIDTH;
+    centered_position.y = normalized_y * DAYS_GONE_HUD_DESIGN_HEIGHT;
+    return std::isfinite(centered_position.x) && std::isfinite(centered_position.y);
+} catch (...) {
+    return false;
+}
+
 template <typename T>
 bool can_write(T* ptr) {
     return ptr != nullptr && is_writable_process_range((uintptr_t)ptr, sizeof(T));
@@ -780,6 +1328,7 @@ IXRTrackingSystemHook::IXRTrackingSystemHook(FFakeStereoRenderingHook* stereo_ho
 }
 
 void IXRTrackingSystemHook::pre_initialize() {
+    if (sdk::get_engine_version().is_unvalidated_ue6()) { return; }
     SPDLOG_INFO("IXRTrackingSystemHook::pre_initialize");
 
     for (auto i = 0; i < m_xrtracking_vtable.size(); ++i) {
@@ -814,25 +1363,579 @@ void IXRTrackingSystemHook::pre_initialize() {
 
     // GetSystemName
     m_xrtracking_vtable[0] = (uintptr_t)+[](void* this_ptr, sdk::FName* out) -> sdk::FName* {
-        static sdk::FName fake_name{};
+        static sdk::OwnedFName fake_name{};
         return &fake_name;
     };
 
-    const auto& version = sdk::get_engine_version();
-    m_is_4_26 = version.is(4, 26);
-    m_is_leq_4_25 = version.major == 4 && version.minor <= 25;
-    m_is_leq_4_17 = version.major == 4 && version.minor <= 17;
+    const auto version = sdk::get_file_version_info();
+    const auto str_version = utility::narrow(sdk::search_for_version(utility::get_executable()).value_or(L"0.00"));
 
-    if (m_is_leq_4_25) {
-        SPDLOG_INFO("IXRTrackingSystemHook::IXRTrackingSystemHook: version <= 4.25");
+    try {
+        const auto first_half = std::stoi(str_version.substr(0, str_version.find('.')));
+        const auto second_half = std::stoi(str_version.substr(str_version.find('.') + 1, str_version.size() - 1));
+
+        if (first_half == 4 && second_half == 26) {
+            m_is_4_26 = true;
+        }
+
+        if (first_half == 4 && second_half <= 25) {
+            SPDLOG_INFO("IXRTrackingSystemHook::IXRTrackingSystemHook: version <= 4.25");
+            m_is_leq_4_25 = true;
+        }
+
+        if (first_half == 4 && second_half <= 17) {
+            SPDLOG_INFO("IXRTrackingSystemHook::IXRTrackingSystemHook: version <= 4.17");
+            m_is_leq_4_17 = true;
+        }
+    } catch(...) {
+        SPDLOG_ERROR("IXRTrackingSystemHook::IXRTrackingSystemHook: failed to convert second half of version string to number");
     }
 
-    if (m_is_leq_4_17) {
+    if (!m_is_leq_4_25 && version.dwFileVersionMS >= 0x40000 && version.dwFileVersionMS <= 0x40019) {
+        SPDLOG_INFO("IXRTrackingSystemHook::IXRTrackingSystemHook: version <= 4.25");
+        m_is_leq_4_25 = true;
+    }
+
+    if (!m_is_leq_4_17 && version.dwFileVersionMS >= 0x40000 && version.dwFileVersionMS <= 0x40011) {
         SPDLOG_INFO("IXRTrackingSystemHook::IXRTrackingSystemHook: version <= 4.17");
+        m_is_leq_4_17 = true;
     }
 }
 
 void IXRTrackingSystemHook::on_draw_ui() {
+}
+
+bool IXRTrackingSystemHook::try_install_daysgone_weapon_aim_bridge(void* weapon) {
+    if (!is_daysgone_executable() || weapon == nullptr || !detail::is_live_daysgone_object(weapon)) {
+        return false;
+    }
+
+    if (m_daysgone_weapon_aim_trace_hook) {
+        return validate_daysgone_weapon_object(weapon);
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < m_daysgone_weapon_aim_next_retry) {
+        return false;
+    }
+    m_daysgone_weapon_aim_next_retry = now + std::chrono::seconds(1);
+
+    uintptr_t vtable{};
+    if (!detail::read_process_value(reinterpret_cast<uintptr_t>(weapon), vtable) ||
+        !detail::is_readable_process_range(
+            vtable,
+            (detail::DAYS_GONE_WEAPON_AIM_TRACE_VTABLE_INDEX + 1) * sizeof(void*))) {
+        return false;
+    }
+
+    if (vtable == m_daysgone_rejected_weapon_vtable) {
+        return false;
+    }
+
+    uintptr_t candidate{};
+    uintptr_t trace_hook_point{};
+    if (!detail::read_process_value(
+            vtable + detail::DAYS_GONE_WEAPON_AIM_TRACE_VTABLE_INDEX * sizeof(void*),
+            candidate) ||
+        !detail::validate_daysgone_weapon_aim_trace_update(candidate, trace_hook_point)) {
+        m_daysgone_rejected_weapon_vtable = vtable;
+        SPDLOG_ERROR_ONCE(
+            "[DaysGone][WeaponAim] Rejected the equipped item's vtable slot 0x750 trace topology; preserving native game aim");
+        return false;
+    }
+
+    m_daysgone_weapon_aim_trace_hook = safetyhook::create_mid(
+        reinterpret_cast<void*>(trace_hook_point),
+        &IXRTrackingSystemHook::daysgone_weapon_aim_trace);
+    if (!m_daysgone_weapon_aim_trace_hook) {
+        SPDLOG_ERROR_EVERY_N_SEC(
+            2,
+            "[DaysGone][WeaponAim] Failed to hook validated BendWeapon aiming trace at 0x{:x}",
+            trace_hook_point);
+        return false;
+    }
+
+    m_daysgone_weapon_aim_trace_update = candidate;
+    SPDLOG_INFO(
+        "[DaysGone][WeaponAim] Hooked validated BendWeapon aiming trace at 0x{:x} "
+        "(update=0x{:x}, vtable slot 0x750)",
+        trace_hook_point,
+        candidate);
+    return true;
+}
+
+bool IXRTrackingSystemHook::validate_daysgone_weapon_object(void* weapon) const {
+    if (!is_daysgone_executable() || weapon == nullptr || m_daysgone_weapon_aim_trace_update == 0 ||
+        !detail::is_live_daysgone_object(weapon)) {
+        return false;
+    }
+
+    uintptr_t vtable{};
+    uintptr_t candidate{};
+    return detail::read_process_value(reinterpret_cast<uintptr_t>(weapon), vtable) &&
+        detail::is_readable_process_range(
+            vtable,
+            (detail::DAYS_GONE_WEAPON_AIM_TRACE_VTABLE_INDEX + 1) * sizeof(void*)) &&
+        detail::read_process_value(
+            vtable + detail::DAYS_GONE_WEAPON_AIM_TRACE_VTABLE_INDEX * sizeof(void*),
+            candidate) &&
+        candidate == m_daysgone_weapon_aim_trace_update;
+}
+
+void IXRTrackingSystemHook::invalidate_daysgone_weapon_endpoint_sample() {
+    m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_weapon_endpoint_x.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_y.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_z.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_sample_time_ms.store(0, std::memory_order_relaxed);
+    m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_release);
+}
+
+void IXRTrackingSystemHook::invalidate_daysgone_weapon_aim_sample() {
+    m_daysgone_active_pawn.store(nullptr, std::memory_order_release);
+    m_daysgone_active_controller.store(nullptr, std::memory_order_release);
+    invalidate_daysgone_weapon_endpoint_sample();
+
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_desired_aim_x.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_desired_aim_y.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_desired_aim_z.store(0.0f, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sample_time_ms.store(0, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
+}
+
+bool IXRTrackingSystemHook::publish_daysgone_weapon_aim_sample() {
+    auto& vr = VR::get();
+    if (!is_daysgone_executable() || !vr->is_hmd_active() ||
+        !vr->is_any_aim_method_active() || vr->is_controller_camera_conflict_guard_active()) {
+        return false;
+    }
+
+    const auto aim_method = vr->get_aim_method();
+    const auto rotation_offset = vr->get_rotation_offset();
+    if (!detail::finite_quat(rotation_offset) || glm::dot(rotation_offset, rotation_offset) < 0.000001f) {
+        return false;
+    }
+
+    glm::vec3 tracking_direction{};
+    constexpr glm::vec3 openxr_forward{0.0f, 0.0f, -1.0f};
+
+    if (aim_method == VR::AimMethod::HEAD) {
+        const auto pose = glm::quat{vr->get_rotation(vr->get_hmd_index())};
+        if (!detail::finite_quat(pose) || glm::dot(pose, pose) < 0.000001f) {
+            return false;
+        }
+
+        tracking_direction = glm::normalize(rotation_offset) * (glm::normalize(pose) * openxr_forward);
+    } else if (aim_method == VR::AimMethod::RIGHT_CONTROLLER ||
+               aim_method == VR::AimMethod::LEFT_CONTROLLER) {
+        if (!vr->is_using_controllers()) {
+            return false;
+        }
+
+        const auto controller_index = aim_method == VR::AimMethod::RIGHT_CONTROLLER
+            ? vr->get_right_controller_index()
+            : vr->get_left_controller_index();
+        if (controller_index < 0) {
+            return false;
+        }
+
+        const auto pose = glm::quat{vr->get_aim_rotation(controller_index)};
+        if (!detail::finite_quat(pose) || glm::dot(pose, pose) < 0.000001f) {
+            return false;
+        }
+
+        tracking_direction = glm::normalize(rotation_offset) * (glm::normalize(pose) * openxr_forward);
+    } else if (aim_method == VR::AimMethod::TWO_HANDED_RIGHT ||
+               aim_method == VR::AimMethod::TWO_HANDED_LEFT) {
+        if (!vr->is_using_controllers()) {
+            return false;
+        }
+
+        const auto right_index = vr->get_right_controller_index();
+        const auto left_index = vr->get_left_controller_index();
+        if (right_index < 0 || left_index < 0) {
+            return false;
+        }
+
+        const auto right = glm::vec3{vr->get_aim_position(right_index)};
+        const auto left = glm::vec3{vr->get_aim_position(left_index)};
+        const auto raw_direction = aim_method == VR::AimMethod::TWO_HANDED_RIGHT
+            ? left - right
+            : right - left;
+        if (!detail::finite_vec3(raw_direction) || glm::dot(raw_direction, raw_direction) < 0.000001f) {
+            return false;
+        }
+
+        tracking_direction = glm::normalize(rotation_offset) * glm::normalize(raw_direction);
+    } else {
+        return false;
+    }
+
+    if (!detail::finite_vec3(tracking_direction) ||
+        glm::dot(tracking_direction, tracking_direction) < 0.000001f) {
+        return false;
+    }
+
+    const auto desired = glm::normalize(
+        utility::math::glm_to_ue4(glm::normalize(tracking_direction)));
+    if (!detail::finite_vec3(desired)) {
+        return false;
+    }
+
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_acq_rel);
+    m_daysgone_desired_aim_x.store(desired.x, std::memory_order_relaxed);
+    m_daysgone_desired_aim_y.store(desired.y, std::memory_order_relaxed);
+    m_daysgone_desired_aim_z.store(desired.z, std::memory_order_relaxed);
+    m_daysgone_desired_aim_sample_time_ms.store(
+        detail::steady_clock_milliseconds(),
+        std::memory_order_relaxed);
+    m_daysgone_desired_aim_sequence.fetch_add(1, std::memory_order_release);
+    return true;
+}
+
+void IXRTrackingSystemHook::restore_daysgone_reticle_alignment() {
+    auto* const root = m_daysgone_reticle_root;
+    auto* const slot = m_daysgone_reticle_slot;
+    if (root != nullptr && slot != nullptr && m_daysgone_reticle_original_captured) {
+        detail::DaysGoneAnchorData layout{};
+        auto* const validated_slot = detail::resolve_daysgone_centered_reticle_slot(root, layout);
+        if (validated_slot == slot) {
+            detail::set_daysgone_canvas_slot_position(slot, {
+                m_daysgone_reticle_original_x,
+                m_daysgone_reticle_original_y
+            });
+        }
+    }
+
+    m_daysgone_reticle_root = nullptr;
+    m_daysgone_reticle_slot = nullptr;
+    m_daysgone_reticle_original_x = 0.0f;
+    m_daysgone_reticle_original_y = 0.0f;
+    m_daysgone_reticle_original_captured = false;
+}
+
+void IXRTrackingSystemHook::update_daysgone_reticle_alignment() {
+    auto* const controller = m_daysgone_active_controller.load(std::memory_order_acquire);
+    if (!is_daysgone_native_aim_requested() || controller == nullptr ||
+        !detail::is_live_daysgone_object(controller)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    detail::DaysGoneVector endpoint{};
+    uint64_t sample_time{};
+    bool stable_sample = false;
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        const auto sequence_before =
+            m_daysgone_weapon_endpoint_sequence.load(std::memory_order_acquire);
+        if ((sequence_before & 1) != 0) {
+            continue;
+        }
+
+        endpoint.x = m_daysgone_weapon_endpoint_x.load(std::memory_order_relaxed);
+        endpoint.y = m_daysgone_weapon_endpoint_y.load(std::memory_order_relaxed);
+        endpoint.z = m_daysgone_weapon_endpoint_z.load(std::memory_order_relaxed);
+        sample_time = m_daysgone_weapon_endpoint_sample_time_ms.load(std::memory_order_relaxed);
+
+        const auto sequence_after =
+            m_daysgone_weapon_endpoint_sequence.load(std::memory_order_acquire);
+        if (sequence_before == sequence_after && (sequence_after & 1) == 0) {
+            stable_sample = true;
+            break;
+        }
+    }
+
+    const auto now_ms = detail::steady_clock_milliseconds();
+    if (!stable_sample || sample_time == 0 || now_ms < sample_time ||
+        now_ms - sample_time > detail::DAYS_GONE_AIM_SAMPLE_MAX_AGE_MS ||
+        !std::isfinite(endpoint.x) || !std::isfinite(endpoint.y) ||
+        !std::isfinite(endpoint.z)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    const char* reticle_name{};
+    auto* const root = detail::resolve_daysgone_active_reticle_root(
+        reinterpret_cast<uintptr_t>(controller),
+        reticle_name);
+    detail::DaysGoneAnchorData layout{};
+    auto* const slot = detail::resolve_daysgone_centered_reticle_slot(root, layout);
+    if (root == nullptr || slot == nullptr || reticle_name == nullptr) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    if (root != m_daysgone_reticle_root || slot != m_daysgone_reticle_slot) {
+        restore_daysgone_reticle_alignment();
+        m_daysgone_reticle_root = root;
+        m_daysgone_reticle_slot = slot;
+        m_daysgone_reticle_original_x = layout.offsets.left;
+        m_daysgone_reticle_original_y = layout.offsets.top;
+        m_daysgone_reticle_original_captured = true;
+        SPDLOG_INFO(
+            "[DaysGone][ReticleAim] Following validated {} root CanvasPanelSlot "
+            "root=0x{:x} slot=0x{:x} baseline=({:.1f},{:.1f})",
+            reticle_name,
+            reinterpret_cast<uintptr_t>(root),
+            reinterpret_cast<uintptr_t>(slot),
+            m_daysgone_reticle_original_x,
+            m_daysgone_reticle_original_y);
+    }
+
+    detail::DaysGoneVec2 projected{};
+    if (!detail::project_daysgone_endpoint_to_hud(
+            reinterpret_cast<uintptr_t>(controller), endpoint, projected)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    const detail::DaysGoneVec2 target{
+        m_daysgone_reticle_original_x + projected.x,
+        m_daysgone_reticle_original_y + projected.y
+    };
+    if (!std::isfinite(target.x) || !std::isfinite(target.y) ||
+        std::abs(target.x) > detail::DAYS_GONE_HUD_DESIGN_WIDTH ||
+        std::abs(target.y) > detail::DAYS_GONE_HUD_DESIGN_HEIGHT ||
+        !detail::set_daysgone_canvas_slot_position(slot, target)) {
+        restore_daysgone_reticle_alignment();
+        return;
+    }
+
+    if (now_ms >= m_daysgone_reticle_next_log_ms) {
+        m_daysgone_reticle_next_log_ms = now_ms + 2000;
+        SPDLOG_INFO(
+            "[DaysGone][ReticleAim] {} endpoint=[{:.1f},{:.1f},{:.1f}] slot=({:.1f},{:.1f})",
+            reticle_name,
+            endpoint.x,
+            endpoint.y,
+            endpoint.z,
+            target.x,
+            target.y);
+    }
+}
+
+void IXRTrackingSystemHook::update_daysgone_weapon_aim_bridge(sdk::UGameEngine* engine) {
+    const auto fail_open = [this]() {
+        invalidate_daysgone_weapon_aim_sample();
+        restore_daysgone_reticle_alignment();
+    };
+
+    if (!is_daysgone_native_aim_requested() || engine == nullptr || !VR::get()->is_hmd_active() ||
+        VR::get()->is_controller_camera_conflict_guard_active()) {
+        fail_open();
+        return;
+    }
+
+    uintptr_t game_instance{};
+    if (!detail::read_process_value(
+            reinterpret_cast<uintptr_t>(engine) + detail::DAYS_GONE_GAME_ENGINE_GAME_INSTANCE_OFFSET,
+            game_instance) ||
+        !detail::is_live_daysgone_object(reinterpret_cast<void*>(game_instance))) {
+        fail_open();
+        return;
+    }
+
+    detail::DaysGoneArray local_players{};
+    if (!detail::read_process_value(
+            game_instance + detail::DAYS_GONE_GAME_INSTANCE_LOCAL_PLAYERS_OFFSET,
+            local_players) ||
+        local_players.count < 1 || local_players.count > local_players.max || local_players.max > 8 ||
+        !detail::is_readable_process_range(local_players.data, sizeof(uintptr_t))) {
+        fail_open();
+        return;
+    }
+
+    uintptr_t local_player{};
+    uintptr_t controller{};
+    uintptr_t pawn{};
+    if (!detail::read_process_value(local_players.data, local_player) ||
+        !detail::is_live_daysgone_object(reinterpret_cast<void*>(local_player)) ||
+        !detail::read_process_value(
+            local_player + detail::DAYS_GONE_LOCAL_PLAYER_CONTROLLER_OFFSET,
+            controller) ||
+        !detail::is_live_daysgone_object(reinterpret_cast<void*>(controller)) ||
+        !detail::read_process_value(
+            controller + detail::DAYS_GONE_PLAYER_CONTROLLER_PAWN_OFFSET,
+            pawn) ||
+        !detail::is_live_daysgone_object(reinterpret_cast<void*>(pawn))) {
+        fail_open();
+        return;
+    }
+
+    uint8_t aim_stance{};
+    if (!detail::read_process_value(pawn + detail::DAYS_GONE_PAWN_AIM_STANCE_OFFSET, aim_stance) ||
+        (aim_stance != 1 && aim_stance != 2)) {
+        fail_open();
+        return;
+    }
+
+    if (!m_daysgone_weapon_aim_trace_hook) {
+        auto* const weapon = detail::resolve_daysgone_player_weapon(pawn);
+        if (weapon == nullptr ||
+            !try_install_daysgone_weapon_aim_bridge(weapon) ||
+            !validate_daysgone_weapon_object(weapon)) {
+            fail_open();
+            return;
+        }
+
+        SPDLOG_INFO(
+            "[DaysGone][WeaponAim] Installed from validated player weapon at 0x{:x}",
+            reinterpret_cast<uintptr_t>(weapon));
+    }
+
+    if (!publish_daysgone_weapon_aim_sample()) {
+        fail_open();
+        return;
+    }
+
+    // The trace hook publishes a fresh world endpoint during this engine tick.
+    // Never let the post-tick reticle update consume the prior frame.
+    invalidate_daysgone_weapon_endpoint_sample();
+
+    m_daysgone_active_pawn.store(reinterpret_cast<void*>(pawn), std::memory_order_release);
+    m_daysgone_active_controller.store(reinterpret_cast<void*>(controller), std::memory_order_release);
+}
+
+void IXRTrackingSystemHook::daysgone_weapon_aim_trace(safetyhook::Context& ctx) {
+    auto* const hook = g_hook;
+    if (hook == nullptr || !hook->m_daysgone_weapon_aim_trace_hook) {
+        return;
+    }
+
+    auto* const weapon = reinterpret_cast<void*>(ctx.rcx);
+    auto* const active_pawn = hook->m_daysgone_active_pawn.load(std::memory_order_acquire);
+    if (!is_daysgone_executable() || weapon == nullptr || active_pawn == nullptr ||
+        !detail::is_live_daysgone_object(active_pawn)) {
+        return;
+    }
+
+    uint8_t aim_stance{};
+    uint8_t owner_is_player{};
+    uintptr_t instigator{};
+    if (!detail::read_process_value(
+            reinterpret_cast<uintptr_t>(active_pawn) + detail::DAYS_GONE_PAWN_AIM_STANCE_OFFSET,
+            aim_stance) ||
+        (aim_stance != 1 && aim_stance != 2) ||
+        !detail::read_process_value(
+            reinterpret_cast<uintptr_t>(weapon) + detail::DAYS_GONE_WEAPON_OWNER_IS_PLAYER_OFFSET,
+            owner_is_player) ||
+        owner_is_player == 0 ||
+        !detail::read_process_value(
+            reinterpret_cast<uintptr_t>(weapon) + detail::DAYS_GONE_WEAPON_INSTIGATOR_OFFSET,
+            instigator) ||
+        instigator != reinterpret_cast<uintptr_t>(active_pawn)) {
+        return;
+    }
+
+    detail::DaysGoneVector desired{};
+    uint64_t sample_time{};
+    bool stable_sample = false;
+    for (uint32_t attempt = 0; attempt < 3; ++attempt) {
+        const auto sequence_before =
+            hook->m_daysgone_desired_aim_sequence.load(std::memory_order_acquire);
+        if ((sequence_before & 1) != 0) {
+            continue;
+        }
+
+        desired.x = hook->m_daysgone_desired_aim_x.load(std::memory_order_relaxed);
+        desired.y = hook->m_daysgone_desired_aim_y.load(std::memory_order_relaxed);
+        desired.z = hook->m_daysgone_desired_aim_z.load(std::memory_order_relaxed);
+        sample_time = hook->m_daysgone_desired_aim_sample_time_ms.load(std::memory_order_relaxed);
+
+        const auto sequence_after =
+            hook->m_daysgone_desired_aim_sequence.load(std::memory_order_acquire);
+        if (sequence_before == sequence_after && (sequence_after & 1) == 0) {
+            stable_sample = true;
+            break;
+        }
+    }
+
+    const auto now_ms = detail::steady_clock_milliseconds();
+    const auto desired_length_sq = desired.x * desired.x + desired.y * desired.y + desired.z * desired.z;
+    if (!stable_sample || sample_time == 0 || now_ms < sample_time ||
+        now_ms - sample_time > detail::DAYS_GONE_AIM_SAMPLE_MAX_AGE_MS ||
+        !std::isfinite(desired.x) || !std::isfinite(desired.y) || !std::isfinite(desired.z) ||
+        desired_length_sq < 0.98f || desired_length_sq > 1.02f) {
+        return;
+    }
+
+    auto* const trace_start = reinterpret_cast<detail::DaysGoneVector*>(ctx.r8);
+    auto* const trace_endpoint = reinterpret_cast<detail::DaysGoneVector*>(ctx.r9);
+    if (!detail::is_readable_process_range(reinterpret_cast<uintptr_t>(trace_start), sizeof(*trace_start)) ||
+        !detail::can_write(trace_endpoint)) {
+        return;
+    }
+
+    const auto start = glm::vec3{trace_start->x, trace_start->y, trace_start->z};
+    const auto native_endpoint = glm::vec3{trace_endpoint->x, trace_endpoint->y, trace_endpoint->z};
+    const auto native_delta = native_endpoint - start;
+    const auto native_distance_sq = glm::dot(native_delta, native_delta);
+    if (!detail::finite_vec3(start) || !detail::finite_vec3(native_endpoint) ||
+        !std::isfinite(native_distance_sq) || native_distance_sq < 1.0f || native_distance_sq > 1.0e12f) {
+        return;
+    }
+
+    const auto native_distance = std::sqrt(native_distance_sq);
+    const auto native_forward = native_delta / native_distance;
+    constexpr glm::vec3 world_up{0.0f, 0.0f, 1.0f};
+    const auto native_right_unnormalized = glm::cross(world_up, native_forward);
+    const auto native_right_length_sq = glm::dot(native_right_unnormalized, native_right_unnormalized);
+    if (!std::isfinite(native_right_length_sq) || native_right_length_sq < 0.0001f) {
+        return;
+    }
+
+    const auto native_right = native_right_unnormalized / std::sqrt(native_right_length_sq);
+    const auto native_up = glm::normalize(glm::cross(native_forward, native_right));
+    const auto local_direction = glm::vec3{desired.x, desired.y, desired.z};
+    const auto world_direction_unnormalized =
+        native_forward * local_direction.x +
+        native_right * local_direction.y +
+        native_up * local_direction.z;
+    const auto world_direction_length_sq = glm::dot(world_direction_unnormalized, world_direction_unnormalized);
+    if (!detail::finite_vec3(native_forward) || !detail::finite_vec3(native_right) ||
+        !detail::finite_vec3(native_up) || !detail::finite_vec3(world_direction_unnormalized) ||
+        !std::isfinite(world_direction_length_sq) || world_direction_length_sq < 0.98f ||
+        world_direction_length_sq > 1.02f) {
+        return;
+    }
+
+    const auto world_direction = world_direction_unnormalized / std::sqrt(world_direction_length_sq);
+    const auto rewritten_endpoint = start + world_direction * native_distance;
+    if (!detail::finite_vec3(rewritten_endpoint)) {
+        return;
+    }
+
+    trace_endpoint->x = rewritten_endpoint.x;
+    trace_endpoint->y = rewritten_endpoint.y;
+    trace_endpoint->z = rewritten_endpoint.z;
+
+    hook->m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_acq_rel);
+    hook->m_daysgone_weapon_endpoint_x.store(rewritten_endpoint.x, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_y.store(rewritten_endpoint.y, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_z.store(rewritten_endpoint.z, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_sample_time_ms.store(now_ms, std::memory_order_relaxed);
+    hook->m_daysgone_weapon_endpoint_sequence.fetch_add(1, std::memory_order_release);
+
+    auto next_log = hook->m_daysgone_aim_trace_next_log_ms.load(std::memory_order_relaxed);
+    if (now_ms >= next_log && hook->m_daysgone_aim_trace_next_log_ms.compare_exchange_strong(
+            next_log,
+            now_ms + 1000,
+            std::memory_order_relaxed)) {
+        SPDLOG_INFO(
+            "[DaysGone][WeaponAim] native=[{:.3f},{:.3f},{:.3f}] local=[{:.3f},{:.3f},{:.3f}] "
+            "world=[{:.3f},{:.3f},{:.3f}] distance={:.1f}",
+            native_forward.x,
+            native_forward.y,
+            native_forward.z,
+            desired.x,
+            desired.y,
+            desired.z,
+            world_direction.x,
+            world_direction.y,
+            world_direction.z,
+            native_distance);
+    }
 }
 
 void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
@@ -840,19 +1943,35 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     const auto direct_aim_compat_requested = is_direct_aim_compatibility_requested();
     const auto direct_aim_compat_active = is_direct_aim_compatibility_active();
     const auto deadzone_direct_aim = is_deadzone_ue56_executable();
-    const auto daysgone_controller_aim = is_daysgone_controller_aim_requested();
     const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
     const auto suppress_legacy_fake_hmd_for_aim = legacy_ue4_direct_aim && vr->is_any_aim_method_active();
+
+    if (is_daysgone_executable()) {
+        if (!is_daysgone_native_aim_requested()) {
+            invalidate_daysgone_weapon_aim_sample();
+        } else if (vr->is_controller_camera_conflict_guard_active()) {
+            invalidate_daysgone_weapon_aim_sample();
+            SPDLOG_WARN_ONCE(
+                "[DaysGone][WeaponAim] Preserving native game aim because Controller-Camera Conflict Guard is active");
+            return;
+        } else if (vr->is_controller_aim_enabled() && !vr->is_using_controllers()) {
+            invalidate_daysgone_weapon_aim_sample();
+            SPDLOG_WARN_ONCE(
+                "[DaysGone][WeaponAim] Waiting for motion-controller tracking without changing the configured aim method");
+            return;
+        } else {
+            update_daysgone_weapon_aim_bridge(engine);
+            // Days Gone non-game aim is owned by the weapon bridge. Do not also
+            // mutate camera, ControlRotation, world scale, or the fake HMD path.
+            return;
+        }
+    }
 
     if (direct_aim_compat_requested && vr->is_any_aim_method_active()) {
         const auto aim_method = vr->get_aim_method();
 
         if (legacy_ue4_direct_aim && vr->is_controller_camera_conflict_guard_active()) {
             SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Direct aim is blocked by Controller-Camera Conflict Guard; legacy fake HMD remains disabled");
-        } else if (daysgone_controller_aim && vr->is_controller_camera_conflict_guard_active()) {
-            SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because Controller-Camera Conflict Guard blocks the safe direct controller-aim path");
-            vr->set_aim_method(VR::AimMethod::GAME);
-            return;
         } else if (aim_method == VR::AimMethod::HEAD) {
             if (legacy_ue4_direct_aim) {
                 SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct HMD aim without installing the legacy fake IHeadMountedDisplay");
@@ -864,8 +1983,6 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         } else if (!vr->is_controller_aim_enabled() || !vr->is_using_controllers()) {
             if (legacy_ue4_direct_aim && vr->is_controller_aim_enabled()) {
                 SPDLOG_WARNING_EVERY_N_SEC(2, "[UE4.14-4.17][Aim] Waiting for motion-controller tracking; legacy fake HMD remains disabled");
-            } else if (daysgone_controller_aim) {
-                SPDLOG_WARN_ONCE("[DaysGone][Aim] Falling back to game aim because controller tracking is not actively available");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Falling back to game aim because controller aim is not actively available");
             } else {
@@ -878,8 +1995,6 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
         } else {
             if (legacy_ue4_direct_aim) {
                 SPDLOG_WARN_ONCE("[UE4.14-4.17][Aim] Using direct controller aim without installing the legacy fake IHeadMountedDisplay");
-            } else if (daysgone_controller_aim) {
-                SPDLOG_WARN_ONCE("[DaysGone][Aim] Using direct controller-aim fallback; skipping legacy UE4.11 HMD/ProcessViewRotation controller aim hooks");
             } else if (deadzone_direct_aim) {
                 SPDLOG_WARN_ONCE("[Deadzone][Aim] Allowing experimental controller aim on UE5.6; XR camera path remains disabled");
             } else {
@@ -899,8 +2014,6 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
     if (direct_aim_compat_active) {
         if (legacy_ue4_direct_aim) {
             SPDLOG_INFO_ONCE("[UE4.14-4.17][Aim] Driving guarded direct control-rotation updates");
-        } else if (daysgone_controller_aim) {
-            SPDLOG_INFO_ONCE("[DaysGone][Aim] Driving Days Gone controller aim through direct control rotation updates");
         } else if (deadzone_direct_aim) {
             SPDLOG_INFO_ONCE("[Deadzone][Aim] Driving Deadzone direct aim through control rotation updates");
         } else {
@@ -931,6 +2044,16 @@ void IXRTrackingSystemHook::on_pre_engine_tick(sdk::UGameEngine* engine, float d
 }
 
 void IXRTrackingSystemHook::on_post_engine_tick(sdk::UGameEngine* engine, float delta) {
+    if (is_daysgone_executable()) {
+        if (is_daysgone_native_aim_requested() &&
+            !VR::get()->is_controller_camera_conflict_guard_active()) {
+            update_daysgone_reticle_alignment();
+        } else {
+            restore_daysgone_reticle_alignment();
+        }
+        return;
+    }
+
     if (VR::get()->is_controller_camera_conflict_guard_active()) {
         return;
     }
@@ -1326,6 +2449,10 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_stereo_rendering_de
 }
 
 void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* engine_override) {
+    if (is_daysgone_executable()) {
+        return;
+    }
+
     if (VR::get()->is_controller_camera_conflict_guard_active()) {
         return;
     }
@@ -1336,9 +2463,8 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
     }
 
     const auto legacy_ue4_direct_aim = is_ue4_14_through_4_17();
-    const auto daysgone_aim_guard = is_daysgone_executable();
-    const auto guarded_legacy_aim = legacy_ue4_direct_aim || daysgone_aim_guard;
-    const auto guarded_aim_name = daysgone_aim_guard ? "DaysGone" : "UE4.14-4.17";
+    const auto guarded_legacy_aim = legacy_ue4_direct_aim;
+    constexpr auto guarded_aim_name = "UE4.14-4.17";
 
     if (guarded_legacy_aim) {
         const auto& vr = VR::get();
@@ -1481,6 +2607,7 @@ void IXRTrackingSystemHook::manual_update_control_rotation(sdk::UGameEngine* eng
 }
 
 bool IXRTrackingSystemHook::analyze_head_tracking_allowed(uintptr_t return_address) {
+    if (uevr::nascar::is_target()) { return true; }
     ++detail::total_times_funcs_called;
 
     std::scoped_lock _{detail::return_address_to_functions_mutex};
@@ -1578,6 +2705,10 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed(sdk::IXRTrackingSystem*) {
 
     auto& vr = VR::get();
 
+    if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
+        return false;
+    }
+
     if (is_direct_aim_compatibility_active()) {
         return false;
     }
@@ -1671,6 +2802,10 @@ bool IXRTrackingSystemHook::is_head_tracking_allowed_for_world(sdk::IXRTrackingS
     SPDLOG_INFO_ONCE("is_head_tracking_allowed_for_world {:x}", (uintptr_t)_ReturnAddress());
 
     auto& vr = VR::get();
+
+    if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
+        return false;
+    }
 
     if (is_direct_aim_compatibility_active()) {
         return false;
@@ -2346,6 +3481,10 @@ IXRTrackingSystemHook::SharedPtr* IXRTrackingSystemHook::get_view_extension(sdk:
 void IXRTrackingSystemHook::apply_hmd_rotation(sdk::IXRCamera*, sdk::APlayerController* player_controller, Rotator<float>* rot) {
     SPDLOG_INFO_ONCE("apply_hmd_rotation {:x}", (uintptr_t)_ReturnAddress());
 
+    if (is_daysgone_executable() && VR::get()->is_any_aim_method_active()) {
+        return;
+    }
+
     if (VR::get()->is_hmd_active() && !g_hook->m_process_view_rotation_hook && !g_hook->m_attempted_hook_view_rotation) {
         const auto return_address = (uintptr_t)_ReturnAddress();
         ++detail::total_times_funcs_called;
@@ -2394,6 +3533,10 @@ void IXRTrackingSystemHook::apply_hmd_rotation(sdk::IXRCamera*, sdk::APlayerCont
 bool IXRTrackingSystemHook::update_player_camera(sdk::IXRCamera*, Quat<float>* rel_rot, glm::vec3* rel_pos) {
     SPDLOG_INFO_ONCE("update_player_camera {:x}", (uintptr_t)_ReturnAddress());
 
+    if (is_daysgone_executable() && VR::get()->is_any_aim_method_active()) {
+        return false;
+    }
+
     if (VR::get()->is_hmd_active() && !g_hook->m_process_view_rotation_hook && !g_hook->m_attempted_hook_view_rotation) {
         ++detail::total_times_funcs_called;
 
@@ -2420,7 +3563,7 @@ bool IXRTrackingSystemHook::update_player_camera(sdk::IXRCamera*, Quat<float>* r
         }
     }
 
-    if (!g_hook->m_relative_transform_corrected) {
+    if (!uevr::nascar::is_target() && !g_hook->m_relative_transform_corrected) {
         g_hook->m_relative_transform_corrected = true;
 
         const auto return_address = (uintptr_t)_ReturnAddress();
@@ -2515,6 +3658,11 @@ void IXRTrackingSystemHook::process_view_rotation(
 
     auto& vr = VR::get();
 
+    if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
+        call_orig();
+        return;
+    }
+
     if (!vr->is_hmd_active() || !vr->is_any_aim_method_active()) {
         call_orig();
         return;
@@ -2555,6 +3703,10 @@ void IXRTrackingSystemHook::pre_update_view_rotation(sdk::UObject* reference_obj
 
 void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Rotator<float>* rot) {
     auto& vr = VR::get();
+
+    if (is_daysgone_executable() && vr->is_any_aim_method_active()) {
+        return;
+    }
 
     // Double check that the player controller passed through here is the local player controller
     static bool had_detection_error = false;
@@ -2660,9 +3812,7 @@ void IXRTrackingSystemHook::update_view_rotation(sdk::UObject* reference_obj, Ro
 
         if (aim_type == VR::AimMethod::RIGHT_CONTROLLER || aim_type == VR::AimMethod::LEFT_CONTROLLER) {
             const auto controller_index = aim_type == VR::AimMethod::RIGHT_CONTROLLER ? vr->get_right_controller_index() : vr->get_left_controller_index();
-            og_controller_rot = aim_type == VR::AimMethod::RIGHT_CONTROLLER
-                ? glm::quat{vr->get_controller_rotation_with_offset(VRRuntime::Hand::RIGHT)}
-                : glm::quat{vr->get_controller_rotation_with_offset(VRRuntime::Hand::LEFT)};
+            og_controller_rot = glm::quat{vr->get_aim_rotation(controller_index)};
             og_controller_pos = glm::vec3{vr->get_aim_position(controller_index)};
             right_controller_forward = og_controller_rot * glm::vec3{0.0f, 0.0f, 1.0f};
         } else if (aim_type == VR::AimMethod::TWO_HANDED_RIGHT) { // two handed modes are for imitating rifle aiming

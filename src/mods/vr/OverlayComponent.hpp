@@ -5,6 +5,11 @@
 #include <cstdint>
 #include <algorithm>
 #include <chrono>
+#include <atomic>
+#include <array>
+#include "UIAlphaPolicy.hpp"
+#include "UICompositionPolicy.hpp"
+#include <mutex>
 
 #include "Mod.hpp"
 
@@ -61,6 +66,23 @@ public:
 
     float get_ui_invert_alpha() const {
         return std::clamp(m_ui_invert_alpha->value(), 0.0f, 1.0f);
+    }
+
+    uevr::ui_alpha::Mode get_ui_alpha_mode(bool framework = false) const {
+        return m_ui_alpha_modes[framework ? 1 : 0].load(std::memory_order_relaxed);
+    }
+    void set_ui_alpha_status(bool framework, uevr::ui_alpha::Status status) {
+        m_ui_alpha_status[framework ? 1 : 0].store(status, std::memory_order_relaxed);
+        if (status == uevr::ui_alpha::Status::off || status == uevr::ui_alpha::Status::unsupported) {
+            m_ui_alpha_layers[framework ? 1 : 0].store(0, std::memory_order_relaxed);
+        }
+    }
+    void observe_ui_alpha_layer(bool framework, XrCompositionLayerFlags original, XrCompositionLayerFlags submitted);
+    void set_ui_alpha_sample(bool framework, const uevr::ui_alpha::Sample& sample);
+
+    uint64_t get_ui_composition_request() const { return m_ui_composition_request.load(std::memory_order_relaxed); }
+    void set_ui_composition_status(uevr::ui_composition::Status status) {
+        m_ui_composition_status.store(status, std::memory_order_relaxed);
     }
 
 private:
@@ -124,6 +146,25 @@ private:
     const ModSlider::Ptr m_slate_cylinder_angle{ ModSlider::create("UI_Cylinder_Angle", 0.0f, 360.0f, 90.0f) };
     const ModToggle::Ptr m_ui_follows_view{ ModToggle::create("UI_FollowView", false) };
     const ModSlider::Ptr m_ui_invert_alpha{ ModSlider::create("UI_InvertAlpha", 0.0f, 1.0f, 0.01f) };
+    const ModCombo::Ptr m_game_ui_alpha{ModCombo::create("UI_AlphaMode_MonoDIBR",
+        {"Unchanged", "Inspect only (no visual change)", "Straight RGB -> premultiplied", "Encoded-premultiplied -> linear-premultiplied"})};
+    const ModCombo::Ptr m_imgui_alpha{ModCombo::create("UI_Framework_AlphaMode_MonoDIBR",
+        {"Unchanged", "Inspect only (no visual change)", "Straight RGB -> premultiplied", "Encoded-premultiplied -> linear-premultiplied"})};
+    std::array<std::atomic<uevr::ui_alpha::Mode>, 2> m_ui_alpha_modes{};
+    std::array<std::atomic<uevr::ui_alpha::Status>, 2> m_ui_alpha_status{};
+    std::array<std::atomic<uint8_t>, 2> m_ui_alpha_layers{};
+    std::mutex m_ui_alpha_sample_mutex;
+    std::array<uevr::ui_alpha::Sample, 2> m_ui_alpha_samples{};
+
+    const ModCombo::Ptr m_ui_composition{ModCombo::create("UI_PerEyeComposition_MonoDIBR",
+        {"Runtime layers (default)", "Per-eye projection (experimental)"})};
+    std::atomic<uint64_t> m_ui_composition_request{};
+    std::atomic<uevr::ui_composition::Status> m_ui_composition_status{};
+    void publish_ui_composition(bool enabled) {
+        auto old = m_ui_composition_request.load(std::memory_order_relaxed);
+        while (!m_ui_composition_request.compare_exchange_weak(old, ((old & ~uint64_t{1}) + 2) | (enabled ? 1 : 0),
+            std::memory_order_relaxed)) {}
+    }
 
     const ModSlider::Ptr m_framework_distance{ ModSlider::create("UI_Framework_Distance", 0.5f, 10.0f, 1.75f) };
     const ModSlider::Ptr m_framework_size{ ModSlider::create("UI_Framework_Size", 0.5f, 10.0f, 2.0f) };
@@ -144,6 +185,9 @@ public:
             *m_slate_cylinder_angle,
             *m_ui_follows_view,
             *m_ui_invert_alpha,
+            *m_game_ui_alpha,
+            *m_imgui_alpha,
+            *m_ui_composition,
             *m_framework_distance,
             *m_framework_size,
             *m_framework_ui_follows_view,
@@ -165,18 +209,23 @@ private:
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_slate_quad(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
         std::optional<std::reference_wrapper<XrCompositionLayerCylinderKHR>> generate_slate_cylinder(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
         std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_slate_layer(
             runtimes::OpenXR::SwapchainIndex swapchain = runtimes::OpenXR::SwapchainIndex::UI, 
             XrEyeVisibility eye = XR_EYE_VISIBILITY_BOTH,
-            const UILayerPoseBasis* pose_basis = nullptr
+            const UILayerPoseBasis* pose_basis = nullptr,
+            bool force_stage_space = false
         );
+        std::optional<std::reference_wrapper<XrCompositionLayerBaseHeader>> generate_daysgone_ahud_slate_layer();
+        void reset_daysgone_ahud_pose();
         std::optional<std::reference_wrapper<XrCompositionLayerQuad>> generate_framework_ui_quad();
         
     private:
@@ -184,6 +233,7 @@ private:
         XrCompositionLayerQuad m_slate_layer_right{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder{};
         XrCompositionLayerCylinderKHR m_slate_layer_cylinder_right{};
+        UILayerPoseBasis m_daysgone_ahud_pose_basis{};
         XrCompositionLayerQuad m_framework_ui_layer{};
         OverlayComponent* m_parent{ nullptr };
         

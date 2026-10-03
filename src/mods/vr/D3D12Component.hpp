@@ -2,7 +2,10 @@
 
 #include <array>
 #include <span>
+#include <atomic>
 #include <chrono>
+#include <optional>
+#include <vector>
 
 #include <d3d12.h>
 #include <dxgi.h>
@@ -20,7 +23,11 @@
 #include <../../directxtk12-src/Inc/DescriptorHeap.h>
 
 #include "d3d12/CommandContext.hpp"
+#include "d3d12/DIBRPreview.hpp"
 #include "d3d12/TextureContext.hpp"
+#include "UIAlpha.hpp"
+#include "UIComposition.hpp"
+#include "Stalker2NativeD3D12.hpp"
 
 class VR;
 namespace render {
@@ -38,7 +45,8 @@ public:
 
     vr::EVRCompositorError on_frame(VR* vr);
     void on_post_present(VR* vr);
-    void on_reset(VR* vr);
+    void on_reset(VR* vr, bool mono_retired = false);
+    bool mono_consumers_retired();
 
     void force_reset() { m_force_reset = true; }
 
@@ -89,9 +97,24 @@ public:
 
     HitchFrameSnapshot get_hitch_frame_snapshot(VR* vr) const;
     bool has_game_and_ui_textures() const;
+    const char* get_dibr_preview_status() const { return m_dibr_slots[0].preview.status_name(); }
+    std::string get_dibr_preview_failure_reason() const { return m_dibr_slots[0].preview.failure_reason(); }
+    std::string get_dibr_preview_depth_trace_summary() const { return m_dibr_depth_capture.depth_trace_summary(); }
+
+    struct DIBRSingleViewReadiness {
+        uint64_t generation{};
+        uint32_t consecutive_ready_frames{};
+        uint32_t source_width{};
+        uint32_t source_height{};
+        bool preview_ready{};
+    };
+
+    DIBRSingleViewReadiness get_dibr_single_view_readiness() const;
 
 private:
     friend class render::FrameResourceInspector;
+    uint64_t m_mono_generation{};
+    bool m_mono_block_post_present{};
 
     bool setup();
     std::unique_ptr<DirectX::DX12::SpriteBatch> setup_sprite_batch_pso(
@@ -108,6 +131,7 @@ private:
         bool prefer_left_eye = false,
         bool source_is_single_eye = false,
         d3d12::TextureContext* ui_tex_override = nullptr);
+    bool carry_forward_spectator_backbuffer();
     bool ensure_ue58_spectator_texture(ID3D12Device* device, ID3D12Resource* source);
     void reset_ue58_converted_ui_textures(bool reset_sources = true);
     bool ensure_ue58_slate_ui_consumer_fence(ID3D12Device* device);
@@ -138,7 +162,22 @@ private:
         uint64_t frame_count,
         bool using_mono_expansion);
     bool ensure_shf_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    bool shf_scene_consumers_retired(bool include_stable_copy_producers);
     d3d12::TextureContext* render_shf_mono_scene_texture(ID3D12Device* device);
+    bool run_dibr_preview(
+        VR* vr,
+        ID3D12Device* device,
+        ID3D12Resource* scene_color,
+        D3D12_RESOURCE_STATES scene_color_state,
+        ID3D12Resource* scene_depth,
+        D3D12_RESOURCE_STATES scene_depth_state);
+    bool ensure_dibr_present_texture(d3d12::TextureContext& texture, ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
+    bool capture_dibr_ui_alpha_snapshot(
+        ID3D12Device* device,
+        d3d12::CommandContext& commands,
+        ID3D12Resource* submitted_ui_texture);
+    void reset_dibr_preview();
+    void note_dibr_single_view_preview_result(bool success, const D3D12_RESOURCE_DESC* source_desc = nullptr);
     bool ensure_dune_hmd_mono_scene_texture(ID3D12Device* device, const D3D12_RESOURCE_DESC& source_desc);
     d3d12::TextureContext* render_dune_hmd_mono_scene_texture(
         ID3D12Device* device,
@@ -175,6 +214,17 @@ private:
     void log_frame_timing_stats_if_needed(VR* vr);
     void log_openxr_swapchain_recreate(VR* vr, uint32_t reasons, uint32_t new_depth_width = 0, uint32_t new_depth_height = 0);
 
+    enum class DepthCandidateDecision {
+        Use,
+        Defer,
+        Reject,
+        ResizeReady,
+    };
+
+    void sync_depth_target_stability_guard_state(VR* vr);
+    void clear_depth_target_stability_candidates(bool clear_stable);
+    DepthCandidateDecision evaluate_depth_candidate(VR* vr, const D3D12_RESOURCE_DESC& desc);
+
     ComPtr<ID3D12Resource> m_prev_backbuffer{};
     std::array<d3d12::CommandContext, 3> m_generic_commands{};
     std::chrono::steady_clock::time_point m_last_on_frame{};
@@ -188,6 +238,9 @@ private:
     FrameTimingStats m_perf_post_present{};
 
     d3d12::TextureContext m_backbuffer_copy{};
+    uevr::stalker2_native::PairCache m_stalker2_pair_cache{};
+    bool m_stalker2_pair_was_enabled{};
+    uint64_t m_stalker2_established_epoch{};
 
     d3d12::TextureContext m_game_ui_tex{};
     static constexpr uint32_t UE58_CONVERTED_UI_SLOT_COUNT = 3;
@@ -208,13 +261,56 @@ private:
     ComPtr<ID3D12Fence> m_ue58_converted_ui_consumer_fence{};
     uint64_t m_ue58_converted_ui_consumer_fence_value{};
     d3d12::TextureContext m_game_tex{};
+    // SW Zero Company renders its separate viewport target as R10 HDR, while
+    // the OpenXR runtime accepts BGRA. Keep descriptors for the borrowed engine
+    // source, snapshot it into an owned R10 texture, then convert to m_game_tex.
+    d3d12::TextureContext m_sw_zero_company_scene_source_tex{};
+    d3d12::TextureContext m_sw_zero_company_scene_snapshot_tex{};
     d3d12::TextureContext m_ue58_spectator_tex{};
+    bool m_ue58_dedicated_ui_spectator_valid{};
     d3d12::TextureContext m_scene_capture_tex{};
+    uint64_t m_scene_capture_generation{};
+    uint32_t m_scene_capture_width{};
+    uint32_t m_scene_capture_height{};
     d3d12::TextureContext m_shf_mono_scene_tex{};
+    static constexpr uint32_t DIBR_FRAME_SLOT_COUNT = 3;
+    struct DIBRFrameSlot {
+        d3d12::TextureContext present_tex{};
+        d3d12::DIBRPreview preview{};
+        d3d12::CommandContext commands{};
+    };
+
+    // Capture runs every frame. Each frame slot has independent source,
+    // output, descriptors and command allocator so one slow DIBR dispatch
+    // cannot stall the CPU before the next frame is recorded.
+    d3d12::DIBRPreview m_dibr_depth_capture{};
+    std::array<DIBRFrameSlot, DIBR_FRAME_SLOT_COUNT> m_dibr_slots{};
+    uint32_t m_dibr_slot_cursor{};
+    d3d12::TextureContext* m_dibr_active_present_tex{};
+    // Owned copy of the OpenXR UI swapchain image. It exists solely for the
+    // opt-in DIBR Single View UI-edge guard and is never submitted or rendered
+    // back into the UI path.
+    ComPtr<ID3D12Resource> m_dibr_ui_alpha_snapshot{};
+    // A resize can replace the snapshot while an older DIBR command list is
+    // still queued. Retain replaced resources until the DIBR ring is drained.
+    std::vector<ComPtr<ID3D12Resource>> m_dibr_retired_ui_alpha_snapshots{};
+    uint64_t m_dibr_ui_alpha_snapshot_width{};
+    uint32_t m_dibr_ui_alpha_snapshot_height{};
+    DXGI_FORMAT m_dibr_ui_alpha_snapshot_format{DXGI_FORMAT_UNKNOWN};
+    bool m_dibr_ui_alpha_captured_this_frame{};
+    std::atomic<uint64_t> m_dibr_single_view_generation{1};
+    std::atomic<uint64_t> m_dibr_single_view_source_signature{};
+    std::atomic<uint32_t> m_dibr_single_view_ready_frames{};
+    std::atomic<uint32_t> m_dibr_single_view_source_width{};
+    std::atomic<uint32_t> m_dibr_single_view_source_height{};
+    std::atomic<bool> m_dibr_single_view_preview_ready{};
     d3d12::TextureContext m_dune_hmd_mono_scene_tex{};
     d3d12::TextureContext m_halo_electra_quad_source_tex{};
+    // Declared before the copy contexts so destruction drains them first.
+    std::array<ComPtr<ID3D12Resource>, 3> m_nascar_scene_copy_sources{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
+    bool m_shf_scene_retirement_deferred{};
     d3d12::CommandContext m_dune_hmd_mono_scene_commands{};
     uint64_t m_shf_mono_scene_width{};
     uint32_t m_shf_mono_scene_height{};
@@ -230,6 +326,7 @@ private:
     std::unique_ptr<DirectX::DX12::GraphicsMemory> m_graphics_memory{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_backbuffer_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_game_batch{};
+    std::unique_ptr<DirectX::DX12::SpriteBatch> m_sw_zero_company_scene_conversion_batch{};
     std::unique_ptr<DirectX::DX12::SpriteBatch> m_ui_batch_alpha_invert{};
 
     ID3D12Resource* m_last_checked_native{nullptr};
@@ -325,16 +422,21 @@ private:
         void destroy_swapchains();
         bool pre_acquire(uint32_t swapchain_idx);
         void release_acquired(uint32_t swapchain_idx);
-        void copy(uint32_t swapchain_idx, ID3D12Resource* src,
+        bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> pre_commands = std::nullopt,
             std::optional<std::function<void(d3d12::CommandContext&)>> additional_commands = std::nullopt,
-            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr);
+            D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
+            D3D12_BOX* src_box = nullptr,
+            std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands = std::nullopt,
+            ID3D12Resource* retained_mono_source = nullptr,
+            std::shared_ptr<uevr::stalker2_native::PairFrame> retained_stalker_pair = nullptr);
 
-        void copy(uint32_t swapchain_idx, ID3D12Resource* src,
+        bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr)
         {
-            this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
+            return this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
         }
+        void retire_stalker2_pair_references();
         void retire_framework_ui_delayed_release(bool force_wait = false);
         void copy_framework_ui_ue58(
             ID3D12Resource* src,
@@ -377,8 +479,14 @@ private:
         }
 
         XrGraphicsBindingD3D12KHR binding{XR_TYPE_GRAPHICS_BINDING_D3D12_KHR};
+        uevr::ui_alpha::D3D12 game_ui_alpha, framework_ui_alpha;
+        uevr::ui_composition::D3D12 ui_composition;
+        void process_ui_alpha(uint32_t swapchain_idx, uint32_t texture_index);
 
         struct SwapchainContext {
+            // Declared first so command contexts retire before these references are destroyed.
+            std::vector<ComPtr<ID3D12Resource>> mono_sources{};
+            std::vector<std::shared_ptr<uevr::stalker2_native::PairFrame>> stalker_pairs{};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};
@@ -402,6 +510,8 @@ private:
         std::recursive_mutex mtx{};
         std::array<uint32_t, 2> last_resolution{};
         bool made_depth_with_null_defaults{false};
+        D3D12_RESOURCE_DESC stable_depth_desc{};
+        bool has_stable_depth_desc{};
 
         friend class D3D12Component;
     } m_openxr;
@@ -413,7 +523,13 @@ private:
     bool m_last_afr_state{false};
     bool m_dead_island_2_synced_eye_rebase_pending{};
     bool m_submitted_left_eye{false};
+    bool m_dibr_was_active{};
     uint64_t m_swapchain_recreate_count{};
     uint32_t m_last_swapchain_recreate_reasons{};
+    D3D12_RESOURCE_DESC m_pending_depth_desc{};
+    bool m_has_pending_depth_desc{};
+    uint32_t m_pending_depth_frames{};
+    std::chrono::steady_clock::time_point m_pending_depth_since{};
+    bool m_depth_target_stability_guard_was_active{};
 };
 } // namespace vrmod

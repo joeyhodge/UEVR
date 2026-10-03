@@ -26,6 +26,9 @@ const Profile& get() {
                 profile.version.major,
                 profile.version.minor);
         }
+        if (profile.version.is_validated_ue6()) {
+            SPDLOG_INFO("[UECompat] experimental=true reviewed_source={} packaged_runtime_verified=false", sdk::UE6_REVIEWED_SOURCE);
+        }
 
         return true;
     }();
