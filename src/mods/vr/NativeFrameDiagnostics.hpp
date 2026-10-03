@@ -14,7 +14,8 @@ enum class Runtime : uint8_t { unknown, openxr, openvr };
 enum class Stage : uint8_t { producer, selection, invalidation, copy_recorded, submit_attempt, submit_result };
 enum class Reason : uint8_t {
     none, feature_off, no_packet, stale_frames, rejected_generation, no_capture,
-    changed_generation, changed_resource, exact_frame, same_engine_frame, one_frame_handoff
+    changed_generation, changed_resource, exact_frame, same_engine_frame, one_frame_handoff,
+    exact_transaction, transaction_miss, cached_pair
 };
 enum class Shadow : uint8_t { unavailable, epoch_changed, owner_changed, legacy_changed, matches, differs };
 
@@ -42,6 +43,7 @@ struct Ticket {
     uint64_t control{}, attempt{}, packet_serial{};
     ClockStamp consumer_clock{};
     int32_t submit_render{};
+    bool pair_reused{};
     explicit operator bool() const { return (control & 1) != 0; }
 };
 struct Event {
@@ -60,6 +62,10 @@ struct Event {
     Shadow shadow{};
     bool legacy_same_engine{}, window_observed{}, legacy_window{}, shadow_window{}, resource_checks_ran{}, packet_accepted{};
     ClockStamp producer_clock{}, consumer_clock{};
+    uint64_t transaction_epoch{};
+    uint32_t transaction_primary{}, transaction_secondary{};
+    uint32_t source_pose_frame{};
+    bool pair_reused{};
 };
 static_assert(std::is_trivially_copyable_v<Event>);
 
@@ -266,6 +272,9 @@ inline const char* name(Reason value) {
     case Reason::exact_frame: return "accepted_exact_render_frame";
     case Reason::same_engine_frame: return "accepted_same_engine_grace";
     case Reason::one_frame_handoff: return "accepted_one_frame_handoff";
+    case Reason::exact_transaction: return "accepted_stalker_exact_transaction";
+    case Reason::transaction_miss: return "stalker_exact_transaction_miss";
+    case Reason::cached_pair: return "accepted_stalker_bounded_owned_pair";
     default: return "not_observed";
     }
 }

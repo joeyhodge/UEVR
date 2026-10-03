@@ -51,6 +51,7 @@
 #include "utility/Logging.hpp"
 
 #include "VR.hpp"
+#include "vr/Stalker2NativePolicy.hpp"
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
 #include "vr/KtjLOpenXRFactory.hpp"
@@ -3996,6 +3997,23 @@ bool VR::should_force_native_stereo_fix_same_pass() const {
     // rendering remain unchanged.
     SPDLOG_INFO_ONCE("[Stalker2][NativeStereoFix] Forcing Same Stereo Pass for the validated runtime");
     return true;
+}
+
+bool VR::is_stalker2_native_fix_experiment_enabled() const {
+    if (!m_stalker2_native_pair_experiment->value() || !is_native_stereo_fix_enabled() ||
+        !g_framework || !g_framework->is_dx12()) { return false; }
+    static const bool target = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        return path && uevr::stalker2_native::is_executable(*path) &&
+            uevr::games::should_use_stalker2_ue55_native_fix_capture_layout(*path,
+            sdk::search_for_version(utility::get_executable()).value_or(L"0.00"),
+            sdk::get_file_version_info().dwFileVersionMS, true, true);
+    }();
+    const auto* runtime = get_runtime();
+    return uevr::stalker2_native::Scope{m_stalker2_native_pair_experiment->value(), target,
+        g_framework != nullptr && g_framework->is_dx12(), is_native_stereo_fix_enabled(),
+        runtime != nullptr && runtime->is_openxr() && runtime->loaded, is_native_stereo_fix_texture_array_submit_enabled(),
+        is_using_2d_screen()}.enabled();
 }
 
 bool VR::is_native_openxr_async_wait_active() const {
@@ -14897,6 +14915,12 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                 m_native_stereo_fix_same_pass->draw("Use Same Stereo Pass");
             }
             m_native_stereo_fix_preserve_secondary_pass->draw("Preserve Secondary Pass on UE5.5+");
+            if (stalker2_native_fix_requires_same_pass_cached()) {
+                m_stalker2_native_pair_experiment->draw("Experimental Stalker 2 Exact Native Pair");
+                ImGui::TextWrapped("Default off. UE5.5 DX12 Native Fix and OpenXR double-wide only. Requires a validated render/RHI transaction; otherwise retains the existing path. Owned pair reuse is bounded to three frames/100 ms and costs additional GPU memory/bandwidth.");
+                m_stalker2_sharpen_priority->draw("Experimental Stalker 2 Sharpening Priority");
+                ImGui::TextWrapped("Only frozen r.Tonemapper.Sharpen: after three verified mismatches, use its observed game priority without raising it to Console. No other CVar or game is affected. Stops when unfrozen or either experiment/Native Fix is disabled.");
+            }
             if (uevr::nascar::is_target()) {
                 ImGui::EndDisabled();
                 ImGui::TextWrapped("NASCAR keeps the original eye indices/history and temporarily gives the right singleton a primary pass only while creating its renderer. These generic pass options are not used.");

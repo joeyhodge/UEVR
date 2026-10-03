@@ -15,6 +15,7 @@
 
 #include "../../Mod.hpp"
 #include "CVarDiagnostics.hpp"
+#include "Stalker2NativePolicy.hpp"
 
 // For UE cvars.
 class CVarManager final : public ModComponent {
@@ -30,6 +31,7 @@ public:
 
     void dump_commands();
     void spawn_console();
+    void process_stalker2_sharpen_priority();
 
     void execute_console_script(sdk::UGameEngine* engine, const std::string& filename);
 
@@ -231,6 +233,7 @@ private:
 
     std::vector<std::shared_ptr<CVar>> m_displayed_cvars{};
     std::vector<std::shared_ptr<CVar>> m_all_cvars{}; // ones the user can manually add to cvars.txt'
+    uevr::stalker2_native::SharpenPriority m_stalker2_sharpen_priority{};
 
     std::shared_ptr<CVar> m_hzbo{};
 
