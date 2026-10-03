@@ -6212,6 +6212,23 @@ bool supports_borderlands4_ue554_dedicated_ui_target() {
     return result;
 }
 
+bool supports_minecraft_dungeons_ue561_dedicated_ui_target() {
+    if (g_framework == nullptr || !g_framework->is_dx12()) { return false; }
+
+    static const bool result = [] {
+        const auto executable = utility::get_executable();
+        const auto path = utility::get_module_pathw(executable);
+        if (!path || !uevr::games::is_minecraft_dungeons_executable_path(*path)) {
+            return false;
+        }
+        const auto version = sdk::get_file_version_info();
+        return uevr::games::should_use_minecraft_dungeons_ue561_dedicated_ui_target(
+            *path, sdk::search_for_version(executable).value_or(L"0.00"),
+            version.dwFileVersionMS, version.dwFileVersionLS, true);
+    }();
+    return result;
+}
+
 bool supports_ue55_dedicated_ui_target_for_current_game() {
     // Halloween uses the same RegisterExternalTexture ABI, but its UE5.7
     // input structure is parsed separately before the legacy Slate path.
@@ -6223,6 +6240,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
             supports_borderlands4_ue554_dedicated_ui_target() ||
+            supports_minecraft_dungeons_ue561_dedicated_ui_target() ||
             stalker2_uses_ue55_draw_windows_array_layout() ||
             redemption_sin_eternal_is_current_game() ||
             everspace2_is_current_game() ||
