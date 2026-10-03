@@ -90,6 +90,8 @@ FetchContent_Declare(kananlib
 )
 FetchContent_MakeAvailable(kananlib)
 
+include(cmake/KananlibDecodeWindow.cmake)
+
 message(STATUS "Fetching sdkgenny (f58077f8da8a271490c17558e93b75843b3afd19)...")
 FetchContent_Declare(sdkgenny
 	GIT_REPOSITORY
@@ -566,6 +568,58 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	)
 
 	add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target kananlib-decode-window-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET kananlib-decode-window-tests)
+	set(kananlib-decode-window-tests_SOURCES "")
+
+	list(APPEND kananlib-decode-window-tests_SOURCES
+		"tests/KananlibDecodeWindowTests.cpp"
+	)
+
+	list(APPEND kananlib-decode-window-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${kananlib-decode-window-tests_SOURCES})
+	add_executable(kananlib-decode-window-tests)
+
+	if(kananlib-decode-window-tests_SOURCES)
+		target_sources(kananlib-decode-window-tests PRIVATE ${kananlib-decode-window-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT kananlib-decode-window-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${kananlib-decode-window-tests_SOURCES})
+
+	target_compile_features(kananlib-decode-window-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_compile_options(kananlib-decode-window-tests PRIVATE
+		"/EHa"
+	)
+
+	target_link_libraries(kananlib-decode-window-tests PRIVATE
+		kananlib
+	)
+
+	add_test(NAME kananlib-decode-window-tests COMMAND kananlib-decode-window-tests)
+	set_tests_properties(kananlib-decode-window-tests PROPERTIES TIMEOUT 60)
+	add_test(NAME kananlib-decode-window-configuration-tests COMMAND "${CMAKE_COMMAND}"
+	    "-DUEVR_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+	    "-DKANANLIB_SOURCE_DIR=${kananlib_SOURCE_DIR}"
+	    "-DUEVR_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/kananlib-decode-window/configuration-fixture"
+	    -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/KananlibBackportConfigurationTests.cmake")
+	set_tests_properties(kananlib-decode-window-configuration-tests PROPERTIES TIMEOUT 120)
 
 	unset(CMKR_TARGET)
 	unset(CMKR_SOURCES)
