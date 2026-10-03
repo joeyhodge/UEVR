@@ -1018,6 +1018,46 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target lua-context-dispatch-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET lua-context-dispatch-tests)
+	set(lua-context-dispatch-tests_SOURCES "")
+
+	list(APPEND lua-context-dispatch-tests_SOURCES
+		"tests/LuaContextDispatchTests.cpp"
+	)
+
+	list(APPEND lua-context-dispatch-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${lua-context-dispatch-tests_SOURCES})
+	add_executable(lua-context-dispatch-tests)
+
+	if(lua-context-dispatch-tests_SOURCES)
+		target_sources(lua-context-dispatch-tests PRIVATE ${lua-context-dispatch-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT lua-context-dispatch-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lua-context-dispatch-tests_SOURCES})
+
+	target_link_libraries(lua-context-dispatch-tests PRIVATE
+		luavrlib
+	)
+
+	foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset queued-reset owner-retirement stress)
+	    add_test(NAME lua-context-dispatch-${case} COMMAND lua-context-dispatch-tests ${case})
+	    set_tests_properties(lua-context-dispatch-${case} PROPERTIES TIMEOUT 20)
+	endforeach()
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target uevr
 set(CMKR_TARGET uevr)
 set(uevr_SOURCES "")
