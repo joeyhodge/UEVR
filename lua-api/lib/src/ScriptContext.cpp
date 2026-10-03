@@ -28,14 +28,24 @@ public:
 
     template<typename T>
     void for_each(T&& fn) {
-        std::scoped_lock _{mtx};
-        for (auto it = list.begin(); it != list.end();) {
-            if (auto ctx = it->lock()) {
-                fn(ctx);
-                ++it;
-            } else {
-                it = list.erase(it); // Naturally removes the weak_ptr from the list
+        std::vector<std::shared_ptr<ScriptContext>> contexts;
+        {
+            std::scoped_lock _{mtx};
+            contexts.reserve(list.size());
+            for (auto it = list.begin(); it != list.end();) {
+                if (auto ctx = it->lock()) {
+                    contexts.push_back(std::move(ctx));
+                    ++it;
+                } else {
+                    it = list.erase(it); // Naturally removes the weak_ptr from the list
+                }
             }
+        }
+
+        // Lua can reenter this registry through Unreal. Keep contexts alive,
+        // but never hold the registry lock while waiting for a Lua-state lock.
+        for (auto& ctx : contexts) {
+            ctx->dispatch_if_active([&] { fn(ctx); });
         }
     }
 

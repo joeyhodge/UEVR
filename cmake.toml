@@ -309,6 +309,18 @@ add_test(NAME lua-fname-bindings-legacy COMMAND lua-fname-binding-tests 8 legacy
 set_tests_properties(lua-fname-bindings-8 lua-fname-bindings-12 lua-fname-bindings-legacy PROPERTIES TIMEOUT 60)
 """
 
+[target.lua-context-dispatch-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/LuaContextDispatchTests.cpp"]
+link-libraries = ["luavrlib"]
+cmake-after = """
+foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset queued-reset owner-retirement stress)
+    add_test(NAME lua-context-dispatch-${case} COMMAND lua-context-dispatch-tests ${case})
+    set_tests_properties(lua-context-dispatch-${case} PROPERTIES TIMEOUT 20)
+endforeach()
+"""
+
 [template.ue4template]
 type = "shared"
 sources = ["src/**.cpp", "src/**.c"]

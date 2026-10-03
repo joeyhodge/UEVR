@@ -71,7 +71,11 @@ ScriptState::ScriptState(const ScriptState::GarbageCollectionData& gc_data, UEVR
 }
 
 ScriptState::~ScriptState() {
-
+    // A registry snapshot may outlive this owner. Finish its active callback
+    // before teardown, then refuse queued callbacks into the retired script.
+    if (m_context != nullptr) {
+        m_context->retire_callbacks();
+    }
 }
 
 void ScriptState::run_script(const std::string& p) {
