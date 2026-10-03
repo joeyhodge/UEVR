@@ -1498,7 +1498,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		luavrlib
 	)
 
-	foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset queued-reset owner-retirement stress)
+	foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset queued-reset owner-retirement owned-state-teardown borrowed-state-teardown stress)
 	    add_test(NAME lua-context-dispatch-${case} COMMAND lua-context-dispatch-tests ${case})
 	    set_tests_properties(lua-context-dispatch-${case} PROPERTIES TIMEOUT 20)
 	endforeach()
