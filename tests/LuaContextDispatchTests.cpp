@@ -328,12 +328,13 @@ void test_queued_reset(MockSDK& sdk) {
 void test_owner_retirement(MockSDK& sdk) {
     std::latch entered{1}, reset_started{1}, release{1};
     std::atomic<bool> destroyed{};
+    std::atomic<bool> survived{};
     auto owner = std::make_unique<uevr::ScriptState>(uevr::ScriptState::GarbageCollectionData{}, &sdk.params, false);
     const std::weak_ptr<uevr::ScriptContext> weak = owner->context();
     owner->lua()["hold_callback"] = [&] {
         entered.count_down();
         release.wait();
-        require(!destroyed, "the script owner survives its running callback");
+        survived = !destroyed;
     };
     {
         auto result = owner->lua().safe_script(
@@ -354,7 +355,7 @@ void test_owner_retirement(MockSDK& sdk) {
     release.count_down();
     render.join();
     reset.join();
-    require(serialized && destroyed && weak.expired(), "owner teardown waits for active callbacks and releases retired storage");
+    require(serialized && survived && destroyed && weak.expired(), "owner teardown waits for active callbacks and releases retired storage");
     slate(nullptr, nullptr);
 }
 }
