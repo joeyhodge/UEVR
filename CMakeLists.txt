@@ -818,6 +818,100 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target stalker2-native-policy-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET stalker2-native-policy-tests)
+	set(stalker2-native-policy-tests_SOURCES "")
+
+	list(APPEND stalker2-native-policy-tests_SOURCES
+		"tests/Stalker2NativePolicyTests.cpp"
+	)
+
+	list(APPEND stalker2-native-policy-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${stalker2-native-policy-tests_SOURCES})
+	add_executable(stalker2-native-policy-tests)
+
+	if(stalker2-native-policy-tests_SOURCES)
+		target_sources(stalker2-native-policy-tests PRIVATE ${stalker2-native-policy-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT stalker2-native-policy-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${stalker2-native-policy-tests_SOURCES})
+
+	target_compile_features(stalker2-native-policy-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(stalker2-native-policy-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(stalker2-native-policy-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME stalker2-native-policy-tests COMMAND stalker2-native-policy-tests)
+	set_tests_properties(stalker2-native-policy-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target stalker2-native-d3d12-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET stalker2-native-d3d12-tests)
+	set(stalker2-native-d3d12-tests_SOURCES "")
+
+	list(APPEND stalker2-native-d3d12-tests_SOURCES
+		"tests/Stalker2NativeD3D12Tests.cpp"
+	)
+
+	list(APPEND stalker2-native-d3d12-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${stalker2-native-d3d12-tests_SOURCES})
+	add_executable(stalker2-native-d3d12-tests)
+
+	if(stalker2-native-d3d12-tests_SOURCES)
+		target_sources(stalker2-native-d3d12-tests PRIVATE ${stalker2-native-d3d12-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT stalker2-native-d3d12-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${stalker2-native-d3d12-tests_SOURCES})
+
+	target_compile_features(stalker2-native-d3d12-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(stalker2-native-d3d12-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(stalker2-native-d3d12-tests PRIVATE
+		d3d12
+		dxgi
+		openxr_loader
+	)
+
+	add_test(NAME stalker2-native-d3d12-tests COMMAND stalker2-native-d3d12-tests)
+	set_tests_properties(stalker2-native-d3d12-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target ui-alpha-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET ui-alpha-tests)
@@ -1446,6 +1540,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/SWZeroCompanyBinary.hpp"
 	"src/mods/vr/SifuMeshCommands.hpp"
 	"src/mods/vr/SifuRendererEntry.hpp"
+	"src/mods/vr/Stalker2NativeD3D12.hpp"
+	"src/mods/vr/Stalker2NativePolicy.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"

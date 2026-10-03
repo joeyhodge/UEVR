@@ -1,6 +1,9 @@
 #pragma once
 
 #include <atomic>
+#include <array>
+#include <optional>
+#include <utility>
 #include <unordered_set>
 #include <deque>
 #include <chrono>
@@ -367,6 +370,25 @@ public:
 
     PipelineState last_submit_state{};
     PipelineState get_submit_state();
+    struct Stalker2PairSubmit {
+        std::array<XrView, 2> views{};
+        uint64_t epoch{}, generation{};
+        uint32_t source_frame{};
+        bool reused{};
+        bool scene_available{true};
+    };
+    void set_stalker2_pair_submit(std::optional<Stalker2PairSubmit> value) {
+        std::scoped_lock lock{sync_assignment_mtx}; m_stalker2_pair_submit = std::move(value);
+        m_stalker2_pair_pending.store(m_stalker2_pair_submit.has_value(), std::memory_order_release);
+    }
+    std::optional<Stalker2PairSubmit> take_stalker2_pair_submit() {
+        if (!m_stalker2_pair_pending.load(std::memory_order_acquire)) { return std::nullopt; }
+        std::scoped_lock lock{sync_assignment_mtx};
+        m_stalker2_pair_pending.store(false, std::memory_order_release);
+        return std::exchange(m_stalker2_pair_submit, std::nullopt);
+    }
+    std::optional<Stalker2PairSubmit> m_stalker2_pair_submit{}; // sync_assignment_mtx
+    std::atomic_bool m_stalker2_pair_pending{};
     void end_mono_transition_frame();
     void reset_mono_projection_history();
     void note_mono_projection();

@@ -713,6 +713,11 @@ public:
             m_rendering_method->value() == RenderingMethod::NATIVE_STEREO;
     }
 
+    bool is_stalker2_native_fix_experiment_enabled() const;
+    bool is_stalker2_sharpen_priority_enabled() const {
+        return m_stalker2_sharpen_priority->value() && is_stalker2_native_fix_experiment_enabled();
+    }
+
     bool is_native_stereo_fix_async_openxr_wait_enabled() const {
         const auto runtime = get_runtime();
         return m_native_stereo_fix_async_openxr_wait->value() &&
@@ -1738,6 +1743,8 @@ private:
     const ModToggle::Ptr m_native_stereo_fix_preserve_secondary_pass{ ModToggle::create(generate_name("NativeStereoFixPreserveSecondaryPass"), true) };
     const ModToggle::Ptr m_native_stereo_fix_texture_array_submit{ ModToggle::create(generate_name("NativeStereoFixTextureArraySubmit"), false) };
     const ModToggle::Ptr m_native_stereo_fix_async_openxr_wait{ ModToggle::create(generate_name("NativeStereoFixAsyncOpenXRWait"), false) };
+    const ModToggle::Ptr m_stalker2_native_pair_experiment{ ModToggle::create(generate_name("Stalker2NativePairExperiment"), false) };
+    const ModToggle::Ptr m_stalker2_sharpen_priority{ ModToggle::create(generate_name("Stalker2SharpenExistingPriority"), false) };
 
     const ModSlider::Ptr m_custom_z_near{ ModSlider::create(generate_name("CustomZNear"), 0.001f, 100.0f, 0.01f, true) };
     const ModToggle::Ptr m_custom_z_near_enabled{ ModToggle::create(generate_name("EnableCustomZNear"), false, true) };
@@ -2071,6 +2078,8 @@ public:
             *m_native_stereo_fix_preserve_secondary_pass,
             *m_native_stereo_fix_texture_array_submit,
             *m_native_stereo_fix_async_openxr_wait,
+            *m_stalker2_native_pair_experiment,
+            *m_stalker2_sharpen_priority,
             *m_splitscreen_compatibility_mode,
             *m_splitscreen_view_index,
             *m_compatibility_skip_pip,

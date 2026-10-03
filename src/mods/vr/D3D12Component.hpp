@@ -27,6 +27,7 @@
 #include "d3d12/TextureContext.hpp"
 #include "UIAlpha.hpp"
 #include "UIComposition.hpp"
+#include "Stalker2NativeD3D12.hpp"
 
 class VR;
 namespace render {
@@ -226,6 +227,9 @@ private:
     FrameTimingStats m_perf_post_present{};
 
     d3d12::TextureContext m_backbuffer_copy{};
+    uevr::stalker2_native::PairCache m_stalker2_pair_cache{};
+    bool m_stalker2_pair_was_enabled{};
+    uint64_t m_stalker2_established_epoch{};
 
     d3d12::TextureContext m_game_ui_tex{};
     static constexpr uint32_t UE58_CONVERTED_UI_SLOT_COUNT = 3;
@@ -413,13 +417,15 @@ private:
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT,
             D3D12_BOX* src_box = nullptr,
             std::optional<std::function<void(d3d12::CommandContext&, ID3D12Resource*)>> post_copy_commands = std::nullopt,
-            ID3D12Resource* retained_mono_source = nullptr);
+            ID3D12Resource* retained_mono_source = nullptr,
+            std::shared_ptr<uevr::stalker2_native::PairFrame> retained_stalker_pair = nullptr);
 
         bool copy(uint32_t swapchain_idx, ID3D12Resource* src,
             D3D12_RESOURCE_STATES src_state = D3D12_RESOURCE_STATE_PRESENT, D3D12_BOX* src_box = nullptr)
         {
             return this->copy(swapchain_idx, src, std::nullopt, std::nullopt, src_state, src_box);
         }
+        void retire_stalker2_pair_references();
         void retire_framework_ui_delayed_release(bool force_wait = false);
         void copy_framework_ui_ue58(
             ID3D12Resource* src,
@@ -469,6 +475,7 @@ private:
         struct SwapchainContext {
             // Declared first so command contexts retire before these references are destroyed.
             std::vector<ComPtr<ID3D12Resource>> mono_sources{};
+            std::vector<std::shared_ptr<uevr::stalker2_native::PairFrame>> stalker_pairs{};
             std::vector<XrSwapchainImageD3D12KHR> textures{};
             std::vector<std::unique_ptr<d3d12::TextureContext>> texture_contexts{};
             uint32_t num_textures_acquired{0};
