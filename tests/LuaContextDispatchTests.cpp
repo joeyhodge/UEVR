@@ -2,6 +2,7 @@
 #include <Windows.h>
 
 #include <atomic>
+#include <cstdlib>
 #include <iostream>
 #include <latch>
 #include <memory>
@@ -91,6 +92,57 @@ struct Context {
         require(context->get_last_script_error().e.empty(), "production dispatcher reported a Lua callback error");
     }
 };
+
+struct GuardedLuaAllocator {
+    void* main_state{};
+    bool closed{}, decommitted{}, unexpected_resize{};
+
+    ~GuardedLuaAllocator() {
+        if (main_state != nullptr) { VirtualFree(main_state, 0, MEM_RELEASE); }
+    }
+
+    static void* allocate(void* user, void* pointer, size_t old_size, size_t size) noexcept {
+        auto& self = *static_cast<GuardedLuaAllocator*>(user);
+        if (pointer == nullptr && size != 0 && self.main_state == nullptr && old_size == LUA_TTHREAD) {
+            self.main_state = VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+            return self.main_state;
+        }
+        if (pointer != nullptr && pointer == self.main_state) {
+            if (size == 0) {
+                // Retain the reservation so a stale Lua reference cannot appear
+                // valid through heap reuse after the VM's final allocation dies.
+                self.closed = true;
+                self.decommitted = VirtualFree(pointer, 0, MEM_DECOMMIT) != 0;
+            } else {
+                self.unexpected_resize = true;
+            }
+            return nullptr;
+        }
+        if (size == 0) { std::free(pointer); return nullptr; }
+        return std::realloc(pointer, size);
+    }
+};
+
+void test_state_teardown(MockSDK& sdk, bool borrowed) {
+    GuardedLuaAllocator allocator;
+    auto lua = std::make_shared<sol::state>(sol::default_at_panic, GuardedLuaAllocator::allocate, &allocator);
+    require(allocator.main_state != nullptr, "fixture guards Lua's main-state allocation");
+    const std::weak_ptr<sol::state> weak = lua;
+    auto context = borrowed ? uevr::ScriptContext::create(lua->lua_state(), &sdk.params)
+        : uevr::ScriptContext::create(lua, &sdk.params);
+    context->setup_callback_bindings();
+    if (!borrowed) {
+        lua.reset();
+        require(!weak.expired() && !allocator.closed, "owned context retains its sole Lua VM reference");
+    }
+    context.reset();
+    if (borrowed) {
+        require(!weak.expired() && !allocator.closed, "borrowed context leaves its caller's VM alive");
+        lua.reset();
+    }
+    require(weak.expired() && allocator.closed && allocator.decommitted && !allocator.unexpected_resize,
+        "all Lua references are released before closing the VM, without retaining it afterward");
+}
 
 void test_reentry(MockSDK& sdk) {
     unsigned int ticks{}, slates{};
@@ -373,6 +425,8 @@ int main(int argc, char** argv) {
         else if (name == "owner-reset") { test_owner_reset(sdk); }
         else if (name == "queued-reset") { test_queued_reset(sdk); }
         else if (name == "owner-retirement") { test_owner_retirement(sdk); }
+        else if (name == "owned-state-teardown") { test_state_teardown(sdk, false); }
+        else if (name == "borrowed-state-teardown") { test_state_teardown(sdk, true); }
         else if (name == "stress") { test_stress(sdk); }
         else { throw std::runtime_error("unknown dispatch test case"); }
         std::cout << "Lua context dispatch passed: " << name << '\n';
