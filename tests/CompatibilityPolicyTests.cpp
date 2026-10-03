@@ -495,6 +495,44 @@ void test_version_gates() {
         "other UE5.5.4 games must not inherit the Bodycam viewport ABI");
 }
 
+void test_minecraft_dungeons_dedicated_ui_gate() {
+    using uevr::games::should_use_minecraft_dungeons_ue561_dedicated_ui_target;
+    for (const auto path : {L"Dungeons-Win64-Shipping.exe", L"Dungeons-WinGDK-Shipping.exe",
+            L"D:\\Games\\Minecraft\\Dungeons-Win64-Shipping.exe",
+            L"D:/Games/Minecraft/DUNGEONS-WINGDK-SHIPPING.EXE"}) {
+        for (const auto version : {L"5.6.1", L"5.6.1.0", L"5.6.1.42"}) {
+            expect(should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0, 0, true),
+                "Steam and GDK Dungeons UE5.6.1 enter only the existing dedicated UI path");
+            expect(!should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0, 0, false),
+                "Dungeons DX11 does not inherit the DX12-only dedicated UI route");
+        }
+        for (const auto version : {L"", L"unknown", L"0.00", L"5.6"}) {
+            for (const auto revision : {0u, 1u, 0xffffu}) {
+                expect(should_use_minecraft_dungeons_ue561_dedicated_ui_target(
+                           path, version, 0x00050006, 0x00010000 | revision, true),
+                    "Dungeons UI fallback accepts UE5.6.1 file evidence without binding to a game revision");
+            }
+            expect(!should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0, 0, true) &&
+                   !should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0x00050005, 0x00010000, true) &&
+                   !should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0x00050006, 0x00020000, true),
+                "Dungeons UI file fallback rejects missing and non-5.6.1 version evidence");
+        }
+        for (const auto version : {L"4.27.2", L"5.5.4", L"5.6.0", L"5.6.2", L"5.6.10", L"5.7.4", L"5.8.3"}) {
+            expect(!should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, version, 0x00050006, 0x00010000, true),
+                "conflicting embedded engine versions do not enter the Dungeons UI gate");
+        }
+    }
+    for (const auto path : {L"", L"Minecraft.exe", L"NotDungeons-Win64-Shipping.exe",
+            L"Dungeons-WinGDK-Shipping.exe.bak", L"Dungeons-Win64-Shipping",
+            L"D:/Dungeons-WinGDK-Shipping.exe/Other.exe", L"Stalker2-Win64-Shipping.exe",
+            L"Townfall-Win64-Shipping.exe", L"SWZeroCompany.exe", L"DaysGone.exe",
+            L"SHf-Win64-Shipping.exe", L"KINGDOM HEARTS III.exe", L"OTWD-Win64-Shipping.exe",
+            L"Voyage-Win64-Shipping.exe", L"AVENAGame-Win64-Shipping.exe"}) {
+        expect(!should_use_minecraft_dungeons_ue561_dedicated_ui_target(path, L"5.6.1", 0x00050006, 0x00010000, true),
+            "other games and basename lookalikes keep their existing UI routing");
+    }
+}
+
 void test_borderlands4_dedicated_ui_gate() {
     using uevr::games::should_use_borderlands4_ue554_dedicated_ui_target;
     for (const auto path : {L"Borderlands4.exe", L"C:\\Games\\Borderlands4.exe",
@@ -2122,6 +2160,7 @@ int main(int argc, char** argv) {
     test_scene_view_layouts();
     test_rendering_mode_matrix();
     test_version_gates();
+    test_minecraft_dungeons_dedicated_ui_gate();
     test_borderlands4_dedicated_ui_gate();
     test_borderlands4_slate_inputs();
     test_stalker2_lazy_ghost_bootstrap();
