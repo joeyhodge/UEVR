@@ -2048,6 +2048,7 @@ void OpenXR::destroy() {
     }
 
     std::scoped_lock _{sync_mtx};
+    if (m_stalker2_pair_pending.load(std::memory_order_acquire)) { set_stalker2_pair_submit(std::nullopt); }
 
     if (this->session != nullptr) {
         if (this->session_ready) {
@@ -3574,6 +3575,17 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
     const auto submit_state = this->get_submit_state();
     const auto& pipelined_stage_views = submit_state.stage_views;
     const auto& pipelined_frame_state = submit_state.frame_state;
+    auto stalker_pair = take_stalker2_pair_submit();
+    if (stalker_pair) {
+        auto& stereo = vr->get_fake_stereo_hook();
+        if (!vr->is_stalker2_native_fix_experiment_enabled()) { stalker_pair.reset(); }
+        else if (pipelined_stage_views.size() != 2 || !stereo ||
+            stalker_pair->epoch != stereo->stalker2_native_epoch() ||
+            stalker_pair->generation != stereo->get_render_target_manager()->get_scene_capture_generation()) {
+            stalker_pair->scene_available = false;
+        }
+    }
+    if (stalker_pair && stalker_pair->reused) { has_depth = false; }
     const auto debug_submit_empty = this->debug_submit_empty_frame->value();
 
     if (pipelined_stage_views.empty()) {
@@ -3622,7 +3634,7 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
 
     // we CANT push the layers every time, it cause some layer error
     // in xrEndFrame, so we must only do it when shouldRender is true
-    if (!debug_submit_empty && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
+    if (!debug_submit_empty && (!stalker_pair || stalker_pair->scene_available) && pipelined_frame_state.shouldRender == XR_TRUE && !pipelined_stage_views.empty()) {
         projection_layer_views.resize(pipelined_stage_views.size(), {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW});
         depth_layers.resize(projection_layer_views.size(), {XR_TYPE_COMPOSITION_LAYER_DEPTH_INFO_KHR});
 
@@ -3642,8 +3654,8 @@ XrResult OpenXR::end_frame(const std::vector<XrCompositionLayerBaseHeader*>& qua
             }
 
             projection_layer_views[i].type = XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW;
-            projection_layer_views[i].pose = pipelined_stage_views[i].pose;
-            projection_layer_views[i].fov = pipelined_stage_views[i].fov;
+            projection_layer_views[i].pose = stalker_pair ? stalker_pair->views[i].pose : pipelined_stage_views[i].pose;
+            projection_layer_views[i].fov = stalker_pair ? stalker_pair->views[i].fov : pipelined_stage_views[i].fov;
             projection_layer_views[i].subImage.swapchain = swapchain->handle;
             projection_layer_views[i].subImage.imageArrayIndex = has_native_stereo_array ? (uint32_t)i : 0;
 
