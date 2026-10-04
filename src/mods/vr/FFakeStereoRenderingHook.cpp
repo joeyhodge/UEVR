@@ -72,6 +72,7 @@
 #include <sdk/USceneCaptureComponent2D.hpp>
 #include "utility/SceneCaptureLifecycle.hpp"
 #include "utility/PostInitValidation.hpp"
+#include "utility/PostInitCodeMemory.hpp"
 #include <sdk/FTextureRenderTargetResource.hpp>
 
 #include "Framework.hpp"
@@ -8650,33 +8651,29 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
             return allow_callable_thunk ? looks_like_callable_virtual(fn)
                                         : looks_like_post_init_properties_virtual(fn);
         }
-        const auto module = utility::get_module_within(reinterpret_cast<void*>(fn));
-        const auto size = module ? utility::get_module_size(*module).value_or(0) : 0;
-        const auto base = module ? reinterpret_cast<uintptr_t>(*module) : 0;
-        if (size == 0 || base > (std::numeric_limits<uintptr_t>::max)() - size) {
-            return false;
-        }
-        const auto end = base + size;
-        return uevr::post_init::validates_source_slot_body(fn, [=](uintptr_t address) -> std::span<const uint8_t> {
-            if (address < base || address >= end) { return {}; }
-            const auto limit = address + (std::min)(size_t{15}, end - address);
-            auto cursor = address;
-            while (cursor < limit) {
-                MEMORY_BASIC_INFORMATION mbi{};
-                if (VirtualQuery(reinterpret_cast<void*>(cursor), &mbi, sizeof(mbi)) == 0 ||
-                    mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
-                    break;
+        uintptr_t base{}, end{};
+        const auto read_module_window = [&](uintptr_t address, size_t maximum, bool executable) -> std::span<const uint8_t> {
+            if (base == 0 || address < base || address >= end) {
+                const auto module = utility::get_module_within(reinterpret_cast<void*>(address));
+                const auto size = module ? utility::get_module_size(*module).value_or(0) : 0;
+                base = module ? reinterpret_cast<uintptr_t>(*module) : 0;
+                if (size == 0 || base > (std::numeric_limits<uintptr_t>::max)() - size) {
+                    base = end = 0;
+                    return {};
                 }
-                const auto protection = mbi.Protect & 0xff;
-                if (protection != PAGE_EXECUTE_READ && protection != PAGE_EXECUTE_READWRITE &&
-                    protection != PAGE_EXECUTE_WRITECOPY) { break; }
-                const auto region_base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-                if (mbi.RegionSize > (std::numeric_limits<uintptr_t>::max)() - region_base ||
-                    region_base + mbi.RegionSize <= cursor) { break; }
-                cursor = (std::min)(limit, region_base + mbi.RegionSize);
+                end = base + size;
             }
-            return {reinterpret_cast<const uint8_t*>(address), cursor - address};
-        });
+            return uevr::post_init::module_window(address, base, end, maximum, executable);
+        };
+        return uevr::post_init::validates_source_slot_body(fn,
+            [&](uintptr_t address) { return read_module_window(address, 15, true); },
+            [&](uintptr_t address) -> std::optional<uintptr_t> {
+                const auto data = read_module_window(address, sizeof(uintptr_t), false);
+                if (data.size() != sizeof(uintptr_t)) { return std::nullopt; }
+                uintptr_t target{};
+                memcpy(&target, data.data(), sizeof(target));
+                return target;
+            });
     };
     const auto object_looks_valid = validate_body(object_fn);
     const auto localplayer_looks_valid = object_fn == localplayer_fn
