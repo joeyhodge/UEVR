@@ -7,12 +7,14 @@
 #include <limits>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <spdlog/sinks/base_sink.h>
 #include "utility/Logging.hpp"
 #include "utility/SupportDiagnostics.hpp"
 #include "utility/UObjectAllocatorDiscovery.hpp"
+#include "utility/SceneCaptureLifecycle.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
@@ -66,6 +68,45 @@ static_assert(UEVR_PLUGIN_VERSION_MAJOR == 2 && UEVR_PLUGIN_VERSION_MINOR >= 40)
 int failures{};
 void expect(bool value, const char* message) {
     if (!value) { ++failures; std::cerr << "FAILED: " << message << '\n'; }
+}
+
+void test_scene_capture_lifecycle() {
+    using uevr::scene_capture::component_plan;
+    const auto run = [](bool legacy, bool passive, bool deferred_supported,
+                        bool component_created, bool target_created) {
+        const auto plan = component_plan(legacy, passive, deferred_supported);
+        int finished = component_created && (legacy || !plan.deferred_add) ? 1 : 0;
+        bool configured_before_finish = !plan.finish_after_configuration;
+        if (component_created && target_created) {
+            configured_before_finish = true;
+            finished += plan.finish_after_configuration ? 1 : 0;
+        }
+        return std::pair{finished, configured_before_finish};
+    };
+
+    expect(component_plan(false, false, true).deferred_add &&
+           component_plan(false, false, true).finish_after_configuration,
+        "validated modern/Deadzone captures defer completion until configured");
+    expect(run(false, false, true, true, true) == std::pair{1, true},
+        "deferred captures finish exactly once after target/flags/visibility setup");
+    expect(run(false, false, false, true, true) == std::pair{1, true},
+        "legacy/unknown immediate adds retain registration timing without a second finish");
+    for (bool supported : {false, true}) {
+        expect(run(false, true, supported, true, true).first == 0,
+            "Bodycam passive holders remain unregistered");
+        expect(run(true, false, supported, true, true).first == 1,
+            "Days Gone custom factories are not finished a second time");
+        expect(!component_plan(true, true, supported).deferred_add,
+            "custom legacy factory has precedence over passive/deferred flags");
+    }
+    expect(run(false, false, true, false, true).first == 0,
+        "component creation failure cannot finish a missing component");
+    expect(run(false, false, true, true, false).first == 0,
+        "target creation failure leaves a deferred component unfinished for existing cleanup");
+    for (int generation = 0; generation != 3; ++generation) {
+        expect(run(false, false, true, true, true).first == 1,
+            "retry/recreation uses a fresh per-component lifecycle plan");
+    }
 }
 
 class CountingSink final : public spdlog::sinks::base_sink<std::mutex> {
@@ -444,6 +485,7 @@ void test_uobject_allocator_discovery() {
 }
 
 int main() {
+    test_scene_capture_lifecycle();
     test_opaque_states();
     test_logging();
     test_readbacks();
