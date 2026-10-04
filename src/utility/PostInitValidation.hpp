@@ -24,8 +24,11 @@ inline std::optional<uintptr_t> relative_target(uintptr_t next, int64_t displace
 // This checks code readability/plausibility, NOT virtual-function identity.
 // Use it only at a source-verified slot, never to select a neighboring virtual.
 // read_code must provide at most 15 readable, executable, module-owned bytes.
-template<typename ReadCode>
-bool validates_source_slot_body(uintptr_t entry, ReadCode&& read_code) {
+struct NoPointerReader {
+    std::optional<uintptr_t> operator()(uintptr_t) const { return std::nullopt; }
+};
+template<typename ReadCode, typename ReadPointer = NoPointerReader>
+bool validates_source_slot_body(uintptr_t entry, ReadCode&& read_code, ReadPointer read_pointer = {}) {
     constexpr size_t byte_budget = 256;
     constexpr size_t max_thunks = 4;
     std::array<uintptr_t, max_thunks + 1> entries{};
@@ -56,18 +59,30 @@ bool validates_source_slot_body(uintptr_t entry, ReadCode&& read_code) {
             decoded_bytes += ix.Length;
             std::optional<uintptr_t> target;
             bool relative_branch{};
+            bool indirect_rip_branch{};
             for (size_t i = 0; i < ix.OperandsCount; ++i) {
                 if (ix.Operands[i].Type == ND_OP_OFFS) {
                     relative_branch = true;
                     target = relative_target(next, ix.Operands[i].Info.RelativeOffset.Rel);
                     break;
                 }
+                if (ix.Category == ND_CAT_UNCOND_BR && ix.Operands[i].Type == ND_OP_MEM) {
+                    const auto& memory = ix.Operands[i].Info.Memory;
+                    if (memory.IsRipRel && memory.HasDisp) {
+                        indirect_rip_branch = true;
+                        if (const auto slot = relative_target(next, static_cast<int64_t>(memory.Disp))) {
+                            target = read_pointer(*slot);
+                        }
+                        break;
+                    }
+                }
             }
             if (ix.Category == ND_CAT_CALL) {
                 saw_call = true; // Never follow or invoke a candidate's calls.
             }
             if (ix.Category == ND_CAT_COND_BR || ix.Category == ND_CAT_UNCOND_BR) {
-                if (relative_branch && (!target || read_code(*target).empty())) { return false; }
+                if ((relative_branch || indirect_rip_branch) &&
+                    (!target || read_code(*target).empty())) { return false; }
                 if (ix.Category == ND_CAT_COND_BR && target && *target > next) {
                     if (branch_count == forward_branches.size()) { return false; }
                     forward_branches[branch_count++] = *target;

@@ -1,3 +1,6 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <atomic>
 #include <cstddef>
 #include "../include/uevr/API.h"
@@ -16,6 +19,7 @@
 #include "utility/UObjectAllocatorDiscovery.hpp"
 #include "utility/SceneCaptureLifecycle.hpp"
 #include "utility/PostInitValidation.hpp"
+#include "utility/PostInitCodeMemory.hpp"
 // Some backend translation units still include Windows headers without NOMINMAX.
 #define max(a, b) windows_max_macro_must_not_expand(a, b)
 #include "mods/vr/CVarDiagnostics.hpp"
@@ -187,6 +191,62 @@ void test_source_post_init_validation() {
     using uevr::post_init::relative_target;
     expect(!relative_target(0, -1) && !relative_target((std::numeric_limits<uintptr_t>::max)(), 1),
         "branch arithmetic rejects underflow and overflow");
+
+    constexpr std::array<uint8_t, 6> import_thunk{0xFF,0x25,0,0,0,0};
+    const auto read_import_code = [&](uintptr_t address) -> std::span<const uint8_t> {
+        if (address == 0x1000) { return import_thunk; }
+        if (address == 0x2000) { return noop; } // A different loaded module.
+        return {};
+    };
+    expect(validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t address) -> std::optional<uintptr_t> {
+            return address == 0x1006 ? std::optional<uintptr_t>{0x2000} : std::nullopt;
+        }), "RIP-relative import thunks validate their pointer and target module");
+    expect(!validates_source_slot_body(0x1000, read_import_code),
+        "unreadable RIP-relative pointer slots fail closed");
+    expect(!validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t) -> std::optional<uintptr_t> { return 0x3000; }),
+        "non-module/invalid import targets fail closed");
+    expect(!validates_source_slot_body(0x1000, read_import_code,
+        [](uintptr_t) -> std::optional<uintptr_t> { return 0x1000; }),
+        "indirect thunk cycles are bounded too");
+
+    SYSTEM_INFO info{};
+    GetSystemInfo(&info);
+    const auto page = static_cast<size_t>(info.dwPageSize);
+    auto* memory = static_cast<uint8_t*>(VirtualAlloc(nullptr, page * 3,
+        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    expect(memory != nullptr, "code-window fixture allocation succeeds");
+    if (memory) {
+        constexpr std::array<uint8_t, 6> boundary_code{0xE8,0,0,0,0,0xC3};
+        memcpy(memory + page - 3, boundary_code.data(), boundary_code.size());
+        memory[page * 2 - 1] = 0xC3;
+        DWORD old{};
+        expect(VirtualProtect(memory, page, PAGE_EXECUTE_READWRITE, &old) != 0 &&
+               VirtualProtect(memory + page, page, PAGE_EXECUTE_READ, &old) != 0 &&
+               VirtualProtect(memory + page * 2, page, PAGE_NOACCESS, &old) != 0,
+            "code-window fixture protections are installed");
+        const auto base = reinterpret_cast<uintptr_t>(memory);
+        const auto reader = [&](uintptr_t address) {
+            return uevr::post_init::module_window(address, base, base + page * 3, 15, true);
+        };
+        expect(validates_source_slot_body(base + page - 3, reader),
+            "an instruction crossing readable executable regions is accepted");
+        expect(validates_source_slot_body(base + page * 2 - 1, reader),
+            "a complete return at the no-access boundary is accepted");
+        expect(!validates_source_slot_body(base + page * 2, reader),
+            "no-access code is rejected without dereferencing it");
+        expect(uevr::post_init::module_window(base + page * 2 - 1, base, base + page * 2, 15, true).size() == 1,
+            "code windows never exceed loaded-image bounds");
+        expect(VirtualProtect(memory + page, page, PAGE_READONLY, &old) != 0,
+            "data-only protection is installed");
+        expect(reader(base + page).empty() &&
+               uevr::post_init::module_window(base + page, base, base + page * 3, sizeof(uintptr_t), false).size() == sizeof(uintptr_t),
+            "readable data is allowed only for pointer slots, never as callable code");
+        expect(VirtualProtect(memory + page, page, PAGE_EXECUTE_READ | PAGE_GUARD, &old) != 0 &&
+               reader(base + page).empty(), "guarded executable pages are never read");
+        VirtualFree(memory, 0, MEM_RELEASE);
+    }
 }
 
 class CountingSink final : public spdlog::sinks::base_sink<std::mutex> {
