@@ -71,6 +71,7 @@
 #include <sdk/APlayerController.hpp>
 #include <sdk/USceneCaptureComponent2D.hpp>
 #include "utility/SceneCaptureLifecycle.hpp"
+#include "utility/PostInitValidation.hpp"
 #include <sdk/FTextureRenderTargetResource.hpp>
 
 #include "Framework.hpp"
@@ -8798,7 +8799,8 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     uint32_t slot,
     const char* source_note,
     bool require_inherited_uobject_slot,
-    bool allow_callable_thunk = false)
+    bool allow_callable_thunk = false,
+    bool validate_modern_body = false)
 {
     if (IsBadReadPtr(&object_vtable[slot], sizeof(uintptr_t)) ||
         IsBadReadPtr(&localplayer_vtable[slot], sizeof(uintptr_t)))
@@ -8813,12 +8815,42 @@ std::optional<uint32_t> validate_source_informed_post_init_slot(
     // Shipping builds can fold UObject::PostInitProperties to a bare RET.
     // Accept that only at a source-verified slot; the broad fallback scan
     // below must continue requiring a non-trivial function body.
-    const auto object_looks_valid = allow_callable_thunk
-        ? looks_like_callable_virtual(object_fn)
-        : looks_like_post_init_properties_virtual(object_fn);
-    const auto localplayer_looks_valid = allow_callable_thunk
-        ? looks_like_callable_virtual(localplayer_fn)
-        : looks_like_post_init_properties_virtual(localplayer_fn);
+    const auto validate_body = [=](uintptr_t fn) {
+        if (!validate_modern_body) {
+            return allow_callable_thunk ? looks_like_callable_virtual(fn)
+                                        : looks_like_post_init_properties_virtual(fn);
+        }
+        const auto module = utility::get_module_within(reinterpret_cast<void*>(fn));
+        const auto size = module ? utility::get_module_size(*module).value_or(0) : 0;
+        const auto base = module ? reinterpret_cast<uintptr_t>(*module) : 0;
+        if (size == 0 || base > (std::numeric_limits<uintptr_t>::max)() - size) {
+            return false;
+        }
+        const auto end = base + size;
+        return uevr::post_init::validates_source_slot_body(fn, [=](uintptr_t address) -> std::span<const uint8_t> {
+            if (address < base || address >= end) { return {}; }
+            const auto limit = address + (std::min)(size_t{15}, end - address);
+            auto cursor = address;
+            while (cursor < limit) {
+                MEMORY_BASIC_INFORMATION mbi{};
+                if (VirtualQuery(reinterpret_cast<void*>(cursor), &mbi, sizeof(mbi)) == 0 ||
+                    mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
+                    break;
+                }
+                const auto protection = mbi.Protect & 0xff;
+                if (protection != PAGE_EXECUTE_READ && protection != PAGE_EXECUTE_READWRITE &&
+                    protection != PAGE_EXECUTE_WRITECOPY) { break; }
+                const auto region_base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+                if (mbi.RegionSize > (std::numeric_limits<uintptr_t>::max)() - region_base ||
+                    region_base + mbi.RegionSize <= cursor) { break; }
+                cursor = (std::min)(limit, region_base + mbi.RegionSize);
+            }
+            return {reinterpret_cast<const uint8_t*>(address), cursor - address};
+        });
+    };
+    const auto object_looks_valid = validate_body(object_fn);
+    const auto localplayer_looks_valid = object_fn == localplayer_fn
+        ? object_looks_valid : validate_body(localplayer_fn);
 
     if (!object_looks_valid || !localplayer_looks_valid)
     {
@@ -9043,10 +9075,16 @@ std::optional<uint32_t> resolve_post_init_properties_index_from_uobject(uintptr_
                 UE54_PLUS_POST_INIT_PROPERTIES_SLOT,
                 "UE5.4+ UObject::PostInitProperties",
                 false,
-                is_ue_5_4_dx_backend()))
+                false,
+                true))
         {
             return UE54_PLUS_POST_INIT_PROPERTIES_SLOT;
         }
+        // A plausible neighboring method is not evidence of this ABI. In
+        // UE5.8 development builds slot 9 is GetDetailedInfoInternal, not a
+        // PostInitProperties replacement, and calling it corrupts its output.
+        SPDLOG_WARN("[PostInitProperties] UE5.4+ slot 10 did not validate; skipping LocalPlayer bootstrap for safety");
+        return std::nullopt;
     }
 
     // Keep the nearby slots as a fail-closed fallback for unusual/custom layouts.
@@ -30478,7 +30516,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         idx = resolve_post_init_properties_index_from_uobject(localplayer);
     }
 
-    if ((ue425_426_post_init || prospi_ue427_post_init || ue51_post_init || ue52_post_init || ue53_post_init) && !idx) {
+    if (needs_source_informed_post_init && !idx) {
         if (ue425_426_post_init) {
             g_hook->m_native_stereo_localplayer_bootstrap_failed.store(true, std::memory_order_release);
         }
@@ -30487,7 +30525,7 @@ void FFakeStereoRenderingHook::post_init_properties(uintptr_t localplayer) {
         return;
     }
 
-    for (auto i = 1; !idx && i < 25; ++i) {
+    for (auto i = 1; uevr::post_init::may_scan_legacy_virtuals(needs_source_informed_post_init, idx.has_value()) && i < 25; ++i) {
         if (idx) {
             break;
         }
