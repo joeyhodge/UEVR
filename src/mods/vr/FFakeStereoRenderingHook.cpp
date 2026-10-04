@@ -70,6 +70,7 @@
 #include <sdk/APawn.hpp>
 #include <sdk/APlayerController.hpp>
 #include <sdk/USceneCaptureComponent2D.hpp>
+#include "utility/SceneCaptureLifecycle.hpp"
 #include <sdk/FTextureRenderTargetResource.hpp>
 
 #include "Framework.hpp"
@@ -40128,6 +40129,17 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         bodycam_ue554_is_current_game() &&
         g_framework != nullptr &&
         g_framework->is_dx12();
+    // UE4.26-UE5.8 AddComponentByClass and the SDK's deferred fallback support
+    // configuring before registration. Keep earlier/custom factory timing.
+    const auto supports_deferred_configuration =
+        deadzone2_is_current_game() ||
+        is_ue_4_26_runtime() || is_ue_4_27_runtime() ||
+        is_ue_5_0_to_5_3_runtime() || is_ue_5_4_dx_backend() ||
+        is_ue_5_5_dx_backend() || is_ue_5_6_dx_backend() ||
+        is_ue_5_7_runtime() || is_ue_5_8();
+    const auto component_plan = uevr::scene_capture::component_plan(
+        use_daysgone_legacy_component, use_bodycam_passive_capture_holder,
+        supports_deferred_configuration);
     if (use_daysgone_legacy_component) {
         // UE4.11 UGameplayStatics::SpawnObject rejects UActorComponent classes.
         // Construct and register this transient component through validated
@@ -40137,13 +40149,8 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             scene_capture_c,
             world);
     } else {
-        // Deadzone2's AddComponentByClass completes and registers immediately
-        // when bDeferredFinish is false. This path assigns the texture before
-        // finishing, so defer it and invoke FinishAddComponent exactly once.
-        const auto defer_component_finish =
-            deadzone2_is_current_game() || use_bodycam_passive_capture_holder;
         this->scene_capture_component = static_cast<sdk::USceneCaptureComponent2D*>(
-            this->scene_capture_actor->add_component_by_class(scene_capture_c, defer_component_finish));
+            this->scene_capture_actor->add_component_by_class(scene_capture_c, component_plan.deferred_add));
     }
 
     if (this->scene_capture_component == nullptr) {
@@ -40181,9 +40188,6 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     sdk::UObjectReference tgt{tgt_raw};
 
     SPDLOG_INFO("[VRRenderTargetManager] Created texture target: {:x}", (uintptr_t)tgt.get());
-    if (!use_daysgone_legacy_component && !use_bodycam_passive_capture_holder) {
-        this->scene_capture_actor->finish_add_component(this->scene_capture_component);
-    }
 
     if (use_bodycam_passive_capture_holder) {
         // Bodycam processes registered scene captures at the start of
@@ -40209,6 +40213,10 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
         if (auto capture_every_frame = scene_capture_c->find_property(L"bCaptureEveryFrame"); capture_every_frame != nullptr) {
             *capture_every_frame->get_data<bool>(this->scene_capture_component) = false;
         }
+    }
+
+    if (component_plan.finish_after_configuration) {
+        this->scene_capture_actor->finish_add_component(this->scene_capture_component);
     }
 
     static bool already_updated{false};
