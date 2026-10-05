@@ -6803,8 +6803,24 @@ bool ue55_dx12_try_get_native_resource_direct(
 
     std::array<size_t, 2> direct_slots{};
     size_t direct_slot_count = 2;
+    const uevr::sw_zero_company::BinaryLayout* exact_swzc_layout{};
 
-    if (*desc_offset == 0xe0) {
+    if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
+        const auto* const layout = sw_zero_company_ue56_binary_layout();
+        if (layout == nullptr) {
+            return false;
+        }
+        if (layout->native_resource != nullptr) {
+            exact_swzc_layout = layout;
+        }
+    }
+
+    if (exact_swzc_layout != nullptr) {
+        // The descriptor offset does not identify the virtual-call ABI. In this
+        // build slot 4 is a hidden-sret bindless getter, not a native resource.
+        direct_slots = {uevr::sw_zero_company::native_resource_slot, 0ull};
+        direct_slot_count = 1;
+    } else if (*desc_offset == 0xe0) {
         // Confirmed from Redemption's UE5.6 FD3D12Texture vtable/PDB.
         direct_slots = {7ull, 0ull};
         direct_slot_count = 1;
@@ -6823,6 +6839,24 @@ bool ue55_dx12_try_get_native_resource_direct(
             !utility::get_module_within(reinterpret_cast<void*>(fn)).has_value())
         {
             continue;
+        }
+
+        if (exact_swzc_layout != nullptr) {
+            const auto executable = reinterpret_cast<uintptr_t>(utility::get_executable());
+            const auto code_size = exact_swzc_layout->native_resource->getter_code.size();
+            if (!is_executable_process_range(fn, code_size) ||
+                !uevr::sw_zero_company::matches_native_resource_accessor(*exact_swzc_layout, executable,
+                    reinterpret_cast<uintptr_t>(vtable), fn,
+                    {reinterpret_cast<const uint8_t*>(fn), code_size}))
+            {
+                SPDLOG_WARNING_EVERY_N_SEC(2,
+                    "[SWZeroCompany][UE5.6][SlateUI] Rejected native getter contract for {} rhi={:x} vtable={:x} slot={} fn={:x}; no speculative fallback",
+                    source != nullptr ? source : "<unknown>", reinterpret_cast<uintptr_t>(texture),
+                    reinterpret_cast<uintptr_t>(vtable), slot, fn);
+                return false;
+            }
+            SPDLOG_INFO_ONCE("[SWZeroCompany][UE5.6][SlateUI] Using validated GetNativeResource slot {} for revision {}; bindless getter is not probed",
+                slot, exact_swzc_layout->revision);
         }
 
         auto* native_raw = call_get_native_resource_guarded(texture, fn);
@@ -38048,8 +38082,16 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
     {
         return false;
     }
-    auto* native = ue58_owned_resource != nullptr
-        ? validated_native : reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource());
+    const auto* const swzc_layout = sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()
+        ? sw_zero_company_ue56_binary_layout() : nullptr;
+    auto* native = ue58_owned_resource != nullptr ? validated_native
+        : uevr::sw_zero_company::resolve_native_resource(swzc_layout,
+            [&]() -> IUnknown* {
+                ID3D12Resource* resource{};
+                return ue55_dx12_try_get_native_resource_direct(rhi_texture,
+                    "SWZeroCompany Native Fix capture publication", &resource) ? resource : nullptr;
+            },
+            [&]() -> IUnknown* { return reinterpret_cast<IUnknown*>(rhi_texture->get_native_resource()); });
     if (native == nullptr) {
         return false;
     }
@@ -38769,6 +38811,34 @@ bool VRRenderTargetManager_Base::is_sw_zero_company_dedicated_ui_target_prepared
 
     return rt != nullptr &&
         g_sw_zero_company_active_dedicated_ui_target.load(std::memory_order_acquire) == rt;
+}
+
+bool VRRenderTargetManager_Base::try_get_sw_zero_company_pinned_ui_resource(
+    FRHITexture2D* rt, ID3D12Resource*& native) const
+{
+    native = nullptr;
+    if (!sw_zero_company_ue56_is_current_game() || !is_ue_5_6_dx12_backend()) {
+        return false;
+    }
+    const auto* const layout = sw_zero_company_ue56_binary_layout();
+    if (layout == nullptr || layout->native_resource == nullptr) {
+        return false;
+    }
+
+    // Both wrappers are already retained for process lifetime. Consume the
+    // validated native pointer without restarting the generic virtual-call scan.
+    std::scoped_lock lock{g_sw_zero_company_dedicated_ui_lifetime_mutex};
+    const auto active = g_sw_zero_company_active_dedicated_ui_target.load(std::memory_order_acquire);
+    for (const auto& retained : g_sw_zero_company_retained_dedicated_ui_targets) {
+        if (uevr::sw_zero_company::matches_pinned_ui_target(reinterpret_cast<uintptr_t>(rt),
+                reinterpret_cast<uintptr_t>(active), reinterpret_cast<uintptr_t>(retained.rhi_texture),
+                reinterpret_cast<uintptr_t>(retained.native_resource)))
+        {
+            native = retained.native_resource;
+            break;
+        }
+    }
+    return true; // A pending/mismatched target must not fall through to speculative calls.
 }
 
 bool VRRenderTargetManager_Base::prepare_sw_zero_company_dedicated_ui_target(
@@ -39735,6 +39805,26 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     }
 
     auto existing_target = get_dedicated_ui_target();
+
+    ID3D12Resource* swzc_native{};
+    if (try_get_sw_zero_company_pinned_ui_resource(existing_target, swzc_native)) {
+        // Slate maintenance must use the same retained native resource as the
+        // presenter, including resize recovery. Never re-enter SDK slot discovery.
+        if (existing_target != nullptr) {
+            D3D12_RESOURCE_DESC desc{};
+            if (swzc_native != nullptr && get_d3d12_resource_desc_guarded(swzc_native, desc) &&
+                desc.Width == dedicated_ui_width && desc.Height == dedicated_ui_height)
+            {
+                return;
+            }
+            destroy_dedicated_ui_target();
+            return;
+        }
+        if (!is_dedicated_ui_target_pending()) {
+            try_schedule_dedicated_ui_creation();
+        }
+        return;
+    }
 
     if (uevr::nascar::is_target()) {
         const auto snapshot = get_nascar_ui_target_snapshot();
