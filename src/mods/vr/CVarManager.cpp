@@ -22,6 +22,7 @@
 #include "Framework.hpp"
 
 #include "CVarManager.hpp"
+#include "SatisfactoryRuntime.hpp"
 #include "mods/VR.hpp"
 #include "utility/ImGui.hpp"
 #include "utility/Logging.hpp"
@@ -1452,10 +1453,27 @@ void CVarManager::CVarStandard::freeze() {
     };
 }
 
+bool CVarManager::CVar::update_satisfactory_interface(sdk::IConsoleVariable*& variable) {
+    if (!uevr::satisfactory::is_current_runtime() || !uevr::satisfactory::recover_console_variable(m_name)) {
+        return false;
+    }
+
+    if (variable == nullptr && uevr::satisfactory::console_abi_ready() &&
+        m_satisfactory_interface_retry.begin(diagnostic_now_ms())) {
+        variable = uevr::satisfactory::find_console_variable(m_name, m_type == Type::FLOAT);
+        if (variable == nullptr && m_satisfactory_interface_retry.attempts == uevr::satisfactory::ConsoleRetry::max_attempts) {
+            SPDLOG_WARN("[Satisfactory][CVar] {} interface did not validate; leaving it unavailable without raw-data fallback",
+                utility::narrow(m_name));
+        }
+    }
+    return true;
+}
+
 void CVarManager::CVarStandard::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (m_cvar == nullptr && m_interface_cvar == nullptr) {
+        if (update_satisfactory_interface(m_interface_cvar)) { return; }
         if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
             m_interface_fallback_attempted = true;
             m_interface_cvar = sdk::find_validated_console_variable(m_name);
@@ -1717,6 +1735,7 @@ void CVarManager::CVarData::update() {
     ZoneScopedN(__FUNCTION__);
 
     if (!m_cvar_data && m_interface_cvar == nullptr) {
+        if (update_satisfactory_interface(m_interface_cvar)) { return; }
         if (is_stalker2_ue55_current_game_for_cvars() || sdk::should_use_ue57_console_manager_interface()) {
             m_interface_fallback_attempted = true;
             m_interface_cvar = sdk::find_validated_console_variable(m_name);
