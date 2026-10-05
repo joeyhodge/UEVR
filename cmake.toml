@@ -204,6 +204,64 @@ cmake-after = """
 add_test(NAME diagnostic-safety-tests COMMAND diagnostic-safety-tests)
 """
 
+[target.prospi-camera-trace-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/ProSpiCameraTraceTests.cpp", "src/mods/vr/ProSpiCameraTrace.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests)
+set_tests_properties(prospi-camera-trace-tests PROPERTIES TIMEOUT 30)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME prospi-camera-trace-analyzer-tests COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ProSpiCameraTraceAnalyzerTests.py")
+    set_tests_properties(prospi-camera-trace-analyzer-tests PROPERTIES TIMEOUT 30)
+endif()
+"""
+
+[target.prospi-camera-framing-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/ProSpiCameraFramingTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME prospi-camera-framing-tests COMMAND prospi-camera-framing-tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-framing.json")
+set_tests_properties(prospi-camera-framing-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.prospi-celebration-framing-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/ProSpiCelebrationFramingTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json", "glm"]
+cmake-after = """
+add_test(NAME prospi-celebration-framing-tests COMMAND prospi-celebration-framing-tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-celebration.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-framing.json")
+set_tests_properties(prospi-celebration-framing-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.prospi-roof-visibility-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/ProSpiRoofVisibilityTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["bddisasm", "nlohmann_json"]
+cmake-after = """
+add_test(NAME prospi-roof-visibility-tests COMMAND prospi-roof-visibility-tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-stadium-visibility.json")
+set_tests_properties(prospi-roof-visibility-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.kananlib-decode-window-tests]
 condition = "compatibility-policy-tests"
 type = "executable"

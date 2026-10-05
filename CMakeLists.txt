@@ -573,6 +573,203 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target prospi-camera-trace-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET prospi-camera-trace-tests)
+	set(prospi-camera-trace-tests_SOURCES "")
+
+	list(APPEND prospi-camera-trace-tests_SOURCES
+		"tests/ProSpiCameraTraceTests.cpp"
+		"src/mods/vr/ProSpiCameraTrace.cpp"
+	)
+
+	list(APPEND prospi-camera-trace-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${prospi-camera-trace-tests_SOURCES})
+	add_executable(prospi-camera-trace-tests)
+
+	if(prospi-camera-trace-tests_SOURCES)
+		target_sources(prospi-camera-trace-tests PRIVATE ${prospi-camera-trace-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT prospi-camera-trace-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${prospi-camera-trace-tests_SOURCES})
+
+	target_compile_features(prospi-camera-trace-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(prospi-camera-trace-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(prospi-camera-trace-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests)
+	set_tests_properties(prospi-camera-trace-tests PROPERTIES TIMEOUT 30)
+	find_package(Python3 COMPONENTS Interpreter QUIET)
+	if(Python3_Interpreter_FOUND)
+	    add_test(NAME prospi-camera-trace-analyzer-tests COMMAND "${Python3_EXECUTABLE}"
+	        "${CMAKE_CURRENT_SOURCE_DIR}/tests/ProSpiCameraTraceAnalyzerTests.py")
+	    set_tests_properties(prospi-camera-trace-analyzer-tests PROPERTIES TIMEOUT 30)
+	endif()
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target prospi-camera-framing-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET prospi-camera-framing-tests)
+	set(prospi-camera-framing-tests_SOURCES "")
+
+	list(APPEND prospi-camera-framing-tests_SOURCES
+		"tests/ProSpiCameraFramingTests.cpp"
+	)
+
+	list(APPEND prospi-camera-framing-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${prospi-camera-framing-tests_SOURCES})
+	add_executable(prospi-camera-framing-tests)
+
+	if(prospi-camera-framing-tests_SOURCES)
+		target_sources(prospi-camera-framing-tests PRIVATE ${prospi-camera-framing-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT prospi-camera-framing-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${prospi-camera-framing-tests_SOURCES})
+
+	target_compile_features(prospi-camera-framing-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(prospi-camera-framing-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(prospi-camera-framing-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME prospi-camera-framing-tests COMMAND prospi-camera-framing-tests
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-framing.json")
+	set_tests_properties(prospi-camera-framing-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target prospi-celebration-framing-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET prospi-celebration-framing-tests)
+	set(prospi-celebration-framing-tests_SOURCES "")
+
+	list(APPEND prospi-celebration-framing-tests_SOURCES
+		"tests/ProSpiCelebrationFramingTests.cpp"
+	)
+
+	list(APPEND prospi-celebration-framing-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${prospi-celebration-framing-tests_SOURCES})
+	add_executable(prospi-celebration-framing-tests)
+
+	if(prospi-celebration-framing-tests_SOURCES)
+		target_sources(prospi-celebration-framing-tests PRIVATE ${prospi-celebration-framing-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT prospi-celebration-framing-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${prospi-celebration-framing-tests_SOURCES})
+
+	target_compile_features(prospi-celebration-framing-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(prospi-celebration-framing-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(prospi-celebration-framing-tests PRIVATE
+		nlohmann_json
+		glm
+	)
+
+	add_test(NAME prospi-celebration-framing-tests COMMAND prospi-celebration-framing-tests
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-celebration.json"
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-tokyo-dome-framing.json")
+	set_tests_properties(prospi-celebration-framing-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target prospi-roof-visibility-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET prospi-roof-visibility-tests)
+	set(prospi-roof-visibility-tests_SOURCES "")
+
+	list(APPEND prospi-roof-visibility-tests_SOURCES
+		"tests/ProSpiRoofVisibilityTests.cpp"
+	)
+
+	list(APPEND prospi-roof-visibility-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${prospi-roof-visibility-tests_SOURCES})
+	add_executable(prospi-roof-visibility-tests)
+
+	if(prospi-roof-visibility-tests_SOURCES)
+		target_sources(prospi-roof-visibility-tests PRIVATE ${prospi-roof-visibility-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT prospi-roof-visibility-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${prospi-roof-visibility-tests_SOURCES})
+
+	target_compile_features(prospi-roof-visibility-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(prospi-roof-visibility-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(prospi-roof-visibility-tests PRIVATE
+		bddisasm
+		nlohmann_json
+	)
+
+	add_test(NAME prospi-roof-visibility-tests COMMAND prospi-roof-visibility-tests
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-stadium-visibility.json")
+	set_tests_properties(prospi-roof-visibility-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target kananlib-decode-window-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET kananlib-decode-window-tests)
@@ -1500,6 +1697,9 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/IXRTrackingSystemHook.cpp"
 	"src/mods/vr/KtjLOpenXRFactory.cpp"
 	"src/mods/vr/OverlayComponent.cpp"
+	"src/mods/vr/ProSpiCameraProbe.cpp"
+	"src/mods/vr/ProSpiCameraTrace.cpp"
+	"src/mods/vr/ProSpiRoofVisibility.cpp"
 	"src/mods/vr/RenderTargetPoolHook.cpp"
 	"src/mods/vr/UE57SlateSymbols.cpp"
 	"src/mods/vr/UIAlpha.cpp"
@@ -1589,6 +1789,13 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/NativeFrameDiagnostics.hpp"
 	"src/mods/vr/NativeFrameDiagnosticsJson.hpp"
 	"src/mods/vr/OverlayComponent.hpp"
+	"src/mods/vr/ProSpiCameraFraming.hpp"
+	"src/mods/vr/ProSpiCameraProbe.hpp"
+	"src/mods/vr/ProSpiCameraTrace.hpp"
+	"src/mods/vr/ProSpiCelebrationFraming.hpp"
+	"src/mods/vr/ProSpiRoofVisibility.hpp"
+	"src/mods/vr/ProSpiRoofVisibilityCode.hpp"
+	"src/mods/vr/ProSpiRoofVisibilityPolicy.hpp"
 	"src/mods/vr/RenderTargetPoolHook.hpp"
 	"src/mods/vr/RenderingMethodSetting.hpp"
 	"src/mods/vr/SWZeroCompanyBinary.hpp"
@@ -1635,7 +1842,10 @@ list(APPEND uevr_SOURCES
 	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/NascarHookCompatibility.hpp"
 	"src/utility/OpaqueStateRegistry.hpp"
+	"src/utility/PostInitCodeMemory.hpp"
+	"src/utility/PostInitValidation.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
+	"src/utility/SceneCaptureLifecycle.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/utility/UObjectAllocatorDiscovery.hpp"
 	"src/utility/UObjectArrayBrowser.hpp"

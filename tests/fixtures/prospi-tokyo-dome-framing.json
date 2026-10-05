@@ -1,0 +1,3301 @@
+{
+  "schema": 1,
+  "source_session": "session-11867238994400",
+  "stadium": "Tokyo Dome",
+  "notes": [
+    "Captured input, selected matches and parameters; not authoritative phase/ball/geometry.",
+    "Soft-good overlapping cinematic rigs can also change in the experimental mode; labels are not training targets.",
+    "Existing modes must remain no-op for every fixture.",
+    "The recorded center-field floor was 175 cm; this is a configured estimate, not measured stadium geometry."
+  ],
+  "fixtures": [
+    {
+      "name": "bad_cinema_low_0",
+      "cut": 5,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            5.235920429229736,
+            -91.67838287353516,
+            -2.1433774577417353e-07
+          ],
+          "fov": 7.735723495483398
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 7.727987766265869,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "bad_cinema_low_74",
+      "cut": 5,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            5.37423849105835,
+            -92.13719940185547,
+            2.1438580688482034e-07
+          ],
+          "fov": 7.594701290130615
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 7.587106704711914,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "bad_cinema_low_148",
+      "cut": 5,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -370.0,
+            40.0
+          ],
+          "rotation": [
+            4.9440460205078125,
+            -92.31143951416016,
+            0.0
+          ],
+          "fov": 7.453906059265137
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 7.4464521408081055,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "bad_cinema_safety_0",
+      "cut": 9,
+      "recorded_focus": 7600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            6710.00048828125,
+            -7470.0,
+            1750.0
+          ],
+          "rotation": [
+            -33.34847640991211,
+            167.18838500976562,
+            5.110320557832893e-07
+          ],
+          "fov": 5.470385551452637
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 7600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.4649152755737305,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "bad_cinema_safety_74",
+      "cut": 9,
+      "recorded_focus": 7600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            6710.0,
+            -7470.0,
+            1750.0
+          ],
+          "rotation": [
+            -33.3552131652832,
+            167.1583709716797,
+            0.0
+          ],
+          "fov": 5.469758987426758
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 7600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.46428918838501,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "bad_cinema_safety_148",
+      "cut": 9,
+      "recorded_focus": 7600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            6710.0,
+            -7470.0,
+            1750.0
+          ],
+          "rotation": [
+            -33.379695892333984,
+            167.08445739746094,
+            0.0
+          ],
+          "fov": 5.469134330749512
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 7600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.46366548538208,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "soft_good_cinema_overlap_0",
+      "cut": 55,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -1.711754560470581,
+            83.76754760742188,
+            -5.338467090609811e-08
+          ],
+          "fov": 1.1191085577011108
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.339829719354,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9977904558181763,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9839215278625488,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9755762815475464,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "soft_good_cinema_overlap_75",
+      "cut": 55,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -1.730708360671997,
+            83.68978118896484,
+            5.338520736586361e-08
+          ],
+          "fov": 1.189526915550232
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.007363459614,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9978784322738647,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9842351675033569,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9751268625259399,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "soft_good_cinema_overlap_149",
+      "cut": 55,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -1.7382489442825317,
+            83.65287780761719,
+            1.0677083395194131e-07
+          ],
+          "fov": 1.2590042352676392
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9616.841470165646,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9979574680328369,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9843703508377075,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9748913049697876,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "soft_good_cinema_pan_0",
+      "cut": 67,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -2.235227108001709,
+            71.57136535644531,
+            1.0680295758902503e-07
+          ],
+          "fov": 2.4169819355010986
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9571.080895189209,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9881141781806946,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9519383311271667,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8749831914901733,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "soft_good_cinema_pan_75",
+      "cut": 67,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -2.2365384101867676,
+            71.59529876708984,
+            3.204091569841694e-07
+          ],
+          "fov": 2.42148494720459
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9571.160601749056,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9881866574287415,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.952109694480896,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8752219676971436,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "soft_good_cinema_pan_149",
+      "cut": 67,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1150.0,
+            -11000.0,
+            480.0
+          ],
+          "rotation": [
+            -2.2358691692352295,
+            71.89835357666016,
+            1.0680300732701653e-07
+          ],
+          "fov": 2.4259276390075684
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9572.180206236553,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9891639947891235,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9542605876922607,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8783159852027893,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_0",
+      "cut": 89,
+      "recorded_focus": 1073.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -15.580001831054688,
+            309.5,
+            99.39999389648438
+          ],
+          "rotation": [
+            -2.1773343086242676,
+            -87.2078857421875,
+            2.1359761603889638e-07
+          ],
+          "fov": 69.7025146484375
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1073.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 69.6328125,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "behind_plate_9",
+      "cut": 89,
+      "recorded_focus": 1073.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -15.580001831054688,
+            309.5,
+            99.39999389648438
+          ],
+          "rotation": [
+            -2.1773343086242676,
+            -87.2078857421875,
+            2.1359761603889638e-07
+          ],
+          "fov": 69.7025146484375
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1073.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 69.6328125,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "behind_plate_17",
+      "cut": 89,
+      "recorded_focus": 1073.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -15.580001831054688,
+            309.5,
+            99.39999389648438
+          ],
+          "rotation": [
+            -2.1773343086242676,
+            -87.2078857421875,
+            2.1359761603889638e-07
+          ],
+          "fov": 69.7025146484375
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1073.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 69.6328125,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "behind_plate_learned_0",
+      "cut": 91,
+      "recorded_focus": 789.996337890625,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            52.22053527832031,
+            549.709228515625,
+            89.9859619140625
+          ],
+          "rotation": [
+            0.0,
+            -95.26073455810547,
+            0.0
+          ],
+          "fov": 36.63308334350586
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 789.9962949757723,
+        "legacy_ceiling": 4400,
+        "effective_fov": 36.59645080566406,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              52.22053527832031,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -95.26073455810547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 733.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -52.2205810546875,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -84.73925018310547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 720.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9655296802520752,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9245940446853638,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_learned_11",
+      "cut": 91,
+      "recorded_focus": 789.996337890625,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            52.22053527832031,
+            549.709228515625,
+            89.9859619140625
+          ],
+          "rotation": [
+            0.0,
+            -95.26073455810547,
+            0.0
+          ],
+          "fov": 36.63308334350586
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 789.9962949757723,
+        "legacy_ceiling": 4400,
+        "effective_fov": 36.59645080566406,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              52.22053527832031,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -95.26073455810547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 733.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -52.2205810546875,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -84.73925018310547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 720.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9655296802520752,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9245940446853638,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_learned_21",
+      "cut": 91,
+      "recorded_focus": 789.996337890625,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            52.22053527832031,
+            549.709228515625,
+            89.9859619140625
+          ],
+          "rotation": [
+            0.0,
+            -95.26073455810547,
+            0.0
+          ],
+          "fov": 36.63308334350586
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 789.9962949757723,
+        "legacy_ceiling": 4400,
+        "effective_fov": 36.59645080566406,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              52.22053527832031,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -95.26073455810547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 733.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -52.2205810546875,
+              549.709228515625,
+              89.9859619140625
+            ],
+            "rotation": [
+              0.0,
+              -84.73925018310547,
+              0.0
+            ],
+            "fov": 36.63308334350586
+          },
+          "focus": 720.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9655296802520752,
+          "center_field_family": false
+        },
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9245940446853638,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_single_match_0",
+      "cut": 93,
+      "recorded_focus": 933.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -13.666481018066406,
+            800.19775390625,
+            79.98595428466797
+          ],
+          "rotation": [
+            1.2440096139907837,
+            -89.0252685546875,
+            0.0
+          ],
+          "fov": 26.003026962280273
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 933.0,
+        "legacy_ceiling": 5500,
+        "effective_fov": 25.97702407836914,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_single_match_48",
+      "cut": 93,
+      "recorded_focus": 933.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -13.666481018066406,
+            800.19775390625,
+            79.98595428466797
+          ],
+          "rotation": [
+            1.2440096139907837,
+            -89.0252685546875,
+            0.0
+          ],
+          "fov": 26.003026962280273
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 933.0,
+        "legacy_ceiling": 5500,
+        "effective_fov": 25.97702407836914,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "behind_plate_single_match_96",
+      "cut": 93,
+      "recorded_focus": 933.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -13.666481018066406,
+            800.19775390625,
+            79.98595428466797
+          ],
+          "rotation": [
+            1.2440096139907837,
+            -89.0252685546875,
+            0.0
+          ],
+          "fov": 26.003026962280273
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 933.0,
+        "legacy_ceiling": 5500,
+        "effective_fov": 25.97702407836914,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -13.666481018066406,
+              800.19775390625,
+              79.98595428466797
+            ],
+            "rotation": [
+              1.2440096139907837,
+              -89.0252685546875,
+              0.0
+            ],
+            "fov": 26.003026962280273
+          },
+          "focus": 933.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 1.0,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "ground_ball_sweep_0",
+      "cut": 103,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            662.4655151367188,
+            1965.969482421875,
+            1000.0
+          ],
+          "rotation": [
+            -16.858428955078125,
+            -109.2249526977539,
+            -8.921128937799949e-07
+          ],
+          "fov": 53.627567291259766
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 53.57394027709961,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_sweep_75",
+      "cut": 103,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            -265.32537841796875,
+            259.56939697265625,
+            1085.9986572265625
+          ],
+          "rotation": [
+            -18.15187644958496,
+            -104.83982849121094,
+            8.98487712674978e-07
+          ],
+          "fov": 42.16443634033203
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 42.12227249145508,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_sweep_149",
+      "cut": 103,
+      "recorded_focus": 1038.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            1702.7100830078125,
+            1407.7183837890625,
+            1381.994140625
+          ],
+          "rotation": [
+            -22.723224639892578,
+            -90.0,
+            0.0
+          ],
+          "fov": 37.076210021972656
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 1038.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 37.03913497924805,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_stands_0",
+      "cut": 105,
+      "recorded_focus": 3600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            3260.0,
+            2830.0,
+            1300.0
+          ],
+          "rotation": [
+            -11.746094703674316,
+            -125.02860260009766,
+            0.0
+          ],
+          "fov": 2.8304076194763184
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 3600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_stands_72",
+      "cut": 105,
+      "recorded_focus": 3600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            3260.0,
+            2830.0,
+            1300.0
+          ],
+          "rotation": [
+            -11.768524169921875,
+            -125.17483520507812,
+            4.360528009783593e-07
+          ],
+          "fov": 2.8411483764648438
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 3600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_stands_144",
+      "cut": 105,
+      "recorded_focus": 3600.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            3260.0,
+            2830.0,
+            1300.0
+          ],
+          "rotation": [
+            -11.87267780303955,
+            -125.74114990234375,
+            4.3621875533972343e-07
+          ],
+          "fov": 2.8499350547790527
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 3600.0,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_outfield_0",
+      "cut": 109,
+      "recorded_focus": 4400.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            5749.99951171875,
+            -9239.9990234375,
+            920.0
+          ],
+          "rotation": [
+            11.83493423461914,
+            18.160320281982422,
+            2.1807919381444663e-07
+          ],
+          "fov": 58.905242919921875
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 4400.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 58.84634017944336,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_outfield_64",
+      "cut": 109,
+      "recorded_focus": 4400.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            5749.99951171875,
+            -9239.9990234375,
+            920.0
+          ],
+          "rotation": [
+            7.379930019378662,
+            21.782453536987305,
+            1.0761314683804812e-07
+          ],
+          "fov": 63.3838996887207
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": false,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 4400.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 63.320518493652344,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": []
+    },
+    {
+      "name": "ground_ball_outfield_127",
+      "cut": 109,
+      "recorded_focus": 3680.0,
+      "expected_accepted": false,
+      "request": {
+        "camera": {
+          "location": [
+            5749.99951171875,
+            -9239.9990234375,
+            920.0
+          ],
+          "rotation": [
+            3.7173917293548584,
+            24.68647003173828,
+            -5.3473357297662005e-08
+          ],
+          "fov": 65.65046691894531
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": false,
+        "protected_risk": false,
+        "focus": 3680.0,
+        "legacy_ceiling": 4400,
+        "effective_fov": 65.58482360839844,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              5699.9755859375,
+              -9293.64453125,
+              936.4630737304688
+            ],
+            "rotation": [
+              -5.190977573394775,
+              37.50046920776367,
+              0.0
+            ],
+            "fov": 65.65056610107422
+          },
+          "focus": 3680.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9283658266067505,
+          "center_field_family": false
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_0",
+      "cut": 119,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1042.9892578125,
+            -10992.564453125,
+            524.0
+          ],
+          "rotation": [
+            -2.3770968914031982,
+            84.17594909667969,
+            0.0
+          ],
+          "fov": 2.932896137237549
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.932917038881,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9992982149124146,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9808065295219421,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9745862483978271,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_84",
+      "cut": 119,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1042.989013671875,
+            -10992.564453125,
+            524.0
+          ],
+          "rotation": [
+            -2.3770968914031982,
+            84.17594909667969,
+            0.0
+          ],
+          "fov": 2.932896137237549
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.932917038881,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9992982149124146,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9808065295219421,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9745862483978271,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_167",
+      "cut": 119,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1042.989013671875,
+            -10992.564453125,
+            524.0
+          ],
+          "rotation": [
+            -2.3770968914031982,
+            84.17594909667969,
+            0.0
+          ],
+          "fov": 2.932896137237549
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.932917038881,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9992982149124146,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9808065295219421,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9745862483978271,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_high_0",
+      "cut": 122,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -11000.8994140625,
+            2097.10009765625
+          ],
+          "rotation": [
+            -11.29296588897705,
+            89.99998474121094,
+            -4.353150586666743e-07
+          ],
+          "fov": 6.193209171295166
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9893.667994346753,
+        "legacy_ceiling": 7600,
+        "effective_fov": 6.187016487121582,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8594472408294678,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8387542963027954,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_high_119",
+      "cut": 122,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -11000.8994140625,
+            2097.10009765625
+          ],
+          "rotation": [
+            -11.29296588897705,
+            89.99998474121094,
+            -4.353150586666743e-07
+          ],
+          "fov": 6.193209171295166
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9893.667994346753,
+        "legacy_ceiling": 7600,
+        "effective_fov": 6.187016487121582,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8594472408294678,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8387542963027954,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_high_238",
+      "cut": 122,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            0.0,
+            -11000.8994140625,
+            2097.10009765625
+          ],
+          "rotation": [
+            -11.29296588897705,
+            89.99998474121094,
+            -4.353150586666743e-07
+          ],
+          "fov": 6.193209171295166
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9893.667994346753,
+        "legacy_ceiling": 7600,
+        "effective_fov": 6.187016487121582,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8594472408294678,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.8387542963027954,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_offset_0",
+      "cut": 124,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.1151113510131836,
+            83.52117919921875,
+            0.0
+          ],
+          "fov": 3.3752853870391846
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9615.793597803699,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9979816675186157,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9817478060722351,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9704923629760742,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_offset_82",
+      "cut": 124,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.1151113510131836,
+            83.52117919921875,
+            0.0
+          ],
+          "fov": 3.3752853870391846
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9615.793597803699,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9979816675186157,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9817478060722351,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9704923629760742,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_offset_164",
+      "cut": 124,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.1151113510131836,
+            83.52117919921875,
+            0.0
+          ],
+          "fov": 3.3752853870391846
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9615.793597803699,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9979816675186157,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9817478060722351,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9704923629760742,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_repeat_0",
+      "cut": 125,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1147.59130859375,
+            -10999.6533203125,
+            484.302978515625
+          ],
+          "rotation": [
+            -2.1151113510131836,
+            83.52117919921875,
+            0.0
+          ],
+          "fov": 3.3752853870391846
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9615.793597803699,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9979816675186157,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9817478060722351,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9704923629760742,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_repeat_78",
+      "cut": 125,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -565.5952758789062,
+            -10762.92578125,
+            500.0
+          ],
+          "rotation": [
+            -2.3115203380584717,
+            86.91703796386719,
+            3.2042584052760503e-07
+          ],
+          "fov": 2.843986988067627
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9627.253642341178,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9859750866889954,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9731352925300598,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9574481248855591,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_repeat_155",
+      "cut": 125,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -565.5952758789062,
+            -10762.92578125,
+            500.0
+          ],
+          "rotation": [
+            -2.3115203380584717,
+            86.91703796386719,
+            3.2042584052760503e-07
+          ],
+          "fov": 2.843986988067627
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9627.253642341178,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9859750866889954,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9731352925300598,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9574481248855591,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_reverse_offset_0",
+      "cut": 126,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -565.5952758789062,
+            -10762.92578125,
+            500.0
+          ],
+          "rotation": [
+            -2.3115203380584717,
+            86.91703796386719,
+            3.2042584052760503e-07
+          ],
+          "fov": 2.843986988067627
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9627.253642341178,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9859750866889954,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9731352925300598,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9574481248855591,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_reverse_offset_63",
+      "cut": 126,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1042.989013671875,
+            -10992.564453125,
+            524.0
+          ],
+          "rotation": [
+            -2.3770968914031982,
+            84.17594909667969,
+            0.0
+          ],
+          "fov": 2.932896137237549
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.932917038881,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9992982149124146,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9808065295219421,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9745862483978271,
+          "center_field_family": true
+        }
+      ]
+    },
+    {
+      "name": "bad_behind_pitcher_reverse_offset_126",
+      "cut": 126,
+      "recorded_focus": 7600.0,
+      "expected_accepted": true,
+      "request": {
+        "camera": {
+          "location": [
+            -1042.989013671875,
+            -10992.564453125,
+            524.0
+          ],
+          "rotation": [
+            -2.3770968914031982,
+            84.17594909667969,
+            0.0
+          ],
+          "fov": 2.932896137237549
+        },
+        "mode": 3,
+        "prospi": true,
+        "dolly_enabled": true,
+        "sequencer_enabled": true,
+        "safety_enabled": true,
+        "exact_override": false,
+        "learned": true,
+        "eligible_family": true,
+        "protected_risk": false,
+        "focus": 9617.932917038881,
+        "legacy_ceiling": 7600,
+        "effective_fov": 5.0,
+        "base_fov": 90.0,
+        "forward_offset": 7.277410984039307,
+        "right_offset": -5.564833164215088,
+        "up_offset": 0.0,
+        "max_safety_up": 400.0,
+        "required_floor": 175.0
+      },
+      "matches": [
+        {
+          "pose": {
+            "location": [
+              -1050.0,
+              -11000.0,
+              620.0
+            ],
+            "rotation": [
+              -2.825068473815918,
+              84.00196838378906,
+              1.0685155871215102e-07
+            ],
+            "fov": 2.2317512035369873
+          },
+          "focus": 9500.0,
+          "min_fov": 17.25731658935547,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9992982149124146,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -980.0,
+              -11110.0,
+              510.0
+            ],
+            "rotation": [
+              -1.8461248874664307,
+              76.95787048339844,
+              2.1355423029945086e-07
+            ],
+            "fov": 0.991513729095459
+          },
+          "focus": 9060.0,
+          "min_fov": 16.5,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9808065295219421,
+          "center_field_family": true
+        },
+        {
+          "pose": {
+            "location": [
+              -1150.0,
+              -11000.0,
+              480.0
+            ],
+            "rotation": [
+              -1.7626327276229858,
+              92.61491394042969,
+              -5.338610975513802e-08
+            ],
+            "fov": 0.7639610171318054
+          },
+          "focus": 10307.0,
+          "min_fov": 17.286436080932617,
+          "multiplier": 0.9990000128746033,
+          "confidence": 0.9745862483978271,
+          "center_field_family": true
+        }
+      ]
+    }
+  ]
+}

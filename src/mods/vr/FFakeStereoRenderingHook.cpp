@@ -29079,6 +29079,25 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         ? (!is_full_pass && vr->take_mono_main_view_update(vr->get_runtime()->internal_frame_count))
         : true_index == 1;
 
+    std::optional<uevr::prospi::trace::Ticket> trace_view;
+    const auto trace_pose = [&]() {
+        uevr::prospi::trace::Pose p{};
+        if (has_double_precision) {
+            const auto position = (const Vector3d*)view_location;
+            p.location = {(float)position->x, (float)position->y, (float)position->z};
+            p.rotation = {(float)rot_d->pitch, (float)rot_d->yaw, (float)rot_d->roll};
+        } else {
+            p.location = {view_location->x, view_location->y, view_location->z};
+            p.rotation = {view_rotation->pitch, view_rotation->yaw, view_rotation->roll};
+        }
+        p.valid = uevr::prospi::trace::finite(p.location) && uevr::prospi::trace::finite(p.rotation);
+        return p;
+    };
+    if (!is_full_pass && vr->prospi_camera_trace().active()) {
+        auto ticket = vr->prospi_camera_trace().begin_view(trace_pose(), view_index, (int32_t)true_index, GetCurrentThreadId());
+        if (ticket) { trace_view = ticket; }
+    }
+
     if (!is_full_pass) {
         for (auto& mod : mods) {
             mod->on_early_calculate_stereo_view_offset(stereo, view_index, view_rotation, world_to_meters, view_location, g_hook->m_has_double_precision);
@@ -29156,6 +29175,18 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     // Don't apply any headset transformations
     // if we have stereo emulation mode enabled
     // it is only for debugging purposes
+    if (trace_view) {
+        auto& e = trace_view->event;
+        auto& v = e.view;
+        v.neutral = trace_pose();
+        v.neutral.fov = e.camera.dolly_enabled ? e.camera.base_fov : e.camera.effective_fov;
+        v.neutral_valid = v.neutral.valid;
+        v.forward_offset = {camera_forward.x, camera_forward.y, camera_forward.z};
+        v.right_offset = {camera_right.x, camera_right.y, camera_right.z};
+        v.up_offset = {camera_up.x, camera_up.y, camera_up.z};
+        v.world_to_meters = world_to_meters; v.world_scale = world_scale;
+        v.decoupled_pitch = vr->is_decoupled_pitch_enabled();
+    }
     if (!vr->is_stereo_emulation_enabled()) {
         const auto is_2d_screen = vr->is_using_2d_screen();
 
@@ -29273,6 +29304,11 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
     if (!is_full_pass) {
         for (auto& mod : mods) {
             mod->on_post_calculate_stereo_view_offset(stereo, view_index, view_rotation, world_to_meters, view_location, g_hook->m_has_double_precision);
+        }
+        if (trace_view) {
+            trace_view->event.view.output = trace_pose();
+            trace_view->event.view.output.fov = trace_view->event.view.neutral.fov;
+            vr->prospi_camera_trace().finish_view(*trace_view);
         }
 
         if (true_index == 0) {

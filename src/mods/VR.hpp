@@ -34,6 +34,10 @@
 
 #include "Mod.hpp"
 #include "vr/RenderingMethodSetting.hpp"
+#include "vr/ProSpiCameraProbe.hpp"
+#include "vr/ProSpiCameraFraming.hpp"
+#include "vr/ProSpiCelebrationFraming.hpp"
+#include "vr/ProSpiRoofVisibility.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -240,6 +244,8 @@ public:
     Matrix4x4f get_current_eye_transform(bool flip = false);
     Matrix4x4f get_projection_matrix(VRRuntime::Eye eye, bool flip = false);
     Matrix4x4f get_current_projection_matrix(bool flip = false);
+
+    uevr::prospi::trace::Recorder& prospi_camera_trace() noexcept { return m_prospi_camera_trace; }
 
     bool is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source = vr::k_ulInvalidInputValueHandle) const;
 
@@ -1517,12 +1523,14 @@ private:
         PROSPI_AUTO_CAMERA_SEQUENCER_OBSERVE = 0,
         PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST = 1,
         PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST = 2,
+        PROSPI_AUTO_CAMERA_SEQUENCER_CALIBRATED_FRAMING = uevr::prospi::framing::calibrated_mode,
     };
 
     static const inline std::vector<std::string> s_prospi_auto_camera_sequencer_mode_names{
         "Observe Only",
         "Assist",
         "Learned Assist",
+        "Calibrated Framing (Experimental)",
     };
 
     const std::unique_ptr<RenderingMethodSetting> m_rendering_method{
@@ -1651,6 +1659,9 @@ private:
     const ModToggle::Ptr m_prospi_remove_frame_pace{
         ModToggle::create(generate_name("ProSpiRemoveFramePace"), false)
     };
+    const ModToggle::Ptr m_prospi_show_stadium_roofs{
+        ModToggle::create(generate_name("ProSpiShowStadiumRoofs"), false)
+    };
     const ModToggle::Ptr m_match_game_fov_prospi_crowd_visibility_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiCrowdVisibilityGuard"), false) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityTriggerFOV"), 10.0f, 40.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_crowd_visibility_hold_seconds{ ModSlider::create(generate_name("MatchGameFOVProSpiCrowdVisibilityHoldSeconds"), 0.5f, 15.0f, 4.0f) };
@@ -1728,6 +1739,11 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyTelephotoTriggerFOV"), 5.0f, 60.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldYMax"), -20000.0f, 5000.0f, -6000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
+    const ModToggle::Ptr m_prospi_camera_trace_enabled{ ModToggle::create(generate_name("ProSpiCameraTrace"), false) };
+    const ModKey::Ptr m_prospi_camera_trace_bad_key{ ModKey::create(generate_name("ProSpiCameraTraceBadKey"), VK_F6) };
+    const ModKey::Ptr m_prospi_camera_trace_good_key{ ModKey::create(generate_name("ProSpiCameraTraceGoodKey"), VK_F7) };
+    const ModKey::Ptr m_prospi_camera_trace_toggle_key{ ModKey::create(generate_name("ProSpiCameraTraceToggleKey"), VK_F9) };
+    const ModString::Ptr m_prospi_camera_trace_stadium{ ModString::create(generate_name("ProSpiCameraTraceStadium"), "unspecified") };
     const ModToggle::Ptr m_match_game_fov_prospi_cinematic_camera_assist{ ModToggle::create(generate_name("MatchGameFOVProSpiCinematicCameraAssist"), false) };
     const ModCombo::Ptr m_match_game_fov_prospi_auto_camera_sequencer_mode{ ModCombo::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerMode"), s_prospi_auto_camera_sequencer_mode_names, PROSPI_AUTO_CAMERA_SEQUENCER_ASSIST) };
     const ModSlider::Ptr m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiAutoCameraSequencerTriggerFOV"), 5.0f, 60.0f, 26.0f) };
@@ -2039,6 +2055,7 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void update_prospi_camera_trace_control();
     void clear_prospi_balanced_player_visibility_cache();
     void update_prospi_player_visibility_guard();
     void attempt_hook_prospi_player_visibility();
@@ -2148,6 +2165,7 @@ public:
             *m_prospi_balanced_player_preservation,
             *m_prospi_preserve_enabled_player_models,
             *m_prospi_remove_frame_pace,
+            *m_prospi_show_stadium_roofs,
             *m_match_game_fov_prospi_crowd_visibility_guard,
             *m_match_game_fov_prospi_crowd_visibility_trigger_fov,
             *m_match_game_fov_prospi_crowd_visibility_hold_seconds,
@@ -2202,6 +2220,11 @@ public:
             *m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov,
             *m_match_game_fov_prospi_camera_safety_outfield_y_max,
             *m_match_game_fov_prospi_auto_camera_sequencer,
+            *m_prospi_camera_trace_enabled,
+            *m_prospi_camera_trace_bad_key,
+            *m_prospi_camera_trace_good_key,
+            *m_prospi_camera_trace_toggle_key,
+            *m_prospi_camera_trace_stadium,
             *m_match_game_fov_prospi_cinematic_camera_assist,
             *m_match_game_fov_prospi_auto_camera_sequencer_mode,
             *m_match_game_fov_prospi_auto_camera_sequencer_trigger_fov,
@@ -2389,6 +2412,14 @@ private:
         std::chrono::steady_clock::time_point last_seen{};
     };
     std::mutex m_prospi_camera_history_mtx{};
+    uevr::prospi::trace::Recorder m_prospi_camera_trace{};
+    uevr::prospi::trace::CameraProbe m_prospi_camera_trace_probe{};
+    uevr::prospi::roof::VisibilityGuard m_prospi_roof_visibility{};
+    std::atomic<bool> m_prospi_camera_trace_requested{};
+    std::atomic<uint32_t> m_prospi_camera_trace_markers{};
+    std::array<std::atomic<int32_t>, 3> m_prospi_camera_trace_keys{VK_F6, VK_F7, VK_F9};
+    bool m_prospi_camera_trace_start_attempted{}, m_prospi_camera_trace_previous_write{};
+    uint32_t m_prospi_camera_trace_key_edges{};
     std::deque<ProSpiCameraCutHistoryEntry> m_prospi_camera_cut_history{};
     std::string m_prospi_selected_history_camera_id{};
     uint64_t m_prospi_camera_cut_sequence{0};
@@ -2659,6 +2690,9 @@ private:
     std::atomic<float> m_prospi_auto_camera_sequencer_confidence{0.0f};
     std::atomic<float> m_prospi_auto_camera_sequencer_fov_before{0.0f};
     std::atomic<float> m_prospi_auto_camera_sequencer_fov_after{0.0f};
+    std::atomic<int32_t> m_prospi_calibrated_framing_status{0};
+    uevr::prospi::celebration::FocusContinuity m_prospi_celebration_focus;
+    uevr::prospi::trace::CameraProbe m_prospi_celebration_identity_probe;
     bool m_prospi_auto_camera_sequencer_logged_active{false};
     int32_t m_prospi_auto_camera_sequencer_logged_zone{0};
     std::string m_prospi_auto_camera_sequencer_logged_camera_id{};
