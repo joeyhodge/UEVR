@@ -15442,16 +15442,20 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_match_game_fov->draw("Match Game FOV");
 
             if (is_prospi_executable()) {
-                m_prospi_show_stadium_roofs->draw("Always Show Stadium Roof / Outfield Structure");
+                m_prospi_show_stadium_roofs->draw("Always Show Stadium Roof / Background");
                 ImGui::TextWrapped(
-                    "Default-off, all-stadium ProSpi option. Keeps validated roof/ceiling and structural outfield meshes visible across camera cuts, "
+                    "Default-off, all-stadium ProSpi option. Keeps validated roof/ceiling, structural outfield and game-confirmed background meshes visible across camera cuts, "
                     "including behind-pitcher and fielding views. Independent of Match Game FOV, camera assist and rendering mode. "
+                    "Additional exterior, glass and background pieces are learned only after the game shows them normally. "
+                    "If enabled while they are already hidden, briefly use behind the plate or Wide/Live once, then return to the desired camera. "
+                    "Learning also includes inactive variants that intentionally stay untouched. "
                     "Does not change masks, lighting, LODs, scoreboards or alternate ads; turning off restores the game's latest visibility request. "
                     "Additional stadium geometry can increase GPU cost. Open-air stadiums remain open-air.");
                 if (m_prospi_show_stadium_roofs->value()) {
-                    ImGui::Text("Stadium guard: %s | Targets: %u | Overrides: %llu",
+                    ImGui::Text("Stadium guard: %s | Targets: %u | Learning: %u | Overrides: %llu",
                         uevr::prospi::roof::status_name(m_prospi_roof_visibility.status()),
-                        m_prospi_roof_visibility.count(), (unsigned long long)m_prospi_roof_visibility.overrides());
+                        m_prospi_roof_visibility.count(), m_prospi_roof_visibility.learning_count(),
+                        (unsigned long long)m_prospi_roof_visibility.overrides());
                 }
             }
 

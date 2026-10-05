@@ -6,12 +6,13 @@
 
 namespace sdk { class UObjectBase; }
 namespace uevr::prospi::roof {
-enum class Status : uint8_t { off, waiting, active, unsupported };
+enum class Status : uint8_t { off, waiting, active, unsupported, learning };
 inline const char* status_name(Status status) {
     switch (status) {
     case Status::off: return "off";
     case Status::waiting: return "waiting for stadium geometry";
     case Status::active: return "active";
+    case Status::learning: return "learning normal stadium background";
     default: return "unsupported layout/setter (unchanged)";
     }
 }
@@ -24,6 +25,7 @@ public:
     void update(sdk::UObjectBase* viewport, bool enabled) noexcept;
     Status status() const noexcept { return m_status.load(std::memory_order_relaxed); }
     uint32_t count() const noexcept { return m_count.load(std::memory_order_relaxed); }
+    uint32_t learning_count() const noexcept { return m_learning.load(std::memory_order_relaxed); }
     uint64_t overrides() const noexcept { return m_overrides.load(std::memory_order_relaxed); }
 
 private:
@@ -31,6 +33,7 @@ private:
     std::shared_ptr<Impl> m_impl;
     std::atomic<Status> m_status{Status::off};
     std::atomic<uint32_t> m_count{};
+    std::atomic<uint32_t> m_learning{};
     std::atomic<uint64_t> m_overrides{};
 };
 }

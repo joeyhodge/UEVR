@@ -148,6 +148,7 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
     struct Entry {
         Identity component, owner, level, mesh, package;
         Lease lease;
+        VisibilityProof proof;
     };
     static inline std::atomic<std::shared_ptr<Impl>> active;
     static inline std::atomic<Native> native_entry{};
@@ -347,17 +348,21 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
             runtime(entry.owner), sdk::is_current_object(entry.mesh) && sdk::is_current_object(entry.package),
             runtime(entry.level), current_scope, owner_hidden, component_hidden}.accepted();
     }
-    Entry* learn(sdk::UObjectBase* component) {
+    Entry* learn(sdk::UObjectBase* component, std::optional<bool> requested = {}) {
         const auto id = observe(component);
         if (!id || !runtime(*id) || !has_class(*id, component_class)) { return nullptr; }
+        bool inherited_override{};
         const auto existing = entries.find(id->object);
         if (existing != entries.end()) {
             if (sdk::object_liveness::matches(existing->second.component, *id) && eligible(existing->second)) {
                 return &existing->second;
             }
+            // A different mesh/owner on the same component cannot learn from
+            // a visible value that this guard forced for the previous binding.
+            inherited_override = sdk::object_liveness::matches(existing->second.component, *id) &&
+                (existing->second.lease.forced || existing->second.proof.inherited_override);
             entries.erase(existing);
         }
-        if (entries.size() >= max_targets) { return nullptr; }
         const auto owner = outer(*id);
         if (!owner || !runtime(*owner) || !has_class(*owner, actor_class)) { return nullptr; }
         const auto level = outer(*owner);
@@ -367,27 +372,54 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
         const auto mesh = observe(mesh_ptr);
         if (!mesh || !has_class(*mesh, mesh_class)) { return nullptr; }
         const auto package = outer(*mesh);
-        if (!package || !stadium_geometry(component->get_name_safe(), mesh_ptr->get_name_safe(), object(*package)->get_name_safe())) { return nullptr; }
+        if (!package) { return nullptr; }
+        const auto kind = geometry(component->get_name_safe(), mesh_ptr->get_name_safe(), object(*package)->get_name_safe());
+        if (kind == Geometry::rejected) { return nullptr; }
         bool current{};
         Entry entry{*id, *owner, *level, *mesh, *package};
         if (!eligible(entry) || !visible.get(*id, current)) { return nullptr; }
         entry.lease.game_request(current);
+        entry.proof.kind = kind;
+        entry.proof.inherited_override = inherited_override;
+        if (requested.has_value()) { entry.proof.game_request(*requested, current); }
+        else { entry.proof.sample_unforced(current); }
+        if (entries.size() >= max_targets) {
+            // Speculative background discovery must not crowd out the previous
+            // structural path. Never evict a restoration obligation or proof.
+            if (kind != Geometry::structural) { return nullptr; }
+            const auto pending = std::find_if(entries.begin(), entries.end(), [](const auto& item) {
+                return disposable_pending(item.second.proof, item.second.lease);
+            });
+            if (pending == entries.end()) { return nullptr; }
+            entries.erase(pending);
+        }
         return &entries.emplace(id->object, std::move(entry)).first->second;
     }
-    bool force(Entry& entry) {
+    bool force(Entry& entry, std::optional<bool> requested = {}) {
         bool current{};
         if (!eligible(entry) || !visible.get(entry.component, current)) { return false; }
+        if (!entry.proof.allows_override()) {
+            // New background groups must first be seen game-visible. A pending
+            // entry has never been forced, so our own readback cannot train it.
+            if (requested.has_value()) { entry.proof.game_request(*requested, current); }
+            else { entry.proof.sample_unforced(current); }
+            if (!entry.proof.allows_override()) { return true; }
+        }
         if (!current) {
             entry.lease.game_request(false);
-            const auto component = entry.component;
+            const auto binding = entry;
             // NoPropagation: do not unhide unrelated attached meshes, masks or
             // LODs. OnVisibilityChanged still performs normal render-state work.
-            original(object(component), true, uint8_t{0});
+            original(object(binding.component), true, uint8_t{0});
             // A callback may alter the cache. Reacquire instead of retaining a
             // borrowed entry across the native call or updating a reused object.
-            const auto cached = entries.find(component.object);
-            if (cached != entries.end() && sdk::object_liveness::matches(cached->second.component, component) &&
-                runtime(component) && visible.get(component, current)) {
+            const auto cached = entries.find(binding.component.object);
+            if (cached != entries.end() && sdk::object_liveness::matches(cached->second.component, binding.component) &&
+                sdk::object_liveness::matches(cached->second.owner, binding.owner) &&
+                sdk::object_liveness::matches(cached->second.level, binding.level) &&
+                sdk::object_liveness::matches(cached->second.mesh, binding.mesh) &&
+                sdk::object_liveness::matches(cached->second.package, binding.package) &&
+                eligible(cached->second) && visible.get(binding.component, current)) {
                 cached->second.lease.override_applied(current);
                 if (current) { ++override_count; }
             }
@@ -399,9 +431,9 @@ struct VisibilityGuard::Impl : std::enable_shared_from_this<Impl> {
         uintptr_t cls{};
         if (!read(reinterpret_cast<uintptr_t>(component) + sdk::UObjectBase::get_class_private_offset(), cls) ||
             cls != component_class.object) { return; }
-        if (auto entry = learn(component)) {
+        if (auto entry = learn(component, requested)) {
             entry->lease.game_request(requested);
-            force(*entry);
+            force(*entry, requested);
         }
     }
     void release() {
@@ -486,14 +518,19 @@ void VisibilityGuard::update(sdk::UObjectBase* viewport, bool enabled) noexcept 
         if (!m_impl) { m_impl = std::make_shared<Impl>(); }
         const auto previous = status();
         m_impl->update(viewport, enabled);
+        const auto learning = static_cast<uint32_t>(std::count_if(m_impl->entries.begin(), m_impl->entries.end(),
+            [](const auto& item) { return !item.second.proof.allows_override(); }));
+        const auto targets = static_cast<uint32_t>(m_impl->entries.size()) - learning;
         const auto current = !enabled ? Status::off :
             m_impl->initialization.attempted && !m_impl->initialization.supported ? Status::unsupported :
-            m_impl->enabled.load() && !m_impl->entries.empty() ? Status::active : Status::waiting;
+            m_impl->enabled.load() && targets ? Status::active :
+            m_impl->enabled.load() && learning ? Status::learning : Status::waiting;
         m_status.store(current, std::memory_order_relaxed);
-        m_count.store(static_cast<uint32_t>(m_impl->entries.size()), std::memory_order_relaxed);
+        m_count.store(targets, std::memory_order_relaxed);
+        m_learning.store(learning, std::memory_order_relaxed);
         m_overrides.store(m_impl->override_count, std::memory_order_relaxed);
         if (previous != current) {
-            spdlog::info("[PROSPI_ROOF] state={} targets={} overrides={}", status_name(current), count(), overrides());
+            spdlog::info("[PROSPI_ROOF] state={} targets={} learning={} overrides={}", status_name(current), count(), learning_count(), overrides());
         }
     } catch (...) {
         if (m_impl) { m_impl->enabled.store(false, std::memory_order_release); }

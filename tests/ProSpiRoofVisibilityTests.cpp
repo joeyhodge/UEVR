@@ -70,6 +70,87 @@ void background_names() {
     }
     require(!stadium_geometry(L"p03_outfield_wall_R4", L"SM_p03_outfield_wall_R4", L"/Game/Characters/wall"),
         "structural name does not bypass package scope");
+
+    for (const auto name : {L"p07_alpha_outfield__07_wallGrazed02", L"p03_outfield_of_C_rubberFence01",
+            L"p03_outfield_std_1st_pillar1", L"p07_alpha_outfield__01_soratoshiba_handrail05",
+            L"p07_alpha_outfield__09_std_C_window01", L"p07_alpha_outfield__07_of_home_fence01"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        const auto package = std::wstring{L"/Game/Stadiums/Hokkaido/Meshes/Night/"} + mesh;
+        require(geometry(std::wstring{name} + L".fbx(nstadium)", mesh, package) == Geometry::structural,
+            "captured numbered/compound structural roles recognized");
+    }
+    for (const auto name : {L"p00_soto__00_distant_view", L"p00_soto__00_field_out01",
+            L"p03_outfield_std_R_1F_shop01", L"p07_alpha_outfield__01_alpha_outfield034",
+            L"p07_alpha_outfield__14_2F_tower11logo", L"p02_infield_cheering"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        const auto package = std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Day/"} + mesh;
+        require(geometry(std::wstring{name} + L".fbx(dstadium)", mesh, package) == Geometry::observed_background,
+            "background groups use game-visible proof, not a stadium/hash allowlist");
+        require(geometry(name, mesh, L"/Game/StadiumsOther/Meshes/mesh") == Geometry::rejected,
+            "background does not bypass exact package boundary");
+        require(geometry(name, mesh, package + L"_another") == Geometry::rejected,
+            "background package leaf must match the actual asset");
+        require(geometry(std::wstring{name} + L"_another", mesh, package) == Geometry::rejected,
+            "background component/mesh identities must agree");
+    }
+    for (const auto name : {L"p03_outfield_wallProxy01", L"p03_outfield_roofMask01", L"p03_outfield_wallLOD2",
+            L"p03_outfield_wall_variant2", L"p03_outfield_wall_extra01", L"p03_outfield_wallSpectator01"}) {
+        const auto mesh = std::wstring{L"SM_"} + name;
+        const auto package = std::wstring{L"/Game/Stadiums/AnotherStadium/Meshes/Day/"} + mesh;
+        require(geometry(name, mesh, package) == Geometry::rejected, "numbered/compound exclusions remain closed");
+    }
+}
+
+void visibility_proof() {
+    VisibilityProof pending{Geometry::observed_background};
+    for (size_t i{}; i < 1000; ++i) {
+        pending.sample_unforced(false);
+        pending.game_request(false, false);
+        require(!pending.allows_override(), "never-visible unknown variant cannot be forced by repeated discovery/hide calls");
+    }
+    pending.game_request(true, false);
+    require(!pending.allows_override(), "unapplied game show request is not visibility proof");
+    pending.game_request(false, true);
+    require(!pending.allows_override(), "readback alone on a hide call is not a successful show request");
+    pending.game_request(true, true);
+    require(pending.allows_override(), "successful original game show call authorizes this background");
+    for (const bool request : {false, true, false, true, false}) {
+        pending.game_request(request, request);
+        require(pending.allows_override(), "legitimate show proof survives camera cuts in the same identity/world");
+    }
+    VisibilityProof sampled{Geometry::observed_background};
+    sampled.sample_unforced(true);
+    require(sampled.allows_override(), "normally visible background can be learned at Draw");
+    VisibilityProof rebound{Geometry::observed_background, false, true};
+    for (size_t i{}; i < 1000; ++i) { rebound.sample_unforced(true); }
+    require(!rebound.allows_override(), "a changed binding cannot learn from our previous forced visible readback");
+    rebound.game_request(false, true);
+    require(!rebound.allows_override(), "unsuccessful hide does not clear inherited-override evidence");
+    rebound.game_request(true, false);
+    require(!rebound.allows_override(), "unsuccessful show cannot authorize a new binding");
+    rebound.game_request(true, true);
+    require(rebound.allows_override(), "new binding requires its own successful game show");
+    rebound = {Geometry::observed_background, false, true};
+    rebound.sample_unforced(false); rebound.sample_unforced(true);
+    require(rebound.allows_override(), "an observed real false/true transition supplies independent proof");
+    pending = {Geometry::observed_background};
+    require(!pending.allows_override(), "disable, travel or replaced identities never inherit another binding's proof");
+    VisibilityProof structural{Geometry::structural};
+    require(structural.allows_override(), "validated structural startup handling remains available");
+    VisibilityProof excluded;
+    excluded.sample_unforced(true); excluded.game_request(true, true);
+    require(!excluded.allows_override(), "visibility never authorizes excluded masks/actors/assets");
+
+    Lease lease;
+    VisibilityProof unproven{Geometry::observed_background};
+    require(disposable_pending(unproven, lease), "unproven discovery cannot crowd out structural targets at the cap");
+    unproven.inherited_override = true;
+    require(!disposable_pending(unproven, lease), "never forget a pending binding's inherited forced-value rejection");
+    unproven.inherited_override = false; lease.forced = true;
+    require(!disposable_pending(unproven, lease), "never evict restoration ownership");
+    lease.forced = false; unproven.sample_unforced(true);
+    require(!disposable_pending(unproven, lease), "never discard established visible proof for speculative discovery");
+    require(!disposable_pending(structural, lease), "previous structural entries are never speculative evictions");
 }
 void maintenance() {
     size_t cursor = 999;
@@ -85,28 +166,53 @@ void maintenance() {
     require(maintenance_index(cursor, 3) < 3 && cursor < 3, "cache shrink or erase never indexes out of bounds");
     require(cached_targets_per_draw < max_targets, "maintenance never validates the entire capped cache in one Draw");
 }
-void captured_stadium(const char* path) {
+void captured_stadium(const char* path, size_t components, size_t changes, size_t hidden_variants) {
     std::ifstream file{path};
     require(file.good(), "captured stadium fixture readable");
     const auto fixture = nlohmann::json::parse(file);
-    size_t changed{}, accepted{}, preserved_hidden{}, walls{};
+    size_t changed{}, direct{}, backgrounds{}, preserved_hidden{}, covered{}, learned_changes{};
     const auto widen = [](const std::string& value) { return std::wstring{value.begin(), value.end()}; };
     for (const auto& row : fixture.at("rows")) {
         const auto c = widen(row.at("component").get<std::string>());
         const auto m = widen(row.at("mesh").get<std::string>());
         const auto p = widen(row.at("package").get<std::string>());
-        const auto result = stadium_geometry(c, m, p);
-        if (result != row.at("expected").get<bool>()) { throw std::runtime_error("fixture classification mismatch: " + row.at("component").get<std::string>()); }
-        changed += row.at("behind_pitcher") != row.at("behind_plate");
-        accepted += result;
-        if (!row.at("behind_plate").get<bool>()) {
-            require(!result, "no permanently hidden variant is forced visible");
+        const auto before = row.at("behind_pitcher").get<bool>();
+        const auto after = row.at("behind_plate").get<bool>();
+        const auto kind = geometry(c, m, p);
+        VisibilityProof proof{kind};
+        proof.sample_unforced(before);
+        if (row.contains("expected") && row.at("expected").get<bool>()) {
+            require(kind == Geometry::structural, "previously accepted structural handling retained");
+        }
+        if (kind == Geometry::observed_background && !before) {
+            require(!proof.allows_override(), "hidden background is not speculatively forced at startup");
+        }
+        changed += before != after;
+        direct += kind == Geometry::structural;
+        backgrounds += kind == Geometry::observed_background;
+        proof.game_request(after, after);
+        if (!after) {
+            require(!proof.allows_override(), "no permanently hidden variant is forced visible");
             ++preserved_hidden;
         }
-        if (result && c.find(L"outfield_wall_") != std::wstring::npos) { ++walls; }
+        if (before != after) {
+            if (kind == Geometry::rejected || !proof.allows_override()) {
+                throw std::runtime_error("captured camera-hidden background missed: " + row.at("component").get<std::string>());
+            }
+            require(!row.at("hidden_in_game").get<bool>(), "captured background must not be HiddenInGame");
+            if (row.contains("actor_hidden")) { require(!row.at("actor_hidden").get<bool>(), "captured actor remains visible"); }
+            proof.game_request(false, false);
+            require(proof.allows_override(), "next behind-pitcher/fielding cut retains learned coverage");
+            ++covered;
+            learned_changes += kind == Geometry::observed_background;
+        }
     }
-    require(fixture.at("rows").size() == 366 && changed == 98, "complete controlled native A/B fixture retained");
-    require(accepted == 36 && walls == 7 && preserved_hidden == 32, "all captured roofs/walls selected; all hidden variants preserved");
+    require(fixture.at("rows").size() == components && changed == changes, "complete controlled native A/B fixture retained");
+    require(covered == changes && preserved_hidden == hidden_variants, "every captured camera-hidden component covered, all never-visible variants preserved");
+    require(direct + backgrounds <= max_targets, "full captured stadium fits the unchanged bounded cache");
+    std::cout << components << " components: " << covered << " camera changes covered (" << learned_changes
+        << " require visible proof), " << preserved_hidden << " hidden variants preserved, "
+        << direct << " direct / " << backgrounds << " background candidates\n";
 }
 void cuts_and_restore() {
     Lease lease;
@@ -194,9 +300,10 @@ void viewport_dispatch() {
 }
 int main(int argc, char** argv) {
     try {
-        names(); background_names(); eligibility(); maintenance(); cuts_and_restore(); setter_validation(); bool_metadata(); viewport_dispatch();
-        require(argc == 2, "captured stadium fixture argument required");
-        captured_stadium(argv[1]);
+        names(); background_names(); visibility_proof(); eligibility(); maintenance(); cuts_and_restore(); setter_validation(); bool_metadata(); viewport_dispatch();
+        require(argc == 3, "both captured stadium fixture arguments required");
+        captured_stadium(argv[1], 366, 98, 32);
+        captured_stadium(argv[2], 503, 185, 10);
         std::cout << "ProSpi stadium visibility classification, viewport dispatch, bounded maintenance, scope, cut/restore and native setter tests passed\n";
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

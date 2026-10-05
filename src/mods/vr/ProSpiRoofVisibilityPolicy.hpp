@@ -50,6 +50,24 @@ inline std::wstring lowercase(std::wstring_view name) {
     return result;
 }
 
+inline std::wstring asset_words(std::wstring_view name) {
+    std::wstring result;
+    result.reserve(name.size());
+    const auto lower = [](wchar_t c) { return c >= L'a' && c <= L'z'; };
+    const auto upper = [](wchar_t c) { return c >= L'A' && c <= L'Z'; };
+    const auto digit = [](wchar_t c) { return c >= L'0' && c <= L'9'; };
+    wchar_t previous{};
+    for (const auto c : name) {
+        // Keep numbered/CamelCase structural roles separate: wallGrazed02,
+        // rubberFence01 and handrail05 are not arbitrary substring matches.
+        if ((upper(c) && lower(previous)) || (digit(c) && (lower(previous) || upper(previous))) ||
+            ((lower(c) || upper(c)) && digit(previous))) { result += L'_'; }
+        result += upper(c) ? c + L'a' - L'A' : c;
+        previous = c;
+    }
+    return result;
+}
+
 inline bool token(std::wstring_view name, std::wstring_view word) {
     const auto alnum = [](wchar_t c) {
         return (c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9');
@@ -65,11 +83,14 @@ inline bool token(std::wstring_view name, std::wstring_view word) {
     return false;
 }
 
-inline bool excluded_geometry(std::wstring_view name) {
-    return token(name, L"mask") || token(name, L"proxy") || token(name, L"collision") ||
-        token(name, L"lod") || token(name, L"extra") || token(name, L"variant") ||
-        token(name, L"alternate") || token(name, L"wbc") || token(name, L"crowd") ||
-        token(name, L"spectator") || name.find(L"soloplaymask") != std::wstring_view::npos ||
+inline bool excluded_geometry(std::wstring_view raw) {
+    const auto name = lowercase(raw);
+    const auto words = asset_words(raw);
+    for (const auto role : {L"mask", L"proxy", L"collision", L"lod", L"extra", L"variant",
+            L"alternate", L"wbc", L"crowd", L"spectator"}) {
+        if (token(name, role) || token(words, role)) { return true; }
+    }
+    return name.find(L"soloplaymask") != std::wstring_view::npos ||
         name.find(L"score") != std::wstring_view::npos ||
         name.find(L"displaytemplete") != std::wstring_view::npos ||
         name.find(L"displaytemplate") != std::wstring_view::npos;
@@ -77,7 +98,7 @@ inline bool excluded_geometry(std::wstring_view name) {
 
 inline bool roof_name(std::wstring_view raw) {
     const auto name = lowercase(raw);
-    return !excluded_geometry(name) && (token(name, L"roof") || token(name, L"ceiling"));
+    return !excluded_geometry(raw) && (token(name, L"roof") || token(name, L"ceiling"));
 }
 
 inline bool stadium_roof(std::wstring_view component, std::wstring_view mesh,
@@ -87,13 +108,16 @@ inline bool stadium_roof(std::wstring_view component, std::wstring_view mesh,
         package.starts_with(L"/game/stadiums/") && package.size() > 15;
 }
 
-inline bool outfield_structure(std::wstring_view name) {
-    if (excluded_geometry(name) || !token(name, L"outfield")) { return false; }
+inline bool outfield_structure(std::wstring_view raw) {
+    const auto name = lowercase(raw);
+    if (excluded_geometry(raw) || !token(name, L"outfield")) { return false; }
+    const auto words = asset_words(raw);
     // Only structural roles from the controlled A/B, not every outfield asset.
     // In particular, alternate displays and ads are not structural geometry.
     for (const auto role : {L"wall", L"walls", L"stand", L"stands", L"pillar", L"pillars",
-            L"stairs", L"fence", L"fences", L"handrail", L"railing", L"wiremesh", L"saku", L"room"}) {
-        if (token(name, role)) { return true; }
+            L"stair", L"stairs", L"fence", L"fences", L"handrail", L"railing", L"wiremesh", L"saku", L"room",
+            L"net", L"window", L"glass"}) {
+        if (token(name, role) || token(words, role)) { return true; }
     }
     return false;
 }
@@ -105,11 +129,52 @@ inline bool stadium_geometry(std::wstring_view component, std::wstring_view mesh
     if (!package.starts_with(L"/game/stadiums/") || package.size() <= 15) { return false; }
     auto c = lowercase(component);
     auto m = lowercase(mesh);
-    if (!outfield_structure(c) || !outfield_structure(m)) { return false; }
+    if (!outfield_structure(component) || !outfield_structure(mesh)) { return false; }
     if (const auto fbx = c.find(L".fbx("); fbx != std::wstring::npos && c.ends_with(L")")) { c.resize(fbx); }
     if (m.starts_with(L"sm_")) { m.erase(0, 3); }
     return c == m;
 }
+
+enum class Geometry : uint8_t { rejected, structural, observed_background };
+
+inline Geometry geometry(std::wstring_view component, std::wstring_view mesh,
+    std::wstring_view mesh_package) {
+    if (stadium_geometry(component, mesh, mesh_package)) { return Geometry::structural; }
+    const auto package = lowercase(mesh_package);
+    if (!package.starts_with(L"/game/stadiums/") || excluded_geometry(component) || excluded_geometry(mesh)) {
+        return Geometry::rejected;
+    }
+    auto c = lowercase(component);
+    auto m = lowercase(mesh);
+    // Only the exported stadium-background groups, with identical component,
+    // asset and package leaf names. Never select arbitrary stadium UObjects.
+    if (const auto fbx = c.find(L".fbx("); fbx != std::wstring::npos && c.ends_with(L")")) { c.resize(fbx); }
+    const auto slash = package.rfind(L'/');
+    if (slash == std::wstring::npos || package.substr(slash + 1) != m) { return Geometry::rejected; }
+    if (m.starts_with(L"sm_")) { m.erase(0, 3); }
+    if (c != m) { return Geometry::rejected; }
+    if (c.starts_with(L"p00_soto_") || c.starts_with(L"p03_outfield_") || c.starts_with(L"p07_alpha_outfield_") ||
+        c == L"p02_infield_cheering" || c.starts_with(L"p02_infield_cheering_")) {
+        return Geometry::observed_background;
+    }
+    return Geometry::rejected;
+}
+
+struct VisibilityProof {
+    Geometry kind{Geometry::rejected};
+    bool observed_visible{}, inherited_override{};
+    void sample_unforced(bool visible) {
+        if (!visible) { inherited_override = false; }
+        else if (!inherited_override) { observed_visible = true; }
+    }
+    void game_request(bool requested, bool readback) {
+        if (!readback || requested) { inherited_override = false; }
+        observed_visible |= requested && readback;
+    }
+    bool allows_override() const {
+        return kind == Geometry::structural || (kind == Geometry::observed_background && observed_visible);
+    }
+};
 
 // Snapshot keys before invoking a game setter; never keep a cache iterator
 // across a potentially reentrant game call. The cursor resumes a bounded sweep.
@@ -139,4 +204,9 @@ struct Lease {
     void override_applied(bool readback) { forced = !requested && readback; }
     bool should_restore(bool current_visible) const { return forced && current_visible; }
 };
+
+inline bool disposable_pending(const VisibilityProof& proof, const Lease& lease) {
+    return proof.kind == Geometry::observed_background && !proof.allows_override() &&
+        !proof.inherited_override && !lease.forced;
+}
 }

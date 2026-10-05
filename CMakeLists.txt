@@ -763,7 +763,8 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	)
 
 	add_test(NAME prospi-roof-visibility-tests COMMAND prospi-roof-visibility-tests
-	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-stadium-visibility.json")
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-stadium-visibility.json"
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-stadium-hokkaido-visibility.json")
 	set_tests_properties(prospi-roof-visibility-tests PROPERTIES TIMEOUT 30)
 
 	unset(CMKR_TARGET)
