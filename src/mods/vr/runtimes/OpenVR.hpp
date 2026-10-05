@@ -36,6 +36,9 @@ struct OpenVR final : public VRRuntime {
     VRRuntime::Error consume_events(std::function<void(void*)> callback) override;
     VRRuntime::Error update_matrices(float nearz, float farz) override;
 
+    void refresh_frame_controller_types();
+    std::chrono::steady_clock::time_point last_frame_controller_refresh{};
+
     void destroy() override;
 
     void enqueue_render_poses(uint32_t frame_count) override;

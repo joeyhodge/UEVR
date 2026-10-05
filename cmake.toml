@@ -193,6 +193,18 @@ add_test(NAME build-metadata-tests COMMAND powershell -NoProfile -NonInteractive
 set_tests_properties(build-metadata-tests PROPERTIES TIMEOUT 120)
 """
 
+[target.steam-frame-input-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/SteamFrameInputTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME steam-frame-input-tests COMMAND steam-frame-input-tests "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(steam-frame-input-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
