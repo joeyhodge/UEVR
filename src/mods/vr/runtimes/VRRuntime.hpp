@@ -7,6 +7,7 @@
 #include <shared_mutex>
 #include <optional>
 #include <array>
+#include "../SteamFrameInput.hpp"
 
 #include <spdlog/spdlog.h>
 #include <sdk/Math.hpp>
@@ -137,6 +138,13 @@ struct VRRuntime {
     bool is_openvr() const {
         return this->type() == Type::OPENVR;
     }
+
+    uint8_t get_frame_controller_mask() const {
+        return frame_controller_profiles.mask();
+    }
+
+    // Physical left/right controller identity, never inferred from the headset.
+    uevr::steam_frame::ControllerProfileCache frame_controller_profiles{};
 
     void handle_pause_select(bool systembutton_pressed) {
         const auto now = std::chrono::steady_clock::now();

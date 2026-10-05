@@ -513,6 +513,52 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target steam-frame-input-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET steam-frame-input-tests)
+	set(steam-frame-input-tests_SOURCES "")
+
+	list(APPEND steam-frame-input-tests_SOURCES
+		"tests/SteamFrameInputTests.cpp"
+	)
+
+	list(APPEND steam-frame-input-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${steam-frame-input-tests_SOURCES})
+	add_executable(steam-frame-input-tests)
+
+	if(steam-frame-input-tests_SOURCES)
+		target_sources(steam-frame-input-tests PRIVATE ${steam-frame-input-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT steam-frame-input-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${steam-frame-input-tests_SOURCES})
+
+	target_compile_features(steam-frame-input-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(steam-frame-input-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(steam-frame-input-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME steam-frame-input-tests COMMAND steam-frame-input-tests "${CMAKE_CURRENT_SOURCE_DIR}")
+	set_tests_properties(steam-frame-input-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target diagnostic-safety-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET diagnostic-safety-tests)
@@ -1596,6 +1642,8 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/SifuRendererEntry.hpp"
 	"src/mods/vr/Stalker2NativeD3D12.hpp"
 	"src/mods/vr/Stalker2NativePolicy.hpp"
+	"src/mods/vr/SteamFrameBindings.hpp"
+	"src/mods/vr/SteamFrameInput.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"

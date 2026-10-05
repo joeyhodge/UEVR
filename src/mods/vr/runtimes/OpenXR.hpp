@@ -160,8 +160,12 @@ public:
     std::string get_path_string(XrPath path) const;
     std::string get_session_state_string(XrSessionState state) const;
     XrPath get_path(const std::string& path) const;
-    std::string get_current_interaction_profile() const;
-    XrPath get_current_interaction_profile_path() const;
+    std::string get_current_interaction_profile(VRRuntime::Hand hand = VRRuntime::Hand::LEFT) const;
+    XrPath get_current_interaction_profile_path(VRRuntime::Hand hand = VRRuntime::Hand::LEFT) const;
+    void refresh_frame_controller_types();
+    XrPath frame_interaction_profile_path{XR_NULL_PATH};
+    std::chrono::steady_clock::time_point last_frame_controller_refresh{};
+    int frame_binding_editor_hand{};
 
     std::optional<std::string> initialize_actions(const std::string& json_string);
 
@@ -213,7 +217,7 @@ public:
 
     void trigger_haptic_vibration(float duration, float frequency, float amplitude, VRRuntime::Hand source) const;
     void display_bindings_editor();
-    void save_bindings();
+    void save_bindings(const std::string& interaction_profile = {});
 
 public: 
     // OpenXR specific fields

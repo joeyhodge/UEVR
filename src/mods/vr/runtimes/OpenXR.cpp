@@ -25,6 +25,7 @@
 #include "../../../utility/Logging.hpp"
 #include "OpenXR.hpp"
 #include "../UIComposition.hpp"
+#include "../SteamFrameBindings.hpp"
 
 using namespace nlohmann;
 
@@ -1733,6 +1734,10 @@ VRRuntime::Error OpenXR::consume_events(std::function<void(void*)> callback) {
             callback(&edb);
         }
 
+        if (bh->type == XR_TYPE_EVENT_DATA_INTERACTION_PROFILE_CHANGED) {
+            this->frame_controller_profiles.invalidate();
+        }
+
         if (bh->type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED) {
             const auto ev = (XrEventDataSessionStateChanged*)&edb;
             this->session_state = ev->state;
@@ -2106,6 +2111,7 @@ VRRuntime::Error OpenXR::update_input() {
     std::scoped_lock _{this->event_mtx};
 
     if (!this->ready() || this->session_state != XR_SESSION_STATE_FOCUSED) {
+        this->frame_controller_profiles.invalidate();
         return (VRRuntime::Error)XR_ERROR_SESSION_NOT_READY;
     }
 
@@ -2118,15 +2124,20 @@ VRRuntime::Error OpenXR::update_input() {
 
     if (result != XR_SUCCESS) {
         spdlog::error("[VR] Failed to sync actions: {}", this->get_result_string(result));
+        this->frame_controller_profiles.invalidate();
 
         return (VRRuntime::Error)result;
     }
 
+    refresh_frame_controller_types();
     const auto current_interaction_profile = this->get_current_interaction_profile();
 
     for (auto i = 0; i < 2; ++i) {
         auto& hand = this->hands[i];
         hand.forced_actions.clear();
+        const auto hand_interaction_profile = this->get_frame_controller_mask() != 0
+            ? this->get_current_interaction_profile(static_cast<VRRuntime::Hand>(i))
+            : current_interaction_profile;
 
         // Update controller pose state
         {
@@ -2164,9 +2175,9 @@ VRRuntime::Error OpenXR::update_input() {
         }
 
         // Handle vector activator stuff
-        for (auto& it : hand.profiles[current_interaction_profile].vector_activators) {
+        for (auto& it : hand.profiles[hand_interaction_profile].vector_activators) {
             const auto activator = it.first;
-            const auto modifier = hand.profiles[current_interaction_profile].action_vector_associations[activator];
+            const auto modifier = hand.profiles[hand_interaction_profile].action_vector_associations[activator];
 
             if (this->is_action_active(activator, (VRRuntime::Hand)i)) {
                 const auto axis = this->get_action_axis(modifier, (VRRuntime::Hand)i);
@@ -2187,6 +2198,8 @@ VRRuntime::Error OpenXR::update_input() {
 }
 
 void OpenXR::destroy() {
+    this->frame_controller_profiles.invalidate();
+    this->frame_interaction_profile_path = XR_NULL_PATH;
     if (!this->loaded) {
         return;
     }
@@ -2703,26 +2716,42 @@ XrPath OpenXR::get_path(const std::string& path) const {
     return path_handle;
 }
 
-std::string OpenXR::get_current_interaction_profile() const {
-    XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
-    if (xrGetCurrentInteractionProfile(this->session, this->hands[0].path, &state) != XR_SUCCESS) {
-        return "";
-    }
-
-    return this->get_path_string(state.interactionProfile);
+std::string OpenXR::get_current_interaction_profile(VRRuntime::Hand hand) const {
+    const auto path = get_current_interaction_profile_path(hand);
+    return path != XR_NULL_PATH ? this->get_path_string(path) : "";
 }
 
-XrPath OpenXR::get_current_interaction_profile_path() const {
+XrPath OpenXR::get_current_interaction_profile_path(VRRuntime::Hand hand) const {
+    if (hand > VRRuntime::Hand::RIGHT || this->session == XR_NULL_HANDLE) { return XR_NULL_PATH; }
     XrInteractionProfileState state{XR_TYPE_INTERACTION_PROFILE_STATE};
-    if (xrGetCurrentInteractionProfile(this->session, this->hands[0].path, &state) != XR_SUCCESS) {
+    if (xrGetCurrentInteractionProfile(this->session, this->hands[hand].path, &state) != XR_SUCCESS) {
         return XR_NULL_PATH;
     }
 
     return state.interactionProfile;
 }
 
+void OpenXR::refresh_frame_controller_types() {
+    const auto snapshot = this->frame_controller_profiles.begin_refresh();
+    if (this->frame_interaction_profile_path == XR_NULL_PATH || !snapshot) { return; }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - this->last_frame_controller_refresh < std::chrono::milliseconds{250}) { return; }
+    this->last_frame_controller_refresh = now;
+    uint8_t mask{};
+    bool retry{};
+    for (unsigned hand = 0; hand < 2; ++hand) {
+        const auto path = get_current_interaction_profile_path(static_cast<VRRuntime::Hand>(hand));
+        if (path == XR_NULL_PATH) { retry = true; continue; }
+        if (path == this->frame_interaction_profile_path) { mask |= static_cast<uint8_t>(1u << hand); }
+    }
+    this->frame_controller_profiles.publish(*snapshot, mask, retry);
+}
+
 std::optional<std::string> OpenXR::initialize_actions(const std::string& json_string) {
     spdlog::info("[VR] Initializing actions");
+    this->frame_interaction_profile_path = XR_NULL_PATH;
+    this->frame_controller_profiles.invalidate();
+    this->last_frame_controller_refresh = {};
 
     if (auto result = xrStringToPath(this->instance, "/user/hand/left", &this->hands[VRRuntime::Hand::LEFT].path); result != XR_SUCCESS) {
         return "xrStringToPath failed (left): " + this->get_result_string(result);
@@ -2770,7 +2799,9 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
 
     std::unordered_map<std::string, std::vector<XrActionSuggestedBinding>> profile_bindings{};
 
-    for (const auto& controller : s_supported_controllers) {
+    auto supported_controllers = uevr::steam_frame::supported_profiles(s_supported_controllers,
+        this->enabled_extensions.contains(uevr::steam_frame::extension));
+    for (const auto& controller : supported_controllers) {
         profile_bindings[controller] = {};
     }
 
@@ -2923,7 +2954,8 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
                 }
 
                 if (this->action_set.action_map.contains(map_it.action_name)) {
-                    for (const auto& controller : s_supported_controllers) {
+                    for (const auto& controller : supported_controllers) {
+                        if (controller == uevr::steam_frame::interaction_profile) { continue; }
                         if (attempt_add_binding(controller, { this->action_set.action_map[map_it.action_name], p })) {
                             this->hands[index].profiles[controller].path_map[map_it.action_name] = p;
                         }
@@ -2941,10 +2973,50 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         return "json missing pose action";
     }
 
+    // Native Frame paths are submitted as one transaction. A rejected profile
+    // leaves all existing Touch/Index/Vive suggestions available for fallback.
+    if (this->enabled_extensions.contains(uevr::steam_frame::extension)) {
+        std::array<HandData::InteractionProfile, 2> profiles;
+        XrPath profile_path{XR_NULL_PATH};
+        const bool profile_valid = xrStringToPath(this->instance, uevr::steam_frame::interaction_profile, &profile_path) == XR_SUCCESS &&
+            profile_path != XR_NULL_PATH;
+        const auto resolve = [&](const uevr::steam_frame::Binding& binding) -> std::optional<XrActionSuggestedBinding> {
+            const auto action = this->action_set.action_map.find(std::string{binding.action});
+            XrPath path{XR_NULL_PATH};
+            if (action == this->action_set.action_map.end() ||
+                xrStringToPath(this->instance, binding.path.data(), &path) != XR_SUCCESS || path == XR_NULL_PATH) {
+                return std::nullopt;
+            }
+            const auto hand = binding.path.starts_with("/user/hand/left/") ? VRRuntime::Hand::LEFT : VRRuntime::Hand::RIGHT;
+            profiles[hand].path_map[std::string{binding.action}] = path;
+            return XrActionSuggestedBinding{action->second, path};
+        };
+        const auto submit = [&](const std::vector<XrActionSuggestedBinding>& bindings) {
+            XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+            suggested.interactionProfile = profile_path;
+            suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+            suggested.suggestedBindings = bindings.data();
+            if (xrSuggestInteractionProfileBindings(this->instance, &suggested) != XR_SUCCESS) { return false; }
+            profile_bindings[uevr::steam_frame::interaction_profile] = bindings;
+            return true;
+        };
+        if (uevr::steam_frame::suggest_native_bindings<XrActionSuggestedBinding>(profile_valid, resolve, submit)) {
+            this->frame_interaction_profile_path = profile_path;
+            for (unsigned hand = 0; hand < 2; ++hand) {
+                this->hands[hand].profiles[uevr::steam_frame::interaction_profile] = std::move(profiles[hand]);
+            }
+            spdlog::info("[VR] Native Steam Frame interaction profile registered");
+        } else {
+            spdlog::warn("[VR] Native Steam Frame bindings unavailable; preserving controller compatibility fallback");
+            std::erase(supported_controllers, std::string{uevr::steam_frame::interaction_profile});
+        }
+    }
+
     // Check for json files that will override the default suggested bindings
-    for (const auto& controller : s_supported_controllers) {
+    for (const auto& controller : supported_controllers) {
         // Create default action vector associations
         for (const auto& association : s_action_vector_associations) {
+            if (controller == uevr::steam_frame::interaction_profile) { break; }
             auto& hand = this->hands[association.hand];
             auto& hand_profile = hand.profiles[controller];
             auto& action_map = this->action_set.action_map;
@@ -2971,6 +3043,61 @@ std::optional<std::string> OpenXR::initialize_actions(const std::string& json_st
         if (!std::filesystem::exists(filename)) {
             filename = (Framework::get_persistent_dir() / ".." / "UEVR" / "Profiles" / profile_file).string();
             spdlog::info("[VR] Setting bindings file to {}", filename);
+        }
+
+        if (controller == uevr::steam_frame::interaction_profile) {
+            if (!std::filesystem::exists(filename)) { continue; }
+            try {
+                std::ifstream file{filename, std::ios::binary};
+                std::string text(uevr::steam_frame::max_custom_binding_bytes + 1, '\0');
+                file.read(text.data(), static_cast<std::streamsize>(text.size()));
+                text.resize(static_cast<size_t>(file.gcount()));
+                if (text.size() > uevr::steam_frame::max_custom_binding_bytes) {
+                    throw std::runtime_error{"Steam Frame binding file exceeds the size limit"};
+                }
+                const auto action_kind = [&](const std::string& name) -> std::optional<uevr::steam_frame::ActionType> {
+                    using uevr::steam_frame::ActionType;
+                    const auto it = this->action_set.action_map.find(name);
+                    if (it == this->action_set.action_map.end()) { return std::nullopt; }
+                    if (this->action_set.bool_actions.contains(it->second)) { return ActionType::Boolean; }
+                    if (this->action_set.float_actions.contains(it->second)) { return ActionType::Float; }
+                    if (this->action_set.vector2_actions.contains(it->second)) { return ActionType::Vector2; }
+                    if (this->action_set.pose_actions.contains(it->second)) { return ActionType::Pose; }
+                    if (this->action_set.vibration_actions.contains(it->second)) { return ActionType::Haptic; }
+                    return std::nullopt;
+                };
+                const auto custom = uevr::steam_frame::parse_custom_bindings(nlohmann::json::parse(text), action_kind);
+                std::vector<XrActionSuggestedBinding> bindings;
+                std::array<HandData::InteractionProfile, 2> profiles;
+                for (const auto& item : custom.bindings) {
+                    XrPath path{XR_NULL_PATH};
+                    if (xrStringToPath(this->instance, item.path.c_str(), &path) != XR_SUCCESS || path == XR_NULL_PATH) {
+                        throw std::runtime_error{"Invalid Steam Frame component path"};
+                    }
+                    bindings.push_back({this->action_set.action_map.at(item.action), path});
+                    profiles[item.path.starts_with("/user/hand/left/") ? 0 : 1].path_map[item.action] = path;
+                }
+                for (const auto& item : custom.associations) {
+                    const auto activator = this->action_set.action_map.at(item.activator);
+                    auto& profile = profiles[item.hand];
+                    profile.action_vector_associations[activator] = this->action_set.action_map.at(item.modifier);
+                    for (const auto& output : item.outputs) {
+                        profile.vector_activators[activator].push_back({{output.x, output.y}, this->action_set.action_map.at(output.action)});
+                    }
+                }
+                XrInteractionProfileSuggestedBinding suggested{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
+                suggested.interactionProfile = this->frame_interaction_profile_path;
+                suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+                suggested.suggestedBindings = bindings.data();
+                const auto result = xrSuggestInteractionProfileBindings(this->instance, &suggested);
+                if (result != XR_SUCCESS) { throw std::runtime_error{this->get_result_string(result)}; }
+                profile_bindings[controller] = std::move(bindings);
+                for (unsigned hand = 0; hand < 2; ++hand) { this->hands[hand].profiles[controller] = std::move(profiles[hand]); }
+                spdlog::info("[VR] Loaded customized Steam Frame bindings from {}", filename);
+            } catch (const std::exception& error) {
+                spdlog::warn("[VR] Keeping native Steam Frame defaults; rejected {}: {}", filename, error.what());
+            }
+            continue;
         }
 
         // check if the file exists
@@ -3219,7 +3346,8 @@ Vector2f OpenXR::get_stick_axis(VRRuntime::Hand hand_idx) const {
 
     const auto& hand = this->hands[hand_idx];
 
-    auto profile_it = hand.profiles.find(this->get_current_interaction_profile());
+    auto profile_it = hand.profiles.find(this->get_current_interaction_profile(
+        this->get_frame_controller_mask() != 0 ? hand_idx : VRRuntime::Hand::LEFT));
 
     if (profile_it == hand.profiles.end()) {
         return Vector2f{};
@@ -3294,8 +3422,19 @@ void OpenXR::trigger_haptic_vibration(float duration, float frequency, float amp
 }
 
 void OpenXR::display_bindings_editor() {
-    const auto current_interaction_profile = this->get_current_interaction_profile();
+    auto current_interaction_profile = this->get_current_interaction_profile();
+    if (this->get_frame_controller_mask() != 0) {
+        const auto right_profile = this->get_current_interaction_profile(VRRuntime::Hand::RIGHT);
+        if (current_interaction_profile != right_profile) {
+            if (current_interaction_profile.empty()) { this->frame_binding_editor_hand = 1; }
+            ImGui::Combo("Profile to edit", &this->frame_binding_editor_hand, "Left controller\0Right controller\0");
+            if (this->frame_binding_editor_hand == 1) { current_interaction_profile = right_profile; }
+        }
+    }
     ImGui::Text("Interaction Profile: %s", current_interaction_profile.c_str());
+    if (current_interaction_profile == uevr::steam_frame::interaction_profile) {
+        ImGui::TextWrapped("Frame: right ABXY and left D-pad; bumpers send LB/RB, Menu/View send Start/Back. Grips retain VR grab actions.");
+    }
 
     if (ImGui::Button("Restore Default Bindings")) {
         auto filename = current_interaction_profile + ".json";
@@ -3313,7 +3452,7 @@ void OpenXR::display_bindings_editor() {
     }
 
     if (ImGui::Button("Save Bindings")) {
-        this->save_bindings();
+        this->save_bindings(current_interaction_profile);
     }
 
     auto display_hand = [&](const std::string& name, uint32_t index) {
@@ -3380,7 +3519,7 @@ void OpenXR::display_bindings_editor() {
                 if (ImGui::Button("X")) {
                     path_map.erase(it.first);
 
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                     ImGui::PopID();
                     break;
                 }
@@ -3392,7 +3531,7 @@ void OpenXR::display_bindings_editor() {
                     path_map.erase(it.first);
                     path_map[known_actions[current_combo_index]] = it.second;
 
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                     ImGui::PopID();
 
                     break;
@@ -3412,7 +3551,7 @@ void OpenXR::display_bindings_editor() {
                     spdlog::error("[VR] Failed to convert path: {}", hand.ui.new_path_name);
                 } else {
                     path_map[known_actions[hand.ui.action_combo_index]] = p;
-                    this->save_bindings();
+                    this->save_bindings(current_interaction_profile);
                 }
             }
 
@@ -3519,8 +3658,8 @@ void OpenXR::display_bindings_editor() {
     display_hand("Right", 1);
 }
 
-void OpenXR::save_bindings() {
-    const auto current_interaction_profile = this->get_current_interaction_profile();
+void OpenXR::save_bindings(const std::string& interaction_profile) {
+    const auto current_interaction_profile = interaction_profile.empty() ? this->get_current_interaction_profile() : interaction_profile;
     nlohmann::json j;
 
     for (auto& hand : this->hands) {
