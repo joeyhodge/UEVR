@@ -1,6 +1,7 @@
 #include "../../VR.hpp"
 
 #include "OpenVR.hpp"
+#include "../SteamFrameInput.hpp"
 
 namespace runtimes {
 VRRuntime::Error OpenVR::synchronize_frame(std::optional<uint32_t> frame_count, SyncFrameCallsite callsite) {
@@ -154,6 +155,19 @@ VRRuntime::Error OpenVR::consume_events(std::function<void(void*)> callback) {
         }
 
         switch ((vr::EVREventType)event.eventType) {
+            case vr::VREvent_TrackedDeviceActivated:
+            case vr::VREvent_TrackedDeviceDeactivated:
+            case vr::VREvent_TrackedDeviceUpdated:
+            case vr::VREvent_TrackedDeviceRoleChanged:
+            case vr::VREvent_Input_BindingLoadSuccessful:
+            case vr::VREvent_Input_BindingsUpdated: {
+                this->frame_controller_profiles.invalidate();
+            } break;
+            case vr::VREvent_PropertyChanged: {
+                if (event.data.property.prop == vr::Prop_ControllerType_String) {
+                    this->frame_controller_profiles.invalidate();
+                }
+            } break;
             // Detect whether video settings changed
             case vr::VREvent_SteamVRSectionSettingChanged: {
                 spdlog::info("VR: VREvent_SteamVRSectionSettingChanged");
@@ -280,7 +294,35 @@ VRRuntime::Error OpenVR::update_matrices(float nearz, float farz) {
     return VRRuntime::Error::SUCCESS;
 }
 
+void OpenVR::refresh_frame_controller_types() {
+    const auto snapshot = this->frame_controller_profiles.begin_refresh();
+    if (!this->hmd || !this->loaded || !snapshot) { return; }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - this->last_frame_controller_refresh < std::chrono::milliseconds{250}) { return; }
+    this->last_frame_controller_refresh = now;
+
+    uint8_t mask{};
+    bool retry{};
+    for (unsigned hand = 0; hand < 2; ++hand) {
+        const auto role = hand == 0 ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand;
+        const auto device = this->hmd->GetTrackedDeviceIndexForControllerRole(role);
+        if (device == vr::k_unTrackedDeviceIndexInvalid || !this->hmd->IsTrackedDeviceConnected(device)) { continue; }
+        std::array<char, 128> type{};
+        vr::ETrackedPropertyError error{};
+        const auto length = this->hmd->GetStringTrackedDeviceProperty(device,
+            vr::Prop_ControllerType_String, type.data(), static_cast<uint32_t>(type.size()), &error);
+        if (error == vr::TrackedProp_UnknownProperty || error == vr::TrackedProp_ValueNotProvidedByDevice ||
+            error == vr::TrackedProp_BufferTooSmall) { continue; }
+        if (error != vr::TrackedProp_Success || length == 0 || length > type.size()) { retry = true; continue; }
+        if (type[length - 1] == '\0' && uevr::steam_frame::is_frame_controller(std::string_view{type.data(), length - 1})) {
+            mask |= static_cast<uint8_t>(1u << hand);
+        }
+    }
+    this->frame_controller_profiles.publish(*snapshot, mask, retry);
+}
+
 void OpenVR::destroy() {
+    this->frame_controller_profiles.invalidate();
     if (this->loaded) {
         vr::VR_Shutdown();
     }

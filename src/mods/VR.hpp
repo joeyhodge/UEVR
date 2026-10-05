@@ -32,6 +32,7 @@
 #include "vr/CVarManager.hpp"
 
 #include "Mod.hpp"
+#include "vr/SteamFrameInput.hpp"
 
 #undef max
 #include <tracy/Tracy.hpp>
@@ -112,6 +113,10 @@ public:
     static const inline std::string s_action_dpad_down = "/actions/default/in/DPad_Down";
     static const inline std::string s_action_dpad_left = "/actions/default/in/DPad_Left";
     static const inline std::string s_action_system_button = "/actions/default/in/SystemButton";
+    static const inline std::string s_action_bumper = "/actions/default/in/Bumper";
+    static const inline std::string s_action_start_button = "/actions/default/in/StartButton";
+    static const inline std::string s_action_back_button = "/actions/default/in/BackButton";
+    static const inline std::string s_action_trigger_axis = "/actions/default/in/TriggerAxis";
     static const inline std::string s_action_thumbrest_touch_left = "/actions/default/in/ThumbrestTouchLeft";
     static const inline std::string s_action_thumbrest_touch_right = "/actions/default/in/ThumbrestTouchRight";
 
@@ -1061,6 +1066,14 @@ private:
     mutable TracyLockable(std::recursive_mutex, m_actions_mtx);
     mutable std::shared_mutex m_rotation_mtx{};
 
+    uevr::steam_frame::DigitalInput read_digital_input(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::AnalogInput read_trigger_axis(vr::VRInputValueHandle_t source) const;
+    bool is_native_frame_source(vr::VRInputValueHandle_t source) const;
+    bool is_gamepad_shoulder_pressed(vr::VRInputValueHandle_t source) const;
+    uint8_t gamepad_trigger_value(vr::VRInputValueHandle_t source, uint8_t existing) const;
+    void apply_frame_gamepad_input(XINPUT_GAMEPAD& gamepad) const;
+    bool is_gamepad_face_action_active(vr::VRActionHandle_t normal, vr::VRActionHandle_t swapped) const;
+
     std::vector<int32_t> m_controllers{};
     std::unordered_set<int32_t> m_controllers_set{};
 
@@ -1107,6 +1120,10 @@ private:
     vr::VRActionHandle_t m_action_dpad_left{};
 
     vr::VRActionHandle_t m_action_system_button{};
+    vr::VRActionHandle_t m_action_bumper{};
+    vr::VRActionHandle_t m_action_start_button{};
+    vr::VRActionHandle_t m_action_back_button{};
+    vr::VRActionHandle_t m_action_trigger_axis{};
     vr::VRActionHandle_t m_action_haptic{};
     vr::VRActionHandle_t m_action_thumbrest_touch_left{};
     vr::VRActionHandle_t m_action_thumbrest_touch_right{};
@@ -1135,6 +1152,10 @@ private:
         { s_action_dpad_left, m_action_dpad_left },
 
         { s_action_system_button, m_action_system_button },
+        { s_action_bumper, m_action_bumper },
+        { s_action_start_button, m_action_start_button },
+        { s_action_back_button, m_action_back_button },
+        { s_action_trigger_axis, m_action_trigger_axis },
         { s_action_thumbrest_touch_left, m_action_thumbrest_touch_left },
         { s_action_thumbrest_touch_right, m_action_thumbrest_touch_right },
 
@@ -2128,6 +2149,7 @@ private:
     static std::string actions_json;
     static std::string binding_rift_json;
     static std::string bindings_oculus_touch_json;
+    static std::string bindings_frame_controller_json;
     static std::string binding_vive;
     static std::string bindings_vive_controller;
     static std::string bindings_knuckles;
@@ -2136,6 +2158,7 @@ private:
         { "actions.json", actions_json },
         { "binding_rift.json", binding_rift_json },
         { "bindings_oculus_touch.json", bindings_oculus_touch_json },
+        { "bindings_frame_controller.json", bindings_frame_controller_json },
         { "binding_vive.json", binding_vive },
         { "bindings_vive_controller.json", bindings_vive_controller },
         { "bindings_knuckles.json", bindings_knuckles }

@@ -1,4 +1,5 @@
 #include "../VR.hpp"
+#include "SteamFrameBindings.hpp"
 
 std::string VR::actions_json = R"(
 {
@@ -94,6 +95,26 @@ std::string VR::actions_json = R"(
       "type": "boolean"
     },
     {
+      "name": "/actions/default/in/Bumper",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/StartButton",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/BackButton",
+      "type": "boolean",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/default/in/TriggerAxis",
+      "type": "vector1",
+      "requirement": "optional"
+    },
+    {
       "name": "/actions/default/in/Squeeze",
       "type": "vector1"
     },
@@ -148,10 +169,16 @@ std::string VR::actions_json = R"(
     {
       "controller_type": "rift",
       "binding_url": "binding_rift.json"
+    },
+    {
+      "controller_type": "frame_controller",
+      "binding_url": "bindings_frame_controller.json"
     }
   ],
   "localization": []
 })";
+
+std::string VR::bindings_frame_controller_json = uevr::steam_frame::make_openvr_bindings().dump(4);
 
 std::string VR::binding_rift_json = R"(
 {
