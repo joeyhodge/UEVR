@@ -82,6 +82,7 @@
 #include "StellarBladeRendererEntry.hpp"
 #include "HiFiRushRendererEntry.hpp"
 #include "SifuRendererEntry.hpp"
+#include "SatisfactoryRuntime.hpp"
 #include "SifuMeshCommands.hpp"
 #include "DuneFrameHandoff.hpp"
 #include "HalloweenRenderTargets.hpp"
@@ -10377,6 +10378,15 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         source_validated_ue425 && hellblade_is_current_game();
     static const auto executable_path = utility::get_module_pathw(utility::get_executable()).value_or(L"");
     const auto vr = VR::get();
+    const auto satisfactory_native_fix = uevr::satisfactory::use_modular_renderer(
+        uevr::satisfactory::is_current_runtime(), g_framework != nullptr && g_framework->is_dx12(),
+        vr != nullptr && vr->is_native_stereo_fix_enabled());
+    const auto satisfactory_renderer = satisfactory_native_fix ? uevr::satisfactory::renderer_image() : std::nullopt;
+    if (satisfactory_native_fix && !satisfactory_renderer) {
+        SPDLOG_WARN_ONCE("[Satisfactory][NativeStereoFix] Matching UE5.6.1 Renderer module not validated; retrying fail-closed");
+        return std::nullopt;
+    }
+    const auto expected_renderer_module = satisfactory_renderer ? satisfactory_renderer->base : game_module;
     const auto stellar_blade_native_fix = uevr::games::should_use_stellar_blade_callable_renderer_entry(
         executable_path,
         is_ue_4_26_runtime(),
@@ -10453,7 +10463,7 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
 
         if (!callee || !caller || callee->begin == caller->begin ||
             callee->begin == excluded_viewport_draw ||
-            callee->image_base != game_module || caller->image_base != game_module ||
+            !uevr::satisfactory::owns_renderer_pair(expected_renderer_module, callee->image_base, caller->image_base) ||
             caller->size() > 0x180 || callee->size() < 0x200 ||
             !direct_call_returns_to(stack[i + 1], callee->begin))
         {
@@ -10464,6 +10474,16 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
         // generic direct-call pair can otherwise resolve GuardedMain through
         // GuardedMainWrapper on UE4 and install a hook that never runs again.
         if (!has_begin_rendering_viewfamily_wrapper_shape(*caller)) {
+            continue;
+        }
+
+        if (satisfactory_native_fix &&
+            (!satisfactory_renderer->contains(callee->begin, callee->size()) ||
+             !satisfactory_renderer->contains(caller->begin, caller->size()) ||
+             !is_readable_process_range(caller->begin, caller->size()) ||
+             !uevr::satisfactory::one_family_wrapper(
+                 {reinterpret_cast<const uint8_t*>(caller->begin), caller->size()},
+                 caller->begin, callee->begin, stack[i + 1]))) {
             continue;
         }
 
@@ -10491,6 +10511,14 @@ std::optional<uintptr_t> resolve_begin_rendering_viewfamilies_from_stack(
                 i,
                 score);
         }
+    }
+
+    if (satisfactory_native_fix) {
+        if (best_candidate) {
+            SPDLOG_INFO("[Satisfactory][NativeStereoFix] Validated Renderer-DLL entry {:x} from one-family wrapper; no EXE/large-frame fallback",
+                *best_candidate);
+        }
+        return best_candidate;
     }
 
     if (!best_candidate) {
@@ -22186,14 +22214,19 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 is_ue_4_25_runtime() &&
                 g_framework != nullptr &&
                 g_framework->is_dx12();
+            const bool satisfactory_preserve_secondary_pass =
+                uevr::satisfactory::use_modular_renderer(uevr::satisfactory::is_current_runtime(),
+                    g_framework != nullptr && g_framework->is_dx12(), vr->is_native_stereo_fix_enabled());
             const bool preserve_secondary_pass =
                 hellblade_preserve_secondary_pass ||
+                satisfactory_preserve_secondary_pass ||
                 (is_ue55_or_newer &&
                  vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
                  !vr->should_force_native_stereo_fix_same_pass() &&
                  !force_primary_constructor_pass);
             const bool use_primary_constructor_pass =
                 !hellblade_preserve_secondary_pass &&
+                !satisfactory_preserve_secondary_pass &&
                 (force_primary_constructor_pass ||
                  (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass));
 
@@ -22210,6 +22243,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             } else if (hellblade_preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[Hellblade][NativeStereoFix] Preserving SECONDARY constructor pass for the engine's paired renderer");
+            } else if (satisfactory_preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE(
+                    "[Satisfactory][NativeStereoFix] Preserving the constructor eye pair; singleton adaptation is confined to the linked renderer call");
             } else if (preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
@@ -24809,6 +24845,91 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         views.count = prev_count;
         view_family->set_render_target(original_target);
     }};
+
+    if (uevr::satisfactory::use_modular_renderer(
+            uevr::satisfactory::is_current_runtime(), g_framework != nullptr && g_framework->is_dx12(), native_stereo_fix_enabled)) {
+        const auto fail_closed = [&](const char* reason) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
+            SPDLOG_WARNING_EVERY_N_SEC(2,
+                "[Satisfactory][NativeStereoFix] Preserving the original two-view render: {}", reason);
+            call_original();
+        };
+        if (!uses_tarrayview) {
+            fail_closed("Renderer did not expose the validated TArrayView ABI");
+            return;
+        }
+        uevr::satisfactory::NativeFamilyClone right_clone;
+        const char* reason{};
+        if (!right_clone.initialize(view_family, expected_vtable, reason)) {
+            if (right_clone.original_render_safe()) { fail_closed(reason != nullptr ? reason : "native family clone is unavailable"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "Satisfactory family already owns renderer interfaces; refusing to submit it twice"); }
+            return;
+        }
+        auto* const right_family = right_clone.get();
+        auto* const right_views = right_family->get_views();
+        right_family->set_render_target(rtfrt);
+        if (right_family->get_render_target() != rtfrt || right_family->get_scene_interface() != view_family_scene) {
+            fail_closed("cloned family target/scene identity changed");
+            return;
+        }
+
+        std::array<sdk::FSceneViewFamily*, max_sane_view_families + 1> linked{};
+        const auto count = uevr::satisfactory::link_families(
+            std::span{view_families.begin(), view_families.size()}, view_family, right_family, linked);
+        if (!count) {
+            fail_closed("selected family was not unique in the original list");
+            return;
+        }
+        const auto restore_backlink = [&]() {
+            return native_right_view->get_view_family() == view_family ||
+                (native_right_view->get_view_family() == right_family &&
+                    try_set_ue57_scene_view_family(native_right_view, right_family, view_family));
+        };
+        utility::ScopeGuard restore_right_family{[&]() { restore_backlink(); }};
+        if (!try_set_ue57_scene_view_family(native_right_view, view_family, right_family)) {
+            if (restore_backlink()) { fail_closed("right-eye Family backlink could not be redirected"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, "right-eye Family backlink could not be restored"); }
+            return;
+        }
+
+        // The matching Engine exports prove the same dd0/dd8 singleton fields
+        // as the existing UE5.7 adapter; this does not widen its engine gate.
+        UE57FSceneViewSingletonPrimaryOverride singleton;
+        if (!singleton.initialize(native_right_view, right_family, reason)) {
+            const bool metadata_restored = singleton.restore();
+            const bool family_restored = restore_backlink();
+            if (metadata_restored && family_restored) { fail_closed(reason != nullptr ? reason : "right-eye singleton adaptation failed"); }
+            else { g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, "right-eye singleton transaction could not be restored"); }
+            return;
+        }
+        views.data[0] = native_left_view;
+        views.data[1] = native_right_view;
+        views.count = 1;
+        right_views->data[0] = native_right_view;
+        right_views->count = 1;
+        TArrayViewViewFamily families{linked.data(), static_cast<int32_t>(*count)};
+        SPDLOG_INFO_ONCE("[Satisfactory][NativeStereoFix] Rendering fresh linked eye families in one renderer call; upscalers remain family-owned");
+        g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
+            render_module, canvas, reinterpret_cast<sdk::FSceneViewFamily*>(&families));
+
+        const bool unique_interfaces = right_clone.finish(view_family);
+        const bool metadata_restored = singleton.restore();
+        const bool family_restored = restore_backlink();
+        views.data[0] = original_first;
+        views.data[1] = original_second;
+        views.count = prev_count;
+        view_family->set_render_target(original_target);
+        if (!unique_interfaces || !metadata_restored || !family_restored) {
+            g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                "linked eye-family ownership or restoration failed after rendering");
+            SPDLOG_ERROR_EVERY_N_SEC(2, "[Satisfactory][NativeStereoFix] Rejecting the completed linked transaction (ownership={}, metadata={}, family={})",
+                unique_interfaces, metadata_restored, family_restored);
+            return;
+        }
+        publish_native_packet();
+        return;
+    }
 
     const bool use_ue57_linked_family_transaction =
         is_ue_5_7_or_newer() && !is_ue_5_8_or_newer();
