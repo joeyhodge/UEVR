@@ -2144,8 +2144,12 @@ void test_ktjl_hook_contracts() {
 #include "DuneFrameHandoffTests.hpp"
 #include "HalloweenRenderTargetsTests.hpp"
 #include "MonoRenderingTests.hpp"
+#include "SatisfactoryModularTests.hpp"
 
 int main(int argc, char** argv) {
+    test_satisfactory_array_snapshots();
+    test_satisfactory_native_family();
+    test_satisfactory_modular_discovery();
     test_outerworlds2_tracking_policy();
     test_mono_rendering();
     test_halloween_render_targets();

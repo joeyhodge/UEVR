@@ -16,6 +16,7 @@
 #include "../../Mod.hpp"
 #include "CVarDiagnostics.hpp"
 #include "Stalker2NativePolicy.hpp"
+#include "SatisfactoryModular.hpp"
 
 // For UE cvars.
 class CVarManager final : public ModComponent {
@@ -129,6 +130,7 @@ public:
         }
 
     protected:
+        bool update_satisfactory_interface(sdk::IConsoleVariable*& variable);
         uint64_t begin_ui_write(double requested);
         void finish_ui_write(uint64_t request_id, bool callable);
         void load_internal(const std::string& filename, bool set_defaults);
@@ -159,6 +161,7 @@ public:
 
         bool m_frozen{false};
         bool m_ever_frozen{false};
+        uevr::satisfactory::ConsoleRetry m_satisfactory_interface_retry{};
         mutable std::mutex m_write_observation_mutex{};
         uevr::cvar_diagnostics::WriteObservation m_write_observation{};
     };
