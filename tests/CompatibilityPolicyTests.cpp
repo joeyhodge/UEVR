@@ -1690,6 +1690,68 @@ void test_sw_zero_company_binary_revisions() {
     check_exact_code(initialize_hmd_prologue);
     check_exact_code(stereo_enabled_code);
     check_exact_code(stereo_rtm_accessor);
+    check_exact_code(latest_native_resource_code);
+
+    expect(binary_layouts[0].native_resource == nullptr && binary_layouts[1].native_resource == nullptr &&
+           binary_layouts[2].native_resource == &latest_native_resource && native_resource_slot == 5,
+        "SWZC native getter repair is isolated to the proven new revision and never selects bindless slot 4");
+    const auto& latest = binary_layouts[2];
+    constexpr uintptr_t image_base = 0x140000000ull;
+    const auto getter = image_base + latest_native_resource.getter_rva;
+    for (const auto table_rva : {latest_native_resource.texture_vtable_rva, latest_native_resource.backbuffer_vtable_rva}) {
+        const auto table = image_base + table_rva;
+        expect(matches_native_resource_accessor(latest, image_base, table, getter, latest_native_resource_code),
+            "SWZC actual texture and backbuffer-reference tables share the validated native getter ABI");
+        expect(!matches_native_resource_accessor(latest, image_base, table, image_base + 0x5F97BD0, latest_native_resource_code) &&
+               !matches_native_resource_accessor(latest, image_base, table, image_base + 0x5F9CDC0, latest_native_resource_code),
+            "SWZC both hidden-sret bindless getters are rejected before invocation");
+        for (size_t size = 0; size < latest_native_resource_code.size(); ++size) {
+            expect(!matches_native_resource_accessor(latest, image_base, table, getter,
+                       std::span{latest_native_resource_code}.first(size)),
+                "SWZC incomplete native getter evidence cannot enable a speculative call");
+        }
+        for (size_t offset = 0; offset < latest_native_resource_code.size(); ++offset) {
+            auto changed = latest_native_resource_code;
+            changed[offset] ^= 1;
+            expect(!matches_native_resource_accessor(latest, image_base, table, getter, changed),
+                "SWZC native getter code or resource-member changes fail closed");
+        }
+        expect(!matches_native_resource_accessor(binary_layouts[0], image_base, table, getter, latest_native_resource_code) &&
+               !matches_native_resource_accessor(binary_layouts[1], image_base, table, getter, latest_native_resource_code),
+            "SWZC older revisions do not inherit the new update's native getter addresses");
+    }
+    expect(!matches_native_resource_accessor(latest, image_base, image_base + 0x100, getter, latest_native_resource_code) &&
+           !matches_native_resource_accessor(latest, image_base, image_base - 1, getter, latest_native_resource_code) &&
+           !matches_native_resource_accessor(latest, image_base, image_base + latest_native_resource.texture_vtable_rva,
+               image_base - 1, latest_native_resource_code) &&
+           !matches_native_resource_accessor(latest, 0, latest_native_resource.texture_vtable_rva,
+               latest_native_resource.getter_rva, latest_native_resource_code),
+        "SWZC unknown tables, foreign addresses and absent image bases fail closed");
+    expect(matches_pinned_ui_target(0x1000, 0x1000, 0x1000, 0x2000),
+        "SWZC UI consumer reuses only the active process-retained texture/resource pair");
+    expect(!matches_pinned_ui_target(0, 0, 0, 0x2000) &&
+           !matches_pinned_ui_target(0x1000, 0, 0x1000, 0x2000) &&
+           !matches_pinned_ui_target(0x1000, 0x3000, 0x1000, 0x2000) &&
+           !matches_pinned_ui_target(0x1000, 0x1000, 0x3000, 0x2000) &&
+           !matches_pinned_ui_target(0x1000, 0x1000, 0x1000, 0),
+        "SWZC pending, retired, mismatched and null native UI targets are not submitted");
+
+    for (const auto result : {uintptr_t{0}, uintptr_t{0x2000}}) {
+        size_t validated_calls{}, legacy_calls{};
+        const auto resource = resolve_native_resource(&latest,
+            [&]() { ++validated_calls; return result; },
+            [&]() { ++legacy_calls; return uintptr_t{0x3000}; });
+        expect(resource == result && validated_calls == 1 && legacy_calls == 0,
+            "SWZC new-revision capture uses the validated getter even on failure, with no legacy probe");
+    }
+    for (const auto* layout : {static_cast<const BinaryLayout*>(nullptr), &binary_layouts[0], &binary_layouts[1]}) {
+        size_t validated_calls{}, legacy_calls{};
+        const auto resource = resolve_native_resource(layout,
+            [&]() { ++validated_calls; return uintptr_t{0x2000}; },
+            [&]() { ++legacy_calls; return uintptr_t{0x3000}; });
+        expect(resource == 0x3000 && validated_calls == 0 && legacy_calls == 1,
+            "SWZC native lookup routing preserves the established path for other games and older revisions");
+    }
 
     expect(binary_layouts[0].inlined_stereo == nullptr &&
            binary_layouts[1].inlined_stereo == &update_inlined_stereo &&

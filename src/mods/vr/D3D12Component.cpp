@@ -219,7 +219,10 @@ std::pair<uint32_t, uint32_t> get_ui_extent() {
         return fallback;
     }
 
-    const auto native = (ID3D12Resource*)ui_target->get_native_resource();
+    ID3D12Resource* native{};
+    if (!rtm->try_get_sw_zero_company_pinned_ui_resource(ui_target, native)) {
+        native = static_cast<ID3D12Resource*>(ui_target->get_native_resource());
+    }
 
     if (native == nullptr) {
         return fallback;
@@ -2748,6 +2751,10 @@ vr::EVRCompositorError D3D12Component::on_frame(VR* vr) {
         : ffsr->get_render_target_manager()->get_ui_target();
     const auto native_ui_resource = [&]() -> ID3D12Resource* {
         if (uevr::nascar::is_target()) { return nascar_ui_snapshot ? nascar_ui_snapshot->resource.Get() : nullptr; }
+        ID3D12Resource* native{};
+        if (ffsr->get_render_target_manager()->try_get_sw_zero_company_pinned_ui_resource(ui_target, native)) {
+            return native;
+        }
         return ui_target ? static_cast<ID3D12Resource*>(ui_target->get_native_resource()) : nullptr;
     };
 
