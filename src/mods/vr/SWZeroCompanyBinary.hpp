@@ -106,6 +106,25 @@ inline constexpr InlinedStereoLayout latest_inlined_stereo{
     0x79752F0, 0x7975D62, 0xD8A4408, 0xD8A44B0,
     latest_stereo_assignment, latest_stereo_entries, latest_stereo_rtm_entries};
 
+// Slot 4 returns FRHIDescriptorHandle through hidden output storage. It must
+// never be called with GetNativeResource's pointer-return ABI.
+inline constexpr size_t native_resource_slot = 5;
+inline constexpr std::array<uint8_t, 71> latest_native_resource_code{
+    0x40, 0x53, 0x48, 0x83, 0xEC, 0x20, 0x48, 0x8B, 0x81, 0xB8, 0x00, 0x00,
+    0x00, 0x33, 0xDB, 0x48, 0x85, 0xC0, 0x74, 0x09, 0x48, 0x8B, 0x58, 0x20,
+    0x48, 0x85, 0xDB, 0x75, 0x21, 0x48, 0x8B, 0x01, 0xFF, 0x50, 0x38, 0x48,
+    0x85, 0xC0, 0x74, 0x16, 0x48, 0x8B, 0x80, 0xB8, 0x00, 0x00, 0x00, 0x48,
+    0x85, 0xC0, 0x74, 0x0A, 0x48, 0x8B, 0x40, 0x20, 0x48, 0x83, 0xC4, 0x20,
+    0x5B, 0xC3, 0x48, 0x8B, 0xC3, 0x48, 0x83, 0xC4, 0x20, 0x5B, 0xC3};
+struct NativeResourceLayout {
+    uint32_t texture_vtable_rva;
+    uint32_t backbuffer_vtable_rva;
+    uint32_t getter_rva;
+    std::span<const uint8_t> getter_code;
+};
+inline constexpr NativeResourceLayout latest_native_resource{
+    0xD1F0A58, 0xD1F7950, 0x5F97B80, latest_native_resource_code};
+
 struct BinaryLayout {
     uint32_t revision;
     uint32_t slate_rva;
@@ -121,6 +140,7 @@ struct BinaryLayout {
     std::span<const uint8_t> nanite_prologue;
     std::span<const uint8_t> hologram_call;
     const InlinedStereoLayout* inlined_stereo{};
+    const NativeResourceLayout* native_resource{};
 };
 
 // These UE5.6.1 builds have the same call ABIs and resource members, but different
@@ -134,12 +154,37 @@ inline constexpr std::array<BinaryLayout, 3> binary_layouts{{
         update_nanite_prologue, update_hologram_call, &update_inlined_stereo},
     {197649, 0x6275900, 0x7710500, 0x577CDD0, 0x5F97110, 0x5A1B400, 0x553C194, 0x45,
         update_slate_arguments, update_slate_renderer, update_register_prologue,
-        update_nanite_prologue, update_hologram_call, &latest_inlined_stereo},
+        update_nanite_prologue, update_hologram_call, &latest_inlined_stereo, &latest_native_resource},
 }};
 
 inline bool matches_bytes(std::span<const uint8_t> code, std::span<const uint8_t> expected) {
     return !expected.empty() && code.size() >= expected.size() &&
         std::equal(expected.begin(), expected.end(), code.begin());
+}
+
+inline bool matches_native_resource_accessor(const BinaryLayout& layout, uintptr_t image_base,
+    uintptr_t vtable, uintptr_t getter, std::span<const uint8_t> code)
+{
+    const auto* const native = layout.native_resource;
+    if (native == nullptr || image_base == 0 || vtable < image_base || getter < image_base) {
+        return false;
+    }
+    return (vtable - image_base == native->texture_vtable_rva ||
+            vtable - image_base == native->backbuffer_vtable_rva) &&
+        getter - image_base == native->getter_rva && matches_bytes(code, native->getter_code);
+}
+
+inline bool matches_pinned_ui_target(uintptr_t expected, uintptr_t active, uintptr_t retained, uintptr_t native) {
+    return expected != 0 && expected == active && expected == retained && native != 0;
+}
+
+template <typename Validated, typename Legacy>
+auto resolve_native_resource(const BinaryLayout* layout, Validated validated, Legacy legacy) {
+    // A failed validated lookup must not restart the unsafe legacy slot probe.
+    if (layout != nullptr && layout->native_resource != nullptr) {
+        return validated();
+    }
+    return legacy();
 }
 
 inline bool matches_slate_arguments(const BinaryLayout& layout, std::span<const uint8_t> code) {
