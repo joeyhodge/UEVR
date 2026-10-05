@@ -28403,7 +28403,8 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
     if (sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()) {
         namespace binary = uevr::sw_zero_company;
         const auto* const layout = sw_zero_company_ue56_binary_layout();
-        if (layout != nullptr && layout->revision == binary::inlined_stereo_revision) {
+        const auto* const stereo = layout != nullptr ? layout->inlined_stereo : nullptr;
+        if (stereo != nullptr) {
             const auto base = reinterpret_cast<uintptr_t>(utility::get_executable());
             const auto memory = sdk::discovery::process_memory();
             const auto matches_code = [&](uint32_t rva, std::span<const uint8_t> expected) {
@@ -28421,21 +28422,21 @@ std::optional<uintptr_t> FFakeStereoRenderingHook::locate_fake_stereo_rendering_
                 }
                 return true;
             };
-            if (!matches_code(binary::initialize_hmd_rva, binary::initialize_hmd_prologue) ||
-                !matches_code(binary::stereo_assignment_rva, binary::stereo_assignment) ||
-                !matches_table(binary::stereo_primary_rva, binary::stereo_entries) ||
-                !matches_table(binary::stereo_secondary_rva, binary::stereo_rtm_entries) ||
-                !matches_code(binary::stereo_entries[1].rva, binary::stereo_enabled_code) ||
-                !matches_code(binary::stereo_entries.back().rva, binary::stereo_rtm_accessor)) {
+            if (!matches_code(stereo->initialize_hmd_rva, binary::initialize_hmd_prologue) ||
+                !matches_code(stereo->assignment_rva, stereo->assignment) ||
+                !matches_table(stereo->primary_rva, stereo->entries) ||
+                !matches_table(stereo->secondary_rva, stereo->rtm_entries) ||
+                !matches_code(stereo->entries[1].rva, binary::stereo_enabled_code) ||
+                !matches_code(stereo->entries.back().rva, binary::stereo_rtm_accessor)) {
                 SPDLOG_ERROR("[SWZeroCompany][UE5.6][Stereo] Inlined constructor or stereo interfaces did not validate");
                 return std::nullopt;
             }
 
             // Only discover the tables. InitializeHMDDevice remains responsible
             // for construction; this interior block is never called or hooked.
-            cached_result = base + binary::stereo_primary_rva;
-            SPDLOG_INFO("[SWZeroCompany][UE5.6][Stereo] Validated inlined constructor vtables primary={:x} secondary={:x}",
-                *cached_result, base + binary::stereo_secondary_rva);
+            cached_result = base + stereo->primary_rva;
+            SPDLOG_INFO("[SWZeroCompany][UE5.6][Stereo] Validated revision {} inlined constructor vtables primary={:x} secondary={:x}",
+                layout->revision, *cached_result, base + stereo->secondary_rva);
             return cached_result;
         }
     }

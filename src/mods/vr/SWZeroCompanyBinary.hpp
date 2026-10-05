@@ -52,18 +52,13 @@ inline constexpr std::array<uint8_t, 35> update_hologram_call{
     0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x8D, 0x85, 0x30, 0x06, 0x00, 0x00,
     0x48, 0x89, 0x44, 0x24, 0x20, 0xE8, 0x6C, 0xF2, 0x4D, 0x00};
 
-// In 196985 the constructor is inlined into InitializeHMDDevice. The first
+// In these updates the constructor is inlined into InitializeHMDDevice. The first
 // StereoEmulationHeight reference instead belongs to SetFinalViewRect.
-inline constexpr uint32_t inlined_stereo_revision = 196985;
-inline constexpr uint32_t initialize_hmd_rva = 0x79749C0;
-inline constexpr uint32_t stereo_assignment_rva = 0x7975432;
-inline constexpr uint32_t stereo_primary_rva = 0xD8A2C18;
-inline constexpr uint32_t stereo_secondary_rva = 0xD8A2B98;
 inline constexpr std::array<uint8_t, 28> initialize_hmd_prologue{
     0x40, 0x55, 0x53, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
     0x48, 0x8D, 0xAC, 0x24, 0x08, 0xFD, 0xFF, 0xFF,
     0x48, 0x81, 0xEC, 0xF8, 0x03, 0x00, 0x00};
-inline constexpr std::array<uint8_t, 21> stereo_assignment{
+inline constexpr std::array<uint8_t, 21> update_stereo_assignment{
     0x48, 0x8D, 0x05, 0xDF, 0xD7, 0xF2, 0x05, 0x48, 0x89, 0x07,
     0x48, 0x8D, 0x05, 0x55, 0xD7, 0xF2, 0x05, 0x48, 0x89, 0x47, 0x08};
 inline constexpr std::array<uint8_t, 3> stereo_enabled_code{0xB0, 0x01, 0xC3};
@@ -74,14 +69,42 @@ struct VtableEntry {
     uint32_t slot;
     uint32_t rva;
 };
-inline constexpr std::array<VtableEntry, 10> stereo_entries{{
+inline constexpr std::array<VtableEntry, 10> update_stereo_entries{{
     {0, 0x7974970}, {1, 0x4183B60}, {4, 0x7973990}, {5, 0x79739A0},
     {8, 0x79739C0}, {9, 0x7973A10}, {11, 0x7973C10}, {12, 0x7974060},
     {14, 0x7974380}, {16, 0x417CC50},
 }};
-inline constexpr std::array<VtableEntry, 3> stereo_rtm_entries{{
+inline constexpr std::array<VtableEntry, 3> update_stereo_rtm_entries{{
     {0, 0x7974760}, {2, 0x7974960}, {8, 0x7974790},
 }};
+
+inline constexpr std::array<uint8_t, 21> latest_stereo_assignment{
+    0x48, 0x8D, 0x05, 0x9F, 0xE6, 0xF2, 0x05, 0x48, 0x89, 0x07,
+    0x48, 0x8D, 0x05, 0x3D, 0xE7, 0xF2, 0x05, 0x48, 0x89, 0x47, 0x08};
+inline constexpr std::array<VtableEntry, 10> latest_stereo_entries{{
+    {0, 0x79752A0}, {1, 0x4183C00}, {4, 0x79742C0}, {5, 0x79742D0},
+    {8, 0x79742F0}, {9, 0x7974340}, {11, 0x7974540}, {12, 0x7974990},
+    {14, 0x7974CB0}, {16, 0x417CCF0},
+}};
+inline constexpr std::array<VtableEntry, 3> latest_stereo_rtm_entries{{
+    {0, 0x7975090}, {2, 0x7975290}, {8, 0x79750C0},
+}};
+
+struct InlinedStereoLayout {
+    uint32_t initialize_hmd_rva;
+    uint32_t assignment_rva;
+    uint32_t primary_rva;
+    uint32_t secondary_rva;
+    std::span<const uint8_t> assignment;
+    std::span<const VtableEntry> entries;
+    std::span<const VtableEntry> rtm_entries;
+};
+inline constexpr InlinedStereoLayout update_inlined_stereo{
+    0x79749C0, 0x7975432, 0xD8A2C18, 0xD8A2B98,
+    update_stereo_assignment, update_stereo_entries, update_stereo_rtm_entries};
+inline constexpr InlinedStereoLayout latest_inlined_stereo{
+    0x79752F0, 0x7975D62, 0xD8A4408, 0xD8A44B0,
+    latest_stereo_assignment, latest_stereo_entries, latest_stereo_rtm_entries};
 
 struct BinaryLayout {
     uint32_t revision;
@@ -97,17 +120,21 @@ struct BinaryLayout {
     std::span<const uint8_t> register_prologue;
     std::span<const uint8_t> nanite_prologue;
     std::span<const uint8_t> hologram_call;
+    const InlinedStereoLayout* inlined_stereo{};
 };
 
-// Both UE5.6.1 builds have the same call ABIs and resource members, but different
+// These UE5.6.1 builds have the same call ABIs and resource members, but different
 // code addresses/register allocation. Never mix independently selected revisions.
-inline constexpr std::array<BinaryLayout, 2> binary_layouts{{
+inline constexpr std::array<BinaryLayout, 3> binary_layouts{{
     {196320, 0x3A3D140, 0x4EB90C0, 0x2D4D9E0, 0x3711F60, 0x307CB10, 0x2AA6885, 0x44,
         original_slate_arguments, original_slate_renderer, original_register_prologue,
         original_nanite_prologue, original_hologram_call},
     {196985, 0x6275360, 0x770FFF0, 0x577CE70, 0x5F96B70, 0x5A1B4A0, 0x553C234, 0x45,
         update_slate_arguments, update_slate_renderer, update_register_prologue,
-        update_nanite_prologue, update_hologram_call},
+        update_nanite_prologue, update_hologram_call, &update_inlined_stereo},
+    {197649, 0x6275900, 0x7710500, 0x577CDD0, 0x5F97110, 0x5A1B400, 0x553C194, 0x45,
+        update_slate_arguments, update_slate_renderer, update_register_prologue,
+        update_nanite_prologue, update_hologram_call, &latest_inlined_stereo},
 }};
 
 inline bool matches_bytes(std::span<const uint8_t> code, std::span<const uint8_t> expected) {

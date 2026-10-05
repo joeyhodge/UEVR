@@ -1624,8 +1624,9 @@ void test_stellar_blade_callable_renderer_entry() {
 
 void test_sw_zero_company_binary_revisions() {
     using namespace uevr::sw_zero_company;
-    expect(binary_layouts[0].revision == 196320 && binary_layouts[1].revision == 196985,
-        "SWZC retains the original revision alongside the validated update");
+    expect(binary_layouts.size() == 3 && binary_layouts[0].revision == 196320 &&
+           binary_layouts[1].revision == 196985 && binary_layouts[2].revision == 197649,
+        "SWZC retains both working revisions alongside the latest validated update");
     expect(select_unique_layout([](const auto&) { return false; }) == nullptr,
         "SWZC unknown binary fails closed");
     expect(select_unique_layout([](const auto&) { return true; }) == nullptr,
@@ -1638,6 +1639,9 @@ void test_sw_zero_company_binary_revisions() {
         std::copy(layout.slate_arguments.begin(), layout.slate_arguments.end(), slate.begin() + 0x2D);
         std::copy(layout.slate_renderer.begin(), layout.slate_renderer.end(), slate.begin() + layout.slate_renderer_offset);
         expect(matches_slate_arguments(layout, slate), "SWZC validated hidden-sret Slate arguments are accepted");
+        expect(select_unique_layout([&](const auto& candidate) {
+            return candidate.slate_rva == layout.slate_rva && matches_slate_arguments(candidate, slate);
+        }) == &layout, "SWZC identical Slate ABIs select only the revision at the validated address");
         // Discovery can run after the DrawWindow entry has already been hooked.
         std::fill(slate.begin(), slate.begin() + 0x20, 0xCC);
         expect(matches_slate_arguments(layout, slate), "SWZC Slate identity does not depend on a patched entry");
@@ -1647,7 +1651,8 @@ void test_sw_zero_company_binary_revisions() {
         }
         for (const auto& other : binary_layouts) {
             if (other.revision != layout.revision) {
-                expect(!matches_slate_arguments(other, slate), "SWZC Slate revisions cannot cross-match");
+                expect(other.slate_rva != layout.slate_rva,
+                    "SWZC revisions with shared Slate arguments retain distinct code identities");
             }
         }
         for (const auto offset : {0x2Du, 0x35u, 0x41u, layout.slate_renderer_offset, layout.slate_renderer_offset + 3}) {
@@ -1683,19 +1688,40 @@ void test_sw_zero_company_binary_revisions() {
     check_exact_code(copy_call_layout);
     check_exact_code(separate_target_code);
     check_exact_code(initialize_hmd_prologue);
-    check_exact_code(stereo_assignment);
     check_exact_code(stereo_enabled_code);
     check_exact_code(stereo_rtm_accessor);
 
-    int32_t primary_disp{}, secondary_disp{};
-    std::memcpy(&primary_disp, stereo_assignment.data() + 3, sizeof(primary_disp));
-    std::memcpy(&secondary_disp, stereo_assignment.data() + 13, sizeof(secondary_disp));
-    expect(static_cast<int64_t>(stereo_assignment_rva) + 7 + primary_disp == stereo_primary_rva &&
-           static_cast<int64_t>(stereo_assignment_rva) + 17 + secondary_disp == stereo_secondary_rva,
-        "SWZC inlined constructor assignments must address the exact two interfaces");
-    expect(inlined_stereo_revision == binary_layouts[1].revision &&
-           stereo_entries[1].slot == 1 && stereo_entries.back().slot == 16,
-        "SWZC inlined constructor applies only to the new revision and retains the original stereo slot ABI");
+    expect(binary_layouts[0].inlined_stereo == nullptr &&
+           binary_layouts[1].inlined_stereo == &update_inlined_stereo &&
+           binary_layouts[2].inlined_stereo == &latest_inlined_stereo,
+        "SWZC binds each inlined constructor to its own immutable binary revision");
+    for (const auto& layout : binary_layouts) {
+        const auto* const stereo = layout.inlined_stereo;
+        if (stereo == nullptr) {
+            continue;
+        }
+        check_exact_code(stereo->assignment);
+        int32_t primary_disp{}, secondary_disp{};
+        std::memcpy(&primary_disp, stereo->assignment.data() + 3, sizeof(primary_disp));
+        std::memcpy(&secondary_disp, stereo->assignment.data() + 13, sizeof(secondary_disp));
+        expect(static_cast<int64_t>(stereo->assignment_rva) + 7 + primary_disp == stereo->primary_rva &&
+               static_cast<int64_t>(stereo->assignment_rva) + 17 + secondary_disp == stereo->secondary_rva,
+            "SWZC inlined constructor assignments must address the exact two interfaces");
+        expect(stereo->entries.size() == 10 && stereo->entries[1].slot == 1 &&
+               stereo->entries.back().slot == 16 && stereo->rtm_entries.size() == 3 &&
+               stereo->rtm_entries.back().slot == 8,
+            "SWZC updated constructors retain the source-validated stereo and target-manager slot ABIs");
+    }
+    expect(update_inlined_stereo.initialize_hmd_rva == 0x79749C0 &&
+           update_inlined_stereo.assignment_rva == 0x7975432 &&
+           update_inlined_stereo.primary_rva == 0xD8A2C18 &&
+           update_inlined_stereo.secondary_rva == 0xD8A2B98,
+        "SWZC previously working inlined constructor addresses remain unchanged");
+    expect(latest_inlined_stereo.initialize_hmd_rva == 0x79752F0 &&
+           latest_inlined_stereo.assignment_rva == 0x7975D62 &&
+           latest_inlined_stereo.primary_rva == 0xD8A4408 &&
+           latest_inlined_stereo.secondary_rva == 0xD8A44B0,
+        "SWZC latest constructor uses its EXE/PDB-validated tables, not a previous build's addresses");
 }
 
 } // namespace
