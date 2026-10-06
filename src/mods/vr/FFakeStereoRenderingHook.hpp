@@ -1,5 +1,7 @@
 #pragma once
 
+#include <sdk/GalacticRacerRuntime.hpp>
+
 #include <memory>
 #include <array>
 #include <atomic>
@@ -108,6 +110,24 @@ public:
         mutable std::atomic_uint64_t last_seen_ms{};
     };
 
+    struct GalacticRacerSceneSnapshot {
+        Microsoft::WRL::ComPtr<ID3D12Resource> resource{};
+        D3D12_RESOURCE_DESC desc{};
+        uintptr_t source_texture{};
+        uint64_t generation{};
+        uintptr_t device_identity{};
+    };
+    std::shared_ptr<const GalacticRacerSceneSnapshot> get_swgr_scene_snapshot() const {
+        return swgr_scene_snapshot.load(std::memory_order_acquire);
+    }
+    std::shared_ptr<const GalacticRacerSceneSnapshot> get_swgr_ui_snapshot() const {
+        return swgr_ui_snapshot.load(std::memory_order_acquire);
+    }
+    std::unique_lock<std::mutex> try_pin_swgr_ui_registration() {
+        return std::unique_lock<std::mutex>{swgr_ui_lifetime_mutex, std::try_to_lock};
+    }
+    bool observe_swgr_scene_target(sdk::FViewport* viewport);
+
     std::shared_ptr<const NascarTextureSnapshot> get_nascar_scene_target_snapshot() const {
         auto snapshot = nascar_scene_target_snapshot.load(std::memory_order_acquire);
         if (!snapshot) { return nullptr; }
@@ -195,6 +215,10 @@ public:
     }
 
     FRHITexture2D* get_render_target() {
+        if (swgr_scene_observation.load(std::memory_order_acquire)) {
+            const auto snapshot = get_swgr_scene_snapshot();
+            return snapshot ? reinterpret_cast<FRHITexture2D*>(snapshot->source_texture) : nullptr;
+        }
         if (uevr::nascar::is_target()) {
             const auto snapshot = get_nascar_scene_target_snapshot();
             // Identity only. D3D12 consumers retain the COM-owned snapshot.
@@ -508,6 +532,11 @@ protected:
     void* ue58_pending_native_resource{nullptr};
     uint32_t ue58_pending_scene_target_observations{0};
     std::atomic<std::shared_ptr<const Everspace2D3D12SceneTargetSnapshot>> everspace2_scene_target_snapshot{};
+    std::atomic<std::shared_ptr<const GalacticRacerSceneSnapshot>> swgr_scene_snapshot{};
+    std::atomic<std::shared_ptr<const GalacticRacerSceneSnapshot>> swgr_ui_snapshot{};
+    std::mutex swgr_ui_lifetime_mutex{};
+    std::atomic_bool swgr_scene_observation{};
+    std::atomic_uint64_t swgr_scene_generation{};
     std::atomic<uint64_t> everspace2_scene_target_generation{};
     std::atomic<std::shared_ptr<const SWZeroCompanyD3D12SceneTargetSnapshot>> sw_zero_company_scene_target_snapshot{};
     std::atomic<uint64_t> sw_zero_company_scene_target_generation{};
@@ -1036,10 +1065,11 @@ public:
     }
 
     bool has_slate_hook() {
-        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active();
+        return (bool)m_slate_thread_hook || m_nascar_slate_getter.active() || (bool)m_swgr_slate_output_hook;
     }
 
     uintptr_t get_slate_hook_target_address() const {
+        if (m_swgr_slate_output_hook) { return m_swgr_slate_output_hook.target_address(); }
         return m_slate_thread_hook.target_address();
     }
 
@@ -1236,6 +1266,11 @@ private:
     static void ue57_add_slate_draw_elements_pass_hook(safetyhook::Context& ctx);
     static void slate_output_texture_register_hook_impl(safetyhook::Context& ctx, bool ue58);
     static void ue55_slate_output_texture_register_hook(safetyhook::Context& ctx);
+    static void swgr_slate_output_hook(safetyhook::Context& ctx);
+    static void swgr_slate_output_restore_hook(safetyhook::Context& ctx);
+    static void swgr_bink_overlay_hook(void* viewport_closure, void* commands);
+    static void swgr_bink_packet_hook(safetyhook::Context& ctx);
+    void attempt_hook_swgr_bink_overlay();
     static void* sw_zero_company_ue56_register_external_texture_hook(
         void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
@@ -1530,6 +1565,11 @@ private:
     safetyhook::InlineHook m_slate_thread_hook{};
     std::vector<safetyhook::MidHook> m_ue57_slate_elements_hooks{};
     safetyhook::MidHook m_ue55_slate_output_texture_register_hook{};
+    safetyhook::MidHook m_swgr_slate_output_restore_hook{};
+    safetyhook::MidHook m_swgr_slate_output_hook{};
+    safetyhook::MidHook m_swgr_bink_packet_hook{};
+    safetyhook::InlineHook m_swgr_bink_overlay_hook{};
+    bool m_swgr_bink_attempted{};
     safetyhook::InlineHook m_sw_zero_company_ue56_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
 
