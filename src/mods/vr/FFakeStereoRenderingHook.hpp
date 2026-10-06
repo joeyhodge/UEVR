@@ -36,6 +36,7 @@
 #include "CompatibilityPolicy.hpp"
 #include "UE58UIInitialization.hpp"
 #include "UE58OwnedUITexture.hpp"
+#include "GalacticRacerOwnedTexture.hpp"
 #include "NativeFrameDiagnostics.hpp"
 #include "Stalker2NativePolicy.hpp"
 #include "UE57SlateSymbols.hpp"
@@ -78,6 +79,7 @@ public:
         uint32_t width{};
         uint32_t height{};
         std::optional<uevr::ue58_owned_ui::Resource> ue58_owned_resource{};
+        std::optional<uevr::swgr_owned::Resource> swgr_owned_resource{};
     };
 
     struct Everspace2D3D12SceneTargetSnapshot {

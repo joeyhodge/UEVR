@@ -220,6 +220,26 @@ std::optional<SwgrNativeTexture> swgr_validate_texture(uintptr_t texture, uint32
     return result;
 }
 
+struct SwgrOwnedTexture {
+    uevr::swgr_owned::Resource identity;
+    SwgrNativeTexture native;
+};
+
+std::optional<SwgrOwnedTexture> swgr_validate_owned_texture(sdk::UTexture* texture, uint32_t width, uint32_t height) try {
+    if (!swgr_ue574_dx12_runtime() || texture == nullptr) { return {}; }
+    const auto owner = reinterpret_cast<uintptr_t>(texture);
+    const auto owner_class = texture->get_class();
+    if (!owner_class) { return {}; }
+    const auto size = owner_class->get_properties_size();
+    if (size <= 0 || static_cast<size_t>(size) > uevr::swgr_owned::max_owner_size) { return {}; }
+    const auto memory = sdk::discovery::process_memory();
+    const auto identity = uevr::swgr_owned::find_resource(memory, owner, size, width, height);
+    if (!identity) { return {}; }
+    auto native = swgr_validate_texture(identity->rhi_texture, width, height);
+    if (!native || !uevr::swgr_owned::resource_matches(memory, owner, *identity, width, height)) { return {}; }
+    return SwgrOwnedTexture{*identity, std::move(*native)};
+} catch (...) { return {}; }
+
 std::atomic<uint32_t> g_ue58_last_render_pose_frame{
     (std::numeric_limits<uint32_t>::max)()};
 std::atomic<uint32_t> g_ue58_next_render_pose_frame{};
@@ -25458,7 +25478,22 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     sdk::FTextureRenderTargetResource* rtrsrc{};
     sdk::FRenderTarget* rtfrt{};
     FRHITexture2D* scene_capture_rhi{};
-    if (native_capture_snapshot != nullptr && native_capture_snapshot->ue58_owned_resource) {
+    if (swgr_ue574_dx12_runtime()) {
+        // UI initialization must not redirect this capture through process-wide
+        // discovery offsets. Revalidate only its generation-owned resource.
+        if (native_capture_snapshot != nullptr && native_capture_snapshot->swgr_owned_resource &&
+            reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
+            native_capture_snapshot->generation == rtm->get_scene_capture_generation() &&
+            uevr::swgr_owned::resource_matches(sdk::discovery::process_memory(),
+                native_capture_snapshot->owner_texture, *native_capture_snapshot->swgr_owned_resource,
+                native_capture_snapshot->width, native_capture_snapshot->height))
+        {
+            const auto& identity = *native_capture_snapshot->swgr_owned_resource;
+            rtrsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(identity.resource);
+            rtfrt = reinterpret_cast<sdk::FRenderTarget*>(identity.resource + uevr::swgr_owned::render_target_offset);
+            scene_capture_rhi = reinterpret_cast<FRHITexture2D*>(identity.rhi_texture);
+        }
+    } else if (native_capture_snapshot != nullptr && native_capture_snapshot->ue58_owned_resource) {
         namespace layout = uevr::ue58_owned_ui;
         const auto& identity = *native_capture_snapshot->ue58_owned_resource;
         if (rt != nullptr && reinterpret_cast<uintptr_t>(rt) == native_capture_snapshot->owner_texture &&
@@ -39186,9 +39221,16 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
     {
         return false;
     }
+    const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
+    const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
+    std::optional<SwgrOwnedTexture> swgr_owned{};
+    if (swgr_ue574_dx12_runtime()) {
+        swgr_owned = swgr_validate_owned_texture(owner_texture, expected_width, expected_height);
+        if (!swgr_owned || swgr_owned->identity.rhi_texture != reinterpret_cast<uintptr_t>(rhi_texture)) { return false; }
+    }
     const auto* const swzc_layout = sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend()
         ? sw_zero_company_ue56_binary_layout() : nullptr;
-    auto* native = ue58_owned_resource != nullptr ? validated_native
+    auto* native = swgr_owned ? swgr_owned->native.resource.Get() : ue58_owned_resource != nullptr ? validated_native
         : uevr::sw_zero_company::resolve_native_resource(swzc_layout,
             [&]() -> IUnknown* {
                 ID3D12Resource* resource{};
@@ -39200,8 +39242,6 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
         return false;
     }
 
-    const auto expected_width = static_cast<uint32_t>(VR::get()->get_hmd_width());
-    const auto expected_height = static_cast<uint32_t>(VR::get()->get_hmd_height());
     bool resource_valid = false;
 
     if (g_framework->get_renderer_type() == Framework::RendererType::D3D11) {
@@ -39274,6 +39314,11 @@ bool VRRenderTargetManager_Base::publish_scene_capture_target_snapshot(
     snapshot->generation = generation;
     snapshot->width = expected_width;
     snapshot->height = expected_height;
+    if (swgr_owned) {
+        if (!uevr::swgr_owned::resource_matches(sdk::discovery::process_memory(),
+                reinterpret_cast<uintptr_t>(owner_texture), swgr_owned->identity, expected_width, expected_height)) { return false; }
+        snapshot->swgr_owned_resource = swgr_owned->identity;
+    }
     if (ue58_owned_resource != nullptr) {
         if (!uevr::ue58_owned_ui::resource_matches(reinterpret_cast<uintptr_t>(owner_texture),
                 *ue58_owned_resource, expected_width, expected_height,
@@ -40751,7 +40796,16 @@ bool VRRenderTargetManager_Base::create_dedicated_ui_texture() {
                         }
 
                         FRHITexture2D* ready_texture{};
-                        if (uevr::nascar::is_target()) {
+                        if (swgr_ue574_dx12_runtime()) {
+                            const auto validated = swgr_validate_owned_texture(tgt.get(), width, height);
+                            if (!validated) {
+                                SPDLOG_INFO_EVERY_N_SEC(2, "[SWGR][SlateUI] Waiting for initialized owned UI resource; no global offset scan");
+                                return false;
+                            }
+                            ready_texture = reinterpret_cast<FRHITexture2D*>(validated->identity.rhi_texture);
+                            SPDLOG_INFO("[SWGR][SlateUI] Validated owned UI resource at owner+0x{:x}; capture offsets unchanged",
+                                validated->identity.private_resource_offset);
+                        } else if (uevr::nascar::is_target()) {
                             ready_texture = nascar_read_owned_ui_texture(tgt.get(), width, height);
                             if (ready_texture == nullptr) {
                                 SPDLOG_INFO_EVERY_N_SEC(5,
@@ -40936,6 +40990,22 @@ void VRRenderTargetManager_Base::ensure_dedicated_ui_target(uintptr_t command_li
     }
 
     auto existing_target = get_dedicated_ui_target();
+
+    if (swgr_ue574_dx12_runtime()) {
+        const auto snapshot = get_swgr_ui_snapshot();
+        if (existing_target != nullptr) {
+            // Completion clears the in-flight ticket, not this published generation.
+            if (snapshot && snapshot->source_texture == reinterpret_cast<uintptr_t>(existing_target) &&
+                snapshot->generation == dedicated_ui_generation &&
+                snapshot->desc.Width == dedicated_ui_width && snapshot->desc.Height == dedicated_ui_height &&
+                g_framework->get_d3d12_hook() != nullptr &&
+                snapshot->device_identity == reinterpret_cast<uintptr_t>(g_framework->get_d3d12_hook()->get_device())) { return; }
+            destroy_dedicated_ui_target();
+            return;
+        }
+        if (!is_dedicated_ui_target_pending()) { try_schedule_dedicated_ui_creation(); }
+        return;
+    }
 
     ID3D12Resource* swzc_native{};
     if (try_get_sw_zero_company_pinned_ui_resource(existing_target, swzc_native)) {
@@ -41167,6 +41237,9 @@ FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
     {
         return snapshot->rhi_texture;
     }
+
+    // A retired/pending SWGR target must not re-enter cached global discovery.
+    if (swgr_ue574_dx12_runtime()) { return nullptr; }
 
     if (this->in_flight_target != nullptr) {
         return nullptr;
@@ -41682,6 +41755,16 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             sdk::FRenderTarget* frt{};
             FRHITexture2D* rhi_texture{};
             std::optional<UE58OwnedTextureResource> ue58_owned{};
+            std::optional<SwgrOwnedTexture> swgr_owned{};
+            if (swgr_ue574_dx12_runtime()) {
+                swgr_owned = swgr_validate_owned_texture(tgt.get(),
+                    static_cast<uint32_t>(VR::get()->get_hmd_width()),
+                    static_cast<uint32_t>(VR::get()->get_hmd_height()));
+                if (!swgr_owned) {
+                    SPDLOG_INFO_EVERY_N_SEC(2, "[SWGR][NativeStereoFix] Waiting for initialized owned capture resource; no global offset scan");
+                    return false;
+                }
+            }
             if (is_validated_ue58_slate_ui_runtime() && is_ue58_dx12_backend()) {
                 const char* reason{};
                 ue58_owned = ue58_dx12_validate_owned_resource(tgt.get(), get_render_target(),
@@ -41710,7 +41793,12 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
             const bool use_storm_escape_capture_layout =
                 storm_escape_uses_validated_ue561_native_fix_capture_layout();
 
-            if (ue58_owned) {
+            if (swgr_owned) {
+                rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(swgr_owned->identity.resource);
+                frt = reinterpret_cast<sdk::FRenderTarget*>(swgr_owned->identity.resource + uevr::swgr_owned::render_target_offset);
+                rhi_texture = reinterpret_cast<FRHITexture2D*>(swgr_owned->identity.rhi_texture);
+                sdk::FRenderTarget::update_offsets(frt);
+            } else if (ue58_owned) {
                 // The complete owned chain, not Slate's ABI or a title name,
                 // selects this path. Keep it local to this capture generation.
                 rsrc = reinterpret_cast<sdk::FTextureRenderTargetResource*>(ue58_owned->identity.resource);
