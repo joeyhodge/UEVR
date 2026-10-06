@@ -18,7 +18,11 @@ PATH_FIELDS = ["seconds", "sequence", "epoch", "cut", "camera_sequence", "kind",
                "id", "play_mode", "raw_fov", "effective_fov", "base_fov", "focus_before",
                "focus_after", "dolly", "safety_up", "raw_x", "raw_y", "raw_z",
                "neutral_x", "neutral_y", "neutral_z", "output_x", "output_y", "output_z",
-               "suspects", "snapshot_age_ms", "previous_assist_write", "input_matches_assist"]
+               "suspects", "snapshot_age_ms", "previous_assist_write", "input_matches_assist",
+               "native_status", "native_frame", "native_camera", "native_fov", "native_focus_cm",
+               "look_at_x", "look_at_y", "look_at_z", "source_matches_input",
+               "neutral_target_depth", "neutral_target_yaw_error", "neutral_target_pitch_error",
+               "hmd_target_depth", "hmd_target_yaw_error", "hmd_target_pitch_error"]
 
 
 def vector(pose):
@@ -34,13 +38,19 @@ def names(bits):
     return [name for bit, name in SUSPECTS.items() if bits & bit]
 
 
+def add_range(container, key, value):
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+        low, high = container.get(key, [value, value])
+        container[key] = [min(low, value), max(high, value)]
+
+
 def catalogue(session, output):
     session, output = Path(session).resolve(), Path(output).resolve()
     if output == session or output in session.parents or session in output.parents:
         raise ValueError("Choose a separate output directory, not the trace or profile directory")
     output.mkdir(parents=True, exist_ok=True)
     metadata = json.loads((session / "metadata.json").read_text(encoding="utf-8"))
-    if metadata.get("schema") != 1:
+    if metadata.get("schema") not in (1, 2):
         raise ValueError("Unsupported trace schema")
     cuts, missing, coverage = {}, Counter(), Counter()
     first_ns = None
@@ -76,7 +86,9 @@ def catalogue(session, output):
                     "views": Counter(), "cache_previous_write": 0, "game_cut": False,
                     "inferred_cut": False, "targets_verified": 0, "geometry_verified": 0,
                     "post_tick_fov_range": None, "projection_symmetric_fov_range": None,
-                    "cache_probe_observations": 0})
+                    "cache_probe_observations": 0, "native_source_statuses": Counter(),
+                    "native_look_at_samples": 0, "native_ranges": {}, "target_framing_ranges": {},
+                    "source_matched_views": 0, "hmd_only_target_behind": 0})
                 cut["first_ns"] = min(cut["first_ns"], time_ns)
                 cut["last_ns"] = max(cut["last_ns"], time_ns)
                 cut["samples"] += 1
@@ -108,10 +120,30 @@ def catalogue(session, output):
                         bounds = cut["ranges"].setdefault("raw_fov", [value, value])
                         bounds[0], bounds[1] = min(bounds[0], value), max(bounds[1], value)
                 view = e.get("view", {})
+                native = c.get("native_source", {})
+                if kind == "observation":
+                    native = e.get("observation", {}).get("native_source", {})
+                if kind in ("camera", "observation"):
+                    cut["native_source_statuses"][native.get("status", "unavailable_legacy_trace")] += 1
+                    if native.get("valid") and native.get("status") == "accepted":
+                        cut["native_look_at_samples"] += 1
+                        add_range(cut["native_ranges"], "focus_cm", native.get("focus_cm"))
+                        add_range(cut["native_ranges"], "original_game_fov", native.get("pose", {}).get("fov"))
+                        add_range(cut["native_ranges"], "capture_us", native.get("capture_us"))
                 neutral_xyz = vector(view.get("neutral", {})) if view.get("neutral_valid") else None
                 output_xyz = vector(view.get("output", {}))
                 if kind == "view":
                     cut["views"][str(view.get("eye", "unknown"))] += 1
+                    if view.get("source_matches_input"):
+                        cut["source_matched_views"] += 1
+                        framing = view.get("target_framing", {})
+                        for stage in ("source", "neutral", "hmd"):
+                            metrics = framing.get(stage, {})
+                            if metrics.get("valid"):
+                                for field in ("distance_cm", "depth_cm", "yaw_error_degrees", "pitch_error_degrees"):
+                                    add_range(cut["target_framing_ranges"], f"{stage}_{field}", metrics.get(field))
+                        if framing.get("hmd", {}).get("behind") and not framing.get("neutral", {}).get("behind"):
+                            cut["hmd_only_target_behind"] += 1
                     if view.get("input_matches_assist") and raw_xyz and neutral_xyz and len(points[key]) < 600:
                         points[key].append((raw_xyz, neutral_xyz))
                 if kind == "observation":
@@ -143,6 +175,19 @@ def catalogue(session, output):
                         "snapshot_age_ms": view.get("snapshot_age_ms"),
                         "previous_assist_write": c.get("previous_update_wrote_fov")}
                     row["input_matches_assist"] = view.get("input_matches_assist")
+                    row.update({"native_status": native.get("status"), "native_frame": native.get("native_frame"),
+                        "native_camera": native.get("object"), "native_fov": native.get("pose", {}).get("fov") if native.get("valid") else None,
+                        "native_focus_cm": native.get("focus_cm"), "source_matches_input": view.get("source_matches_input")})
+                    look_at = vector({"location": native.get("look_at")}) if native.get("valid") else None
+                    if look_at:
+                        for axis, value in zip("xyz", look_at):
+                            row[f"look_at_{axis}"] = value
+                    if view.get("source_matches_input"):
+                        for stage in ("neutral", "hmd"):
+                            metrics = view.get("target_framing", {}).get(stage, {})
+                            if metrics.get("valid"):
+                                for short, field in (("depth", "depth_cm"), ("yaw_error", "yaw_error_degrees"), ("pitch_error", "pitch_error_degrees")):
+                                    row[f"{stage}_target_{short}"] = metrics.get(field)
                     for prefix, xyz in (("raw", raw_xyz), ("neutral", neutral_xyz), ("output", output_xyz)):
                         if xyz:
                             for axis, value in zip("xyz", xyz):
@@ -158,7 +203,7 @@ def catalogue(session, output):
             identities[identity].add(tuple(cut["ranges"].get("raw_fov", [])))
         summaries.append(cut)
     ambiguous_ids = {key: sorted(value) for key, value in identities.items() if len(value) > 1}
-    catalogue_data = {"schema": 1, "record_only": True, "session": metadata.get("session"),
+    catalogue_data = {"schema": metadata.get("schema"), "record_only": True, "session": metadata.get("session"),
         "coverage": coverage, "gaps": missing, "malformed_lines": malformed,
         "capabilities": metadata.get("capabilities", {}), "observed_stadiums": sorted(observed_stadiums),
         "duration_seconds": (last_ns - (first_ns or last_ns)) / 1e9,
@@ -180,6 +225,9 @@ def catalogue(session, output):
         "Automatic flags are suspect evidence, not proof that a shot is bad.",
         "The configured floor estimate is NOT measured stadium geometry. BallFollow mode is an existing heuristic, not a verified ball target.",
         "A pre-tick FOV may be contaminated by the preceding assist write; compare the post-tick cache and stereo input.", "",
+        "Schema 2 can record the native authored look-at point and focus distance, independently of assist FOV writes. This is not verified player/ball ownership.",
+        "Neutral target flags describe assist framing estimates. Headset-only target changes are counted separately, not blamed on camera assist.",
+        "Unavailable/torn source samples are never replaced with a prior target. Inspect source status and matched-view coverage before deriving corrections.", "",
         "Projection FOV ranges are symmetric approximations from m00; use the full matrix for asymmetric HMD frusta.", "",
         "## Highest Priority Cuts", "", "| Epoch/cut | Time (s) | Camera | Reasons |", "|---|---:|---|---|"]
     for cut in sorted(summaries, key=lambda cut: -cut["review_priority"])[:60]:

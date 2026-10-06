@@ -23,6 +23,26 @@ Json pose_json(const Pose& p) {
         {"cache_timestamp", p.timestamp_valid ? Json(p.cache_timestamp) : Json(nullptr)},
         {"valid", valid_pose(p)}};
 }
+Json source_json(const NativeSource& s) {
+    static constexpr const char* statuses[] = {"unavailable", "unsupported_layout", "unreadable",
+        "unsupported_node", "corrupt_list", "changed_during_read", "invalid_values",
+        "bridge_mismatch", "manager_mismatch", "accepted"};
+    return {{"status", statuses[(size_t)s.status]}, {"valid", valid_source(s)}, {"pose", pose_json(s.pose)},
+        {"look_at", valid_source(s) ? Json(s.look_at) : Json(nullptr)},
+        {"focus_cm", valid_source(s) ? Json(s.focus_distance) : Json(nullptr)},
+        {"object", s.object}, {"pcm", s.camera_manager}, {"camera_actor", s.camera_actor},
+        {"time_ns", s.time_ns}, {"native_frame", s.frame}, {"list_nodes", s.list_nodes},
+        {"capture_us", s.capture_us}, {"bridge_error_cm", s.position_error},
+        {"bridge_direction_error_degrees", s.direction_error}, {"bridge_fov_error_degrees", s.fov_error},
+        {"provenance", "native publisher look-at before normalization; validated against UE bridge"},
+        {"subject_identity_verified", false}, {"layout", "prospi-native-camera-v1"}};
+}
+Json framing_json(const TargetFraming& f) {
+    return {{"valid", f.valid}, {"distance_cm", f.distance}, {"depth_cm", f.depth},
+        {"yaw_error_degrees", f.yaw_error}, {"pitch_error_degrees", f.pitch_error},
+        {"behind", f.behind}, {"clip_estimate_valid", f.clip_estimate_valid},
+        {"ndc_estimate", {f.ndc_x, f.ndc_y}}, {"offscreen_estimate", f.offscreen_estimate}};
+}
 Json camera_json(const Camera& c) {
     Json matches = Json::array();
     for (size_t i = 0; i < (std::min<size_t>)(c.match_count, c.matches.size()); ++i) {
@@ -30,12 +50,18 @@ Json camera_json(const Camera& c) {
         matches.push_back({{"id", m.id.data()}, {"score", m.score}, {"confidence", m.confidence},
             {"weight", m.weight}, {"focus", m.focus_distance}, {"min_fov", m.min_fov}, {"multiplier", m.multiplier}});
     }
-    return {{"input", pose_json(c.input)}, {"world", c.world}, {"pcm", c.camera_manager},
+    return {{"input", pose_json(c.input)}, {"native_source", source_json(c.native_source)},
+        {"world", c.world}, {"pcm", c.camera_manager},
         {"view_target", c.view_target}, {"id", c.id.data()}, {"dolly_source", c.dolly_source.data()},
         {"matches", matches}, {"preset", c.preset}, {"mode", c.mode}, {"play_mode", c.play_mode}, {"source", c.source},
         {"zone", c.zone}, {"rendering_method", c.rendering_method}, {"confidence", c.confidence},
         {"framing_status", c.framing_status}, {"framing_candidate_focus", c.framing_candidate_focus},
         {"framing_candidate_dolly", c.framing_candidate_dolly},
+        {"native_focus_guard", {{"enabled", c.native_focus_guard_enabled}, {"applied", c.native_focus_guard_applied},
+            {"status", c.native_focus_guard_status}, {"dolly_before", c.native_focus_guard_dolly_before},
+            {"lift_before", c.native_focus_guard_lift_before}, {"end_z", c.native_focus_guard_end_z},
+            {"target_depth", c.native_focus_guard_depth}, {"floor", c.native_focus_guard_floor},
+            {"zone", c.native_focus_guard_zone}, {"protected", c.native_focus_guard_protected}}},
         {"base_fov", c.base_fov}, {"effective_fov", c.effective_fov}, {"min_fov", c.min_fov},
         {"multiplier", c.multiplier}, {"focus_before", c.focus_before}, {"focus_after", c.focus_after},
         {"dolly_before", c.dolly_before}, {"dolly_after", c.dolly_after},
@@ -69,13 +95,27 @@ Json event_json(const Event& e) {
             {"world_to_meters", v.world_to_meters}, {"world_scale", v.world_scale},
             {"snapshot_age_ms", v.snapshot_age_ms}, {"index", v.index}, {"eye", v.eye},
             {"neutral_valid", v.neutral_valid}, {"decoupled_pitch", v.decoupled_pitch},
-            {"input_matches_assist", v.input_matches_assist}, {"family_role", "unclassified"}};
+            {"input_matches_assist", v.input_matches_assist}, {"family_role", "unclassified"},
+            {"source_matches_input", v.source_matches_input},
+            {"hmd", {{"valid", v.hmd_pose_valid}, {"rotation_xyzw", v.hmd_rotation},
+                {"eye_rotation_xyzw", v.eye_rotation}, {"recenter_rotation_xyzw", v.recenter_rotation},
+                {"standing_delta_runtime_units", v.standing_delta}, {"head_translation_cm", v.head_translation},
+                {"eye_translation_cm", v.eye_translation}, {"head_translation_applied", v.head_translation_applied},
+                {"rotation_applied", v.hmd_rotation_applied}, {"mono", v.mono}}}};
+        if (v.source_matches_input && valid_source(e.camera.native_source)) {
+            const auto& s = e.camera.native_source;
+            out["view"]["target_framing"] = {{"source", framing_json(target_framing(s.pose, s.look_at))},
+                {"neutral", framing_json(v.neutral_valid ? target_framing(v.neutral, s.look_at) : TargetFraming{})},
+                {"hmd", framing_json(target_framing(v.output, s.look_at))},
+                {"note", "Angular framing is measured; clip bounds are neutral-camera estimates, not asymmetric HMD visibility."}};
+        }
     } else if (e.kind == Kind::projection) {
         out["projection"] = e.projection;
         out["eye"] = e.view.eye;
     } else if (e.kind == Kind::observation) {
         const auto& o = e.observation;
         out["observation"] = {{"cache", pose_json(o.cache)}, {"source_camera", pose_json(o.source_camera)},
+            {"native_source", source_json(o.native_source)},
             {"ball", o.ball_valid ? Json(o.ball) : Json(nullptr)},
             {"ball_velocity", o.velocity_valid ? Json(o.ball_velocity) : Json(nullptr)},
             {"subject", o.subject_valid ? Json(o.subject) : Json(nullptr)},
@@ -119,7 +159,7 @@ struct Recorder::Impl {
         if (e.time_ns == 0) { e.time_ns = Recorder::clock_ns(); }
         e.session = session;
         e.epoch = epoch;
-        e.cut_sequence = cut_sequence;
+        if (e.camera_sequence == 0) { e.cut_sequence = cut_sequence; }
         queue[(head + count) % queue.size()] = e;
         ++count;
         wake.notify_one();
@@ -130,15 +170,17 @@ struct Recorder::Impl {
             const auto directory = root / ("session-" + std::to_string(session));
             std::filesystem::create_directories(directory);
             auto meta = Json::parse(metadata);
-            meta["schema"] = 1;
+            meta["schema"] = 2;
             meta["session"] = session;
             meta["units"] = {{"position", "Unreal cm"}, {"rotation", "pitch/yaw/roll degrees"},
                 {"projection", "column-major 4x4"}, {"clock", "steady nanoseconds; session-local"}};
             meta["limits"] = {{"bytes", limits.byte_limit}, {"queue", limits.queue_capacity},
                 {"history", limits.history_capacity}, {"normal_hz", 30}, {"burst_hz", 120}, {"context_seconds", 5}};
             meta["capabilities"] = {{"camera", true}, {"neutral_and_hmd_pose", true},
+                {"native_look_at", "Conditional on validated code/layout, manager and per-sample bridge agreement"},
+                {"hmd_offset_provenance", true},
                 {"authoritative_ball", false}, {"static_geometry", false},
-                {"note", "Ball/geometry are unavailable unless a validated provider supplies observations. No inferred ball is substituted."}};
+                {"note", "A native look-at point is not player/ball identity. Unsupported or torn samples are unavailable, never carried forward."}};
             if (meta.contains("executable") && meta["executable"].is_string()) {
                 const auto executable = std::filesystem::u8path(meta["executable"].get<std::string>());
                 std::error_code error;
@@ -369,6 +411,8 @@ Ticket Recorder::begin_view(Pose input, int32_t index, int32_t eye, uint32_t thr
         distance(input.location, t.event.camera.input.location) < 100.0f &&
         angle_delta(input.rotation[0], t.event.camera.input.rotation[0]) < 5.0f &&
         angle_delta(input.rotation[1], t.event.camera.input.rotation[1]) < 5.0f;
+    t.event.view.source_matches_input = source_matches_input(t.event.camera.native_source,
+        t.event.view.input, t.event.camera.camera_manager, t.event.time_ns);
     t.event.view.snapshot_age_ms = (float)(t.event.time_ns - p.camera.time_ns) / 1'000'000.0f;
     if (eye < 0 || eye > 1) { return {}; }
     const auto channel = eye * 2 + (t.event.view.input_matches_assist ? 1 : 0);
@@ -414,7 +458,9 @@ void Recorder::observation(Observation sample, uint32_t thread) noexcept {
     if (!lock) { p.dropped.fetch_add(1); return; }
     if (!p.have_camera || (sample.reference_camera && sample.reference_camera != p.camera.camera_sequence &&
         (!p.have_neutral || sample.reference_camera != p.neutral.camera_sequence))) { return; }
-    Event e = p.camera; e.kind = Kind::observation; e.thread = thread; e.time_ns = clock_ns(); e.observation = sample;
+    // An older neutral transaction must not be relabelled as the newest camera/cut.
+    Event e = sample.reference_camera && sample.reference_camera != p.camera.camera_sequence ? p.neutral : p.camera;
+    e.kind = Kind::observation; e.thread = thread; e.time_ns = clock_ns(); e.observation = sample;
     p.push(e);
 }
 void Recorder::mark(Marker marker, std::string_view label, uint32_t thread) noexcept {

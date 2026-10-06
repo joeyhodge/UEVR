@@ -1,5 +1,6 @@
 #pragma once
 #include "ProSpiCameraTrace.hpp"
+#include "ProSpiNativeCameraSource.hpp"
 #include <sdk/ObjectIdentity.hpp>
 
 namespace sdk { class UObjectBase; }
@@ -9,6 +10,7 @@ namespace uevr::prospi::trace {
 class CameraProbe {
 public:
     bool capture(sdk::UObjectBase* pcm, Camera& camera) noexcept;
+    NativeSource capture_native(uintptr_t pcm) noexcept;
     void post_tick(Recorder& recorder, uint32_t thread) noexcept;
     void reset() noexcept;
 private:
@@ -21,5 +23,7 @@ private:
     uint8_t m_cut_mask{};
     uint64_t m_last_post{};
     bool m_previous_post_cut{};
+    native::Layout m_native_layout{};
+    bool m_native_attempted{}, m_native_supported{};
 };
 }

@@ -1,6 +1,8 @@
 #include <sdk/ReflectedNameCall.hpp>
 #define NOMINMAX
 
+#include "vr/ProSpiNativeFocusGuard.hpp"
+
 #include <fstream>
 #include <cmath>
 #include <algorithm>
@@ -9322,6 +9324,17 @@ void VR::update_prospi_camera_trace_control() {
 
 void VR::update_game_fov() {
     auto framing_status = uevr::prospi::framing::Status::not_selected;
+    uevr::prospi::focus_guard::Decision native_focus_decision{};
+    float native_focus_dolly_before{}, native_focus_lift_before{};
+    utility::ScopeGuard native_focus_finish{[&] {
+        if (native_focus_decision.status == uevr::prospi::focus_guard::Status::off &&
+            m_prospi_native_focus_status.load(std::memory_order_relaxed) == (int32_t)uevr::prospi::focus_guard::Status::off) { return; }
+        m_prospi_native_focus_dolly_before.store(native_focus_dolly_before, std::memory_order_relaxed);
+        m_prospi_native_focus_dolly_after.store(native_focus_decision.dolly, std::memory_order_relaxed);
+        m_prospi_native_focus_lift_before.store(native_focus_lift_before, std::memory_order_relaxed);
+        m_prospi_native_focus_lift_after.store(native_focus_decision.lift, std::memory_order_relaxed);
+        m_prospi_native_focus_status.store((int32_t)native_focus_decision.status, std::memory_order_relaxed);
+    }};
     std::optional<float> framing_base_fov;
     bool celebration_observed{};
     utility::ScopeGuard celebration_finish{[&] {
@@ -10702,10 +10715,12 @@ void VR::update_game_fov() {
         c.mode = m_match_game_fov_prospi_auto_camera_sequencer_mode->value();
         c.rendering_method = m_rendering_method->value();
         c.dolly_enabled = m_match_game_fov_dolly->value();
+        c.native_focus_guard_enabled = m_match_game_fov_prospi_native_focus_guard->value();
         c.stabilizer = camera_cut_stabilizer_enabled;
         c.previous_update_wrote_fov = m_prospi_camera_trace_previous_write;
         c.provenance = uevr::prospi::trace::Provenance::pre_tick_cache;
         if (!m_prospi_camera_trace_probe.capture(pcm, c)) { m_prospi_camera_trace.probe_failed(); }
+        else { c.native_source = m_prospi_camera_trace_probe.capture_native((uintptr_t)pcm); }
     }
     utility::ScopeGuard trace_camera_finish{[&] {
         if (!trace_camera) { return; }
@@ -12787,6 +12802,62 @@ void VR::update_game_fov() {
                         0.0f,
                         std::clamp(m_match_game_fov_prospi_camera_safety_max_up_offset->value(), 0.0f, 4000.0f));
                     safety_active = safety_up_offset > 0.001f || std::abs(dolly_before - dolly_offset) > 0.001f;
+                }
+            }
+
+            if (m_match_game_fov_prospi_native_focus_guard->value()) {
+                const auto source = (ProSpiAutoCameraSource)m_prospi_auto_camera_sequencer_source.load(std::memory_order_relaxed);
+                const uevr::prospi::focus_guard::Request request{
+                    .camera = {{location->x, location->y, location->z}, {rotation->x, rotation->y, rotation->z},
+                        raw_fov, 0.0f, 0.0f, true},
+                    .camera_manager = (uintptr_t)pcm,
+                    .now_ns = uevr::prospi::trace::Recorder::clock_ns(),
+                    .mode = m_match_game_fov_prospi_auto_camera_sequencer_mode->value(), .zone = (int32_t)safety_zone,
+                    .enabled = true, .prospi = is_prospi, .dolly_enabled = true,
+                    .sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value() &&
+                        m_prospi_auto_camera_sequencer_active.load(std::memory_order_relaxed),
+                    .safety_enabled = m_match_game_fov_prospi_camera_safety_guard->value() &&
+                        m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1.0f,
+                    .protected_camera = prospi_calibration_applied || prospi_tv_override_applied || generic_camera_preset_applied ||
+                        generic_camera_presets_apply_enabled || camera_cut_stabilizer_enabled ||
+                        m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
+                        m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active ||
+                        signed_safety.accepted || framing_status == uevr::prospi::framing::Status::accepted ||
+                        home_plate_pitch_view || baseline_line_telephoto_camera || dugout_celebration_tracking_camera ||
+                        pre_celebration_line_camera || close_cutscene_focus_camera || close_home_line_tracking_camera ||
+                        near_home_side_tracking_camera || left_field_stadium_back_risk_camera ||
+                        elevated_transition_sweep_camera || upper_deck_crowd_overshoot_camera,
+                    .automatic_source = source == ProSpiAutoCameraSource::RuleAssist || source == ProSpiAutoCameraSource::LearnedNearest,
+                    .dolly = dolly_offset, .lift = safety_up_offset, .predicted_z = predicted_z,
+                    .floor = safety_min_z, .max_lift = m_match_game_fov_prospi_camera_safety_max_up_offset->value(),
+                    .base_fov = base_fov, .forward_offset = m_camera_forward_offset->value(),
+                    .right_offset = m_camera_right_offset->value(), .up_offset = m_camera_up_offset->value(),
+                };
+                uevr::prospi::trace::NativeSource native_source{};
+                if (uevr::prospi::focus_guard::eligible(request)) {
+                    // Use this update's recorder sample, never a prior frame's target. No source reads while off/protected.
+                    native_source = trace_camera ? trace_camera->native_source : m_prospi_native_focus_probe.capture_native((uintptr_t)pcm);
+                }
+                auto current_request = request;
+                current_request.now_ns = uevr::prospi::trace::Recorder::clock_ns();
+                native_focus_dolly_before = dolly_offset; native_focus_lift_before = safety_up_offset;
+                native_focus_decision = uevr::prospi::focus_guard::evaluate(current_request, native_source);
+                if (native_focus_decision.applied()) {
+                    dolly_offset = native_focus_decision.dolly;
+                    safety_up_offset = native_focus_decision.lift;
+                    predicted_z = native_focus_decision.predicted_z;
+                    safety_active = safety_up_offset > 0.001f || std::abs(dolly_before - dolly_offset) > 0.001f;
+                }
+                if (trace_camera) {
+                    trace_camera->native_focus_guard_status = (int32_t)native_focus_decision.status;
+                    trace_camera->native_focus_guard_applied = native_focus_decision.applied();
+                    trace_camera->native_focus_guard_dolly_before = native_focus_dolly_before;
+                    trace_camera->native_focus_guard_lift_before = native_focus_lift_before;
+                    trace_camera->native_focus_guard_end_z = native_focus_decision.end_z;
+                    trace_camera->native_focus_guard_depth = native_focus_decision.target_depth;
+                    trace_camera->native_focus_guard_floor = safety_min_z;
+                    trace_camera->native_focus_guard_zone = (int32_t)safety_zone;
+                    trace_camera->native_focus_guard_protected = request.protected_camera;
                 }
             }
 
@@ -15934,6 +16005,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         (unsigned long long)trace_counters.written, (unsigned long long)trace_counters.dropped,
                         (unsigned long long)trace_counters.suspects, (double)trace_counters.bytes / (1024 * 1024));
                     ImGui::TextWrapped("Records raw cache, assist, neutral camera and per-eye output. No camera corrections are learned or applied. Automatic suspect markers retain quick cuts; manual markers are optional.");
+                    ImGui::TextWrapped("Validated native camera layouts also record the game's authored look-at point and focus distance, plus headset/eye offset provenance. Unsupported, stale or mismatched samples remain unavailable. A look-at point is not verified player/ball identity.");
                     ImGui::TextWrapped("Ball-follow is only for game-authored ball-follow shots. Ball position and stadium collision are currently unverified; the trace never treats a guessed target as the ball or a configured floor as measured geometry.");
                     if (ImGui::Button("Mark Bad Cut")) { m_prospi_camera_trace_markers.fetch_or(1); }
                     ImGui::SameLine();
@@ -15983,6 +16055,17 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                             ImGui::TextWrapped("Experimental: consistent calibrations improve central behind-pitcher framing. Validated low baseline rigs also retain nearby short focus, bounded focus continuity and signed height safety. Requires Camera Safety Guard, the relevant Field/Outfield Rule and legacy broad cinematic assist off. Unsupported rigs keep Learned Assist. Keeps game aim, FOV controls and exact focus overrides; no stadium collision or automatic ball tracking.");
                             ImGui::TextWrapped("Framing: %s", uevr::prospi::framing::status_name(
                                 (uevr::prospi::framing::Status)m_prospi_calibrated_framing_status.load(std::memory_order_relaxed)));
+                            m_match_game_fov_prospi_native_focus_guard->draw("Authored Focus / Low-Camera Safety (Experimental)");
+                            if (m_match_game_fov_prospi_native_focus_guard->value()) {
+                                ImGui::TextWrapped("Opt-in: bounds dolly before the game's authored look-at and uses signed lift on validated low upward-pitched Field/Outfield rigs. Keeps configured floors, lift limits, game aim/FOV, saved overrides and celebration rules. No collision or ball/player tracking. Unsupported builds, other rigs and stale sources keep the existing assist.");
+                                ImGui::TextWrapped("Focus guard: %s", uevr::prospi::focus_guard::status_name(
+                                    (uevr::prospi::focus_guard::Status)m_prospi_native_focus_status.load(std::memory_order_relaxed)));
+                                ImGui::Text("Dolly %.1f -> %.1f cm; lift %.1f -> %.1f cm",
+                                    m_prospi_native_focus_dolly_before.load(std::memory_order_relaxed),
+                                    m_prospi_native_focus_dolly_after.load(std::memory_order_relaxed),
+                                    m_prospi_native_focus_lift_before.load(std::memory_order_relaxed),
+                                    m_prospi_native_focus_lift_after.load(std::memory_order_relaxed));
+                            }
                         }
                     }
                 }

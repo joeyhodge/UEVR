@@ -11,6 +11,36 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AnalyzerTests(unittest.TestCase):
+    def test_native_target_is_not_ball_and_head_motion_is_separate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session = root / "session"
+            session.mkdir()
+            (session / "metadata.json").write_text(json.dumps({"schema": 2, "session": 2}))
+            pose = {"location": [0, 0, 0], "rotation": [0, 0, 0], "fov": 20, "valid": True}
+            native = {"valid": True, "status": "accepted", "pose": pose, "focus_cm": 4000,
+                      "look_at": [4000, 0, 0], "native_frame": 7, "object": 123}
+            assist = {"input": pose, "native_source": native}
+            events = [{"kind": "camera", "sequence": 1, "time_ns": 1000, "epoch": 1, "cut_sequence": 1,
+                       "assist": assist},
+                      {"kind": "view", "sequence": 2, "time_ns": 2000, "epoch": 1, "cut_sequence": 1,
+                       "assist": assist, "view": {"source_matches_input": True, "input_matches_assist": True,
+                           "neutral_valid": True, "neutral": pose, "output": pose, "eye": 0,
+                           "target_framing": {"source": {"valid": True, "depth_cm": 4000},
+                               "neutral": {"valid": True, "depth_cm": 3800, "behind": False},
+                               "hmd": {"valid": True, "depth_cm": -100, "behind": True}}}},
+                      {"kind": "observation", "time_ns": 3000, "epoch": 1, "cut_sequence": 1,
+                       "observation": {"native_source": {"status": "changed_during_read", "valid": False}}}]
+            (session / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+            cut = MODULE.catalogue(session, root / "review")["cuts"][0]
+            self.assertEqual(cut["targets_verified"], 0)
+            self.assertEqual(cut["native_look_at_samples"], 1)
+            self.assertEqual(cut["native_ranges"]["focus_cm"], [4000, 4000])
+            self.assertEqual(cut["hmd_only_target_behind"], 1)
+            self.assertEqual(cut["source_matched_views"], 1)
+            self.assertEqual(cut["native_source_statuses"]["changed_during_read"], 1)
+            self.assertNotIn("target_behind", cut["suspects"])
+
     def test_read_only_catalogue_and_incomplete_tail(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

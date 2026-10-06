@@ -29336,6 +29336,8 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         auto& v = e.view;
         v.neutral = trace_pose();
         v.neutral.fov = e.camera.dolly_enabled ? e.camera.base_fov : e.camera.effective_fov;
+        v.neutral.aspect = e.camera.native_source.pose.aspect;
+        v.neutral.aspect_valid = e.camera.native_source.pose.aspect_valid;
         v.neutral_valid = v.neutral.valid;
         v.forward_offset = {camera_forward.x, camera_forward.y, camera_forward.z};
         v.right_offset = {camera_right.x, camera_right.y, camera_right.z};
@@ -29368,6 +29370,21 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         // not rotate the translation a second time on calibrated/canted HMDs.
         const auto eye_translation_rotation = mono ? glm::normalize(vqi_norm * current_hmd_rotation) : glm::normalize(new_rotation);
         const auto eye_separation = quat_converter * (eye_translation_rotation * (eye_offset * world_scale));
+
+        if (trace_view) {
+            auto& v = trace_view->event.view;
+            v.hmd_pose_valid = true;
+            v.hmd_rotation = {current_hmd_rotation.x, current_hmd_rotation.y, current_hmd_rotation.z, current_hmd_rotation.w};
+            v.eye_rotation = {current_eye_rotation_offset.x, current_eye_rotation_offset.y,
+                current_eye_rotation_offset.z, current_eye_rotation_offset.w};
+            v.recenter_rotation = {rotation_offset.x, rotation_offset.y, rotation_offset.z, rotation_offset.w};
+            v.standing_delta = {standing_delta.x, standing_delta.y, standing_delta.z};
+            v.head_translation = {-head_offset.x, -head_offset.y, -head_offset.z};
+            v.eye_translation = {-eye_separation.x, -eye_separation.y, -eye_separation.z};
+            v.head_translation_applied = !is_2d_screen;
+            v.hmd_rotation_applied = !is_2d_screen;
+            v.mono = mono;
+        }
 
         if (!has_double_precision) {
             if (!is_2d_screen) {

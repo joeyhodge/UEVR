@@ -1760,6 +1760,7 @@ private:
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyTelephotoTriggerFOV"), 5.0f, 60.0f, 26.0f) };
     const ModSlider::Ptr m_match_game_fov_prospi_camera_safety_outfield_y_max{ ModSlider::create(generate_name("MatchGameFOVProSpiCameraSafetyOutfieldYMax"), -20000.0f, 5000.0f, -6000.0f) };
     const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
+    const ModToggle::Ptr m_match_game_fov_prospi_native_focus_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiNativeFocusGuard"), false) };
     const ModToggle::Ptr m_prospi_camera_trace_enabled{ ModToggle::create(generate_name("ProSpiCameraTrace"), false) };
     const ModKey::Ptr m_prospi_camera_trace_bad_key{ ModKey::create(generate_name("ProSpiCameraTraceBadKey"), VK_F6) };
     const ModKey::Ptr m_prospi_camera_trace_good_key{ ModKey::create(generate_name("ProSpiCameraTraceGoodKey"), VK_F7) };
@@ -2241,6 +2242,7 @@ public:
             *m_match_game_fov_prospi_camera_safety_telephoto_trigger_fov,
             *m_match_game_fov_prospi_camera_safety_outfield_y_max,
             *m_match_game_fov_prospi_auto_camera_sequencer,
+            *m_match_game_fov_prospi_native_focus_guard,
             *m_prospi_camera_trace_enabled,
             *m_prospi_camera_trace_bad_key,
             *m_prospi_camera_trace_good_key,
@@ -2435,6 +2437,10 @@ private:
     std::mutex m_prospi_camera_history_mtx{};
     uevr::prospi::trace::Recorder m_prospi_camera_trace{};
     uevr::prospi::trace::CameraProbe m_prospi_camera_trace_probe{};
+    uevr::prospi::trace::CameraProbe m_prospi_native_focus_probe{};
+    std::atomic<int32_t> m_prospi_native_focus_status{};
+    std::atomic<float> m_prospi_native_focus_dolly_before{}, m_prospi_native_focus_dolly_after{};
+    std::atomic<float> m_prospi_native_focus_lift_before{}, m_prospi_native_focus_lift_after{};
     uevr::prospi::roof::VisibilityGuard m_prospi_roof_visibility{};
     std::atomic<bool> m_prospi_camera_trace_requested{};
     std::atomic<uint32_t> m_prospi_camera_trace_markers{};

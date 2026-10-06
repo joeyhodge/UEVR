@@ -21,9 +21,58 @@ bool read_memory(uintptr_t source, void* destination, size_t size) {
     SIZE_T copied{};
     return ReadProcessMemory(GetCurrentProcess(), (void*)source, destination, size, &copied) && copied == size;
 }
+bool native_layout(native::Layout& layout) {
+    layout.base = (uintptr_t)GetModuleHandleW(nullptr);
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (!read_memory(layout.base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew <= 0 || dos.e_lfanew > 4096 ||
+        !read_memory(layout.base + dos.e_lfanew, &nt, sizeof(nt)) || nt.Signature != IMAGE_NT_SIGNATURE ||
+        nt.FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt.FileHeader.TimeDateStamp != 1786532279 || nt.OptionalHeader.SizeOfImage != 783106048) { return false; }
+    layout.image_size = nt.OptionalHeader.SizeOfImage;
+    struct Fingerprint { uint32_t rva; std::string_view bytes; };
+    static constexpr Fingerprint fingerprints[] = {
+        {0x05819570, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
+        {0x058195e0, "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"},
+        {0x05819616, "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"},
+        {0x05811410, "dfe85a810000e8f5890100b801000000f00fc1051873790d8b0d1273790d908b"},
+        {0x058170e0, "40534883ec20488bd9488d0d6aa2d514e84bedb101488b430833c9488b400848"},
+        {0x05818b20, "40534883ec20488bd9488d0ddd88d514e80bd3b101488bc34883c4205bc3cccc"},
+        {0x05817000, "4883ec28488d0d4fa3d514e830eeb10133c04883c428c3cccccccccccccccccc"},
+        {0x05811e80, "4883ec28488d0dd2f3d514e8b03fb201488b058970780d488b40104883c428c3"},
+        {0x030ddb50, "4883ec48f20f101a8b42080f28e3f30f100d0e6578040f28c389442438f30f10"},
+        {0x030dd3b0, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
+        {0x030dd850, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
+    };
+    const auto digit = [](char c) { return c <= '9' ? c - '0' : c - 'a' + 10; };
+    for (const auto& f : fingerprints) {
+        std::array<uint8_t, 32> actual{};
+        if (f.bytes.size() != actual.size() * 2 || !native::module(layout, layout.base + f.rva, actual.size()) ||
+            !read_memory(layout.base + f.rva, actual.data(), actual.size())) { return false; }
+        for (size_t i = 0; i < actual.size(); ++i) {
+            if (actual[i] != ((digit(f.bytes[i * 2]) << 4) | digit(f.bytes[i * 2 + 1]))) { return false; }
+        }
+    }
+    return true;
+}
 }
 void CameraProbe::reset() noexcept {
     m_identity.reset(); m_class = 0; m_cache = -1; m_last_post = 0; m_previous_post_cut = false;
+    m_native_layout = {}; m_native_attempted = m_native_supported = false;
+}
+NativeSource CameraProbe::capture_native(uintptr_t pcm) noexcept {
+    const auto started = Recorder::clock_ns();
+    // Only the recorder or the opt-in focus guard enters this read-only path.
+    if (!m_native_attempted) {
+        m_native_attempted = true;
+        m_native_supported = native_layout(m_native_layout);
+    }
+    NativeSource source{};
+    if (!m_native_supported) { source.status = SourceStatus::unsupported_layout; return source; }
+    source = native::sample(read_memory, m_native_layout, pcm, Recorder::clock_ns());
+    source.capture_us = (float)(Recorder::clock_ns() - started) / 1000.0f;
+    return source;
 }
 bool CameraProbe::resolve(sdk::UObjectBase* pcm) {
     const auto cls = pcm->get_class();
@@ -129,6 +178,9 @@ void CameraProbe::post_tick(Recorder& recorder, uint32_t thread) noexcept {
         Observation o{};
         uintptr_t target{};
         if (!read(o.cache, o.cut_known, o.cut, target)) { recorder.probe_failed(); return; }
+        o.native_source = capture_native(m_identity->object);
+        o.source_camera_valid = valid_source(o.native_source);
+        if (o.source_camera_valid) { o.source_camera = o.native_source.pose; }
         o.reference_camera = camera->camera_sequence;
         recorder.observation(o, thread);
         if (o.cut_known && o.cut && !m_previous_post_cut) {
