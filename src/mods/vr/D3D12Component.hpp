@@ -297,6 +297,7 @@ private:
     d3d12::TextureContext m_halo_electra_quad_source_tex{};
     // Declared before the copy contexts so destruction drains them first.
     std::array<ComPtr<ID3D12Resource>, 3> m_nascar_scene_copy_sources{};
+    std::array<ComPtr<ID3D12Resource>, 3> m_swgr_scene_copy_sources{};
     std::array<d3d12::CommandContext, 3> m_game_tex_commands{};
     d3d12::CommandContext m_shf_mono_scene_commands{};
     bool m_shf_scene_retirement_deferred{};
