@@ -2235,11 +2235,13 @@ void test_ktjl_hook_contracts() {
 #include "GalacticRacerRenderTargetsTests.hpp"
 #include "GalacticRacerNativeFixTests.hpp"
 #include "GalacticRacerBinkTests.hpp"
+#include "GalacticRacerBinkSeekTests.hpp"
 
 int main(int argc, char** argv) {
     test_swgr_render_targets();
     test_swgr_native_fix();
     test_swgr_bink();
+    test_swgr_bink_seek();
     if (argc == 3 && std::string_view{argv[1]} == "--swgr-memory-image") { test_swgr_memory_image(argv[2]); }
     test_satisfactory_array_snapshots();
     test_satisfactory_native_family();
