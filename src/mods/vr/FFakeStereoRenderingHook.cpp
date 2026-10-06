@@ -40636,6 +40636,9 @@ FRHITexture2D* VRRenderTargetManager_Base::get_scene_capture_render_target() {
         return snapshot->rhi_texture;
     }
 
+    // A retired/pending SWGR target must not re-enter cached global discovery.
+    if (swgr_ue574_dx12_runtime()) { return nullptr; }
+
     if (this->in_flight_target != nullptr) {
         return nullptr;
     }
@@ -40849,9 +40852,6 @@ bool VRRenderTargetManager_Base::create_scene_capture() try {
     }
 
     scene_capture_creation_requested.store(false, std::memory_order_release);
-
-    // A retired/pending SWGR target must not re-enter cached global discovery.
-    if (swgr_ue574_dx12_runtime()) { return nullptr; }
 
     if (this->in_flight_target != nullptr) {
         return false;
