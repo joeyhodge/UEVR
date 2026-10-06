@@ -28,6 +28,7 @@
 #include <utility/ScopeGuard.hpp>
 
 #include <sdk/Globals.hpp>
+#include <sdk/GalacticRacerRuntime.hpp>
 #include <sdk/CVar.hpp>
 #include <sdk/ConsoleManager.hpp>
 #include <sdk/threading/GameThreadWorker.hpp>
@@ -16576,6 +16577,10 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_head_turn_camera_stabilizer->draw("Head-Turn Camera Stabilizer");
             m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
             m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
+            if (sdk::galactic_racer::current_dx12_game()) {
+                m_compatibility_swgr_bink_seek_budget->draw("Galactic Racer Movie Seek Budget (Experimental)");
+                ImGui::TextWrapped("Opt-in SWGR UE5.7.4 DX12 only. Uses a 6 ms incremental budget for playing, forward-seeking viewport movies and keeps their completed image scheduled while seeking. A full decode can exceed the budget; movie/audio timing needs testing. Enable before playing a movie. Rewinds, paused seeks, texture movies and other games keep the original path.");
+            }
             if (m_compatibility_ui_layer_pose_stabilizer->value()) {
                 ImGui::TextWrapped("OpenXR UE5.7+: latches game UI layer pose to the same frame basis used for scene submit.");
             }

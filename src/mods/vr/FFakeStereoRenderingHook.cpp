@@ -88,6 +88,7 @@
 #include "HalloweenRenderTargets.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "GalacticRacerNativeFix.hpp"
+#include "GalacticRacerBinkSeek.hpp"
 #include "GalacticRacerBink.hpp"
 #include "HalloweenNativeFix.hpp"
 #include "KtjLFogResources.hpp"
@@ -13375,6 +13376,16 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         add_safety_hook("SWGR original Slate output restoration", "mid", m_swgr_slate_output_restore_hook);
         add_safety_hook("SWGR Bink viewport overlay", "inline", m_swgr_bink_overlay_hook);
         add_safety_hook("SWGR Bink local UI packet", "mid", m_swgr_bink_packet_hook);
+        add_safety_hook("SWGR Bink forward seek budget", "mid", m_swgr_bink_seek_hook);
+        add_safety_hook("SWGR Bink completed-image seek display", "mid", m_swgr_bink_seek_display_hook);
+        if (sdk::galactic_racer::current_dx12_game()) {
+            result["galactic_racer_bink_seek"] = {
+                {"enabled", m_swgr_bink_seek_enabled.load(std::memory_order_acquire)},
+                {"budget_ms", uevr::swgr_bink::seek_budget_ms},
+                {"budgeted_seeks", m_swgr_bink_budgeted_seeks.load(std::memory_order_relaxed)},
+                {"seek_display_ticks", m_swgr_bink_seek_displays.load(std::memory_order_relaxed)}
+            };
+        }
         add_safety_hook("UGameViewportClient::Draw", "inline", m_gameviewportclient_draw_hook);
         add_safety_hook("FViewport::Draw", "inline", m_viewport_draw_hook);
         add_safety_hook("LocalPlayer::SetupViewPoint", "inline", m_localplayer_get_viewpoint_hook);
@@ -14292,6 +14303,7 @@ void* FFakeStereoRenderingHook::engine_tick_hook(sdk::UGameEngine* engine, float
 
     // Best place to run game thread jobs.
     GameThreadWorker::get().execute();
+    if (sdk::galactic_racer::current_game()) { hook->service_swgr_bink_seek_budget(); }
     if (uevr::nascar::is_target()) {
         hook->service_nascar_synced_redraw(engine);
     }
@@ -14463,6 +14475,87 @@ void FFakeStereoRenderingHook::swgr_bink_packet_hook(safetyhook::Context& ctx) {
         !swgr_write_bink_packet(ctx.rdi, *redirected)) { return; }
     SPDLOG_INFO_EVERY_N_SEC(10, "[SWGR][BinkUI] Viewport movies routed to dedicated UI {}x{} generation={}; original playback retained",
         packet.width, packet.height, scope->ui->generation);
+}
+
+void FFakeStereoRenderingHook::swgr_bink_seek_hook(safetyhook::Context& ctx) {
+    auto* const hook = g_hook;
+    if (!hook || !hook->m_swgr_bink_seek_enabled.load(std::memory_order_acquire)) { return; }
+    if (uevr::swgr_bink::seek_invocation(sdk::discovery::process_memory(), true,
+        ctx.rsi, ctx.rcx, ctx.rdi, ctx.rsp, ctx.rbx, ctx.rdx, ctx.r8)) {
+        ctx.r8 = uevr::swgr_bink::seek_budget_ms;
+        hook->m_swgr_bink_budgeted_seeks.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void FFakeStereoRenderingHook::swgr_bink_seek_display_hook(safetyhook::Context& ctx) {
+    auto* const hook = g_hook;
+    if (!hook || !hook->m_swgr_bink_seek_enabled.load(std::memory_order_acquire)) { return; }
+    if (uevr::swgr_bink::tick_invocation(sdk::discovery::process_memory(), true, ctx.rsi, ctx.rsp, ctx.rdi)) {
+        // Take only Tick's existing overlay continuation, without changing SDK
+        // playback state, the player's pause flag, texture completion or audio.
+        ctx.rflags = uevr::swgr_bink::overlay_branch_flags(ctx.rflags, true);
+        hook->m_swgr_bink_seek_displays.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void FFakeStereoRenderingHook::service_swgr_bink_seek_budget() {
+    const auto vr = VR::get();
+    const bool wanted = swgr_ue574_dx12_runtime() && vr && vr->is_swgr_bink_seek_budget_enabled() &&
+        vr->is_hmd_active() && !vr->is_stereo_emulation_enabled();
+    if (!wanted || !m_swgr_bink_overlay_hook) {
+        m_swgr_bink_seek_enabled.store(false, std::memory_order_release); return;
+    }
+    if (!m_swgr_bink_seek_attempted) {
+        m_swgr_bink_seek_attempted = true;
+        const auto image = utility::get_executable();
+        const auto base = reinterpret_cast<uintptr_t>(image);
+        const auto size = utility::get_module_size(image).value_or(0);
+        if (!base || !size || base + size < base) { return; }
+        const auto memory = sdk::discovery::process_memory();
+        const auto function_size = [base](uintptr_t address) -> size_t {
+            DWORD64 unwind_base{};
+            const auto f = RtlLookupFunctionEntry(address, &unwind_base, nullptr);
+            return f && unwind_base == base && base + f->BeginAddress == address && f->EndAddress > f->BeginAddress ?
+                f->EndAddress - f->BeginAddress : 0;
+        };
+        const auto find = [&](const char* pattern, const auto& code, const auto& mask, size_t entry_size) {
+            uintptr_t selected{}, cursor = base;
+            for (size_t count = 0; count < 128 && cursor < base + size; ++count) {
+                const auto candidate = utility::scan(cursor, base + size - cursor, pattern);
+                if (!candidate) { return selected; }
+                cursor = *candidate + 1;
+                if (function_size(*candidate) != entry_size ||
+                    !uevr::swgr_bink::in_module(*candidate, code.size(), base, size) ||
+                    !uevr::swgr::code_matches(memory, *candidate, code, mask)) { continue; }
+                if (selected) { return uintptr_t{}; }
+                selected = *candidate;
+            }
+            return uintptr_t{}; // A truncated search cannot establish uniqueness.
+        };
+        namespace b = uevr::swgr_bink;
+        const b::SeekFunctions functions{
+            find(b::seek_signature, b::seek_code, b::seek_mask, b::seek_code.size()),
+            find(b::tick_signature, b::tick_code, b::tick_mask, b::tick_code.size()),
+            find(b::process_signature, b::process_code, b::process_mask, b::process_entry_size)};
+        if (!b::seek_contract(memory, functions, base, size, function_size)) {
+            SPDLOG_WARN("[SWGR][BinkSeek] No unique matching seek/Tick/decode-budget contract; original playback retained"); return;
+        }
+        auto display = safetyhook::create_mid(reinterpret_cast<void*>(functions.tick + b::tick_boundary),
+            &swgr_bink_seek_display_hook, safetyhook::MidHook::StartDisabled);
+        auto seek = safetyhook::create_mid(reinterpret_cast<void*>(functions.seek + b::seek_boundary),
+            &swgr_bink_seek_hook, safetyhook::MidHook::StartDisabled);
+        if (!display || !seek) {
+            SPDLOG_WARN("[SWGR][BinkSeek] Hook preparation failed; original playback retained"); return;
+        }
+        m_swgr_bink_seek_display_hook = std::move(display);
+        m_swgr_bink_seek_hook = std::move(seek);
+        if (!m_swgr_bink_seek_display_hook.enable() || !m_swgr_bink_seek_hook.enable()) {
+            m_swgr_bink_seek_hook.reset(); m_swgr_bink_seek_display_hook.reset();
+            SPDLOG_WARN("[SWGR][BinkSeek] Hook enable failed; original playback retained"); return;
+        }
+        SPDLOG_INFO("[SWGR][BinkSeek] Opt-in {} ms forward-overlay seek budget installed; completed-image continuation ready", b::seek_budget_ms);
+    }
+    m_swgr_bink_seek_enabled.store(m_swgr_bink_seek_hook && m_swgr_bink_seek_display_hook, std::memory_order_release);
 }
 
 void FFakeStereoRenderingHook::attempt_hook_swgr_bink_overlay() {
