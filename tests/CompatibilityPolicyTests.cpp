@@ -2233,12 +2233,14 @@ void test_ktjl_hook_contracts() {
 #include "HalloweenRenderTargetsTests.hpp"
 #include "SatisfactoryModularTests.hpp"
 #include "GalacticRacerRenderTargetsTests.hpp"
+#include "GalacticRacerOwnedTextureTests.hpp"
 #include "GalacticRacerNativeFixTests.hpp"
 #include "GalacticRacerBinkTests.hpp"
 #include "GalacticRacerBinkSeekTests.hpp"
 
 int main(int argc, char** argv) {
     test_swgr_render_targets();
+    test_swgr_owned_texture();
     test_swgr_native_fix();
     test_swgr_bink();
     test_swgr_bink_seek();
