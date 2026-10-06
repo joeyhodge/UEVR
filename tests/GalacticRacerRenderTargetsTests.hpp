@@ -2,6 +2,7 @@
 
 #include <fstream>
 #include "mods/vr/GalacticRacerRenderTargets.hpp"
+#include "mods/vr/GalacticRacerOwnedTexture.hpp"
 #include "mods/vr/GalacticRacerNativeFix.hpp"
 #include "mods/vr/GalacticRacerBink.hpp"
 #include "mods/vr/GalacticRacerBinkSeek.hpp"
@@ -184,6 +185,15 @@ void test_swgr_memory_image(const char* path) {
     expect(sdk::galactic_racer::viewport_accessor(memory, 0x149275d00), "actual FViewport getter contract");
     expect(sdk::galactic_racer::viewport_gamma_accessor(memory, 0x149275d00), "actual viewport gamma contract");
     expect(sdk::galactic_racer::native_accessor(memory, 0x148ddfd50), "actual FD3D12Texture direct resource contract");
+    const auto owned_accessor = [&](uintptr_t table, uint32_t slot, const auto& code) {
+        uintptr_t fn{};
+        auto actual = code;
+        return memory.load(table + slot * sizeof(uintptr_t), fn) &&
+            memory.executable(memory.context, fn, actual.size()) && memory.load(fn, actual) && actual == code;
+    };
+    expect(owned_accessor(0x1492a3530, 6, uevr::swgr_owned::size_x_code), "actual owned resource width contract");
+    expect(owned_accessor(0x1492a3530, 7, uevr::swgr_owned::size_y_code), "actual owned resource height contract");
+    expect(owned_accessor(0x1492a3600, 2, uevr::swgr_owned::texture_code), "actual owned FRenderTarget accessor contract");
     expect(uevr::swgr::slate_join(memory, 0x14283e160, 0x14283dc9e, 0x14283ff84), "actual inlined Slate registration/restoration contract");
     expect(!uevr::swgr::slate_join(memory, 0x14283e160, 0x14283dc1f, 0x14283dc9e), "actual array helper cannot be selected as DrawWindow");
 
