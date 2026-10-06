@@ -9,6 +9,7 @@
 #include <thread>
 #include "utility/HiFiRushHookMemory.hpp"
 #include "utility/ProtectedHookTrampoline.hpp"
+#include "mods/vr/GalacticRacerBinkSeekCode.hpp"
 
 int test_ktjl_cloud_hook_installation();
 int test_ktjl_shadow_gather(const wchar_t* image_path);
@@ -46,6 +47,83 @@ bool rejected_write(uint8_t* p) {
 }
 __declspec(noinline) int replacement() { return 11; }
 void mid_replacement(safetyhook::Context&) {}
+bool swgr_seek_test_enabled{};
+void swgr_seek_test_callback(safetyhook::Context& ctx) {
+    if (swgr_seek_test_enabled) { ctx.r8 = 6; }
+}
+void swgr_display_test_callback(safetyhook::Context& ctx) {
+    uint32_t state{};
+    std::memcpy(&state, reinterpret_cast<void*>(ctx.rdi + 0x4c), sizeof(state));
+    if (swgr_seek_test_enabled && state == 2) { ctx.rflags |= uintptr_t{0x40}; }
+}
+
+void test_swgr_bink_seek_boundaries() {
+    namespace b = uevr::swgr_bink;
+    auto* page = static_cast<uint8_t*>(VirtualAlloc(nullptr, 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    expect(page != nullptr, "SWGR seek boundary fixture allocates");
+    if (!page) { return; }
+    std::memset(page, 0x90, 0x1000);
+    const uint8_t seek_setup[]{0x48,0x83,0xec,0x28, 0x41,0xb8,0xff,0xff,0xff,0xff};
+    std::memcpy(page, seek_setup, sizeof(seek_setup));
+    auto* seek_boundary = page + sizeof(seek_setup);
+    std::memcpy(seek_boundary, b::seek_code.data() + 0xab, 5);
+    const int32_t call_displacement = static_cast<int32_t>(page + 0x100 - seek_boundary - 5);
+    std::memcpy(seek_boundary + 1, &call_displacement, sizeof(call_displacement));
+    const uint8_t seek_return[]{0x48,0x83,0xc4,0x28,0xc3};
+    std::memcpy(seek_boundary + 5, seek_return, sizeof(seek_return));
+    const uint8_t consumer[]{0x4c,0x89,0x01, 0x48,0x89,0x51,0x08, 0x4c,0x89,0xc0,0xc3};
+    std::memcpy(page + 0x100, consumer, sizeof(consumer));
+
+    auto* tick = page + 0x200;
+    const uint8_t tick_setup[]{0x56,0x57, 0x48,0x83,0xec,0x28, 0x48,0x89,0xd6, 0x48,0x89,0xcf};
+    std::memcpy(tick, tick_setup, sizeof(tick_setup));
+    auto* tick_compare = tick + sizeof(tick_setup);
+    std::memcpy(tick_compare, b::tick_code.data() + 0x270, 4);
+    auto* display_boundary = tick_compare + 4;
+    // Exact JE +0x18 / CMP [RSI+0xe8],0 from SWGR, with local return paths.
+    std::memcpy(display_boundary, b::tick_code.data() + 0x274, 9);
+    const uint8_t fallback[]{0xb8,3,0,0,0,0xeb,0x0f};
+    std::memcpy(display_boundary + 9, fallback, sizeof(fallback));
+    const uint8_t display[]{0xb8,7,0,0,0};
+    std::memcpy(display_boundary + 0x1a, display, sizeof(display));
+    const uint8_t tick_return[]{0x48,0x83,0xc4,0x28,0x5f,0x5e,0xc3};
+    std::memcpy(display_boundary + 0x1f, tick_return, sizeof(tick_return));
+    std::array<uint8_t, 0x300> original{};
+    std::memcpy(original.data(), page, original.size());
+    DWORD old{};
+    expect(VirtualProtect(page, 0x1000, PAGE_EXECUTE_READ, &old) != 0, "SWGR fixture protects executable code");
+    FlushInstructionCache(GetCurrentProcess(), page, 0x1000);
+    using Seek = uint64_t(*)(uint64_t*, uint64_t);
+    using Tick = uint64_t(*)(const uint8_t*, const uint8_t*);
+    const auto call_seek = reinterpret_cast<Seek>(page);
+    const auto call_tick = reinterpret_cast<Tick>(tick);
+    std::array<uint64_t, 2> output{};
+    std::array<uint8_t, 0x58> info{};
+    std::array<uint8_t, 0x100> player{};
+    expect(call_seek(output.data(), 185) == UINT32_MAX && output[1] == 185, "unhooked Goto receives original unlimited budget and frame");
+    auto seek = safetyhook::MidHook::create(seek_boundary, swgr_seek_test_callback, safetyhook::MidHook::StartDisabled);
+    auto display_hook = safetyhook::MidHook::create(display_boundary, swgr_display_test_callback, safetyhook::MidHook::StartDisabled);
+    expect(seek && display_hook, "both exact SWGR boundaries relocate using the shipped SafetyHook");
+    if (seek && display_hook) {
+        expect(display_hook->enable().has_value() && seek->enable().has_value(), "display guard installs before seek budget");
+        for (bool enabled : {false, true}) {
+            swgr_seek_test_enabled = enabled;
+            expect(call_seek(output.data(), 185) == (enabled ? 6u : UINT32_MAX) && output[1] == 185,
+                "midhook changes only SDK budget and preserves requested movie frame");
+            for (uint32_t state : {0u, 1u, 2u, 3u}) {
+                std::memcpy(info.data() + 0x4c, &state, sizeof(state));
+                expect(call_tick(info.data(), player.data()) == (state == 1 || (enabled && state == 2) ? 7u : 3u),
+                    "relocated short conditional branch uses restored ZF and preserves fallback");
+            }
+        }
+        swgr_seek_test_enabled = false;
+        expect(seek->disable().has_value() && display_hook->disable().has_value(), "both boundaries disable normally");
+    }
+    if (seek) { seek->reset(); }
+    if (display_hook) { display_hook->reset(); }
+    expect(std::memcmp(original.data(), page, original.size()) == 0, "seek/display teardown restores all original fixture bytes");
+    VirtualFree(page, 0, MEM_RELEASE);
+}
 bool reject_cloud{};
 void (*clobber_cloud_registers)(){};
 void cloud_consumer_test_hook(safetyhook::Context& ctx) {
@@ -249,6 +327,7 @@ int wmain(int argc, wchar_t** argv) {
     safetyhook::set_protection_override(nullptr);
     test_ktjl_cloud_consumer_boundary();
     failures += test_ktjl_cloud_hook_installation();
+    test_swgr_bink_seek_boundaries();
     failures += test_ktjl_shadow_gather(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
     failures += test_ktjl_cloud_outputs(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
     failures += test_ktjl_lighting_thread(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);

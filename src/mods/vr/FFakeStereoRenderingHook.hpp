@@ -1271,6 +1271,9 @@ private:
     static void swgr_bink_overlay_hook(void* viewport_closure, void* commands);
     static void swgr_bink_packet_hook(safetyhook::Context& ctx);
     void attempt_hook_swgr_bink_overlay();
+    static void swgr_bink_seek_hook(safetyhook::Context& ctx);
+    static void swgr_bink_seek_display_hook(safetyhook::Context& ctx);
+    void service_swgr_bink_seek_budget();
     static void* sw_zero_company_ue56_register_external_texture_hook(
         void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
@@ -1570,6 +1573,11 @@ private:
     safetyhook::MidHook m_swgr_bink_packet_hook{};
     safetyhook::InlineHook m_swgr_bink_overlay_hook{};
     bool m_swgr_bink_attempted{};
+    safetyhook::MidHook m_swgr_bink_seek_hook{};
+    safetyhook::MidHook m_swgr_bink_seek_display_hook{};
+    bool m_swgr_bink_seek_attempted{};
+    std::atomic_bool m_swgr_bink_seek_enabled{};
+    std::atomic_uint64_t m_swgr_bink_budgeted_seeks{}, m_swgr_bink_seek_displays{};
     safetyhook::InlineHook m_sw_zero_company_ue56_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
 
