@@ -4,6 +4,7 @@
 #include "mods/vr/GalacticRacerRenderTargets.hpp"
 #include "mods/vr/GalacticRacerNativeFix.hpp"
 #include "mods/vr/GalacticRacerBink.hpp"
+#include "mods/vr/GalacticRacerBinkSeek.hpp"
 
 namespace swgr_tests {
 struct Memory {
@@ -203,6 +204,8 @@ void test_swgr_memory_image(const char* path) {
         return it != functions.end() && (*it)[0] == rva && (*it)[1] > rva ? (*it)[1] - rva : 0;
     };
     namespace s = uevr::swgr_native;
+    expect(uevr::swgr_bink::seek_contract(memory, {0x146cbd900, 0x142d71e0a, 0x143dd9990},
+        base, fixture.size, function_size), "actual Bink seek budget, overlay continuation and decoder-completion contracts");
     expect(uevr::swgr_bink::overlay_contract(memory, 0x140380236, function_size(0x140380236), base, fixture.size),
         "actual Bink viewport callback/packet/consumer contract; no injected execution");
     const auto family = s::family_functions(memory, 0x14384d17c, function_size(0x14384d17c), base, fixture.size, function_size);
