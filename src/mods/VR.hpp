@@ -121,6 +121,14 @@ public:
     static const inline std::string s_action_start_button = "/actions/default/in/StartButton";
     static const inline std::string s_action_back_button = "/actions/default/in/BackButton";
     static const inline std::string s_action_trigger_axis = "/actions/default/in/TriggerAxis";
+    static const inline std::string s_action_squeeze = "/actions/default/in/Squeeze";
+    static const inline std::array<std::string, 10> s_touch_actions{
+        "/actions/default/in/TriggerTouch", "/actions/default/in/GripTouch",
+        "/actions/default/in/BumperTouch", "/actions/default/in/JoystickTouch",
+        "/actions/default/in/DPad_UpTouch", "/actions/default/in/DPad_RightTouch",
+        "/actions/default/in/DPad_DownTouch", "/actions/default/in/DPad_LeftTouch",
+        "/actions/default/in/StartButtonTouch", "/actions/default/in/BackButtonTouch"
+    };
     static const inline std::string s_action_thumbrest_touch_left = "/actions/default/in/ThumbrestTouchLeft";
     static const inline std::string s_action_thumbrest_touch_right = "/actions/default/in/ThumbrestTouchRight";
 
@@ -295,6 +303,10 @@ public:
         return false;
     }
     Vector2f get_joystick_axis(vr::VRInputValueHandle_t handle) const;
+    std::string get_controller_profile(vr::VRInputValueHandle_t source) const;
+    const char* get_controller_type(vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::DigitalInput get_action_state(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
+    uevr::steam_frame::AnalogInput get_action_axis(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const;
 
     vr::VRActionHandle_t get_action_handle(std::string_view action_path) {
         if (auto it = m_action_handles.find(action_path.data()); it != m_action_handles.end()) {
@@ -1313,6 +1325,8 @@ private:
     vr::VRActionHandle_t m_action_start_button{};
     vr::VRActionHandle_t m_action_back_button{};
     vr::VRActionHandle_t m_action_trigger_axis{};
+    vr::VRActionHandle_t m_action_squeeze{};
+    std::array<vr::VRActionHandle_t, 10> m_touch_actions{};
     vr::VRActionHandle_t m_action_haptic{};
     vr::VRActionHandle_t m_action_thumbrest_touch_left{};
     vr::VRActionHandle_t m_action_thumbrest_touch_right{};
@@ -1345,6 +1359,17 @@ private:
         { s_action_start_button, m_action_start_button },
         { s_action_back_button, m_action_back_button },
         { s_action_trigger_axis, m_action_trigger_axis },
+        { s_action_squeeze, m_action_squeeze },
+        { s_touch_actions[0], m_touch_actions[0] },
+        { s_touch_actions[1], m_touch_actions[1] },
+        { s_touch_actions[2], m_touch_actions[2] },
+        { s_touch_actions[3], m_touch_actions[3] },
+        { s_touch_actions[4], m_touch_actions[4] },
+        { s_touch_actions[5], m_touch_actions[5] },
+        { s_touch_actions[6], m_touch_actions[6] },
+        { s_touch_actions[7], m_touch_actions[7] },
+        { s_touch_actions[8], m_touch_actions[8] },
+        { s_touch_actions[9], m_touch_actions[9] },
         { s_action_thumbrest_touch_left, m_action_thumbrest_touch_left },
         { s_action_thumbrest_touch_right, m_action_thumbrest_touch_right },
 
