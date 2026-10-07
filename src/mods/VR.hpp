@@ -38,6 +38,7 @@
 #include "vr/ProSpiCameraProbe.hpp"
 #include "vr/ProSpiCameraFraming.hpp"
 #include "vr/ProSpiCelebrationFraming.hpp"
+#include "vr/ProSpiCameraCutGuard.hpp"
 #include "vr/ProSpiRoofVisibility.hpp"
 
 #undef max
@@ -432,6 +433,13 @@ public:
     auto get_camera_up_offset() const {
         return m_camera_up_offset->value() + m_prospi_camera_safety_up_offset.load(std::memory_order_relaxed);
     }
+
+    struct CameraViewOffsets {
+        float forward{}, right{}, up{};
+        uevr::prospi::cut_guard::Status status{};
+    };
+    bool uses_prospi_camera_cut_guard() const;
+    CameraViewOffsets get_camera_view_offsets(const uevr::prospi::trace::Pose& input) const;
 
     auto get_world_scale() const {
         return m_world_scale->value();
@@ -2403,6 +2411,7 @@ private:
     std::atomic<float> m_game_fov_raw{0.0f};
     std::atomic<float> m_game_fov_base{0.0f};
     std::atomic<float> m_game_fov_dolly_offset{0.0f};
+    uevr::prospi::cut_guard::Publication m_prospi_camera_cut_offsets;
     std::atomic<bool> m_game_fov_valid{false};
     std::atomic<int32_t> m_match_game_fov_prospi_preset{0};
     std::atomic<float> m_match_game_fov_prospi_actual_min_active{0.0f};

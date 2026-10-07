@@ -97,6 +97,7 @@ Json event_json(const Event& e) {
             {"neutral_valid", v.neutral_valid}, {"decoupled_pitch", v.decoupled_pitch},
             {"input_matches_assist", v.input_matches_assist}, {"family_role", "unclassified"},
             {"source_matches_input", v.source_matches_input},
+            {"assist_offset_status", v.assist_offset_status},
             {"hmd", {{"valid", v.hmd_pose_valid}, {"rotation_xyzw", v.hmd_rotation},
                 {"eye_rotation_xyzw", v.eye_rotation}, {"recenter_rotation_xyzw", v.recenter_rotation},
                 {"standing_delta_runtime_units", v.standing_delta}, {"head_translation_cm", v.head_translation},

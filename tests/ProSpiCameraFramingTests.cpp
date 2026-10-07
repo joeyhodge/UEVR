@@ -1,5 +1,6 @@
 #include "mods/vr/ProSpiCameraFraming.hpp"
 #include "mods/vr/ProSpiNativeFocusGuard.hpp"
+#include "mods/vr/ProSpiCameraCutGuard.hpp"
 
 #include <nlohmann/json.hpp>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <random>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace uevr::prospi::framing;
@@ -173,7 +175,7 @@ trace::Pose focus_endpoint(const fg::Request& r, const fg::Decision& d, float as
 void check_focus_endpoint(const fg::Request& r, const trace::NativeSource& s, const fg::Decision& d) {
     const auto p = focus_endpoint(r, d, s.pose.aspect);
     const auto f = trace::target_framing(p, s.look_at);
-    require(d.dolly <= r.dolly && d.dolly >= 0 && d.lift <= r.lift && d.lift <= r.max_lift,
+    require(d.dolly <= r.dolly && d.dolly >= 0 && (fg::close_rig(r) || d.lift <= r.lift) && d.lift <= r.max_lift,
         "Focus guard increased travel/lift or exceeded budget");
     require(p.location[2] >= r.floor + 1.999f && std::abs(p.location[2] - d.end_z) < .01f,
         "Focus guard dropped the configured floor");
@@ -286,6 +288,139 @@ void native_focus_guards() {
     std::cout << "Native focus guards: randomized applied=" << applied << " height-only=" << height_only << " capped=" << capped << '\n';
 }
 
+void close_focus_guards() {
+    auto r = focus_request();
+    r.camera = {{0, -370, 40}, {7.9294457f, 61.478813f, 0}, 17.80147f, 0, 0, true};
+    r.close_camera = true; r.dolly = 875.70575f; r.lift = 250.00043f; r.predicted_z = -80.00042f;
+    auto s = focus_source(r, 562.4411f);
+    auto d = fg::evaluate(r, s);
+    require(fg::eligible(r) && d.status == fg::Status::target_capped && d.dolly < s.focus_distance && d.lift < 150,
+        "Recorded walk-up retained old subject overshoot/excess lift");
+    check_focus_endpoint(r, s, d);
+    auto legacy = r; legacy.close_camera = false;
+    require(!fg::evaluate(legacy, s).applied(), "Close-shot opt-in changed a historical rig");
+    for (int mode : {0, 1, 2, 4}) {
+        auto other = r; other.mode = mode;
+        const auto unchanged = fg::evaluate(other, s);
+        require(!unchanged.applied() && unchanged.dolly == r.dolly && unchanged.lift == r.lift,
+            "Close guard changed another sequencer mode");
+    }
+    auto other_game = r; other_game.prospi = false;
+    require(!fg::eligible(other_game) && !fg::evaluate(other_game, s).applied(), "Close guard changed another game");
+    for (float x : {-3000.0f, 3000.0f}) {
+        r.camera = {{x, -500, 200}, {-8, x > 0 ? 160.0f : 20.0f, 0}, 8, 0, 0, true};
+        r.dolly = 1100; r.lift = 150; r.predicted_z = 46.9f;
+        s = focus_source(r, 900);
+        d = fg::evaluate(r, s);
+        require(d.applied(), "Validated downward baseline overshoot not bounded");
+        check_focus_endpoint(r, s, d);
+        r.dolly = 300; r.lift = 20;
+        d = fg::evaluate(r, s);
+        require(d.status == fg::Status::unchanged && d.dolly == r.dolly && d.lift == r.lift,
+            "Already-safe close action zoom changed");
+    }
+    r.camera = {{3000, -500, 200}, {-8, 160, 0}, 3.1f, 0, 0, true};
+    r.dolly = 1100; r.lift = 150; s = focus_source(r, 900);
+    d = fg::evaluate(r, s);
+    require(d.applied(), "Authored telephoto dugout cut incorrectly excluded by VR projection minimum");
+    check_focus_endpoint(r, s, d);
+    auto unsupported = r; unsupported.camera.fov = .49f;
+    require(!fg::eligible(unsupported), "Unsupported extreme telephoto close rig accepted");
+    r = focus_request(); r.close_camera = true;
+    r.camera = {{3000, -500, 500}, {0.1f, 160, 0}, 10, 0, 0, true};
+    r.dolly = 1100; r.lift = 0; r.predicted_z = 500;
+    s = focus_source(r, 900); d = fg::evaluate(r, s);
+    require(d.applied() && d.lift == 0, "Zero-lift close overshoot not bounded");
+    check_focus_endpoint(r, s, d);
+    for (float pitch : {-0.001f, 0.0f, 0.001f}) {
+        auto level = r; level.camera.rotation[0] = pitch;
+        const auto source = focus_source(level, 900);
+        const auto bounded = fg::evaluate(level, source);
+        require(bounded.applied() && bounded.lift == 0, "Level close shot lost a bounded zero-lift endpoint");
+        check_focus_endpoint(level, source, bounded);
+    }
+    r.protected_camera = true;
+    require(!fg::evaluate(r, s).applied(), "Close guard replaced explicit/protected camera");
+    r.protected_camera = false; r.zone = 3;
+    require(!fg::eligible(r) && !fg::evaluate(r, s).applied(), "Stand floor treated as field floor");
+    require(fg::keep_dugout_field_floor(true, 3, true, true), "Dugout classification lost to stand band");
+    for (int mode : {0, 1, 2, 4}) {
+        require(!fg::keep_dugout_field_floor(true, mode, true, true), "Other mode changed floor precedence");
+    }
+    require(!fg::keep_dugout_field_floor(false, 3, true, true) &&
+        !fg::keep_dugout_field_floor(true, 3, false, true) && !fg::keep_dugout_field_floor(true, 3, true, false),
+        "Unsupported/off floor precedence changed");
+
+    r.camera = {{3000, -500, 200}, {-8, 160, 0}, 8, 0, 0, true};
+    r.zone = 1; r.dolly = 300; r.lift = 10; r.max_lift = 400;
+    s = focus_source(r, 900); d = fg::evaluate(r, s);
+    require(d.status == fg::Status::signed_height && d.dolly == r.dolly && d.lift > r.lift,
+        "Necessary bounded floor-only lift was not applied");
+    check_focus_endpoint(r, s, d);
+    s.pose.rotation[1] += .26f;
+    require(!fg::evaluate(r, s).applied(), "Close guard exceeded its yaw agreement bound");
+    s = focus_source(r, 900); s.pose.fov += .11f;
+    require(!fg::evaluate(r, s).applied(), "Close guard accepted a different authored FOV");
+
+    std::mt19937 rng{492331};
+    const auto random = [&](float lo, float hi) { return std::uniform_real_distribution<float>{lo, hi}(rng); };
+    size_t applied{}, negative{}, increases{};
+    for (int i = 0; i < 10000; ++i) {
+        r.camera.location[2] = random(-100, 600); r.camera.rotation[0] = random(-18, 16);
+        r.camera.fov = random(5, 24); r.dolly = random(0, 2000); r.lift = random(0, 600); r.max_lift = 600;
+        s = focus_source(r, random(100, 5000)); d = fg::evaluate(r, s);
+        if (d.applied()) {
+            ++applied; negative += r.camera.rotation[0] < 0; increases += d.lift > r.lift;
+            check_focus_endpoint(r, s, d);
+        } else if (d.status == fg::Status::unchanged) {
+            require(d.dolly == r.dolly && d.lift == r.lift, "Unchanged close result altered offsets");
+        }
+    }
+    require(applied > 1000 && negative > 100 && increases > 100, "Insufficient signed close-camera coverage");
+}
+
+void cut_guards() {
+    namespace cg = uevr::prospi::cut_guard;
+    const cg::Snapshot s{.camera = {{-1147.5913f, -10999.653f, 484.303f}, {-2.1151114f, 83.521179f, 0},
+        3.3752854f, 0, 0, true}, .dolly = 9195.959f, .lift = 30.094757f, .time_ns = 1'000'000'000, .automatic = true};
+    const trace::Pose cut{{758.6665f, 2590.9854f, 1000}, {-16.858395f, -109.99998f, 0}, 0, 0, 0, true};
+    const auto d = cg::evaluate(s, cut, s.time_ns + 5'000'000);
+    require(d.status == cg::Status::discontinuity && d.dolly == 0 && d.lift == 0,
+        "Recorded cut reused previous 9200 cm dolly below field");
+    auto pan = s.camera; pan.location[0] += 50; pan.rotation[1] += 2;
+    const auto good = cg::evaluate(s, pan, s.time_ns + 5'000'000);
+    require(good.status == cg::Status::unchanged && good.dolly == s.dolly && good.lift == s.lift,
+        "Normal authored pan/ball follow changed");
+    pan = s.camera; pan.rotation[1] += 360;
+    require(cg::evaluate(s, pan, s.time_ns).dolly == s.dolly, "Wrapped yaw treated as a cut");
+    auto explicit_camera = s; explicit_camera.automatic = false;
+    require(cg::evaluate(explicit_camera, cut, s.time_ns).dolly == s.dolly, "Saved override rejected");
+    require(cg::evaluate(s, pan, s.time_ns - 1).status == cg::Status::stale &&
+        cg::evaluate(s, pan, s.time_ns + 250'000'001).status == cg::Status::stale, "Invalid snapshot time accepted");
+    pan.location[0] = std::numeric_limits<float>::quiet_NaN();
+    require(cg::evaluate(s, pan, s.time_ns).status == cg::Status::unavailable, "Invalid stereo input accepted");
+    cg::Publication publication;
+    require(!publication.read(), "Publication supplied an uninitialized snapshot");
+    auto epoch = publication.invalidate();
+    require(publication.publish(s, epoch) && publication.read()->dolly == s.dolly, "Valid snapshot not published");
+    publication.invalidate(); require(!publication.read(), "Invalidation retained previous shot offsets");
+    require(!publication.publish(s, epoch) && !publication.read(), "Retired update republished stale shot offsets");
+    std::atomic<bool> done{}, failed{};
+    std::thread writer{[&] {
+        for (int i = 1; i <= 10000; ++i) {
+            const auto current_epoch = publication.invalidate(); auto next = s; next.dolly = (float)i; next.lift = (float)-i;
+            publication.publish(next, current_epoch);
+        }
+        done.store(true);
+    }};
+    do {
+        if (const auto current = publication.read()) { if (current->dolly != -current->lift) { failed.store(true); } }
+    } while (!done.load());
+    writer.join(); require(!failed.load(), "Publication mixed dolly/lift from different updates");
+    epoch = publication.invalidate();
+    require(publication.publish(s, epoch) && publication.read()->dolly == s.dolly, "Publication did not recover");
+}
+
 // Offline shadow review consumes the trace's saved evidence, never a live object or profile setting.
 int shadow(const std::filesystem::path& root, const std::filesystem::path& output) {
     const auto meta = read_json(root / "metadata.json");
@@ -384,6 +519,87 @@ trace::NativeSource read_native_source(const Json& value) {
     out.status = trace::SourceStatus::accepted;
     return out;
 }
+void hokkaido_fixtures(const Json& fixture) {
+    namespace cg = uevr::prospi::cut_guard;
+    size_t corrected{}, rejected{};
+    for (const auto& f : fixture.at("samples")) {
+        fg::Request r{
+            .camera = read_trace_pose(f.at("camera")), .camera_manager = f.at("camera_manager"), .now_ns = f.at("time_ns"),
+            .mode = 3, .zone = f.at("zone"), .enabled = true, .prospi = true, .dolly_enabled = true,
+            .sequencer_enabled = true, .safety_enabled = true,
+            .protected_camera = f.at("framing_status") == 1, .automatic_source = f.at("automatic"),
+            .close_camera = f.at("close_correction"), .dolly = f.at("dolly"), .lift = f.at("lift"),
+            .predicted_z = f.at("predicted_z"), .floor = f.at("floor"), .max_lift = f.at("max_lift"), .base_fov = f.at("base_fov"),
+        };
+        const auto s = read_native_source(f.at("native_source"));
+        const auto d = fg::evaluate(r, s);
+        const auto name = "Hokkaido sequence " + std::to_string(f.at("sequence").get<uint64_t>());
+        if (f.at("close_correction").get<bool>()) {
+            require(d.applied(), name + ": " + fg::status_name(d.status));
+            auto actual = r; actual.camera = read_trace_pose(f.at("view"));
+            const auto end = focus_endpoint(actual, d, s.pose.aspect);
+            const auto target = trace::target_framing(end, s.look_at);
+            require(end.location[2] >= r.floor + 1.95f && end.location[2] < f.at("recorded_neutral").at("location")[2] &&
+                target.valid && !target.behind && !target.offscreen_estimate && std::abs(target.ndc_y) < .52f,
+                name + ": failed floor/framing correction");
+            ++corrected;
+        } else {
+            require(!d.applied() && d.dolly == r.dolly && d.lift == r.lift, name + ": known-good focus changed");
+        }
+        auto disabled = r; disabled.enabled = false;
+        require(fg::evaluate(disabled, s).dolly == r.dolly && fg::evaluate(disabled, s).lift == r.lift,
+            name + ": opt-out changed offsets");
+        const cg::Snapshot snapshot{.camera = r.camera, .dolly = r.dolly, .lift = r.lift,
+            .time_ns = r.now_ns, .automatic = r.automatic_source};
+        const auto view = read_trace_pose(f.at("view"));
+        const auto cut = cg::evaluate(snapshot, view, r.now_ns);
+        const bool reject = cut.status == cg::Status::discontinuity;
+        require(reject == f.at("cut_rejection").get<bool>(), name + ": unexpected cut classification");
+        if (reject) {
+            require(cut.dolly == 0 && cut.lift == 0 && view.location[2] >= 170 &&
+                f.at("recorded_neutral").at("location")[2].get<float>() < -1000, name + ": stale cut not cleared");
+            ++rejected;
+        } else {
+            require(cut.dolly == r.dolly && cut.lift == r.lift, name + ": steady authored motion changed");
+        }
+    }
+    require(corrected == 6 && rejected == 1, "Missing recorded walk-up/cut regression coverage");
+    std::cout << "Hokkaido captured fixtures: " << fixture.at("samples").size() << ", corrected=" << corrected
+        << ", stale cut rejected=" << rejected << '\n';
+}
+
+int cut_shadow(const std::filesystem::path& root, const std::filesystem::path& output) {
+    namespace cg = uevr::prospi::cut_guard;
+    size_t views{}, rejected{}; Json examples = Json::array();
+    std::ifstream stream(root / "events.jsonl"); require(stream.good(), "Cannot open cut replay");
+    std::string line;
+    while (std::getline(stream, line)) {
+        const auto e = Json::parse(line); if (e.at("kind") != "view") { continue; }
+        const auto& a = e.at("assist"); const auto& v = e.at("view");
+        if (!v.at("neutral_valid").get<bool>()) { continue; }
+        const auto now = e.at("time_ns").get<uint64_t>();
+        const auto age = v.at("snapshot_age_ms").get<double>() * 1'000'000.0;
+        require(age >= 0 && age < now, "Invalid cut replay age");
+        const cg::Snapshot s{.camera = read_trace_pose(a.at("input")), .dolly = a.at("dolly_after"), .lift = a.at("safety_up"),
+            .time_ns = now - (uint64_t)age, .automatic = !a.at("calibration_applied").get<bool>() &&
+                (a.at("source") == 2 || a.at("source") == 3)};
+        const auto p = read_trace_pose(v.at("input")); const auto d = cg::evaluate(s, p, now); ++views;
+        if (d.status != cg::Status::unchanged) {
+            require(d.dolly == 0 && d.lift == 0, "Rejected cut kept previous offsets"); ++rejected;
+            if (examples.size() < 24) {
+                examples.push_back({{"sequence", e.at("sequence")}, {"cut", e.at("cut_sequence")},
+                    {"status", (int)d.status}, {"old_dolly", s.dolly}, {"old_neutral", v.at("neutral").at("location")},
+                    {"safe_authored_location", p.location}});
+            }
+        } else { require(d.dolly == s.dolly && d.lift == s.lift, "Steady camera changed"); }
+    }
+    std::ofstream file(output); require(file.good(), "Cannot create cut replay report");
+    file << Json{{"views", views}, {"rejected", rejected}, {"unchanged", views - rejected}, {"examples", examples},
+        {"limits", "Offline pose-sized cut test, not a collision/subject or live thread-order guarantee."}}.dump(2) << '\n';
+    std::cout << "Cut replay views=" << views << " rejected=" << rejected << " unchanged=" << views - rejected << '\n';
+    return 0;
+}
+
 int native_shadow(const std::filesystem::path& root, const std::filesystem::path& output) {
     const auto meta = read_json(root / "metadata.json");
     require(meta.at("variant").get<std::string>().find("eBaseball") != std::string::npos, "Replay requires ProSpi trace");
@@ -409,7 +625,7 @@ int native_shadow(const std::filesystem::path& root, const std::filesystem::path
         const auto& a = e.at("assist");
         const auto offsets = a.at("base_offsets").get<trace::Vector>();
         const auto source = read_native_source(a.at("native_source"));
-        const fg::Request r{
+        fg::Request r{
             .camera = read_trace_pose(a.at("input")), .camera_manager = a.at("pcm"), .now_ns = e.at("time_ns"),
             .mode = a.at("mode"), .zone = a.at("zone"), .enabled = true, .prospi = true,
             .dolly_enabled = a.at("dolly_enabled"),
@@ -422,6 +638,19 @@ int native_shadow(const std::filesystem::path& root, const std::filesystem::path
             .floor = a.at("safety_min_z"), .max_lift = a.at("safety_max_up"), .base_fov = a.at("base_fov"),
             .forward_offset = offsets[0], .right_offset = offsets[1], .up_offset = offsets[2],
         };
+        auto close_request = r; close_request.close_camera = true;
+        r.close_camera = fg::close_rig(close_request);
+        if (r.close_camera) {
+            r.sequencer_enabled = option("VR_MatchGameFOVProSpiAutoCameraSequencer");
+            r.safety_enabled = r.safety_enabled && option("VR_MatchGameFOVProSpiCameraSafetyFieldRule");
+            r.protected_camera = protected_settings || a.at("calibration_applied").get<bool>() ||
+                a.at("segment_latch").get<bool>() || a.at("framing_status") == 1 || a.at("stabilizer").get<bool>();
+        } else {
+            // Older source-validated recordings predate these optional diagnostics.
+            if (const auto diagnostics = a.find("native_focus_guard"); diagnostics != a.end()) {
+                r.protected_camera = r.protected_camera || diagnostics->at("protected").get<bool>();
+            }
+        }
         auto disabled = r; disabled.enabled = false;
         const auto old = fg::evaluate(disabled, source);
         require(!old.applied() && old.dolly == r.dolly && old.lift == r.lift && old.predicted_z == r.predicted_z,
@@ -449,7 +678,7 @@ int native_shadow(const std::filesystem::path& root, const std::filesystem::path
         shot.min_dolly = (std::min)(shot.min_dolly, d.dolly); shot.max_dolly = (std::max)(shot.max_dolly, d.dolly);
         shot.min_lift = (std::min)(shot.min_lift, d.lift); shot.max_lift = (std::max)(shot.max_lift, d.lift);
         shot.min_clearance = (std::min)(shot.min_clearance, after_pose.location[2] - r.floor);
-        require(d.dolly <= r.dolly && d.lift <= r.lift && d.lift <= r.max_lift &&
+        require(d.dolly <= r.dolly && (r.close_camera || d.lift <= r.lift) && d.lift <= r.max_lift &&
             after_pose.location[2] >= r.floor + 1.95f && after.valid && !after.behind && !after.offscreen_estimate,
             "Replay violated floor/target/travel constraints at sequence " + std::to_string(e.at("sequence").get<uint64_t>()));
         if (shot.examples.size() < 2 || ((before.behind || before.offscreen_estimate) && shot.examples.size() == 2)) {
@@ -473,7 +702,7 @@ int native_shadow(const std::filesystem::path& root, const std::filesystem::path
         {"default_off_unchanged", true}, {"statuses", reasons}, {"changed_shots", changed},
         {"limits", {"Replays the same C++ focus guard; preserves original game aim/FOV and configured floors.",
             "Frustum is a neutral-camera estimate, not asymmetric HMD or collision proof.",
-            "No celebration was recorded. Other camera families and existing celebration rules stay unchanged.",
+            "Authored focus is not verified player/ball ownership. Neutral clipping is not HMD or collision proof.",
             "Runtime-only setting/override gates still need A/B validation; no profile or calibration is modified."}}};
     std::ofstream file(output); require(file.good(), "Cannot create native-focus replay report");
     file << report.dump(2) << '\n'; require(file.good(), "Could not write replay report");
@@ -488,9 +717,11 @@ int main(int argc, char** argv) {
     try {
         if (argc == 4 && std::string(argv[1]) == "--shadow") { return shadow(argv[2], argv[3]); }
         if (argc == 4 && std::string(argv[1]) == "--native-shadow") { return native_shadow(argv[2], argv[3]); }
+        if (argc == 4 && std::string(argv[1]) == "--cut-shadow") { return cut_shadow(argv[2], argv[3]); }
         require(argc == 2, "Usage: tests fixture.json OR --shadow/--native-shadow session-path output.json");
         const auto fixtures = read_json(argv[1]);
-        captured_fixtures(fixtures); guards(fixtures); native_focus_guards();
+        captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); close_focus_guards(); cut_guards();
+        hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";
         return 0;
     } catch (const std::exception& e) {

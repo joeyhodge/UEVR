@@ -255,6 +255,7 @@ void native_trace_serialization() {
     view.neutral = view.output = c.input; view.neutral_valid = true;
     view.hmd_pose_valid = true; view.hmd_rotation = {0, 0, 0, 1}; view.head_translation = {1, 2, 3};
     view.head_translation_applied = view.hmd_rotation_applied = true;
+    view.assist_offset_status = 3;
     view.output.rotation[1] = 100;
     r.finish_view(ticket); r.mark(Marker::good, "keep context", 1);
     r.stop(); settle(r);
@@ -269,6 +270,7 @@ void native_trace_serialization() {
             guard["floor"] == 170 && guard["zone"] == 1 && !guard["protected"].get<bool>(),
             "Focus-guard decision not associated with its camera/view");
         require(e["view"]["hmd"]["head_translation_cm"] == nlohmann::json::array({1, 2, 3}), "HMD offsets lost");
+        require(e["view"]["assist_offset_status"] == 3, "Cut-offset rejection status lost");
         require(e["view"]["target_framing"]["hmd"]["behind"].get<bool>() &&
             !e["view"]["target_framing"]["neutral"]["behind"].get<bool>(), "head/assist framing mixed");
         require(e["suspects"] == 0, "headset-only movement became a bad-cut flag");

@@ -29839,9 +29839,11 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         vqi_norm = utility::math::flatten(vqi_norm);
     }
 
-    const auto camera_forward_offset = vr->get_camera_forward_offset();
-    const auto camera_right_offset = vr->get_camera_right_offset();
-    const auto camera_up_offset = vr->get_camera_up_offset();
+    const auto camera_offsets = vr->uses_prospi_camera_cut_guard() ? vr->get_camera_view_offsets(trace_pose()) :
+        VR::CameraViewOffsets{vr->get_camera_forward_offset(), vr->get_camera_right_offset(), vr->get_camera_up_offset()};
+    const auto camera_forward_offset = camera_offsets.forward;
+    const auto camera_right_offset = camera_offsets.right;
+    const auto camera_up_offset = camera_offsets.up;
     const auto camera_forward = quat_converter * (vqi_norm * glm::vec3{0, 0, camera_forward_offset});
     const auto camera_right = quat_converter * (vqi_norm * glm::vec3{-camera_right_offset, 0, 0});
     const auto camera_up = quat_converter * (vqi_norm * glm::vec3{0, -camera_up_offset, 0});
@@ -29874,6 +29876,7 @@ __forceinline void FFakeStereoRenderingHook::calculate_stereo_view_offset(
         v.up_offset = {camera_up.x, camera_up.y, camera_up.z};
         v.world_to_meters = world_to_meters; v.world_scale = world_scale;
         v.decoupled_pitch = vr->is_decoupled_pitch_enabled();
+        v.assist_offset_status = (int32_t)camera_offsets.status;
     }
     if (!vr->is_stereo_emulation_enabled()) {
         const auto is_2d_screen = vr->is_using_2d_screen();

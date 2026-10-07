@@ -9324,6 +9324,11 @@ void VR::update_prospi_camera_trace_control() {
 }
 
 void VR::update_game_fov() {
+    uint64_t prospi_cut_epoch{};
+    if (m_match_game_fov_prospi_native_focus_guard->value() &&
+        m_match_game_fov_prospi_auto_camera_sequencer_mode->value() == 3 && is_prospi_executable()) {
+        prospi_cut_epoch = m_prospi_camera_cut_offsets.invalidate();
+    }
     auto framing_status = uevr::prospi::framing::Status::not_selected;
     uevr::prospi::focus_guard::Decision native_focus_decision{};
     float native_focus_dolly_before{}, native_focus_lift_before{};
@@ -10676,6 +10681,15 @@ void VR::update_game_fov() {
     const auto is_ebaseball_pro_spirit = is_prospi && is_ebaseball_pro_spirit_variant();
     const auto location = read_game_camera_location(pcm);
     const auto rotation = read_game_camera_rotation(pcm);
+    const bool guarded_dugout_camera = is_prospi && m_match_game_fov_prospi_auto_camera_sequencer->value() &&
+        uevr::prospi::focus_guard::keep_dugout_field_floor(
+        m_match_game_fov_prospi_native_focus_guard->value(), m_match_game_fov_prospi_auto_camera_sequencer_mode->value(),
+        m_match_game_fov_prospi_camera_safety_field_rule->value(),
+        location && rotation && is_prospi_dugout_celebration_tracking_camera(*location, *rotation, raw_fov) &&
+        uevr::prospi::focus_guard::close_rig({
+            .camera = {{location->x, location->y, location->z}, {rotation->x, rotation->y, rotation->z}, raw_fov, 0, 0, true},
+            .zone = (int32_t)ProSpiCameraSafetyZone::FieldFloor, .close_camera = true,
+        }));
     const uevr::prospi::celebration::Gates celebration_gates{
         .mode = m_match_game_fov_prospi_auto_camera_sequencer_mode->value(),
         .prospi = is_prospi, .dolly = m_match_game_fov_dolly->value(),
@@ -10686,6 +10700,7 @@ void VR::update_game_fov() {
             m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1.0f,
         .field_floor = m_match_game_fov_prospi_camera_safety_field_rule->value() &&
             (!m_match_game_fov_prospi_camera_safety_stand_rule->value() ||
+             guarded_dugout_camera ||
              (location && std::abs(location->x) < std::clamp(m_match_game_fov_prospi_camera_safety_stand_x_min->value(), 0.0f, 10000.0f))) &&
             (!m_match_game_fov_prospi_camera_safety_outfield_rule->value() ||
              (location && location->y > std::clamp(m_match_game_fov_prospi_camera_safety_outfield_y_max->value(), -20000.0f, 5000.0f))),
@@ -12672,7 +12687,8 @@ void VR::update_game_fov() {
                 raw_fov <= telephoto_fov &&
                 !baseline_line_telephoto_camera &&
                 !pre_celebration_line_camera &&
-                !close_cutscene_focus_camera) {
+                !close_cutscene_focus_camera &&
+                !guarded_dugout_camera) {
                 safety_zone = ProSpiCameraSafetyZone::StandCrowd;
                 safety_min_z = std::clamp(m_match_game_fov_prospi_camera_safety_stand_min_z->value(), -500.0f, 4000.0f);
             }
@@ -12808,27 +12824,35 @@ void VR::update_game_fov() {
 
             if (m_match_game_fov_prospi_native_focus_guard->value()) {
                 const auto source = (ProSpiAutoCameraSource)m_prospi_auto_camera_sequencer_source.load(std::memory_order_relaxed);
+                const uevr::prospi::trace::Pose focus_pose{
+                    {location->x, location->y, location->z}, {rotation->x, rotation->y, rotation->z},
+                    raw_fov, 0.0f, 0.0f, true};
+                const bool close_camera = uevr::prospi::focus_guard::close_rig({
+                    .camera = focus_pose, .zone = (int32_t)safety_zone,
+                    .close_camera = close_cutscene_focus_camera || dugout_celebration_tracking_camera,
+                });
                 const uevr::prospi::focus_guard::Request request{
-                    .camera = {{location->x, location->y, location->z}, {rotation->x, rotation->y, rotation->z},
-                        raw_fov, 0.0f, 0.0f, true},
+                    .camera = focus_pose,
                     .camera_manager = (uintptr_t)pcm,
                     .now_ns = uevr::prospi::trace::Recorder::clock_ns(),
                     .mode = m_match_game_fov_prospi_auto_camera_sequencer_mode->value(), .zone = (int32_t)safety_zone,
                     .enabled = true, .prospi = is_prospi, .dolly_enabled = true,
                     .sequencer_enabled = m_match_game_fov_prospi_auto_camera_sequencer->value() &&
-                        m_prospi_auto_camera_sequencer_active.load(std::memory_order_relaxed),
+                        (m_prospi_auto_camera_sequencer_active.load(std::memory_order_relaxed) || close_camera),
                     .safety_enabled = m_match_game_fov_prospi_camera_safety_guard->value() &&
-                        m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1.0f,
+                        m_match_game_fov_prospi_camera_safety_dolly_cap_strength->value() == 1.0f &&
+                        (!close_camera || m_match_game_fov_prospi_camera_safety_field_rule->value()),
                     .protected_camera = prospi_calibration_applied || prospi_tv_override_applied || generic_camera_preset_applied ||
                         generic_camera_presets_apply_enabled || camera_cut_stabilizer_enabled ||
                         m_match_game_fov_prospi_actual_clamp->value() || is_decoupled_pitch_enabled() ||
                         m_match_game_fov_prospi_cinematic_camera_assist->value() || m_prospi_cutscene_segment_active ||
-                        signed_safety.accepted || framing_status == uevr::prospi::framing::Status::accepted ||
-                        home_plate_pitch_view || baseline_line_telephoto_camera || dugout_celebration_tracking_camera ||
-                        pre_celebration_line_camera || close_cutscene_focus_camera || close_home_line_tracking_camera ||
-                        near_home_side_tracking_camera || left_field_stadium_back_risk_camera ||
-                        elevated_transition_sweep_camera || upper_deck_crowd_overshoot_camera,
+                        framing_status == uevr::prospi::framing::Status::accepted || home_plate_pitch_view ||
+                        (!close_camera && (signed_safety.accepted || baseline_line_telephoto_camera ||
+                            dugout_celebration_tracking_camera || pre_celebration_line_camera ||
+                            close_cutscene_focus_camera || close_home_line_tracking_camera || near_home_side_tracking_camera ||
+                            left_field_stadium_back_risk_camera || elevated_transition_sweep_camera || upper_deck_crowd_overshoot_camera)),
                     .automatic_source = source == ProSpiAutoCameraSource::RuleAssist || source == ProSpiAutoCameraSource::LearnedNearest,
+                    .close_camera = close_camera,
                     .dolly = dolly_offset, .lift = safety_up_offset, .predicted_z = predicted_z,
                     .floor = safety_min_z, .max_lift = m_match_game_fov_prospi_camera_safety_max_up_offset->value(),
                     .base_fov = base_fov, .forward_offset = m_camera_forward_offset->value(),
@@ -12877,11 +12901,43 @@ void VR::update_game_fov() {
         }
 
         m_game_fov_dolly_offset.store(dolly_offset, std::memory_order_relaxed);
+        if (is_prospi && location && rotation && m_match_game_fov_prospi_native_focus_guard->value() &&
+            m_match_game_fov_prospi_auto_camera_sequencer_mode->value() == 3) {
+            const auto source = (ProSpiAutoCameraSource)m_prospi_auto_camera_sequencer_source.load(std::memory_order_relaxed);
+            m_prospi_camera_cut_offsets.publish({
+                .camera = {{location->x, location->y, location->z}, {rotation->x, rotation->y, rotation->z},
+                    raw_fov, 0.0f, 0.0f, true},
+                .dolly = dolly_offset, .lift = m_prospi_camera_safety_up_offset.load(std::memory_order_relaxed),
+                .time_ns = uevr::prospi::trace::Recorder::clock_ns(),
+                .automatic = !prospi_calibration_applied && !prospi_tv_override_applied && !generic_camera_preset_applied &&
+                    !generic_camera_presets_apply_enabled && !camera_cut_stabilizer_enabled &&
+                    !m_match_game_fov_prospi_actual_clamp->value() &&
+                    (source == ProSpiAutoCameraSource::RuleAssist || source == ProSpiAutoCameraSource::LearnedNearest),
+            }, prospi_cut_epoch);
+        }
         if (trace_camera) { trace_camera->dolly_after = dolly_offset; }
     } else {
         m_game_fov_dolly_offset.store(0.0f, std::memory_order_relaxed);
         update_prospi_camera_safety_state(false);
     }
+}
+
+bool VR::uses_prospi_camera_cut_guard() const {
+    return m_match_game_fov->value() && m_match_game_fov_dolly->value() &&
+        m_match_game_fov_prospi_native_focus_guard->value() &&
+        m_match_game_fov_prospi_auto_camera_sequencer->value() &&
+        m_match_game_fov_prospi_auto_camera_sequencer_mode->value() == 3 && is_prospi_executable();
+}
+
+VR::CameraViewOffsets VR::get_camera_view_offsets(const uevr::prospi::trace::Pose& input) const {
+    const CameraViewOffsets legacy{get_camera_forward_offset(), get_camera_right_offset(), get_camera_up_offset()};
+    if (!uses_prospi_camera_cut_guard()) { return legacy; }
+    const auto snapshot = m_prospi_camera_cut_offsets.read();
+    const auto decision = snapshot ? uevr::prospi::cut_guard::evaluate(*snapshot, input, uevr::prospi::trace::Recorder::clock_ns()) :
+        uevr::prospi::cut_guard::Decision{uevr::prospi::cut_guard::Status::unavailable};
+    if (snapshot && !snapshot->automatic) { return legacy; }
+    return {m_camera_forward_offset->value() + decision.dolly, legacy.right,
+        m_camera_up_offset->value() + decision.lift, decision.status};
 }
 
 float VR::get_game_fov() const {
@@ -16058,7 +16114,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                 (uevr::prospi::framing::Status)m_prospi_calibrated_framing_status.load(std::memory_order_relaxed)));
                             m_match_game_fov_prospi_native_focus_guard->draw("Authored Focus / Low-Camera Safety (Experimental)");
                             if (m_match_game_fov_prospi_native_focus_guard->value()) {
-                                ImGui::TextWrapped("Opt-in: bounds dolly before the game's authored look-at and uses signed lift on validated low upward-pitched Field/Outfield rigs. Keeps configured floors, lift limits, game aim/FOV, saved overrides and celebration rules. No collision or ball/player tracking. Unsupported builds, other rigs and stale sources keep the existing assist.");
+                                ImGui::TextWrapped("Opt-in: bounds dolly before the game's authored look-at on validated low Field/Outfield and close walk-up/dugout rigs. Keeps configured floors, lift limits, game aim/FOV and saved overrides. Rejects a previous shot's automatic dolly/lift at a cut-sized pose jump. No collision or ball/player tracking. Unsupported sources keep the existing focus assist.");
                                 ImGui::TextWrapped("Focus guard: %s", uevr::prospi::focus_guard::status_name(
                                     (uevr::prospi::focus_guard::Status)m_prospi_native_focus_status.load(std::memory_order_relaxed)));
                                 ImGui::Text("Dolly %.1f -> %.1f cm; lift %.1f -> %.1f cm",

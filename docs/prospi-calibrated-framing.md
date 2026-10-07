@@ -162,9 +162,65 @@ accepted center-field samples remain unchanged by the celebration refinement.
 The earlier soft-good low-rig shot changes height by about 2 cm for floor
 clearance; labels alone are not evidence that any new camera is visually ideal.
 
+## Authored focus / close-cut safety
+
+The optional `Authored Focus / Low-Camera Safety (Experimental)` checkbox is
+still default-off and limited to ProSpi mode 3. It requires the existing safety
+guard and full dolly-cap strength, and retains explicit overrides and protected
+camera settings. The corresponding setting is:
+
+```ini
+VR_MatchGameFOVProSpiNativeFocusGuard=true
+```
+
+Fresh native source data must agree with the current camera manager, pose and
+FOV, pass the validated native-to-Unreal bridge, and be at most 50 ms old. There
+is no saved subject target or new native/ProcessEvent call. Unsupported source
+layouts, stale/mismatched data and impossible budgets keep the existing focus
+assist. This is not a collision query or verified player/ball tracker.
+
+In addition to the original low upward Field/Outfield rigs, the option covers
+bounded low walk-up and baseline/dugout cameras recognized by the existing
+camera rules. An already-safe close shot keeps its exact dolly/lift. A corrected
+shot caps forward advance before the authored focus, retains the depth implied
+by the game's changing FOV, and uses signed height within the configured lift
+budget. It never re-aims the game camera. Corrected close shots also keep the
+authored point inside the central half of the neutral frustum rather than on
+its edge; this is not proof of asymmetric HMD visibility.
+
+A recognized low dugout rig retains Field Floor classification when it overlaps
+the generic stand band. Neither configured floor values nor genuine stand/high
+camera classifications are globally lowered. No opposite-side subject is
+inferred by mirroring a saved entry.
+
+The Hokkaido recording `session-4923318888100` shows walk-up cuts advancing beyond
+their authored focus while the old unsigned height estimate adds excessive
+lift. It also shows a new cut using the preceding pitch shot's roughly 9,200 cm
+dolly, placing the neutral camera about 16 metres below the field. The option
+now publishes automatic dolly/lift together with their source pose. A large
+pose discontinuity, invalid publication or age over 250 ms suppresses only that
+old automatic pair until a fresh update; manual offsets and HMD motion remain.
+Normal authored pans and ball follow retain their offsets. The callback uses
+fixed-size, nonblocking publication and performs no object scan or game call.
+
+Fixtures include 22 captured Hokkaido samples, safe action/pitch cuts, the stale
+cut, signed/zero-pitch cases, source rejection, override/off-mode behavior and
+publication invalidation/concurrency. The two additional offline-only replays
+use the production helpers:
+
+```powershell
+prospi-camera-framing-tests.exe --native-shadow "path/to/session" "external/focus.json"
+prospi-camera-framing-tests.exe --cut-shadow "path/to/session" "external/cuts.json"
+```
+
+Test walk-ups and both dugouts, then the previously good pitching, action zoom
+and moving ball-follow shots with all other settings unchanged. The latest
+recording contains no celebration; first-base celebration framing still needs
+runtime confirmation, including the subject and the transition out of the shot.
+
 ## Remaining work
 
-Unsupported low/dugout and high-lift cinematic cases remain on the old path.
+Unsupported low/dugout and high-lift cinematic cases remain on the old focus path.
 Subject-aware aim/focus and collision-aware refinement still need reliable
 subjects or stadium geometry and another recorded comparison. Do not globally
 lower stand/dugout floors based only on suspect flags: several soft-good cuts

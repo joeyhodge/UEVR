@@ -109,7 +109,7 @@ struct View {
     Vector head_translation{}, eye_translation{}, standing_delta{};
     std::array<float, 4> hmd_rotation{}, eye_rotation{}, recenter_rotation{};
     float world_to_meters{}, world_scale{}, snapshot_age_ms{};
-    int32_t index{}, eye{-1};
+    int32_t index{}, eye{-1}, assist_offset_status{};
     bool neutral_valid{}, decoupled_pitch{}, full_pass{}, input_matches_assist{};
     bool source_matches_input{}, hmd_pose_valid{}, head_translation_applied{}, hmd_rotation_applied{}, mono{};
 };
