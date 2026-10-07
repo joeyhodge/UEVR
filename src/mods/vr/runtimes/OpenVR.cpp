@@ -303,6 +303,7 @@ void OpenVR::refresh_frame_controller_types() {
 
     uint8_t mask{};
     bool retry{};
+    std::array<std::string, 2> profiles;
     for (unsigned hand = 0; hand < 2; ++hand) {
         const auto role = hand == 0 ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand;
         const auto device = this->hmd->GetTrackedDeviceIndexForControllerRole(role);
@@ -314,11 +315,14 @@ void OpenVR::refresh_frame_controller_types() {
         if (error == vr::TrackedProp_UnknownProperty || error == vr::TrackedProp_ValueNotProvidedByDevice ||
             error == vr::TrackedProp_BufferTooSmall) { continue; }
         if (error != vr::TrackedProp_Success || length == 0 || length > type.size()) { retry = true; continue; }
-        if (type[length - 1] == '\0' && uevr::steam_frame::is_frame_controller(std::string_view{type.data(), length - 1})) {
-            mask |= static_cast<uint8_t>(1u << hand);
+        if (type[length - 1] == '\0') {
+            profiles[hand].assign(type.data(), length - 1);
+            if (uevr::steam_frame::is_frame_controller(profiles[hand])) {
+                mask |= static_cast<uint8_t>(1u << hand);
+            }
         }
     }
-    this->frame_controller_profiles.publish(*snapshot, mask, retry);
+    this->frame_controller_profiles.publish(*snapshot, mask, retry, std::move(profiles));
 }
 
 void OpenVR::destroy() {
