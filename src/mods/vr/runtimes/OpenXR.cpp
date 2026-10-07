@@ -2781,18 +2781,29 @@ XrPath OpenXR::get_current_interaction_profile_path(VRRuntime::Hand hand) const 
 
 void OpenXR::refresh_frame_controller_types() {
     const auto snapshot = this->frame_controller_profiles.begin_refresh();
-    if (this->frame_interaction_profile_path == XR_NULL_PATH || !snapshot) { return; }
+    if (this->session == XR_NULL_HANDLE || !snapshot) { return; }
     const auto now = std::chrono::steady_clock::now();
     if (now - this->last_frame_controller_refresh < std::chrono::milliseconds{250}) { return; }
     this->last_frame_controller_refresh = now;
     uint8_t mask{};
     bool retry{};
+    std::array<std::string, 2> profiles;
     for (unsigned hand = 0; hand < 2; ++hand) {
         const auto path = get_current_interaction_profile_path(static_cast<VRRuntime::Hand>(hand));
         if (path == XR_NULL_PATH) { retry = true; continue; }
-        if (path == this->frame_interaction_profile_path) { mask |= static_cast<uint8_t>(1u << hand); }
+        if (path == this->frame_interaction_profile_path) {
+            mask |= static_cast<uint8_t>(1u << hand);
+            profiles[hand] = uevr::steam_frame::interaction_profile;
+        } else {
+            std::array<char, XR_MAX_PATH_LENGTH> text{};
+            uint32_t length{};
+            if (xrPathToString(this->instance, path, static_cast<uint32_t>(text.size()), &length, text.data()) == XR_SUCCESS &&
+                length > 0 && length <= text.size() && text[length - 1] == '\0') {
+                profiles[hand].assign(text.data(), length - 1);
+            } else { retry = true; }
+        }
     }
-    this->frame_controller_profiles.publish(*snapshot, mask, retry);
+    this->frame_controller_profiles.publish(*snapshot, mask, retry, std::move(profiles));
 }
 
 std::optional<std::string> OpenXR::initialize_actions(const std::string& json_string) {

@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -28,6 +29,8 @@ constexpr bool is_frame_controller(std::string_view type) {
     return type == controller_type;
 }
 
+inline const char* normalized_controller_type(std::string_view profile);
+
 class ControllerProfileCache {
 public:
     uint8_t mask() const { return static_cast<uint8_t>(m_state.load(std::memory_order_acquire) & 3u); }
@@ -43,15 +46,48 @@ public:
         return (current & 4u) != 0 ? std::optional<uint64_t>{current} : std::nullopt;
     }
 
-    bool publish(uint64_t observed, uint8_t mask, bool retry) {
+    bool publish(uint64_t observed, uint8_t mask, bool retry, std::array<std::string, 2> profiles = {}) {
+        std::scoped_lock lock{m_identity_mutex};
         const auto next = (observed & ~7ull) | (mask & 3u) | (retry ? 4u : 0u);
-        return m_state.compare_exchange_strong(observed, next, std::memory_order_acq_rel, std::memory_order_acquire);
+        if (!m_state.compare_exchange_strong(observed, next, std::memory_order_acq_rel, std::memory_order_acquire)) {
+            return false;
+        }
+        m_identity_epoch = next & ~7ull;
+        m_profiles = std::move(profiles);
+        return true;
+    }
+
+    std::string profile(unsigned hand) const {
+        if (hand >= 2) { return {}; }
+        std::scoped_lock lock{m_identity_mutex};
+        const auto state = m_state.load(std::memory_order_acquire);
+        return (state & ~7ull) == m_identity_epoch ? m_profiles[hand] : std::string{};
+    }
+
+    const char* type(unsigned hand) const {
+        if (hand >= 2) { return "unknown"; }
+        std::scoped_lock lock{m_identity_mutex};
+        const auto state = m_state.load(std::memory_order_acquire);
+        return (state & ~7ull) == m_identity_epoch ? normalized_controller_type(m_profiles[hand]) : "unknown";
     }
 
 private:
     // A reconnect/profile event cannot be overwritten by an in-flight property read.
     std::atomic<uint64_t> m_state{4u}; // epoch, refresh-needed bit, physical hand mask
+    mutable std::mutex m_identity_mutex;
+    uint64_t m_identity_epoch{};
+    std::array<std::string, 2> m_profiles{};
 };
+
+inline const char* normalized_controller_type(std::string_view profile) {
+    if (profile == controller_type || profile == interaction_profile) { return "frame"; }
+    if (profile == "oculus_touch" || profile == "/interaction_profiles/oculus/touch_controller") { return "touch"; }
+    if (profile == "knuckles" || profile == "/interaction_profiles/valve/index_controller") { return "index"; }
+    if (profile == "vive_controller" || profile == "/interaction_profiles/htc/vive_controller") { return "vive"; }
+    if (profile == "holographic_controller" || profile == "/interaction_profiles/microsoft/motion_controller") { return "wmr"; }
+    if (profile == "/interaction_profiles/khr/simple_controller") { return "simple"; }
+    return "unknown";
+}
 
 struct Binding {
     std::string_view path;
@@ -69,6 +105,20 @@ inline constexpr std::array openxr_bindings{
     Binding{"/user/hand/right/input/b/touch", "abuttontouchleft"},
     Binding{"/user/hand/right/input/x/touch", "bbuttontouchright"},
     Binding{"/user/hand/right/input/y/touch", "bbuttontouchleft"},
+    Binding{"/user/hand/left/input/trigger/touch", "triggertouch"},
+    Binding{"/user/hand/right/input/trigger/touch", "triggertouch"},
+    Binding{"/user/hand/left/input/squeeze/touch", "griptouch"},
+    Binding{"/user/hand/right/input/squeeze/touch", "griptouch"},
+    Binding{"/user/hand/left/input/bumper/touch", "bumpertouch"},
+    Binding{"/user/hand/right/input/bumper/touch", "bumpertouch"},
+    Binding{"/user/hand/left/input/thumbstick/touch", "joysticktouch"},
+    Binding{"/user/hand/right/input/thumbstick/touch", "joysticktouch"},
+    Binding{"/user/hand/left/input/dpad_up/touch", "dpad_uptouch"},
+    Binding{"/user/hand/left/input/dpad_right/touch", "dpad_righttouch"},
+    Binding{"/user/hand/left/input/dpad_down/touch", "dpad_downtouch"},
+    Binding{"/user/hand/left/input/dpad_left/touch", "dpad_lefttouch"},
+    Binding{"/user/hand/left/input/view/touch", "backbuttontouch"},
+    Binding{"/user/hand/right/input/menu/touch", "startbuttontouch"},
     Binding{"/user/hand/left/input/dpad_up/click", "dpad_up"},
     Binding{"/user/hand/left/input/dpad_right/click", "dpad_right"},
     Binding{"/user/hand/left/input/dpad_down/click", "dpad_down"},
@@ -119,6 +169,19 @@ struct AnalogInput {
     bool active{};
     float value{};
 };
+
+inline DigitalInput validated_digital(DigitalInput input) {
+    return input.active ? input : DigitalInput{};
+}
+
+inline AnalogInput validated_axis(AnalogInput input) {
+    return input.active && std::isfinite(input.value)
+        ? AnalogInput{true, std::clamp(input.value, 0.0f, 1.0f)} : AnalogInput{};
+}
+
+constexpr bool passive_input_action(std::string_view action) {
+    return action == "/actions/default/in/Squeeze" || action.ends_with("Touch");
+}
 
 constexpr bool write_default_binding(std::string_view filename, bool exists) {
     return filename != binding_file || !exists;
