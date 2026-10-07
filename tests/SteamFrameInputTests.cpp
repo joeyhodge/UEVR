@@ -146,6 +146,38 @@ void controller_cache() {
     current = cache.begin_refresh();
     expect(cache.publish(*current, 0, false) && cache.mask() == 0 && !cache.begin_refresh(),
         "reconnecting legacy controllers restores the unchanged mapping without repeated scans");
+    cache.invalidate();
+    current = cache.begin_refresh();
+    expect(cache.publish(*current, 2, false, {"oculus_touch", "frame_controller"}), "mixed controller profiles publish together");
+    expect(cache.profile(0) == "oculus_touch" && cache.profile(1) == "frame_controller" &&
+        std::string_view{cache.type(0)} == "touch" && std::string_view{cache.type(1)} == "frame",
+        "each physical hand exposes its own actual controller, not the headset");
+    cache.invalidate();
+    expect(cache.profile(0).empty() && cache.profile(1).empty() && std::string_view{cache.type(1)} == "unknown",
+        "identity access rejects the retired epoch before the next refresh");
+    const auto stale = cache.begin_refresh();
+    cache.invalidate();
+    current = cache.begin_refresh();
+    expect(cache.publish(*current, 0, false, {"/interaction_profiles/oculus/touch_controller", ""}) &&
+        !cache.publish(*stale, 3, false, {"frame_controller", "frame_controller"}) &&
+        std::string_view{cache.type(0)} == "touch" && cache.profile(1).empty(),
+        "late native observations cannot overwrite a newer fallback or disconnected hand");
+    expect(cache.profile(2).empty() && std::string_view{cache.type(2)} == "unknown", "invalid hands are neutral");
+    expect(std::string_view{sf::normalized_controller_type("frame_hmd")} == "unknown", "HMD identity never enables controller input");
+    expect(std::string_view{sf::normalized_controller_type(sf::interaction_profile)} == "frame", "OpenXR native profile normalizes to frame");
+    const auto unavailable = sf::validated_axis({false, 1.0f});
+    const auto invalid = sf::validated_axis({true, std::numeric_limits<float>::quiet_NaN()});
+    expect(!unavailable.active && unavailable.value == 0 && !invalid.active && invalid.value == 0,
+        "inactive or non-finite analog data never leaks a stale value");
+    expect(sf::validated_axis({true, 1.5f}).value == 1 && sf::validated_axis({true, -0.5f}).value == 0,
+        "trigger and grip axes are bounded independently");
+    expect(!sf::validated_digital({false, true}).pressed, "inactive digital data never leaks a stale press");
+    for (const auto action : {"Squeeze", "GripTouch", "TriggerTouch", "BumperTouch", "JoystickTouch",
+        "DPad_UpTouch", "DPad_RightTouch", "DPad_DownTouch", "DPad_LeftTouch", "StartButtonTouch", "BackButtonTouch"}) {
+        expect(sf::passive_input_action(std::string{"/actions/default/in/"} + action), "new passive inputs never activate gamepad focus detection");
+    }
+    expect(!sf::passive_input_action("/actions/default/in/Grip") && !sf::passive_input_action("/actions/default/in/Bumper"),
+        "grip and bumper clicks keep their existing active-input behavior");
 }
 
 void custom_bindings() {
@@ -222,10 +254,11 @@ void bindings(const std::filesystem::path& root, const std::filesystem::path& dr
         expect(actions.emplace(lower(action.at("name").get<std::string>()), action.at("type").get<std::string>()).second,
             "all manifest action names remain unique");
     }
-    expect(actions.size() == 33, "only three optional boolean actions and one analog action extend the manifest");
+    expect(actions.size() == 43, "ten optional touch actions extend the existing native manifest");
     for (const auto& action : manifest["actions"]) {
         const auto name = action.at("name").get<std::string>();
-        if (name.ends_with("Bumper") || name.ends_with("StartButton") || name.ends_with("BackButton") || name.ends_with("TriggerAxis")) {
+        if (name.ends_with("Bumper") || name.ends_with("StartButton") || name.ends_with("BackButton") ||
+            name.ends_with("TriggerAxis") || name.ends_with("Touch")) {
             expect(action.at("requirement") == "optional", "additional controls are not required on older controllers");
         }
     }
@@ -255,6 +288,10 @@ void bindings(const std::filesystem::path& root, const std::filesystem::path& dr
         const auto path = std::string{"/user/hand/right/input/"} + physical + "/click";
         const auto found = std::find_if(sf::openxr_bindings.begin(), sf::openxr_bindings.end(), [&](const auto& entry) { return entry.path == path; });
         expect(found != sf::openxr_bindings.end() && found->action == logical, "each physical ABXY button maps to its matching gamepad bit");
+        const std::string touch_action = std::string{logical}.insert(7, "touch");
+        const auto touch_path = std::string{"/user/hand/right/input/"} + physical + "/touch";
+        const auto touch = std::find_if(sf::openxr_bindings.begin(), sf::openxr_bindings.end(), [&](const auto& entry) { return entry.path == touch_path; });
+        expect(touch != sf::openxr_bindings.end() && touch->action == touch_action, "native face touches retain the same logical aliases as clicks");
     }
     const auto frame = sf::make_openvr_bindings();
     const auto roundtrip = json::parse(frame.dump());

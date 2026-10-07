@@ -1252,6 +1252,46 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target lua-controller-input-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET lua-controller-input-tests)
+	set(lua-controller-input-tests_SOURCES "")
+
+	list(APPEND lua-controller-input-tests_SOURCES
+		"tests/LuaControllerInputTests.cpp"
+	)
+
+	list(APPEND lua-controller-input-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${lua-controller-input-tests_SOURCES})
+	add_executable(lua-controller-input-tests)
+
+	if(lua-controller-input-tests_SOURCES)
+		target_sources(lua-controller-input-tests PRIVATE ${lua-controller-input-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT lua-controller-input-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${lua-controller-input-tests_SOURCES})
+
+	target_link_libraries(lua-controller-input-tests PRIVATE
+		luavrlib
+	)
+
+	foreach(case IN ITEMS native openxr-sources legacy missing)
+	    add_test(NAME lua-controller-input-${case} COMMAND lua-controller-input-tests ${case} "${CMAKE_CURRENT_SOURCE_DIR}")
+	    set_tests_properties(lua-controller-input-${case} PROPERTIES TIMEOUT 30)
+	endforeach()
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target uevr
 set(CMKR_TARGET uevr)
 set(uevr_SOURCES "")
@@ -1351,6 +1391,14 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/D3D12Component.hpp"
 	"src/mods/vr/DuneFrameHandoff.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
+	"src/mods/vr/GalacticRacerBink.hpp"
+	"src/mods/vr/GalacticRacerBinkCode.hpp"
+	"src/mods/vr/GalacticRacerBinkSeek.hpp"
+	"src/mods/vr/GalacticRacerBinkSeekCode.hpp"
+	"src/mods/vr/GalacticRacerNativeFix.hpp"
+	"src/mods/vr/GalacticRacerNativeFixCode.hpp"
+	"src/mods/vr/GalacticRacerOwnedTexture.hpp"
+	"src/mods/vr/GalacticRacerRenderTargets.hpp"
 	"src/mods/vr/HalloweenNativeFix.hpp"
 	"src/mods/vr/HalloweenRenderTargets.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
@@ -1413,7 +1461,10 @@ list(APPEND uevr_SOURCES
 	"src/utility/Nascar26HookCompatibility.hpp"
 	"src/utility/NascarHookCompatibility.hpp"
 	"src/utility/OpaqueStateRegistry.hpp"
+	"src/utility/PostInitCodeMemory.hpp"
+	"src/utility/PostInitValidation.hpp"
 	"src/utility/ProtectedHookTrampoline.hpp"
+	"src/utility/SceneCaptureLifecycle.hpp"
 	"src/utility/SupportDiagnostics.hpp"
 	"src/utility/UObjectAllocatorDiscovery.hpp"
 	"src/utility/UObjectArrayBrowser.hpp"
