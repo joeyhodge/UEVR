@@ -472,6 +472,10 @@ int ScriptContext::setup_bindings() {
         "get_action_handle", &UEVR_VRData::get_action_handle,
         "is_action_active", &UEVR_VRData::is_action_active,
         "get_joystick_axis", &UEVR_VRData::get_joystick_axis,
+        "get_controller_type", sol::property([](const UEVR_VRData&) { return &API::VR::get_controller_type; }),
+        "get_controller_profile", sol::property([](const UEVR_VRData&) { return &API::VR::get_controller_profile; }),
+        "get_action_state", sol::property([](const UEVR_VRData&) { return &API::VR::get_action_state; }),
+        "get_action_axis", sol::property([](const UEVR_VRData&) { return &API::VR::get_action_axis; }),
         "trigger_haptic_vibration", &UEVR_VRData::trigger_haptic_vibration,
         "is_using_controllers", &UEVR_VRData::is_using_controllers,
         "get_lowest_xinput_index", &UEVR_VRData::get_lowest_xinput_index,
@@ -498,6 +502,11 @@ int ScriptContext::setup_bindings() {
         "save_config", &UEVR_VRData::save_config,
         "reload_config", &UEVR_VRData::reload_config
     );
+
+    m_lua.new_usertype<UEVR_DigitalInputState>("UEVR_DigitalInputState", sol::no_constructor,
+        "active", &UEVR_DigitalInputState::active, "pressed", &UEVR_DigitalInputState::pressed);
+    m_lua.new_usertype<UEVR_AnalogInputState>("UEVR_AnalogInputState", sol::no_constructor,
+        "active", &UEVR_AnalogInputState::active, "value", &UEVR_AnalogInputState::value);
 
     // TODO: Add operators to these types
     m_lua.new_usertype<UEVR_Vector2f>("UEVR_Vector2f",

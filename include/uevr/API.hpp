@@ -29,6 +29,8 @@ extern "C" {
     #include "API.h"
 }
 
+#include "ControllerInput.hpp"
+
 #include <optional>
 #include <filesystem>
 #include <string>
@@ -1410,6 +1412,22 @@ public:
 
             fn(source, &result);
             return result;
+        }
+
+        static std::string get_controller_type(UEVR_InputSourceHandle source) {
+            return input::controller_type(API::get()->param(), source);
+        }
+
+        static std::string get_controller_profile(UEVR_InputSourceHandle source) {
+            return input::controller_profile(API::get()->param(), source);
+        }
+
+        static UEVR_DigitalInputState get_action_state(UEVR_ActionHandle action, UEVR_InputSourceHandle source) {
+            return input::action_state(API::get()->param(), action, source);
+        }
+
+        static UEVR_AnalogInputState get_action_axis(UEVR_ActionHandle action, UEVR_InputSourceHandle source) {
+            return input::action_axis(API::get()->param(), action, source);
         }
 
         static void trigger_haptic_vibration(float seconds_from_now, float amplitude, float frequency, float duration, UEVR_InputSourceHandle source) {

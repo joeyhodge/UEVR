@@ -36,7 +36,7 @@ SOFTWARE.
 #define UEVR_OUT
 
 #define UEVR_PLUGIN_VERSION_MAJOR 2
-#define UEVR_PLUGIN_VERSION_MINOR 40
+#define UEVR_PLUGIN_VERSION_MINOR 41
 #define UEVR_PLUGIN_VERSION_PATCH 0
 
 #define UEVR_RENDERER_D3D11 0
@@ -561,6 +561,16 @@ DECLARE_UEVR_HANDLE(UEVR_ActionHandle);
 DECLARE_UEVR_HANDLE(UEVR_InputSourceHandle);
 
 typedef struct {
+    bool active;
+    bool pressed;
+} UEVR_DigitalInputState;
+
+typedef struct {
+    bool active;
+    float value;
+} UEVR_AnalogInputState;
+
+typedef struct {
     bool (*is_runtime_ready)();
     bool (*is_openvr)();
     bool (*is_openxr)();
@@ -628,6 +638,12 @@ typedef struct {
     void (*get_mod_value)(const char* key, char* value, unsigned int value_size);
     void (*save_config)();
     void (*reload_config)();
+    /* SDK 2.41+: append-only controller input API. Older backends have no tail. */
+    const char* (*get_controller_type)(UEVR_InputSourceHandle source);
+    /* Returns byte length excluding NUL. Insufficient buffers receive an empty string. */
+    unsigned int (*get_controller_profile)(UEVR_InputSourceHandle source, char* buffer, unsigned int capacity);
+    void (*get_action_state)(UEVR_ActionHandle action, UEVR_InputSourceHandle source, UEVR_DigitalInputState* out_state);
+    void (*get_action_axis)(UEVR_ActionHandle action, UEVR_InputSourceHandle source, UEVR_AnalogInputState* out_state);
 } UEVR_VRData;
 
 struct lua_State;
