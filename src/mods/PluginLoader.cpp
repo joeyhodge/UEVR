@@ -1364,6 +1364,31 @@ void get_joystick_axis(UEVR_InputSourceHandle source, UEVR_Vector2f* out_axis) {
     out_axis->y = axis.y;
 }
 
+const char* get_controller_type(UEVR_InputSourceHandle source) {
+    return ::VR::get()->get_controller_type((::vr::VRInputValueHandle_t)source);
+}
+
+unsigned int get_controller_profile(UEVR_InputSourceHandle source, char* buffer, unsigned int capacity) {
+    const auto profile = ::VR::get()->get_controller_profile((::vr::VRInputValueHandle_t)source);
+    if (buffer && capacity > 0) {
+        buffer[0] = '\0';
+        if (profile.size() < capacity) { std::memcpy(buffer, profile.c_str(), profile.size() + 1); }
+    }
+    return static_cast<unsigned int>(profile.size());
+}
+
+void get_action_state(UEVR_ActionHandle action, UEVR_InputSourceHandle source, UEVR_DigitalInputState* out_state) {
+    if (!out_state) { return; }
+    const auto state = ::VR::get()->get_action_state((::vr::VRActionHandle_t)action, (::vr::VRInputValueHandle_t)source);
+    *out_state = {state.active, state.pressed};
+}
+
+void get_action_axis(UEVR_ActionHandle action, UEVR_InputSourceHandle source, UEVR_AnalogInputState* out_state) {
+    if (!out_state) { return; }
+    const auto state = ::VR::get()->get_action_axis((::vr::VRActionHandle_t)action, (::vr::VRInputValueHandle_t)source);
+    *out_state = {state.active, state.value};
+}
+
 void trigger_haptic_vibration(float seconds_from_now, float duration, float frequency, float amplitude, UEVR_InputSourceHandle source) {
     ::VR::get()->trigger_haptic_vibration(seconds_from_now, duration, frequency, amplitude, (::vr::VRInputValueHandle_t)source);
 }
@@ -1536,6 +1561,10 @@ UEVR_VRData g_vr_data {
     .get_mod_value = uevr::vr::get_mod_value,
     .save_config = uevr::vr::save_config,
     .reload_config = uevr::vr::reload_config,
+    .get_controller_type = uevr::vr::get_controller_type,
+    .get_controller_profile = uevr::vr::get_controller_profile,
+    .get_action_state = uevr::vr::get_action_state,
+    .get_action_axis = uevr::vr::get_action_axis,
 };
 
 

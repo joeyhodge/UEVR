@@ -378,6 +378,18 @@ foreach(case IN ITEMS reentry lock-order membership lifetime reset owner-reset q
 endforeach()
 """
 
+[target.lua-controller-input-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/LuaControllerInputTests.cpp"]
+link-libraries = ["luavrlib"]
+cmake-after = """
+foreach(case IN ITEMS native openxr-sources legacy missing)
+    add_test(NAME lua-controller-input-${case} COMMAND lua-controller-input-tests ${case} "${CMAKE_CURRENT_SOURCE_DIR}")
+    set_tests_properties(lua-controller-input-${case} PROPERTIES TIMEOUT 30)
+endforeach()
+"""
+
 [template.ue4template]
 type = "shared"
 sources = ["src/**.cpp", "src/**.c"]
