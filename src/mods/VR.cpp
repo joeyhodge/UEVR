@@ -3451,6 +3451,8 @@ bool VR::is_any_action_down() {
     const auto right_joystick = get_right_joystick();
 
     for (auto& it : m_action_handles) {
+        // Passive sensors and the newly exposed grip axis do not steal gamepad focus.
+        if (uevr::steam_frame::passive_input_action(it.first)) { continue; }
         if (it.second == m_action_trigger_axis || it.second == m_action_bumper ||
             it.second == m_action_start_button || it.second == m_action_back_button) {
             const auto frame_mask = get_runtime()->get_frame_controller_mask();
@@ -10096,6 +10098,56 @@ void VR::apply_frame_gamepad_input(XINPUT_GAMEPAD& gamepad) const {
         if (start.active && start.pressed) { gamepad.wButtons |= XINPUT_GAMEPAD_START; }
         if (back.active && back.pressed) { gamepad.wButtons |= XINPUT_GAMEPAD_BACK; }
     }
+}
+
+std::string VR::get_controller_profile(vr::VRInputValueHandle_t source) const {
+    const auto runtime = get_runtime();
+    if (!runtime->loaded || (runtime->is_openvr() && source == vr::k_ulInvalidInputValueHandle)) { return {}; }
+    if (source == m_left_joystick) { return runtime->frame_controller_profiles.profile(0); }
+    if (source == m_right_joystick) { return runtime->frame_controller_profiles.profile(1); }
+    return {};
+}
+
+const char* VR::get_controller_type(vr::VRInputValueHandle_t source) const {
+    const auto runtime = get_runtime();
+    if (!runtime->loaded || (runtime->is_openvr() && source == vr::k_ulInvalidInputValueHandle)) { return "unknown"; }
+    if (source == m_left_joystick) { return runtime->frame_controller_profiles.type(0); }
+    if (source == m_right_joystick) { return runtime->frame_controller_profiles.type(1); }
+    return "unknown";
+}
+
+uevr::steam_frame::DigitalInput VR::get_action_state(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const {
+    if ((get_runtime()->is_openvr() && source == vr::k_ulInvalidInputValueHandle) ||
+        (source != m_left_joystick && source != m_right_joystick) || action == vr::k_ulInvalidActionHandle ||
+        action == m_action_trigger_axis || action == m_action_squeeze || action == m_action_joystick ||
+        action == m_action_pose || action == m_action_grip_pose || action == m_action_haptic) { return {}; }
+    const auto known = std::any_of(m_action_handles.begin(), m_action_handles.end(),
+        [&](const auto& entry) { return entry.second.get() == action; });
+    return known ? uevr::steam_frame::validated_digital(read_digital_input(action, source)) : uevr::steam_frame::DigitalInput{};
+}
+
+uevr::steam_frame::AnalogInput VR::get_action_axis(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const {
+    const auto runtime = get_runtime();
+    if (!runtime->loaded || (source != m_left_joystick && source != m_right_joystick) ||
+        (runtime->is_openvr() && source == vr::k_ulInvalidInputValueHandle) ||
+        action == vr::k_ulInvalidActionHandle || (action != m_action_trigger_axis && action != m_action_squeeze)) { return {}; }
+    if (runtime->is_openvr()) {
+        vr::InputAnalogActionData_t data{};
+        if (vr::VRInput()->GetAnalogActionData(action, &data, sizeof(data), source) == vr::VRInputError_None) {
+            return uevr::steam_frame::validated_axis({data.bActive, data.x});
+        }
+    } else if (runtime->is_openxr() && source <= VRRuntime::Hand::RIGHT) {
+        const auto xr_action = (XrAction)action;
+        if (!m_openxr->action_set.float_actions.contains(xr_action)) { return {}; }
+        XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO};
+        info.action = xr_action;
+        info.subactionPath = m_openxr->hands[source].path;
+        XrActionStateFloat data{XR_TYPE_ACTION_STATE_FLOAT};
+        if (xrGetActionStateFloat(m_openxr->session, &info, &data) == XR_SUCCESS) {
+            return uevr::steam_frame::validated_axis({data.isActive == XR_TRUE, data.currentState});
+        }
+    }
+    return {};
 }
 
 bool VR::is_action_active(vr::VRActionHandle_t action, vr::VRInputValueHandle_t source) const {
