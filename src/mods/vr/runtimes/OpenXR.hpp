@@ -26,6 +26,7 @@
 
 #include "Mod.hpp"
 #include "../MonoRenderingPolicy.hpp"
+#include "../ControllerTouchBindings.hpp"
 
 #include "VRRuntime.hpp"
 
@@ -714,7 +715,7 @@ public:
         std::vector<VectorActivator> vector_activators{};
     };
 
-    static inline std::vector<InteractionBinding> s_bindings_map {
+    static inline std::vector<InteractionBinding> s_bindings_map = uevr::controller_touch::add_openxr_controls<InteractionBinding>({
         {"/user/hand/*/input/aim/pose", "pose"},
         {"/user/hand/*/input/grip/pose", "grippose"},
         {"/user/hand/*/input/trigger", "trigger"}, // oculus?
@@ -755,7 +756,7 @@ public:
         {"/user/hand/*/input/trackpad", "touchpad"}, // vive & others
         {"/user/hand/*/input/trackpad/click", "touchpadclick"}, // vive & others
         {"/user/hand/*/output/haptic", "haptic"}, // most of them
-    };
+    });
 
     static inline std::vector<ActionVectorAssociation> s_action_vector_associations {
         { 

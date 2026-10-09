@@ -2,6 +2,7 @@
 #define NOMINMAX
 
 #include "vr/ProSpiNativeFocusGuard.hpp"
+#include "vr/ControllerTouchBindings.hpp"
 
 #include <fstream>
 #include <cmath>
@@ -4319,6 +4320,11 @@ std::optional<std::string> VR::initialize_openvr_input() {
 
     // write default actions and bindings with the static strings we have
     for (auto& it : m_binding_files) {
+        if (it.first == uevr::controller_touch::openvr_file && std::filesystem::exists(module_directory / it.first) &&
+            !uevr::controller_touch::can_upgrade_saved_defaults(module_directory / it.first, it.second)) {
+            spdlog::info("Keeping customized Touch binding file {}; bind the optional touch actions manually if needed", it.first);
+            continue;
+        }
         if (!uevr::steam_frame::write_default_binding(it.first, std::filesystem::exists(module_directory / it.first))) {
             spdlog::info("Keeping customized Steam Frame binding file {}", it.first);
             continue;
