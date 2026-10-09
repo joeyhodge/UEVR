@@ -81,7 +81,8 @@ private:
 
 inline const char* normalized_controller_type(std::string_view profile) {
     if (profile == controller_type || profile == interaction_profile) { return "frame"; }
-    if (profile == "oculus_touch" || profile == "/interaction_profiles/oculus/touch_controller") { return "touch"; }
+    if (profile == "oculus_touch" || profile == "/interaction_profiles/oculus/touch_controller" ||
+        profile == "/interaction_profiles/meta/touch_controller_plus") { return "touch"; }
     if (profile == "knuckles" || profile == "/interaction_profiles/valve/index_controller") { return "index"; }
     if (profile == "vive_controller" || profile == "/interaction_profiles/htc/vive_controller") { return "vive"; }
     if (profile == "holographic_controller" || profile == "/interaction_profiles/microsoft/motion_controller") { return "wmr"; }

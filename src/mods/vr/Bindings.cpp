@@ -1,5 +1,6 @@
 #include "../VR.hpp"
 #include "SteamFrameBindings.hpp"
+#include "ControllerTouchBindings.hpp"
 
 std::string VR::actions_json = R"(
 {
@@ -259,7 +260,7 @@ std::string VR::binding_rift_json = R"(
    "simulated_actions" : []
 })";
 
-std::string VR::bindings_oculus_touch_json = R"(
+std::string VR::bindings_oculus_touch_json = uevr::controller_touch::make_openvr_defaults(R"(
 {
    "alias_info" : {},
    
@@ -463,7 +464,7 @@ std::string VR::bindings_oculus_touch_json = R"(
    "name" : "oculus_touch",
    "options" : {},
    "simulated_actions" : []
-})";
+})");
 
 std::string VR::binding_vive = R"(
 {
