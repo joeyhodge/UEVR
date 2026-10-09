@@ -1647,6 +1647,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/CVarDiagnostics.hpp"
 	"src/mods/vr/CVarManager.hpp"
 	"src/mods/vr/CompatibilityPolicy.hpp"
+	"src/mods/vr/ControllerTouchBindings.hpp"
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
 	"src/mods/vr/DuneFrameHandoff.hpp"
