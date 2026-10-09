@@ -25,6 +25,8 @@ struct MockInput {
     static inline unsigned calls{};
     static inline bool grip_pressed{}, grip_active{true};
     static inline bool swapped{};
+    static inline bool openxr{}, runtime_ready{true};
+    static inline UEVR_InputSourceHandle observed_source{};
     static inline bool bumper_active{true};
     static inline UEVR_InputSourceHandle left_source{(UEVR_InputSourceHandle)10}, right_source{(UEVR_InputSourceHandle)11};
     static inline std::string left_type{"frame"}, right_type{"frame"};
@@ -61,8 +63,22 @@ struct MockInput {
         params.sdk = &sdk;
         params.lua = &lua;
         lua.add_additional_bindings = [](lua_State*) {};
+        vr.is_runtime_ready = [] { return runtime_ready; };
+        vr.is_openxr = [] { return openxr; };
+        vr.is_openvr = [] { return !openxr; };
         vr.get_left_joystick_source = [] { return swapped ? right_source : left_source; };
         vr.get_right_joystick_source = [] { return swapped ? left_source : right_source; };
+        vr.is_action_active = [](UEVR_ActionHandle, UEVR_InputSourceHandle source) {
+            observed_source = source;
+            return source == left_source || source == right_source;
+        };
+        vr.get_joystick_axis = [](UEVR_InputSourceHandle source, UEVR_Vector2f* out) {
+            observed_source = source;
+            *out = {source == left_source ? 0.25f : 0.75f, 0.5f};
+        };
+        vr.trigger_haptic_vibration = [](float, float, float, float, UEVR_InputSourceHandle source) {
+            observed_source = source;
+        };
         vr.get_action_handle = [](const char* name) {
             return reinterpret_cast<UEVR_ActionHandle>(static_cast<uintptr_t>(std::string_view{name}.ends_with("Grip") ? 20 :
                 std::string_view{name}.ends_with("Bumper") ? 21 : 22));
@@ -125,6 +141,7 @@ int main(int argc, char** argv) {
         const auto mode = std::string_view{argv[1]};
         require(mode == "native" || mode == "openxr-sources" || mode == "legacy" || mode == "missing", "Unknown input test mode");
         if (mode == "openxr-sources") {
+            MockInput::openxr = true;
             MockInput::left_source = nullptr; // OpenXR's physical left hand is source zero.
             MockInput::right_source = (UEVR_InputSourceHandle)1;
         }
@@ -145,6 +162,20 @@ int main(int argc, char** argv) {
         lua["grip"] = (UEVR_ActionHandle)20;
         lua["nan_axis"] = (UEVR_ActionHandle)22;
         lua["large_axis"] = (UEVR_ActionHandle)23;
+        UEVR_Vector2f axis_out{};
+        lua["axis_out"] = &axis_out;
+        script(lua, R"(
+            local vr = uevr.params.vr
+            left_getter, right_getter = vr.get_left_joystick_source, vr.get_right_joystick_source
+            assert(type(left_getter) == 'function' and type(right_getter) == 'function')
+            local source = left_getter()
+            assert(source ~= nil and right_getter() ~= nil)
+            assert(vr.is_action_active(grip, source))
+            vr.get_joystick_axis(source, axis_out)
+            assert(axis_out.x == 0.25 and axis_out.y == 0.5)
+            vr.trigger_haptic_vibration(0, 0.1, 0, 0.25, source)
+        )");
+        require(MockInput::observed_source == MockInput::left_source, "Lua source round-trips through legacy input/haptic consumers");
         script(lua, R"(
             vr = uevr.params.vr
             assert(vr.get_controller_type(left) == (native and 'frame' or 'unknown'))
@@ -163,6 +194,39 @@ int main(int argc, char** argv) {
         )");
         if (!native) { require(MockInput::calls == 0, "old/missing API never calls an appended entry"); }
         require(API::VR::get_controller_type(MockInput::left_source) == (native ? "frame" : "unknown"), "C++ facade uses the same version guard");
+        if (mode == "openxr-sources") {
+            script(lua, R"(
+                local vr = uevr.params.vr
+                assert(left_getter() ~= nil and left_getter() == left_getter())
+                assert(vr.get_controller_type(left_getter()) == 'frame')
+                assert(vr.get_controller_profile(left_getter()) == 'frame_controller')
+                assert(not vr.get_action_state(grip, left_getter()).pressed)
+                assert(not vr.get_action_axis(grip, left_getter()).active)
+                assert(vr.get_controller_type(nil) == 'frame') -- old scripts can still pass the zero source
+                assert(vr.is_action_active(grip, nil))
+                vr.get_joystick_axis(nil, axis_out)
+                assert(axis_out.x == 0.25 and axis_out.y == 0.5)
+                vr.trigger_haptic_vibration(0, 0.1, 0, 0.25, nil)
+            )");
+            MockInput::runtime_ready = false;
+            script(lua, "assert(left_getter() == nil and right_getter() ~= nil)");
+            MockInput::runtime_ready = true;
+            MockInput::openxr = false;
+            script(lua, "assert(left_getter() == nil)"); // missing OpenVR source remains nil
+            MockInput::openxr = true;
+            MockInput::swapped = true;
+            script(lua, R"(
+                local vr = uevr.params.vr
+                assert(vr.get_controller_profile(left_getter()) == '/interaction_profiles/valve/frame_controller_valve')
+                assert(right_getter() ~= nil and vr.get_controller_profile(right_getter()) == 'frame_controller')
+                assert(vr.is_action_active(grip, right_getter()))
+                vr.get_joystick_axis(right_getter(), axis_out)
+                assert(axis_out.x == 0.25 and axis_out.y == 0.5)
+                vr.trigger_haptic_vibration(0, 0.1, 0, 0.25, right_getter())
+            )");
+            require(MockInput::observed_source == MockInput::left_source, "swapped zero source stays the physical left hand");
+            MockInput::swapped = false;
+        }
 
         const auto module_path = std::filesystem::path{argv[2]} / "examples/lua/steam_frame_satisfactory.lua";
         std::ifstream module{module_path};
