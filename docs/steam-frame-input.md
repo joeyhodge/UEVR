@@ -41,13 +41,25 @@ storage. New C/C++ accessors are appended to the 2.40 API, and C++/Lua wrappers
 check the backend version before reading the new tail. Older plugins remain
 compatible; the updated LuaVR bridge also returns neutral input on older backends.
 
+Lua source getters preserve OpenXR's valid zero-valued physical-left source as
+opaque light userdata rather than `nil`, including when hands are swapped. C/C++
+source values and all action/haptic consumers retain their existing ABI. A
+missing OpenVR source or an unready zero source still returns `nil`. Older Lua
+scripts passing `nil` as OpenXR's physical-left source remain compatible.
+
 ## Touch controls
 
 New optional boolean actions are `TriggerTouch`, `GripTouch`, `BumperTouch`,
 `JoystickTouch`, `DPad_UpTouch`, `DPad_RightTouch`, `DPad_DownTouch`,
 `DPad_LeftTouch`, `StartButtonTouch` and `BackButtonTouch`. Prefix them with
 `/actions/default/in/`. Face-button touches retain their existing actions.
-These new actions have native Frame bindings only; other profiles are unchanged.
+Frame retains its native touch bindings. Touch/Quest compatibility profiles also
+bind `TriggerTouch`, `JoystickTouch`, and the optional analog `TriggerAxis` and
+`Squeeze` where the runtime accepts their components. OpenVR Touch additionally
+binds the driver's advertised `GripTouch`, face touches and thumbrest touches.
+OpenXR Touch/Touch Plus do not expose a separate grip-touch component: `GripTouch`
+remains inactive there, not inferred from grip pressure. The actual driver and
+active interaction profile determine availability, not the headset model.
 Touch sensors and the newly exposed squeeze axis do not activate controller
 gamepad-focus detection by themselves. Steam/system buttons are not appropriated.
 This exposes the documented touch states, not arbitrary finger-joint tracking.
@@ -99,6 +111,12 @@ Existing `bindings_frame_controller.json` and custom OpenXR profiles are never
 overwritten. An older/custom file may leave new touch actions unbound; `active`
 will then be false. Opt into the new controls by rebinding them in the runtime,
 or deliberately restoring just the Frame default after preserving customizations.
+OpenVR's `bindings_oculus_touch.json` is upgraded only if the complete saved JSON
+matches the stock old or current defaults. Customized, unreadable, malformed or
+oversized Touch files are preserved; bind the extra actions manually or restore
+just the Touch defaults deliberately. Existing digital/gamepad mappings, poses,
+haptics and controller-focus/spoofing behavior are unchanged. Passive touches and
+the exposed grip axis do not activate spoofing.
 
 Offline tests cover both generated runtime mappings, click/touch parity,
 installed OpenVR driver components, neutral states, mixed/swapped controllers,

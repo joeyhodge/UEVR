@@ -2,6 +2,7 @@
 #include <Windows.h>
 #endif
 #include "mods/vr/SteamFrameBindings.hpp"
+#include "mods/vr/ControllerTouchBindings.hpp"
 
 #include <chrono>
 #include <filesystem>
@@ -28,12 +29,14 @@ std::string read(const std::filesystem::path& path) {
     return text;
 }
 std::string definition(const std::string& source, const std::string& name) {
-    const auto marker = "std::string VR::" + name + " = R\"(";
+    const auto marker = "std::string VR::" + name + " = ";
     const auto start = source.find(marker);
     if (start == std::string::npos) { throw std::runtime_error{"Missing binding definition: " + name}; }
-    const auto end = source.find(")\";", start + marker.size());
+    const auto raw = source.find("R\"(", start + marker.size());
+    if (raw == std::string::npos) { throw std::runtime_error{"Missing raw binding definition"}; }
+    const auto end = source.find(")\"", raw + 3);
     if (end == std::string::npos) { throw std::runtime_error{"Unterminated binding definition"}; }
-    return source.substr(start + marker.size(), end - start - marker.size());
+    return source.substr(raw + 3, end - raw - 3);
 }
 uint64_t hash(std::string_view text) {
     uint64_t value = 14695981039346656037ull;
@@ -163,6 +166,8 @@ void controller_cache() {
         std::string_view{cache.type(0)} == "touch" && cache.profile(1).empty(),
         "late native observations cannot overwrite a newer fallback or disconnected hand");
     expect(cache.profile(2).empty() && std::string_view{cache.type(2)} == "unknown", "invalid hands are neutral");
+    expect(std::string_view{sf::normalized_controller_type("/interaction_profiles/meta/touch_controller_plus")} == "touch",
+        "a reported native Touch Plus controller has the same Lua type without assuming a headset model");
     expect(std::string_view{sf::normalized_controller_type("frame_hmd")} == "unknown", "HMD identity never enables controller input");
     expect(std::string_view{sf::normalized_controller_type(sf::interaction_profile)} == "frame", "OpenXR native profile normalizes to frame");
     const auto unavailable = sf::validated_axis({false, 1.0f});
@@ -334,6 +339,71 @@ void bindings(const std::filesystem::path& root, const std::filesystem::path& dr
         }
     }
 }
+
+void touch_bindings(const std::filesystem::path& root, const std::filesystem::path& driver) {
+    namespace touch = uevr::controller_touch;
+    const auto source = read(root / "src/mods/vr/Bindings.cpp");
+    const auto legacy = json::parse(definition(source, "bindings_oculus_touch_json"));
+    const auto defaults = touch::add_openvr_controls(legacy);
+    const auto text = defaults.dump();
+    expect(touch::remove_added_controls(defaults) == legacy, "Touch additions leave every old input, pose and haptic binding unchanged");
+    expect(touch::add_openvr_controls(defaults) == defaults, "Touch bindings are not added twice");
+    expect(source.find("bindings_oculus_touch_json = uevr::controller_touch::make_openvr_defaults(") != std::string::npos,
+        "production OpenVR defaults use the validated Touch additions");
+    expect(read(root / "src/mods/vr/runtimes/OpenXR.hpp").find("s_bindings_map = uevr::controller_touch::add_openxr_controls<InteractionBinding>(") != std::string::npos,
+        "production OpenXR suggestions include the optional Touch controls");
+    struct Binding { std::string path, action; };
+    const auto xr = touch::add_openxr_controls<Binding>({{"/original", "original"}});
+    expect(xr.size() == 1 + touch::openxr_bindings.size() && xr.front().path == "/original",
+        "OpenXR additions preserve original suggestions and their order");
+    std::map<std::string, std::string> actions;
+    const auto manifest = json::parse(definition(source, "actions_json"));
+    for (const auto& action : manifest["actions"]) {
+        actions[lower(action.at("name").get<std::string>())] = action.at("type");
+    }
+    for (const auto& item : touch::openxr_bindings) {
+        const auto output = std::string{"/actions/default/in/"} + std::string{item.action};
+        expect(actions.at(output) == (item.path.ends_with("/value") ? "vector1" : "boolean"),
+            "OpenXR Touch components and action types agree");
+        expect(item.path != "/user/hand/*/input/squeeze/touch", "OpenXR Touch grip sensing is never fabricated from pressure");
+    }
+    const auto& sources = defaults.at("bindings").at("/actions/default").at("sources");
+    const auto driver_profile = driver.empty() ? json{} : json::parse(read(driver));
+    for (const auto& binding : touch::openvr_bindings) {
+        const auto item = std::find_if(sources.begin(), sources.end(), [&](const json& s) {
+            return s.at("path").get_ref<const std::string&>() == binding.path &&
+                s.at("mode").get_ref<const std::string&>() == binding.mode;
+        });
+        expect(item != sources.end(), "each optional Touch control is bound");
+        if (item == sources.end()) { continue; }
+        const auto output = std::string{"/actions/default/in/"} + std::string{binding.action};
+        expect(item->at("inputs").at(std::string{binding.input}).at("output") == output &&
+            actions.at(output) == (binding.input == "pull" ? "vector1" : "boolean"), "OpenVR Touch output and type are correct");
+        if (!driver.empty()) {
+            const auto tail = std::string{binding.path.substr(binding.path.find("/input/"))};
+            const auto& component = driver_profile.at("input_source").at(tail);
+            expect(component.value(std::string{binding.input == "pull" ? "value" : binding.input}, false),
+                "the installed SteamVR Touch driver advertises the added component");
+            if (component.contains("side")) {
+                expect(binding.path.starts_with("/user/hand/" + component.at("side").get<std::string>() + '/'),
+                    "Touch face inputs use their correct physical hand");
+            }
+        }
+    }
+    expect(touch::can_upgrade_saved_defaults(std::string_view{legacy.dump()}, text), "only stock old Touch defaults are upgraded automatically");
+    expect(touch::can_upgrade_saved_defaults(std::string_view{text}, text), "current stock Touch defaults remain recognized");
+    auto custom = legacy;
+    custom["bindings"]["/actions/default"]["sources"][0]["inputs"]["pull"]["output"] = "/actions/default/in/triggeraxis";
+    expect(!touch::can_upgrade_saved_defaults(std::string_view{custom.dump()}, text), "custom mappings are preserved, not silently merged or replaced");
+    custom = defaults;
+    custom["name"] = "My Touch profile";
+    expect(!touch::can_upgrade_saved_defaults(std::string_view{custom.dump()}, text), "custom profile metadata is preserved");
+    expect(!touch::can_upgrade_saved_defaults(std::string_view{"{"}, text), "malformed saved files remain untouched");
+    const std::string oversized(touch::max_saved_binding_bytes + 1, ' ');
+    expect(!touch::can_upgrade_saved_defaults(std::string_view{oversized}, text), "saved profile reads are bounded");
+    const std::string deep = std::string(32, '[') + "0" + std::string(32, ']');
+    expect(!touch::can_upgrade_saved_defaults(std::string_view{deep}, text), "excessively nested saved profiles fail closed");
+}
 }
 
 int main(int argc, char** argv) {
@@ -344,6 +414,7 @@ int main(int argc, char** argv) {
         controller_cache();
         custom_bindings();
         bindings(argv[1], argc > 2 ? std::filesystem::path{argv[2]} : std::filesystem::path{});
+        touch_bindings(argv[1], argc > 3 ? std::filesystem::path{argv[3]} : std::filesystem::path{});
         if (failures == 0) { std::cout << "Steam Frame input tests passed\n"; }
     } catch (const std::exception& error) { ++failures; std::cerr << error.what() << '\n'; }
     return failures == 0 ? 0 : 1;

@@ -19,6 +19,20 @@
 #include "ScriptContext.hpp"
 
 namespace uevr {
+namespace {
+auto lua_input_source(const UEVR_VRData& vr, UEVR_InputSourceHandle (*get_source)()) {
+    return sol::as_function([get_source, ready = vr.is_runtime_ready, openxr = vr.is_openxr](sol::this_state state) -> sol::object {
+        const auto source = get_source ? get_source() : nullptr;
+        // OpenXR's valid physical-left source is zero, not a missing pointer.
+        // Preserve its value without changing C API numbering or other handles.
+        if (source == nullptr && get_source && ready && openxr && ready() && openxr()) {
+            return sol::make_object(state, sol::lightuserdata_value{nullptr});
+        }
+        return sol::make_object(state, source);
+    });
+}
+}
+
 class ScriptContexts {
 public:
     void add(std::shared_ptr<ScriptContext> ctx) {
@@ -467,8 +481,8 @@ int ScriptContext::setup_bindings() {
         "get_transform", &UEVR_VRData::get_transform,
         "get_eye_offset", &UEVR_VRData::get_eye_offset,
         "get_ue_projection_matrix", &UEVR_VRData::get_ue_projection_matrix,
-        "get_left_joystick_source", &UEVR_VRData::get_left_joystick_source,
-        "get_right_joystick_source", &UEVR_VRData::get_right_joystick_source,
+        "get_left_joystick_source", sol::property([](const UEVR_VRData& vr) { return lua_input_source(vr, vr.get_left_joystick_source); }),
+        "get_right_joystick_source", sol::property([](const UEVR_VRData& vr) { return lua_input_source(vr, vr.get_right_joystick_source); }),
         "get_action_handle", &UEVR_VRData::get_action_handle,
         "is_action_active", &UEVR_VRData::is_action_active,
         "get_joystick_axis", &UEVR_VRData::get_joystick_axis,
