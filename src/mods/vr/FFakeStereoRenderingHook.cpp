@@ -87,6 +87,7 @@
 #include "DuneFrameHandoff.hpp"
 #include "DuneFrameHandoffDiscovery.hpp"
 #include "DuneRendererAbi.hpp"
+#include "DuneNativeTransaction.hpp"
 #include "HalloweenRenderTargets.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "GalacticRacerNativeFix.hpp"
@@ -9537,6 +9538,46 @@ bool dune_frame_handoff_enabled() {
         runtime != nullptr &&
         uevr::dune_frame::enabled(validated_dune_frame_handoff(), g_framework->is_dx12(),
             runtime->is_openxr(), vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled());
+}
+
+bool dune_native_transaction_runtime() {
+    const auto& vr = VR::get();
+    const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
+    if (g_framework == nullptr || runtime == nullptr || !g_framework->is_dx12() ||
+        !runtime->is_openxr() || !vr->is_using_native_stereo() || !vr->is_native_stereo_fix_enabled()) { return false; }
+    static const bool matches = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        const auto version = sdk::get_file_version_info();
+        return path && uevr::games::is_dune_ue521_frame_handoff_runtime(
+            *path, version.dwFileVersionMS, version.dwFileVersionLS);
+    }();
+    return matches;
+}
+
+bool validated_dune_native_view_layout() {
+    static const bool validated = [] {
+        const auto constructor = sdk::FSceneView::get_constructor_address();
+        if (!constructor) { return false; }
+        DWORD64 owner{};
+        const auto fn = RtlLookupFunctionEntry(*constructor, &owner, nullptr);
+        if (!fn || owner != reinterpret_cast<uintptr_t>(utility::get_executable()) ||
+            owner + fn->BeginAddress != *constructor || fn->EndAddress <= fn->BeginAddress ||
+            fn->EndAddress - fn->BeginAddress > uevr::dune_native::maximum_constructor_bytes) { return false; }
+        std::array<uint8_t, uevr::dune_native::maximum_constructor_bytes> code{};
+        const auto size = fn->EndAddress - fn->BeginAddress;
+        const bool valid = is_executable_process_range(*constructor, size) &&
+            read_dune_frame_memory(*constructor, code.data(), size) &&
+            uevr::dune_native::valid_constructor(std::span{code}.first(size));
+        SPDLOG_INFO("[Dune][NativeStereoFix] Constructor-owned eye layout proof={} constructor={:x}", valid, *constructor);
+        return valid;
+    }();
+    return validated;
+}
+
+bool write_dune_native_pass(uintptr_t address, const void* value, size_t size) {
+    if (size != sizeof(uint32_t) || !is_writable_process_range(address, size)) { return false; }
+    std::memcpy(reinterpret_cast<void*>(address), value, size);
+    return true;
 }
 
 bool valid_dune_frame_object(uintptr_t object) {
@@ -22953,10 +22994,12 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 uevr::satisfactory::use_modular_renderer(uevr::satisfactory::is_current_runtime(),
                     g_framework != nullptr && g_framework->is_dx12(), vr->is_native_stereo_fix_enabled());
             const bool swgr_preserve_secondary_pass = swgr_ue574_dx12_runtime();
+            const bool dune_preserve_secondary_pass = dune_native_transaction_runtime();
             const bool preserve_secondary_pass =
                 hellblade_preserve_secondary_pass ||
                 satisfactory_preserve_secondary_pass ||
                 swgr_preserve_secondary_pass ||
+                dune_preserve_secondary_pass ||
                 (is_ue55_or_newer &&
                  vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
                  !vr->should_force_native_stereo_fix_same_pass() &&
@@ -22965,6 +23008,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 !hellblade_preserve_secondary_pass &&
                 !satisfactory_preserve_secondary_pass &&
                 !swgr_preserve_secondary_pass &&
+                !dune_preserve_secondary_pass &&
                 (force_primary_constructor_pass ||
                  (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass));
 
@@ -22987,6 +23031,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             } else if (swgr_preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[SWGR][NativeStereoFix] Preserving the constructor eye pair and packed rectangles; adaptation is confined to the validated linked renderer call");
+            } else if (dune_preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE(
+                    "[Dune][NativeStereoFix] Preserving the constructor eye pair for learning and transition fallback; PRIMARY adaptation is confined to the right singleton render");
             } else if (preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
@@ -26218,6 +26265,24 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         g_framework != nullptr &&
         g_framework->is_dx12();
 
+    const bool use_dune_singleton_transaction = dune_native_transaction_runtime();
+    uevr::dune_native::SingletonPrimary dune_singleton{read_dune_frame_memory, write_dune_native_pass};
+    if (use_dune_singleton_transaction &&
+        (!vr->is_native_stereo_fix_same_pass_enabled() || !validated_dune_frame_handoff() ||
+         !validated_dune_native_view_layout() ||
+         !is_writable_process_range(reinterpret_cast<uintptr_t>(native_right_view) + uevr::dune_native::pass_offset, sizeof(uint32_t)) ||
+         !dune_singleton.prepare(true, reinterpret_cast<uintptr_t>(view_family),
+             reinterpret_cast<uintptr_t>(native_left_view), reinterpret_cast<uintptr_t>(native_right_view),
+             reinterpret_cast<uintptr_t>(native_left_metadata.state), reinterpret_cast<uintptr_t>(native_right_metadata.state),
+             native_capture_snapshot->generation)))
+    {
+        g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+            "Dune singleton eye layout, frame handoff or Same Pass contract is unavailable");
+        SPDLOG_WARNING_EVERY_N_SEC(2, "[Dune][NativeStereoFix] Preserving the original eye pair: singleton transaction did not validate");
+        call_original();
+        return;
+    }
+
     const auto runtime_frame_count = runtime->internal_frame_count;
 
     // The second render must consume the same runtime pose assignment as the
@@ -26396,7 +26461,23 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
     } else {
-        render_secondary_view();
+        if (use_dune_singleton_transaction) {
+            if (view_family->get_render_target() != rtfrt || view_family->get_scene_interface() != view_family_scene ||
+                !dune_singleton.apply(rtm->get_scene_capture_generation())) {
+                g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                    "Dune right singleton changed after the primary renderer call");
+                return;
+            }
+            SPDLOG_INFO_ONCE("[Dune][NativeStereoFix] Adapting only the validated right singleton during its renderer call; constructor pair and exposure remain authored");
+            render_secondary_view();
+            if (!dune_singleton.restore()) {
+                g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                    "Dune secondary pass could not be restored after its renderer call");
+                return;
+            }
+        } else {
+            render_secondary_view();
+        }
     }
     stalker_secondary_frame = stalker_family_frame();
 
