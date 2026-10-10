@@ -559,6 +559,94 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target stock-frame-migration-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET stock-frame-migration-tests)
+	set(stock-frame-migration-tests_SOURCES "")
+
+	list(APPEND stock-frame-migration-tests_SOURCES
+		"tests/StockFrameMigrationTests.cpp"
+	)
+
+	list(APPEND stock-frame-migration-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${stock-frame-migration-tests_SOURCES})
+	add_executable(stock-frame-migration-tests)
+
+	if(stock-frame-migration-tests_SOURCES)
+		target_sources(stock-frame-migration-tests PRIVATE ${stock-frame-migration-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT stock-frame-migration-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${stock-frame-migration-tests_SOURCES})
+
+	target_compile_features(stock-frame-migration-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(stock-frame-migration-tests PRIVATE
+		"src/"
+	)
+
+	target_link_libraries(stock-frame-migration-tests PRIVATE
+		nlohmann_json
+	)
+
+	add_test(NAME stock-frame-migration-tests COMMAND stock-frame-migration-tests)
+	set_tests_properties(stock-frame-migration-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
+# Target gamepad-recovery-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET gamepad-recovery-tests)
+	set(gamepad-recovery-tests_SOURCES "")
+
+	list(APPEND gamepad-recovery-tests_SOURCES
+		"tests/GamepadRecoveryTests.cpp"
+	)
+
+	list(APPEND gamepad-recovery-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${gamepad-recovery-tests_SOURCES})
+	add_executable(gamepad-recovery-tests)
+
+	if(gamepad-recovery-tests_SOURCES)
+		target_sources(gamepad-recovery-tests PRIVATE ${gamepad-recovery-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT gamepad-recovery-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${gamepad-recovery-tests_SOURCES})
+
+	target_compile_features(gamepad-recovery-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(gamepad-recovery-tests PRIVATE
+		"src/"
+	)
+
+	add_test(NAME gamepad-recovery-tests COMMAND gamepad-recovery-tests "${CMAKE_CURRENT_SOURCE_DIR}")
+	set_tests_properties(gamepad-recovery-tests PROPERTIES TIMEOUT 30)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target diagnostic-safety-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET diagnostic-safety-tests)
@@ -1660,6 +1748,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/GalacticRacerNativeFixCode.hpp"
 	"src/mods/vr/GalacticRacerOwnedTexture.hpp"
 	"src/mods/vr/GalacticRacerRenderTargets.hpp"
+	"src/mods/vr/GamepadRecovery.hpp"
 	"src/mods/vr/HalloweenNativeFix.hpp"
 	"src/mods/vr/HalloweenRenderTargets.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
@@ -1697,6 +1786,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/SteamFrameBindings.hpp"
 	"src/mods/vr/SteamFrameInput.hpp"
 	"src/mods/vr/StellarBladeRendererEntry.hpp"
+	"src/mods/vr/StockFrameBindingMigration.hpp"
 	"src/mods/vr/UE57SlateSymbols.hpp"
 	"src/mods/vr/UE58OwnedUITexture.hpp"
 	"src/mods/vr/UE58UIInitialization.hpp"
