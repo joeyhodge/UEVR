@@ -1,6 +1,8 @@
 #include "mods/vr/DuneFrameHandoff.hpp"
+#include "DuneFrameHandoffDiscoveryTests.hpp"
 
 void test_dune_frame_handoff() {
+    test_dune_frame_handoff_discovery();
     namespace d = uevr::dune_frame;
     for (const auto path : {
              L"C:\\XboxGames\\Dune- Awakening\\Content\\DuneSandbox\\Binaries\\WinGDK\\DuneSandbox-WinGDK-Shipping.exe",
