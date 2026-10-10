@@ -85,6 +85,8 @@
 #include "SatisfactoryRuntime.hpp"
 #include "SifuMeshCommands.hpp"
 #include "DuneFrameHandoff.hpp"
+#include "DuneFrameHandoffDiscovery.hpp"
+#include "DuneRendererAbi.hpp"
 #include "HalloweenRenderTargets.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "GalacticRacerNativeFix.hpp"
@@ -9431,6 +9433,40 @@ bool read_dune_frame_memory(uintptr_t address, void* output, size_t size) {
     return true;
 }
 
+std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies();
+bool dune_callback_code_belongs_to_entry(uintptr_t entry, uintptr_t code, size_t size);
+
+std::optional<uintptr_t> find_unique_dune_code_pattern(HMODULE module, const std::string& pattern) {
+    const auto base = reinterpret_cast<uintptr_t>(module);
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (!read_dune_frame_memory(base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew <= 0 || dos.e_lfanew > 0x1000 ||
+        !read_dune_frame_memory(base + dos.e_lfanew, &nt, sizeof(nt)) ||
+        nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC ||
+        nt.FileHeader.SizeOfOptionalHeader != sizeof(IMAGE_OPTIONAL_HEADER64) ||
+        nt.FileHeader.NumberOfSections == 0 || nt.FileHeader.NumberOfSections > 96) { return {}; }
+    const uevr::dune_frame::CodeImage image{base, nt.OptionalHeader.SizeOfImage};
+    const auto sections = base + dos.e_lfanew + sizeof(nt);
+    if (!image.contains(sections, nt.FileHeader.NumberOfSections * sizeof(IMAGE_SECTION_HEADER))) { return {}; }
+    std::optional<uintptr_t> result{};
+    for (uint16_t i = 0; i < nt.FileHeader.NumberOfSections; ++i) {
+        IMAGE_SECTION_HEADER section{};
+        if (!read_dune_frame_memory(sections + i * sizeof(section), &section, sizeof(section))) { return {}; }
+        constexpr auto code_flags = IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_CNT_CODE;
+        if ((section.Characteristics & code_flags) != code_flags) { continue; }
+        const auto length = std::max(section.Misc.VirtualSize, section.SizeOfRawData);
+        const auto start = base + section.VirtualAddress;
+        if (!image.contains(start, length) || !is_executable_process_range(start, length) ||
+            !is_readable_process_range(start, length)) { return {}; }
+        if (const auto match = utility::scan(start, length, pattern)) {
+            if (result || utility::scan(*match + 1, start + length - *match - 1, pattern)) { return {}; }
+            result = match;
+        }
+    }
+    return result;
+}
+
 bool validated_dune_frame_handoff() {
     static const bool validated = [] {
         const auto module = utility::get_executable();
@@ -9445,8 +9481,51 @@ bool validated_dune_frame_handoff() {
             dos.e_lfanew <= 0 || dos.e_lfanew > 0x1000 ||
             !read_dune_frame_memory(base + dos.e_lfanew, &nt, sizeof(nt)) ||
             nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) { return false; }
-        return uevr::dune_frame::validate_binary(base, nt.FileHeader.TimeDateStamp,
-            nt.OptionalHeader.SizeOfImage, read_dune_frame_memory);
+        if (uevr::dune_frame::validate_binary(base, nt.FileHeader.TimeDateStamp,
+                nt.OptionalHeader.SizeOfImage, read_dune_frame_memory)) { return true; }
+
+        // One-time, read-only discovery. Follow verified calls rather than
+        // substituting another update's RVAs or running scans in frame callbacks.
+        const auto renderer = resolve_dune_begin_rendering_viewfamilies();
+        const auto bridge = find_unique_dune_code_pattern(module, uevr::dune_frame::bridge_pattern());
+        std::array<uint8_t, uevr::dune_renderer::maximum_abi_bytes> renderer_code{};
+        if (!renderer || !bridge || !read_dune_frame_memory(*renderer, renderer_code.data(), renderer_code.size())) {
+            SPDLOG_WARN("[Dune][FrameHandoff] Missing readable renderer or unique command bridge; RDG handoff remains disabled (renderer={} bridge={})",
+                renderer.has_value(), bridge.has_value());
+            return false;
+        }
+        const uevr::dune_frame::CodeImage image{base, nt.OptionalHeader.SizeOfImage};
+        const auto entry = [&](uintptr_t address, size_t minimum) {
+            DWORD64 owner{};
+            const auto function = RtlLookupFunctionEntry(address, &owner, nullptr);
+            return function && owner == base && base + function->BeginAddress == address &&
+                function->EndAddress > function->BeginAddress &&
+                function->EndAddress - function->BeginAddress >= minimum &&
+                function->EndAddress - function->BeginAddress <= 0x4000 &&
+                image.contains(address, function->EndAddress - function->BeginAddress) &&
+                is_executable_process_range(address, minimum);
+        };
+        const auto containing_function = [&](uintptr_t address, size_t size) {
+            DWORD64 owner{};
+            const auto function = RtlLookupFunctionEntry(address, &owner, nullptr);
+            return function && owner == base && address >= base + function->BeginAddress &&
+                function->EndAddress > function->BeginAddress &&
+                address - base < function->EndAddress && size <= function->EndAddress - (address - base);
+        };
+        const auto read_code = [&](uintptr_t address, void* output, size_t size) {
+            return image.contains(address, size) && is_executable_process_range(address, size) &&
+                read_dune_frame_memory(address, output, size);
+        };
+        const std::array bridges{*bridge};
+        const auto proof = uevr::dune_frame::discover_contract(image, *renderer, renderer_code, bridges,
+            read_code, entry, containing_function, dune_callback_code_belongs_to_entry);
+        if (proof) {
+            SPDLOG_INFO("[Dune][FrameHandoff] Validated relocatable contract: renderer={:x} bridge={:x} graph={:x} callbacks={:x}",
+                *renderer, proof->bridge, proof->graph_constructor, proof->dispatcher);
+        } else {
+            SPDLOG_WARN("[Dune][FrameHandoff] Updated image failed structural proof; RDG handoff remains disabled");
+        }
+        return proof.has_value();
     }();
     return validated;
 }
@@ -9777,6 +9856,12 @@ std::optional<RuntimeFunctionRange> get_canonical_runtime_function_range(uintptr
     }
 
     return std::nullopt;
+}
+
+bool dune_callback_code_belongs_to_entry(uintptr_t entry, uintptr_t code, size_t size) {
+    const auto range = get_canonical_runtime_function_range(code);
+    return range && range->image_base == reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr)) &&
+        range->begin == entry && code >= range->begin && code < range->end && size <= range->end - code;
 }
 
 bool direct_call_returns_to(uintptr_t return_address, uintptr_t expected_target) {
@@ -10934,9 +11019,9 @@ bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
     const auto game_module = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const auto function = get_runtime_function_range(target);
 
-    // Current Dune builds split this renderer body across adjacent unwind
-    // ranges; the entry range is 0x1f1 bytes even though execution continues
-    // into the next range. Only the entry prologue is needed for the ABI proof.
+    // Earlier Dune builds split this body across adjacent unwind ranges.
+    // Stay within the callable entry range; newer register allocations also
+    // need the array bounds/frame store, still bounded to the first 0x400 bytes.
     constexpr size_t minimum_entry_size = 0x40;
     constexpr size_t maximum_entry_size = 0x4000;
     if (!function || function->begin != target || function->image_base != game_module ||
@@ -10945,28 +11030,10 @@ bool validate_dune_begin_rendering_viewfamilies_target(uintptr_t target) {
         return false;
     }
 
-    // Dune's UE5.2 implementation consumes the TArrayView passed in R8 at the
-    // start of the plural function: its data pointer is at +0 and count at +8.
-    // The retail build reads those fields directly from R8, while the public
-    // test build first preserves R8 in RDI. Require the alias assignment and
-    // both field reads for the latter so either compiler allocation proves the
-    // same ABI without weakening the exact-wrapper resolver.
-    const auto validation_size = std::min<size_t>(function->size(), 0x100);
-    const auto direct_data_read = utility::scan(target, validation_size, "4D 8B 20");
-    const auto direct_count_read = utility::scan(target, validation_size, "49 63 40 08");
-    const auto direct_r8_layout =
-        direct_data_read.has_value() && direct_count_read.has_value() &&
-        *direct_data_read < *direct_count_read;
-    const auto preserve_r8_in_rdi = utility::scan(target, validation_size, "49 8B F8");
-    const auto preserved_data_read = utility::scan(target, validation_size, "4C 8B 27");
-    const auto preserved_count_read = utility::scan(target, validation_size, "48 63 47 08");
-    const auto preserved_rdi_layout =
-        preserve_r8_in_rdi.has_value() && preserved_data_read.has_value() &&
-        preserved_count_read.has_value() &&
-        *preserve_r8_in_rdi < *preserved_data_read &&
-        *preserved_data_read < *preserved_count_read;
-
-    return direct_r8_layout || preserved_rdi_layout;
+    std::array<uint8_t, uevr::dune_renderer::maximum_abi_bytes> code{};
+    const auto size = std::min(function->size(), code.size());
+    return read_dune_frame_memory(target, code.data(), size) &&
+        uevr::dune_renderer::valid_array_view_abi(std::span{code}.first(size));
 }
 
 std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
@@ -10988,7 +11055,7 @@ std::optional<uintptr_t> resolve_dune_begin_rendering_viewfamilies() {
             "48 83 C4 38 C3";
         constexpr size_t call_offset = 0x2C;
 
-        const auto wrapper = utility::scan(module, wrapper_pattern);
+        const auto wrapper = find_unique_dune_code_pattern(module, wrapper_pattern);
         if (!wrapper) {
             SPDLOG_ERROR(
                 "[Dune][NativeStereoFix] Refusing activation: the verified singular BeginRenderingViewFamily wrapper was not found");
