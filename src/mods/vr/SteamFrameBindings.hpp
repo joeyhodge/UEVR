@@ -67,7 +67,16 @@ CustomBindings parse_custom_bindings(const nlohmann::json& j, ActionKind&& actio
     return candidate;
 }
 
-inline nlohmann::json make_openvr_bindings() {
+// The initial stock file predates these optional touch actions. Keep its source
+// order intact so migration never mistakes a partially edited file for stock.
+constexpr bool is_added_touch_action(std::string_view action) {
+    return action == "triggertouch" || action == "griptouch" || action == "bumpertouch" ||
+        action == "joysticktouch" || action == "dpad_uptouch" || action == "dpad_righttouch" ||
+        action == "dpad_downtouch" || action == "dpad_lefttouch" || action == "backbuttontouch" ||
+        action == "startbuttontouch";
+}
+
+inline nlohmann::json make_openvr_bindings(bool include_added_touch_actions = true) {
     using nlohmann::json;
     json result{
         {"controller_type", controller_type},
@@ -94,7 +103,8 @@ inline nlohmann::json make_openvr_bindings() {
     // Derive both runtime defaults from one logical mapping. OpenVR uses grip,
     // not OpenXR's squeeze, and a source mode selects click/touch/pull components.
     for (const auto& binding : openxr_bindings) {
-        if (binding.action == "pose" || binding.action == "grippose" || binding.action == "haptic") {
+        if (binding.action == "pose" || binding.action == "grippose" || binding.action == "haptic" ||
+            (!include_added_touch_actions && is_added_touch_action(binding.action))) {
             continue;
         }
         auto path = std::string{binding.path};
