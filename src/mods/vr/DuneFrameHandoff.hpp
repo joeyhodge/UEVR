@@ -8,7 +8,7 @@
 
 namespace uevr::dune_frame {
 
-// September 24 shipping image. A new image must prove these contracts again.
+// September 24 fast path. Other images need the independent relocatable proof.
 inline constexpr uint32_t image_timestamp = 0x6AB3D64E;
 inline constexpr uint32_t image_size = 0x0D7C1000;
 inline constexpr uint32_t family_slot = 7;
@@ -34,7 +34,8 @@ inline constexpr std::array<uint8_t, 21> command_link{
 
 template <typename Read>
 bool validate_binary(uintptr_t base, uint32_t timestamp, uint32_t size, Read&& read) {
-    if (!base || timestamp != image_timestamp || size != image_size) { return false; }
+    if (!base || timestamp != image_timestamp || size != image_size ||
+        base > std::numeric_limits<uintptr_t>::max() - size) { return false; }
     const auto matches = [&](uint32_t rva, const auto& expected) {
         auto bytes = expected;
         return read(base + rva, bytes.data(), bytes.size()) && bytes == expected;
