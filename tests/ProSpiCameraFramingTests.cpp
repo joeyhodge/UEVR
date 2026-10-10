@@ -183,6 +183,66 @@ void check_focus_endpoint(const fg::Request& r, const trace::NativeSource& s, co
         "Focus guard endpoint lost authored point");
     require(std::abs(f.depth - d.target_depth) < .01f, "Reported focus depth disagrees with geometry");
 }
+void current_near_home_height_guards() {
+    // Recorded Oct 9 rig/telephoto range; focus is a synthetic validated source,
+    // not a claim that the old unsupported-layout recording captured its target.
+    for (const auto fov : {7.0f, 8.0f, 8.01f, 10.5f, 12.0f}) {
+        for (const auto pitch : {3.0f, 3.5f, 4.0f}) {
+            auto r = focus_request(); r.camera.rotation = {pitch, 102.5f, 0}; r.camera.fov = fov;
+            const auto s = std::sin(pitch * .017453292519943295f);
+            r.predicted_z = r.camera.location[2] - s * r.dolly;
+            r.lift = r.floor - r.predicted_z;
+            const auto source = focus_source(r, 5500);
+            const auto d = fg::evaluate(r, source);
+            require(fg::eligible(r) && d.status == fg::Status::signed_height && d.dolly == r.dolly && d.lift == 0 &&
+                d.end_z >= r.floor + 2, "Marked upward telephoto rig retained unsigned safety lift");
+            check_focus_endpoint(r, source, d);
+            auto unavailable = source; unavailable.status = trace::SourceStatus::unsupported_layout;
+            const auto original = fg::evaluate(r, unavailable);
+            require(!original.applied() && original.dolly == r.dolly && original.lift == r.lift,
+                "Telephoto envelope correction bypassed source validation");
+            r.protected_camera = true;
+            require(!fg::eligible(r) && !fg::evaluate(r, source).applied(), "Protected telephoto shot changed");
+        }
+    }
+    auto r = focus_request(); r.camera.fov = 10.5f; r.camera.rotation = {3.5f, 102.5f, 0};
+    const auto fallback = [](const fg::Request& other) {
+        const auto d = fg::evaluate(other, focus_source(other, 5500));
+        require(!fg::eligible(other) && !d.applied() && d.dolly == other.dolly && d.lift == other.lift,
+            "Near-home extension affected an unrelated camera");
+    };
+    auto outside = r; outside.zone = 4; outside.camera.location = {-4000, -6000, 50};
+    outside.camera.rotation[1] = 56; fallback(outside);
+    for (auto yaw : {74.99f, 125.01f}) { outside = r; outside.camera.rotation[1] = yaw; fallback(outside); }
+    outside = r; outside.camera.fov = 12.01f; fallback(outside);
+    outside = r; outside.camera.location[2] = 151; fallback(outside);
+    outside = r; outside.camera.rotation[0] = -.1f; fallback(outside);
+    outside = r; outside.camera.location[1] = -2700; fallback(outside);
+}
+void current_marked_height_fixtures(const Json& fixtures) {
+    require(fixtures.at("samples").size() == 12, "Marked-cut fixture coverage changed");
+    float highest_before{}, highest_after{};
+    for (const auto& sample : fixtures.at("samples")) {
+        auto r = focus_request(); const auto p = read_pose(sample.at("input"));
+        r.camera = {p.location, p.rotation, p.fov, 0, 0, true};
+        r.dolly = sample.at("dolly_after"); r.lift = sample.at("safety_up");
+        r.predicted_z = sample.at("safety_predicted_z"); r.floor = sample.at("safety_min_z");
+        r.max_lift = sample.at("safety_max_up"); r.base_fov = sample.at("base_fov");
+        const auto source = focus_source(r, 5500); // Synthetic target; old trace has no valid native source.
+        const auto d = fg::evaluate(r, source);
+        require(fg::eligible(r) && d.status == fg::Status::signed_height && d.dolly == r.dolly && d.lift == 0,
+            "Actual marked-positive-pitch cut retained the erroneous safety lift");
+        check_focus_endpoint(r, source, d);
+        const auto before = focus_endpoint(r, {.dolly = r.dolly, .lift = r.lift}, source.pose.aspect);
+        highest_before = (std::max)(highest_before, before.location[2]);
+        highest_after = (std::max)(highest_after, d.end_z);
+        auto protected_shot = r; protected_shot.protected_camera = true;
+        const auto old = fg::evaluate(protected_shot, source);
+        require(!old.applied() && old.dolly == r.dolly && old.lift == r.lift, "Protected marked shot changed");
+    }
+    require(highest_before > 500 && highest_after < 250, "Marked-cut signed-height regression not exercised");
+    std::cout << "Actual marked-cut inputs: 12, synthetic-source max height=" << highest_before << " -> " << highest_after << " cm\n";
+}
 void native_focus_guards() {
     const auto base = focus_request();
     const auto source = focus_source(base);
@@ -377,6 +437,80 @@ void close_focus_guards() {
         }
     }
     require(applied > 1000 && negative > 100 && increases > 100, "Insufficient signed close-camera coverage");
+}
+
+void baseline_focus_guards() {
+    auto r = focus_request();
+    r.camera = {{3500, -1500, 0}, {-5, 110, 0}, 10, 0, 0, true};
+    r.close_camera = true; r.baseline_camera = true; r.dolly = 881.2f; r.lift = 400; r.predicted_z = -76.8f;
+    auto s = focus_source(r, 1000);
+    auto d = fg::evaluate(r, s);
+    require(fg::eligible(r) && d.applied() && d.dolly < r.dolly && d.lift < r.lift,
+        "First-base yaw gap lost the validated authored focus");
+    check_focus_endpoint(r, s, d);
+    auto historical = r; historical.baseline_camera = false;
+    require(!fg::eligible(historical) && !fg::evaluate(historical, s).applied(),
+        "Historical close-rig recognition changed without baseline capability");
+
+    r.camera.location[0] = -3500; r.camera.rotation[1] = -100;
+    s = focus_source(r, 1000); d = fg::evaluate(r, s);
+    require(d.applied(), "Third-base yaw gap lost authored focus");
+    check_focus_endpoint(r, s, d);
+    for (float x : {-3500.0f, 3500.0f}) {
+        for (float yaw : {-170.0f, -100.0f, -45.1f, -45.0f, 0.0f, 110.0f, 124.9f, 125.0f, 170.0f}) {
+            r.camera = {{x, -1500, 200}, {-8, yaw, 0}, 10, 0, 0, true};
+            r.dolly = 300; r.lift = 20; r.predicted_z = 200 + std::sin(-8 * .01745329252f) * r.dolly;
+            s = focus_source(r, 900); d = fg::evaluate(r, s);
+            require(d.status == fg::Status::unchanged && d.dolly == r.dolly && d.lift == r.lift,
+                "Already-good low action zoom changed across a baseline pan");
+        }
+    }
+
+    r.camera = {{3500, -1500, 0}, {5, 110, 0}, 10, 0, 0, true};
+    r.dolly = 1400; r.lift = 300; r.predicted_z = -122;
+    s = focus_source(r, 3000); d = fg::evaluate(r, s);
+    require(d.applied() && d.dolly == r.dolly && d.lift < 55,
+        "Unsigned estimate retained an unnecessary lift on an otherwise on-screen baseline shot");
+    check_focus_endpoint(r, s, d);
+    auto correct = r; correct.lift = d.lift; correct.predicted_z = d.predicted_z;
+    const auto good = fg::evaluate(correct, s);
+    require(good.status == fg::Status::unchanged && good.dolly == correct.dolly && good.lift == correct.lift,
+        "Corrected baseline changed again instead of retaining its safe action zoom");
+
+    for (int change = 0; change < 12; ++change) {
+        auto v = r; auto source = s;
+        switch (change) {
+        case 0: v.enabled = false; break;
+        case 1: v.prospi = false; break;
+        case 2: v.mode = 2; break;
+        case 3: v.protected_camera = true; break;
+        case 4: v.automatic_source = false; break;
+        case 5: v.safety_enabled = false; break;
+        case 6: v.forward_offset = 1; break;
+        case 7: v.camera.location[2] = 1500; break;
+        case 8: source.time_ns -= 50'000'001; break;
+        case 9: source.pose.rotation[1] += .26f; break;
+        case 10: source.pose.fov += .11f; break;
+        case 11: source.status = trace::SourceStatus::unavailable; break;
+        }
+        const auto fallback = fg::evaluate(v, source);
+        require(!fallback.applied() && fallback.dolly == v.dolly && fallback.lift == v.lift,
+            "Invalid/off/protected baseline path changed the existing offsets");
+    }
+
+    std::mt19937 rng{245674};
+    const auto random = [&](float lo, float hi) { return std::uniform_real_distribution<float>{lo, hi}(rng); };
+    size_t applied{};
+    for (int i = 0; i < 10000; ++i) {
+        r.camera.location[0] = i % 2 ? -3500.0f : 3500.0f;
+        r.camera.location[2] = random(-100, 600); r.camera.rotation = {random(-18, 16), random(-540, 540), 0};
+        r.camera.fov = random(.5f, 24); r.dolly = random(0, 2000); r.lift = random(0, 400);
+        r.predicted_z = r.camera.location[2] - std::abs(std::sin(r.camera.rotation[0] * .01745329252f)) * r.dolly;
+        s = focus_source(r, random(100, 5000)); d = fg::evaluate(r, s);
+        if (d.applied()) { ++applied; check_focus_endpoint(r, s, d); }
+        else { require(d.dolly == r.dolly && d.lift == r.lift, "Baseline fallback altered offsets"); }
+    }
+    require(applied > 1000, "Insufficient baseline yaw/height/focus coverage");
 }
 
 void cut_guards() {
@@ -720,7 +854,8 @@ int main(int argc, char** argv) {
         if (argc == 4 && std::string(argv[1]) == "--cut-shadow") { return cut_shadow(argv[2], argv[3]); }
         require(argc == 2, "Usage: tests fixture.json OR --shadow/--native-shadow session-path output.json");
         const auto fixtures = read_json(argv[1]);
-        captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); close_focus_guards(); cut_guards();
+        captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); current_near_home_height_guards(); close_focus_guards(); baseline_focus_guards(); cut_guards();
+        current_marked_height_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261009-marked-height.json"));
         hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";
         return 0;

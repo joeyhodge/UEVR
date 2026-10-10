@@ -218,7 +218,75 @@ and moving ball-follow shots with all other settings unchanged. The latest
 recording contains no celebration; first-base celebration framing still needs
 runtime confirmation, including the subject and the transition out of the shot.
 
+## Current EXE authored-focus discovery
+
+The October 9 recording used EXE timestamp `1790730967`, image size `771923968`,
+SHA-256 `4910484dcee164b85d27fa8575414f1914cf9bf1f437e7197c34f2371ab456c2`.
+Every native-source sample was rejected because only the older build's layout
+was accepted. BN confirms unchanged native camera fields and publisher/bridge
+semantics, but independently moved code, globals and vtables.
+
+Both verified builds are now supported. Discovery validates their exact code
+fingerprints, the RIP-relative context/list/counter references, and bridge and
+sentinel vtable slots before publishing any address. The current EXE's code
+slices are an independent offline fixture. Unknown identities, mixed addresses,
+changed code, inaccessible memory and mismatched vtables fail closed. Validation
+is cached per probe; it does not scan the executable or call game functions in
+the camera hot path. Each target sample still verifies its list, manager, bridge
+pose/FOV and read witnesses. This does not promise support for unknown updates.
+
+The marked-bad near-home rig at `(350, -3300, 50)` cm spans about 7-10.5 degrees
+game FOV with positive pitch. Its unsigned estimate added about 270-314 cm lift
+even though forward dolly raises the real view. The existing opt-in authored-
+focus solver now covers this bounded near-home range (up to 12 degrees, with a
+75-125 degree yaw restriction above 8 degrees). It uses signed height only after
+fresh source validation and joint focus/floor/frustum checks. Other outfield
+FOV envelopes and gameplay/ball-follow/replay rules are not broadened.
+
+No recorder-derived target is substituted when validation fails. Recording
+cadence cannot affect the focus solver; manual/protected settings keep their
+original path. The low-baseline floor override also requires full safety-cap
+strength and honors manual presets, stabilization and actual-position clamping.
+
+The observed 259-293 ms cinematic tick gaps do not establish a GPU, streaming
+or recorder root cause. Light recording removes the old high-rate trace burden;
+it is not a claim that all cinematic hitches are fixed. Test recorder off/on,
+marked-bad near-home cuts and both celebrations, then the previously good shots.
+
 ## Remaining work
+
+### Ground-level baseline pan height
+
+The October 7 Hokkaido log contains low baseline poses with yaw near 110 degrees
+on the first-base side and -100 degrees on the third-base side. Their old yaw
+classification selected the 1,705 cm stand floor and reached the 400 cm lift
+limit. The short recording does not contain the reported celebration itself;
+the quantized log IDs are not exact camera poses or player coordinates.
+
+With mode 3 and the existing Authored Focus option, automatic low baseline pans
+now retain Field Floor through yaw changes. The extra envelope is bounded to
+abs(X) 1,200-4,200 cm, Y -2,500 to 1,800 cm, Z -100 to 600 cm, pitch -18 to 16
+degrees, near-zero roll, and game FOV 0.5-24 degrees. It requires the current
+signed-safety gates, zero manual offsets, a reachable configured field floor,
+and requested forward dolly no greater than 2,000 cm. Exact/manual/protected
+settings and genuine elevated stand rigs keep the original handling.
+
+Within the existing 1,250 cm signed-height budget, upward advance no longer
+receives a false downward height estimate. The native-focus guard covers the
+additional baseline orientations with its unchanged fresh-source validation,
+FOV reserve, floor, frustum and lift budgets. If a larger supported dolly still
+uses the old unsigned estimate, only demonstrated excess automatic lift is
+eligible for signed correction; an already-correct low/action shot retains its
+offsets. Failed native validation retains the existing focus path. There is no
+new aim, ball-follow rule, calibration rewrite, per-stadium target, collision
+query, or toggle. The original short-focus learning/continuity rules are unchanged.
+
+Regression tests cover both yaw gaps and boundaries, signed stereo height,
+safe low-shot no-ops, elevated stands, manual/off-mode gates, stale source
+rejection, and randomized yaw/focus/budget cases. Test celebrations on both
+sides in the HMD, including the exit from the shot, before treating this as a
+confirmed repair of the unrecorded celebration. Other stadium geometry remains
+unverified; the same validated policy is used rather than mirrored coordinates.
 
 Unsupported low/dugout and high-lift cinematic cases remain on the old focus path.
 Subject-aware aim/focus and collision-aware refinement still need reliable

@@ -137,7 +137,8 @@ struct Recorder::Impl {
         limits.history_capacity = std::clamp<size_t>(limits.history_capacity, 1, 4096);
     }
     Limits limits;
-    std::atomic<bool> enabled{}, stop_requested{}, done{true};
+    std::atomic<bool> enabled{}, stop_requested{}, done{true}, capture_requested{};
+    std::atomic<Detail> detail{Detail::light};
     std::atomic<Status> state{Status::off};
     std::atomic<uint64_t> written{}, dropped{}, suspects{}, bytes{}, probe_failures{};
     std::mutex mutex;
@@ -147,6 +148,9 @@ struct Recorder::Impl {
     uint64_t session{}, epoch{}, sequence{}, cut_sequence{}, last_camera_queued{};
     std::array<uint64_t, 4> last_view_time{}, last_view_camera{};
     std::array<uint64_t, 2> last_projection_time{}, last_projection_camera{};
+    std::array<uint64_t, 4> light_projection_camera{};
+    uint64_t last_observation_camera{};
+    SamplingPolicy fallback_sampling{};
     uintptr_t world{};
     Event camera{}, neutral{};
     bool have_camera{}, have_neutral{}, previous_cut{};
@@ -177,6 +181,15 @@ struct Recorder::Impl {
                 {"projection", "column-major 4x4"}, {"clock", "steady nanoseconds; session-local"}};
             meta["limits"] = {{"bytes", limits.byte_limit}, {"queue", limits.queue_capacity},
                 {"history", limits.history_capacity}, {"normal_hz", 30}, {"burst_hz", 120}, {"context_seconds", 5}};
+            const bool light = detail.load(std::memory_order_relaxed) == Detail::light;
+            meta["sampling"] = light ? "light" : "detailed";
+            if (light) {
+                meta["limits"]["normal_hz"] = 1;
+                meta["limits"]["burst_hz"] = 0;
+                meta["limits"]["cut_hz_limit"] = 4;
+                meta["limits"]["context_seconds"] = 0;
+                meta["sampling_note"] = "One full camera sample per second plus bounded cut edges and manual marks; linked eye/projection/post-tick records are separate lines. No high-rate bursts.";
+            }
             meta["capabilities"] = {{"camera", true}, {"neutral_and_hmd_pose", true},
                 {"native_look_at", "Conditional on validated code/layout, manager and per-sample bridge agreement"},
                 {"hmd_offset_provenance", true},
@@ -249,6 +262,11 @@ struct Recorder::Impl {
                 }
                 for (size_t i = 0; i < n && !storage_full; ++i) {
                     const auto& e = batch[i];
+                    if (light) {
+                        Saved entry{e};
+                        storage_full = !save(entry);
+                        continue;
+                    }
                     while (!history.empty() && (history.size() >= limits.history_capacity ||
                         (e.time_ns > history.front().event.time_ns && e.time_ns - history.front().event.time_ns > 5 * second))) {
                         history.pop_front();
@@ -318,7 +336,7 @@ Recorder::~Recorder() {
     stop();
     if (m_impl->worker.joinable()) { m_impl->worker.join(); }
 }
-bool Recorder::start(const std::filesystem::path& root, std::string metadata) {
+bool Recorder::start(const std::filesystem::path& root, std::string metadata, Detail detail) {
     auto& p = *m_impl;
     if (!p.done.load(std::memory_order_acquire)) { return false; }
     if (p.worker.joinable()) { p.worker.join(); }
@@ -332,6 +350,10 @@ bool Recorder::start(const std::filesystem::path& root, std::string metadata) {
     p.have_camera = p.have_neutral = p.previous_cut = false;
     p.last_view_time = {}; p.last_view_camera = {};
     p.last_projection_time = {}; p.last_projection_camera = {};
+    p.light_projection_camera = {}; p.last_observation_camera = 0;
+    p.fallback_sampling.reset();
+    p.capture_requested.store(false);
+    p.detail.store(detail == Detail::detailed ? Detail::detailed : Detail::light, std::memory_order_relaxed);
     p.written = p.dropped = p.suspects = p.bytes = p.probe_failures = 0;
     p.stop_requested.store(false);
     p.done.store(false);
@@ -352,6 +374,8 @@ void Recorder::stop() noexcept {
     p.wake.notify_one();
 }
 bool Recorder::active() const noexcept { return m_impl->enabled.load(std::memory_order_relaxed); }
+Detail Recorder::detail() const noexcept { return m_impl->detail.load(std::memory_order_relaxed); }
+bool Recorder::take_capture_request() noexcept { return m_impl->capture_requested.exchange(false, std::memory_order_relaxed); }
 Counters Recorder::counters() const noexcept {
     const auto& p = *m_impl;
     return {p.written.load(), p.dropped.load(), p.suspects.load(), p.bytes.load(), p.probe_failures.load(), p.state.load()};
@@ -361,13 +385,21 @@ void Recorder::camera(Camera c, uint32_t thread, float capture_us) noexcept {
     if (!active()) { return; }
     std::unique_lock lock{p.mutex, std::try_to_lock};
     if (!lock || !active()) { p.dropped.fetch_add(1); return; }
-    if (p.world != c.world || (p.have_camera && p.camera.camera.camera_manager != c.camera_manager)) {
+    const auto now = clock_ns();
+    if (detail() == Detail::light && !c.frame_cut_observed) {
+        const auto decision = p.fallback_sampling.observe(c.input, c.world, c.camera_manager, c.rendering_method,
+            now, Detail::light, take_capture_request());
+        if (!decision.capture) { return; }
+        c.frame_cut_observed = true; c.frame_inferred_cut = decision.inferred_cut;
+    }
+    if (p.world != c.world || (p.have_camera && (p.camera.camera.camera_manager != c.camera_manager ||
+        (detail() == Detail::light && p.camera.camera.rendering_method != c.rendering_method)))) {
         ++p.epoch; p.world = c.world; p.have_camera = p.have_neutral = false; p.previous_cut = false;
     }
     Event e{};
-    e.time_ns = clock_ns(); e.thread = thread; e.kind = Kind::camera; e.camera = c; e.capture_us = capture_us;
+    e.time_ns = now; e.thread = thread; e.kind = Kind::camera; e.camera = c; e.capture_us = capture_us;
     e.suspects = camera_suspects(c);
-    e.inferred_cut = p.have_camera && trace::inferred_cut(p.camera.camera.input, c.input);
+    e.inferred_cut = p.have_camera && (c.frame_cut_observed ? c.frame_inferred_cut : trace::inferred_cut(p.camera.camera.input, c.input));
     const auto actual_cut = c.cut_known && c.cut && !p.previous_cut;
     p.previous_cut = c.cut_known && c.cut;
     e.camera.cut = actual_cut;
@@ -382,7 +414,7 @@ void Recorder::camera(Camera c, uint32_t thread, float capture_us) noexcept {
     e.sequence = e.camera_sequence;
     const bool edge = !p.have_camera || e.inferred_cut || actual_cut || e.suspects != p.camera.suspects;
     p.camera = e; p.have_camera = true;
-    if (edge || e.time_ns - p.last_camera_queued >= second / 120) {
+    if (detail() == Detail::light || edge || e.time_ns - p.last_camera_queued >= second / 120) {
         p.push(e); p.last_camera_queued = e.time_ns;
     }
 }
@@ -391,6 +423,7 @@ void Recorder::invalidate(uintptr_t world, std::string_view reason, uint32_t thr
     if (!active()) { return; }
     std::unique_lock lock{p.mutex, std::try_to_lock};
     if (!lock) { p.dropped.fetch_add(1); return; }
+    p.fallback_sampling.reset();
     if (!p.have_camera && p.world == world) { return; }
     ++p.epoch; p.world = world; p.have_camera = p.have_neutral = false;
     Event e{}; e.kind = Kind::gap; e.thread = thread; copy_text(e.label, reason); p.push(e);
@@ -403,23 +436,27 @@ Ticket Recorder::begin_view(Pose input, int32_t index, int32_t eye, uint32_t thr
     std::unique_lock lock{p.mutex, std::try_to_lock};
     if (!lock) { p.dropped.fetch_add(1); return {}; }
     if (!active() || !p.have_camera) { return {}; }
+    if (eye < 0 || eye > 1) { return {}; }
+    const auto now = clock_ns();
+    const auto matches = finite(input.location) && finite(input.rotation) &&
+        distance(input.location, p.camera.camera.input.location) < 100.0f &&
+        angle_delta(input.rotation[0], p.camera.camera.input.rotation[0]) < 5.0f &&
+        angle_delta(input.rotation[1], p.camera.camera.input.rotation[1]) < 5.0f;
+    const auto channel = eye * 2 + (matches ? 1 : 0);
+    if (detail() == Detail::light && (now < p.camera.time_ns || now - p.camera.time_ns > second / 4 ||
+        p.last_view_camera[channel] == p.camera.camera_sequence)) { return {}; }
     Ticket t{p.camera};
-    t.event.kind = Kind::view; t.event.thread = thread; t.event.time_ns = clock_ns();
+    t.event.kind = Kind::view; t.event.thread = thread; t.event.time_ns = now;
     t.event.view.input = input; t.event.view.input.fov = t.event.camera.input.fov;
     t.event.view.input.valid = finite(input.location) && finite(input.rotation);
     t.event.view.eye = eye; t.event.view.index = index;
-    t.event.view.input_matches_assist = finite(input.location) && finite(input.rotation) &&
-        distance(input.location, t.event.camera.input.location) < 100.0f &&
-        angle_delta(input.rotation[0], t.event.camera.input.rotation[0]) < 5.0f &&
-        angle_delta(input.rotation[1], t.event.camera.input.rotation[1]) < 5.0f;
+    t.event.view.input_matches_assist = matches;
     t.event.view.source_matches_input = source_matches_input(t.event.camera.native_source,
         t.event.view.input, t.event.camera.camera_manager, t.event.time_ns);
     t.event.view.snapshot_age_ms = (float)(t.event.time_ns - p.camera.time_ns) / 1'000'000.0f;
-    if (eye < 0 || eye > 1) { return {}; }
-    const auto channel = eye * 2 + (t.event.view.input_matches_assist ? 1 : 0);
     const bool critical = (p.camera.inferred_cut || p.camera.camera.cut) &&
         p.last_view_camera[channel] != p.camera.camera_sequence;
-    if (!critical && t.event.time_ns - p.last_view_time[channel] < second / 120) { return {}; }
+    if (detail() == Detail::detailed && !critical && t.event.time_ns - p.last_view_time[channel] < second / 120) { return {}; }
     p.last_view_time[channel] = t.event.time_ns;
     p.last_view_camera[channel] = p.camera.camera_sequence;
     return t;
@@ -445,9 +482,14 @@ void Recorder::projection(Matrix matrix, int32_t eye, uint32_t thread) noexcept 
     if (!lock) { p.dropped.fetch_add(1); return; }
     if (last_view.session != p.session || last_view.epoch != p.epoch) { return; }
     const auto now = clock_ns();
+    const auto channel = eye * 2 + (last_view.view.input_matches_assist ? 1 : 0);
+    if (detail() == Detail::light) {
+        if (p.light_projection_camera[channel] == last_view.camera_sequence) { return; }
+        p.light_projection_camera[channel] = last_view.camera_sequence;
+    }
     const bool critical = (last_view.inferred_cut || last_view.camera.cut) &&
         p.last_projection_camera[eye] != last_view.camera_sequence;
-    if (!critical && now - p.last_projection_time[eye] < second / 120) { return; }
+    if (detail() == Detail::detailed && !critical && now - p.last_projection_time[eye] < second / 120) { return; }
     p.last_projection_time[eye] = now; p.last_projection_camera[eye] = last_view.camera_sequence;
     Event e = last_view; e.kind = Kind::projection; e.projection = matrix; e.thread = thread; e.time_ns = clock_ns();
     p.push(e);
@@ -461,12 +503,17 @@ void Recorder::observation(Observation sample, uint32_t thread) noexcept {
         (!p.have_neutral || sample.reference_camera != p.neutral.camera_sequence))) { return; }
     // An older neutral transaction must not be relabelled as the newest camera/cut.
     Event e = sample.reference_camera && sample.reference_camera != p.camera.camera_sequence ? p.neutral : p.camera;
+    if (detail() == Detail::light) {
+        if (p.last_observation_camera == e.camera_sequence) { return; }
+        p.last_observation_camera = e.camera_sequence;
+    }
     e.kind = Kind::observation; e.thread = thread; e.time_ns = clock_ns(); e.observation = sample;
     p.push(e);
 }
 void Recorder::mark(Marker marker, std::string_view label, uint32_t thread) noexcept {
     auto& p = *m_impl;
     if (!active()) { return; }
+    if (marker == Marker::bad || marker == Marker::good) { p.capture_requested.store(true, std::memory_order_relaxed); }
     std::unique_lock lock{p.mutex, std::try_to_lock};
     if (!lock) { p.dropped.fetch_add(1); return; }
     Event e = p.have_camera ? p.camera : Event{};

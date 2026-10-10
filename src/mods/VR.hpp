@@ -1722,6 +1722,10 @@ private:
     const ModToggle::Ptr m_prospi_remove_frame_pace{
         ModToggle::create(generate_name("ProSpiRemoveFramePace"), false)
     };
+
+    static const inline std::vector<std::string> s_prospi_camera_trace_detail_names{
+        "Light (1 Hz + cuts/marks)", "Detailed (30 Hz + bursts)",
+    };
     const ModToggle::Ptr m_prospi_show_stadium_roofs{
         ModToggle::create(generate_name("ProSpiShowStadiumRoofs"), false)
     };
@@ -1804,6 +1808,7 @@ private:
     const ModToggle::Ptr m_match_game_fov_prospi_auto_camera_sequencer{ ModToggle::create(generate_name("MatchGameFOVProSpiAutoCameraSequencer"), false) };
     const ModToggle::Ptr m_match_game_fov_prospi_native_focus_guard{ ModToggle::create(generate_name("MatchGameFOVProSpiNativeFocusGuard"), false) };
     const ModToggle::Ptr m_prospi_camera_trace_enabled{ ModToggle::create(generate_name("ProSpiCameraTrace"), false) };
+    const ModCombo::Ptr m_prospi_camera_trace_detail{ ModCombo::create(generate_name("ProSpiCameraTraceDetail"), s_prospi_camera_trace_detail_names, 0) };
     const ModKey::Ptr m_prospi_camera_trace_bad_key{ ModKey::create(generate_name("ProSpiCameraTraceBadKey"), VK_F6) };
     const ModKey::Ptr m_prospi_camera_trace_good_key{ ModKey::create(generate_name("ProSpiCameraTraceGoodKey"), VK_F7) };
     const ModKey::Ptr m_prospi_camera_trace_toggle_key{ ModKey::create(generate_name("ProSpiCameraTraceToggleKey"), VK_F9) };
@@ -2287,6 +2292,7 @@ public:
             *m_match_game_fov_prospi_auto_camera_sequencer,
             *m_match_game_fov_prospi_native_focus_guard,
             *m_prospi_camera_trace_enabled,
+            *m_prospi_camera_trace_detail,
             *m_prospi_camera_trace_bad_key,
             *m_prospi_camera_trace_good_key,
             *m_prospi_camera_trace_toggle_key,
@@ -2481,6 +2487,7 @@ private:
     };
     std::mutex m_prospi_camera_history_mtx{};
     uevr::prospi::trace::Recorder m_prospi_camera_trace{};
+    uevr::prospi::trace::SamplingPolicy m_prospi_camera_trace_sampling{};
     uevr::prospi::trace::CameraProbe m_prospi_camera_trace_probe{};
     uevr::prospi::trace::CameraProbe m_prospi_native_focus_probe{};
     std::atomic<int32_t> m_prospi_native_focus_status{};

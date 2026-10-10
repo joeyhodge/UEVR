@@ -1,0 +1,69 @@
+{
+  "provenance": "Read-only code/RIP/vtable slices of the current EXE, cross-checked in Binary Ninja; no captured game objects.",
+  "sha256": "4910484dcee164b85d27fa8575414f1914cf9bf1f437e7197c34f2371ab456c2",
+  "base": 5368709120,
+  "timestamp": 1790730967,
+  "image_size": 771923968,
+  "blocks": [
+    {
+      "rva": 92167760,
+      "bytes": "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"
+    },
+    {
+      "rva": 92167872,
+      "bytes": "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"
+    },
+    {
+      "rva": 92167926,
+      "bytes": "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"
+    },
+    {
+      "rva": 92134651,
+      "bytes": "b801000000f00fc105080faf0d8b0d020faf0d908b0dfb0eaf0d9048ffc983e1"
+    },
+    {
+      "rva": 92158400,
+      "bytes": "40534883ec20488bd9488d0d8ae90a15e87bccb201488b430833c9488b400848"
+    },
+    {
+      "rva": 92165120,
+      "bytes": "40534883ec20488bd9488d0dfdcf0a15e83bb2b201488bc34883c4205bc3cccc"
+    },
+    {
+      "rva": 92158176,
+      "bytes": "4883ec28488d0d6fea0a15e860cdb20133c04883c428c3cccccccccccccccccc"
+    },
+    {
+      "rva": 92137312,
+      "bytes": "4883ec28488d0df23a0b15e8e01eb301488b05690cae0d488b40104883c428c3"
+    },
+    {
+      "rva": 51319184,
+      "bytes": "4883ec48f20f101a8b42080f28e3f30f100dced174040f28c389442438f30f10"
+    },
+    {
+      "rva": 51317232,
+      "bytes": "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"
+    },
+    {
+      "rva": 51318416,
+      "bytes": "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"
+    },
+    {
+      "rva": 92158431,
+      "bytes": "483b05c2bfad0d"
+    },
+    {
+      "rva": 92134656,
+      "bytes": "f00fc105080faf0d"
+    },
+    {
+      "rva": 137942848,
+      "bytes": "e0387e4501000000"
+    },
+    {
+      "rva": 128091760,
+      "bytes": "90110f4301000000f0090f4301000000900e0f4301000000"
+    }
+  ]
+}

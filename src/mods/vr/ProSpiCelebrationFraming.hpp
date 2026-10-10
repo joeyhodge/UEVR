@@ -9,6 +9,16 @@ namespace uevr::prospi::celebration {
 using framing::Pose;
 using framing::Calibration;
 
+// Ground-level baseline pans can change yaw without becoming stand cameras.
+// This is a height-policy envelope, not proof of a player, celebration or collision.
+inline bool baseline_rig(const Pose& p) noexcept {
+    return framing::valid_pose(p) && std::abs(p.location[0]) >= 1200.0f && std::abs(p.location[0]) <= 4200.0f &&
+        p.location[1] >= -2500.0f && p.location[1] <= 1800.0f &&
+        p.location[2] >= -100.0f && p.location[2] <= 600.0f &&
+        p.rotation[0] >= -18.0f && p.rotation[0] <= 16.0f &&
+        std::abs(p.rotation[2]) <= 0.01f && p.fov >= 0.5f && p.fov <= 24.0f;
+}
+
 // A low baseline rig, not proof of a celebration, subject or stadium collision.
 inline bool low_rig(const Pose& p) noexcept {
     if (!framing::valid_pose(p)) { return false; }
@@ -103,6 +113,7 @@ struct SafetyRequest {
     Pose camera{};
     float dolly{}, forward{}, right{}, up{}, floor{}, max_lift{};
     bool field_zone{};
+    bool baseline_camera{};
 };
 struct SafetyDecision {
     bool accepted{};
@@ -111,7 +122,8 @@ struct SafetyDecision {
 
 inline SafetyDecision signed_safety(const SafetyRequest& r) noexcept {
     SafetyDecision out{};
-    if (!r.gates.enabled() || !r.field_zone || !low_rig(r.camera)) { return out; }
+    if (!r.gates.enabled() || !r.field_zone ||
+        !(low_rig(r.camera) || (r.baseline_camera && baseline_rig(r.camera)))) { return out; }
     for (const auto x : {r.dolly, r.forward, r.right, r.up, r.floor, r.max_lift}) {
         if (!std::isfinite(x)) { return out; }
     }
@@ -136,5 +148,15 @@ inline SafetyDecision signed_safety(const SafetyRequest& r) noexcept {
     if (!std::isfinite(out.end_z) || out.end_z < r.floor + 1.0f) { return {}; }
     out.dolly = dolly; out.accepted = true;
     return out;
+}
+
+inline bool baseline_field_floor(SafetyRequest r, bool focus_guard, bool automatic, bool protected_camera) noexcept {
+    if (!focus_guard || !automatic || protected_camera || !baseline_rig(r.camera) ||
+        !std::isfinite(r.dolly) || r.dolly < 0 || r.dolly > 2000 ||
+        r.forward != 0 || r.right != 0 || r.up != 0) { return false; }
+    // Establish that the configured field floor is reachable before overriding the stand band.
+    r.dolly = 0;
+    r.baseline_camera = true;
+    return signed_safety(r).accepted;
 }
 }

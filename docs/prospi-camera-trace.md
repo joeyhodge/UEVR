@@ -21,9 +21,10 @@ dugout, crowd, replay or establishing shot at the ball.
    player close-ups, dugout/stands and replay cuts. Do not run Dumper7 or a broad
    UObject scan in the same run if avoidable; it can perturb timing.
 4. Optionally press **Ctrl+Alt+F6** for a bad cut or **Ctrl+Alt+F7** for a good
-   cut. Automatic suspect flags already retain fast cuts; manual marks are not
-   required. A delayed mark identifies its current shot plus five seconds of
-   preceding context, not a guaranteed earlier shot.
+   cut. Light mode records one full camera sample per second plus detected pose
+   jumps and marks; manual marks are not required. A delayed mark identifies the
+   most recent sampled shot, not a guaranteed earlier shot. It requests a fresh
+   sample on the next camera update as well as recording the marker immediately.
 5. Press Ctrl+Alt+F9 to stop. Stop flush is asynchronous; wait until the UI status
    is Off before closing if possible. During recording files flush each second.
 
@@ -32,8 +33,9 @@ storage-limit status affects only recording. Toggle off/on to start a new
 session after an error. Keys can be changed/unbound in the panel and always
 require Ctrl+Alt and the foreground game window. They are not consumed by UEVR.
 
-Start inside the stadium, not at the main menu: the first recording wrote about
-20 MB/minute. Stop between separate pause/pitching/ball-in-play comparisons if
+Start inside the stadium, not at the main menu. The original high-detail recorder
+wrote about 20 MB/minute, sometimes much more during bursts. Light is now the
+default. Stop between separate pause/pitching/ball-in-play comparisons if
 convenient. The requested toggle saves normally, so turn it off before an
 SDK-only session if recording is not wanted.
 
@@ -47,6 +49,7 @@ Default is false. Optional config-only stadium label (one stadium per session):
 
 ```ini
 VR_ProSpiCameraTraceStadium=your-stadium-name
+VR_ProSpiCameraTraceDetail=0
 VR_ProSpiCameraTraceBadKey=117
 VR_ProSpiCameraTraceGoodKey=118
 VR_ProSpiCameraTraceToggleKey=120
@@ -54,6 +57,9 @@ VR_ProSpiCameraTraceToggleKey=120
 
 Those decimal virtual keys are F6/F7/F9. Start/stop via hotkey is synchronized to
 the displayed setting and saves with the normal UEVR config save operation.
+`VR_ProSpiCameraTraceDetail=0` selects Light (default); `=1` selects the existing
+Detailed capture. **Recording Detail (Next Session)** is also available in ImGui.
+The detail level is fixed for a session; stop/start to change it.
 
 ## Files and measured evidence
 
@@ -82,15 +88,34 @@ the epoch; late view tickets from an old world/session are discarded. Auxiliary
 view family roles remain unclassified. `input_matches_assist` is a geometric
 sanity check, not proof that a view belongs to the main scene.
 
-Normal persisted rate is up to 30 Hz per event/eye channel; cut/marker/new suspect
-bursts retain the preceding bounded five-second history and five seconds after.
-Camera input enqueue is limited to 120 Hz except critical cut/suspect edges.
+Light samples the full camera and trace-only reflection/native probes once per
+second. An allocation-free comparison of existing pose values on adjacent game
+updates detects cut-sized jumps, limited to four cut-triggered captures/sec to
+avoid noisy unbounded bursts. World/PCM/render-mode changes and manual marks can
+request additional immediate samples. Smooth pans across distant samples are not
+mislabelled as cuts. No five-second high-rate burst is activated in Light mode.
+
+Each sampled camera admits at most one view/projection per eye/matching channel
+and one post-tick observation. A normal two-eye sample is about six JSON lines,
+not one line/sec; auxiliary mismatched views and marks add bounded context.
+Stale assist snapshots do not generate new Light eye records. The assist uses
+its own fresh native source independently of diagnostic sampling. Its normal
+operation is not decimated or changed by the recorder.
+
+Detailed retains the original persisted rate of up to 30 Hz per event/eye channel;
+cut/marker/new suspect bursts retain the preceding bounded five-second history
+and five seconds after. Detailed camera enqueue is limited to 120 Hz except
+critical cut/suspect edges. Use it for sub-second cuts or frame-level timing.
 Queue and history have fixed limits; producers use try-lock and **drop evidence
 rather than block rendering**. Drop counts must be considered when reviewing
 coverage. Disk I/O and JSON serialization run on a background writer.
 
 ## Important limits
 
+- Two-second shots normally contain periodic samples, and detected pose jumps
+  add cut-edge samples. Light is not a frame-by-frame trace: sub-second events,
+  small cuts between similar poses, and game-cut flags between probes can be
+  missed. Contention, stalls and unavailable cameras still leave coverage gaps.
 - The pre-tick cache can contain the previous assist's FOV write. That provenance
   is recorded; compare post-tick and stereo input rather than assuming every
   cached value is untouched game intent.

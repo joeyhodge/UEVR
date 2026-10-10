@@ -247,7 +247,8 @@ include-directories = ["src/"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json"]
 cmake-after = """
-add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests)
+add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-native-layout-20261007.json")
 set_tests_properties(prospi-camera-trace-tests PROPERTIES TIMEOUT 30)
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)

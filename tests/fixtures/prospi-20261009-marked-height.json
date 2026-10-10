@@ -1,0 +1,295 @@
+{
+  "trace": "session-56089059804000",
+  "stadium": "unspecified",
+  "provenance": "Actual camera inputs at manual bad marks; native source was unavailable in this recording. Tests use a synthetic aligned target to check signed geometry only.",
+  "samples": [
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 10.662084579467773,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.046626091003418,
+          103.4483871459961,
+          -1.0687275420195874e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 268.81610107421875,
+      "safety_predicted_z": -98.81610107421875,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 9.428410530090332,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.257692813873291,
+          103.72409057617188,
+          -1.0689443286082678e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 279.1151428222656,
+      "safety_predicted_z": -109.11514282226562,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 8.646306037902832,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.4654054641723633,
+          103.32891845703125,
+          -1.069172057555079e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 289.2484130859375,
+      "safety_predicted_z": -119.2484130859375,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 8.372477531433105,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.5840048789978027,
+          103.19389343261719,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 295.0333251953125,
+      "safety_predicted_z": -125.03330993652344,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 8.125214576721191,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.7009856700897217,
+          103.15631866455078,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 300.738525390625,
+      "safety_predicted_z": -130.738525390625,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.9459404945373535,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.7749223709106445,
+          103.20435333251953,
+          -2.1390751214767079e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 304.34405517578125,
+      "safety_predicted_z": -134.3440704345703,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.831276893615723,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.8356223106384277,
+          103.27227020263672,
+          2.139225756536689e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 307.30389404296875,
+      "safety_predicted_z": -137.3038787841797,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.701558589935303,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.9063284397125244,
+          103.35970306396484,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 310.7513427734375,
+      "safety_predicted_z": -140.75135803222656,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.4726080894470215,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.9768638610839844,
+          103.42314910888672,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 314.19024658203125,
+      "safety_predicted_z": -144.1902313232422,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.290457248687744,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.907865285873413,
+          103.33380126953125,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 310.8262939453125,
+      "safety_predicted_z": -140.8262939453125,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.1577959060668945,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.825028657913208,
+          103.10530853271484,
+          -2.1391991822383716e-07
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 306.787353515625,
+      "safety_predicted_z": -136.78733825683594,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    },
+    {
+      "input": {
+        "aspect": 1.7777780294418335,
+        "cache_timestamp": null,
+        "fov": 7.052095413208008,
+        "location": [
+          350.0,
+          -3300.0,
+          50.0
+        ],
+        "rotation": [
+          3.768556594848633,
+          102.47539520263672,
+          0.0
+        ],
+        "valid": true
+      },
+      "base_fov": 90.0,
+      "dolly_after": 2800.0,
+      "safety_up": 304.03363037109375,
+      "safety_predicted_z": -134.0336456298828,
+      "safety_min_z": 170.0,
+      "safety_max_up": 400.0
+    }
+  ]
+}

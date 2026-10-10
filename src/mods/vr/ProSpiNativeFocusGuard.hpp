@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ProSpiCameraTrace.hpp"
+#include "ProSpiCelebrationFraming.hpp"
 
 namespace uevr::prospi::focus_guard {
 
@@ -30,7 +31,7 @@ struct Request {
     uint64_t now_ns{};
     int32_t mode{}, zone{};
     bool enabled{}, prospi{}, dolly_enabled{}, sequencer_enabled{}, safety_enabled{};
-    bool protected_camera{}, automatic_source{}, close_camera{};
+    bool protected_camera{}, automatic_source{}, close_camera{}, baseline_camera{};
     float dolly{}, lift{}, predicted_z{}, floor{}, max_lift{}, base_fov{};
     float forward_offset{}, right_offset{}, up_offset{};
 };
@@ -53,7 +54,8 @@ inline bool close_rig(const Request& r) noexcept {
         p.location[1] >= -2500.0f && p.location[1] <= 1800.0f && p.location[2] >= -100.0f && p.location[2] <= 600.0f &&
         pitch >= -18.0f && pitch <= 16.0f && p.fov <= 24.0f &&
         (p.location[0] > 0.0f ? (yaw >= 125.0f || yaw <= -135.0f) : (yaw >= -45.0f && yaw <= 75.0f));
-    return walk_up || baseline;
+    return walk_up || baseline || (r.baseline_camera && celebration::baseline_rig(
+        {p.location, p.rotation, p.fov}));
 }
 
 // Restrict the experiment to the two low, upward-pitched families evidenced in the trace.
@@ -62,11 +64,14 @@ inline bool low_rig(const Request& r) noexcept {
     const auto& p = r.camera;
     const auto pitch = std::remainder(p.rotation[0], 360.0f);
     if (p.location[2] < -100.0f || p.location[2] > 150.0f || pitch < 0.25f || pitch > 8.0f ||
-        std::abs(std::remainder(p.rotation[2], 360.0f)) > 0.01f || p.fov > 8.0f) { return false; }
+        std::abs(std::remainder(p.rotation[2], 360.0f)) > 0.01f) { return false; }
     const auto x = std::abs(p.location[0]), y = p.location[1];
     const auto yaw = std::remainder(p.rotation[1], 360.0f);
-    return (r.zone == 1 && x <= 900.0f && y >= -4500.0f && y < -2800.0f) ||
-        (r.zone == 4 && x >= 2500.0f && x <= 6000.0f && y >= -8000.0f && y <= -4500.0f &&
+    // The Oct 9 marked-bad near-home cut traverses 7-10.5 degrees FOV.
+    // Extend only that low/upward camera envelope, not the outfield/ball-follow path.
+    return (r.zone == 1 && x <= 900.0f && y >= -4500.0f && y < -2800.0f &&
+            (p.fov <= 8.0f || (p.fov <= 12.0f && yaw >= 75.0f && yaw <= 125.0f))) ||
+        (p.fov <= 8.0f && r.zone == 4 && x >= 2500.0f && x <= 6000.0f && y >= -8000.0f && y <= -4500.0f &&
             ((p.location[0] < 0.0f && yaw >= 15.0f && yaw <= 65.0f) ||
              (p.location[0] > 0.0f && (yaw >= 115.0f || yaw <= -150.0f))));
 }
@@ -147,9 +152,14 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& source) no
         std::tan(source.pose.fov * radians * 0.5) / half_width);
     if (close) {
         // Already-safe close shots keep their exact dolly/lift, including action zoom.
-        const auto z = r.camera.location[2] + s * r.dolly + up[2] * r.lift;
+        const auto signed_z = r.camera.location[2] + s * r.dolly;
+        const auto z = signed_z + up[2] * r.lift;
+        const auto minimum_lift = (std::max)(0.0, (r.floor + 2.0 - signed_z) / up[2]);
+        // An unsigned downward estimate must not preserve a spurious lift on an upward baseline dolly.
+        const bool excess_unsigned_lift = r.baseline_camera && signed_z > r.predicted_z + 1.0 &&
+            r.lift > minimum_lift + 1.0;
         const auto remaining = depth - r.dolly;
-        if (z >= r.floor && remaining >= reserve &&
+        if (!excess_unsigned_lift && z >= r.floor && remaining >= reserve &&
             std::abs(lateral) <= remaining * half_width * 0.95 &&
             std::abs(vertical - r.lift) <= remaining * half_height * 0.95) {
             out.status = Status::unchanged; return out;

@@ -6,9 +6,9 @@ namespace uevr::prospi::trace::native {
 struct Layout {
     uintptr_t base{};
     size_t image_size{};
-    uint32_t context_rva{0x12f98f20}, sentinel_rva{0x12f994e8}, frame_rva{0x12fa8740};
-    uint32_t sentinel_vtable_rva{0x083be008}, bridge_vtable_rva{0x07a4e7c0};
-    uint32_t camera_getter_rva{0x05818b20}, empty_getter_rva{0x05817000};
+    uint32_t context_rva{}, sentinel_rva{}, frame_rva{};
+    uint32_t sentinel_vtable_rva{}, bridge_vtable_rva{};
+    uint32_t camera_getter_rva{}, empty_getter_rva{};
 };
 
 inline bool pointer(uintptr_t p) noexcept {
@@ -60,7 +60,10 @@ template <typename Read>
 NativeSource sample(Read read, const Layout& layout, uintptr_t expected_pcm, uint64_t time_ns) noexcept {
     NativeSource result{};
     const auto reject = [&](SourceStatus status) { NativeSource empty{}; empty.status = status; return empty; };
-    if (!pointer(layout.base) || !module(layout, layout.base + layout.frame_rva, 4) ||
+    if (!pointer(layout.base) || !layout.context_rva || !layout.sentinel_rva || !layout.frame_rva ||
+        !layout.sentinel_vtable_rva || !layout.bridge_vtable_rva || !layout.camera_getter_rva || !layout.empty_getter_rva ||
+        layout.image_size > 0x0000800000000000ull - layout.base ||
+        !module(layout, layout.base + layout.frame_rva, 4) ||
         !module(layout, layout.base + layout.context_rva) || !module(layout, layout.base + layout.sentinel_rva)) {
         return reject(SourceStatus::unsupported_layout);
     }

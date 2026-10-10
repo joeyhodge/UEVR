@@ -175,6 +175,71 @@ void continuity_guards() {
     }
 }
 
+void baseline_height_guards() {
+    // Quantized yaw/position families from the Oct 7 log, not an exact celebration recording.
+    SafetyRequest r{enabled(), {{3500, -1500, 0}, {-5, 110, 0}, 10}, 881.2f, 0, 0, 0, 170, 400, true, true};
+    require(baseline_field_floor(r, true, true, false), "Low first-base pan lost field-floor precedence");
+    auto d = signed_safety(r);
+    require(d.accepted && d.dolly == r.dolly && d.lift < 260 && d.end_z >= 171,
+        "Ground-level first-base pan retained the stand-height jump");
+    const auto first_height = d.end_z;
+    for (const auto yaw : {54.0f, 55.0f, 110.0f, 124.9f, 125.0f, 160.0f, 190.0f, 360.0f}) {
+        r.camera.rotation[1] = yaw;
+        require(baseline_field_floor(r, true, true, false), "Yaw boundary promoted a ground rig to stands");
+        d = signed_safety(r);
+        require(d.accepted && d.dolly == r.dolly && std::abs(d.end_z - first_height) < .01f,
+            "Signed baseline height jumped during an authored pan");
+        require(std::abs(stereo_z(r.camera, d.dolly, 0, d.lift) - d.end_z) < .01f,
+            "Baseline height disagrees with applied stereo basis");
+    }
+    r.camera.location[0] = -3500; r.camera.rotation[0] = 0; r.dolly = 992.7f;
+    for (const auto yaw : {-115.0f, -100.0f, -45.1f, -45.0f, 20.0f, 75.0f}) {
+        r.camera.rotation[1] = yaw;
+        d = signed_safety(r);
+        require(baseline_field_floor(r, true, true, false) && d.accepted &&
+            d.dolly == r.dolly && std::abs(d.lift - 172) < .01f,
+            "Third-base pan retained excessive stand lift");
+    }
+    r.camera = {{3500, -1500, 200}, {5, 0, 0}, 10};
+    d = signed_safety(r);
+    require(d.accepted && d.dolly == r.dolly && d.lift == 0,
+        "Upward baseline dolly received a false below-field correction");
+    require(!baseline_field_floor(r, false, true, false) && !baseline_field_floor(r, true, false, false) &&
+        !baseline_field_floor(r, true, true, true), "Off/manual/protected floor selection changed");
+    auto old = r; old.baseline_camera = false;
+    require(!signed_safety(old).accepted, "Historical yaw envelope widened without the guard");
+    for (auto mode : {0, 1, 2, 4}) {
+        auto v = r; v.gates.mode = mode;
+        require(!baseline_field_floor(v, true, true, false) && !signed_safety(v).accepted,
+            "New baseline policy changed a historical mode");
+    }
+    for (auto field : {&Gates::prospi, &Gates::dolly, &Gates::sequencer, &Gates::safety, &Gates::field_floor}) {
+        auto v = r; v.gates.*field = false;
+        require(!baseline_field_floor(v, true, true, false), "Baseline floor bypassed a capability gate");
+    }
+    for (int change = 0; change < 13; ++change) {
+        auto v = r;
+        switch (change) {
+        case 0: v.camera.location[2] = 1500; break;
+        case 1: v.camera.location[1] = -6000; break;
+        case 2: v.camera.location[0] = 6000; break;
+        case 3: v.camera.fov = 24.01f; break;
+        case 4: v.camera.fov = .49f; break;
+        case 5: v.camera.rotation[2] = .011f; break;
+        case 6: v.camera.rotation[0] = -18.01f; break;
+        case 7: v.camera.location[2] = std::numeric_limits<float>::quiet_NaN(); break;
+        case 8: v.forward = 1; break;
+        case 9: v.right = 1; break;
+        case 10: v.up = 1; break;
+        case 11: v.dolly = 2001; break;
+        case 12: v.floor = 1705; break;
+        }
+        require(!baseline_field_floor(v, true, true, false), "Unsupported rig/budget/offset replaced the stand policy");
+    }
+    auto high = r; high.camera.location[2] = 1500;
+    require(!signed_safety(high).accepted, "Genuine stand camera treated as a ground-level rig");
+}
+
 bool option(const Json& j, const char* key) { return j.value(key, std::string{"false"}) == "true"; }
 float number(const Json& j, const char* key, float fallback) { return std::stof(j.value(key, std::to_string(fallback))); }
 std::vector<Calibration> matches(const Json& a, const Json& saved) {
@@ -351,7 +416,7 @@ int main(int argc, char** argv) {
     try {
         if (argc == 4 && std::string{argv[1]} == "--shadow") { return shadow(argv[2], argv[3]); }
         require(argc == 3, "Usage: tests celebration.json center.json OR --shadow session output.json");
-        policy_guards(); safety_guards(); continuity_guards(); captured(read_json(argv[1]), read_json(argv[2]));
+        policy_guards(); safety_guards(); continuity_guards(); baseline_height_guards(); captured(read_json(argv[1]), read_json(argv[2]));
         std::cout << "ProSpi low-rig celebration guards passed\n"; return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

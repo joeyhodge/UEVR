@@ -11,6 +11,46 @@ SPEC.loader.exec_module(MODULE)
 
 
 class AnalyzerTests(unittest.TestCase):
+    def test_light_two_second_shots_keep_eye_context_and_marks(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            session = root / "session"
+            session.mkdir()
+            (session / "metadata.json").write_text(json.dumps({"schema": 2, "session": 3,
+                "sampling": "light", "limits": {"normal_hz": 1, "burst_hz": 0}}))
+            events = []
+            sequence = 0
+            for shot in (1, 2, 3):
+                pose = {"location": [shot * 2000, 0, 250], "rotation": [0, 0, 0], "fov": 20, "valid": True}
+                assist = {"input": pose, "id": f"shot-{shot}"}
+                for sample in range(2):
+                    time = ((shot - 1) * 2 + sample + 1) * 1_000_000_000
+                    sequence += 1
+                    camera = sequence
+                    base = {"time_ns": time, "epoch": 1, "cut_sequence": shot,
+                            "camera_sequence": camera, "assist": assist}
+                    events.append({**base, "kind": "camera", "sequence": sequence})
+                    for eye in (0, 1):
+                        sequence += 1
+                        events.append({**base, "kind": "view", "sequence": sequence,
+                            "view": {"input_matches_assist": True, "neutral_valid": True,
+                                     "neutral": pose, "output": pose, "eye": eye}})
+                        sequence += 1
+                        events.append({**base, "kind": "projection", "sequence": sequence,
+                            "projection": [1] + [0] * 15, "view": {"eye": eye}})
+                sequence += 1
+                events.append({**base, "kind": "marker", "sequence": sequence, "marker": 1,
+                               "label": "quick manual mark", "time_ns": time + 500_000_000})
+            (session / "events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+            result = MODULE.catalogue(session, root / "review")
+            self.assertEqual(len(result["cuts"]), 3)
+            self.assertFalse(result["gaps"])
+            self.assertEqual(result["malformed_lines"], 0)
+            for cut in result["cuts"]:
+                self.assertEqual(cut["views"], {"0": 2, "1": 2})
+                self.assertEqual(len(cut["marks"]), 1)
+                self.assertIsNotNone(cut["projection_symmetric_fov_range"])
+
     def test_native_target_is_not_ball_and_head_motion_is_separate(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)

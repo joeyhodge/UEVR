@@ -22,6 +22,7 @@ private:
     int32_t m_aspect{-1}, m_timestamp{-1}, m_cut{-1}, m_target{-1};
     uint8_t m_cut_mask{};
     uint64_t m_last_post{};
+    uint64_t m_last_post_session{}, m_last_post_camera{};
     bool m_previous_post_cut{};
     native::Layout m_native_layout{};
     bool m_native_attempted{}, m_native_supported{};

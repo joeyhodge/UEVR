@@ -747,7 +747,8 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 		nlohmann_json
 	)
 
-	add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests)
+	add_test(NAME prospi-camera-trace-tests COMMAND prospi-camera-trace-tests
+	    "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/prospi-native-layout-20261007.json")
 	set_tests_properties(prospi-camera-trace-tests PROPERTIES TIMEOUT 30)
 	find_package(Python3 COMPONENTS Interpreter QUIET)
 	if(Python3_Interpreter_FOUND)
@@ -1980,6 +1981,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/ProSpiCameraProbe.hpp"
 	"src/mods/vr/ProSpiCameraTrace.hpp"
 	"src/mods/vr/ProSpiCelebrationFraming.hpp"
+	"src/mods/vr/ProSpiNativeCameraLayout.hpp"
 	"src/mods/vr/ProSpiNativeCameraSource.hpp"
 	"src/mods/vr/ProSpiNativeFocusGuard.hpp"
 	"src/mods/vr/ProSpiRoofVisibility.hpp"

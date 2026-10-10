@@ -56,6 +56,7 @@ enum class SourceStatus : uint8_t {
 enum class Kind : uint8_t { camera, view, projection, observation, marker, gap };
 enum class Marker : uint8_t { none, bad, good, automatic };
 enum class Status : uint8_t { off, starting, recording, stopping, storage_limit, io_error };
+enum class Detail : uint8_t { light, detailed };
 enum Suspect : uint32_t {
     invalid_camera = 1u << 0,
     ambiguous_match = 1u << 1,
@@ -100,6 +101,7 @@ struct Camera {
     float camera_forward{}, camera_right{}, camera_up{}, smoothing{};
     bool calibration_applied{}, wrote_fov{}, previous_update_wrote_fov{};
     bool cut_known{}, cut{}, safety_active{}, dolly_enabled{}, stabilizer{}, segment_latch{}, sequencer_active{};
+    bool frame_cut_observed{}, frame_inferred_cut{};
     Provenance provenance{};
 };
 
@@ -266,6 +268,47 @@ inline bool inferred_cut(const Pose& before, const Pose& after) noexcept {
          std::abs(before.fov - after.fov) > 8.0f);
 }
 
+struct SamplingDecision {
+    bool capture{}, inferred_cut{};
+};
+
+// Game-thread only: inspect existing values every update, before any trace-only probe.
+class SamplingPolicy {
+public:
+    static constexpr uint64_t interval_ns = 1'000'000'000;
+    static constexpr uint64_t cut_interval_ns = interval_ns / 4;
+
+    void reset() noexcept { *this = {}; }
+    SamplingDecision observe(const Pose& pose, uintptr_t world, uintptr_t pcm, int32_t method,
+        uint64_t now, Detail detail, bool force = false) noexcept {
+        if (!valid_pose(pose) || !world || !pcm || !now) { reset(); return {}; }
+        const bool first = !m_have_pose || world != m_world || pcm != m_pcm || method != m_method || now < m_last_observed;
+        if (first) {
+            reset();
+            m_world = world; m_pcm = pcm; m_method = method;
+        } else {
+            // Compare adjacent updates, not distant 1 Hz samples of a smooth pan.
+            m_pending_cut = m_pending_cut || trace::inferred_cut(m_pose, pose);
+        }
+        m_pose = pose; m_have_pose = true; m_last_observed = now;
+        const bool cut_ready = m_pending_cut && now - m_last_cut >= cut_interval_ns;
+        if (first || force || detail == Detail::detailed || cut_ready || now - m_last_capture >= interval_ns) {
+            const SamplingDecision result{true, m_pending_cut};
+            m_last_capture = now;
+            if (first || m_pending_cut) { m_last_cut = now; }
+            m_pending_cut = false;
+            return result;
+        }
+        return {};
+    }
+private:
+    Pose m_pose{};
+    uintptr_t m_world{}, m_pcm{};
+    int32_t m_method{};
+    uint64_t m_last_observed{}, m_last_capture{}, m_last_cut{};
+    bool m_have_pose{}, m_pending_cut{};
+};
+
 struct Ticket {
     Event event{};
     explicit operator bool() const noexcept { return event.camera_sequence != 0; }
@@ -288,9 +331,11 @@ public:
     Recorder(const Recorder&) = delete;
     Recorder& operator=(const Recorder&) = delete;
 
-    bool start(const std::filesystem::path& root, std::string metadata_json);
+    bool start(const std::filesystem::path& root, std::string metadata_json, Detail detail = Detail::light);
     void stop() noexcept;
     bool active() const noexcept;
+    Detail detail() const noexcept;
+    bool take_capture_request() noexcept;
     Counters counters() const noexcept;
     void camera(Camera sample, uint32_t thread, float capture_us = 0.0f) noexcept;
     void invalidate(uintptr_t world, std::string_view reason, uint32_t thread) noexcept;
