@@ -249,6 +249,15 @@ template <class Helper, class Capture> void lifecycle(Helper& h, Capture&& captu
         }
         return result;
     };
+    // Missing-snapshot checks must not let the GPU retry helper recapture that snapshot.
+    auto without_refresh = [&](size_t n = 1) {
+        auto result = h.compose(f, std::span{layers}.first(n));
+        for (int i = 0; i < 8 && !result; ++i) {
+            Sleep(1);
+            result = h.compose(f, std::span{layers}.first(n));
+        }
+        return result;
+    };
     h.begin_frame(f.request);
     fresh();
     auto result = render();
@@ -268,7 +277,7 @@ template <class Helper, class Capture> void lifecycle(Helper& h, Capture&& captu
     result = {};
     h.begin_frame(f.request);
     h.bind(false, base(q), source.swapchain, source.alpha);
-    expect(!render(), "game UI requires a fresh frame snapshot");
+    expect(!without_refresh(), "game UI requires a fresh frame snapshot");
     fresh();
     fresh(true);
     result = render(2);
@@ -314,7 +323,7 @@ template <class Helper, class Capture> void lifecycle(Helper& h, Capture&& captu
     h.invalidate(true);
     fresh();
     h.bind(true, base(imgui), imgui.subImage.swapchain, source.alpha);
-    expect(!render(2), "failed original release invalidates snapshot");
+    expect(!without_refresh(2), "failed original release invalidates snapshot");
     require(h.reset(), "clean reset");
 
     h.begin_frame(f.request);
@@ -327,7 +336,7 @@ template <class Helper, class Capture> void lifecycle(Helper& h, Capture&& captu
     h.begin_frame(f.request);
     fresh();
     h.bind(true, base(imgui), imgui.subImage.swapchain, source.alpha);
-    expect(!render(2), "returning from another rendering mode cannot reuse stale ImGui");
+    expect(!without_refresh(2), "returning from another rendering mode cannot reuse stale ImGui");
     fresh(true);
     result = render(2);
     expect(result.count == 2, "mode return waits for new framework copy");
