@@ -35,6 +35,7 @@
 #include "Mod.hpp"
 #include "vr/RenderingMethodSetting.hpp"
 #include "vr/SteamFrameInput.hpp"
+#include "vr/GamepadRecovery.hpp"
 #include "vr/ProSpiCameraProbe.hpp"
 #include "vr/ProSpiCameraFraming.hpp"
 #include "vr/ProSpiCelebrationFraming.hpp"
@@ -205,7 +206,7 @@ public:
     void on_pre_viewport_client_draw(void* viewport_client, void* viewport, void* canvas) override;
 
     void update_hmd_state(bool from_view_extensions = false, uint32_t frame_count = 0);
-    void update_action_states();
+    void update_action_states(bool from_stalled_xinput = false);
     void update_dpad_gestures();
 
     void reinitialize_renderer() {
@@ -941,8 +942,9 @@ public:
     }
 
     bool is_xinput_gamepad_active_within(std::chrono::seconds seconds) const {
-        return m_last_xinput_update.time_since_epoch().count() != 0 &&
-            (std::chrono::steady_clock::now() - m_last_xinput_update) <= seconds;
+        const auto last_update = m_last_xinput_update.load(std::memory_order_relaxed);
+        return last_update.time_since_epoch().count() != 0 &&
+            (std::chrono::steady_clock::now() - last_update) <= seconds;
     }
 
     bool is_controller_camera_conflict_guard_active() const;
@@ -1115,6 +1117,7 @@ private:
 
     bool detect_controllers();
     bool is_any_action_down();
+    bool can_recover_gamepad_input() const;
     void update_shf_auto_2d_mode(sdk::UGameEngine* engine);
     void update_dispatch_auto_2d_mode(sdk::UGameEngine* engine);
     void update_mixtape_auto_2d_mode(sdk::UGameEngine* engine);
@@ -1328,14 +1331,16 @@ private:
     vr::VRInputValueHandle_t m_right_joystick{};
 
     std::chrono::steady_clock::time_point m_last_controller_update{};
-    std::chrono::steady_clock::time_point m_last_xinput_update{};
-    std::chrono::steady_clock::time_point m_last_xinput_spoof_sent{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_xinput_update{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_xinput_spoof_sent{};
     std::chrono::steady_clock::time_point m_last_xinput_l3_r3_menu_open{};
     std::chrono::steady_clock::time_point m_last_interaction_display{};
-    std::chrono::steady_clock::time_point m_last_engine_tick{};
+    std::atomic<std::chrono::steady_clock::time_point> m_last_engine_tick{};
     std::chrono::steady_clock::time_point m_last_mod_frame{};
     std::chrono::steady_clock::time_point m_last_tick_gap_log{};
     std::atomic_bool m_has_observed_xinput{false};
+    std::mutex m_gamepad_recovery_mtx{};
+    uevr::input_recovery::GamepadRecovery m_gamepad_recovery{}; // protected by m_gamepad_recovery_mtx
 
     struct UILayerPoseTelemetrySnapshot {
         uint64_t sample_count{};
@@ -1485,7 +1490,7 @@ private:
     std::atomic<uint32_t> m_stalker2_transition_stress_events{0};
     std::atomic<uint32_t> m_stalker2_transition_deferred_frames{0};
 
-    uint32_t m_lowest_xinput_user_index{};
+    std::atomic_uint32_t m_lowest_xinput_user_index{};
 
     std::chrono::nanoseconds m_last_input_delay{};
     std::chrono::nanoseconds m_avg_input_delay{};
@@ -2816,7 +2821,7 @@ private:
     bool m_backbuffer_inconsistency{false};
     bool m_init_finished{false};
     bool m_has_hw_scheduling{false}; // hardware accelerated GPU scheduling
-    bool m_spoofed_gamepad_connection{false};
+    std::atomic_bool m_spoofed_gamepad_connection{false};
     bool m_aim_temp_disabled{false};
     bool m_subnautica2_save_thumbnail_guard_done{false};
     bool m_subnautica2_save_thumbnail_fallback_logged{false};

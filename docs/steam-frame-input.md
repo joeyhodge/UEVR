@@ -107,22 +107,50 @@ the adapter to an independently customized bridge.
 
 ## Saved customizations and testing
 
-Existing `bindings_frame_controller.json` and custom OpenXR profiles are never
-overwritten. An older/custom file may leave new touch actions unbound; `active`
-will then be false. Opt into the new controls by rebinding them in the runtime,
-or deliberately restoring just the Frame default after preserving customizations.
+OpenVR's `bindings_frame_controller.json` is automatically upgraded only when
+its complete saved JSON matches the initial stock Frame defaults. Current stock
+is not rewritten. Customized/partially edited, unreadable, malformed, duplicate-key,
+deeply nested, oversized or linked files are preserved. Publication uses a complete
+temporary file and same-directory rename, with the original bytes checked again
+before replacement; it never truncates the saved Frame file. Custom OpenXR profiles
+are unchanged. Custom files may leave new touch actions unbound (`active` is false);
+bind those controls in the runtime or deliberately restore just the Frame default.
 OpenVR's `bindings_oculus_touch.json` is upgraded only if the complete saved JSON
 matches the stock old or current defaults. Customized, unreadable, malformed or
 oversized Touch files are preserved; bind the extra actions manually or restore
-just the Touch defaults deliberately. Existing digital/gamepad mappings, poses,
-haptics and controller-focus/spoofing behavior are unchanged. Passive touches and
-the exposed grip axis do not activate spoofing.
+just the Touch defaults deliberately. Existing digital/gamepad mappings, poses
+and haptics are unchanged. Passive touches and the exposed grip axis do not activate
+spoofing.
+
+## Bounded gamepad recovery
+
+With controller/pause intent and no selected XInput poll for two seconds, device
+notification/window recovery uses 2/4/8/16/30-second retry delays, capped at 30
+seconds. A selected XInput poll resets the retry schedule; retries do not stop
+permanently. Recovery is suppressed unless OpenXR is ready and FOCUSED, or OpenVR
+is ready and `IsInputAvailable()` is true. A restarting runtime never recovers the
+window. Focus is rechecked immediately before window activation, outside the
+action mutex. Unfocused recovery probes are limited to one per 250 ms.
+
+If the engine has not ticked for over one second, XInput's action-sync fallback
+shares one 8 ms minimum interval across indices/callbacks and obeys the same focus
+gate. Recovery bookkeeping uses its own short critical section, not the mutex
+held during VR driver action updates. Normal engine-tick action updates, physical gamepad processing, rendering
+and runtime frame waits are not throttled. The separate OpenVR 30 ms restart
+heuristic is unchanged. A fallback action sync skips a busy action mutex rather
+than queuing more work behind the driver. These limits reduce redundant recovery
+work, not diagnose the cause of a game's high CPU usage. No new configuration
+setting is required.
 
 Offline tests cover both generated runtime mappings, click/touch parity,
 installed OpenVR driver components, neutral states, mixed/swapped controllers,
-profile invalidation, guarded 2.40 API storage, production Lua registration, and
-the optional bridge adapter. Hardware tests still need both runtimes, B/X click
+profile invalidation, guarded 2.40 API storage, production Lua registration,
+the optional bridge adapter, exact stock migration, failed/locked-file publication,
+retry backoff/focus, and concurrent stalled-engine fallback polling. Hardware
+tests still need both runtimes, dashboard closed/open/closed, reconnect, B/X click
 and touch, independent bumpers/grips, analog grip/trigger, reconnect, hand swap,
 and an existing Touch controller/profile comparison.
 
 Reference: <https://partner.steamgames.com/doc/steamhardware/steamframe/input>
+Input focus: <https://registry.khronos.org/OpenXR/specs/1.1/man/html/XrSessionState.html>
+and `IVRSystem::IsInputAvailable` in <https://github.com/ValveSoftware/openvr/blob/master/headers/openvr.h>.

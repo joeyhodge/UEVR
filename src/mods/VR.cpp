@@ -3,6 +3,7 @@
 
 #include "vr/ProSpiNativeFocusGuard.hpp"
 #include "vr/ControllerTouchBindings.hpp"
+#include "vr/StockFrameBindingMigration.hpp"
 
 #include <fstream>
 #include <cmath>
@@ -4316,10 +4317,28 @@ std::optional<std::string> VR::initialize_openvr() {
 std::optional<std::string> VR::initialize_openvr_input() {
     ZoneScopedN(__FUNCTION__);
 
+    {
+        std::scoped_lock _{m_gamepad_recovery_mtx};
+        m_gamepad_recovery.reset();
+    }
     const auto module_directory = Framework::get_persistent_dir();
 
     // write default actions and bindings with the static strings we have
     for (auto& it : m_binding_files) {
+        if (it.first == uevr::steam_frame::binding_file) {
+            const auto result = uevr::steam_frame::migrate_stock_defaults(module_directory / it.first, it.second);
+            using Result = uevr::steam_frame::MigrationResult;
+            if (result == Result::Upgraded) {
+                spdlog::info("Upgraded stock Steam Frame binding file {} with optional touch actions", it.first);
+            } else if (result == Result::Created) {
+                spdlog::info("Writing default binding file {}", it.first);
+            } else if (result == Result::Failed) {
+                spdlog::warn("Could not safely publish Steam Frame binding file {}; existing file was not overwritten", it.first);
+            } else if (result == Result::Preserved) {
+                spdlog::info("Keeping customized or unreadable Steam Frame binding file {}", it.first);
+            }
+            continue;
+        }
         if (it.first == uevr::controller_touch::openvr_file && std::filesystem::exists(module_directory / it.first) &&
             !uevr::controller_touch::can_upgrade_saved_defaults(module_directory / it.first, it.second)) {
             spdlog::info("Keeping customized Touch binding file {}; bind the optional touch actions manually if needed", it.first);
@@ -4655,6 +4674,10 @@ std::optional<std::string> VR::initialize_openxr() {
 std::optional<std::string> VR::initialize_openxr_input() {
     ZoneScopedN(__FUNCTION__);
 
+    {
+        std::scoped_lock _{m_gamepad_recovery_mtx};
+        m_gamepad_recovery.reset();
+    }
     if (auto err = m_openxr->initialize_actions(VR::actions_json)) {
         m_openxr->error = err.value();
         spdlog::error("[VR] {}", m_openxr->error.value());
@@ -4851,7 +4874,7 @@ bool VR::on_message(HWND wnd, UINT message, WPARAM w_param, LPARAM l_param) {
 
     if (message == WM_DEVICECHANGE && !m_spoofed_gamepad_connection) {
         spdlog::info("[VR] Received WM_DEVICECHANGE");
-        m_last_xinput_spoof_sent = std::chrono::steady_clock::now();
+        m_last_xinput_spoof_sent.store(std::chrono::steady_clock::now(), std::memory_order_relaxed);
     }
 
     return true;
@@ -4864,13 +4887,14 @@ void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE
 
     const auto now = std::chrono::steady_clock::now();
 
-    if (now - m_last_engine_tick > std::chrono::seconds(1)) {
+    const auto last_engine_tick = m_last_engine_tick.load(std::memory_order_relaxed);
+    if (now - last_engine_tick > uevr::input_recovery::GamepadRecovery::engine_stale_after) {
         const auto mod_frame_delta_ms = m_last_mod_frame.time_since_epoch().count() == 0
             ? -1ll
             : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_mod_frame).count();
-        const auto tick_delta_ms = m_last_engine_tick.time_since_epoch().count() == 0
+        const auto tick_delta_ms = last_engine_tick.time_since_epoch().count() == 0
             ? -1ll
-            : std::chrono::duration_cast<std::chrono::milliseconds>(now - m_last_engine_tick).count();
+            : std::chrono::duration_cast<std::chrono::milliseconds>(now - last_engine_tick).count();
 
         if (const auto runtime = get_runtime(); runtime != nullptr && runtime->is_openxr()) {
             if (const auto openxr = get_openxr_runtime(); openxr != nullptr) {
@@ -4893,7 +4917,7 @@ void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE
             SPDLOG_INFO_EVERY_N_SEC(1, "[VR] XInputGetState called, but engine tick hasn't been called in over a second. tick_delta_ms={} mod_frame_delta_ms={}", tick_delta_ms, mod_frame_delta_ms);
         }
 
-        update_action_states();
+        update_action_states(true);
     }
 
     if (*retval == ERROR_SUCCESS) {
@@ -4902,29 +4926,33 @@ void VR::on_xinput_get_state(uint32_t* retval, uint32_t user_index, XINPUT_STATE
         gamepad_snapturn(*state);
     }
 
-    if (now - m_last_xinput_update > std::chrono::seconds(2)) {
-        m_lowest_xinput_user_index = user_index;
-    }
-
-    if (user_index < m_lowest_xinput_user_index) {
-        m_lowest_xinput_user_index = user_index;
-        spdlog::info("[VR] Changed lowest XInput user index to {}", user_index);
-    }
-
-    if (user_index != m_lowest_xinput_user_index) {
-        if (!m_spoofed_gamepad_connection && is_using_controllers()) {
-            spdlog::info("[VR] XInputGetState called, but user index is {}", user_index);
+    {
+        std::scoped_lock _{m_gamepad_recovery_mtx};
+        if (now - m_last_xinput_update.load(std::memory_order_relaxed) > std::chrono::seconds(2)) {
+            m_lowest_xinput_user_index = user_index;
         }
 
-        return;
-    }
+        if (user_index < m_lowest_xinput_user_index) {
+            m_lowest_xinput_user_index = user_index;
+            spdlog::info("[VR] Changed lowest XInput user index to {}", user_index);
+        }
 
-    if (!m_spoofed_gamepad_connection) {
-        spdlog::info("[VR] Successfully spoofed gamepad connection @ {}", user_index);
+        if (user_index != m_lowest_xinput_user_index) {
+            if (!m_spoofed_gamepad_connection && is_using_controllers()) {
+                spdlog::info("[VR] XInputGetState called, but user index is {}", user_index);
+            }
+
+            return;
+        }
+
+        if (!m_spoofed_gamepad_connection) {
+            spdlog::info("[VR] Successfully spoofed gamepad connection @ {}", user_index);
+        }
+
+        m_last_xinput_update.store(now, std::memory_order_relaxed);
+        m_spoofed_gamepad_connection = true;
+        m_gamepad_recovery.observe_xinput_poll();
     }
-    
-    m_last_xinput_update = now;
-    m_spoofed_gamepad_connection = true;
 
     auto runtime = get_runtime();
 
@@ -7582,7 +7610,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     ZoneScopedN(__FUNCTION__);
 
     const auto now = std::chrono::steady_clock::now();
-    const auto previous_engine_tick = m_last_engine_tick;
+    const auto previous_engine_tick = m_last_engine_tick.load(std::memory_order_relaxed);
     const bool hitch_diagnostics_enabled = m_enable_hitch_diagnostics->value();
 
     m_cvar_manager->on_pre_engine_tick(engine, delta);
@@ -7598,7 +7626,7 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
         m_hitch_diagnostics_enabled_last_frame = true;
         record_hitch_snapshot_sample(now);
     }
-    m_last_engine_tick = now;
+    m_last_engine_tick.store(now, std::memory_order_relaxed);
 
     if (hitch_diagnostics_enabled && previous_engine_tick.time_since_epoch().count() != 0) {
         const auto tick_gap = now - previous_engine_tick;
@@ -13421,10 +13449,33 @@ void VR::update_hmd_state(bool from_view_extensions, uint32_t frame_count) {
     runtime->got_first_poses = true;
 }
 
-void VR::update_action_states() {
+bool VR::can_recover_gamepad_input() const {
+    const auto runtime = get_runtime();
+    if (runtime == nullptr) { return false; }
+    if (runtime->is_openxr()) {
+        const auto openxr = get_openxr_runtime();
+        if (openxr == nullptr) { return false; }
+        std::unique_lock focus_lock{openxr->event_mtx, std::try_to_lock};
+        return focus_lock.owns_lock() && uevr::input_recovery::input_focus_allows_recovery(
+            openxr->ready(), openxr->wants_reinitialize, openxr->session_state == XR_SESSION_STATE_FOCUSED);
+    }
+    if (runtime->is_openvr()) {
+        const auto openvr = get_openvr_runtime();
+        return openvr != nullptr && openvr->ready() && !openvr->wants_reinitialize &&
+            openvr->hmd != nullptr && openvr->hmd->IsInputAvailable();
+    }
+    return false;
+}
+
+void VR::update_action_states(bool from_stalled_xinput) {
     ZoneScopedN(__FUNCTION__);
 
-    std::scoped_lock _{m_actions_mtx};
+    std::unique_lock action_lock{m_actions_mtx, std::defer_lock};
+    if (from_stalled_xinput) {
+        if (!action_lock.try_lock()) { return; }
+    } else {
+        action_lock.lock();
+    }
 
     auto runtime = get_runtime();
 
@@ -13432,6 +13483,13 @@ void VR::update_action_states() {
         return;
     }
 
+    if (from_stalled_xinput) {
+        std::scoped_lock recovery_lock{m_gamepad_recovery_mtx};
+        if (!m_gamepad_recovery.request_stalled_poll(std::chrono::steady_clock::now(),
+            m_last_engine_tick.load(std::memory_order_relaxed), [this]() { return can_recover_gamepad_input(); })) {
+            return;
+        }
+    }
     static bool once = true;
 
     if (once) {
@@ -13474,19 +13532,21 @@ void VR::update_action_states() {
         actively_using_controller = true;
     }
 
-    const auto last_xinput_update_is_late = std::chrono::steady_clock::now() - m_last_xinput_update >= std::chrono::seconds(2);
-    const auto should_be_spoofing = (actively_using_controller || get_runtime()->handle_pause);
+    bool retry_gamepad = false;
+    {
+        std::scoped_lock recovery_lock{m_gamepad_recovery_mtx};
+        const auto recovery_now = std::chrono::steady_clock::now();
+        const auto last_xinput_update_is_late = recovery_now - m_last_xinput_update.load(std::memory_order_relaxed) >=
+            uevr::input_recovery::GamepadRecovery::xinput_stale_after;
+        const auto should_be_spoofing = (actively_using_controller || get_runtime()->handle_pause);
 
-    if (m_spoofed_gamepad_connection && last_xinput_update_is_late && should_be_spoofing) {
-        m_spoofed_gamepad_connection = false;
-    }
+        if (m_spoofed_gamepad_connection && last_xinput_update_is_late && should_be_spoofing) {
+            m_spoofed_gamepad_connection = false;
+        }
 
-    if (!m_spoofed_gamepad_connection && last_xinput_update_is_late && should_be_spoofing) {
-        spdlog::info("[VR] Attempting to spoof gamepad connection");
-        g_framework->post_message(WM_DEVICECHANGE, 0, 0);
-        g_framework->activate_window();
-
-        m_last_xinput_spoof_sent = std::chrono::steady_clock::now();
+        retry_gamepad = !m_spoofed_gamepad_connection && m_gamepad_recovery.request_retry(recovery_now,
+            last_xinput_update_is_late, should_be_spoofing, [this]() { return can_recover_gamepad_input(); });
+        if (retry_gamepad) { m_last_xinput_spoof_sent.store(recovery_now, std::memory_order_relaxed); }
     }
 
     /*if (m_recenter_view_key->is_key_down_once()) {
@@ -13505,6 +13565,15 @@ void VR::update_action_states() {
     }
 
     update_dpad_gestures();
+
+    // Window activation can synchronously call another thread's window proc.
+    // Never make that call while holding the action lock needed by XInput.
+    action_lock.unlock();
+    if (retry_gamepad && !m_spoofed_gamepad_connection && can_recover_gamepad_input()) {
+        spdlog::info("[VR] Attempting to spoof gamepad connection");
+        g_framework->post_message(WM_DEVICECHANGE, 0, 0);
+        g_framework->activate_window();
+    }
 }
 
 void VR::update_dpad_gestures() {
@@ -14642,7 +14711,7 @@ void VR::on_frame() {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    const auto is_allowed_draw_window = now - m_last_xinput_update < std::chrono::seconds(2);
+    const auto is_allowed_draw_window = now - m_last_xinput_update.load(std::memory_order_relaxed) < std::chrono::seconds(2);
 
     if (!is_allowed_draw_window) {
         m_rt_modifier.draw = false;

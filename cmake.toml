@@ -205,6 +205,29 @@ add_test(NAME steam-frame-input-tests COMMAND steam-frame-input-tests "${CMAKE_C
 set_tests_properties(steam-frame-input-tests PROPERTIES TIMEOUT 30)
 """
 
+[target.stock-frame-migration-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/StockFrameMigrationTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+link-libraries = ["nlohmann_json"]
+cmake-after = """
+add_test(NAME stock-frame-migration-tests COMMAND stock-frame-migration-tests)
+set_tests_properties(stock-frame-migration-tests PROPERTIES TIMEOUT 30)
+"""
+
+[target.gamepad-recovery-tests]
+condition = "compatibility-policy-tests"
+type = "executable"
+sources = ["tests/GamepadRecoveryTests.cpp"]
+include-directories = ["src/"]
+compile-features = ["cxx_std_23"]
+cmake-after = """
+add_test(NAME gamepad-recovery-tests COMMAND gamepad-recovery-tests "${CMAKE_CURRENT_SOURCE_DIR}")
+set_tests_properties(gamepad-recovery-tests PROPERTIES TIMEOUT 30)
+"""
+
 [target.diagnostic-safety-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
