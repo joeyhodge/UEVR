@@ -88,6 +88,7 @@
 #include "DuneFrameHandoffDiscovery.hpp"
 #include "DuneRendererAbi.hpp"
 #include "DuneNativeTransaction.hpp"
+#include "DuneSmartGI.hpp"
 #include "HalloweenRenderTargets.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "GalacticRacerNativeFix.hpp"
@@ -1689,10 +1690,14 @@ bool dune_native_fix_renderer_resolver_is_current_game() {
     return result;
 }
 
+bool validated_dune_frame_handoff();
+
 bool dune_source_view_extension_is_current_game() {
     static const bool result = []() {
         const auto exe_path = utility::get_module_pathw(utility::get_executable());
-        return exe_path && uevr::games::is_dune_awakening_source_view_extension_path(*exe_path);
+        if (!exe_path) { return false; }
+        if (uevr::games::is_dune_awakening_source_view_extension_path(*exe_path)) { return true; }
+        return uevr::games::is_dune_awakening_gdk_executable_path(*exe_path) && validated_dune_frame_handoff();
     }();
 
     return result;
@@ -9473,7 +9478,7 @@ bool validated_dune_frame_handoff() {
         const auto module = utility::get_executable();
         const auto path = utility::get_module_pathw(module);
         const auto version = sdk::get_file_version_info();
-        if (!path || !uevr::games::is_dune_ue521_frame_handoff_runtime(
+        if (!path || !uevr::games::is_dune_ue521_relocatable_runtime(
                 *path, version.dwFileVersionMS, version.dwFileVersionLS)) { return false; }
         const auto base = reinterpret_cast<uintptr_t>(module);
         IMAGE_DOS_HEADER dos{};
@@ -9482,7 +9487,8 @@ bool validated_dune_frame_handoff() {
             dos.e_lfanew <= 0 || dos.e_lfanew > 0x1000 ||
             !read_dune_frame_memory(base + dos.e_lfanew, &nt, sizeof(nt)) ||
             nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) { return false; }
-        if (uevr::dune_frame::validate_binary(base, nt.FileHeader.TimeDateStamp,
+        const bool is_gdk = uevr::games::is_dune_awakening_gdk_executable_path(*path);
+        if (!is_gdk && uevr::dune_frame::validate_binary(base, nt.FileHeader.TimeDateStamp,
                 nt.OptionalHeader.SizeOfImage, read_dune_frame_memory)) { return true; }
 
         // One-time, read-only discovery. Follow verified calls rather than
@@ -9493,6 +9499,10 @@ bool validated_dune_frame_handoff() {
         if (!renderer || !bridge || !read_dune_frame_memory(*renderer, renderer_code.data(), renderer_code.size())) {
             SPDLOG_WARN("[Dune][FrameHandoff] Missing readable renderer or unique command bridge; RDG handoff remains disabled (renderer={} bridge={})",
                 renderer.has_value(), bridge.has_value());
+            return false;
+        }
+        if (is_gdk && !uevr::dune_frame::valid_begin_family_callback(renderer_code)) {
+            SPDLOG_WARN("[Dune][FrameHandoff] GDK game-thread family callback did not validate; no Win64 mapping will be inherited");
             return false;
         }
         const uevr::dune_frame::CodeImage image{base, nt.OptionalHeader.SizeOfImage};
@@ -9548,8 +9558,9 @@ bool dune_native_transaction_runtime() {
     static const bool matches = [] {
         const auto path = utility::get_module_pathw(utility::get_executable());
         const auto version = sdk::get_file_version_info();
-        return path && uevr::games::is_dune_ue521_frame_handoff_runtime(
-            *path, version.dwFileVersionMS, version.dwFileVersionLS);
+        return path && uevr::games::is_dune_ue521_relocatable_runtime(
+            *path, version.dwFileVersionMS, version.dwFileVersionLS) &&
+            (!uevr::games::is_dune_awakening_gdk_executable_path(*path) || validated_dune_frame_handoff());
     }();
     return matches;
 }
@@ -9589,6 +9600,122 @@ bool valid_dune_frame_object(uintptr_t object) {
         read_dune_frame_memory(table, &function, sizeof(function)) &&
         utility::get_module_within(reinterpret_cast<void*>(function)).value_or(nullptr) == module &&
         is_executable_process_range(function, 1);
+}
+
+safetyhook::InlineHook g_dune_smartgi_getter_hook{};
+std::atomic<bool> g_dune_smartgi_ready{false};
+
+bool dune_smartgi_title_runtime() {
+    static const bool matches = [] {
+        const auto path = utility::get_module_pathw(utility::get_executable());
+        const auto version = sdk::get_file_version_info();
+        return path && uevr::games::is_dune_ue521_relocatable_runtime(
+            *path, version.dwFileVersionMS, version.dwFileVersionLS);
+    }();
+    return matches;
+}
+
+void* dune_smartgi_getter_hook(void* output, void* graph, void* scene_info, void* view) {
+    namespace s = uevr::dune_smartgi;
+    // The trampoline is immutable until process shutdown; no mutex, allocation,
+    // history cache or GPU wait is added to the healthy getter path.
+    const auto result = g_dune_smartgi_getter_hook.unsafe_call<void*>(output, graph, scene_info, view);
+    const auto& vr = VR::get();
+    const auto* runtime = vr != nullptr ? vr->get_runtime() : nullptr;
+    if (g_framework == nullptr || runtime == nullptr || result != output ||
+        !s::enabled(g_dune_smartgi_ready.load(std::memory_order_acquire), g_framework->is_dx12(),
+            runtime->is_openxr(), vr->is_hmd_active(), vr->is_using_native_stereo())) { return result; }
+    int32_t count{};
+    const auto address = reinterpret_cast<uintptr_t>(output);
+    if (!s::pointer(address) || !read_dune_frame_memory(address + offsetof(s::ClipmapInfo, count), &count, sizeof(count)) ||
+        count != 0) { return result; }
+    const bool singleton = dune_native_transaction_runtime() && vr->is_native_stereo_fix_same_pass_enabled() &&
+        validated_dune_frame_handoff();
+    const auto primary = s::missing_secondary_source(reinterpret_cast<uintptr_t>(view), singleton,
+        read_dune_frame_memory, valid_dune_frame_object);
+    if (!primary) { return result; }
+    const auto info = s::read_primary_clipmaps(*primary, read_dune_frame_memory);
+    if (!info || !is_writable_process_range(address, sizeof(*info))) {
+        SPDLOG_WARN_ONCE("[Dune][SmartGI] Missing right-eye clipmaps have no valid current primary source; engine parameters remain unchanged");
+        return result;
+    }
+    std::memcpy(output, &*info, sizeof(*info));
+    SPDLOG_INFO_ONCE("[Dune][SmartGI] Supplied missing secondary lighting inputs from the authored primary link (clipmaps={} dimensions={}/{}/{}); eye states and GPU ownership are unchanged",
+        info->count, info->dimensions[0], info->dimensions[1], info->dimensions[2]);
+    return result;
+}
+
+void attempt_hook_dune_smartgi() {
+    namespace s = uevr::dune_smartgi;
+    if (g_framework == nullptr || !g_framework->is_dx12() || !dune_smartgi_title_runtime()) { return; }
+    static bool attempted{};
+    if (std::exchange(attempted, true)) { return; }
+    if (!validated_dune_frame_handoff()) {
+        SPDLOG_WARN("[Dune][SmartGI] Current renderer/family ABI did not validate; no clipmap hook installed");
+        return;
+    }
+    const auto module = utility::get_executable();
+    const auto base = reinterpret_cast<uintptr_t>(module);
+    IMAGE_DOS_HEADER dos{};
+    IMAGE_NT_HEADERS64 nt{};
+    if (!read_dune_frame_memory(base, &dos, sizeof(dos)) || dos.e_magic != IMAGE_DOS_SIGNATURE ||
+        dos.e_lfanew <= 0 || dos.e_lfanew > 0x1000 ||
+        !read_dune_frame_memory(base + dos.e_lfanew, &nt, sizeof(nt)) ||
+        nt.Signature != IMAGE_NT_SIGNATURE || nt.OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) { return; }
+    const uevr::dune_frame::CodeImage image{base, nt.OptionalHeader.SizeOfImage};
+    const auto code_read = [&](uintptr_t at, void* out, size_t size) {
+        return image.contains(at, size) && is_executable_process_range(at, size) && read_dune_frame_memory(at, out, size);
+    };
+    const auto entry_length = [&](uintptr_t at) -> std::optional<size_t> {
+        DWORD64 owner{};
+        const auto fn = RtlLookupFunctionEntry(at, &owner, nullptr);
+        if (!fn || owner != base || base + fn->BeginAddress != at || fn->EndAddress <= fn->BeginAddress ||
+            !image.contains(at, fn->EndAddress - fn->BeginAddress)) { return {}; }
+        return fn->EndAddress - fn->BeginAddress;
+    };
+    const auto constructor = sdk::FSceneView::get_constructor_address();
+    const auto ctor_length = constructor ? entry_length(*constructor) : std::nullopt;
+    std::array<uint8_t, uevr::dune_native::maximum_constructor_bytes> constructor_code{};
+    if (!ctor_length || *ctor_length > constructor_code.size() ||
+        !code_read(*constructor, constructor_code.data(), *ctor_length) ||
+        !s::valid_exposure_constructor(image, *constructor, std::span{constructor_code}.first(*ctor_length), code_read)) {
+        SPDLOG_WARN("[Dune][SmartGI] Authored primary-eye link did not validate in this binary; no clipmap hook installed");
+        return;
+    }
+    const auto getter = find_unique_dune_code_pattern(module,
+        "48 83 EC 58 45 33 D2 4D 8B D9 4C 89 11 4C 8B C1 44 89 51 08 4C 89 51 10");
+    const auto lookup = [&](uintptr_t at) -> std::optional<s::UnwindFunction> {
+        DWORD64 owner{};
+        const auto fn = RtlLookupFunctionEntry(at, &owner, nullptr);
+        if (!fn || owner != base) { return {}; }
+        return s::UnwindFunction{fn->BeginAddress, fn->EndAddress, fn->UnwindData};
+    };
+    const auto getter_owner = [&](uintptr_t entry, uintptr_t at, size_t) {
+        return s::getter_segment_owner(image, entry, at, read_dune_frame_memory, lookup);
+    };
+    std::array<uint8_t, s::getter_code.size()> code{};
+    if (!getter || !s::valid_getter_unwind(*getter, entry_length, getter_owner) ||
+        !code_read(*getter, code.data(), code.size()) || !s::valid_getter(code)) {
+        SPDLOG_WARN("[Dune][SmartGI] Complete read-only getter contract did not validate in this binary; no clipmap hook installed");
+        return;
+    }
+    int32_t displacement{};
+    std::memcpy(&displacement, code.data() + s::getter_displacements[0], sizeof(displacement));
+    const auto constant = static_cast<uintptr_t>(*getter + s::half_constant_instruction_end + int64_t{displacement});
+    double half{};
+    if (!image.contains(constant, sizeof(half)) || !read_dune_frame_memory(constant, &half, sizeof(half)) || half != 0.5) {
+        SPDLOG_WARN("[Dune][SmartGI] Clipmap scale constant did not validate; no clipmap hook installed");
+        return;
+    }
+    auto hook = safetyhook::create_inline(reinterpret_cast<void*>(*getter), &dune_smartgi_getter_hook,
+        safetyhook::InlineHook::StartDisabled);
+    if (!hook) { SPDLOG_WARN("[Dune][SmartGI] Cannot prepare getter hook; original behavior retained"); return; }
+    g_dune_smartgi_getter_hook = std::move(hook);
+    if (!g_dune_smartgi_getter_hook.enable().has_value()) {
+        SPDLOG_WARN("[Dune][SmartGI] Cannot enable getter hook; original behavior retained"); return;
+    }
+    g_dune_smartgi_ready.store(true, std::memory_order_release);
+    SPDLOG_INFO("[Dune][SmartGI] Independently validated primary link and CPU-only getter at {:x}; Native/OpenXR missing-input repair ready", *getter);
 }
 
 struct DuneFrameCommands {
@@ -16686,6 +16813,7 @@ bool FFakeStereoRenderingHook::hook() {
     attempt_hook_dead_island_ue425_hair_light_indices();
     attempt_hook_bodycam_update_pre_exposure();
     attempt_hook_sifu_native_mesh_commands();
+    attempt_hook_dune_smartgi();
     attempt_hook_ktjl_cloud_output();
     attempt_hook_ktjl_stereo_cloud();
     attempt_hook_ktjl_stereo_fog();
