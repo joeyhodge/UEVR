@@ -32,6 +32,20 @@ inline constexpr std::array<uint8_t, 21> dispatcher_prefix{
     0x48,0x8B,0xDA,0x4C,0x8B,0xF1};
 inline constexpr size_t dispatcher_scan_size = 0x200;
 
+// GDK cannot inherit a Win64 source mapping. Its own plural renderer must
+// also prove the game-thread family argument at BeginRenderViewFamily slot 5.
+inline constexpr auto begin_family_code = std::to_array<uint8_t>({
+    0x49,0x8B,0x1F,0x45,0x33,0xF6,0x44,0x39,0xB3,0xB8,0,0,0,0x7E,0x26,0x33,0xF6,
+    0x48,0x8B,0x83,0xB0,0,0,0,0x48,0x8B,0xD3,0x48,0x8B,0x0C,0x06,0x48,0x8B,0x01,
+    0xFF,0x50,0x28,0x41,0xFF,0xC6,0x48,0x8D,0x76,0x10,0x44,0x3B,0xB3,0xB8,0,0,0,0x7C,0xDC});
+
+inline bool valid_begin_family_callback(std::span<const uint8_t> code) {
+    if (code.size() > dune_renderer::maximum_abi_bytes) { return false; }
+    const auto found = std::search(code.begin(), code.end(), begin_family_code.begin(), begin_family_code.end());
+    return found != code.end() &&
+        std::search(found + 1, code.end(), begin_family_code.begin(), begin_family_code.end()) == code.end();
+}
+
 template <size_t N>
 constexpr bool displacement_byte(size_t index, const std::array<size_t, N>& displacements) {
     for (auto start : displacements) {
