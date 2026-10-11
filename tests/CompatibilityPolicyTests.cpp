@@ -13,6 +13,7 @@
 #include "mods/GameSpecific.hpp"
 #include "utility/UObjectScanBudget.hpp"
 #include "mods/vr/BodycamTextureLayout.hpp"
+#include "mods/vr/HellraiserCaptureLayout.hpp"
 #include "mods/vr/BreathedgeInventoryPolicy.hpp"
 #include "mods/vr/Borderlands4Slate.hpp"
 #include "mods/vr/UE58OwnedUITexture.hpp"
@@ -449,6 +450,32 @@ void test_version_gates() {
                L"C:\\Games\\Other-Win64-Shipping.exe", L"5.6.1", 0x00050006, 0x00010000, true, true),
         "other UE5.6.1 games must retain their existing capture discovery");
 
+    const auto hellraiser = [](std::wstring_view path, std::wstring_view version,
+        uint32_t ms, uint32_t ls, bool dx12 = true, bool native = true, bool fix = true) {
+        return uevr::games::should_use_hellraiser_ue561_native_fix_capture_layout(
+            path, version, ms, ls, dx12, native, fix);
+    };
+    expect(hellraiser(L"C:\\Games\\Hellraiser-Win64-Shipping.exe", L"5.6.1", 0, 0),
+        "Hellraiser UE5.6.1 Native Fix must validate its full owned capture chain");
+    expect(hellraiser(L"C:/Games/HELLRAISER-WIN64-SHIPPING.EXE", L"0.00", 0x00050006, 0x00010000),
+        "Hellraiser must use the numeric file version when its embedded version is absent");
+    expect(hellraiser(L"Hellraiser-Win64-Shipping.exe", L"unknown", 0x00050006, 0x00010000),
+        "Hellraiser's bare executable name must match the exact title gate");
+    expect(!hellraiser(L"Other-Win64-Shipping.exe", L"5.6.1", 0x00050006, 0x00010000),
+        "other stock UE5.6.1 games must not inherit Hellraiser's capture repair");
+    expect(!hellraiser(L"OtherHellraiser-Win64-Shipping.exe", L"5.6.1", 0, 0),
+        "a partial executable-name match must not enable Hellraiser's capture repair");
+    expect(!hellraiser(L"Hellraiser-Win64-Shipping.exe", L"5.6.1", 0, 0, false),
+        "Hellraiser DX11 must retain its original discovery path");
+    expect(!hellraiser(L"Hellraiser-Win64-Shipping.exe", L"5.6.1", 0, 0, true, false),
+        "Synced, Ghost Fix and synthetic rendering must not enter Hellraiser Native Fix discovery");
+    expect(!hellraiser(L"Hellraiser-Win64-Shipping.exe", L"5.6.1", 0, 0, true, true, false),
+        "ordinary Native must not enable the capture repair");
+    expect(!hellraiser(L"Hellraiser-Win64-Shipping.exe", L"5.7.1", 0x00050006, 0x00010000),
+        "a contradictory detected version must not be overridden by file metadata");
+    expect(!hellraiser(L"Hellraiser-Win64-Shipping.exe", L"unknown", 0x00050006, 0x00020000),
+        "an unverified Hellraiser engine patch must retain its existing path");
+
     expect(uevr::games::stalker2_native_fix_requires_same_pass(
                L"C:\\Games\\Stalker2-Win64-Shipping.exe", L"5.1.1", 0),
         "legacy Stalker2 Native Fix must retain the stable same-pass handoff");
@@ -792,6 +819,140 @@ void test_ue58_render_pose_fallback() {
     input.runtime_ready = false;
     expect(!should_use_ue58_render_pose_fallback(input),
         "an unready OpenXR runtime must fail the pre-view pose fallback closed");
+}
+
+void test_hellraiser_owned_capture_layout() {
+    namespace layout = uevr::hellraiser_capture;
+    constexpr uintptr_t base = 0x10000, owner = 0x10100, resource = 0x11000, unrelated = 0x12000;
+    constexpr uintptr_t rhi = 0x13000, d3d = 0x14000, native = 0x15000;
+    constexpr uintptr_t resource_table = 0x18000, target_table = 0x18100, rhi_table = 0x18200;
+    constexpr uintptr_t target_fn = 0x19000, shader_fn = 0x19100, gamma_fn = 0x19200, native_fn = 0x19300;
+    std::vector<uint8_t> memory(0x10000);
+    auto put = [&](uintptr_t address, const auto& value) {
+        std::memcpy(memory.data() + address - base, &value, sizeof(value));
+    };
+    size_t reads{};
+    bool executable_code = true;
+    bool module_tables = true;
+    auto read = [&](uintptr_t address, auto& out) {
+        ++reads;
+        if (address < base || address - base > memory.size() || sizeof(out) > memory.size() - (address - base)) {
+            return false;
+        }
+        std::memcpy(&out, memory.data() + address - base, sizeof(out));
+        return true;
+    };
+    auto module_owned = [&](uintptr_t address) { return module_tables && address >= resource_table && address < 0x1a000; };
+    auto executable = [&](uintptr_t address, size_t size) {
+        return executable_code && address >= target_fn && address + size <= 0x1a000;
+    };
+    const char* reason{};
+    auto find = [&](uintptr_t target = 0x10100, uint32_t width = 1920, uint32_t height = 1080) {
+        return layout::find_resource(target, width, height, rhi_table, read, module_owned, executable, reason);
+    };
+    put(resource, resource_table);
+    put(resource + layout::render_target_offset, target_table);
+    put(resource + layout::owner_offset, owner);
+    put(resource + layout::texture_rhi_offset, rhi);
+    put(resource + layout::render_target_texture_offset, rhi);
+    put(resource + layout::width_offset, uint32_t{1920});
+    put(resource + layout::height_offset, uint32_t{1080});
+    put(rhi, rhi_table);
+    put(rhi + layout::d3d_resource_offset, d3d);
+    put(d3d + layout::native_resource_offset, native);
+    put(target_table + 2 * sizeof(uintptr_t), target_fn);
+    put(target_table + 4 * sizeof(uintptr_t), shader_fn);
+    put(target_table + 6 * sizeof(uintptr_t), gamma_fn);
+    put(rhi_table + 5 * sizeof(uintptr_t), native_fn);
+    put(target_fn, layout::target_accessor);
+    put(shader_fn, layout::shader_accessor);
+    put(gamma_fn, layout::gamma_accessor);
+    put(native_fn, layout::native_accessor);
+
+    // Reproduce the scanner's tempting +0x50/+0xb0 false positive. Only the
+    // genuine +0x120/+0x128 owned pair is allowed to publish an identity.
+    put(owner + 0x50, unrelated);
+    put(unrelated + 0xb0, rhi);
+    expect(!find(), "unrelated nested RHI pointers must not substitute for a pending capture resource");
+    put(owner + layout::private_resource_offset, resource);
+    expect(!find(), "a missing render-thread mirror must not publish the game-thread resource");
+    put(owner + layout::render_thread_resource_offset, unrelated);
+    expect(!find(), "incoherent GT/RT resources must wait rather than seed cached offsets");
+    put(owner + layout::render_thread_resource_offset, resource);
+    const auto ready = find();
+    expect(ready && ready->resource == resource && ready->rhi_texture == rhi && ready->native_resource == native,
+        "the complete source-proved capture must bypass the unrelated earlier pointer and stale cached offsets");
+    reads = 0;
+    expect(find().has_value() && reads < 30, "capture validation must be bounded, not scan the object or image");
+    expect(!find(0) && !find((std::numeric_limits<uintptr_t>::max)() - 7),
+        "null and overflowing owner ranges must fail before reading pointers");
+    expect(!find(owner, 0, 1080) && !find(owner, 1920, 65537), "invalid eye dimensions must fail closed");
+    expect(!find(owner, 2472, 2416), "a real texture with the wrong eye extent is not a valid capture");
+
+    put(resource + layout::owner_offset, owner + 8);
+    expect(!find(), "an unrelated object's resource must fail the owner round trip");
+    put(resource + layout::owner_offset, owner);
+    put(resource + layout::render_target_texture_offset, uintptr_t{});
+    expect(!find(), "an incomplete render-target reference must remain pending");
+    put(resource + layout::render_target_texture_offset, rhi + 8);
+    expect(!find(), "separated shader/target references must not publish this single-sample capture");
+    put(resource + layout::render_target_texture_offset, rhi);
+    put(rhi, rhi_table + 8);
+    expect(!find(), "another RHI vtable must not be trusted by its member offsets alone");
+    put(rhi, rhi_table);
+    module_tables = false;
+    expect(!find(), "heap or external-module vtables must fail accessor proof");
+    module_tables = true;
+    executable_code = false;
+    expect(!find(), "matching bytes in non-executable memory must not establish an accessor ABI");
+    executable_code = true;
+    for (const auto function : {target_fn, shader_fn, gamma_fn, native_fn}) {
+        put(function, uint8_t{0xcc});
+        expect(!find(), "every render-target and native-resource accessor must pass independent code proof");
+        put(function, uint8_t{function == native_fn ? uint8_t{0x40} : uint8_t{0x48}});
+    }
+    put(rhi + layout::d3d_resource_offset, uintptr_t{});
+    expect(!find(), "a pending direct native resource must not execute a linked-texture fallback");
+    put(rhi + layout::d3d_resource_offset, d3d);
+    put(d3d + layout::native_resource_offset, uintptr_t{});
+    expect(!find(), "a pending D3D12 texture must not be published");
+    put(d3d + layout::native_resource_offset, native);
+    expect(find() == ready, "pending initialization must recover without a latched false positive");
+
+    constexpr layout::NativeDescriptor valid{0x50000, 1920, 1080, 1, 1, 1, true, true, true, false, false};
+    expect(layout::valid_descriptor(valid, valid.device, 1920, 1080), "a matching BGRA capture device/descriptor must pass");
+    expect(!layout::valid_descriptor(valid, 0x60000, 1920, 1080), "a different D3D12 device must fail closed");
+    expect(!layout::valid_descriptor(valid, 0, 1920, 1080), "an absent hooked device must fail closed");
+    expect(!layout::valid_descriptor(valid, valid.device, 1920, 1200), "mismatched native extents must fail closed");
+    for (int field = 0; field < 8; ++field) {
+        auto invalid = valid;
+        switch (field) {
+        case 0: invalid.mips = 2; break;
+        case 1: invalid.array_size = 2; break;
+        case 2: invalid.samples = 4; break;
+        case 3: invalid.texture2d = false; break;
+        case 4: invalid.bgra = false; break;
+        case 5: invalid.render_target = false; break;
+        case 6: invalid.depth_stencil = true; break;
+        case 7: invalid.deny_shader_resource = true; break;
+        }
+        expect(!layout::valid_descriptor(invalid, valid.device, 1920, 1080),
+            "wrong format, usage, sample count, mip count or array size must reject the native target");
+    }
+
+    layout::StableResource stability;
+    if (ready) {
+        const layout::Observation observation{1, *ready};
+        expect(!stability.observe(observation) && stability.observe(observation),
+            "two coherent observations are required before capture offset publication");
+        expect(!stability.observe(std::nullopt) && !stability.observe(observation),
+            "a rejection must discard the previous readiness observation");
+        expect(!stability.observe(layout::Observation{2, *ready}), "another generation must relearn readiness");
+        auto changed = *ready;
+        changed.native_resource += 8;
+        expect(!stability.observe(layout::Observation{2, changed}), "native resource replacement must reset readiness");
+        expect(!stability.observe(layout::Observation{0, *ready}), "a zero generation must never publish");
+    }
 }
 
 void test_bodycam_owned_texture_layout() {
@@ -2271,6 +2432,7 @@ int main(int argc, char** argv) {
     test_stalker2_lazy_ghost_bootstrap();
     test_ue58_render_pose_fallback();
     test_bodycam_owned_texture_layout();
+    test_hellraiser_owned_capture_layout();
     test_bodycam_native_fix_pre_exposure_pairing();
     test_ue58_pooled_slate_fallback();
     test_ue58_owned_ui_resource();
