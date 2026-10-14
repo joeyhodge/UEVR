@@ -262,6 +262,82 @@ void setter_validation() {
     auto moved = captured;
     moved[29] ^= 0x7f;
     require(visibility_setter(moved, 0x14c, 0x20), "different cookie RVA remains valid");
+
+    const auto prospi2025 = hex(
+        "48895c2418488974242055574156488d6c24b94881ec00010000488b05877ee9eb4831e048894537"
+        "4180f8024889cf0fb6894c010000410fb6f00f94d30fb6c1c0e805440fb6f2240138c274258d46ff3c01"
+        "0fb6c20f96d380e1dfc0e00508c1488b07888f4c0100004889f9ff9070040000");
+    require(visibility_setter(prospi2025, 0x14c, 0x20), "2025 relocated setter retains the validated flag/callback contract");
+    require(!visibility_setter(prospi2025, 0x14d, 0x20), "2025 reflected offset remains required");
+    require(!visibility_setter(prospi2025, 0x14c, 0x10), "2025 reflected visibility mask remains required");
+    for (size_t size{}; size < prospi2025.size(); ++size) {
+        require(!visibility_setter(std::span{prospi2025}.first(size), 0x14c, 0x20), "truncated 2025 body rejected");
+    }
+    const auto thunk = hex("e94b77bc1f");
+    require(visibility_thunk_target(thunk, 0x14495f550) == 0x164526ca0, "captured 2025 direct leaf jump decoded");
+    require(!visibility_setter(thunk, 0x14c, 0x20), "leaf jump does not substitute for setter-body proof");
+    for (size_t size{}; size < thunk.size(); ++size) {
+        require(!visibility_thunk_target(std::span{thunk}.first(size), 0x14495f550), "truncated jump rejected");
+    }
+    require(visibility_thunk_target(hex("e9fbffffff"), 100) == 100, "cycle is decoded for the owner walk to reject");
+    require(!visibility_thunk_target(hex("ff25000000"), 100), "indirect and external-hook trampolines are not followed");
+    require(!visibility_thunk_target(thunk, (std::numeric_limits<uintptr_t>::max)() - 4), "jump next-address overflow rejected");
+    require(!visibility_thunk_target(hex("e97fffffff"), 0), "negative jump address underflow rejected");
+    require(!visibility_thunk_target(hex("e9ffffff7f"), (std::numeric_limits<uintptr_t>::max)() - 5), "positive jump overflow rejected");
+
+    struct CodeEntry {
+        uintptr_t address;
+        std::vector<uint8_t> code;
+        bool exact_function{}, permitted{true};
+    };
+    std::vector<CodeEntry> entries;
+    std::vector<uintptr_t> inspected;
+    const auto inspect = [&](uintptr_t address) -> std::optional<VisibilityCodeEntry> {
+        inspected.push_back(address);
+        const auto it = std::find_if(entries.begin(), entries.end(),
+            [address](const auto& entry) { return entry.address == address; });
+        return it != entries.end() && it->permitted ?
+            std::optional<VisibilityCodeEntry>{{it->code, it->exact_function}} : std::nullopt;
+    };
+    const auto resolve = [&](uintptr_t address) {
+        inspected.clear();
+        return visibility_setter_entry(address, 0x14c, 0x20, inspect);
+    };
+    const auto near_jump = [](uintptr_t from, uintptr_t to) {
+        const auto distance = static_cast<int64_t>(to) - static_cast<int64_t>(from) - 5;
+        require(distance >= INT32_MIN && distance <= INT32_MAX, "synthetic jump fits rel32");
+        const auto bits = std::bit_cast<uint32_t>(static_cast<int32_t>(distance));
+        return std::vector<uint8_t>{0xe9, static_cast<uint8_t>(bits), static_cast<uint8_t>(bits >> 8),
+            static_cast<uint8_t>(bits >> 16), static_cast<uint8_t>(bits >> 24)};
+    };
+    constexpr uintptr_t first = 0x1000, second = 0x2000, third = 0x3000, setter = 0x4000;
+    entries = {{setter, captured, true}};
+    require(resolve(setter) == setter && inspected.size() == 1, "original direct eBaseball setter remains accepted");
+    entries = {{0x14495f550, thunk}, {0x164526ca0, prospi2025, true}};
+    require(resolve(0x14495f550) == 0x164526ca0 && inspected.size() == 2,
+        "captured 2025 leaf route resolves to the real setter, never the thunk");
+    entries = {{first, near_jump(first, second)}, {second, near_jump(second, setter)}, {setter, prospi2025, true}};
+    require(resolve(first) == setter && inspected.size() == 3, "two owned leaf jumps are the supported bound");
+    entries = {{first, near_jump(first, second)}, {second, near_jump(second, third)},
+        {third, near_jump(third, setter)}, {setter, prospi2025, true}};
+    require(!resolve(first) && inspected.size() == 3 && inspected.back() == third,
+        "third jump rejected without inspecting its target");
+    entries = {{first, near_jump(first, first)}};
+    require(!resolve(first) && inspected.size() == 1, "self-cycle never rereads an entry");
+    entries = {{first, near_jump(first, second)}, {second, near_jump(second, first)}};
+    require(!resolve(first) && inspected.size() == 2, "two-entry cycle rejected before a repeated read");
+    entries = {{first, near_jump(first, setter), true}, {setter, prospi2025, true}};
+    require(!resolve(first) && inspected.size() == 1, "jump replacing an unwind-described function is not followed");
+    entries = {{setter, prospi2025}};
+    require(!resolve(setter), "unwind-less setter-shaped bytes never authorize a hook");
+    entries = {{first, near_jump(first, setter)}, {setter, prospi2025, true, false}};
+    require(!resolve(first) && inspected.size() == 2, "reader-rejected executable ownership cannot authorize the target");
+    entries = {{first, near_jump(first, setter)}, {setter, hooked, true}};
+    require(!resolve(first) && inspected.size() == 2, "leaf route cannot bypass the final setter-body validation");
+    entries = {{first, hex("ff25000000")}, {setter, prospi2025, true}};
+    require(!resolve(first) && inspected.size() == 1, "indirect trampoline is rejected by the actual bounded walker");
+    require(!resolve(0) && inspected.empty(), "null entry is rejected without reading");
+    require(!resolve(third) && inspected.size() == 1, "missing or unreadable entry fails closed");
 }
 void bool_metadata() {
     // Both live SetVisibility parameters are 01 00 01 ff at their metadata

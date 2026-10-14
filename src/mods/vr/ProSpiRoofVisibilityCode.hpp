@@ -1,14 +1,31 @@
 #pragma once
 
 #include <bddisasm.h>
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
 
 namespace uevr::prospi::roof {
+inline std::optional<uintptr_t> visibility_thunk_target(std::span<const uint8_t> code, uintptr_t address) {
+    if (code.size() < 5 || code[0] != 0xe9 || address > (std::numeric_limits<uintptr_t>::max)() - 5) { return {}; }
+    const auto raw = uint32_t{code[1]} | (uint32_t{code[2]} << 8) |
+        (uint32_t{code[3]} << 16) | (uint32_t{code[4]} << 24);
+    const auto displacement = static_cast<int64_t>(std::bit_cast<int32_t>(raw));
+    const auto next = address + 5;
+    if (displacement >= 0) {
+        const auto distance = static_cast<uintptr_t>(displacement);
+        return distance <= (std::numeric_limits<uintptr_t>::max)() - next ?
+            std::optional<uintptr_t>{next + distance} : std::nullopt;
+    }
+    const auto distance = static_cast<uintptr_t>(-displacement);
+    return distance <= next ? std::optional<uintptr_t>{next - distance} : std::nullopt;
+}
+
 // Deliberately conservative: accept only the source/BN-proven byte-flag setter
 // reached by the reflected SceneComponent.SetVisibility exec, not a signature
 // elsewhere in the protected executable.
@@ -58,5 +75,31 @@ inline bool visibility_setter(std::span<const uint8_t> code, uint32_t offset, ui
         at += ix.Length;
     }
     return false;
+}
+
+struct VisibilityCodeEntry {
+    std::span<const uint8_t> code;
+    bool exact_function{};
+};
+
+// The reader must verify same-image executable ownership and reject non-entry
+// unwind records. Only genuine leaf thunks may lead to another candidate.
+template<class Inspect>
+std::optional<uintptr_t> visibility_setter_entry(uintptr_t entry, uint32_t offset, uint8_t mask, Inspect&& inspect) {
+    std::array<uintptr_t, 3> seen{};
+    for (size_t n{}; n < seen.size(); ++n) {
+        if (!entry || std::find(seen.begin(), seen.begin() + n, entry) != seen.begin() + n) { return {}; }
+        seen[n] = entry;
+        const auto candidate = inspect(entry);
+        if (!candidate || candidate->code.size() > 256) { return {}; }
+        if (candidate->exact_function) {
+            return visibility_setter(candidate->code, offset, mask) ? std::optional<uintptr_t>{entry} : std::nullopt;
+        }
+        if (n + 1 == seen.size()) { return {}; }
+        const auto target = visibility_thunk_target(candidate->code, entry);
+        if (!target) { return {}; }
+        entry = *target;
+    }
+    return {};
 }
 }

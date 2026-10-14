@@ -68,6 +68,15 @@ learning step.
   flag-update/OnVisibilityChanged sequence must all agree. No fixed code RVA is
   used. Unsupported compiler/layout shapes fail closed; an update can therefore
   require revalidation, not an unsafe guess.
+- ProSpi 2025's protected direct-call entry is a leaf near-jump without its own
+  unwind record. Discovery may follow at most two such jumps, only through
+  executable pages belonging to the exec's same image. The final entry must
+  have an exact unwind-described start and pass the original visibility flag,
+  mutation and callback checks. Cycles, indirect jumps, cross-image/private
+  trampolines and jumps replacing an unwind-described function are rejected.
+  Every code read must fit inside the verified executable memory region.
+  The hook is installed on that validated real setter; the game's jump route
+  and normal visibility/child-propagation behavior remain intact.
 - Hooks/scans are not installed/run while the option has never been enabled.
   When enabled, background maintenance visits at most eight cached targets and
   discovery at most 256 objects per viewport Draw, sharing a 250 us check budget.
@@ -132,4 +141,8 @@ After failed discovery with no installed hook, an explicit off/on retries setup;
 it does not repeat scans every frame or replace an existing visibility hook.
 Viewport fixtures cover the captured secondary interface, direct pointers,
 unrelated/unaligned/null pointers, overflow and explicit retry behavior.
+The same bounded setter-entry walker used at runtime is tested against the
+captured 2025 jump and setter, the direct eBaseball entry, the two-jump limit,
+cycles, missing/reader-rejected entries, indirect trampolines, detoured
+unwind-described functions and setter-shaped code without unwind proof.
 Build/offline success means ready to test, not runtime confirmation.

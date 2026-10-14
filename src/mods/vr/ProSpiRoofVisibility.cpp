@@ -115,10 +115,33 @@ std::optional<std::pair<uintptr_t, size_t>> function_range(uintptr_t address) {
         !(info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) { return {}; }
     return std::pair{address, static_cast<size_t>(size)};
 }
+std::optional<uintptr_t> resolve_setter_entry(uintptr_t entry, const Boolean& visible, void* image) {
+    std::array<uint8_t, 256> bytes{};
+    return visibility_setter_entry(entry, visible.offset, visible.mask,
+        [&](uintptr_t address) -> std::optional<VisibilityCodeEntry> {
+        MEMORY_BASIC_INFORMATION info{};
+        if (!VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) || info.AllocationBase != image ||
+            info.Type != MEM_IMAGE || info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) { return {}; }
+        const auto range = function_range(address);
+        DWORD64 base{};
+        // The protected 2025 entry is a leaf E9 thunk into the same image's
+        // real, unwind-described setter. Do not follow a detoured function.
+        if (!range && RtlLookupFunctionEntry(address, &base, nullptr)) { return {}; }
+        const auto size = range ? (std::min)(bytes.size(), range->second) : size_t{5};
+        const auto region = reinterpret_cast<uintptr_t>(info.BaseAddress);
+        if (address < region || address - region > info.RegionSize ||
+            size > info.RegionSize - (address - region) || !read_bytes(address, bytes.data(), size)) { return {}; }
+        return VisibilityCodeEntry{{bytes.data(), size}, range.has_value()};
+    });
+}
+
 std::optional<uintptr_t> resolve_setter(sdk::UFunction* fn, const Boolean& visible) {
     const auto entry = reinterpret_cast<uintptr_t>(fn->get_native_function());
     const auto range = function_range(entry);
     if (!range || range->second > 512) { return {}; }
+    MEMORY_BASIC_INFORMATION info{};
+    if (!VirtualQuery(reinterpret_cast<void*>(entry), &info, sizeof(info)) || info.Type != MEM_IMAGE) { return {}; }
     std::array<uint8_t, 512> bytes{};
     if (!read_bytes(entry, bytes.data(), range->second)) { return {}; }
     std::optional<uintptr_t> result;
@@ -129,13 +152,9 @@ std::optional<uintptr_t> resolve_setter(sdk::UFunction* fn, const Boolean& visib
             int32_t rel{};
             std::memcpy(&rel, bytes.data() + at + 1, sizeof(rel));
             const auto target = entry + at + 5 + static_cast<int64_t>(rel);
-            if (const auto candidate = function_range(target)) {
-                std::array<uint8_t, 256> code{};
-                const auto size = (std::min)(code.size(), candidate->second);
-                if (read_bytes(target, code.data(), size) && visibility_setter({code.data(), size}, visible.offset, visible.mask)) {
-                    if (result && *result != target) { return {}; }
-                    result = target;
-                }
+            if (const auto candidate = resolve_setter_entry(target, visible, info.AllocationBase)) {
+                if (result && *result != *candidate) { return {}; }
+                result = *candidate;
             }
         }
         at += ix.Length;
