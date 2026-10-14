@@ -9371,6 +9371,7 @@ void VR::update_game_fov() {
     }
     auto framing_status = uevr::prospi::framing::Status::not_selected;
     uevr::prospi::focus_guard::Decision native_focus_decision{};
+    uevr::prospi::focus_guard::ViewCorrection native_focus_view{};
     float native_focus_dolly_before{}, native_focus_lift_before{};
     utility::ScopeGuard native_focus_finish{[&] {
         if (native_focus_decision.status == uevr::prospi::focus_guard::Status::off &&
@@ -12947,6 +12948,11 @@ void VR::update_game_fov() {
                     predicted_z = native_focus_decision.predicted_z;
                     safety_active = safety_up_offset > 0.001f || std::abs(dolly_before - dolly_offset) > 0.001f;
                 }
+                auto view_request = current_request;
+                view_request.dolly = dolly_offset;
+                view_request.lift = safety_up_offset;
+                view_request.predicted_z = predicted_z;
+                native_focus_view = uevr::prospi::focus_guard::prepare_view(view_request, native_source);
                 if (trace_camera) {
                     trace_camera->native_focus_guard_status = (int32_t)native_focus_decision.status;
                     trace_camera->native_focus_guard_applied = native_focus_decision.applied();
@@ -12987,6 +12993,7 @@ void VR::update_game_fov() {
                     !generic_camera_presets_apply_enabled && !camera_cut_stabilizer_enabled &&
                     !m_match_game_fov_prospi_actual_clamp->value() &&
                     (source == ProSpiAutoCameraSource::RuleAssist || source == ProSpiAutoCameraSource::LearnedNearest),
+                .view_focus = native_focus_view,
             }, prospi_cut_epoch);
         }
         if (trace_camera) { trace_camera->dolly_after = dolly_offset; }

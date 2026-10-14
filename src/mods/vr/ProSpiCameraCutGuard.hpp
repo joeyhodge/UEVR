@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ProSpiCameraTrace.hpp"
+#include "ProSpiNativeFocusGuard.hpp"
 #include <atomic>
 #include <mutex>
 #include <optional>
@@ -12,9 +13,10 @@ struct Snapshot {
     float dolly{}, lift{};
     uint64_t time_ns{};
     bool automatic{};
+    focus_guard::ViewCorrection view_focus{};
 };
 
-enum class Status : uint8_t { unchanged, unavailable, stale, discontinuity };
+enum class Status : uint8_t { unchanged, unavailable, stale, discontinuity, authored_focus };
 struct Decision {
     Status status{};
     float dolly{}, lift{};
@@ -30,6 +32,9 @@ inline Decision evaluate(const Snapshot& s, const trace::Pose& input, uint64_t n
         trace::angle_delta(s.camera.rotation[0], input.rotation[0]) > 20.0f ||
         trace::angle_delta(s.camera.rotation[1], input.rotation[1]) > 25.0f ||
         trace::angle_delta(s.camera.rotation[2], input.rotation[2]) > 25.0f) { return {Status::discontinuity}; }
+    if (focus_guard::matches_view(s.view_focus, input) && s.view_focus.dolly <= s.dolly) {
+        return {Status::authored_focus, s.view_focus.dolly, s.view_focus.lift};
+    }
     return {Status::unchanged, s.dolly, s.lift};
 }
 

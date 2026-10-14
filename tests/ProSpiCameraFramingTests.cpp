@@ -653,6 +653,157 @@ trace::NativeSource read_native_source(const Json& value) {
     out.status = trace::SourceStatus::accepted;
     return out;
 }
+
+void view_focus_guards() {
+    namespace cg = uevr::prospi::cut_guard;
+    auto r = focus_request();
+    r.camera = {{-3200, -1700, 145}, {1, 110, 0}, 15, 0, 0, true};
+    r.close_camera = true; r.baseline_camera = true; r.dolly = 900; r.lift = 12; r.predicted_z = 160;
+    auto current = r; current.camera.location[0] -= 7; current.camera.rotation[1] -= .4f;
+    auto source = focus_source(current, 403);
+    const auto correction = fg::prepare_view(r, source);
+    require(fg::evaluate(r, source).status == fg::Status::source_mismatch && correction.valid,
+        "Cached baseline pose mismatch did not produce a view-only candidate");
+    const cg::Snapshot snapshot{.camera = r.camera, .dolly = r.dolly, .lift = r.lift, .time_ns = r.now_ns,
+        .automatic = true, .view_focus = correction};
+    auto input = current.camera; input.fov = 0; // Stereo callback has no FOV argument.
+    const auto left = cg::evaluate(snapshot, input, r.now_ns + 49'000'000);
+    const auto right = cg::evaluate(snapshot, input, r.now_ns + 51'000'000);
+    require(left.status == cg::Status::authored_focus && left.dolly < 403 &&
+        right.status == left.status && right.dolly == left.dolly && right.lift == left.lift,
+        "Eye callbacks re-evaluated publisher freshness or used different prepared offsets");
+    for (int change = 0; change < 4; ++change) {
+        auto other = input;
+        if (change == 0) { other.location[0] -= 1.01f; }
+        if (change == 1) { other.rotation[0] += .11f; }
+        if (change == 2) { other.rotation[1] += .11f; }
+        if (change == 3) { other.rotation[2] += .011f; }
+        const auto d = cg::evaluate(snapshot, other, r.now_ns);
+        require(d.status == cg::Status::unchanged && d.dolly == r.dolly && d.lift == r.lift,
+            "Unmatched view consumed an authored-focus candidate");
+    }
+    require(cg::evaluate(snapshot, input, r.now_ns + 250'000'001).status == cg::Status::stale,
+        "Prepared focus outlived the existing cut transaction");
+    auto explicit_camera = snapshot; explicit_camera.automatic = false;
+    require(cg::evaluate(explicit_camera, input, r.now_ns).dolly == r.dolly,
+        "Prepared focus replaced an explicit override");
+    for (int change = 0; change < 16; ++change) {
+        auto other = r; auto s = source;
+        switch (change) {
+        case 0: other.enabled = false; break;
+        case 1: other.prospi = false; break;
+        case 2: other.mode = 2; break;
+        case 3: other.protected_camera = true; break;
+        case 4: other.automatic_source = false; break;
+        case 5: other.baseline_camera = false; break;
+        case 6: other.safety_enabled = false; break;
+        case 7: other.forward_offset = 1; break;
+        case 8: s.status = trace::SourceStatus::unsupported_layout; break;
+        case 9: s.time_ns -= 50'000'001; break;
+        case 10: ++s.time_ns; break;
+        case 11: ++s.camera_manager; break;
+        case 12: s.object = 0; break;
+        case 13: s.camera_actor = 0; break;
+        case 14: s.look_at[2] += 100; break;
+        case 15: s.pose.location[2] = 1500; break;
+        }
+        require(!fg::prepare_view(other, s).valid, "Off/protected/unproven source prepared a correction");
+    }
+    for (const auto value : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), -1.0f}) {
+        auto invalid = snapshot; invalid.view_focus.dolly = value;
+        require(cg::evaluate(invalid, input, r.now_ns).dolly == r.dolly, "Invalid candidate dolly used");
+        invalid = snapshot; invalid.view_focus.lift = value;
+        require(cg::evaluate(invalid, input, r.now_ns).dolly == r.dolly, "Invalid candidate lift used");
+    }
+    auto invalid = snapshot; invalid.view_focus.dolly = r.dolly + 1;
+    require(cg::evaluate(invalid, input, r.now_ns).dolly == r.dolly, "Candidate increased travel");
+    input.valid = false;
+    require(!fg::matches_view(correction, input), "Invalid view flag accepted");
+    cg::Publication publication;
+    const auto epoch = publication.invalidate();
+    require(publication.publish(snapshot, epoch) && publication.read()->view_focus.valid,
+        "Prepared focus lost during publication");
+    publication.invalidate();
+    require(!publication.read() && !publication.publish(snapshot, epoch), "Retired shot retained prepared focus");
+
+    auto unsigned_height = r;
+    unsigned_height.camera.location[2] = 50; unsigned_height.camera.rotation[0] = 5;
+    unsigned_height.dolly = 1400; unsigned_height.lift = 300;
+    unsigned_height.predicted_z = 50 - 1400 * std::sin(5 * .017453292519943295f);
+    auto shifted = unsigned_height; shifted.camera.location[0] -= 7; shifted.camera.rotation[1] -= .4f;
+    const auto height = fg::prepare_view(unsigned_height, focus_source(shifted, 3000));
+    require(height.valid && height.dolly == unsigned_height.dolly && height.lift < 5,
+        "Phase alignment erased the excess unsigned-height detector");
+    for (const auto p : {trace::Pose{{0, 100, 0}, {0, -90, 0}, 71, 0, 0, true},
+                        trace::Pose{{0, -3500, 538}, {-4, 90, 0}, 14, 0, 0, true},
+                        trace::Pose{{0, 4000, 800}, {-10, -90, 0}, 12, 0, 0, true},
+                        trace::Pose{{-4000, 2500, 1500}, {-16, -50, 0}, 10, 0, 0, true},
+                        trace::Pose{{0, -370, 40}, {8, 61, 0}, 18, 0, 0, true}}) {
+        auto other = r; other.camera = p;
+        require(!fg::prepare_view(other, focus_source(other, 403)).valid,
+            "Baseline phase repair affected gameplay, ball-follow, stand or walk-up rigs");
+    }
+}
+
+void baseline_pan_fixtures(const Json& fixture) {
+    namespace cg = uevr::prospi::cut_guard;
+    size_t overshoots{}, corrected{}, unchanged{}, cuts{}, mirrored{};
+    require(fixture.at("samples").size() == 64, "Captured baseline-pan coverage changed");
+    for (const auto& sample : fixture.at("samples")) {
+        const auto& a = sample.at("request");
+        const auto offsets = a.at("base_offsets").get<trace::Vector>();
+        const fg::Request r{
+            .camera = read_trace_pose(a.at("camera")), .camera_manager = a.at("camera_manager"), .now_ns = a.at("time_ns"),
+            .mode = a.at("mode"), .zone = a.at("zone"), .enabled = a.at("enabled"), .prospi = a.at("prospi"),
+            .dolly_enabled = a.at("dolly_enabled"), .sequencer_enabled = a.at("sequencer_enabled"),
+            .safety_enabled = a.at("safety_enabled"), .protected_camera = a.at("protected_camera"),
+            .automatic_source = a.at("automatic_source"), .close_camera = a.at("close_camera"), .baseline_camera = a.at("baseline_camera"),
+            .dolly = a.at("dolly"), .lift = a.at("lift"), .predicted_z = a.at("predicted_z"),
+            .floor = a.at("floor"), .max_lift = a.at("max_lift"), .base_fov = a.at("base_fov"),
+            .forward_offset = offsets[0], .right_offset = offsets[1], .up_offset = offsets[2],
+        };
+        const auto source = read_native_source(sample.at("native_source"));
+        const auto input = read_trace_pose(sample.at("view").at("input"));
+        const auto now = sample.at("view").at("time_ns").get<uint64_t>();
+        const cg::Snapshot old{.camera = r.camera, .dolly = r.dolly, .lift = r.lift, .time_ns = r.now_ns, .automatic = true};
+        auto proposed = old; proposed.view_focus = fg::prepare_view(r, source);
+        const auto before = cg::evaluate(old, input, now), after = cg::evaluate(proposed, input, now);
+        if (sample.at("expected_before") == "cut") {
+            require(before.status == cg::Status::discontinuity && after.status == before.status && after.dolly == 0 && after.lift == 0,
+                "Publisher candidate bypassed the previous-shot rejection");
+            ++cuts; continue;
+        }
+        if (after.status != cg::Status::authored_focus) {
+            require(after.status == before.status && after.dolly == before.dolly && after.lift == before.lift &&
+                sample.at("expected_before") != "overshoot", "Recorded overshoot retained or unrelated shot changed");
+            ++unchanged; continue;
+        }
+        auto actual = r; actual.camera = input; actual.camera.fov = source.pose.fov;
+        const auto endpoint = focus_endpoint(actual, {.dolly = after.dolly, .lift = after.lift}, source.pose.aspect);
+        const auto framing = trace::target_framing(endpoint, source.look_at);
+        require(after.dolly <= r.dolly && after.dolly >= 0 && after.lift <= r.max_lift &&
+            endpoint.location[2] >= r.floor + 1.9f && framing.valid && !framing.behind &&
+            framing.clip_estimate_valid && std::abs(framing.ndc_x) <= .52f && std::abs(framing.ndc_y) <= .52f,
+            "Actual view endpoint lost the floor, authored focus, or framing margin: " + sample.at("label").get<std::string>());
+        ++corrected;
+        if (sample.at("expected_before") != "overshoot") { continue; }
+        ++overshoots;
+        // Reflection is synthetic first-base coverage, not a claim of a captured first-base celebration.
+        const auto reflect = [](trace::Pose p) { p.location[0] = -p.location[0]; p.rotation[1] = 180 - p.rotation[1]; p.rotation[2] = -p.rotation[2]; return p; };
+        auto mirror_r = r; mirror_r.camera = reflect(r.camera);
+        auto mirror_s = source; mirror_s.pose = reflect(source.pose); mirror_s.look_at[0] = -source.look_at[0];
+        auto mirror = old; mirror.camera = mirror_r.camera; mirror.view_focus = fg::prepare_view(mirror_r, mirror_s);
+        const auto reflected = cg::evaluate(mirror, reflect(input), now);
+        require(reflected.status == after.status && std::abs(reflected.dolly - after.dolly) < .01f &&
+            std::abs(reflected.lift - after.lift) < .01f, "Mirrored 1B pan changed the validated solution");
+        ++mirrored;
+    }
+    require(overshoots == 10 && cuts == 2 && unchanged >= 40 && mirrored == overshoots,
+        "Insufficient overshoot/unchanged/cut/mirrored coverage");
+    std::cout << "Captured baseline pans: corrected=" << corrected << " overshoots=" << overshoots <<
+        " unchanged=" << unchanged << " cut rejects=" << cuts << " synthetic mirrors=" << mirrored << '\n';
+}
+
 void hokkaido_fixtures(const Json& fixture) {
     namespace cg = uevr::prospi::cut_guard;
     size_t corrected{}, rejected{};
@@ -857,6 +1008,8 @@ int main(int argc, char** argv) {
         captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); current_near_home_height_guards(); close_focus_guards(); baseline_focus_guards(); cut_guards();
         current_marked_height_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261009-marked-height.json"));
         hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));
+        view_focus_guards();
+        baseline_pan_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261010-baseline-pan.json"));
         std::cout << "ProSpi calibrated-framing guards passed\n";
         return 0;
     } catch (const std::exception& e) {

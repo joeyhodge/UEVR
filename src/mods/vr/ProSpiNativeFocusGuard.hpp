@@ -236,4 +236,38 @@ inline Decision evaluate(const Request& r, const trace::NativeSource& source) no
     return out;
 }
 
+struct ViewCorrection {
+    trace::Pose camera{};
+    float dolly{}, lift{};
+    bool valid{};
+};
+
+// A pre-tick PCM cache can trail the native publisher during a baseline pan.
+// Prepare against that validated publisher, but consume only on its exact view pose.
+inline ViewCorrection prepare_view(const Request& r, const trace::NativeSource& source) noexcept {
+    if (!eligible(r) || !r.baseline_camera || !close_rig(r) || !trace::valid_source(source)) { return {}; }
+    auto current = r;
+    current.camera = source.pose;
+    if (!close_rig(current)) { return {}; }
+    // Transport the estimate without erasing evidence of an old unsigned-height lift.
+    constexpr float radians = 0.017453292519943295f;
+    current.predicted_z = r.predicted_z + current.camera.location[2] - r.camera.location[2] + r.dolly *
+        (std::sin(current.camera.rotation[0] * radians) - std::sin(r.camera.rotation[0] * radians));
+    const auto decision = evaluate(current, source);
+    if (!decision.applied()) { return {}; }
+    return {current.camera, decision.dolly, decision.lift, true};
+}
+
+inline bool matches_view(const ViewCorrection& c, const trace::Pose& input) noexcept {
+    // CalculateStereoViewOffset has no FOV argument. The prepared FOV comes from
+    // the proven native bridge, not the previous PCM cache or a fixed zoom.
+    return c.valid && trace::valid_pose(c.camera) && input.valid && trace::finite(input.location) &&
+        trace::finite(input.rotation) && std::isfinite(c.dolly) && c.dolly >= 0.0f &&
+        std::isfinite(c.lift) && c.lift >= 0.0f && c.lift <= 600.0f &&
+        trace::distance(c.camera.location, input.location) <= 1.0f &&
+        trace::angle_delta(c.camera.rotation[0], input.rotation[0]) <= 0.1f &&
+        trace::angle_delta(c.camera.rotation[1], input.rotation[1]) <= 0.1f &&
+        trace::angle_delta(c.camera.rotation[2], input.rotation[2]) <= 0.01f;
+}
+
 } // namespace uevr::prospi::focus_guard
