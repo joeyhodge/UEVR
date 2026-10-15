@@ -1,5 +1,6 @@
 #include "mods/vr/ProSpiCameraTrace.hpp"
 #include "mods/vr/ProSpiNativeCameraLayout.hpp"
+#include "mods/vr/ProSpiNativeFocusGuard.hpp"
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <iostream>
@@ -70,6 +71,10 @@ struct LayoutFixture {
     LayoutFixture(const native::VerifiedBuild& b, uintptr_t load_base = 0x140000000) : base(load_base) {
         timestamp = b.timestamp; image_size = b.layout.image_size;
         for (const auto& f : b.code) { bytes(f.rva, f.bytes); }
+        if (b.vertical_fov_instruction) {
+            bytes(b.vertical_fov_instruction - 4, "488b4360f30f107000");
+            put(b.vertical_fov_instruction + 4, (uint8_t)b.layout.vertical_fov_offset);
+        }
         bytes(b.code[4].rva + 0x1f, "483b0500000000");
         put(b.code[4].rva + 0x22, (int32_t)(b.layout.sentinel_rva - (b.code[4].rva + 0x26)));
         put(b.layout.sentinel_vtable_rva + 0x38, base + b.layout.empty_getter_rva);
@@ -85,7 +90,8 @@ void native_layout_guards(const char* current_fixture) {
         LayoutFixture f{build}; native::Layout out{};
         require(f.resolve(out) && out.context_rva == build.layout.context_rva && out.frame_rva == build.layout.frame_rva &&
             out.sentinel_rva == build.layout.sentinel_rva && out.bridge_vtable_rva == build.layout.bridge_vtable_rva &&
-            out.camera_getter_rva == build.layout.camera_getter_rva, "Known native layout/RIP roots rejected");
+            out.camera_getter_rva == build.layout.camera_getter_rva &&
+            out.vertical_fov_offset == build.layout.vertical_fov_offset, "Known native layout/RIP roots rejected");
         const auto before = f.memory;
         require(f.resolve(out) && before == f.memory, "Layout discovery wrote memory");
         const auto expect_rejection = [](LayoutFixture invalid) {
@@ -100,6 +106,14 @@ void native_layout_guards(const char* current_fixture) {
         auto invalid = f;
         invalid.memory[invalid.base + build.code[4].rva + 0x22] ^= 1;
         expect_rejection(invalid); // Beyond the 32-byte next-node prefix: exercise RIP validation.
+        if (build.vertical_fov_instruction) {
+            for (uint32_t byte = 0; byte < 9; ++byte) {
+                invalid = f; invalid.memory[invalid.base + build.vertical_fov_instruction - 4 + byte] ^= 1;
+                expect_rejection(invalid);
+                invalid = f; invalid.memory.erase(invalid.base + build.vertical_fov_instruction - 4 + byte);
+                expect_rejection(invalid);
+            }
+        }
         for (size_t slot = 1; slot < 4; ++slot) {
             invalid = f; invalid.put(build.layout.bridge_vtable_rva + (uint32_t)slot * 8, invalid.base + build.code[8].rva);
             if (slot == 1) { invalid.put(build.layout.bridge_vtable_rva + 8, uintptr_t{0x700000000}); }
@@ -120,16 +134,23 @@ void native_layout_guards(const char* current_fixture) {
         require(relocated.resolve(out) && out.base == relocated.base, "ASLR layout validation used preferred-base pointers");
     }
     require(current_fixture != nullptr, "Current EXE slices were not supplied");
-    std::ifstream file(current_fixture); nlohmann::json captured; file >> captured;
-    LayoutFixture actual{native::verified_builds[1]}; actual.memory.clear();
-    actual.base = captured.at("base"); actual.timestamp = captured.at("timestamp"); actual.image_size = captured.at("image_size");
-    for (const auto& block : captured.at("blocks")) {
-        actual.bytes(block.at("rva"), block.at("bytes").get<std::string>());
+    const std::filesystem::path current_path{current_fixture};
+    for (const auto& path : {current_path, current_path.parent_path() / "prospi-native-layout-2025.json"}) {
+        std::ifstream file(path); nlohmann::json captured; file >> captured;
+        const auto expected = native::verified_build(captured.at("timestamp"), captured.at("image_size"));
+        require(expected != nullptr, "Captured EXE identity is not supported");
+        LayoutFixture actual{*expected}; actual.memory.clear();
+        actual.base = captured.at("base"); actual.timestamp = captured.at("timestamp"); actual.image_size = captured.at("image_size");
+        for (const auto& block : captured.at("blocks")) {
+            actual.bytes(block.at("rva"), block.at("bytes").get<std::string>());
+        }
+        native::Layout out{};
+        require(actual.resolve(out) && out.context_rva == expected->layout.context_rva &&
+            out.frame_rva == expected->layout.frame_rva && out.sentinel_rva == expected->layout.sentinel_rva &&
+            out.bridge_vtable_rva == expected->layout.bridge_vtable_rva &&
+            out.vertical_fov_offset == captured.value("vertical_fov_offset", 0x1cu),
+            "Captured EXE fixture disagrees with implemented layout");
     }
-    native::Layout out{};
-    require(actual.resolve(out) && out.context_rva == 0x132bf3e0 && out.frame_rva == 0x132cec10 &&
-        out.sentinel_rva == 0x132bf9a8 && out.bridge_vtable_rva == 0x07a28668,
-        "Current EXE fixture disagrees with implemented layout");
 }
 struct NativeFixture {
     native::Layout layout{};
@@ -179,7 +200,9 @@ struct NativeFixture {
             put(node + 0x60, node + 0x2000);
             put(node + 0x70, std::array<float, 4>{1, 2, 3, 0});
             put(node + 0x80, std::array<float, 4>{101, 2, 3, 0});
-            put(node + 0x2000 + 0x1c, 0.4f);
+            // A plausible neighbouring lens value must not be mistaken for FOV.
+            put(node + 0x2000 + (layout.vertical_fov_offset == 0x18 ? 0x1c : 0x18), 0.9f);
+            put(node + 0x2000 + layout.vertical_fov_offset, 0.4f);
         }
     }
     NativeSource sample() {
@@ -187,9 +210,19 @@ struct NativeFixture {
     }
 };
 void native_provider() {
-    NativeFixture current{3, 1};
-    require(valid_source(current.sample()) && current.sample().object == current.nodes[0],
-        "Current build lost native list/bridge validation");
+    for (size_t i = 0; i < native::verified_builds.size(); ++i) {
+        NativeFixture current{3, i};
+        require(valid_source(current.sample()) && current.sample().object == current.nodes[0],
+            "Supported build lost native list/bridge/lens validation");
+        const auto offset = current.layout.vertical_fov_offset;
+        current.layout.vertical_fov_offset = offset == 0x18 ? 0x1c : 0x18;
+        require(current.sample().status == SourceStatus::bridge_mismatch, "Wrong lens field was silently adopted");
+        current.layout.vertical_fov_offset = 0x20;
+        require(current.sample().status == SourceStatus::unsupported_layout, "Unknown lens field was read");
+        current.layout.vertical_fov_offset = offset;
+        current.memory.erase(current.nodes[0] + 0x2000 + offset);
+        require(current.sample().status == SourceStatus::unreadable, "Unavailable lens field was substituted");
+    }
     NativeFixture f;
     const auto before = f.memory;
     auto s = f.sample();
@@ -220,6 +253,35 @@ void native_provider() {
         return f.read(a, p, n);
     }, f.layout, f.pcm, Recorder::clock_ns());
     require(source.status == SourceStatus::changed_during_read && source.object == 0, "torn source retained");
+}
+void prospi_2025_focus_integration() {
+    NativeFixture f{3, 2};
+    for (const auto node : f.nodes) {
+        f.put(node + 0x70, Vector{250, 20, 0});
+        f.put(node + 0x80, Vector{50, 20, 0});
+        f.put(node + 0x2000 + 0x18, 2 * std::atan(std::tan(5.0f / 57.29577951308232f) / 1.5f));
+    }
+    f.put(f.interface + 0x140, Vector{2500, 0, 200});
+    f.put(f.interface + 0x150, std::array<float, 4>{0, 0, 1, 0});
+    f.put(f.interface + 0x160, 10.0f);
+    const auto before = f.memory;
+    const auto source = f.sample();
+    require(valid_source(source), "2025 camera source rejected before focus solver");
+    uevr::prospi::focus_guard::Request r{};
+    r.camera = source.pose; r.camera_manager = f.pcm; r.now_ns = source.time_ns;
+    r.mode = 3; r.zone = 1;
+    r.enabled = r.prospi = r.dolly_enabled = r.sequencer_enabled = r.safety_enabled = true;
+    r.automatic_source = r.close_camera = r.baseline_camera = true;
+    r.dolly = 1900; r.predicted_z = 200; r.floor = 170; r.max_lift = 400; r.base_fov = 90;
+    const auto decision = uevr::prospi::focus_guard::evaluate(r, source);
+    require(decision.status == uevr::prospi::focus_guard::Status::target_capped &&
+        decision.dolly < r.dolly && decision.target_depth > 174 && decision.end_z >= r.floor,
+        "2025 authored focus did not bound the existing mode's close-shot dolly");
+    auto unavailable = source; unavailable.status = SourceStatus::unavailable;
+    const auto fallback = uevr::prospi::focus_guard::evaluate(r, unavailable);
+    require(!fallback.applied() && fallback.dolly == r.dolly && fallback.lift == r.lift,
+        "2025 unavailable source changed the existing assist");
+    require(before == f.memory, "2025 focus integration wrote game memory");
 }
 void target_framing_policies() {
     Camera c{};
@@ -525,6 +587,6 @@ void failures_and_contention() {
 }
 }
 int main(int argc, char** argv) {
-    try { native_layout_guards(argc == 2 ? argv[1] : nullptr); policies(); sampling_policy(); light_recording(); native_provider(); target_framing_policies(); disabled(); association_and_restart(); cut_observation_association(); native_trace_serialization(); failures_and_contention(); std::cout << "ProSpi camera trace tests passed\n"; }
+    try { native_layout_guards(argc == 2 ? argv[1] : nullptr); policies(); sampling_policy(); light_recording(); native_provider(); prospi_2025_focus_integration(); target_framing_policies(); disabled(); association_and_restart(); cut_observation_association(); native_trace_serialization(); failures_and_contention(); std::cout << "ProSpi camera trace tests passed\n"; }
     catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
 }

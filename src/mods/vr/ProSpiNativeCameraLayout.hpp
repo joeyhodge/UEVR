@@ -10,11 +10,12 @@ struct VerifiedBuild {
     Layout layout;
     std::array<CodeFingerprint, 11> code;
     uint32_t counter_instruction;
+    uint32_t vertical_fov_instruction{};
 };
 
-// The native publisher and UE bridge retain the same fields in these two builds.
+// The publisher/bridge contract is shared; ProSpi 2025 has an earlier lens FOV field.
 // Code, globals and vtables move independently; never apply a single RVA delta.
-inline constexpr std::array<VerifiedBuild, 2> verified_builds{{
+inline constexpr std::array<VerifiedBuild, 3> verified_builds{{
     {1786532279, {0, 783106048, 0x12f98f20, 0x12f994e8, 0x12fa8740,
         0x083be008, 0x07a4e7c0, 0x05818b20, 0x05817000}, {{
         {0x05819570, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
@@ -43,6 +44,20 @@ inline constexpr std::array<VerifiedBuild, 2> verified_builds{{
         {0x030f09f0, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
         {0x030f0e90, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
     }}, 0x057ddd00},
+    {1773341438, {0, 737062912, 0x10693620, 0x10693b88, 0x106a2de0,
+        0x0849eef8, 0x07ab58e0, 0x055a2ef0, 0x055a13d0, 0x18}, {{
+        {0x055a3980, "488bc44889580848897010574881ecc00000000f2970e80f2978d8440f2940c8"},
+        {0x055a39f0, "4885db480f44d84038b0140400007405488bd8eb08488bc8e8c3010000488bcf"},
+        {0x055a3a26, "440f285370440f295424300f2883800000000f29442420f3410f5cc20f28d045"},
+        {0x0559c48b, "b801000000f00fc1054869100b8b0d4269100b908b0d3b69100b9048ffc983e1"},
+        {0x055a14b0, "40534883ec20488bd9488d0d526e8f13e86b7edc01488b430833c9488b400848"},
+        {0x055a2ef0, "40534883ec20488bd9488d0dbe548f13e82b64dc01488bc34883c4205bc3cccc"},
+        {0x055a13d0, "4883ec28488d0d376f8f13e8507fdc0133c04883c428c3cccccccccccccccccc"},
+        {0x0559cee0, "4883ec28488d0d45b38f13e840c4dc01488b0529670f0b488b40104883c428c3"},
+        {0x02e93820, "4883ec48f20f101a8b42080f28e3f30f100d3e8da3040f28c389442438f30f10"},
+        {0x02e93130, "40534883ec50f20f1012488bd98b4208488d4c24300f28ca89442448f30f1044"},
+        {0x02e935d0, "48895c2408574883ec30488b5910488bf90f297424204885db7411488b832802"},
+    }}, 0x0559c490, 0x055a3aa3},
 }};
 
 inline const VerifiedBuild* verified_build(uint32_t timestamp, size_t image_size) noexcept {
@@ -59,6 +74,7 @@ bool resolve_layout(Read read, uintptr_t base, uint32_t timestamp, size_t image_
     if (!build || !pointer(base) || image_size > 0x0000800000000000ull - base) { return false; }
     auto candidate = build->layout;
     candidate.base = base;
+    if (candidate.vertical_fov_offset != 0x1c && candidate.vertical_fov_offset != 0x18) { return false; }
     const auto bytes = [&](uint32_t rva, void* destination, size_t count) {
         return module(candidate, base + rva, count) && read(base + rva, destination, count);
     };
@@ -69,6 +85,14 @@ bool resolve_layout(Read read, uintptr_t base, uint32_t timestamp, size_t image_
         for (size_t i = 0; i < actual.size(); ++i) {
             if (actual[i] != ((digit(f.bytes[i * 2]) << 4) | digit(f.bytes[i * 2 + 1]))) { return false; }
         }
+    }
+    // Do not infer the 2025 lens field from the otherwise identical publisher prefix.
+    if (build->vertical_fov_instruction || candidate.vertical_fov_offset != 0x1c) {
+        std::array<uint8_t, 9> actual{};
+        const std::array<uint8_t, 9> expected{0x48, 0x8b, 0x43, 0x60, 0xf3, 0x0f, 0x10, 0x70,
+            (uint8_t)candidate.vertical_fov_offset};
+        if (build->vertical_fov_instruction < 4 ||
+            !bytes(build->vertical_fov_instruction - 4, actual.data(), actual.size()) || actual != expected) { return false; }
     }
     const auto rip_matches = [&](uint32_t rva, std::string_view opcode, uint32_t target, size_t target_size) {
         std::array<uint8_t, 9> instruction{};

@@ -226,7 +226,7 @@ Every native-source sample was rejected because only the older build's layout
 was accepted. BN confirms unchanged native camera fields and publisher/bridge
 semantics, but independently moved code, globals and vtables.
 
-Both verified builds are now supported. Discovery validates their exact code
+Both verified eBaseball builds are supported. Discovery validates their exact code
 fingerprints, the RIP-relative context/list/counter references, and bridge and
 sentinel vtable slots before publishing any address. The current EXE's code
 slices are an independent offline fixture. Unknown identities, mixed addresses,
@@ -252,6 +252,36 @@ The observed 259-293 ms cinematic tick gaps do not establish a GPU, streaming
 or recorder root cause. Light recording removes the old high-rate trace burden;
 it is not a claim that all cinematic hitches are fixed. Test recorder off/on,
 marked-bad near-home cuts and both celebrations, then the previously good shots.
+
+### ProSpi 2025 authored-focus adapter
+
+The 2025 recording rejected every native source as `unsupported_layout`: it was
+not one of the two eBaseball executable identities above. The separately verified
+2025 build has timestamp `1773341438`, image size `737062912` and SHA-256
+`03f6832e8f544935fafadba0efdb02865cf12ed3f2a590cc6d20eed50be4aca1`.
+Its list, context, DWORD frame counter, getters and UE bridge are independently
+validated, not translated by an eBaseball address delta.
+
+The publisher also reads vertical FOV at lens offset `0x18`, versus eBaseball's
+`0x1c`. The 2025 adapter verifies that exact load instruction and selects the
+matching field; the established eBaseball field and discovery checks are unchanged.
+An independent small EXE-slice fixture covers discovery, ASLR and rejection of
+changed or unavailable code, roots, lens instructions and vtables. Provider tests
+use deliberately different adjacent lens values to reject cross-version field
+mixups, and pass a validated 2025 source through the existing close-shot solver.
+
+A 25-second read-only flat-stadium capture accepted 680 coherent samples across
+678 native frames. Authored focus varied from about 474 to 11,332 cm and horizontal
+FOV from 0.61 to 65.65 degrees while staying within the existing bridge tolerances.
+Concurrent/torn or unpublished samples were rejected rather than reused. This
+confirms the source/bridge contract, not player identity or ideal HMD framing.
+
+This enables the existing mode 3 Authored Focus option on that 2025 build. It does
+not introduce another mode or toggle, retune safety floors or calibration, or
+change the gameplay, ball-follow, replay, manual or protected-shot policies.
+Invalid/stale/unpublished data still preserves the existing assist; discovery is
+cached, with no executable scan or game calls in the camera hot path. Camera
+framing, both celebrations and cut transitions still require an in-HMD test.
 
 ## Remaining work
 

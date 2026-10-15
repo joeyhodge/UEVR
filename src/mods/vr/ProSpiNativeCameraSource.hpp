@@ -9,6 +9,7 @@ struct Layout {
     uint32_t context_rva{}, sentinel_rva{}, frame_rva{};
     uint32_t sentinel_vtable_rva{}, bridge_vtable_rva{};
     uint32_t camera_getter_rva{}, empty_getter_rva{};
+    uint32_t vertical_fov_offset{0x1c};
 };
 
 inline bool pointer(uintptr_t p) noexcept {
@@ -62,6 +63,7 @@ NativeSource sample(Read read, const Layout& layout, uintptr_t expected_pcm, uin
     const auto reject = [&](SourceStatus status) { NativeSource empty{}; empty.status = status; return empty; };
     if (!pointer(layout.base) || !layout.context_rva || !layout.sentinel_rva || !layout.frame_rva ||
         !layout.sentinel_vtable_rva || !layout.bridge_vtable_rva || !layout.camera_getter_rva || !layout.empty_getter_rva ||
+        (layout.vertical_fov_offset != 0x1c && layout.vertical_fov_offset != 0x18) ||
         layout.image_size > 0x0000800000000000ull - layout.base ||
         !module(layout, layout.base + layout.frame_rva, 4) ||
         !module(layout, layout.base + layout.context_rva) || !module(layout, layout.base + layout.sentinel_rva)) {
@@ -119,7 +121,7 @@ NativeSource sample(Read read, const Layout& layout, uintptr_t expected_pcm, uin
     float vfov{};
     if (!s.bytes(result.object + 0x60, camera.data(), camera.size())) { return reject(SourceStatus::unreadable); }
     std::memcpy(&lens, camera.data(), 8);
-    if (!pointer(lens) || !s.value(lens + 0x1c, vfov)) { return reject(SourceStatus::unreadable); }
+    if (!pointer(lens) || !s.value(lens + layout.vertical_fov_offset, vfov)) { return reject(SourceStatus::unreadable); }
     Vector native_position{}, native_target{}, bridge_position{};
     std::array<float, 4> q{};
     float bridge_fov{};
