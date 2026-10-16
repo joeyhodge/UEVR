@@ -10602,6 +10602,7 @@ void VR::update_game_fov() {
         m_prospi_auto_camera_sequencer_last_play_mode = 0;
         m_prospi_auto_camera_sequencer_last_dolly = 0.0f;
         m_prospi_auto_camera_sequencer_last_valid = false;
+        m_prospi_camera_return_timeline.reset();
         m_prospi_auto_camera_sequencer_last_ball_follow_time = {};
         m_prospi_auto_camera_observation_valid = false;
         m_prospi_auto_camera_observation_location = {};
@@ -11360,6 +11361,7 @@ void VR::update_game_fov() {
         const auto outfield_y_max = std::clamp(m_match_game_fov_prospi_camera_safety_outfield_y_max->value(), -20000.0f, 5000.0f);
 
         const auto is_cut_like = location_delta >= 2500.0f || yaw_delta >= 30.0f || pitch_delta >= 20.0f || fov_delta >= 7.5f;
+        const auto hard_camera_cut = !m_prospi_auto_camera_observation_valid || is_cut_like;
         const auto third_base_outfield_line_replay_camera =
             is_prospi_third_base_outfield_line_replay_camera(*location, *rotation, raw_fov);
         const auto third_base_low_line_telephoto_camera =
@@ -11559,11 +11561,13 @@ void VR::update_game_fov() {
             sequence_cap = 2400.0f;
         }
 
-        struct LearnedCandidate {
-            ProSpiCameraCalibration calibration{};
-            float score{};
-            float confidence{};
-        };
+        const auto return_retention = m_prospi_camera_return_timeline.update(
+            {(uintptr_t)world, (uintptr_t)pcm, m_rendering_method->value(), sequencer_mode,
+                (int32_t)play_mode, (int32_t)sequence_zone, prospi_calibration_applied, cinematic_camera_assist_enabled},
+            std::chrono::duration<double>(observation_now.time_since_epoch()).count(), hard_camera_cut,
+            m_match_game_fov_prospi_auto_camera_sequencer_smoothing->value());
+
+        using LearnedCandidate = uevr::prospi::matching::Candidate<ProSpiCameraCalibration>;
 
         const auto framing_calibration = [](const ProSpiCameraCalibration& c, float match_confidence) {
             const auto preset = prospi_preset_from_value(c.preset);
@@ -11572,16 +11576,28 @@ void VR::update_game_fov() {
                 c.dolly_distance, c.actual_min_fov, c.projection_multiplier, match_confidence,
                 preset == ProSpiCameraPreset::CenterFieldTelephoto || preset == ProSpiCameraPreset::CenterFieldHighTelephoto};
         };
-        std::vector<LearnedCandidate> learned_candidates{};
-        if (!prospi_calibration_applied && learned_mode) {
+        const auto calibration_snapshot = !prospi_calibration_applied && learned_mode
+            ? m_prospi_camera_match_snapshot.read() : nullptr;
+        static thread_local uevr::prospi::matching::Workspace<LearnedCandidate> candidate_workspace;
+        auto candidate_lease = candidate_workspace.acquire(calibration_snapshot ? calibration_snapshot->size() : 0);
+        auto& learned_candidates = candidate_lease.values();
+        if (calibration_snapshot) {
             const auto location_radius = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_match_location_radius->value(), 250.0f, 15000.0f);
             const auto yaw_radius = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_match_yaw_radius->value(), 2.0f, 90.0f);
             const auto pitch_radius = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_match_pitch_radius->value(), 2.0f, 90.0f);
             const auto fov_radius = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_match_fov_radius->value(), 1.0f, 60.0f);
             const auto min_confidence = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_match_min_confidence->value(), 0.05f, 1.0f);
+            const auto current_family_known =
+                prospi_preset != ProSpiCameraPreset::None &&
+                prospi_preset != ProSpiCameraPreset::GenericTelephoto;
+            const auto current_plate_overhead =
+                std::abs(location->x) <= 1250.0f &&
+                location->y >= 1800.0f &&
+                location->z >= 400.0f &&
+                normalize_angle_delta(rotation->y, -90.0f) <= 35.0f;
+            const auto absolute_fov_gate = std::clamp(fov_radius * 1.5f, 6.0f, outfield_facing_home_camera ? 28.0f : 20.0f);
 
-            std::scoped_lock _{m_prospi_camera_calibration_mtx};
-            for (const auto& [_, calibration] : m_prospi_camera_calibrations) {
+            for (const auto& calibration : *calibration_snapshot) {
                 if (!calibration.has_pose) {
                     continue;
                 }
@@ -11590,9 +11606,6 @@ void VR::update_game_fov() {
                 }
 
                 const auto calibration_preset = prospi_preset_from_value(calibration.preset);
-                const auto current_family_known =
-                    prospi_preset != ProSpiCameraPreset::None &&
-                    prospi_preset != ProSpiCameraPreset::GenericTelephoto;
                 const auto calibration_family_known =
                     calibration_preset != ProSpiCameraPreset::None &&
                     calibration_preset != ProSpiCameraPreset::GenericTelephoto;
@@ -11613,19 +11626,12 @@ void VR::update_game_fov() {
                     continue;
                 }
 
-                const auto current_pitch_view =
-                    is_prospi_home_plate_pitch_view(*location, *rotation, prospi_preset, raw_fov);
                 const auto calibration_pitch_view =
                     is_prospi_home_plate_pitch_view(calibration.location, calibration.rotation, calibration_preset, calibration.raw_fov);
-                if (current_pitch_view != calibration_pitch_view) {
+                if (home_plate_pitch_view != calibration_pitch_view) {
                     continue;
                 }
 
-                const auto current_plate_overhead =
-                    std::abs(location->x) <= 1250.0f &&
-                    location->y >= 1800.0f &&
-                    location->z >= 400.0f &&
-                    normalize_angle_delta(rotation->y, -90.0f) <= 35.0f;
                 const auto calibration_plate_overhead =
                     std::abs(calibration.location.x) <= 1250.0f &&
                     calibration.location.y >= 1800.0f &&
@@ -11680,7 +11686,6 @@ void VR::update_game_fov() {
                 const auto yaw_norm = normalize_angle_delta(rotation->y, calibration.rotation.y) / yaw_radius;
                 const auto pitch_norm = normalize_angle_delta(rotation->x, calibration.rotation.x) / pitch_radius;
                 const auto fov_norm = std::abs(raw_fov - calibration.raw_fov) / fov_radius;
-                const auto absolute_fov_gate = std::clamp(fov_radius * 1.5f, 6.0f, outfield_facing_home_camera ? 28.0f : 20.0f);
                 if (loc_norm > 2.5f ||
                     yaw_norm > 2.5f ||
                     pitch_norm > 2.5f ||
@@ -11701,7 +11706,7 @@ void VR::update_game_fov() {
                     preset_penalty;
                 const auto candidate_confidence = 1.0f / (1.0f + score);
                 if (candidate_confidence >= min_confidence) {
-                    learned_candidates.push_back({calibration, score, candidate_confidence});
+                    learned_candidates.push_back({&calibration, score, candidate_confidence});
                 }
             }
         }
@@ -11716,12 +11721,12 @@ void VR::update_game_fov() {
             for (size_t i = 0; i < c.match_count; ++i) {
                 const auto& candidate = learned_candidates[i];
                 auto& match = c.matches[i];
-                uevr::prospi::trace::copy_text(match.id, candidate.calibration.camera_id);
+                uevr::prospi::trace::copy_text(match.id, candidate.calibration->camera_id);
                 match.score = candidate.score; match.confidence = candidate.confidence;
                 match.weight = candidate.confidence * candidate.confidence;
-                match.focus_distance = candidate.calibration.dolly_distance;
-                match.min_fov = candidate.calibration.actual_min_fov;
-                match.multiplier = candidate.calibration.projection_multiplier;
+                match.focus_distance = candidate.calibration->dolly_distance;
+                match.min_fov = candidate.calibration->actual_min_fov;
+                match.multiplier = candidate.calibration->projection_multiplier;
                 weight_sum += match.weight;
             }
             if (weight_sum > 0) {
@@ -11740,9 +11745,9 @@ void VR::update_game_fov() {
             for (size_t i = 0; i < candidate_count; ++i) {
                 const auto weight = learned_candidates[i].confidence * learned_candidates[i].confidence;
                 weight_sum += weight;
-                learned_dolly += learned_candidates[i].calibration.dolly_distance * weight;
-                learned_min_fov += learned_candidates[i].calibration.actual_min_fov * weight;
-                learned_multiplier += learned_candidates[i].calibration.projection_multiplier * weight;
+                learned_dolly += learned_candidates[i].calibration->dolly_distance * weight;
+                learned_min_fov += learned_candidates[i].calibration->actual_min_fov * weight;
+                learned_multiplier += learned_candidates[i].calibration->projection_multiplier * weight;
                 confidence = std::max(confidence, learned_candidates[i].confidence);
             }
 
@@ -11756,7 +11761,7 @@ void VR::update_game_fov() {
                 prospi_dolly_source = "SmartLearned";
                 source = ProSpiAutoCameraSource::LearnedNearest;
                 match_label = candidate_count == 1
-                    ? learned_candidates.front().calibration.camera_id
+                    ? learned_candidates.front().calibration->camera_id
                     : std::format("{} learned cameras", candidate_count);
             }
         } else if (prospi_calibration_applied) {
@@ -11800,7 +11805,7 @@ void VR::update_game_fov() {
             std::array<uevr::prospi::framing::Calibration, 3> matches{};
             const auto count = (std::min)(learned_candidates.size(), matches.size());
             for (size_t i = 0; i < count; ++i) {
-                matches[i] = framing_calibration(learned_candidates[i].calibration, learned_candidates[i].confidence);
+                matches[i] = framing_calibration(*learned_candidates[i].calibration, learned_candidates[i].confidence);
             }
             // Use the same one-time default-FOV observation for validation and final dolly math.
             framing_base_fov = read_default_fov(pcm).value_or(m_game_fov_base.load(std::memory_order_relaxed));
@@ -11897,7 +11902,7 @@ void VR::update_game_fov() {
             std::array<uevr::prospi::framing::Calibration, 3> matches{};
             const auto count = (std::min)(learned_candidates.size(), matches.size());
             for (size_t i = 0; i < count; ++i) {
-                matches[i] = framing_calibration(learned_candidates[i].calibration, learned_candidates[i].confidence);
+                matches[i] = framing_calibration(*learned_candidates[i].calibration, learned_candidates[i].confidence);
             }
             celebration_short_focus = uevr::prospi::celebration::short_focus(celebration_pose, {matches.data(), count});
         }
@@ -11972,8 +11977,8 @@ void VR::update_game_fov() {
                 m_prospi_auto_camera_sequencer_last_camera_id == prospi_camera_id &&
                 m_prospi_auto_camera_sequencer_last_zone == (int32_t)sequence_zone &&
                 target_dolly > m_prospi_auto_camera_sequencer_last_dolly) {
-                const auto smoothing = std::clamp(m_match_game_fov_prospi_auto_camera_sequencer_smoothing->value(), 0.0f, 0.95f);
-                target_dolly = lerp_float(target_dolly, m_prospi_auto_camera_sequencer_last_dolly, smoothing);
+                target_dolly = uevr::prospi::return_smoothing::apply(
+                    target_dolly, m_prospi_auto_camera_sequencer_last_dolly, return_retention);
             }
 
             const auto sequenced_dolly = allow_dolly_increase ? target_dolly : std::min(active_dolly_distance, target_dolly);
@@ -11988,12 +11993,6 @@ void VR::update_game_fov() {
         apply_prospi_dugout_celebration_tuning();
 
         constexpr auto prospi_cutscene_segment_max_duration = std::chrono::seconds{8};
-        const auto hard_camera_cut =
-            !m_prospi_auto_camera_observation_valid ||
-            location_delta >= 2500.0f ||
-            yaw_delta >= 30.0f ||
-            pitch_delta >= 20.0f ||
-            fov_delta >= 7.5f;
         const auto coordinate_cutscene_camera =
             dugout_celebration_tracking_camera ||
             pre_celebration_line_camera ||
@@ -12122,6 +12121,7 @@ void VR::update_game_fov() {
             raw_fov);
     } else {
         m_prospi_auto_camera_sequencer_last_valid = false;
+        m_prospi_camera_return_timeline.reset();
         m_prospi_auto_camera_observation_valid = false;
         m_prospi_cutscene_segment_active = false;
         update_prospi_auto_camera_sequencer_state(false);
@@ -13861,6 +13861,13 @@ void VR::save_cameras() try {
     spdlog::error("[VR] Failed to save camera offsets");
 }
 
+void VR::publish_prospi_camera_calibrations() {
+    // Called only while holding the edit mutex; matching keeps its own immutable snapshot alive.
+    if (!m_prospi_camera_match_snapshot.publish(m_prospi_camera_calibrations)) {
+        spdlog::error("[VR] Camera calibration snapshot failed; learned matching disabled until the next edit/reload");
+    }
+}
+
 void VR::save_prospi_camera_calibrations() try {
     ZoneScopedN(__FUNCTION__);
 
@@ -13969,6 +13976,7 @@ void VR::load_prospi_camera_calibrations() try {
     {
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         m_prospi_camera_calibrations = std::move(calibrations);
+        publish_prospi_camera_calibrations();
         calibration_count = m_prospi_camera_calibrations.size();
     }
 
@@ -14017,6 +14025,7 @@ void VR::save_current_prospi_camera_calibration() {
     {
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         m_prospi_camera_calibrations[camera_id] = calibration;
+        publish_prospi_camera_calibrations();
     }
 
     save_prospi_camera_calibrations();
@@ -14044,6 +14053,7 @@ void VR::clear_current_prospi_camera_calibration() {
     {
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         removed = m_prospi_camera_calibrations.erase(camera_id) > 0;
+        if (removed) { publish_prospi_camera_calibrations(); }
     }
 
     if (removed) {
@@ -14073,6 +14083,7 @@ void VR::clear_current_prospi_preset_calibrations() {
                 ++it;
             }
         }
+        if (removed > 0) { publish_prospi_camera_calibrations(); }
     }
 
     if (removed > 0) {
@@ -14207,6 +14218,7 @@ bool VR::apply_prospi_tuning_to_camera(
     {
         std::scoped_lock _{m_prospi_camera_calibration_mtx};
         m_prospi_camera_calibrations[calibration.camera_id] = calibration;
+        publish_prospi_camera_calibrations();
     }
 
     m_match_game_fov_prospi_camera_calibration_auto->value() = true;
@@ -16223,6 +16235,9 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                         m_match_game_fov_prospi_auto_camera_sequencer_stand_cap->draw("Stand/Crowd Dolly Cap");
                         m_match_game_fov_prospi_auto_camera_sequencer_outfield_cap->draw("Outfield Low Dolly Cap");
                         m_match_game_fov_prospi_auto_camera_sequencer_smoothing->draw("Sequencer Return Smoothing");
+                        if (ImGui::IsItemHovered()) {
+                            ImGui::SetTooltip("Time-based dolly return, matched to the previous 30 FPS response. Cuts and long gaps reset it; FOV and head tracking are not smoothed.");
+                        }
                         if (m_match_game_fov_prospi_auto_camera_sequencer_mode->value() == PROSPI_AUTO_CAMERA_SEQUENCER_LEARNED_ASSIST ||
                             m_match_game_fov_prospi_auto_camera_sequencer_mode->value() == PROSPI_AUTO_CAMERA_SEQUENCER_CALIBRATED_FRAMING) {
                             ImGui::SeparatorText("Learned Match Tuning");
@@ -16618,6 +16633,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                 {
                                     std::scoped_lock _{m_prospi_camera_calibration_mtx};
                                     m_prospi_camera_calibrations[calibration.camera_id] = calibration;
+                                    publish_prospi_camera_calibrations();
                                 }
 
                                 save_prospi_camera_calibrations();
@@ -16637,6 +16653,7 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
                                 {
                                     std::scoped_lock _{m_prospi_camera_calibration_mtx};
                                     removed = m_prospi_camera_calibrations.erase(selected.camera_id) > 0;
+                                    if (removed) { publish_prospi_camera_calibrations(); }
                                 }
 
                                 if (removed) {

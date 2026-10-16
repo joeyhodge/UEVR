@@ -768,6 +768,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND prospi-camera-framing-tests_SOURCES
 		"tests/ProSpiCameraFramingTests.cpp"
+		"tests/ProSpiCameraMatchingTests.cpp"
 	)
 
 	list(APPEND prospi-camera-framing-tests_SOURCES
@@ -1941,6 +1942,11 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/D3D11Component.hpp"
 	"src/mods/vr/D3D12Component.hpp"
 	"src/mods/vr/DuneFrameHandoff.hpp"
+	"src/mods/vr/DuneFrameHandoffDiscovery.hpp"
+	"src/mods/vr/DuneNativeTransaction.hpp"
+	"src/mods/vr/DuneRendererAbi.hpp"
+	"src/mods/vr/DuneSmartGI.hpp"
+	"src/mods/vr/DuneSmartGIContract.hpp"
 	"src/mods/vr/FFakeStereoRenderingHook.hpp"
 	"src/mods/vr/GalacticRacerBink.hpp"
 	"src/mods/vr/GalacticRacerBinkCode.hpp"
@@ -1953,6 +1959,7 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/GamepadRecovery.hpp"
 	"src/mods/vr/HalloweenNativeFix.hpp"
 	"src/mods/vr/HalloweenRenderTargets.hpp"
+	"src/mods/vr/HellraiserCaptureLayout.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
 	"src/mods/vr/IXRTrackingSystemHook.hpp"
 	"src/mods/vr/KtjLCloudHook.hpp"
@@ -1978,7 +1985,9 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/OverlayComponent.hpp"
 	"src/mods/vr/ProSpiCameraCutGuard.hpp"
 	"src/mods/vr/ProSpiCameraFraming.hpp"
+	"src/mods/vr/ProSpiCameraMatching.hpp"
 	"src/mods/vr/ProSpiCameraProbe.hpp"
+	"src/mods/vr/ProSpiCameraReturnSmoothing.hpp"
 	"src/mods/vr/ProSpiCameraTrace.hpp"
 	"src/mods/vr/ProSpiCelebrationFraming.hpp"
 	"src/mods/vr/ProSpiNativeCameraLayout.hpp"

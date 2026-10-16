@@ -261,7 +261,7 @@ endif()
 [target.prospi-camera-framing-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/ProSpiCameraFramingTests.cpp"]
+sources = ["tests/ProSpiCameraFramingTests.cpp", "tests/ProSpiCameraMatchingTests.cpp"]
 include-directories = ["src/"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["nlohmann_json"]

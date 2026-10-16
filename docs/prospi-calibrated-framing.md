@@ -80,6 +80,38 @@ This mode never creates a ball-follow target or changes camera yaw/pitch to
 chase a ball. It follows the authored camera's movement. Existing `BallFollow`
 labels are heuristic and are not used as proof of a real ball position.
 
+## Matching cost and sequencer return timing
+
+Both ProSpi 2024-2025 and eBaseball use an immutable calibration snapshot for
+learned matching. Saving, editing, clearing or reloading calibrations publishes
+a new snapshot under the existing edit lock; an in-progress match retains its
+original snapshot. Scoring no longer holds that lock or copies calibration
+strings into each candidate. Candidate storage is reused per thread, with
+separate temporary storage for nested updates. The map iteration order,
+score-only full sort, matching gates, top-three blend, trace match ordering and
+exact saved overrides are retained. No camera entries are truncated. A failed
+snapshot rebuild disables learned matching until the next edit/reload rather
+than reusing deleted entries; the existing rules/exact lookup remain available.
+
+The existing **Sequencer Return Smoothing** control now describes retention per
+1/30 second. A value of 0.25 retains the same return response as the old blend
+at 30 updates/second; other rates use `pow(value, elapsed_seconds * 30)` instead
+of applying that retention once every update. This only affects the existing
+automatic rule-assist dolly-return increase path, not matching scores, targets,
+FOV, head tracking or game simulation. Dolly decreases remain immediate.
+
+Cuts, world/camera/rendering/sequencer/play-mode/zone changes, manual-override
+transitions, disabled/unavailable paths, invalid clocks and gaps over 250 ms
+bypass old return history. Existing camera-ID/zone gates and downstream safety
+limits still apply. Celebration continuity and camera-cut stabilization already
+use elapsed time and are unchanged. No profile/calibration migration, new
+native hook, game call, frame-rate override or recording dependency is added.
+
+Offline coverage checks snapshot lifetime/edit/failure/concurrent publication,
+storage reuse and nested updates, equal-score/full-sort and blend equivalence,
+and 15-144 Hz/variable-rate return timing. Live FPS gains and camera feel still
+require a same-settings HMD comparison; this is not a frame-pacing fix.
+
 ## Low baseline / celebration refinement
 
 The second Tokyo Dome recording, `session-35746876825400`, confirmed three

@@ -16,6 +16,7 @@
 
 using namespace uevr::prospi::framing;
 using Json = nlohmann::json;
+void run_prospi_camera_matching_tests();
 namespace {
 void require(bool ok, const std::string& message) {
     if (!ok) { throw std::runtime_error(message); }
@@ -1005,6 +1006,7 @@ int main(int argc, char** argv) {
         if (argc == 4 && std::string(argv[1]) == "--cut-shadow") { return cut_shadow(argv[2], argv[3]); }
         require(argc == 2, "Usage: tests fixture.json OR --shadow/--native-shadow session-path output.json");
         const auto fixtures = read_json(argv[1]);
+        run_prospi_camera_matching_tests();
         captured_fixtures(fixtures); guards(fixtures); native_focus_guards(); current_near_home_height_guards(); close_focus_guards(); baseline_focus_guards(); cut_guards();
         current_marked_height_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-20261009-marked-height.json"));
         hokkaido_fixtures(read_json(std::filesystem::path{argv[1]}.parent_path() / "prospi-hokkaido-cut-framing.json"));

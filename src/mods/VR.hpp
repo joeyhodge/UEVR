@@ -40,6 +40,8 @@
 #include "vr/ProSpiCameraFraming.hpp"
 #include "vr/ProSpiCelebrationFraming.hpp"
 #include "vr/ProSpiCameraCutGuard.hpp"
+#include "vr/ProSpiCameraMatching.hpp"
+#include "vr/ProSpiCameraReturnSmoothing.hpp"
 #include "vr/ProSpiRoofVisibility.hpp"
 
 #undef max
@@ -2125,6 +2127,7 @@ private:
 
     void update_fullscreen_16x9_camera_compatibility(sdk::UGameEngine* engine);
     void update_game_fov();
+    void publish_prospi_camera_calibrations();
     void update_prospi_camera_trace_control();
     void clear_prospi_balanced_player_visibility_cache();
     void update_prospi_player_visibility_guard();
@@ -2469,6 +2472,7 @@ private:
     std::atomic<uint64_t> m_prospi_cut_cadence_guard_generation{0};
     std::mutex m_prospi_camera_calibration_mtx{};
     std::unordered_map<std::string, ProSpiCameraCalibration> m_prospi_camera_calibrations{};
+    uevr::prospi::matching::PublishedCalibrations<ProSpiCameraCalibration> m_prospi_camera_match_snapshot{};
     std::string m_prospi_current_camera_id{};
     struct ProSpiCameraCutHistoryEntry {
         std::string camera_id{};
@@ -2781,6 +2785,7 @@ private:
     int32_t m_prospi_auto_camera_sequencer_last_play_mode{0};
     float m_prospi_auto_camera_sequencer_last_dolly{0.0f};
     bool m_prospi_auto_camera_sequencer_last_valid{false};
+    uevr::prospi::return_smoothing::Timeline m_prospi_camera_return_timeline{};
     std::chrono::steady_clock::time_point m_prospi_auto_camera_sequencer_last_ball_follow_time{};
     bool m_prospi_auto_camera_observation_valid{false};
     glm::vec3 m_prospi_auto_camera_observation_location{};
