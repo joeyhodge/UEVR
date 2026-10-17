@@ -3,6 +3,8 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <new>
 #include <optional>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include "GearsEDayNativeContracts.hpp"
@@ -29,6 +31,17 @@ inline constexpr size_t family_size = 0x198;
 inline constexpr size_t interfaces_offset = 0x160;
 inline constexpr size_t constrained_rect_offset = 0x380;
 inline constexpr size_t unconstrained_rect_offset = 0x390;
+
+struct alignas(16) FamilyStorage {
+    std::array<uint8_t, 0x1000> bytes{};
+};
+static_assert(sizeof(FamilyStorage) >= family_size && alignof(FamilyStorage) >= 16);
+
+inline std::unique_ptr<FamilyStorage> make_family_storage() {
+    // Only the outer placement storage is ours. The verified native copy/dtor
+    // allocate/free the member arrays themselves; destructor flags remain zero.
+    return std::unique_ptr<FamilyStorage>{new (std::nothrow) FamilyStorage{}};
+}
 
 struct FamilyFunctions {
     uintptr_t copy{};

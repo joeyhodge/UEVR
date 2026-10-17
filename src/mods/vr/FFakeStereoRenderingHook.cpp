@@ -908,17 +908,22 @@ public:
                 sizeof(uintptr_t));
         }
 
-        m_allocator = sdk::FMalloc::get();
-        if (m_allocator == nullptr) {
-            failure_reason = "engine allocator is unavailable";
-            return false;
-        }
-
         constexpr size_t guarded_family_storage_size = 0x1000;
-        m_object = reinterpret_cast<sdk::FSceneViewFamily*>(
-            m_allocator->malloc(guarded_family_storage_size, 16));
+        if (goweday_ue561_dx12_runtime()) {
+            m_goweday_storage = uevr::gears_native::make_family_storage();
+            m_object = m_goweday_storage
+                ? reinterpret_cast<sdk::FSceneViewFamily*>(m_goweday_storage->bytes.data()) : nullptr;
+        } else {
+            m_allocator = sdk::FMalloc::get();
+            if (m_allocator == nullptr) {
+                failure_reason = "engine allocator is unavailable";
+                return false;
+            }
+            m_object = reinterpret_cast<sdk::FSceneViewFamily*>(
+                m_allocator->malloc(guarded_family_storage_size, 16));
+        }
         if (m_object == nullptr) {
-            failure_reason = "engine allocation for cloned family failed";
+            failure_reason = "allocation for cloned family storage failed";
             return false;
         }
         std::memset(m_object, 0, guarded_family_storage_size);
@@ -1050,12 +1055,13 @@ private:
             m_functions->deleting_destructor(m_object, 0);
         }
 
-        if (m_object != nullptr && m_allocator != nullptr) {
+        if (m_object != nullptr && m_allocator != nullptr && !m_goweday_storage) {
             m_allocator->free(m_object);
         }
 
         m_constructed = false;
         m_object = nullptr;
+        m_goweday_storage.reset();
         m_allocator = nullptr;
         m_functions.reset();
         m_borrowed_owned_interfaces = {};
@@ -1064,6 +1070,7 @@ private:
     std::optional<UE57FSceneViewFamilyFunctions> m_functions{};
     sdk::FMalloc* m_allocator{};
     sdk::FSceneViewFamily* m_object{};
+    std::unique_ptr<uevr::gears_native::FamilyStorage> m_goweday_storage{};
     std::array<uintptr_t, ue57_owned_interface_count> m_borrowed_owned_interfaces{};
     bool m_constructed{};
 };
