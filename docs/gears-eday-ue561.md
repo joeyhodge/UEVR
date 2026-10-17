@@ -96,6 +96,16 @@ view-metadata contracts rather than by a UE5.7 version assumption.
 - Record shared interfaces before clone retirement, reject shared owned
   upscalers, and detach only borrowed ownership. Restore view metadata, backlinks,
   arrays and render targets before publishing the exact-generation capture.
+- Derive the copy scan signature from the validated bytes, including the leading
+  `0x40` REX prefix. The previous signature started one byte inside the function,
+  so the correct unwind-boundary check rejected every result. End-to-end scans
+  now require exactly one validated entry in the preserved game image.
+- Keep both constructor rectangles packed for ordinary and failed-closed
+  rendering. Only the linked transaction rebases the right rectangle into its
+  single-eye target. This game's constructor proves constrained/unconstrained
+  output offsets `+0x380/+0x390`; SWGR's different offsets are not reused. Compare
+  live rectangles with exact-pair metadata and capture dimensions before writing,
+  then restore on every exit. Failed restoration refuses rendering/publication.
 
 For this validated transaction, preserving constructor identity is mandatory
 regardless of the legacy Preserve Secondary Pass/Same Pass checkbox combination;
@@ -126,6 +136,10 @@ their existing paths. This transaction still requires a fresh HMD runtime test.
   and verify the constructor's pass/primary-index fields. The production
   validators also pass against the preserved executable's actual code and unwind
   table; no engine allocation/destruction address comes from a runtime JSON file.
+- The production Kanan pattern parser finds the exact copy entry, while a
+  regression fixture reproduces the old entry-plus-one match. Rectangle tests
+  cover stale metadata, resolution mismatches, malformed/overlapping pairs,
+  partial-write rollback, failed restoration and untouched neighboring bytes.
 
 These are offline/runtime-code contract checks, not confirmation of Native Fix,
 Ghost Fix, UObject browsing or the extracted HUD in the HMD after this follow-up.
