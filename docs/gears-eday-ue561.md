@@ -1,9 +1,33 @@
 # Gears E-Day UE5.6.1 compatibility
 
-Initial scope: `GoWEDay-Steam.exe`, file version UE5.6.1, DX12. Other executable
-names, engine minors and games retain their existing rendering paths. UObject
+Scope: `GoWEDay-Steam.exe` and the observed `WinGDK/GoWEDay.exe`, file version
+UE5.6.1, DX12. Other executable names, engine minors and games retain their
+existing rendering paths. UObject
 discovery itself is renderer-independent. This is a test integration, not yet
 an in-game/HMD compatibility confirmation.
+
+## Game Pass identity-only admission
+
+The supplied GDK log identifies `FairlightConcept/Binaries/WinGDK/GoWEDay.exe`
+on DX12. Its current Steam-only build bypassed this adapter, reached legacy
+allocation replay after native-texture discovery failed, and ends during UI
+texture creation. It contains no exception stack and does not prove the precise
+failure, private layouts or file-version resource values.
+
+The GDK addition admits only that case-insensitive basename with an immediate
+`WinGDK` parent, while retaining the exact UE5.6.1 file-version requirement.
+Missing/non-engine version resources are not accepted. This is eligibility to
+attempt validated discovery, not a claim that Steam's layout is shared by GDK.
+No runtime RVAs, guessed GDK names, layout alternatives, byte masks, virtual
+slots, calling conventions, ownership or rendering defaults are changed.
+
+Existing instruction, unwind, object/header, texture/device/extent, Slate ABI
+and exact-generation eye-pair checks remain mandatory at their use sites.
+Engine-owned allocation avoids replay; unsupported discovery preserves the
+original draw/pair or declines the unsafe operation. GDK may still require its
+own evidence-backed adapter if these contracts differ. Its EXE/PDB is unavailable
+and the GDK path has not been runtime-tested. Steam contract fixtures and the
+preserved Steam image can establish non-regression, not GDK compatibility.
 
 ## Verified contracts
 
