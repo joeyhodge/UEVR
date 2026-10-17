@@ -6,7 +6,9 @@
 #include <cstring>
 #include <iostream>
 #include <string_view>
+#include <utility/Pattern.hpp>
 #include "sdk/GearsEDayDiscovery.hpp"
+#include "mods/vr/GearsEDayNativeFix.hpp"
 
 namespace {
 int failures{};
@@ -44,6 +46,16 @@ bool private_trampoline(const SafetyHookInline& hook) {
 
 int test_goweday_hook_boundaries() {
     failures = 0;
+    {
+        namespace n = uevr::gears_native;
+        utility::Pattern pattern{n::family_copy_signature.data()};
+        const auto entry = reinterpret_cast<uintptr_t>(n::family_copy_code.data());
+        expect(pattern.find(entry, n::family_copy_code.size()) == entry,
+            "Gears production scan pattern includes the leading REX byte and resolves the exact validated function entry");
+        utility::Pattern old_pattern{"53 55 56 57 41 56 48 83 EC 40 48 8D 05 ? ? ? ? 48 8B D9 48 89 01 48 8B FA 48 83 C1 08"};
+        expect(old_pattern.find(entry, n::family_copy_code.size()) == entry + 1,
+            "regression reproduces the old one-byte-inside-function match rejected by Native Fix");
+    }
     // Reproduce the game's observed address-space condition in this test process
     // only. Reserve virtual address space, not 4 GiB of physical/committed memory.
     constexpr size_t reserve_size = 0x100020000ULL;

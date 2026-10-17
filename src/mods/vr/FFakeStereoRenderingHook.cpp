@@ -383,7 +383,7 @@ std::optional<UE57FSceneViewFamilyFunctions> resolve_ue57_fsceneviewfamily_funct
         };
         size_t candidates{};
         for (auto cursor = base; size != 0 && cursor < base + size;) {
-            const auto match = utility::scan(cursor, base + size - cursor, g::family_copy_signature);
+            const auto match = utility::scan(cursor, base + size - cursor, g::family_copy_signature.data());
             if (!match) { break; }
             cursor = *match + 1;
             const auto functions = g::family_functions(memory, *match, base, size, function_size);
@@ -23038,7 +23038,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
         int32_t y = 0;
 
         if (!vr->is_using_afr() && true_index == 1 &&
-            (!vr->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime())) {
+            (!vr->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime())) {
             x += w;
         }
 
@@ -25980,6 +25980,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
     if (use_ue57_linked_family_transaction) {
         const bool swgr_linked = swgr_ue574_dx12_runtime();
         uevr::swgr_native::RectOverride swgr_right_rects{};
+        uevr::gears_native::RectOverride goweday_right_rects{};
         const auto fail_closed = [&](const char* reason) {
             g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed, reason);
             SPDLOG_WARNING_EVERY_N_SEC(
@@ -25988,6 +25989,10 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
                 reason);
             if (!swgr_right_rects.restore()) {
                 SPDLOG_ERROR("[SWGR][NativeStereoFix] Refusing fallback after right-eye rectangle restoration failed");
+                return;
+            }
+            if (!goweday_right_rects.restore()) {
+                SPDLOG_ERROR("[GoWEDay][NativeStereoFix] Refusing fallback after right-eye rectangle restoration failed");
                 return;
             }
             call_original();
@@ -26142,6 +26147,32 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             }
         }
 
+        if (goweday_linked) {
+            const auto as_rects = [](const NativeStereoViewMetadata& metadata) {
+                uevr::gears_native::ViewRects rects{};
+                std::copy_n(metadata.constrained_view_rect.bounds, 4, rects.constrained.begin());
+                std::copy_n(metadata.view_rect.bounds, 4, rects.unconstrained.begin());
+                return rects;
+            };
+            const auto write_rects = [](void*, uintptr_t view, const uevr::gears_native::ViewRects& rects) {
+                const auto constrained = view + uevr::gears_native::constrained_rect_offset;
+                const auto unconstrained = view + uevr::gears_native::unconstrained_rect_offset;
+                if (!sdk::gears_eday::pointer(view) ||
+                    !is_writable_process_range(constrained, sizeof(rects.constrained)) ||
+                    !is_writable_process_range(unconstrained, sizeof(rects.unconstrained))) { return false; }
+                std::memcpy(reinterpret_cast<void*>(constrained), rects.constrained.data(), sizeof(rects.constrained));
+                std::memcpy(reinterpret_cast<void*>(unconstrained), rects.unconstrained.data(), sizeof(rects.unconstrained));
+                return true;
+            };
+            if (!goweday_right_rects.initialize(sdk::discovery::process_memory(),
+                    reinterpret_cast<uintptr_t>(native_left_view), reinterpret_cast<uintptr_t>(native_right_view),
+                    as_rects(native_left_metadata), as_rects(native_right_metadata),
+                    native_capture_snapshot->width, native_capture_snapshot->height, nullptr, write_rects)) {
+                fail_closed("Gears packed rectangles did not match the exact capture transaction");
+                return;
+            }
+        }
+
         if (!try_set_ue57_scene_view_family(native_right_view, view_family, right_family)) {
             fail_closed("secondary view Family backlink could not be redirected safely");
             return;
@@ -26207,7 +26238,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
 
         const bool unique_goweday_interfaces = !goweday_linked || right_family_clone.finish_goweday(view_family);
         const bool right_singleton_restored = right_singleton_primary.restore();
-        const bool right_rects_restored = swgr_right_rects.restore();
+        const bool swgr_rects_restored = swgr_right_rects.restore();
+        const bool goweday_rects_restored = goweday_right_rects.restore();
+        const bool right_rects_restored = swgr_rects_restored && goweday_rects_restored;
         const auto right_family_after_render = native_right_view->get_view_family();
         const bool right_family_restored =
             right_family_after_render == view_family ||
@@ -29583,7 +29616,7 @@ void FFakeStereoRenderingHook::adjust_view_rect(FFakeStereoRendering* stereo, in
         SPDLOG_INFO_ONCE("[Medium][UE4.25Plus] Forcing one-based stereo eye passes (1=left, 2=right)");
     }
 
-    if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime()) {
+    if (!VR::get()->is_native_stereo_fix_enabled() || swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime()) {
         *x += *w * true_index;
     }
 }
