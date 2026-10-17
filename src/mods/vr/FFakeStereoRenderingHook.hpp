@@ -1282,6 +1282,8 @@ private:
     void service_swgr_bink_seek_budget();
     static void* sw_zero_company_ue56_register_external_texture_hook(
         void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
+    static void* goweday_register_external_texture_hook(
+        void* graph_builder, void* texture, const wchar_t* name, uint8_t flags);
     static void ue58_slate_output_texture_register_hook(safetyhook::Context& ctx);
     static void daysgone_slate_intermediate_buffer_hook(safetyhook::Context& ctx);
     static void daysgone_bend_taa_composite_hook(safetyhook::Context& ctx);
@@ -1585,6 +1587,7 @@ private:
     std::atomic_bool m_swgr_bink_seek_enabled{};
     std::atomic_uint64_t m_swgr_bink_budgeted_seeks{}, m_swgr_bink_seek_displays{};
     safetyhook::InlineHook m_sw_zero_company_ue56_slate_output_texture_register_hook{};
+    safetyhook::InlineHook m_goweday_slate_output_texture_register_hook{};
     std::vector<safetyhook::MidHook> m_ue58_slate_output_texture_register_hooks{};
 
     struct UE58SlateUICapabilityDiagnostics {

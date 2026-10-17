@@ -18,6 +18,8 @@
 
 #include <sdk/UObjectBase.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
+#include <sdk/GearsEDayDiscovery.hpp>
+#include <sdk/EngineModule.hpp>
 #include <sdk/UObjectArray.hpp>
 #include <sdk/UClass.hpp>
 #include <sdk/FField.hpp>
@@ -55,6 +57,7 @@
 #include "UObjectHook.hpp"
 #include "vr/KtjLHookContracts.hpp"
 #include "utility/UObjectAllocatorDiscovery.hpp"
+#include "utility/HookDiagnostics.hpp"
 
 //#define VERBOSE_UOBJECTHOOK
 
@@ -98,6 +101,27 @@ bool is_townfall_ue56_uobjecthook() {
         return HIWORD(version.dwFileVersionMS) == 5 && LOWORD(version.dwFileVersionMS) == 6;
     }();
     return target;
+}
+
+std::optional<uintptr_t> find_goweday_object_free() {
+    const auto module = sdk::get_ue_module(L"CoreUObject");
+    if (!module) { return {}; }
+    std::unordered_set<uintptr_t> candidates;
+    for (const auto text : utility::scan_strings(module,
+            L"Removing object (0x%016llx) at index %d but the index points to a different object (0x%016llx)!")) {
+        for (const auto ref : utility::scan_displacement_references(module, text)) {
+            const auto start = utility::find_function_start_unwind(ref);
+            if (start && utility::get_module_within(*start).value_or(nullptr) == module &&
+                sdk::gears_eday::object_free(sdk::discovery::process_memory(), *start)) {
+                candidates.insert(*start);
+            }
+        }
+    }
+    if (candidates.size() != 1) {
+        SPDLOG_ERROR("[GoWEDay][UObjectHook] Expected one validated FreeUObjectIndex, found {}", candidates.size());
+        return {};
+    }
+    return *candidates.begin();
 }
 
 std::optional<uintptr_t> find_townfall_object_allocator() {
@@ -954,7 +978,10 @@ void UObjectHook::hook() {
 
     m_wants_activate = false;
 
-    auto destructor_fn = sdk::UObjectBase::get_destructor();
+    const bool goweday = sdk::gears_eday::current_game();
+    // The protected image can occupy the entire rel32 allocation range. Observe
+    // the validated GC retirement entry instead of relocating the short RIP-relative destructor.
+    auto destructor_fn = goweday ? find_goweday_object_free() : sdk::UObjectBase::get_destructor();
 
     if (!destructor_fn) {
         SPDLOG_ERROR("[UObjectHook] Failed to find UObjectBase::destructor, cannot hook UObjectBase");
@@ -965,7 +992,7 @@ void UObjectHook::hook() {
     // and deferred registration call the same FUObjectArray allocator instead.
     // OW2's backup resolver can select an unrelated helper. Do not discover or
     // hook it; keep destructor tracking and the validated object-array fallback.
-    auto add_object_fn = is_outerworlds2_uobjecthook() ? std::optional<uintptr_t>{} :
+    auto add_object_fn = (goweday || is_outerworlds2_uobjecthook()) ? std::optional<uintptr_t>{} :
         is_townfall_ue56_uobjecthook() ? find_townfall_object_allocator() : sdk::UObjectBase::get_add_object();
     if (is_outerworlds2_uobjecthook()) {
         SPDLOG_INFO("[OW2][UObjectHook] Skipping AddObject discovery; using validated array tracking with a 4 ms soft tick budget");
@@ -985,11 +1012,38 @@ void UObjectHook::hook() {
         SPDLOG_WARN("[UObjectHook] UObjectBase::AddObject was not found; using incremental FUObjectArray creation tracking");
     }
 
-    m_destructor_hook = safetyhook::create_inline((void*)destructor_fn.value(), &destructor,
-        safetyhook::InlineHook::StartDisabled);
-    if (m_destructor_hook && !m_destructor_hook.enable()) { m_destructor_hook.reset(); }
+    if (goweday) {
+        const auto* array = sdk::FUObjectArray::get();
+        const auto& layout = sdk::FUObjectArray::get_layout();
+        const auto header = sdk::UObjectBase::published_header_layout();
+        if (!array || !header->valid() || header->index != 12 || header->packed_index ||
+            !layout.chunked || layout.inlined || layout.ue58 || layout.objects_offset != 0x10 ||
+            layout.objects_per_chunk != 65536 || layout.stride != 24 || layout.object != 0 || layout.serial != 16) {
+            SPDLOG_ERROR("[GoWEDay][UObjectHook] Free-index/header layout not validated; no hook installed");
+            return;
+        }
+        auto result = safetyhook::InlineHook::create(safetyhook::Allocator::create_private(),
+            reinterpret_cast<void*>(*destructor_fn), &goweday_free_object, safetyhook::InlineHook::StartDisabled);
+        if (!result) {
+            uevr::hooks::log_error("[GoWEDay][UObjectHook] Creating free-index hook", *destructor_fn, result.error());
+            return;
+        }
+        m_goweday_object_free_hook = std::move(*result);
+        m_goweday_object_array.store(const_cast<sdk::FUObjectArray*>(array), std::memory_order_release);
+        if (const auto enabled = m_goweday_object_free_hook.enable(); !enabled) {
+            uevr::hooks::log_error("[GoWEDay][UObjectHook] Enabling free-index hook", *destructor_fn, enabled.error());
+            m_goweday_object_array.store(nullptr, std::memory_order_release);
+            m_goweday_object_free_hook.reset();
+            return;
+        }
+        SPDLOG_INFO("[GoWEDay][UObjectHook] Hooked validated FreeUObjectIndex at {:x}; array-based creation tracking", *destructor_fn);
+    } else {
+        m_destructor_hook = safetyhook::create_inline((void*)destructor_fn.value(), &destructor,
+            safetyhook::InlineHook::StartDisabled);
+        if (m_destructor_hook && !m_destructor_hook.enable()) { m_destructor_hook.reset(); }
+    }
 
-    if (!m_destructor_hook) {
+    if (!m_destructor_hook && !m_goweday_object_free_hook) {
         SPDLOG_ERROR("[UObjectHook] Failed to hook UObjectBase::destructor, cannot hook UObjectBase");
         return;
     }
@@ -1053,7 +1107,7 @@ void UObjectHook::hook() {
 
     if (m_add_object_hooked) {
         SPDLOG_INFO("[UObjectHook] Hooked UObjectBase");
-    } else {
+    } else if (!goweday) {
         SPDLOG_INFO("[UObjectHook] Hooked UObjectBase destructor; AddObject creation tracking is using FUObjectArray scanning");
     }
 
@@ -6566,6 +6620,23 @@ void* UObjectHook::destructor(sdk::UObjectBase* object, void* rdx, void* r8, voi
     try { hook->remove_tracked_object(object); }
     catch (...) { SPDLOG_WARN_ONCE("[UObjectHook] Object retirement refused after an exception"); }
     return hook->m_destructor_hook.unsafe_call<void*>(object, rdx, r8, r9);
+}
+
+void UObjectHook::goweday_free_object(sdk::FUObjectArray* array, sdk::UObjectBase* object) {
+    auto& hook = UObjectHook::get();
+    try {
+        if (array == hook->m_goweday_object_array.load(std::memory_order_acquire)) {
+            // No discovery or UObject virtual calls while the engine owns the GC lock.
+            const auto header = sdk::UObjectBase::published_header_layout();
+            const auto observed = sdk::object_liveness::observe_identity(sdk::discovery::process_memory(),
+                reinterpret_cast<uintptr_t>(array), sdk::FUObjectArray::get_layout(),
+                reinterpret_cast<uintptr_t>(object), header->index, header->packed_index, header);
+            if (observed) { hook->remove_tracked_object(object, &observed->identity); }
+        }
+    } catch (...) {
+        SPDLOG_WARN_ONCE("[GoWEDay][UObjectHook] Free-index observation refused after an exception");
+    }
+    hook->m_goweday_object_free_hook.unsafe_call<void>(array, object);
 }
 
 void UObjectHook::PersistentProperties::save_to_file(std::optional<std::filesystem::path> path) try {

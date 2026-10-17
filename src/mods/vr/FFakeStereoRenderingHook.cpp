@@ -42,6 +42,9 @@
 #include <sdk/CVar.hpp>
 #include <sdk/MafiaDiscovery.hpp>
 #include <sdk/DiscoveryMemory.hpp>
+#include <sdk/GearsEDayDiscovery.hpp>
+#include "GearsEDayAllocation.hpp"
+#include "utility/HookDiagnostics.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
 #include <sdk/ObjectLivenessPolicy.hpp>
@@ -153,6 +156,19 @@ bool halloween_ue574_dx12_runtime();
 bool looks_like_vtable_object(void* object);
 bool get_d3d12_resource_desc_guarded(ID3D12Resource* resource, D3D12_RESOURCE_DESC& out);
 bool get_d3d12_resource_device_guarded(ID3D12Resource* resource, ID3D12Device4** out);
+bool is_probable_d3d_native_resource(void* native);
+
+bool goweday_ue561_dx12_runtime() {
+    return sdk::gears_eday::current_game() && g_framework != nullptr && g_framework->is_dx12();
+}
+
+bool goweday_has_slate_abi() {
+    if (!goweday_ue561_dx12_runtime() || g_hook == nullptr) { return false; }
+    const auto target = g_hook->get_slate_hook_target_address();
+    if (target == 0) { return false; }
+    static const bool validated = sdk::gears_eday::slate_abi(sdk::discovery::process_memory(), target);
+    return validated;
+}
 
 bool swgr_ue574_dx12_runtime() {
     const bool selected = sdk::galactic_racer::current_game() && g_framework != nullptr && g_framework->is_dx12();
@@ -6128,7 +6144,35 @@ bool is_ue_5_6_dx12_backend() {
     return g_framework != nullptr && g_framework->is_dx12() && is_ue_5_6_runtime();
 }
 
+bool goweday_try_get_native_resource(FRHITexture2D* texture, ID3D12Resource** out_native, D3D12_RESOURCE_DESC* out_desc) {
+    if (out_native) { *out_native = nullptr; }
+    if (out_desc) { *out_desc = {}; }
+    if (!goweday_ue561_dx12_runtime()) { return false; }
+    const auto native_address = sdk::gears_eday::native_resource(
+        sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(texture));
+    auto* native = native_address ? reinterpret_cast<ID3D12Resource*>(*native_address) : nullptr;
+    D3D12_RESOURCE_DESC desc{};
+    ID3D12Device4* raw_device{};
+    if (!is_probable_d3d_native_resource(native) || !get_d3d12_resource_desc_guarded(native, desc) ||
+        !get_d3d12_resource_device_guarded(native, &raw_device)) { return false; }
+    Microsoft::WRL::ComPtr<ID3D12Device4> device;
+    device.Attach(raw_device);
+    const auto& hook = g_framework->get_d3d12_hook();
+    if (hook == nullptr || hook->get_device() == nullptr || device.Get() != hook->get_device() ||
+        desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || desc.Width == 0 || desc.Width > 65536 ||
+        desc.Height == 0 || desc.Height > 65536 || desc.DepthOrArraySize != 1 || desc.MipLevels != 1 ||
+        desc.SampleDesc.Count != 1 || desc.Format == DXGI_FORMAT_UNKNOWN ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) == 0 ||
+        (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL) != 0) { return false; }
+    if (out_native) { *out_native = native; }
+    if (out_desc) { *out_desc = desc; }
+    return true;
+}
+
 bool ue56_dx12_try_get_native_resource(FRHITexture2D* texture, const char* source, ID3D12Resource** out_native = nullptr, D3D12_RESOURCE_DESC* out_desc = nullptr) {
+    if (goweday_ue561_dx12_runtime()) {
+        return goweday_try_get_native_resource(texture, out_native, out_desc);
+    }
     if (out_native != nullptr) {
         *out_native = nullptr;
     }
@@ -6401,6 +6445,7 @@ bool supports_ue55_dedicated_ui_target_for_current_game() {
     // the wrong target, leaving the HUD clipped in the upper-left/left-eye path.
     // Keep this allowlisted and DX12-only until more games validate it.
     return (aphelion_is_current_game() ||
+            goweday_has_slate_abi() ||
             ark_ascended_is_current_game() ||
             mechwarrior_clans_is_current_game() ||
             supports_borderlands4_ue554_dedicated_ui_target() ||
@@ -6979,6 +7024,9 @@ bool ue55_dx12_try_get_native_resource_direct(
     ID3D12Resource** out_native = nullptr,
     D3D12_RESOURCE_DESC* out_desc = nullptr)
 {
+    if (goweday_ue561_dx12_runtime()) {
+        return goweday_try_get_native_resource(texture, out_native, out_desc);
+    }
     if (out_native != nullptr) {
         *out_native = nullptr;
     }
@@ -13716,6 +13764,7 @@ std::string FFakeStereoRenderingHook::build_hook_provenance_json() {
         }
         add_safety_hook("UGameEngine::Tick", "inline", m_tick_hook);
         add_safety_hook("Slate DrawWindow render thread", "inline", m_slate_thread_hook);
+        add_safety_hook("GoWEDay Slate RegisterExternalTexture", "inline", m_goweday_slate_output_texture_register_hook);
         add_safety_hook("SWGR inlined Slate output", "mid", m_swgr_slate_output_hook);
         add_safety_hook("SWGR original Slate output restoration", "mid", m_swgr_slate_output_restore_hook);
         add_safety_hook("SWGR Bink viewport overlay", "inline", m_swgr_bink_overlay_hook);
@@ -15299,48 +15348,62 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
     uintptr_t register_target{};
     bool after_slate_output_ref = false;
 
-    // Decode linearly here. exhaustive_decode follows early CALL branches in this
-    // function and can miss the straight-line RegisterExternalTexture callsite.
-    for (auto* ip = (uint8_t*)draw_window; (uintptr_t)ip < draw_window + 0x3000;) {
-        const auto decoded = utility::decode_one(ip);
-
-        if (!decoded) {
-            break;
+    if (goweday_ue561_dx12_runtime()) {
+        const auto found = sdk::gears_eday::slate_output_register(sdk::discovery::process_memory(),
+            draw_window, m_slate_thread_hook.original_bytes().size());
+        if (!found) {
+            SPDLOG_ERROR("[GoWEDay][SlateUI] Unpatched DrawWindow body/register contract not validated; preserving original routing");
+            return;
         }
+        slate_output_ref_ip = found->name_reference;
+        register_callsite = found->callsite;
+        register_target = found->target;
+        SPDLOG_INFO("[GoWEDay][SlateUI] Validated original DrawWindow body: name {:x}, register {:x} -> {:x}",
+            slate_output_ref_ip, register_callsite, register_target);
+    } else {
+        // Decode linearly here. exhaustive_decode follows early CALL branches in this
+        // function and can miss the straight-line RegisterExternalTexture callsite.
+        for (auto* ip = (uint8_t*)draw_window; (uintptr_t)ip < draw_window + 0x3000;) {
+            const auto decoded = utility::decode_one(ip);
 
-        if (!after_slate_output_ref) {
-            const auto referenced = utility::resolve_displacement((uintptr_t)ip);
+            if (!decoded) {
+                break;
+            }
 
-            if (referenced &&
-                is_readable_process_range(*referenced, sizeof(wchar_t) * 19) &&
-                std::wstring_view{(const wchar_t*)*referenced, 18}.starts_with(L"SlateOutputTexture"))
-            {
-                slate_output_ref_ip = (uintptr_t)ip;
-                after_slate_output_ref = true;
-                SPDLOG_INFO("[UE5.5][SlateUI] found SlateOutputTexture reference at {:x}", slate_output_ref_ip);
+            if (!after_slate_output_ref) {
+                const auto referenced = utility::resolve_displacement((uintptr_t)ip);
+
+                if (referenced &&
+                    is_readable_process_range(*referenced, sizeof(wchar_t) * 19) &&
+                    std::wstring_view{(const wchar_t*)*referenced, 18}.starts_with(L"SlateOutputTexture"))
+                {
+                    slate_output_ref_ip = (uintptr_t)ip;
+                    after_slate_output_ref = true;
+                    SPDLOG_INFO("[UE5.5][SlateUI] found SlateOutputTexture reference at {:x}", slate_output_ref_ip);
+                }
+
+                ip += decoded->Length;
+                continue;
+            }
+
+            const auto mnemonic = std::string_view{decoded->Mnemonic};
+
+            if (mnemonic.starts_with("CALL")) {
+                const auto target = utility::resolve_displacement((uintptr_t)ip);
+
+                if (target.has_value()) {
+                    register_callsite = (uintptr_t)ip;
+                    register_target = *target;
+                    break;
+                }
+            }
+
+            if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
+                break;
             }
 
             ip += decoded->Length;
-            continue;
         }
-
-        const auto mnemonic = std::string_view{decoded->Mnemonic};
-
-        if (mnemonic.starts_with("CALL")) {
-            const auto target = utility::resolve_displacement((uintptr_t)ip);
-
-            if (target.has_value()) {
-                register_callsite = (uintptr_t)ip;
-                register_target = *target;
-                break;
-            }
-        }
-
-        if (decoded->Instruction == ND_INS_RETN || decoded->Instruction == ND_INS_INT3) {
-            break;
-        }
-
-        ip += decoded->Length;
     }
 
     if (slate_output_ref_ip == 0 || register_callsite == 0) {
@@ -15357,6 +15420,42 @@ void FFakeStereoRenderingHook::attempt_hook_ue55_slate_output_texture_register()
             uevr::halloween_rt::slate_register_arguments)))
     {
         SPDLOG_ERROR("[Halloween][UE5.7][SlateUI] RegisterExternalTexture argument contract changed; preserving engine routing");
+        return;
+    }
+
+    if (goweday_ue561_dx12_runtime() &&
+        (!goweday_has_slate_abi() || register_callsite < sdk::gears_eday::slate_register_code.size() ||
+         !sdk::gears_eday::matches(sdk::discovery::process_memory(),
+             register_callsite - sdk::gears_eday::slate_register_code.size(),
+             sdk::gears_eday::slate_register_code, sdk::gears_eday::slate_register_mask)))
+    {
+        SPDLOG_ERROR("[GoWEDay][SlateUI] RegisterExternalTexture ABI changed; preserving original routing");
+        return;
+    }
+
+    if (goweday_ue561_dx12_runtime()) {
+        if (utility::get_module_within(register_target).value_or(nullptr) != utility::get_executable() ||
+            !sdk::gears_eday::slate_register_entry(sdk::discovery::process_memory(), register_target)) {
+            SPDLOG_ERROR("[GoWEDay][SlateUI] RegisterExternalTexture function ABI not validated; preserving original routing");
+            return;
+        }
+        // The image can leave no allocatable rel32 space. This validated entry
+        // supports SafetyHook's far trampoline without relocating the E8 callsite.
+        auto result = safetyhook::InlineHook::create(safetyhook::Allocator::create_private(),
+            reinterpret_cast<void*>(register_target), &FFakeStereoRenderingHook::goweday_register_external_texture_hook,
+            safetyhook::InlineHook::StartDisabled);
+        if (!result) {
+            uevr::hooks::log_error("[GoWEDay][SlateUI] Creating RegisterExternalTexture hook", register_target, result.error());
+            return;
+        }
+        m_goweday_slate_output_texture_register_hook = std::move(*result);
+        if (const auto enabled = m_goweday_slate_output_texture_register_hook.enable(); !enabled) {
+            uevr::hooks::log_error("[GoWEDay][SlateUI] Enabling RegisterExternalTexture hook", register_target, enabled.error());
+            m_goweday_slate_output_texture_register_hook.reset();
+            return;
+        }
+        m_hooked_ue55_slate_output_texture_register = true;
+        SPDLOG_INFO("[GoWEDay][SlateUI] Hooked validated RegisterExternalTexture entry {:x} using private trampolines", register_target);
         return;
     }
 
@@ -16089,7 +16188,17 @@ void FFakeStereoRenderingHook::attempt_hook_fsceneview_constructor() {
         return;
     }
 
-    g_hook->m_sceneview_data.constructor_hook = safetyhook::create_inline(*constructor, (uintptr_t)&sceneview_constructor, safetyhook::InlineHook::StartDisabled);
+    if (goweday_ue561_dx12_runtime()) {
+        auto result = safetyhook::InlineHook::create(safetyhook::Allocator::create_private(),
+            reinterpret_cast<void*>(*constructor), &sceneview_constructor, safetyhook::InlineHook::StartDisabled);
+        if (!result) {
+            uevr::hooks::log_error("[GoWEDay][FSceneView] Creating constructor hook", *constructor, result.error());
+            return;
+        }
+        g_hook->m_sceneview_data.constructor_hook = std::move(*result);
+    } else {
+        g_hook->m_sceneview_data.constructor_hook = safetyhook::create_inline(*constructor, (uintptr_t)&sceneview_constructor, safetyhook::InlineHook::StartDisabled);
+    }
 
     if (!g_hook->m_sceneview_data.constructor_hook) {
         SPDLOG_ERROR("Failed to hook FSceneView::FSceneView constructor!");
@@ -19853,6 +19962,10 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         sw_zero_company_ue56_is_current_game() && is_ue_5_6_dx12_backend();
     const bool bodycam_ue554_dx12_viewport_adoption =
         bodycam_ue554_is_current_game() && is_ue_5_5_dx12_backend();
+    const bool goweday_viewport_adoption = goweday_ue561_dx12_runtime();
+    const bool is_goweday_post_draw = goweday_viewport_adoption && source != nullptr &&
+        std::strcmp(source, "UGameViewportClient::Draw post") == 0;
+    if (goweday_viewport_adoption && !is_goweday_post_draw) { return; }
     const bool stalker2_ue55_dx12_viewport_observation =
         stalker2_uses_ue55_draw_windows_array_layout() && g_framework->is_dx12();
     bool allow_scene_viewport_rt_adoption =
@@ -19860,8 +19973,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         naruto_ue416_dx11_viewport_adoption || dead_island_2_ue425_dx12_viewport_adoption ||
         pokemon_emerald_ue56_dx12_viewport_adoption ||
         sw_zero_company_ue56_dx12_viewport_adoption ||
-        bodycam_ue554_dx12_viewport_adoption;
-    const auto log_prefix = bodycam_ue554_dx12_viewport_adoption
+        bodycam_ue554_dx12_viewport_adoption || goweday_viewport_adoption;
+    const auto log_prefix = goweday_viewport_adoption ? "[GoWEDay][UE5.6.1][RT]" : bodycam_ue554_dx12_viewport_adoption
         ? "[Bodycam][UE5.5.4][RT]"
         : (dune_viewport_adoption
             ? "[Dune][RT]"
@@ -19901,6 +20014,8 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     if (vr == nullptr || !vr->is_hmd_active() || viewport == nullptr || IsBadReadPtr(viewport, sizeof(void*))) {
         return;
     }
+    if (goweday_viewport_adoption &&
+        (vr->is_extreme_compatibility_mode_enabled() || vr->is_stereo_emulation_enabled())) { return; }
 
     const bool is_stalker2_post_draw =
         stalker2_ue55_dx12_viewport_observation &&
@@ -19997,6 +20112,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         !is_dead_island_2_viewport_refresh &&
         !is_pokemon_emerald_viewport_refresh &&
         !is_sw_zero_company_viewport_refresh &&
+        !is_goweday_post_draw &&
         !is_bodycam_viewport_refresh &&
         !is_stalker2_viewport_refresh)
     {
@@ -20006,7 +20122,23 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
     std::optional<Everspace2ViewportTextureCandidate> everspace2_candidate{};
     auto candidate = (FRHITexture2D*)nullptr;
 
-    if (everspace2_direct_observation) {
+    if (goweday_viewport_adoption) {
+        uintptr_t original_getter{};
+        if (m_viewport_get_render_target_texture_hook != nullptr) {
+            original_getter = reinterpret_cast<uintptr_t>(m_viewport_get_render_target_texture_hook->
+                get_original<decltype(&viewport_get_render_target_texture_hook)>());
+        }
+        const auto texture = sdk::gears_eday::completed_draw_texture(sdk::discovery::process_memory(),
+            reinterpret_cast<uintptr_t>(viewport), reinterpret_cast<uintptr_t>(&viewport_get_render_target_texture_hook),
+            original_getter);
+        candidate = texture ? reinterpret_cast<FRHITexture2D*>(*texture) : nullptr;
+        if (texture && original_getter == 0 &&
+            (!sdk::FRenderTarget::get_render_target_texture_index() || !sdk::FRenderTarget::get_display_gamma_index())) {
+            // Seed the shared FRenderTarget indices from the proven viewport,
+            // before Native Fix's capture-resource gamma hook needs them.
+            sdk::FRenderTarget::update_offsets(viewport);
+        }
+    } else if (everspace2_direct_observation) {
         everspace2_candidate = everspace2_get_scene_viewport_texture(viewport);
         candidate = everspace2_candidate ? everspace2_candidate->texture : nullptr;
     } else if (ue58_viewport_adoption ||
@@ -20364,6 +20496,7 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
         dead_island_2_ue425_dx12_viewport_adoption ||
         sw_zero_company_ue56_dx12_viewport_adoption ||
         bodycam_ue554_dx12_viewport_adoption ||
+        goweday_viewport_adoption ||
         stalker2_ue55_synced_viewport_adoption)
     {
         // Dead Island keeps its engine-owned side-by-side target in Synced
@@ -20372,11 +20505,13 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             ? static_cast<uint64_t>(vr->get_hmd_width())
             : static_cast<uint64_t>(vr->get_hmd_width()) *
                 (((naruto_ue416_dx11_viewport_adoption && vr->is_using_afr()) ||
+                  (goweday_viewport_adoption && vr->is_using_afr()) ||
                   stalker2_ue55_synced_viewport_adoption)
                     ? 1ull
                     : 2ull);
         const auto alternate_expected_width =
-            bodycam_ue554_dx12_viewport_adoption || stalker2_ue55_synced_viewport_adoption
+            bodycam_ue554_dx12_viewport_adoption || stalker2_ue55_synced_viewport_adoption ||
+            (goweday_viewport_adoption && vr->is_using_afr())
                 ? expected_width * 2ull
                 : expected_width;
         const auto expected_height = (uint64_t)vr->get_hmd_height();
@@ -20587,6 +20722,12 @@ void FFakeStereoRenderingHook::try_adopt_scene_viewport_render_target(sdk::FView
             2,
             "[Bodycam][UE5.5.4][RT] Rejected dedicated UI texture at the exact scene-viewport source");
         return;
+    }
+
+    if (goweday_viewport_adoption) {
+        // Capture/UI resource discovery must learn a real FD3D12Texture table,
+        // never the legacy fallback's neighboring Slate-wrapper table.
+        FRHITexture2D::set_vtable(*reinterpret_cast<void**>(candidate));
     }
 
     if (candidate == current_target) {
@@ -20833,7 +20974,7 @@ void FFakeStereoRenderingHook::game_viewport_client_draw_hook(sdk::UGameViewport
         // ES2 can replace the viewport texture during a Draw when a cinematic
         // reallocates pooled targets. Observe the engine-owned pointer again
         // immediately after Draw rather than retaining the allocation-time ref.
-        if (swgr_ue574_dx12_runtime() || everspace2_is_current_game() || is_ue_5_8() ||
+        if (goweday_ue561_dx12_runtime() || swgr_ue574_dx12_runtime() || everspace2_is_current_game() || is_ue_5_8() ||
             (dead_island_2_ue425_is_current_game() && g_framework->is_dx12()) ||
             (naruto_is_current_game() && is_ue_4_16_runtime() && g_framework->is_dx11()) ||
             stalker2_uses_ue55_draw_windows_array_layout()) {
@@ -33252,6 +33393,26 @@ void* FFakeStereoRenderingHook::sw_zero_company_ue56_register_external_texture_h
         graph_builder, texture, name, flags);
 }
 
+void* FFakeStereoRenderingHook::goweday_register_external_texture_hook(
+    void* graph_builder, void* texture, const wchar_t* name, uint8_t flags)
+{
+    auto* const hook = g_hook;
+    if (hook == nullptr || !hook->m_goweday_slate_output_texture_register_hook) { return nullptr; }
+    if (goweday_ue561_dx12_runtime() && hook->m_inside_slate_draw_window &&
+        GetCurrentThreadId() == hook->m_slate_draw_window_thread_id && name != nullptr &&
+        is_readable_process_range(reinterpret_cast<uintptr_t>(name), sizeof(wchar_t) * 19) &&
+        std::wstring_view{name, 18} == L"SlateOutputTexture" && name[18] == L'\0') {
+        safetyhook::Context context{};
+        context.rcx = reinterpret_cast<uintptr_t>(graph_builder);
+        context.rdx = reinterpret_cast<uintptr_t>(texture);
+        context.r8 = reinterpret_cast<uintptr_t>(name);
+        context.r9 = flags;
+        slate_output_texture_register_hook_impl(context, false);
+        texture = reinterpret_cast<void*>(context.rdx);
+    }
+    return hook->m_goweday_slate_output_texture_register_hook.call<void*>(graph_builder, texture, name, flags);
+}
+
 void FFakeStereoRenderingHook::ue58_slate_output_texture_register_hook(safetyhook::Context& ctx) {
     slate_output_texture_register_hook_impl(ctx, true);
 }
@@ -36741,6 +36902,53 @@ void* FFakeStereoRenderingHook::slate_draw_window_render_thread(void* renderer, 
         return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
     }
 
+    if (goweday_ue561_dx12_runtime()) {
+        const auto previous_inside = g_hook->m_inside_slate_draw_window;
+        const auto previous_thread = g_hook->m_slate_draw_window_thread_id;
+        g_hook->m_inside_slate_draw_window = false;
+        utility::ScopeGuard restore_slate_scope{[&] {
+            g_hook->m_inside_slate_draw_window = previous_inside;
+            g_hook->m_slate_draw_window_thread_id = previous_thread;
+        }};
+        const auto command_list = goweday_has_slate_abi()
+            ? sdk::gears_eday::slate_command_list(sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(a3))
+            : std::nullopt;
+        if (!command_list || !is_readable_process_range(*command_list, 0x100) ||
+            !is_writable_process_range(reinterpret_cast<uintptr_t>(a2), sizeof(UE55SlateDrawWindowPassOutputs)) ||
+            !try_read_ue55_slate_draw_inputs_full(a4, renderer, ue55_inputs_full))
+        {
+            SPDLOG_WARNING_EVERY_N_SEC(5,
+                "[GoWEDay][SlateUI] Unvalidated RDG/input/output contract; preserving original draw");
+            return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+        }
+
+        // RDX is the game's output storage; the command list is GraphBuilder.RHICmdList.
+        g_hook->get_slate_thread_worker()->execute(reinterpret_cast<FRHICommandListImmediate*>(*command_list));
+        const int64_t width = int64_t(ue55_inputs_full.scene_view_rect.max.x) - ue55_inputs_full.scene_view_rect.min.x;
+        const int64_t height = int64_t(ue55_inputs_full.scene_view_rect.max.y) - ue55_inputs_full.scene_view_rect.min.y;
+        const bool valid_extent = width > 0 && width <= 16384 && height > 0 && height <= 16384;
+        const auto vr = VR::get();
+        auto* const rtm = g_hook->get_render_target_manager();
+        if (vr != nullptr && vr->is_hmd_active() && !vr->is_stereo_emulation_enabled() &&
+            !vr->is_extreme_compatibility_mode_enabled() && rtm != nullptr && valid_extent)
+        {
+            g_hook->note_stable_slate_draw();
+            g_hook->attempt_hook_ue55_slate_output_texture_register();
+            if (!g_hook->m_hooked_ue55_slate_output_texture_register) {
+                SPDLOG_WARNING_EVERY_N_SEC(10, "[GoWEDay][SlateUI] Output hook unavailable; original Slate routing retained");
+                return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+            }
+            rtm->request_dedicated_ui_target(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+            rtm->ensure_dedicated_ui_target(*command_list);
+            g_hook->m_inside_slate_draw_window = true;
+            g_hook->m_slate_draw_window_thread_id = GetCurrentThreadId();
+            SPDLOG_INFO_ONCE("[GoWEDay][SlateUI] Validated hidden-sret/RDG ABI and output hook; preparing rooted UI target");
+        }
+        // Outputs are observations, not ownership: never promote a pooled scene
+        // or swapchain output into the rooted UI target.
+        return g_hook->m_slate_thread_hook.call<void*>(renderer, a2, a3, a4, params, unk1, unk2);
+    }
+
     if (sw_zero_company_ue56_is_current_game() &&
         is_ue_5_6_dx12_backend() &&
         sw_zero_company_has_source_matched_slate_sret_abi() &&
@@ -38457,6 +38665,12 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
     auto rtm = g_hook->get_render_target_manager();
 
+    if (goweday_ue561_dx12_runtime()) {
+        uevr::gears_eday::defer_to_engine_allocation(rtm->texture_hook_ref, rtm->shader_resource_hook_ref,
+            rtm->allocate_texture_called, rtm->set_up_texture_hook, rtm->legacy_texture_replay_failed_closed);
+        return;
+    }
+
     if (rtm->legacy_texture_replay_failed_closed.load(std::memory_order_acquire)) {
         return;
     }
@@ -39355,6 +39569,12 @@ void VRRenderTargetManager_Base::pre_texture_hook_callback(safetyhook::Context& 
 
 void VRRenderTargetManager_Base::texture_hook_callback(safetyhook::Context& ctx, bool from_second) {
     auto rtm = g_hook->get_render_target_manager();
+
+    if (goweday_ue561_dx12_runtime()) {
+        uevr::gears_eday::defer_to_engine_allocation(rtm->texture_hook_ref, rtm->shader_resource_hook_ref,
+            rtm->allocate_texture_called, rtm->set_up_texture_hook, rtm->legacy_texture_replay_failed_closed);
+        return;
+    }
 
     if (rtm->legacy_texture_replay_failed_closed.load(std::memory_order_acquire)) {
         rtm->allocate_texture_called = false;
@@ -42954,6 +43174,14 @@ void VRRenderTargetManager_Base::halloween_texture_completed(safetyhook::Context
 }
 
 bool VRRenderTargetManager_Base::allocate_render_target_texture(uintptr_t return_address, FTexture2DRHIRef* tex, FTexture2DRHIRef* shader_resource) {
+    if (goweday_ue561_dx12_runtime()) {
+        // The dump and InitRHI show the first BufferedRT call constructs a
+        // descriptor (its first field is flags=9), not a texture. Do not install
+        // allocation midhooks or call it with FTexture2DRHIRef output storage.
+        SPDLOG_INFO_ONCE("[GoWEDay][Scene] Engine-owned allocation; descriptor replay and allocation midhooks disabled; observing completed Draw");
+        return uevr::gears_eday::defer_to_engine_allocation(texture_hook_ref, shader_resource_hook_ref,
+            allocate_texture_called, set_up_texture_hook, legacy_texture_replay_failed_closed);
+    }
     if (swgr_ue574_dx12_runtime()) {
         swgr_scene_observation.store(true, std::memory_order_release);
         texture_hook_ref = nullptr;

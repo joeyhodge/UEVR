@@ -320,7 +320,7 @@ set_tests_properties(kananlib-decode-window-configuration-tests PROPERTIES TIMEO
 [target.hifi-hook-memory-tests]
 condition = "compatibility-policy-tests"
 type = "executable"
-sources = ["tests/HiFiRushHookMemoryTests.cpp", "tests/KtjLCloudHookTests.cpp", "tests/KtjLShadowGatherTests.cpp", "tests/KtjLCloudOutputTests.cpp", "tests/KtjLLightingThreadTests.cpp", "tests/KtjLMeshResourceTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
+sources = ["tests/HiFiRushHookMemoryTests.cpp", "tests/GearsEDayHookTests.cpp", "tests/KtjLCloudHookTests.cpp", "tests/KtjLShadowGatherTests.cpp", "tests/KtjLCloudOutputTests.cpp", "tests/KtjLLightingThreadTests.cpp", "tests/KtjLMeshResourceTests.cpp", "src/utility/HiFiRushHookMemory.cpp"]
 include-directories = ["src/", "dependencies/submodules/UESDK/src"]
 compile-features = ["cxx_std_23"]
 link-libraries = ["safetyhook", "spdlog", "kananlib"]

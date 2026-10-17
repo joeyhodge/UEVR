@@ -16,6 +16,7 @@ int test_ktjl_shadow_gather(const wchar_t* image_path);
 int test_ktjl_cloud_outputs(const wchar_t* image_path);
 int test_ktjl_lighting_thread(const wchar_t* image_path);
 int test_ktjl_mesh_resources(const wchar_t* image_path);
+int test_goweday_hook_boundaries();
 
 namespace {
 int failures{};
@@ -326,6 +327,7 @@ int wmain(int argc, wchar_t** argv) {
     }
     safetyhook::set_protection_override(nullptr);
     test_ktjl_cloud_consumer_boundary();
+    failures += test_goweday_hook_boundaries();
     failures += test_ktjl_cloud_hook_installation();
     test_swgr_bink_seek_boundaries();
     failures += test_ktjl_shadow_gather(argc == 3 && std::wstring_view{argv[1]} == L"--ktjl-memory-image" ? argv[2] : nullptr);
