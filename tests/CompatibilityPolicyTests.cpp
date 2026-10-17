@@ -25,6 +25,7 @@
 #include "mods/vr/KtjLFogResources.hpp"
 #include "mods/vr/KtjLHookContracts.hpp"
 #include "mods/vr/SWZeroCompanyBinary.hpp"
+#include "mods/vr/GearsEDayAllocation.hpp"
 
 namespace {
 
@@ -41,6 +42,39 @@ void expect(bool condition, std::string_view message) {
 
 constexpr size_t offset_delta(size_t member, size_t base) {
     return member - base;
+}
+
+void test_goweday_engine_allocation() {
+    struct Manager {
+        uintptr_t* texture_hook_ref{};
+        uintptr_t* shader_resource_hook_ref{};
+        bool allocate_texture_called{};
+        bool set_up_texture_hook{};
+        std::atomic_bool legacy_texture_replay_failed_closed{};
+        uintptr_t scene{0x10000};
+        uintptr_t dedicated_ui{0x20000};
+        uint64_t generation{7};
+    } manager;
+    uintptr_t target{0x30000}, shader{0x40000};
+    // Reallocation, mode changes and a previously armed callback all leave
+    // creation/refcounting with the engine; no game output storage is retained.
+    for (int pass = 0; pass < 3; ++pass) {
+        manager.texture_hook_ref = &target;
+        manager.shader_resource_hook_ref = &shader;
+        manager.allocate_texture_called = true;
+        manager.set_up_texture_hook = false;
+        manager.legacy_texture_replay_failed_closed.store(false);
+        expect(!uevr::gears_eday::defer_to_engine_allocation(manager.texture_hook_ref, manager.shader_resource_hook_ref,
+            manager.allocate_texture_called, manager.set_up_texture_hook, manager.legacy_texture_replay_failed_closed),
+            "Gears allocation returns false so the engine performs its original allocation");
+        expect(manager.texture_hook_ref == nullptr && manager.shader_resource_hook_ref == nullptr &&
+            !manager.allocate_texture_called && manager.set_up_texture_hook &&
+            manager.legacy_texture_replay_failed_closed.load(std::memory_order_acquire),
+            "Gears disables pre/post replay and never retains stack-local output references");
+        expect(target == 0x30000 && shader == 0x40000 && manager.scene == 0x10000 &&
+            manager.dedicated_ui == 0x20000 && manager.generation == 7,
+            "Gears allocation bypass preserves engine outputs, published targets and generation");
+    }
 }
 
 void test_outerworlds2_tracking_policy() {
@@ -2399,8 +2433,11 @@ void test_ktjl_hook_contracts() {
 #include "GalacticRacerNativeFixTests.hpp"
 #include "GalacticRacerBinkTests.hpp"
 #include "GalacticRacerBinkSeekTests.hpp"
+#include "GearsEDayNativeFixTests.hpp"
 
 int main(int argc, char** argv) {
+    test_goweday_engine_allocation();
+    test_goweday_native_family();
     test_swgr_render_targets();
     test_swgr_owned_texture();
     test_swgr_native_fix();
