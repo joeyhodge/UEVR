@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <span>
 
@@ -106,6 +107,31 @@ inline constexpr InlinedStereoLayout latest_inlined_stereo{
     0x79752F0, 0x7975D62, 0xD8A4408, 0xD8A44B0,
     latest_stereo_assignment, latest_stereo_entries, latest_stereo_rtm_entries};
 
+inline constexpr std::array<uint8_t, 21> revision_199049_stereo_assignment{
+    0x48, 0x8D, 0x05, 0xF7, 0x58, 0xF5, 0x05, 0x48, 0x89, 0x07,
+    0x48, 0x8D, 0x05, 0x6D, 0x58, 0xF5, 0x05, 0x48, 0x89, 0x47, 0x08};
+inline constexpr std::array<VtableEntry, 10> revision_199049_stereo_entries{{
+    {0, 0x797D020}, {1, 0x4189F20}, {4, 0x797C040}, {5, 0x797C050},
+    {8, 0x797C070}, {9, 0x797C0C0}, {11, 0x797C2C0}, {12, 0x797C710},
+    {14, 0x797CA30}, {16, 0x4183010},
+}};
+inline constexpr std::array<VtableEntry, 3> revision_199049_stereo_rtm_entries{{
+    {0, 0x797CE10}, {2, 0x797D010}, {8, 0x797CE40},
+}};
+inline constexpr InlinedStereoLayout revision_199049_inlined_stereo{
+    0x797D070, 0x797DAE2, 0xD8D33E0, 0xD8D3360,
+    revision_199049_stereo_assignment, revision_199049_stereo_entries, revision_199049_stereo_rtm_entries};
+inline constexpr std::array<uint8_t, 35> revision_199049_hologram_call{
+    0x4C, 0x89, 0x64, 0x24, 0x38, 0x49, 0x8B, 0xCE, 0x4C, 0x89, 0x5C, 0x24, 0x30,
+    0x48, 0x89, 0x44, 0x24, 0x28, 0x48, 0x8D, 0x85, 0x30, 0x06, 0x00, 0x00,
+    0x48, 0x89, 0x44, 0x24, 0x20, 0xE8, 0x4C, 0xF3, 0x4D, 0x00};
+inline constexpr size_t revision_199049_visible_clusters_load_offset = 0x14E;
+inline constexpr std::array<uint8_t, 4> revision_199049_visible_clusters_load{0x49, 0x8B, 0x47, 0x38};
+inline constexpr size_t revision_199049_shading_mask_load_offset = 0x7E4;
+inline constexpr std::array<uint8_t, 4> revision_199049_shading_mask_load{0x48, 0x8B, 0x41, 0x60};
+inline constexpr size_t revision_199049_raster_code_size =
+    revision_199049_shading_mask_load_offset + revision_199049_shading_mask_load.size();
+
 // Slot 4 returns FRHIDescriptorHandle through hidden output storage. It must
 // never be called with GetNativeResource's pointer-return ABI.
 inline constexpr size_t native_resource_slot = 5;
@@ -124,6 +150,8 @@ struct NativeResourceLayout {
 };
 inline constexpr NativeResourceLayout latest_native_resource{
     0xD1F0A58, 0xD1F7950, 0x5F97B80, latest_native_resource_code};
+inline constexpr NativeResourceLayout revision_199049_native_resource{
+    0xD21F9B8, 0xD2267F8, 0x5F9ECA0, latest_native_resource_code};
 
 struct BinaryLayout {
     uint32_t revision;
@@ -141,11 +169,12 @@ struct BinaryLayout {
     std::span<const uint8_t> hologram_call;
     const InlinedStereoLayout* inlined_stereo{};
     const NativeResourceLayout* native_resource{};
+    bool native_fix_hologram_guard{};
 };
 
 // These UE5.6.1 builds have the same call ABIs and resource members, but different
 // code addresses/register allocation. Never mix independently selected revisions.
-inline constexpr std::array<BinaryLayout, 3> binary_layouts{{
+inline constexpr std::array<BinaryLayout, 4> binary_layouts{{
     {196320, 0x3A3D140, 0x4EB90C0, 0x2D4D9E0, 0x3711F60, 0x307CB10, 0x2AA6885, 0x44,
         original_slate_arguments, original_slate_renderer, original_register_prologue,
         original_nanite_prologue, original_hologram_call},
@@ -155,11 +184,28 @@ inline constexpr std::array<BinaryLayout, 3> binary_layouts{{
     {197649, 0x6275900, 0x7710500, 0x577CDD0, 0x5F97110, 0x5A1B400, 0x553C194, 0x45,
         update_slate_arguments, update_slate_renderer, update_register_prologue,
         update_nanite_prologue, update_hologram_call, &latest_inlined_stereo, &latest_native_resource},
+    {199049, 0x627CBE0, 0x7718180, 0x5783A10, 0x5F9E230, 0x5A220E0, 0x5542D94, 0x45,
+        update_slate_arguments, update_slate_renderer, update_register_prologue,
+        update_nanite_prologue, revision_199049_hologram_call,
+        &revision_199049_inlined_stereo, &revision_199049_native_resource, true},
 }};
+
+inline bool should_guard_hologram_dispatch(bool dx12, bool hmd_active, bool native_stereo,
+    bool native_fix, bool native_fix_validated, uintptr_t expected_caller, uintptr_t actual_caller)
+{
+    return dx12 && hmd_active && native_stereo && (!native_fix || native_fix_validated) &&
+        expected_caller != 0 && expected_caller == actual_caller;
+}
 
 inline bool matches_bytes(std::span<const uint8_t> code, std::span<const uint8_t> expected) {
     return !expected.empty() && code.size() >= expected.size() &&
         std::equal(expected.begin(), expected.end(), code.begin());
+}
+
+inline bool matches_revision_199049_hologram_raster(std::span<const uint8_t> code) {
+    return code.size() >= revision_199049_raster_code_size &&
+        matches_bytes(code.subspan(revision_199049_visible_clusters_load_offset), revision_199049_visible_clusters_load) &&
+        matches_bytes(code.subspan(revision_199049_shading_mask_load_offset), revision_199049_shading_mask_load);
 }
 
 inline bool matches_native_resource_accessor(const BinaryLayout& layout, uintptr_t image_base,
