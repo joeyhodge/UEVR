@@ -8,10 +8,27 @@
 #include "GearsEDayNativeContracts.hpp"
 
 namespace uevr::gears_native {
-inline constexpr const char* family_copy_signature =
-    "53 55 56 57 41 56 48 83 EC 40 48 8D 05 ? ? ? ? 48 8B D9 48 89 01 48 8B FA 48 83 C1 08";
+inline constexpr auto family_copy_signature = [] {
+    // Build the scan prefix from the same contract as validation, including REX.
+    constexpr size_t prefix_size = 0x1f;
+    constexpr char hex[] = "0123456789ABCDEF";
+    std::array<char, prefix_size * 3 + 1> result{};
+    size_t cursor{};
+    for (size_t i = 0; i < prefix_size; ++i) {
+        if (family_copy_mask[i] == 0) { result[cursor++] = '?'; }
+        else {
+            result[cursor++] = hex[family_copy_code[i] >> 4];
+            result[cursor++] = hex[family_copy_code[i] & 15];
+        }
+        result[cursor++] = ' ';
+    }
+    result[cursor - 1] = '\0';
+    return result;
+}();
 inline constexpr size_t family_size = 0x198;
 inline constexpr size_t interfaces_offset = 0x160;
+inline constexpr size_t constrained_rect_offset = 0x380;
+inline constexpr size_t unconstrained_rect_offset = 0x390;
 
 struct FamilyFunctions {
     uintptr_t copy{};
@@ -61,6 +78,7 @@ std::optional<FamilyFunctions> family_functions(const sdk::discovery::Memory& me
 
 inline bool singleton_layout(const sdk::discovery::Memory& memory, uintptr_t constructor) {
     return sdk::gears_eday::view_constructor(memory, constructor) &&
+        sdk::gears_eday::matches(memory, constructor + 0xc4, view_rects_code, view_rects_mask) &&
         sdk::gears_eday::matches(memory, constructor + 0x214, view_singleton_code, view_singleton_mask);
 }
 
@@ -82,4 +100,77 @@ inline bool fresh_family(const sdk::discovery::Memory& memory, uintptr_t family,
     return pointer_at(0) == vtable && bytes[0xb0] <= 1 && pointer_at(0x158) == 0 &&
         pointer_at(0x168) == 0 && pointer_at(0x170) == 0 && pointer_at(0x178) == 0;
 }
+
+using Rect = std::array<int32_t, 4>;
+struct ViewRects {
+    Rect constrained{}, unconstrained{};
+    bool operator==(const ViewRects&) const = default;
+};
+
+inline bool read_rects(const sdk::discovery::Memory& memory, uintptr_t view, ViewRects& out) {
+    return sdk::gears_eday::pointer(view) &&
+        memory.load(view + constrained_rect_offset, out.constrained) &&
+        memory.load(view + unconstrained_rect_offset, out.unconstrained);
+}
+
+inline std::optional<ViewRects> rebase_right(const ViewRects& left, const ViewRects& right,
+    uint32_t width, uint32_t height) {
+    if (!width || !height || width > 16384 || height > 16384) { return {}; }
+    const auto w = static_cast<int32_t>(width), h = static_cast<int32_t>(height);
+    if (left.unconstrained != Rect{0, 0, w, h} || right.unconstrained != Rect{w, 0, 2 * w, h} ||
+        left.constrained[0] < 0 || left.constrained[1] < 0 ||
+        left.constrained[2] <= left.constrained[0] || left.constrained[2] > w ||
+        left.constrained[3] <= left.constrained[1] || left.constrained[3] > h) { return {}; }
+    auto next = right;
+    for (const auto i : {0, 2}) {
+        if (next.constrained[i] < w || next.constrained[i] > 2 * w) { return {}; }
+        next.constrained[i] -= w;
+        next.unconstrained[i] -= w;
+    }
+    return next == left ? std::optional{next} : std::nullopt;
+}
+
+// Leave ordinary/fail-closed rendering packed. Only the validated linked
+// transaction may temporarily move the right eye into its single-eye target.
+class RectOverride {
+public:
+    using Writer = bool(*)(void*, uintptr_t, const ViewRects&);
+    RectOverride() = default;
+    RectOverride(const RectOverride&) = delete;
+    RectOverride& operator=(const RectOverride&) = delete;
+    ~RectOverride() { restore(); }
+
+    bool initialize(const sdk::discovery::Memory& memory, uintptr_t left, uintptr_t right,
+        const ViewRects& left_metadata, const ViewRects& right_metadata,
+        uint32_t width, uint32_t height, void* context, Writer writer) {
+        if (m_active || !writer || left == right) { return false; }
+        ViewRects l{}, r{};
+        if (!read_rects(memory, left, l) || !read_rects(memory, right, r) ||
+            l != left_metadata || r != right_metadata) { return false; }
+        const auto next = rebase_right(l, r, width, height);
+        if (!next) { return false; }
+        m_memory = memory; m_context = context; m_writer = writer; m_view = right; m_saved = r;
+        m_active = true;
+        if (!writer(context, right, *next) || !read_rects(memory, right, r) || r != *next) {
+            restore();
+            return false;
+        }
+        return true;
+    }
+    bool restore() {
+        if (!m_active) { return true; }
+        ViewRects current{};
+        if (!m_writer(m_context, m_view, m_saved) ||
+            !read_rects(m_memory, m_view, current) || current != m_saved) { return false; }
+        m_active = false;
+        return true;
+    }
+private:
+    sdk::discovery::Memory m_memory{};
+    void* m_context{};
+    Writer m_writer{};
+    uintptr_t m_view{};
+    ViewRects m_saved{};
+    bool m_active{};
+};
 }

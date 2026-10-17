@@ -2438,6 +2438,7 @@ void test_ktjl_hook_contracts() {
 int main(int argc, char** argv) {
     test_goweday_engine_allocation();
     test_goweday_native_family();
+    test_goweday_native_rects();
     test_swgr_render_targets();
     test_swgr_owned_texture();
     test_swgr_native_fix();
