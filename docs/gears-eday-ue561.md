@@ -76,6 +76,34 @@ one exact name/argument/callee contract before the first return; changed,
 truncated, non-executable and ambiguous bodies preserve the original UI path.
 Scanners for other titles are unchanged.
 
+## Native Fix renderer transaction
+
+The UI repair is user-confirmed. Native Fix reached its first split render but
+the legacy two-call transaction then failed in game RDG/shader-resource code.
+The Gears-specific replacement uses the existing linked-family mechanism,
+authorized by this game's own complete copy, array-copy, destructor, unwind and
+view-metadata contracts rather than by a UE5.7 version assumption.
+
+- Require a fresh input family with no existing renderer or owned upscalers.
+- Use the game's deep family copy; retain independent Views/AllViews allocation
+  and native reference-counted members. Use the base deleting destructor with
+  deletion disabled, then free only UEVR's clone storage through the engine allocator.
+- Keep the authored constructor eye identity, separate view states and shared
+  exposure. Adapt the right singleton's pass/primary index only during rendering,
+  with its Family backlink pointing at its own capture-target family.
+- Submit both linked eye families through one original renderer call. Do not
+  resubmit the same input family or decrement the scene's frame counter.
+- Record shared interfaces before clone retirement, reject shared owned
+  upscalers, and detach only borrowed ownership. Restore view metadata, backlinks,
+  arrays and render targets before publishing the exact-generation capture.
+
+For this validated transaction, preserving constructor identity is mandatory
+regardless of the legacy Preserve Secondary Pass/Same Pass checkbox combination;
+the physical right singleton is adapted within the renderer instead. Native Fix
+remains opt-in. Unsupported contracts fail closed to the ordinary pair; a family
+already consumed by another renderer is not submitted again. Other games keep
+their existing paths. This transaction still requires a fresh HMD runtime test.
+
 ## Offline follow-up verification
 
 - All five new byte contracts match read-only live captures. Chained unwind
@@ -93,6 +121,11 @@ Scanners for other titles are unchanged.
   enabled in the test process. A separate read-only check runs the production
   scanner against the preserved game image, then against an offline copy with
   a far entry stub; both identify the same output registration function.
+- Gears native family tests mutate every non-relocation copy/destruction byte,
+  reject mismatched helpers/vtables/function boundaries and consumed families,
+  and verify the constructor's pass/primary-index fields. The production
+  validators also pass against the preserved executable's actual code and unwind
+  table; no engine allocation/destruction address comes from a runtime JSON file.
 
 These are offline/runtime-code contract checks, not confirmation of Native Fix,
 Ghost Fix, UObject browsing or the extracted HUD in the HMD after this follow-up.
@@ -105,12 +138,11 @@ Ghost Fix, UObject browsing or the extracted HUD in the HMD after this follow-up
    is not an equivalent comparison with the ordinary stereo path.
 2. Inject in ordinary Native with Native Fix off. Verify both scene eyes,
    head movement, menus/HUD, spectator and a level transition.
-3. The previous test reached the first split render but crashed in a game shader
-   resource binding with Preserve Secondary Pass enabled. That failure is not
-   repaired or runtime-confirmed by the Slate scanner change. After checking
-   UI with Native Fix off, the next controlled comparison is Preserve Secondary
-   Pass off with the existing Same Pass option left on; do not combine it with
-   unrelated changes. Inspect both eyes and export fresh diagnostics if stable.
+3. After confirming ordinary Native/UI, enable Native Fix in a stable scene. No
+   checkbox workaround is required by the Gears linked-family adapter. Confirm
+   the log reports its validated family functions and one linked renderer call;
+   inspect both eyes and export fresh Hook Provenance/Native Frame Diagnostics.
+   Check mode changes and a level transition before calling it runtime-confirmed.
 4. Disable Native Fix before switching to Synced. Test Ghost Fix separately,
    including warm-up, movement and a transition. Do not combine mode changes
    with unrelated profile tweaks in the same comparison.

@@ -44,6 +44,7 @@
 #include <sdk/DiscoveryMemory.hpp>
 #include <sdk/GearsEDayDiscovery.hpp>
 #include "GearsEDayAllocation.hpp"
+#include "GearsEDayNativeFix.hpp"
 #include "utility/HookDiagnostics.hpp"
 #include <sdk/KtjLStereoBootstrap.hpp>
 #include <sdk/KingdomHearts3Runtime.hpp>
@@ -374,6 +375,40 @@ std::optional<UE57FSceneViewFamilyFunctions> resolve_ue57_fsceneviewfamily_funct
     cache.attempted = true;
     cache.module = module;
     cache.functions.reset();
+
+    if (goweday_ue561_dx12_runtime()) {
+        namespace g = uevr::gears_native;
+        const auto memory = sdk::discovery::process_memory();
+        const auto base = reinterpret_cast<uintptr_t>(module);
+        const auto size = utility::get_module_size(module).value_or(0);
+        const auto function_size = [&](uintptr_t address) -> size_t {
+            const auto entry = utility::find_function_entry(address);
+            return entry && base + entry->BeginAddress == address && entry->EndAddress > entry->BeginAddress
+                ? entry->EndAddress - entry->BeginAddress : 0;
+        };
+        size_t candidates{};
+        for (auto cursor = base; size != 0 && cursor < base + size;) {
+            const auto match = utility::scan(cursor, base + size - cursor, g::family_copy_signature);
+            if (!match) { break; }
+            cursor = *match + 1;
+            const auto functions = g::family_functions(memory, *match, base, size, function_size);
+            if (!functions) { continue; }
+            ++candidates;
+            cache.functions = UE57FSceneViewFamilyFunctions{
+                reinterpret_cast<UE57FSceneViewFamilyFunctions::CopyConstructor>(functions->copy),
+                reinterpret_cast<UE57FSceneViewFamilyFunctions::DeletingDestructor>(functions->deleting_destructor),
+                functions->vtable};
+        }
+        if (candidates != 1) {
+            cache.functions.reset();
+            SPDLOG_ERROR("[GoWEDay][NativeStereoFix] Expected one validated family copy/destructor contract, found {}", candidates);
+        } else {
+            SPDLOG_INFO("[GoWEDay][NativeStereoFix] Validated family copy {:x}, destructor {:x}, vtable {:x}",
+                reinterpret_cast<uintptr_t>(cache.functions->copy_constructor),
+                reinterpret_cast<uintptr_t>(cache.functions->deleting_destructor), cache.functions->vtable);
+        }
+        return cache.functions;
+    }
 
     constexpr std::array<uint8_t, 10> copy_prefix{
         0x48, 0x8D, 0x71, 0x08, 0x45, 0x33, 0xE4, 0x4C, 0x89, 0x26,
@@ -852,6 +887,12 @@ public:
             return false;
         }
 
+        if (goweday_ue561_dx12_runtime() && !uevr::gears_native::fresh_family(
+                sdk::discovery::process_memory(), reinterpret_cast<uintptr_t>(source), expected_vtable)) {
+            failure_reason = "Gears source family already owns renderer/upscaler state";
+            return false;
+        }
+
         m_functions = resolve_ue57_fsceneviewfamily_functions(expected_vtable);
         if (!m_functions) {
             failure_reason = "copy constructor or destructor could not be proven";
@@ -914,6 +955,7 @@ public:
             m_object->get_scene_interface() != source->get_scene_interface())
         {
             failure_reason = "copy constructor output failed structural validation";
+            capability_failure = goweday_ue561_dx12_runtime();
             reset();
             return false;
         }
@@ -923,6 +965,16 @@ public:
 
     sdk::FSceneViewFamily* get() const {
         return m_object;
+    }
+
+    bool finish_goweday(sdk::FSceneViewFamily* source) {
+        std::array<uintptr_t, ue57_owned_interface_count> original{}, clone{};
+        const auto memory = sdk::discovery::process_memory();
+        if (!m_constructed || !memory.load(reinterpret_cast<uintptr_t>(source) + ue57_owned_interface_offset, original) ||
+            !memory.load(reinterpret_cast<uintptr_t>(m_object) + ue57_owned_interface_offset, clone)) { return false; }
+        // Record shared pointers even on rejection so clone destruction cannot
+        // delete an interface still owned by the source family.
+        return uevr::satisfactory::record_shared_interfaces(original, clone, m_borrowed_owned_interfaces);
     }
 
     bool mark_additional_view_family(const char*& failure_reason) {
@@ -23354,11 +23406,13 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                     g_framework != nullptr && g_framework->is_dx12(), vr->is_native_stereo_fix_enabled());
             const bool swgr_preserve_secondary_pass = swgr_ue574_dx12_runtime();
             const bool dune_preserve_secondary_pass = dune_native_transaction_runtime();
+            const bool goweday_preserve_secondary_pass = goweday_ue561_dx12_runtime();
             const bool preserve_secondary_pass =
                 hellblade_preserve_secondary_pass ||
                 satisfactory_preserve_secondary_pass ||
                 swgr_preserve_secondary_pass ||
                 dune_preserve_secondary_pass ||
+                goweday_preserve_secondary_pass ||
                 (is_ue55_or_newer &&
                  vr->is_native_stereo_fix_preserve_secondary_pass_enabled() &&
                  !vr->should_force_native_stereo_fix_same_pass() &&
@@ -23368,6 +23422,7 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
                 !satisfactory_preserve_secondary_pass &&
                 !swgr_preserve_secondary_pass &&
                 !dune_preserve_secondary_pass &&
+                !goweday_preserve_secondary_pass &&
                 (force_primary_constructor_pass ||
                  (vr->is_native_stereo_fix_same_pass_enabled() && !preserve_secondary_pass));
 
@@ -23393,6 +23448,9 @@ sdk::FSceneView* FFakeStereoRenderingHook::sceneview_constructor(sdk::FSceneView
             } else if (dune_preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[Dune][NativeStereoFix] Preserving the constructor eye pair for learning and transition fallback; PRIMARY adaptation is confined to the right singleton render");
+            } else if (goweday_preserve_secondary_pass) {
+                SPDLOG_INFO_ONCE(
+                    "[GoWEDay][NativeStereoFix] Preserving authored constructor eye/exposure state; singleton adaptation is confined to one linked renderer call");
             } else if (preserve_secondary_pass) {
                 SPDLOG_INFO_ONCE(
                     "[NativeStereoFix] Preserving UE5.5+ SECONDARY pass identity for modern per-eye renderer paths");
@@ -25360,13 +25418,15 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             return;
         }
 
-        if (is_ue_5_7_or_newer() && !is_ue_5_8_or_newer() &&
+        if (((is_ue_5_7_or_newer() && !is_ue_5_8_or_newer()) || goweday_ue561_dx12_runtime()) &&
             native_capture_snapshot->generation ==
                 g_hook->m_native_stereo_ue57_capability_failure_generation.load(std::memory_order_acquire))
         {
             g_hook->invalidate_native_stereo_frame_packet(
                 NativeStereoFixState::FailedClosed,
-                "UE5.7 linked-family capability is unavailable for this capture generation");
+                goweday_ue561_dx12_runtime()
+                    ? "Gears linked-family capability is unavailable for this capture generation"
+                    : "UE5.7 linked-family capability is unavailable for this capture generation");
             call_original();
             return;
         }
@@ -26314,8 +26374,9 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         return;
     }
 
+    const bool goweday_linked = goweday_ue561_dx12_runtime();
     const bool use_ue57_linked_family_transaction =
-        is_ue_5_7_or_newer() && !is_ue_5_8_or_newer();
+        (is_ue_5_7_or_newer() && !is_ue_5_8_or_newer()) || goweday_linked;
 
     if (use_ue57_linked_family_transaction) {
         const bool swgr_linked = swgr_ue574_dx12_runtime();
@@ -26336,6 +26397,27 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         if (!uses_tarrayview) {
             fail_closed("BeginRenderingViewFamilies did not expose the UE5.7 TArrayView ABI");
             return;
+        }
+
+        if (goweday_linked) {
+            static const bool layout_proven = uevr::gears_native::singleton_layout(sdk::discovery::process_memory(),
+                g_hook->m_sceneview_data.constructor_hook.target_address()) &&
+                uevr::gears_native::renderer_layout(sdk::discovery::process_memory(),
+                    g_hook->m_render_module_begin_render_viewfamily_hook.target_address(),
+                    g_hook->m_render_module_begin_render_viewfamily_hook.original_bytes().size());
+            if (!layout_proven) {
+                g_hook->m_native_stereo_ue57_capability_failure_generation.store(
+                    native_capture_snapshot->generation, std::memory_order_release);
+                fail_closed("Gears view metadata or plural-renderer argument transport was not proven");
+                return;
+            }
+            if (!uevr::gears_native::fresh_family(sdk::discovery::process_memory(),
+                    reinterpret_cast<uintptr_t>(view_family), expected_vtable)) {
+                g_hook->invalidate_native_stereo_frame_packet(NativeStereoFixState::FailedClosed,
+                    "Gears family already owns renderer/upscaler state; refusing a second submission");
+                SPDLOG_ERROR_EVERY_N_SEC(2, "[GoWEDay][NativeStereoFix] Refusing reuse of a consumed family");
+                return;
+            }
         }
 
         if (swgr_linked) {
@@ -26513,13 +26595,18 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
             static_cast<int32_t>(linked_family_count),
         };
 
-        SPDLOG_INFO_ONCE(
-            "[UE5.7][NativeStereoFix] Rendering linked eye families with the secondary singleton adapted to an internal primary view");
+        if (goweday_linked) {
+            SPDLOG_INFO_ONCE("[GoWEDay][NativeStereoFix] Rendering fresh linked eye families in one original renderer call; logical eye state/exposure retained");
+        } else {
+            SPDLOG_INFO_ONCE(
+                "[UE5.7][NativeStereoFix] Rendering linked eye families with the secondary singleton adapted to an internal primary view");
+        }
         g_hook->m_render_module_begin_render_viewfamily_hook.unsafe_call<void>(
             render_module,
             canvas,
             reinterpret_cast<sdk::FSceneViewFamily*>(&linked_family_array));
 
+        const bool unique_goweday_interfaces = !goweday_linked || right_family_clone.finish_goweday(view_family);
         const bool right_singleton_restored = right_singleton_primary.restore();
         const bool right_rects_restored = swgr_right_rects.restore();
         const auto right_family_after_render = native_right_view->get_view_family();
@@ -26532,7 +26619,7 @@ void FFakeStereoRenderingHook::begin_render_viewfamily_real(void* render_module,
         views.count = prev_count;
         view_family->set_render_target(original_target);
 
-        if (!right_singleton_restored || !right_rects_restored || !right_family_restored ||
+        if (!unique_goweday_interfaces || !right_singleton_restored || !right_rects_restored || !right_family_restored ||
             native_right_view->get_view_family() != view_family)
         {
             g_hook->invalidate_native_stereo_frame_packet(
@@ -31161,7 +31248,7 @@ uint32_t FFakeStereoRenderingHook::get_desired_number_of_views_hook(FFakeStereoR
 
         const auto native_fix_state =
             g_hook->m_native_stereo_fix_state.load(std::memory_order_acquire);
-        if (swgr_ue574_dx12_runtime() && capture_snapshot->generation ==
+        if ((swgr_ue574_dx12_runtime() || goweday_ue561_dx12_runtime()) && capture_snapshot->generation ==
             g_hook->m_native_stereo_ue57_capability_failure_generation.load(std::memory_order_acquire)) {
             // Preserve both ordinary views without oscillating FailedClosed /
             // LearningEyePair every frame after a cached capability rejection.
