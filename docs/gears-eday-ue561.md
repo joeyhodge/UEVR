@@ -87,7 +87,11 @@ view-metadata contracts rather than by a UE5.7 version assumption.
 - Require a fresh input family with no existing renderer or owned upscalers.
 - Use the game's deep family copy; retain independent Views/AllViews allocation
   and native reference-counted members. Use the base deleting destructor with
-  deletion disabled, then free only UEVR's clone storage through the engine allocator.
+  deletion disabled. Gears uses zeroed, 16-byte-aligned UEVR-owned outer placement
+  storage, retired by the matching UEVR owner after native member destruction.
+  It does not depend on the generic GMalloc/name scanner. All member allocation
+  and destruction still run through the validated game functions; no engine
+  allocation is freed with UEVR's CRT, and no UEVR buffer is passed to engine Free.
 - Keep the authored constructor eye identity, separate view states and shared
   exposure. Adapt the right singleton's pass/primary index only during rendering,
   with its Family backlink pointing at its own capture-target family.

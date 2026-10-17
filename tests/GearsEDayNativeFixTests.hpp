@@ -30,6 +30,20 @@ struct Memory {
 void test_goweday_native_family() {
     namespace g = uevr::gears_native;
     namespace s = sdk::gears_eday;
+    {
+        auto first = g::make_family_storage(), second = g::make_family_storage();
+        expect(first && second && first.get() != second.get(), "Gears placement storage has independent UEVR ownership without a GMalloc lookup");
+        if (first && second) {
+            expect((reinterpret_cast<uintptr_t>(first->bytes.data()) & 15) == 0 &&
+                first->bytes.size() >= g::family_size, "Gears clone storage has the proven size/alignment");
+            expect(std::all_of(first->bytes.begin(), first->bytes.end(), [](auto byte) { return byte == 0; }),
+                "Gears placement storage is initialized before native construction");
+            first->bytes[0x197] = 0xa5;
+            expect(second->bytes[0x197] == 0, "separate frame-family placement buffers cannot alias");
+            first.reset();
+            expect(second->bytes[0x197] == 0, "releasing one outer buffer does not affect another");
+        }
+    }
     gears_native_tests::Memory m;
     const auto b = m.base, copy = b + 0x100, deleting = b + 0x800, destroy = b + 0x900;
     const auto array_copy = b + 0xc00, table = b + 0x6000, ctor = b + 0x2000, family = b + 0x7000;
