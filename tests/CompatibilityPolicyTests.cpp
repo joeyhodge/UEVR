@@ -1819,9 +1819,10 @@ void test_stellar_blade_callable_renderer_entry() {
 
 void test_sw_zero_company_binary_revisions() {
     using namespace uevr::sw_zero_company;
-    expect(binary_layouts.size() == 3 && binary_layouts[0].revision == 196320 &&
-           binary_layouts[1].revision == 196985 && binary_layouts[2].revision == 197649,
-        "SWZC retains both working revisions alongside the latest validated update");
+    expect(binary_layouts.size() == 4 && binary_layouts[0].revision == 196320 &&
+           binary_layouts[1].revision == 196985 && binary_layouts[2].revision == 197649 &&
+           binary_layouts[3].revision == 199049,
+        "SWZC retains all three working revisions alongside update 199049");
     expect(select_unique_layout([](const auto&) { return false; }) == nullptr,
         "SWZC unknown binary fails closed");
     expect(select_unique_layout([](const auto&) { return true; }) == nullptr,
@@ -1979,6 +1980,94 @@ void test_sw_zero_company_binary_revisions() {
            latest_inlined_stereo.primary_rva == 0xD8A4408 &&
            latest_inlined_stereo.secondary_rva == 0xD8A44B0,
         "SWZC latest constructor uses its EXE/PDB-validated tables, not a previous build's addresses");
+
+    const auto& current = binary_layouts[3];
+    expect(current.inlined_stereo == &revision_199049_inlined_stereo &&
+           current.native_resource == &revision_199049_native_resource &&
+           revision_199049_inlined_stereo.initialize_hmd_rva == 0x797D070 &&
+           revision_199049_inlined_stereo.assignment_rva == 0x797DAE2 &&
+           revision_199049_inlined_stereo.primary_rva == 0xD8D33E0 &&
+           revision_199049_inlined_stereo.secondary_rva == 0xD8D3360,
+        "SWZC 199049 binds both stereo interfaces and native textures to its own verified image");
+    expect(matches_native_resource_accessor(current, image_base,
+               image_base + revision_199049_native_resource.texture_vtable_rva,
+               image_base + revision_199049_native_resource.getter_rva, latest_native_resource_code) &&
+           matches_native_resource_accessor(current, image_base,
+               image_base + revision_199049_native_resource.backbuffer_vtable_rva,
+               image_base + revision_199049_native_resource.getter_rva, latest_native_resource_code),
+        "SWZC 199049 admits only the verified native getter in its two real FRHITexture tables");
+    expect(!matches_native_resource_accessor(current, image_base,
+               image_base + revision_199049_native_resource.texture_vtable_rva,
+               image_base + 0x5F9ECF0, latest_native_resource_code) &&
+           !matches_native_resource_accessor(current, image_base,
+               image_base + revision_199049_native_resource.backbuffer_vtable_rva,
+               image_base + 0x5FA3EE0, latest_native_resource_code) &&
+           !matches_native_resource_accessor(current, image_base,
+               image_base + latest_native_resource.texture_vtable_rva,
+               image_base + revision_199049_native_resource.getter_rva, latest_native_resource_code) &&
+           !matches_native_resource_accessor(latest, image_base,
+               image_base + revision_199049_native_resource.texture_vtable_rva,
+               image_base + latest_native_resource.getter_rva, latest_native_resource_code),
+        "SWZC 199049 rejects bindless hidden-sret getters and cross-revision texture tables");
+    for (const auto result : {uintptr_t{0}, uintptr_t{0x2000}}) {
+        size_t validated_calls{}, legacy_calls{};
+        expect(resolve_native_resource(&current,
+                   [&]() { ++validated_calls; return result; },
+                   [&]() { ++legacy_calls; return uintptr_t{0x3000}; }) == result &&
+                   validated_calls == 1 && legacy_calls == 0,
+            "SWZC 199049 Native Fix never falls back to the unsafe legacy virtual-slot scan");
+    }
+    for (size_t offset = 0; offset < latest_native_resource_code.size(); ++offset) {
+        auto changed = latest_native_resource_code;
+        changed[offset] ^= 1;
+        expect(!matches_native_resource_accessor(current, image_base,
+                   image_base + revision_199049_native_resource.texture_vtable_rva,
+                   image_base + revision_199049_native_resource.getter_rva, changed),
+            "SWZC 199049 rejects every mutated native getter byte");
+    }
+    expect(!binary_layouts[0].native_fix_hologram_guard && !binary_layouts[1].native_fix_hologram_guard &&
+           !binary_layouts[2].native_fix_hologram_guard && current.native_fix_hologram_guard,
+        "SWZC Native Fix hologram coverage changes only for the newly validated revision");
+    std::array<uint8_t, revision_199049_raster_code_size> raster_code{};
+    std::copy(revision_199049_visible_clusters_load.begin(), revision_199049_visible_clusters_load.end(),
+        raster_code.begin() + revision_199049_visible_clusters_load_offset);
+    std::copy(revision_199049_shading_mask_load.begin(), revision_199049_shading_mask_load.end(),
+        raster_code.begin() + revision_199049_shading_mask_load_offset);
+    expect(matches_revision_199049_hologram_raster(raster_code),
+        "SWZC hologram coverage requires both proven raster-member load instructions");
+    for (size_t size = 0; size < raster_code.size(); ++size) {
+        expect(!matches_revision_199049_hologram_raster(std::span{raster_code}.first(size)),
+            "SWZC incomplete Nanite body cannot authorize Native Fix hologram coverage");
+    }
+    for (const auto offset : {revision_199049_visible_clusters_load_offset, revision_199049_shading_mask_load_offset}) {
+        for (size_t byte = 0; byte < 4; ++byte) {
+            auto changed = raster_code;
+            changed[offset + byte] ^= 1;
+            expect(!matches_revision_199049_hologram_raster(changed),
+                "SWZC changed raster offset, register or opcode cannot enable the guard");
+        }
+    }
+    for (const bool dx12 : {false, true}) {
+        for (const bool active : {false, true}) {
+            for (const bool native : {false, true}) {
+                for (const bool native_fix : {false, true}) {
+                    for (const auto& layout : binary_layouts) {
+                        const auto caller = image_base + layout.hologram_return_rva;
+                        const bool expected = dx12 && active && native &&
+                            (!native_fix || layout.native_fix_hologram_guard);
+                        expect(should_guard_hologram_dispatch(dx12, active, native, native_fix,
+                                   layout.native_fix_hologram_guard, caller, caller) == expected,
+                            "SWZC hologram scope preserves other renderers, inactive HMDs and legacy modes");
+                        expect(!should_guard_hologram_dispatch(dx12, active, native, native_fix,
+                                   layout.native_fix_hologram_guard, caller, caller + 1) &&
+                               !should_guard_hologram_dispatch(dx12, active, native, native_fix,
+                                   layout.native_fix_hologram_guard, 0, 0),
+                            "SWZC hologram guard cannot suppress unrelated or unidentified Nanite callers");
+                    }
+                }
+            }
+        }
+    }
 }
 
 } // namespace
