@@ -2534,6 +2534,7 @@ std::atomic_bool g_sw_zero_company_ue56_copy_texture_region_hook_attempted{};
 safetyhook::InlineHook g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook{};
 std::atomic_bool g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook_attempted{};
 std::atomic_uintptr_t g_sw_zero_company_ue56_hologram_dispatch_return{};
+std::atomic_bool g_sw_zero_company_ue56_native_fix_hologram_guard_validated{};
 
 void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
     void* graph_builder,
@@ -2570,16 +2571,17 @@ void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
     // FRasterResults entry is complete during cutscene transitions. UE5.6.1
     // requires both resources below: VisibleClustersSWHW is dereferenced while
     // creating its SRV, and ShadingMask is consumed by ShadeBinning. Native Fix
-    // has its own working renderer path and must remain untouched.
-    const bool plain_native_hologram_dispatch =
-        vr != nullptr &&
-        vr->is_hmd_active() &&
-        vr->is_using_native_stereo() &&
-        !vr->is_native_stereo_fix_enabled() &&
-        executable != 0 &&
-        direct_caller == g_sw_zero_company_ue56_hologram_dispatch_return.load(std::memory_order_acquire);
+    // is admitted only by a revision whose caller and raster contract were also
+    // validated for that path. Healthy dispatches always use the original code.
+    const bool native_hologram_dispatch =
+        vr != nullptr && executable != 0 &&
+        uevr::sw_zero_company::should_guard_hologram_dispatch(
+            g_framework != nullptr && g_framework->is_dx12(), vr->is_hmd_active(),
+            vr->is_using_native_stereo(), vr->is_native_stereo_fix_enabled(),
+            g_sw_zero_company_ue56_native_fix_hologram_guard_validated.load(std::memory_order_acquire),
+            g_sw_zero_company_ue56_hologram_dispatch_return.load(std::memory_order_acquire), direct_caller);
 
-    if (!plain_native_hologram_dispatch) {
+    if (!native_hologram_dispatch) {
         call_original();
         return;
     }
@@ -2589,9 +2591,10 @@ void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
             SW_ZERO_COMPANY_UE56_RASTER_SHADING_MASK_OFFSET + sizeof(void*)))
     {
         SPDLOG_WARN_ONCE(
-            "[SWZeroCompany][UE5.6][Hologram] Skipping unreadable Nanite raster results in plain Native: view={} raster={}; Native Fix is unchanged",
+            "[SWZeroCompany][UE5.6][Hologram] Skipping unreadable Nanite raster results: view={} raster={} native_fix={}",
             view_index,
-            raster_results);
+            raster_results,
+            vr->is_native_stereo_fix_enabled());
         return;
     }
 
@@ -2614,10 +2617,11 @@ void sw_zero_company_ue56_nanite_dispatch_base_pass_hook(
     }
 
     SPDLOG_WARN_ONCE(
-        "[SWZeroCompany][UE5.6][Hologram] Skipping incomplete Nanite base pass in plain Native: view={} VisibleClustersSWHW={} ShadingMask={}; Native Fix is unchanged",
+        "[SWZeroCompany][UE5.6][Hologram] Skipping incomplete Nanite base pass: view={} VisibleClustersSWHW={} ShadingMask={} native_fix={}",
         view_index,
         current_visible_clusters,
-        current_shading_mask);
+        current_shading_mask,
+        vr->is_native_stereo_fix_enabled());
 }
 
 void sw_zero_company_ue56_copy_texture_region_hook(safetyhook::Context& ctx) {
@@ -2828,7 +2832,12 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
     const auto expected_hologram_call_layout = layout->hologram_call;
     const auto target = executable + layout->nanite_rva;
     const auto call_layout = executable + layout->hologram_return_rva - expected_hologram_call_layout.size();
+    const bool raster_contract_matches = !layout->native_fix_hologram_guard ||
+        (is_executable_process_range(target, uevr::sw_zero_company::revision_199049_raster_code_size) &&
+            uevr::sw_zero_company::matches_revision_199049_hologram_raster(
+                {reinterpret_cast<const uint8_t*>(target), uevr::sw_zero_company::revision_199049_raster_code_size}));
     const bool exact_binary_match =
+        raster_contract_matches &&
         is_executable_process_range(target, expected_dispatch_prologue.size()) &&
         is_executable_process_range(call_layout, expected_hologram_call_layout.size()) &&
         std::memcmp(
@@ -2842,7 +2851,7 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
 
     if (!exact_binary_match) {
         SPDLOG_WARN(
-            "[SWZeroCompany][UE5.6][Hologram] Exact Nanite dispatch/caller signatures did not match; leaving the renderer unchanged");
+            "[SWZeroCompany][UE5.6][Hologram] Exact Nanite dispatch/caller/raster signatures did not match; leaving the renderer unchanged");
         return false;
     }
 
@@ -2861,6 +2870,8 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
     // Publish the matching caller before any thread can enter the enabled hook.
     g_sw_zero_company_ue56_hologram_dispatch_return.store(
         executable + layout->hologram_return_rva, std::memory_order_release);
+    g_sw_zero_company_ue56_native_fix_hologram_guard_validated.store(
+        layout->native_fix_hologram_guard, std::memory_order_release);
     if (auto enable_result = g_sw_zero_company_ue56_nanite_dispatch_base_pass_hook.enable(); !enable_result.has_value()) {
         SPDLOG_ERROR(
             "[SWZeroCompany][UE5.6][Hologram] Failed to enable Nanite guard hook: {}",
@@ -2869,8 +2880,8 @@ bool sw_zero_company_ue56_install_nanite_hologram_guard() {
     }
 
     SPDLOG_INFO(
-        "[SWZeroCompany][UE5.6][Hologram] Installed exact-binary plain-Native Nanite guard at {:x}",
-        target);
+        "[SWZeroCompany][UE5.6][Hologram] Installed exact-binary Nanite guard at {:x} (revision={}, native_fix={})",
+        target, layout->revision, layout->native_fix_hologram_guard);
     return true;
 }
 
