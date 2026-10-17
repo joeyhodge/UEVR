@@ -2522,8 +2522,10 @@ void test_ktjl_hook_contracts() {
 #include "GalacticRacerBinkTests.hpp"
 #include "GalacticRacerBinkSeekTests.hpp"
 #include "GearsEDayNativeFixTests.hpp"
+#include "FrameworkInitializationTests.hpp"
 
 int main(int argc, char** argv) {
+    test_framework_initialization();
     test_goweday_engine_allocation();
     test_goweday_native_family();
     test_goweday_native_rects();
