@@ -766,6 +766,7 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 
 	list(APPEND hifi-hook-memory-tests_SOURCES
 		"tests/HiFiRushHookMemoryTests.cpp"
+		"tests/GearsEDayHookTests.cpp"
 		"tests/KtjLCloudHookTests.cpp"
 		"tests/KtjLShadowGatherTests.cpp"
 		"tests/KtjLCloudOutputTests.cpp"
