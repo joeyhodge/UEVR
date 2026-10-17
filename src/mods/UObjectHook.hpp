@@ -277,6 +277,7 @@ private:
     static void* add_object(void* rcx, void* rdx, void* r8, void* r9, void* stack1, void* stack2, void* stack3, void* stack4);
     static void* destructor(sdk::UObjectBase* object, void* rdx, void* r8, void* r9);
     static void townfall_free_object(safetyhook::Context& context);
+    static void goweday_free_object(sdk::FUObjectArray* array, sdk::UObjectBase* object);
     void remove_tracked_object(sdk::UObjectBase* object, const sdk::object_liveness::Identity* identity = nullptr);
 
     std::atomic_bool m_hooked{false};
@@ -318,6 +319,8 @@ private:
 
     SafetyHookInline m_add_object_hook{};
     SafetyHookInline m_destructor_hook{};
+    SafetyHookInline m_goweday_object_free_hook{};
+    std::atomic<sdk::FUObjectArray*> m_goweday_object_array{};
     std::vector<SafetyHookMid> m_townfall_free_hooks;
     std::atomic<sdk::FUObjectArray*> m_townfall_object_array{};
 
