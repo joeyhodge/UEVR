@@ -76,11 +76,16 @@ void test_goweday_native_family() {
     expect(!resolve(), "Gears family contracts must be readable");
     m = good;
     m.put(ctor + 0x30, s::view_identity_code); m.put(ctor + 0x9c, s::view_player_code);
+    m.put(ctor + 0xc4, g::view_rects_code);
     m.put(ctor + 0x214, g::view_singleton_code);
     expect(g::singleton_layout(m.view(), ctor), "Gears singleton fields come from the real view constructor, not its engine version");
     for (size_t i = 0; i < g::view_singleton_mask.size(); ++i) {
         auto changed = m; changed.bytes[ctor + 0x214 - b + i] ^= 1;
         expect(!g::singleton_layout(changed.view(), ctor), "Gears rejects changed pass/primary-index metadata offsets or initialization");
+    }
+    for (size_t i = 0; i < g::view_rects_mask.size(); ++i) {
+        auto changed = m; changed.bytes[ctor + 0xc4 - b + i] ^= 1;
+        expect(!g::singleton_layout(changed.view(), ctor), "Gears rejects changed InitOptions or output rectangle-copy offsets");
     }
     const auto renderer = b + 0x3000;
     m.put(renderer + 0x2a, g::renderer_array_code);
@@ -101,4 +106,74 @@ void test_goweday_native_family() {
     m.put(family + 0x160, uintptr_t(0x12345678));
     expect(g::fresh_family(m.view(), family, table), "Gears permits the intentionally borrowed screen-percentage interface");
     expect(!g::fresh_family(m.view(), family, table + 8), "Gears requires the exact selected source-family vtable");
+}
+
+void test_goweday_native_rects() {
+    namespace g = uevr::gears_native;
+    struct Fixture : gears_native_tests::Memory {
+        bool writable{true}, partial{};
+        int writes{};
+        static bool write(void* context, uintptr_t view, const g::ViewRects& rects) {
+            auto& f = *static_cast<Fixture*>(context);
+            ++f.writes;
+            if (!f.writable) { return false; }
+            f.put(view + g::constrained_rect_offset, rects.constrained);
+            if (f.partial) { f.partial = false; return false; }
+            f.put(view + g::unconstrained_rect_offset, rects.unconstrained);
+            return true;
+        }
+    } f;
+    const auto left = f.base + 0x1000, right = f.base + 0x2000;
+    const g::ViewRects l{{0, 12, 2472, 2404}, {0, 0, 2472, 2416}};
+    const g::ViewRects r{{2472, 12, 4944, 2404}, {2472, 0, 4944, 2416}};
+    Fixture::write(&f, left, l); Fixture::write(&f, right, r);
+    f.put(right + 0x378, uintptr_t(0x1122334455667788));
+    f.put(right + 0x3a0, uintptr_t(0x8877665544332211));
+    const auto original = f.bytes;
+    g::ViewRects read{};
+    {
+        g::RectOverride tx;
+        expect(tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write),
+            "Gears transaction validates exact live and constructor packed rectangles before moving the right eye");
+        expect(g::read_rects(f.view(), left, read) && read == l && g::read_rects(f.view(), right, read) && read == l,
+            "only the linked right-eye capture temporarily has a zero-origin rectangle");
+        expect(!tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write), "active rectangle transaction cannot be overwritten");
+        expect(tx.restore() && f.bytes == original, "explicit restoration preserves every byte including neighboring projection/color fields");
+        expect(tx.restore(), "rectangle restoration is idempotent");
+    }
+    {
+        g::RectOverride tx;
+        expect(tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write), "early-return restoration fixture initializes");
+    }
+    expect(f.bytes == original, "early return restores the packed ordinary-render fallback");
+    {
+        f.partial = true;
+        g::RectOverride tx;
+        expect(!tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write) && f.bytes == original,
+            "partial rectangle writes roll back both fields before fallback");
+    }
+    {
+        g::RectOverride tx;
+        expect(tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write), "failed restoration fixture initializes");
+        f.writable = false;
+        expect(!tx.restore(), "failed restoration cannot authorize fallback or packet publication");
+        f.writable = true;
+        expect(tx.restore() && f.bytes == original, "restoration retries retain the exact saved packed pair");
+    }
+    auto stale = r; ++stale.constrained[1];
+    {
+        g::RectOverride tx;
+        const auto writes = f.writes;
+        expect(!tx.initialize(f.view(), left, right, l, stale, 2472, 2416, &f, Fixture::write), "stale constructor metadata is rejected");
+        expect(!tx.initialize(f.view(), left, left, l, l, 2472, 2416, &f, Fixture::write), "aliased views are rejected");
+        expect(!tx.initialize(f.view(), left, right, l, r, 1236, 1208, &f, Fixture::write), "resolution-generation mismatch is rejected");
+        expect(f.writes == writes && f.bytes == original, "rejected transactions perform no writes");
+    }
+    auto invalid = r; invalid.constrained[0] = (std::numeric_limits<int32_t>::min)();
+    expect(!g::rebase_right(l, invalid, 2472, 2416), "malformed coordinates cannot overflow rebasing arithmetic");
+    expect(!g::rebase_right(l, l, 2472, 2416), "overlapping eyes cannot authorize a capture transaction");
+    expect(!g::rebase_right(l, r, 0, 2416) && !g::rebase_right(l, r, 16385, 2416), "invalid capture dimensions are rejected");
+    f.readable = false;
+    g::RectOverride tx;
+    expect(!tx.initialize(f.view(), left, right, l, r, 2472, 2416, &f, Fixture::write), "unreadable views cannot authorize writes");
 }
