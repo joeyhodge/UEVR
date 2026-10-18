@@ -22,7 +22,9 @@ be unsafe.
 - Accept only one validated debug query at slot 27 or 28. Install the typed
   result handler in that slot; keep all stock SDK tables unchanged.
 - Return initialized 1024x1024 storage, matching the engine default. Verify the
-  receiver and writable eight-byte output range. No game-code NOP or crash
+  exact validated return address, receiver and writable eight-byte output range.
+  Unvalidated callers keep the previous null behavior; do not infer their ABI
+  from a slot number alone. No game-code NOP or crash
   recovery is added, and no per-frame scan, allocation or log is introduced.
 - If proof fails, leave XR unpublished rather than guessing a slot. This can
   block aim initialization on an unsupported update; it is not runtime support
