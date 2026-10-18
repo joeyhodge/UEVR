@@ -13,6 +13,11 @@ inline constexpr const char* process_signature = "40 55 41 57 48 83 EC 38 8B EA 
 
 struct SeekFunctions { uintptr_t seek{}, tick{}, process{}; };
 
+inline bool process_code_matches(const sdk::discovery::Memory& m, uintptr_t address) {
+    return swgr::code_matches(m, address, process_code, process_mask) ||
+        swgr::code_matches(m, address, process_code_382801, process_mask);
+}
+
 template<class Size> inline bool seek_contract(const sdk::discovery::Memory& m,
     const SeekFunctions& f, uintptr_t base, size_t size, Size&& function_size) {
     if (function_size(f.seek) != seek_code.size() || function_size(f.tick) != tick_code.size() ||
@@ -21,7 +26,7 @@ template<class Size> inline bool seek_contract(const sdk::discovery::Memory& m,
         !in_module(f.process, process_code.size(), base, size) ||
         !swgr::code_matches(m, f.seek, seek_code, seek_mask) ||
         !swgr::code_matches(m, f.tick, tick_code, tick_mask) ||
-        !swgr::code_matches(m, f.process, process_code, process_mask)) { return false; }
+        !process_code_matches(m, f.process)) { return false; }
     const auto info = call_target(m, f.seek + 0x5d, base, size);
     const auto go = call_target(m, f.seek + seek_boundary, base, size);
     if (!info || !go || *info == *go || function_size(*info) != info_code.size() ||
