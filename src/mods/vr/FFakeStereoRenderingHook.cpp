@@ -96,6 +96,7 @@
 #include "HalloweenRenderTargets.hpp"
 #include "GalacticRacerRenderTargets.hpp"
 #include "GalacticRacerNativeFix.hpp"
+#include "GalacticRacerRHICommand.hpp"
 #include "GalacticRacerBinkSeek.hpp"
 #include "GalacticRacerBink.hpp"
 #include "HalloweenNativeFix.hpp"
@@ -9640,6 +9641,41 @@ bool is_probable_new_rhi_command(sdk::FRHICommandBase_New* command, const char*&
     return true;
 }
 
+bool swgr_rhi_command_layout_validated() {
+    if (!swgr_ue574_dx12_runtime()) { return false; }
+    static const bool validated = [] {
+        namespace s = uevr::swgr_rhi;
+        const auto image = utility::get_executable();
+        const auto base = reinterpret_cast<uintptr_t>(image);
+        const auto size = utility::get_module_size(image).value_or(0);
+        if (!base || !size || size > UINTPTR_MAX - base) { return false; }
+        const auto memory = sdk::discovery::process_memory();
+        uintptr_t selected{}, cursor = base;
+        for (size_t candidates = 0; candidates < 32 && cursor < base + size; ++candidates) {
+            const auto match = utility::scan(cursor, base + size - cursor, s::constructor_signature);
+            if (!match) {
+                if (selected) {
+                    SPDLOG_INFO("[SWGR][RHICommandList] Validated constructor at {:x}: Root +0x28, CommandLink +0x30; allocator scan bypassed", selected);
+                } else {
+                    SPDLOG_WARN("[SWGR][RHICommandList] No proven command-list layout; render-thread pose fallback retained without allocator scanning");
+                }
+                return selected != 0;
+            }
+            cursor = *match + 1;
+            DWORD64 owner{};
+            const auto function = RtlLookupFunctionEntry(*match, &owner, nullptr);
+            if (!function || owner != base || base + function->BeginAddress != *match ||
+                function->EndAddress <= function->BeginAddress ||
+                !s::command_list_layout(memory, *match, function->EndAddress - function->BeginAddress, base, size)) { continue; }
+            if (selected) { break; }
+            selected = *match;
+        }
+        SPDLOG_WARN("[SWGR][RHICommandList] Ambiguous/incomplete command-list layout search; allocator scan disabled");
+        return false;
+    }();
+    return validated;
+}
+
 bool read_dune_frame_memory(uintptr_t address, void* output, size_t size) {
     if (!is_readable_process_range(address, size)) { return false; }
     std::memcpy(output, reinterpret_cast<const void*>(address), size);
@@ -14980,15 +15016,14 @@ void FFakeStereoRenderingHook::service_swgr_bink_seek_budget() {
             return f && unwind_base == base && base + f->BeginAddress == address && f->EndAddress > f->BeginAddress ?
                 f->EndAddress - f->BeginAddress : 0;
         };
-        const auto find = [&](const char* pattern, const auto& code, const auto& mask, size_t entry_size) {
+        const auto find = [&](const char* pattern, size_t code_size, size_t entry_size, const auto& matches) {
             uintptr_t selected{}, cursor = base;
             for (size_t count = 0; count < 128 && cursor < base + size; ++count) {
                 const auto candidate = utility::scan(cursor, base + size - cursor, pattern);
                 if (!candidate) { return selected; }
                 cursor = *candidate + 1;
                 if (function_size(*candidate) != entry_size ||
-                    !uevr::swgr_bink::in_module(*candidate, code.size(), base, size) ||
-                    !uevr::swgr::code_matches(memory, *candidate, code, mask)) { continue; }
+                    !uevr::swgr_bink::in_module(*candidate, code_size, base, size) || !matches(*candidate)) { continue; }
                 if (selected) { return uintptr_t{}; }
                 selected = *candidate;
             }
@@ -14996,9 +15031,12 @@ void FFakeStereoRenderingHook::service_swgr_bink_seek_budget() {
         };
         namespace b = uevr::swgr_bink;
         const b::SeekFunctions functions{
-            find(b::seek_signature, b::seek_code, b::seek_mask, b::seek_code.size()),
-            find(b::tick_signature, b::tick_code, b::tick_mask, b::tick_code.size()),
-            find(b::process_signature, b::process_code, b::process_mask, b::process_entry_size)};
+            find(b::seek_signature, b::seek_code.size(), b::seek_code.size(),
+                [&](uintptr_t at) { return uevr::swgr::code_matches(memory, at, b::seek_code, b::seek_mask); }),
+            find(b::tick_signature, b::tick_code.size(), b::tick_code.size(),
+                [&](uintptr_t at) { return uevr::swgr::code_matches(memory, at, b::tick_code, b::tick_mask); }),
+            find(b::process_signature, b::process_code.size(), b::process_entry_size,
+                [&](uintptr_t at) { return b::process_code_matches(memory, at); })};
         if (!b::seek_contract(memory, functions, base, size, function_size)) {
             SPDLOG_WARN("[SWGR][BinkSeek] No unique matching seek/Tick/decode-budget contract; original playback retained"); return;
         }
@@ -15064,6 +15102,8 @@ void FFakeStereoRenderingHook::attempt_hook_slate_thread(uintptr_t return_addres
         if (m_swgr_slate_output_hook || m_attempted_hook_slate_thread) { return; }
         m_attempted_hook_slate_thread = true;
         m_attempted_hook_slate_thread_alternate = true;
+        // Resolve once during hook setup, never rescan from the per-frame callback.
+        swgr_rhi_command_layout_validated();
         const auto image = utility::get_executable();
         const auto base = reinterpret_cast<uintptr_t>(image);
         const auto size = utility::get_module_size(image).value_or(0);
@@ -28241,6 +28281,26 @@ void FFakeStereoRenderingHook::pre_render_viewfamily_renderthread(ISceneViewExte
             }
 
             static size_t actual_offset = 0;
+
+            if (swgr_ue574_dx12_runtime()) {
+                const auto root = uevr::swgr_rhi::command_root(sdk::discovery::process_memory(),
+                    reinterpret_cast<uintptr_t>(command_list), swgr_rhi_command_layout_validated(),
+                    [](uintptr_t command) {
+                        const char* reason{};
+                        return is_probable_new_rhi_command(reinterpret_cast<sdk::FRHICommandBase_New*>(command), reason);
+                    });
+                if (root && *root) {
+                    SPDLOG_INFO_ONCE("[SWGR][RHICommandList] Using validated Root +0x28 and command ownership; no legacy offset cache");
+                    SceneViewExtensionAnalyzer::hook_new_rhi_command(
+                        reinterpret_cast<sdk::FRHICommandBase_New*>(*root), frame_count + compensation);
+                } else {
+                    if (!root) {
+                        SPDLOG_WARN_ONCE("[SWGR][RHICommandList] Command Root/ownership not ready; using render-thread poses for this frame and retrying the proven fields next frame");
+                    }
+                    vr->get_runtime()->enqueue_render_poses(frame_count + compensation);
+                }
+                return;
+            }
 
             if (uevr::nascar::is_title25() && g_framework->is_dx12()) {
                 // This exact UE5.5 immediate-list ABI starts with FMemStackBase.
