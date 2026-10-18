@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 
 namespace uevr::swgr_bink {
 // SWGR captured contracts: only external/loader relocations are masked.
@@ -347,6 +348,19 @@ inline constexpr auto process_mask = [] {
         for (size_t i = 0; i < 4; ++i) { mask[offset + i] = 0; }
     }
     return mask;
+}();
+
+// Build Auto-382801 relocates these SDK tables/counters by one page. Keep these
+// five operands exact for each observed image instead of masking more code.
+inline constexpr auto process_code_382801 = [] {
+    auto code = process_code;
+    constexpr std::array<std::pair<size_t, uint32_t>, 5> operands{{
+        {0x9e,0x0a9f4e38}, {0xb5,0x0aaa1c20}, {0xd6,0x0aaa1c20},
+        {0x311,0x0a9f4e20}, {0x7b3,0x0a9f4e40}}};
+    for (const auto& [offset, value] : operands) {
+        for (size_t i = 0; i < sizeof(value); ++i) { code[offset + i] = static_cast<uint8_t>(value >> (8 * i)); }
+    }
+    return code;
 }();
 
 }
