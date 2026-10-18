@@ -51,6 +51,7 @@
 #include "utility/Logging.hpp"
 
 #include "VR.hpp"
+#include "vr/GalacticRacerPanini.hpp"
 #include "vr/Stalker2NativePolicy.hpp"
 #include "UObjectHook.hpp"
 #include "GameSpecific.hpp"
@@ -67,6 +68,7 @@ std::shared_ptr<VR>& VR::get() {
 }
 
 VR::~VR() {
+    uevr::swgr_panini::shutdown();
     stop_native_openxr_async_wait_worker();
     restore_1666amsterdam_native_postprocess_cvars();
     restore_daysgone_gbuffer_cvar();
@@ -4980,6 +4982,8 @@ void VR::on_pre_engine_tick(sdk::UGameEngine* engine, float delta) {
     update_subnautica2_native_water_compatibility(engine);
     update_1666amsterdam_native_postprocess_compatibility(engine);
     update_daysgone_gbuffer_compatibility(engine);
+    uevr::swgr_panini::update(m_compatibility_swgr_disable_panini->value(),
+        m_compatibility_swgr_panini_component->value(), is_hmd_active() && !m_disable_vr);
     update_everspace2_cinematic_bars(engine);
 
     update_statistics_overlay(engine);
@@ -9762,6 +9766,11 @@ void VR::on_draw_sidebar_entry(std::string_view name) {
             m_compatibility_ui_layer_pose_telemetry->draw("UI Layer Pose Telemetry");
             m_compatibility_ui_layer_pose_stabilizer->draw("UI Layer Pose Stabilizer");
             if (sdk::galactic_racer::current_dx12_game()) {
+                m_compatibility_swgr_disable_panini->draw("Galactic Racer Disable Panini - CVar (Experimental)");
+                ImGui::TextWrapped("%s", uevr::swgr_panini::status_text(uevr::swgr_panini::cvar_status()));
+                m_compatibility_swgr_panini_component->draw("Galactic Racer Panini Component Fallback (Experimental)");
+                ImGui::TextWrapped("%s", uevr::swgr_panini::status_text(uevr::swgr_panini::component_status()));
+                ImGui::TextWrapped("Enable only one test. Both default off. CVar uses Gfn.Panini.Enable without raising priority and restores its owned value when disabled. Component fallback bypasses backend CVar lookup using the validated game's temporary-camera branch for each Tick, immediately restoring the flag. Unsupported builds remain unchanged. No FOV, world scale, alpha, UI or stereo mode changes. Compare at high speed; the cause is not yet runtime-confirmed.");
                 m_compatibility_swgr_bink_seek_budget->draw("Galactic Racer Movie Seek Budget (Experimental)");
                 ImGui::TextWrapped("Opt-in SWGR UE5.7.4 DX12 only. Uses a 6 ms incremental budget for playing, forward-seeking viewport movies and keeps their completed image scheduled while seeking. A full decode can exceed the budget; movie/audio timing needs testing. Enable before playing a movie. Rewinds, paused seeks, texture movies and other games keep the original path.");
             }
