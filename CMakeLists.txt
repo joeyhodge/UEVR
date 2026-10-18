@@ -815,6 +815,53 @@ if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	unset(CMKR_SOURCES)
 endif()
 
+# Target gears-eday-aim-tests
+if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
+	set(CMKR_TARGET gears-eday-aim-tests)
+	set(gears-eday-aim-tests_SOURCES "")
+
+	list(APPEND gears-eday-aim-tests_SOURCES
+		"tests/GearsEDayAimTests.cpp"
+	)
+
+	list(APPEND gears-eday-aim-tests_SOURCES
+		cmake.toml
+	)
+
+	set(CMKR_SOURCES ${gears-eday-aim-tests_SOURCES})
+	add_executable(gears-eday-aim-tests)
+
+	if(gears-eday-aim-tests_SOURCES)
+		target_sources(gears-eday-aim-tests PRIVATE ${gears-eday-aim-tests_SOURCES})
+	endif()
+
+	get_directory_property(CMKR_VS_STARTUP_PROJECT DIRECTORY ${PROJECT_SOURCE_DIR} DEFINITION VS_STARTUP_PROJECT)
+	if(NOT CMKR_VS_STARTUP_PROJECT)
+		set_property(DIRECTORY ${PROJECT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT gears-eday-aim-tests)
+	endif()
+
+	source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${gears-eday-aim-tests_SOURCES})
+
+	target_compile_features(gears-eday-aim-tests PRIVATE
+		cxx_std_23
+	)
+
+	target_include_directories(gears-eday-aim-tests PRIVATE
+		"src/"
+		"dependencies/submodules/UESDK/src"
+	)
+
+	target_link_libraries(gears-eday-aim-tests PRIVATE
+		bddisasm
+	)
+
+	add_test(NAME gears-eday-aim-tests COMMAND gears-eday-aim-tests)
+	set_tests_properties(gears-eday-aim-tests PROPERTIES TIMEOUT 60)
+
+	unset(CMKR_TARGET)
+	unset(CMKR_SOURCES)
+endif()
+
 # Target nascar-hook-compatibility-tests
 if(UEVR_BUILD_COMPATIBILITY_TESTS) # compatibility-policy-tests
 	set(CMKR_TARGET nascar-hook-compatibility-tests)
@@ -1488,8 +1535,13 @@ list(APPEND uevr_SOURCES
 	"src/mods/vr/GalacticRacerNativeFix.hpp"
 	"src/mods/vr/GalacticRacerNativeFixCode.hpp"
 	"src/mods/vr/GalacticRacerOwnedTexture.hpp"
+	"src/mods/vr/GalacticRacerRHICommand.hpp"
 	"src/mods/vr/GalacticRacerRenderTargets.hpp"
 	"src/mods/vr/GamepadRecovery.hpp"
+	"src/mods/vr/GearsEDayAim.hpp"
+	"src/mods/vr/GearsEDayAllocation.hpp"
+	"src/mods/vr/GearsEDayNativeContracts.hpp"
+	"src/mods/vr/GearsEDayNativeFix.hpp"
 	"src/mods/vr/HalloweenNativeFix.hpp"
 	"src/mods/vr/HalloweenRenderTargets.hpp"
 	"src/mods/vr/HiFiRushRendererEntry.hpp"
@@ -1545,8 +1597,10 @@ list(APPEND uevr_SOURCES
 	"src/uevr-imgui/uevr_imconfig.hpp"
 	"src/utility/BoundedTextureDiagnostics.hpp"
 	"src/utility/BuildIdentity.hpp"
+	"src/utility/FrameworkInitialization.hpp"
 	"src/utility/GpuRetirement.hpp"
 	"src/utility/HiFiRushHookMemory.hpp"
+	"src/utility/HookDiagnostics.hpp"
 	"src/utility/ImGui.hpp"
 	"src/utility/InputHookInstallation.hpp"
 	"src/utility/Logging.hpp"
