@@ -1930,6 +1930,8 @@ private:
     const ModToggle::Ptr m_compatibility_ui_layer_pose_telemetry{ ModToggle::create(generate_name("Compatibility_UILayerPoseTelemetry"), false, true) };
     const ModToggle::Ptr m_compatibility_ui_layer_pose_stabilizer{ ModToggle::create(generate_name("Compatibility_UILayerPoseStabilizer"), false, true) };
     const ModToggle::Ptr m_compatibility_swgr_bink_seek_budget{ ModToggle::create(generate_name("Compatibility_SWGRBinkSeekBudget"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_disable_panini{ ModToggle::create(generate_name("Compatibility_SWGRDisablePanini"), false, true) };
+    const ModToggle::Ptr m_compatibility_swgr_panini_component{ ModToggle::create(generate_name("Compatibility_SWGRPaniniComponentFallback"), false, true) };
     const ModToggle::Ptr m_compatibility_fullscreen_16x9_cameras{ ModToggle::create(generate_name("Compatibility_Fullscreen16x9Cameras"), false, true) };
     const ModSlider::Ptr m_compatibility_fullscreen_16x9_camera_aspect{ ModSlider::create(generate_name("Compatibility_Fullscreen16x9CameraAspect"), 0.0f, 4.0f, 0.0f, true) };
     const ModToggle::Ptr m_compatibility_subnautica2_native_water{ ModToggle::create(generate_name("Compatibility_Subnautica2NativeWater"), false, true) };
@@ -2407,6 +2409,8 @@ public:
             *m_compatibility_ui_layer_pose_telemetry,
             *m_compatibility_ui_layer_pose_stabilizer,
             *m_compatibility_swgr_bink_seek_budget,
+            *m_compatibility_swgr_disable_panini,
+            *m_compatibility_swgr_panini_component,
             *m_compatibility_fullscreen_16x9_cameras,
             *m_compatibility_fullscreen_16x9_camera_aspect,
             *m_compatibility_subnautica2_native_water,
